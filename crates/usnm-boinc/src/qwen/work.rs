@@ -747,6 +747,17 @@ fn read_unit(
         );
         return done;
     };
+    if let Some(pin) = job.model.as_deref().filter(|pin| *pin != model.name) {
+        diag.section(
+            "model",
+            &format!(
+                "the unit is pinned to {pin}; this payload reads with {} and never another model",
+                model.name
+            ),
+            256,
+        );
+        return done;
+    }
     let gpu = if payload == "2b" { None } else { gpu };
     diag.section(
         "model",

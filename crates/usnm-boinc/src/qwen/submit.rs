@@ -31,7 +31,14 @@ pub enum Target {
     /// Native 2B GPU/CPU worker (`templates/usnm_qwen_2b_in`, stages sticky 2B GGUF + mmproj).
     #[value(name = "native-2b", alias = "native2b")]
     Native2b,
+    /// Native Xiaomi-OCR-0 GPU/CPU worker (`templates/usnm_qwen_x08_in`, stages sticky
+    /// Xiaomi-OCR-0 GGUF + mmproj) for jobs pinned to it at request version 5 (#1776).
+    #[value(name = "native-xiaomi")]
+    NativeXiaomi,
 }
+
+/// `workunit.batch` of Xiaomi-OCR-0 units: only the `_x08` plan classes take it.
+pub const XIAOMI_BATCH: i32 = 108;
 
 impl Target {
     pub fn wu_template(self) -> &'static str {
@@ -39,7 +46,28 @@ impl Target {
             Self::Container | Self::Container8b => "templates/usnm_qwen_in",
             Self::Native8b => "templates/usnm_qwen_8b_in",
             Self::Native2b => "templates/usnm_qwen_2b_in",
+            Self::NativeXiaomi => "templates/usnm_qwen_x08_in",
         }
+    }
+
+    /// Whether `job` may be sent as this target's units: a Xiaomi-OCR-0 job
+    /// only as [`Self::NativeXiaomi`], which takes nothing else, and a job
+    /// pinned to a Qwen model only by a target that carries that model.
+    pub fn check_job(self, job: &Job) -> anyhow::Result<()> {
+        use usnm_ocr_contract::qwen::is_xiaomi_model;
+        let pin = job.model.as_deref();
+        let ok = match self {
+            Self::NativeXiaomi => pin == Some(super::XIAOMI_MODEL),
+            _ if pin.is_some_and(is_xiaomi_model) => false,
+            Self::Container | Self::Native2b => pin.is_none_or(|p| p == "qwen3-vl-2b-q8"),
+            Self::Container8b | Self::Native8b => pin.is_none_or(|p| p == "qwen3-vl-8b-q4km"),
+        };
+        ensure!(
+            ok,
+            "{}: a job pinned to {pin:?} is not for the {self:?} target",
+            job.doc_id
+        );
+        Ok(())
     }
 
     /// BOINC `workunit.batch` identifier passed via `create_work --batch` so
@@ -50,12 +78,15 @@ impl Target {
     /// - `2` (`Native2b`): native 2B/CPU plan classes (`mt`, `nvidia_cuda_2b`, `nvidia_vulkan_2b`)
     /// - `8` (`Native8b`): native 8B GPU plan classes (`apple_gpu_8b`, `nvidia_cuda_8b`,
     ///   `intel_vulkan_8b`, `nvidia_vulkan_8b`, `amd_vulkan_8b`)
+    /// - `108` ([`XIAOMI_BATCH`], `NativeXiaomi`): the Xiaomi-OCR-0 classes (`mt_x08`,
+    ///   `apple_gpu_x08`, `nvidia_vulkan_x08`, `intel_vulkan_x08`, `amd_vulkan_x08`)
     pub fn batch(self) -> i32 {
         match self {
             Self::Container => 12,
             Self::Container8b => 18,
             Self::Native2b => 2,
             Self::Native8b => 8,
+            Self::NativeXiaomi => XIAOMI_BATCH,
         }
     }
 
@@ -65,6 +96,7 @@ impl Target {
             Self::Container8b => "18",
             Self::Native2b => "2",
             Self::Native8b => "8",
+            Self::NativeXiaomi => "108",
         }
     }
 
@@ -78,6 +110,7 @@ impl Target {
                 !plan_class.starts_with("docker")
                     && (plan_class == "mt" || plan_class.ends_with("_2b"))
             }
+            Self::NativeXiaomi => !plan_class.starts_with("docker") && plan_class.ends_with("_x08"),
         }
     }
 
@@ -92,6 +125,7 @@ impl Target {
                 "Qwen3-VL-2B-Instruct-Q8_0.gguf",
                 "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf",
             ],
+            Self::NativeXiaomi => &[super::XIAOMI_FILE, super::XIAOMI_MMPROJ],
         }
     }
 
@@ -106,6 +140,7 @@ impl Target {
             Self::Container8b => ("8b", "container_cold_bytes"),
             Self::Native2b => ("2b", "native_cold_bytes"),
             Self::Native8b => ("8b", "native_cold_bytes"),
+            Self::NativeXiaomi => ("x08", "native_cold_bytes"),
         };
         policy["models"][model][kind].as_u64().expect("disk bound")
     }
@@ -160,6 +195,7 @@ pub fn create_work_args_with_lock(
     target: Target,
     weights_lock_text: &str,
 ) -> anyhow::Result<Vec<String>> {
+    target.check_job(job)?;
     let (fpops_est, fpops_bound) = fpops(job);
     let mut args: Vec<String> = [
         "--appname",
@@ -402,7 +438,7 @@ pub fn benchmark_work_args_for_target(job: &Job, target: Target) -> anyhow::Resu
         matches!(target, Target::Container | Target::Container8b),
         "benchmark NOTICE input templates support container targets only; native benchmark templates are not installed"
     );
-    let mut args = create_work_args_for_target(job, target);
+    let mut args = create_work_args_with_lock(job, target, EMBEDDED_WEIGHTS_LOCK)?;
     let template = args
         .iter_mut()
         .find(|s| *s == "templates/usnm_qwen_in")
@@ -664,6 +700,125 @@ mod tests {
         assert!(!Target::Native2b.is_plan_class_compatible("apple_gpu_8b"));
         assert!(!Target::Native2b.is_plan_class_compatible("nvidia_cuda_8b"));
         assert!(!Target::Native2b.is_plan_class_compatible("docker_mt"));
+
+        for plan in [
+            "mt_x08",
+            "apple_gpu_x08",
+            "nvidia_vulkan_x08",
+            "intel_vulkan_x08",
+            "amd_vulkan_x08",
+        ] {
+            assert!(
+                Target::NativeXiaomi.is_plan_class_compatible(plan),
+                "{plan}"
+            );
+            for other in [
+                Target::Container,
+                Target::Container8b,
+                Target::Native8b,
+                Target::Native2b,
+            ] {
+                assert!(!other.is_plan_class_compatible(plan), "{other:?} {plan}");
+            }
+        }
+        for plan in ["mt", "nvidia_vulkan_8b", "nvidia_vulkan_2b", "docker_mt_2b"] {
+            assert!(
+                !Target::NativeXiaomi.is_plan_class_compatible(plan),
+                "{plan}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_xiaomi_target_sends_only_xiaomi_units_with_their_own_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let unit = tmp.path().join("q");
+        crate::quality::work::tests::unit(&unit);
+        let qwen = super::super::stage::local_unit(
+            &unit.join("page.jpg"),
+            &unit.join("loc.xml"),
+            &tmp.path().join("u"),
+            super::super::stage::tests::engine(),
+            1,
+            4,
+            600,
+            4,
+        )
+        .unwrap();
+        let mut x = qwen.clone();
+        x.engine.models = super::super::xiaomi_models();
+        x.prompt_version = usnm_ocr_contract::qwen::PROMPT_VERSION_XIAOMI;
+        x.model = Some(super::super::XIAOMI_MODEL.into());
+        x.id = x.identity().unwrap();
+        x.validate().unwrap();
+
+        // weights.lock has no Xiaomi-OCR-0 entry yet, so nothing can be sent.
+        let err = create_work_args_with_lock(&x, Target::NativeXiaomi, EMBEDDED_WEIGHTS_LOCK)
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("missing xiaomi-ocr-0-q8_0.gguf in weights.lock"),
+            "{err:#}"
+        );
+        let (model_sha, mmproj_sha) = ("d".repeat(64), "e".repeat(64));
+        let lock = format!(
+            "{EMBEDDED_WEIGHTS_LOCK}xiaomi-ocr-0-q8_0.gguf https://example.invalid/m {model_sha}\n\
+             mmproj-xiaomi-ocr-0-f16.gguf https://example.invalid/p {mmproj_sha}\n"
+        );
+        let args = create_work_args_with_lock(&x, Target::NativeXiaomi, &lock).unwrap();
+        assert!(args.contains(&"templates/usnm_qwen_x08_in".to_string()));
+        assert!(args.windows(2).any(|w| w == ["--batch", "108"]));
+        assert_eq!(Target::NativeXiaomi.batch(), XIAOMI_BATCH);
+        assert_eq!(Target::NativeXiaomi.batch_str(), XIAOMI_BATCH.to_string());
+        assert!(args
+            .windows(2)
+            .any(|w| w == ["--rsc_disk_bound", "12884901888"]));
+        assert!(args.ends_with(&[
+            format!("{}_page_jpg", x.id),
+            format!("{}_qwen_json", x.id),
+            model_physical_name("xiaomi-ocr-0-q8_0.gguf", &model_sha),
+            model_physical_name("mmproj-xiaomi-ocr-0-f16.gguf", &mmproj_sha),
+        ]));
+        // The template's sticky files are the pinned model's.
+        // Read, not embedded: the binary never carries this template (install.py copies it).
+        let template = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../boinc/apps/usnm_qwen_x08_in"),
+        )
+        .unwrap();
+        for f in Target::NativeXiaomi.model_files() {
+            assert!(
+                template.contains(&format!("<open_name>{f}</open_name>")),
+                "{f}"
+            );
+        }
+        let pinned = x.pinned_model().unwrap();
+        assert_eq!(
+            Target::NativeXiaomi.model_files(),
+            [pinned.file.as_str(), pinned.mmproj.as_str()]
+        );
+
+        // A Xiaomi job goes out as no other target, and the Xiaomi target takes no Qwen job.
+        for t in [
+            Target::Container,
+            Target::Container8b,
+            Target::Native8b,
+            Target::Native2b,
+        ] {
+            assert!(create_work_args_with_lock(&x, t, &lock).is_err(), "{t:?}");
+        }
+        assert!(create_work_args_with_lock(&qwen, Target::NativeXiaomi, &lock).is_err());
+        // Qwen pins go only to the targets that carry the pinned model (#968).
+        let mut q2 = qwen.clone();
+        q2.model = Some("qwen3-vl-2b-q8".into());
+        q2.id = q2.identity().unwrap();
+        assert!(Target::Native2b.check_job(&q2).is_ok());
+        assert!(Target::Container.check_job(&q2).is_ok());
+        assert!(Target::Native8b.check_job(&q2).is_err());
+        let mut q8 = qwen.clone();
+        q8.model = Some("qwen3-vl-8b-q4km".into());
+        q8.id = q8.identity().unwrap();
+        assert!(Target::Native8b.check_job(&q8).is_ok());
+        assert!(Target::Native2b.check_job(&q8).is_err());
+        assert!(Target::NativeXiaomi.check_job(&q8).is_err());
     }
 
     #[test]

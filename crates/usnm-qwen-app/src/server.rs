@@ -16,12 +16,15 @@ use std::{
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
-use usnm_ocr_contract::qwen::{loop_cut, tail_repetition, MAX_CROP_TEXT, PROMPT};
+#[cfg(test)]
+use usnm_ocr_contract::qwen::PROMPT_VERSION;
+use usnm_ocr_contract::qwen::{
+    loop_cut, prompt, prompt_before_image, tail_repetition, thinking_off, MAX_CROP_TEXT,
+};
 use usnm_ocr_quality::slot::{resolve_slot_file, BoincControl};
 
 pub const ENV_LLAMA_SERVER: &str = "USNM_LLAMA_SERVER";
 
-pub(crate) const CTX_SIZE: u32 = 4096;
 pub(crate) const LOAD_DEADLINE: Duration = Duration::from_secs(300);
 
 /// The connection to `llama-server` broke before a whole reply arrived: an empty or garbled status
@@ -268,6 +271,33 @@ fn unchunk(mut b: &[u8]) -> anyhow::Result<Vec<u8>> {
     }
 }
 
+/// The chat request for one crop under a request version: the image and the
+/// version's prompt in the version's order (Qwen's prompt after the image,
+/// Xiaomi-OCR-0's before it), and thinking off where the version says so.
+pub(crate) fn request_json(png: &[u8], prompt_version: u32, max_tokens: u32) -> serde_json::Value {
+    let url = format!("data:image/png;base64,{}", BASE64.encode(png));
+    let image = serde_json::json!({"type": "image_url", "image_url": {"url": url}});
+    let text = serde_json::json!({"type": "text", "text": prompt(prompt_version)});
+    let content = if prompt_before_image(prompt_version) {
+        [text, image]
+    } else {
+        [image, text]
+    };
+    let mut request = serde_json::json!({
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": max_tokens,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "seed": 42,
+    });
+    if thinking_off(prompt_version) {
+        request["chat_template_kwargs"] = serde_json::json!({"enable_thinking": false});
+    }
+    request
+}
+
+/// A crop's reading with request version 1's prompt (the tests' shorthand).
+#[cfg(test)]
 pub fn chat_completion(
     port: u16,
     png: &[u8],
@@ -276,20 +306,28 @@ pub fn chat_completion(
     guard: bool,
     timeout: Duration,
 ) -> anyhow::Result<(String, u32, String)> {
-    let url = format!("data:image/png;base64,{}", BASE64.encode(png));
-    let mut request = serde_json::json!({
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": url}},
-                {"type": "text", "text": PROMPT},
-            ]
-        }],
-        "max_tokens": max_tokens,
-        "temperature": 0.0,
-        "top_p": 1.0,
-        "seed": 42,
-    });
+    chat_completion_for(
+        port,
+        png,
+        PROMPT_VERSION,
+        max_tokens,
+        image_min_tokens,
+        guard,
+        timeout,
+    )
+}
+
+/// A crop's reading with `prompt_version`'s request ([`request_json`]).
+pub fn chat_completion_for(
+    port: u16,
+    png: &[u8],
+    prompt_version: u32,
+    max_tokens: u32,
+    image_min_tokens: Option<u32>,
+    guard: bool,
+    timeout: Duration,
+) -> anyhow::Result<(String, u32, String)> {
+    let mut request = request_json(png, prompt_version, max_tokens);
     if guard {
         request["stream"] = true.into();
         let body = serde_json::to_vec(&request)?;
@@ -679,6 +717,7 @@ impl Server {
         threads: u32,
         load_deadline: Duration,
         image_min_tokens: Option<u32>,
+        ctx_size: u32,
         control: &BoincControl,
     ) -> anyhow::Result<(Self, u64)> {
         if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
@@ -708,7 +747,7 @@ impl Server {
             "--port",
             &port.to_string(),
             "--ctx-size",
-            &CTX_SIZE.to_string(),
+            &ctx_size.to_string(),
             "--temp",
             "0",
             "--seed",
@@ -808,6 +847,8 @@ pub(crate) struct Launch<'a> {
     pub(crate) gpu: &'a GpuState,
     pub(crate) threads: u32,
     pub(crate) image_min_tokens: Option<u32>,
+    /// `--ctx-size`, from the job's request version.
+    pub(crate) ctx_size: u32,
     pub(crate) control: &'a BoincControl,
 }
 
@@ -837,6 +878,7 @@ impl Llama {
             l.threads,
             load_deadline,
             l.image_min_tokens,
+            l.ctx_size,
             l.control,
         )?;
         self.port = srv.port;
@@ -1218,6 +1260,8 @@ mod completion_tests {
                 2,
                 Duration::from_secs(2),
                 None,
+                // The context comes from the job's request version (4096, or 16384 for 5).
+                if partial { 4096 } else { 16_384 },
                 &control,
             );
             let error = match result {
@@ -1229,6 +1273,7 @@ mod completion_tests {
             let args: Vec<_> = text.lines().collect();
             let value = |name| args[args.iter().position(|arg| *arg == name).unwrap() + 1];
             assert_eq!(value("-ngl"), if partial { "24" } else { "99" });
+            assert_eq!(value("--ctx-size"), if partial { "4096" } else { "16384" });
             assert_eq!(value("--device"), "Vulkan3");
             assert_eq!(args.contains(&"--no-mmproj-offload"), partial);
             assert_eq!(
@@ -1366,5 +1411,29 @@ mod completion_tests {
             serde_json::json!(["tail_periodic_repetition"])
         );
         assert_eq!(m["image_min_tokens_requested"], 1024);
+    }
+
+    #[test]
+    fn each_request_version_sends_its_own_prompt_in_its_own_place() {
+        use usnm_ocr_contract::qwen::{PROMPT, PROMPT_VERSION_LOOP_GUARD, PROMPT_VERSION_XIAOMI};
+        for v in [PROMPT_VERSION, PROMPT_VERSION_LOOP_GUARD] {
+            let r = request_json(b"png", v, 300);
+            let content = &r["messages"][0]["content"];
+            assert_eq!(content[0]["type"], "image_url");
+            assert_eq!(content[1]["text"], PROMPT);
+            assert!(r.get("chat_template_kwargs").is_none());
+            assert_eq!(r["max_tokens"], 300);
+        }
+        let r = request_json(b"png", PROMPT_VERSION_XIAOMI, 2048);
+        let content = &r["messages"][0]["content"];
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "Extract the text in the image.");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(r["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(
+            (r["temperature"].as_f64(), r["seed"].as_u64()),
+            (Some(0.0), Some(42))
+        );
+        assert_eq!(r["max_tokens"], 2048);
     }
 }

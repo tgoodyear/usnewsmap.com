@@ -533,6 +533,48 @@ class BoincAppVersion {{ static function enum($query) {{
                         self.assertFalse((self.project / f'apps/usnm_qwen/1.0/{subdir}').exists())
 
     @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
+    def test_native_xiaomi_classes_publish_where_their_qwen_classes_do(self):
+        # #1776: mt_x08 on every platform, the GPU classes on their 8B classes' platforms.
+        (self.root / 'php').unlink(missing_ok=True)
+        platforms = ('x86_64-pc-linux-gnu', 'windows_x86_64', 'aarch64-unknown-linux-gnu',
+                     'arm64-apple-darwin', 'x86_64-apple-darwin')
+        allowed = {
+            'mt_x08': set(platforms),
+            'apple_gpu_x08': {'arm64-apple-darwin'},
+            'nvidia_vulkan_x08': {'x86_64-pc-linux-gnu', 'windows_x86_64'},
+            'intel_vulkan_x08': {'x86_64-pc-linux-gnu', 'windows_x86_64'},
+            'amd_vulkan_x08': {'x86_64-pc-linux-gnu', 'windows_x86_64'},
+        }
+        for plan, ok in allowed.items():
+            (self.project / 'html/inc/boinc_db.inc').write_text(f'''<?php
+class BoincApp {{ static function lookup($query) {{ return (object)["id"=>1]; }} }}
+class BoincPlatform {{ static function lookup($query) {{ return (object)["id"=>2]; }} }}
+class BoincAppVersion {{ static function enum($query) {{
+    if (strpos($query, "plan_class='{plan}'") === false) exit(9);
+    return [(object)["id"=>3]];
+}} }}
+''')
+            for platform in platforms:
+                with self.subTest(plan=plan, platform=platform):
+                    subdir = f'{platform}__{plan}'
+                    src = self.source / f'apps/usnm_qwen/1.0/{subdir}'
+                    src.mkdir(parents=True)
+                    (src / 'usnm_qwen').write_text('native-fixture')
+                    env = {**os.environ, 'PROJ': str(self.project), 'APPVER_KIND': 'native',
+                           'APPVER_APP': 'usnm_qwen', 'APPVER_VERSION': '1.0',
+                           'APPVER_PLATFORM': platform, 'APPVER_PLAN_CLASS': plan,
+                           'DB_HOST': 'fixture', 'DB_NAME': 'fixture', 'MASTER_HOST': 'fixture',
+                           'PATH': str(self.root) + os.pathsep + os.environ['PATH']}
+                    result = subprocess.run(['bash', str(self.script)], capture_output=True, text=True, env=env)
+                    if platform in ok:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertIn(f'Verified usnm_qwen 1.0 {platform} {plan}', result.stdout)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn('is not supported on', result.stderr)
+                        self.assertFalse((self.project / f'apps/usnm_qwen/1.0/{subdir}').exists())
+
+    @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
     def test_native_ocr_apps_publish_only_on_linux_x86_64(self):
         (self.project / 'html/inc/boinc_db.inc').write_text('''<?php
 class BoincApp { static function lookup($query) { return (object)["id"=>1]; } }

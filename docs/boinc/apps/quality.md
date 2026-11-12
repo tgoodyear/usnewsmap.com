@@ -53,7 +53,7 @@ Per reader in `result.json`: `name`, `source`, `chars`, `words`, `est_cer` (clip
 
 One page per workunit.
 
-- `qwen.json` (`usnm_ocr_contract::qwen::Job`): `v`, `id`, `doc_id`, `language`, `group`, `input`, `crops` (`[{id, box, stratum, loc_text}]`, <= 64; the quality unit's crops, LoC's words in visual line order), `engine {image, llama, models: [{name, file, mmproj, min_gpu_mb}], weights}`, `prompt_version`, `gpu_timeout_secs`, `cpu_timeout_secs`, `max_tokens_per_1000px2`. Plus `page.jpg`.
+- `qwen.json` (`usnm_ocr_contract::qwen::Job`): `v`, `id`, `doc_id`, `language`, `group`, `input`, `crops` (`[{id, box, stratum, loc_text}]`, <= 64; the quality unit's crops, LoC's words in visual line order), `engine {image, llama, models: [{name, file, mmproj, min_gpu_mb}], weights}`, `prompt_version`, `gpu_timeout_secs`, `cpu_timeout_secs`, `max_tokens_per_1000px2`, and optionally `model` (the one model of `engine.models` the unit must be read with). Plus `page.jpg`.
 - `readings.json` (`qwen::Readings`): `v`, `job_id`, `outcome`, `device`, `model`, `prompt_version`, `readings: [{id, text, tokens, ms}]`, `diag`.
 - `result.json` (`qwen::ResultManifest`): outcome, device, model, times, crops read, host, checksums of the other two. Plus `diag.txt`.
 - Outcomes: `ok`, `timeout` (crops read so far kept), `failed`, `no_gpu` (GPU version, no visible GPU), `unit_error`.
@@ -66,8 +66,13 @@ One page per workunit.
 | 2       | `llama-server --image-min-tokens 1024` (Qwen-VL's minimum); crop upscaled to it            | none       |
 | 3       | as 1                                                                                       | `stop`     |
 | 4       | as 2                                                                                       | `stop`     |
+| 5       | as 1; Xiaomi-OCR-0's request (below)                                                       | none       |
 
 On #529 version 2 raised image-checked Yiddish words from 23% to 59% and left English, Serbian and repeated-print crops as they were. The loop guard (Study 5's `stop` rule) streams the request, checks `tail_repetition` every eight tokens from the twelfth, and on a hit closes the connection (which stops llama-server), keeping the text before the repeated run plus one period. Cut readings, including printed repeats at a natural end, record the raw digest and length and `repetition_loop_guard_cut`; `tokens` is then the count of text events (`loop_guard.stream_deltas`, `completion_tokens_reported` empty). Versions 3 and 4 need app version 1.17; older versions refuse them.
+
+Version 5 is Xiaomi-OCR-0 (#1776) as Study 9 read with it: the prompt `Extract the text in the image.` before the image, thinking off, a 16,384-token context and at most 2,048 output tokens a crop, whatever its area. Only a job pinned to a Xiaomi-OCR-0 model reads with it, and such a job reads with nothing else.
+
+**Model pins.** A job's `model` names the model it must be read with (`xiaomi-ocr-0-q8`, `qwen3-vl-8b-q4km` or `qwen3-vl-2b-q8`). Jobs without one keep their identity and the plan class's choice. With one, `usnm_qwen` reads with that model's files or fails the unit (`model_pin_refused` in its `USNM_QWEN_FAILURE` report); it never falls back to another model, and a Qwen class never reads a Xiaomi-OCR-0 unit. The `_x08` classes (`mt_x08`, `apple_gpu_x08`, `nvidia_vulkan_x08`, `intel_vulkan_x08`, `amd_vulkan_x08`) take batch-108 units only, read pinned Xiaomi-OCR-0 units only and are closed. `qwen stage --model NAME` pins a root's jobs (version 5 by default for Xiaomi-OCR-0, whose engine lists it alone), and a root refuses a page staged for another reader, so 8B and 2B can be staged on the same crops in two roots (#968). `qwen submit --target native-xiaomi` sends them with `templates/usnm_qwen_x08_in`; it needs Xiaomi-OCR-0's lines in `weights.lock`, which aren't there yet. The validator never pairs a Xiaomi-OCR-0 result with another model's.
 
 `qwen stage --prompt-version` and `qwen_submit.py --prompt-version` choose it (default 1). `qwen_submit.py` defers a chunk (exit 75, READY kept) while any dispatchable app version can't read the version, and refuses a second version in one root. The feed stages 3, and 4 for Yiddish ([Request versions on the feed](#request-versions-on-the-feed)).
 

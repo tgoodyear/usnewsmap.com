@@ -19,7 +19,9 @@ use BoincPlatform;
 const APPS = ["usnm_ocr", "usnm_gold"];
 // Native Qwen versions publish held too (#1672): a new platform waits for a real client run.
 const QWEN_NATIVE_CLASSES = ["nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b", "intel_vulkan_8b",
-                             "amd_vulkan_8b", "nvidia_cuda_8b", "nvidia_cuda_2b", "apple_gpu_8b", "mt"];
+                             "amd_vulkan_8b", "nvidia_cuda_8b", "nvidia_cuda_2b", "apple_gpu_8b", "mt",
+                             // Xiaomi-OCR-0 (#1776).
+                             "mt_x08", "apple_gpu_x08", "nvidia_vulkan_x08", "intel_vulkan_x08", "amd_vulkan_x08"];
 const BINDINGS = "/usr/local/lib/usnm-boinc/gold-engine-platforms.json";
 $args = getopt("", ["project:", "app-version:", "action:", "min-version:", "journal-dir:",
                     "gold-bindings:", "accept-stranded", "apply"]);

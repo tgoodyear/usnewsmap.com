@@ -34,7 +34,7 @@ use crate::{
     locks::{check_engine, resolve_model},
     report::{diag_block, failure_report, redacted_tail, report_failure},
     retry::{run_crop, write_temporary_exit, CropEnd, MAX_TEMPORARY_EXITS},
-    server::{chat_completion, find_llama_server, Launch, Llama, CTX_SIZE, LOAD_DEADLINE},
+    server::{chat_completion_for, find_llama_server, Launch, Llama, LOAD_DEADLINE},
 };
 use anyhow::{ensure, Context};
 use std::{
@@ -47,7 +47,7 @@ use usnm_ocr_contract::{
     boinc::sha256,
     quality::{MAX_BUNDLE_SCAN, MAX_SCAN},
     qwen::{
-        image_min_tokens, loop_guard, Crop, Engine, Job, Outcome, Reading, Readings,
+        context_size, image_min_tokens, loop_guard, Crop, Engine, Job, Outcome, Reading, Readings,
         ResultManifest, MAX_ERROR, MAX_JOB_JSON, PROMPT_VERSION, SUPPORTED_PROMPT_VERSIONS,
         VERSION,
     },
@@ -455,6 +455,7 @@ fn run_crops(
         gpu.free_mb,
         gpu.use_gpu,
         host.plan_class.as_deref(),
+        l.job.model.as_deref(),
     ) {
         Ok(m) => m,
         Err(e) => {
@@ -487,6 +488,7 @@ fn run_crops(
         gpu,
         threads,
         image_min_tokens: image_min_tokens(l.job.prompt_version),
+        ctx_size: context_size(l.job.prompt_version),
         control,
     };
     let mut load_ms = 0;
@@ -607,9 +609,10 @@ fn run_crops(
         let end = run_crop(
             &mut llama,
             |srv| {
-                chat_completion(
+                chat_completion_for(
                     srv.port,
                     &png,
+                    l.job.prompt_version,
                     max_tokens,
                     min_tokens,
                     guard,
@@ -761,7 +764,10 @@ fn run_crops(
     drop(llama);
 
     let mut r_diag = BTreeMap::new();
-    r_diag.insert("ctx_size".into(), CTX_SIZE.to_string());
+    r_diag.insert(
+        "ctx_size".into(),
+        context_size(l.job.prompt_version).to_string(),
+    );
     r_diag.insert(
         "image_min_tokens".into(),
         image_min_tokens(l.job.prompt_version).map_or("default".into(), |n| n.to_string()),
@@ -901,7 +907,8 @@ mod tests {
     fn a_unit_error_keeps_the_jobs_supported_request_version() {
         for (raw, want) in [
             (2, usnm_ocr_contract::qwen::PROMPT_VERSION_IMAGE_MIN_TOKENS),
-            (5, PROMPT_VERSION),
+            (5, usnm_ocr_contract::qwen::PROMPT_VERSION_XIAOMI),
+            (6, PROMPT_VERSION),
         ] {
             let tmp = tempfile::tempdir().unwrap();
             let job = serde_json::json!({
@@ -1145,14 +1152,28 @@ mod tests {
 
         // Even with 16000 MB free GPU memory, the 2B classes select the 2B model.
         for plan in ["nvidia_cuda_2b", gpu::NVIDIA_2B_PLAN] {
-            let (chosen_2b, _, _) =
-                resolve_model(&slot, &job.engine.models, Some(16000), true, Some(plan)).unwrap();
+            let (chosen_2b, _, _) = resolve_model(
+                &slot,
+                &job.engine.models,
+                Some(16000),
+                true,
+                Some(plan),
+                None,
+            )
+            .unwrap();
             assert_eq!(chosen_2b.name, "qwen3-vl-2b-q8");
         }
 
         // mt also selects the 2B model even if free_mb is Some(16000).
-        let (chosen_mt, _, _) =
-            resolve_model(&slot, &job.engine.models, Some(16000), false, Some("mt")).unwrap();
+        let (chosen_mt, _, _) = resolve_model(
+            &slot,
+            &job.engine.models,
+            Some(16000),
+            false,
+            Some("mt"),
+            None,
+        )
+        .unwrap();
         assert_eq!(chosen_mt.name, "qwen3-vl-2b-q8");
 
         for plan in [
@@ -1167,10 +1188,170 @@ mod tests {
             } else {
                 16000
             };
-            let (chosen_8b, _, _) =
-                resolve_model(&slot, &job.engine.models, Some(free_mb), true, Some(plan)).unwrap();
+            let (chosen_8b, _, _) = resolve_model(
+                &slot,
+                &job.engine.models,
+                Some(free_mb),
+                true,
+                Some(plan),
+                None,
+            )
+            .unwrap();
             assert_eq!(chosen_8b.name, "qwen3-vl-8b-q4km");
         }
+    }
+
+    fn write_model_files(slot: &Path, models: &[Model]) {
+        for m in models {
+            std::fs::write(slot.join(&m.file), FAKE_GGUF).unwrap();
+            std::fs::write(slot.join(&m.mmproj), FAKE_MMPROJ).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_pinned_unit_reads_with_its_model_or_not_at_all() {
+        use crate::locks::PIN_REFUSED;
+        use crate::test_support::{qwen_models, write_xiaomi_unit, xiaomi_model};
+        let tmp = tempfile::tempdir().unwrap();
+        let slot = tmp.path().join("slot");
+        let job = write_xiaomi_unit(&slot);
+        let pin = job.model.as_deref();
+        // Every model a host could hold, Qwen's files on disk and Xiaomi-OCR-0's not.
+        let mut all = qwen_models();
+        all.push(xiaomi_model());
+        write_model_files(&slot, &qwen_models());
+        for plan in [Some("nvidia_vulkan_x08"), Some("mt_x08"), None] {
+            let err = resolve_model(&slot, &all, Some(16000), true, plan, pin).unwrap_err();
+            let err = format!("{err:#}");
+            assert!(err.starts_with(PIN_REFUSED), "{err}");
+            assert!(err.contains("no other model is read in its place"), "{err}");
+        }
+        write_model_files(&slot, &[xiaomi_model()]);
+        for plan in [
+            Some("nvidia_vulkan_x08"),
+            Some("amd_vulkan_x08"),
+            Some("intel_vulkan_x08"),
+            Some("apple_gpu_x08"),
+            Some("mt_x08"),
+            None,
+        ] {
+            let (m, model, mmproj) =
+                resolve_model(&slot, &all, Some(16000), true, plan, pin).unwrap();
+            assert_eq!(m.name, "xiaomi-ocr-0-q8");
+            assert!(model.ends_with("xiaomi-ocr-0-q8_0.gguf"));
+            assert!(mmproj.ends_with("mmproj-xiaomi-ocr-0-f16.gguf"));
+        }
+        // A pinned file that doesn't match weights.lock is a pin refusal too, so the
+        // failure report flags it.
+        let mismatched = tmp.path().join("mismatched");
+        write_xiaomi_unit(&mismatched);
+        write_model_files(&mismatched, &[xiaomi_model()]);
+        std::fs::write(
+            mismatched.join(&xiaomi_model().file),
+            b"not the pinned weights",
+        )
+        .unwrap();
+        let err =
+            resolve_model(&mismatched, &all, Some(16000), true, Some("mt_x08"), pin).unwrap_err();
+        let err = format!("{err:#}");
+        assert!(err.starts_with(PIN_REFUSED), "{err}");
+        assert!(err.contains("sha256 mismatch"), "{err}");
+        // A Qwen class never reads a Xiaomi unit, and an _x08 class never reads anything else.
+        for plan in ["mt", "nvidia_vulkan_8b", "nvidia_vulkan_2b", "apple_gpu_8b"] {
+            let err = resolve_model(&slot, &all, Some(16000), true, Some(plan), pin).unwrap_err();
+            assert!(format!("{err:#}").starts_with(PIN_REFUSED), "{plan}");
+        }
+        for plan in ["nvidia_vulkan_x08", "mt_x08"] {
+            let err = resolve_model(&slot, &all, Some(16000), true, Some(plan), None).unwrap_err();
+            assert!(format!("{err:#}").starts_with(PIN_REFUSED), "{plan}");
+            for qwen in ["qwen3-vl-8b-q4km", "qwen3-vl-2b-q8"] {
+                let err = resolve_model(&slot, &all, Some(16000), true, Some(plan), Some(qwen))
+                    .unwrap_err();
+                assert!(format!("{err:#}").starts_with(PIN_REFUSED), "{plan} {qwen}");
+            }
+        }
+        // Unpinned, no Xiaomi-OCR-0 model is ever chosen, even listed first with room for it.
+        let xiaomi_first = vec![xiaomi_model(), qwen_models()[1].clone()];
+        let (m, _, _) = resolve_model(&slot, &xiaomi_first, Some(16000), true, None, None).unwrap();
+        assert_eq!(m.name, "qwen3-vl-2b-q8");
+        // 8B and 2B pins on their own classes (#968), and nowhere else.
+        let qwen = qwen_models();
+        let pick = |plan, pin| {
+            resolve_model(&slot, &qwen, Some(16000), true, Some(plan), Some(pin))
+                .map(|(m, _, _)| m.name.clone())
+        };
+        assert_eq!(
+            pick("nvidia_vulkan_8b", "qwen3-vl-8b-q4km").unwrap(),
+            "qwen3-vl-8b-q4km"
+        );
+        assert_eq!(pick("mt", "qwen3-vl-2b-q8").unwrap(), "qwen3-vl-2b-q8");
+        assert_eq!(
+            pick("nvidia_vulkan_2b", "qwen3-vl-2b-q8").unwrap(),
+            "qwen3-vl-2b-q8"
+        );
+        assert!(pick("nvidia_vulkan_8b", "qwen3-vl-2b-q8").is_err());
+        assert!(pick("mt", "qwen3-vl-8b-q4km").is_err());
+        assert!(pick("mt", "qwen3-vl-4b").is_err());
+        // The pinned files are checked against weights.lock like any other.
+        std::fs::write(slot.join("xiaomi-ocr-0-q8_0.gguf"), b"tampered").unwrap();
+        let err = resolve_model(&slot, &all, None, false, Some("mt_x08"), pin).unwrap_err();
+        assert!(format!("{err:#}").contains("sha256 mismatch"));
+    }
+
+    #[test]
+    fn a_refused_pin_fails_the_unit_with_a_flagged_report() {
+        use crate::test_support::{qwen_models, write_xiaomi_unit};
+        let tmp = tempfile::tempdir().unwrap();
+        let slot = tmp.path().join("slot");
+        let job = write_xiaomi_unit(&slot);
+        // Only Qwen's files reach the slot: the unit fails rather than reading with them.
+        write_model_files(&slot, &qwen_models());
+        let port = spawn_mock_llama_server(vec!["never asked"]);
+        run_slot_with(&slot, Some(port), Some(Duration::from_secs(30))).unwrap();
+        let result: ResultManifest =
+            serde_json::from_slice(&std::fs::read(slot.join(RESULT_FILE)).unwrap()).unwrap();
+        assert_eq!(result.outcome, Outcome::Failed);
+        assert_eq!(result.model, None);
+        assert_eq!(result.read, 0);
+        let diag = std::fs::read_to_string(slot.join(DIAG_FILE)).unwrap();
+        assert!(diag.contains(crate::locks::PIN_REFUSED), "{diag}");
+        let report = failure_report(&result, diag.as_bytes());
+        let report: serde_json::Value =
+            serde_json::from_str(report.strip_prefix("USNM_QWEN_FAILURE ").unwrap()).unwrap();
+        assert_eq!(report["model_pin_refused"], true);
+        assert_eq!(job.model.as_deref(), Some("xiaomi-ocr-0-q8"));
+    }
+
+    #[test]
+    fn a_xiaomi_unit_reads_with_version_5_and_names_its_model() {
+        use crate::test_support::{write_xiaomi_unit, xiaomi_model};
+        let tmp = tempfile::tempdir().unwrap();
+        let slot = tmp.path().join("slot");
+        let job = write_xiaomi_unit(&slot);
+        write_model_files(&slot, &[xiaomi_model()]);
+        let port = spawn_mock_llama_server(vec!["first reading", "second reading"]);
+        run_slot_with(&slot, Some(port), Some(Duration::from_secs(30))).unwrap();
+        let result_bytes = std::fs::read(slot.join(RESULT_FILE)).unwrap();
+        let readings_bytes = std::fs::read(slot.join(READINGS_FILE)).unwrap();
+        let diag_bytes = std::fs::read(slot.join(DIAG_FILE)).unwrap();
+        let result: ResultManifest = serde_json::from_slice(&result_bytes).unwrap();
+        assert_eq!(
+            result.outcome,
+            Outcome::Ok,
+            "{}",
+            String::from_utf8_lossy(&diag_bytes)
+        );
+        assert_eq!(result.job_id, job.id);
+        assert_eq!(result.model.as_deref(), Some("xiaomi-ocr-0-q8"));
+        let readings = result.check(&readings_bytes, &diag_bytes).unwrap();
+        assert_eq!(readings.prompt_version, 5);
+        assert_eq!(readings.diag["ctx_size"], "16384");
+        assert_eq!(readings.diag["loop_guard"], "none");
+        assert_eq!(readings.diag["image_min_tokens"], "default");
+        assert_eq!(readings.readings.len(), 2);
+        // Each crop's request asked for Xiaomi-OCR-0's fixed cap.
+        let diag = String::from_utf8_lossy(&diag_bytes);
+        assert!(diag.contains("\"max_tokens_requested\":2048"), "{diag}");
     }
 
     #[test]
@@ -1262,6 +1443,7 @@ mod tests {
                 },
             ],
             prompt_version: PROMPT_VERSION_IMAGE_MIN_TOKENS,
+            model: None,
         };
         job.id = job.identity().unwrap();
         std::fs::write(slot.join(PAGE_FILE), &page_blob).unwrap();
@@ -1391,7 +1573,8 @@ mod tests {
             FAKE_MMPROJ,
         )
         .unwrap();
-        let err = resolve_model(&slot, &job.engine.models, None, false, Some("mt")).unwrap_err();
+        let err =
+            resolve_model(&slot, &job.engine.models, None, false, Some("mt"), None).unwrap_err();
         assert!(format!("{err:#}").contains("sha256 mismatch"));
     }
 

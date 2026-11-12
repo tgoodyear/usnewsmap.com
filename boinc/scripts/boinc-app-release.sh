@@ -155,7 +155,7 @@ sys.exit(0 if hashlib.sha256(a.binary.read_bytes()).hexdigest() == a.sha256 else
 PY
     fi
     case "$APP:$PLAN_CLASS" in
-      usnm_quality: | usnm_ocr_native: | usnm_gold_native: | usnm_qwen:mt | usnm_qwen:apple_gpu_8b | usnm_qwen:nvidia_cuda_8b | usnm_qwen:nvidia_cuda_2b | usnm_qwen:intel_vulkan_8b | usnm_qwen:nvidia_vulkan_8b | usnm_qwen:nvidia_vulkan_6gb_8b | usnm_qwen:nvidia_vulkan_2b | usnm_qwen:amd_vulkan_8b) ;;
+      usnm_quality: | usnm_ocr_native: | usnm_gold_native: | usnm_qwen:mt | usnm_qwen:apple_gpu_8b | usnm_qwen:nvidia_cuda_8b | usnm_qwen:nvidia_cuda_2b | usnm_qwen:intel_vulkan_8b | usnm_qwen:nvidia_vulkan_8b | usnm_qwen:nvidia_vulkan_6gb_8b | usnm_qwen:nvidia_vulkan_2b | usnm_qwen:amd_vulkan_8b | usnm_qwen:mt_x08 | usnm_qwen:apple_gpu_x08 | usnm_qwen:nvidia_vulkan_x08 | usnm_qwen:intel_vulkan_x08 | usnm_qwen:amd_vulkan_x08) ;;
       *) die "--app and --plan-class for --kind native must be usnm_quality, usnm_ocr_native or usnm_gold_native with empty --plan-class, or a supported usnm_qwen native class (boinc/scripts/install.py)" ;;
     esac
     ;;
@@ -201,7 +201,7 @@ else
     *) die "unsupported --platform" ;;
   esac
   case "$PLAN_CLASS:$PLATFORM" in
-    :* | mt:* | apple_gpu_8b:arm64-apple-darwin | nvidia_cuda_8b:x86_64-pc-linux-gnu | nvidia_cuda_8b:aarch64-unknown-linux-gnu | nvidia_cuda_8b:windows_x86_64 | nvidia_cuda_2b:x86_64-pc-linux-gnu | nvidia_cuda_2b:aarch64-unknown-linux-gnu | nvidia_cuda_2b:windows_x86_64 | intel_vulkan_8b:x86_64-pc-linux-gnu | intel_vulkan_8b:windows_x86_64 | nvidia_vulkan_8b:x86_64-pc-linux-gnu | nvidia_vulkan_8b:windows_x86_64 | nvidia_vulkan_6gb_8b:x86_64-pc-linux-gnu | nvidia_vulkan_6gb_8b:windows_x86_64 | nvidia_vulkan_2b:x86_64-pc-linux-gnu | amd_vulkan_8b:x86_64-pc-linux-gnu | amd_vulkan_8b:windows_x86_64) ;;
+    :* | mt:* | apple_gpu_8b:arm64-apple-darwin | nvidia_cuda_8b:x86_64-pc-linux-gnu | nvidia_cuda_8b:aarch64-unknown-linux-gnu | nvidia_cuda_8b:windows_x86_64 | nvidia_cuda_2b:x86_64-pc-linux-gnu | nvidia_cuda_2b:aarch64-unknown-linux-gnu | nvidia_cuda_2b:windows_x86_64 | intel_vulkan_8b:x86_64-pc-linux-gnu | intel_vulkan_8b:windows_x86_64 | nvidia_vulkan_8b:x86_64-pc-linux-gnu | nvidia_vulkan_8b:windows_x86_64 | nvidia_vulkan_6gb_8b:x86_64-pc-linux-gnu | nvidia_vulkan_6gb_8b:windows_x86_64 | nvidia_vulkan_2b:x86_64-pc-linux-gnu | amd_vulkan_8b:x86_64-pc-linux-gnu | amd_vulkan_8b:windows_x86_64 | mt_x08:* | apple_gpu_x08:arm64-apple-darwin | nvidia_vulkan_x08:x86_64-pc-linux-gnu | nvidia_vulkan_x08:windows_x86_64 | intel_vulkan_x08:x86_64-pc-linux-gnu | intel_vulkan_x08:windows_x86_64 | amd_vulkan_x08:x86_64-pc-linux-gnu | amd_vulkan_x08:windows_x86_64) ;;
     *) die "native --plan-class $PLAN_CLASS is not supported on $PLATFORM" ;;
   esac
   for spec in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do
@@ -215,7 +215,7 @@ else
     required_server="llama-server"
     [ "$PLATFORM" != windows_x86_64 ] || required_server="llama-server.exe"
     required_extras=("$required_server" "llama.lock" "weights.lock")
-    if [ "$PLAN_CLASS" = amd_vulkan_8b ]; then
+    if [ "$PLAN_CLASS" = amd_vulkan_8b ] || [ "$PLAN_CLASS" = amd_vulkan_x08 ]; then
       required_helper=usnm-amd-device-map
       [ "$PLATFORM" != windows_x86_64 ] || required_helper=usnm-amd-device-map.exe
       required_extras+=("$required_helper")
