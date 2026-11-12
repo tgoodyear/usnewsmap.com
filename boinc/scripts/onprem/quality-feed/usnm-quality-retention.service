@@ -1,14 +1,15 @@
 # The quality retention step on the storage host (pve-big): frees the download copies of
-# finished usnm_quality bundle images. Lists from CT230 on pve over the host trust; prunes as
-# uid 101000.
+# finished usnm_quality bundle images, then v1-wave10's fully collected units' own page.jpg
+# (prune-units, #1743). Lists from CT230 on pve over the host trust; prunes as uid 101000.
 [Unit]
-Description=usnewsmap quality retention (download copies of finished bundles)
+Description=usnewsmap quality retention (derived bundle images of finished units)
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/opt/usnm-quality-retention/quality-retention.sh --max-bytes 400000000000
+ExecStart=/opt/usnm-quality-retention/quality-retention.sh --max-bytes 400000000000 \
+  --unit-campaign v1-wave10 --unit-max-bytes 400000000000
 Nice=10
 IOSchedulingClass=idle
 TimeoutStartSec=5h
