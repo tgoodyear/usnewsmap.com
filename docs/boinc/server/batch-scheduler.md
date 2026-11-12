@@ -142,7 +142,7 @@ The controller feed source reads one unit: `SOURCE_ARGS="controller --unit usnm-
 The operator does this on the controller host between ticks. Nothing in `/var/lib` changes, so no state needs a reconcile, and rollback is putting the old units back.
 
 1. **Open a rotation window** for the whole migration, so the missing ticks don't page: `python3 /opt/usnm-feed-monitor/feed_status.py --rotation-start --minutes 60 --reason "per-plan controller units (#1690)"` on the evaluator host.
-2. **Save the old units**: `systemctl cat usnm-boinc-priority-controller.service usnm-boinc-priority-controller.timer usnm-boinc-drain.service usnm-boinc-drain.timer 'usnm-boinc-native-feed@*' usnm-boinc-held-archive.service > /root/controller-units-<date>.txt`, and copy those unit files and their `.d/` drop-in directories from `/etc/systemd/system`, `native-feed-tick.sh` and every `/etc/usnm/native-feed-*.flags` into `/root/controller-units-<date>/`, noting each one's original path.
+2. **Save the old units**: `systemctl cat usnm-boinc-priority-controller.service usnm-boinc-priority-controller.timer usnm-boinc-drain.service usnm-boinc-drain.timer 'usnm-boinc-native-feed@*' usnm-boinc-held-archive.service > /root/controller-units-<date>.txt`, and copy those unit files and their `.d/` drop-in directories from `/etc/systemd/system`, `native-feed-tick.sh` and every `/etc/usnm/native-feed-*.flags` into `/root/controller-units-<date>/`, noting each one's original path. Record which timers start at boot: `systemctl is-enabled usnm-boinc-priority-controller.timer usnm-boinc-drain.timer 'usnm-boinc-native-feed@*.timer' usnm-boinc-held-archive.timer > /root/controller-units-<date>/enabled.txt` (one line per timer, in that order; name each native timer).
 3. **Write the flags files** while the old units still run. For each plan, take the arguments after `batch_scheduler.py` in its old `ExecStart` (the shared service's drop-in for `main`, the drain service's line for each draining plan, `/etc/usnm/native-feed-PLAN.flags` for a native plan), leave out `--config`, `--state-dir` and `--apply`, and write one per line to `/etc/usnm/boinc-priority-controller.flags` (`main`) or `/etc/usnm/boinc-priority-controller.PLAN.flags`. Leave `--resume-native` out.
 4. **Pause everything old**: first `systemctl stop usnm-boinc-held-archive.timer` and repeat `systemctl is-active usnm-boinc-held-archive.service` until it is inactive or failed (a running archive starts the shared timer again when it ends). Then `systemctl stop usnm-boinc-priority-controller.timer usnm-boinc-drain.timer 'usnm-boinc-native-feed@*.timer'` and repeat `systemctl is-active usnm-boinc-priority-controller.service usnm-boinc-drain.service 'usnm-boinc-native-feed@*.service'` until none is active or activating.
 5. **Move the checkout** to a commit with this change ([Moving the controller checkout](#moving-the-controller-checkout-1412): steps 1 and 2, then step 3's commands up to the second `sha256sum`; the first tick comes in step 8). From that commit `held-archive.sh` and `archive_history.py` name `@main` by default; `held-archive.sh` fails rather than skip while only the shared timer is active.
@@ -154,7 +154,13 @@ The operator does this on the controller host between ticks. Nothing in `/var/li
 
 No tick runs twice. The old timers are stopped and their services idle before any new timer starts, each plan's state directory has its own `controller.lock` (taken without waiting, so a second tick of the same plan fails instead of running beside it), and every tick takes the tick lock and the controller lease. An old timer left enabled by mistake only adds ticks one after another. The controller is paused from step 4 to step 8, about as long as a checkout move.
 
-**Rollback**: pause the new plans ([Pausing every plan](#pausing-every-plan)) and `systemctl disable` their timers. Copy everything saved in step 2 back to its original path from `/root/controller-units-<date>/`: the unit files and drop-ins (the held-archive unit and its `tick-lock.conf` too), `native-feed-tick.sh` and the `native-feed-*.flags` files. Then `systemctl daemon-reload`. If the checkout stays on the new commit, add `Environment=USNM_CONTROLLER_UNIT=usnm-boinc-priority-controller` to a `usnm-boinc-held-archive.service` drop-in, since `held-archive.sh` names `@main` by default; if it moves back, follow the checkout move's rollback. Set the controller source's `--unit` back to `usnm-boinc-priority-controller.service`, start the old timers and the held-archive timer, and check one tick of each. The flags files can stay; the old units don't read them.
+**Rollback**:
+
+1. Pause the new plans ([Pausing every plan](#pausing-every-plan)) and `systemctl disable` their timers.
+2. Copy everything saved in step 2 back to its original path from `/root/controller-units-<date>/`: the unit files and drop-ins (the held-archive unit and its `tick-lock.conf` too), `native-feed-tick.sh` and the `native-feed-*.flags` files.
+3. If the checkout stays on the new commit, add `Environment=USNM_CONTROLLER_UNIT=usnm-boinc-priority-controller` to a `usnm-boinc-held-archive.service` drop-in, since `held-archive.sh` names `@main` by default; if it moves back, follow the checkout move's rollback.
+4. `systemctl daemon-reload`, after every file above is in place, so the archive starts with the restored environment.
+5. `systemctl enable` each old timer that `enabled.txt` lists as `enabled` (step 9 disabled them, and copying the unit files back doesn't restore that), set the controller source's `--unit` back to `usnm-boinc-priority-controller.service`, start the old timers and the held-archive timer, and check one tick of each. The flags files can stay; the old units don't read them.
 
 ### Moving the controller checkout (#1412)
 
@@ -244,7 +250,7 @@ Moving `/opt/usnm` deploys the controller (`boinc/scripts/batch_scheduler.py`, `
    # /opt/usnm at <commit> since <date> (#<issue>). Revert: <previous commit>, /root/usnm-checkout-<date>.diff.
    ```
 
-5. **Roll back**: pause every plan as in step 3. Never roll back the state directory; if step 1 showed state or journal changes, plan the reconcile before moving:
+5. **Roll back**: pause every plan as in step 3, unless step 3 already paused them and they haven't been started since: then keep `/root/controller-timers.txt` as it is, since pausing again would overwrite it with an empty list. Never roll back the state directory; if step 1 showed state or journal changes, plan the reconcile before moving:
 
    ```sh
    cd /opt/usnm

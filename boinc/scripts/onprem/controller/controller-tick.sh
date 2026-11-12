@@ -5,7 +5,8 @@
 #
 #   controller-tick.sh --plan PLAN [--dry-run] [--print-command] [--config-dir DIR]
 #                      [--state-parent DIR] [--scheduler FILE] [--tick-lock FILE]
-#                      [--lock-wait-secs N] [--held-archive-unit UNIT] [--add-flag ARG]...
+#                      [--lock-wait-secs N] [--lock-recheck-secs N] [--held-archive-unit UNIT]
+#                      [--add-flag ARG]...
 #
 # The plan named `main` is the live plan in the unsuffixed paths the shared service used:
 #   /etc/usnm/boinc-priority-controller.json, /var/lib/usnm-priority-controller and
@@ -29,9 +30,11 @@
 # boinc_batch_failure line feed_collect.py classes as lock_busy.
 #
 # A plan other than main skips its tick (exit 0, one boinc_batch_skipped line) while the
-# held-page archive (--held-archive-unit) runs: the archive holds the tick lock for up to hours
-# and its own pause covers main only. main is never skipped: the archive stops main's timer and
-# starts a main tick itself when it ends, and that tick waits on the lock.
+# held-page archive (--held-archive-unit) runs, checked before the lock, every
+# --lock-recheck-secs (default 30) while waiting for it, and once it is taken. The archive holds
+# the tick lock for up to hours and its own pause covers main only. main is never skipped: the
+# archive stops main's timer and starts a main tick itself when it ends, and that tick waits on
+# the lock.
 #
 # --dry-run runs the plan's tick without --apply and without the lock (batch_scheduler.py then
 # reads only the configuration). --print-command prints the command a tick would run, one
@@ -53,6 +56,7 @@ STATE_PARENT=/var/lib
 SCHEDULER=$(cd "$HERE/../.." && pwd)/batch_scheduler.py
 TICK_LOCK=/run/usnm-boinc-controller-tick.lock
 LOCK_WAIT=1800
+RECHECK=30
 HELD_ARCHIVE_UNIT=usnm-boinc-held-archive.service
 DRY_RUN=false PRINT=false
 ADDED=()
@@ -64,6 +68,7 @@ while [ $# -gt 0 ]; do
     --scheduler) [ $# -ge 2 ] || usage; SCHEDULER=$2; shift 2 ;;
     --tick-lock) [ $# -ge 2 ] || usage; TICK_LOCK=$2; shift 2 ;;
     --lock-wait-secs) [ $# -ge 2 ] || usage; LOCK_WAIT=$2; shift 2 ;;
+    --lock-recheck-secs) [ $# -ge 2 ] || usage; RECHECK=$2; shift 2 ;;
     --held-archive-unit) [ $# -ge 2 ] || usage; HELD_ARCHIVE_UNIT=$2; shift 2 ;;
     --add-flag) [ $# -ge 2 ] || usage; ADDED+=("$2"); shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
@@ -75,6 +80,7 @@ done
 # The same names batch_scheduler.py accepts for a plan, lower case (a systemd instance name).
 [[ $PLAN =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || die "--plan is a plan name: lower-case letters, digits and -"
 [[ $LOCK_WAIT =~ ^[0-9]{1,5}$ ]] && [ "$LOCK_WAIT" -ge 1 ] || die "--lock-wait-secs is 1 to 99999"
+[[ $RECHECK =~ ^[0-9]{1,4}$ ]] && [ "$RECHECK" -ge 1 ] || die "--lock-recheck-secs is 1 to 9999"
 [[ $HELD_ARCHIVE_UNIT =~ ^[a-zA-Z0-9@_.-]+\.service$ ]] || die "--held-archive-unit is a service name"
 
 if [ "$PLAN" = main ]; then
@@ -128,19 +134,29 @@ if $DRY_RUN; then
   exec "${COMMAND[@]}"
 fi
 
-if [ "$PLAN" != main ]; then
-  # A oneshot unit is "activating" while it runs, so is-active alone would miss it.
-  archive=$(systemctl show "$HELD_ARCHIVE_UNIT" -p ActiveState --value 2> /dev/null || true)
-  case $archive in
-    active | activating | deactivating | reloading)
-      printf '{"event": "boinc_batch_skipped", "schema_version": 1, "at": %s, "plan": %s, "reason": "held_archive_running"}\n' \
-        "$(date +%s)" "$(json_string "$PLAN")"
-      exit 0 ;;
+# A plan other than main skips while the held-page archive runs. A oneshot unit is "activating"
+# while it runs, so is-active alone would miss it.
+skip_for_archive() {
+  [ "$PLAN" != main ] || return 1
+  case $(systemctl show "$HELD_ARCHIVE_UNIT" -p ActiveState --value 2> /dev/null || true) in
+    active | activating | deactivating | reloading) ;;
+    *) return 1 ;;
   esac
-fi
+  printf '{"event": "boinc_batch_skipped", "schema_version": 1, "at": %s, "plan": %s, "reason": "held_archive_running"}\n' \
+    "$(date +%s)" "$(json_string "$PLAN")"
+}
+skip_for_archive && exit 0
 
 # The lock is fd 8's, taken here and inherited by the tick; it is released when the tick exits.
+# It is waited for in steps of at most --lock-recheck-secs, so a tick queued behind another plan's
+# skips as soon as an archive starts, instead of waiting out the whole wait and failing.
 exec 8> "$TICK_LOCK"
-flock -w "$LOCK_WAIT" 8 ||
-  die "the tick lock is busy after $LOCK_WAIT seconds: another controller may be active"
+deadline=$((SECONDS + LOCK_WAIT))
+until flock -w "$(( deadline - SECONDS < RECHECK ? deadline - SECONDS : RECHECK ))" 8; do
+  skip_for_archive && exit 0
+  [ "$SECONDS" -lt "$deadline" ] ||
+    die "the tick lock is busy after $LOCK_WAIT seconds: another controller may be active"
+done
+# An archive that started while this tick waited goes first (exit releases the lock).
+skip_for_archive && exit 0
 exec "${COMMAND[@]}"

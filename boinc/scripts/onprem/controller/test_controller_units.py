@@ -43,7 +43,7 @@ sys.exit(int(os.environ.get("FAKE_EXIT", "0")))
 # systemctl show UNIT -p ActiveState --value: $FAKE_ARCHIVE_STATE, or inactive.
 FAKE_SYSTEMCTL = r'''#!/bin/sh
 echo "systemctl $*" >> "$FAKE_SYSTEMCTL_LOG"
-echo "${FAKE_ARCHIVE_STATE:-inactive}"
+if [ -n "$FAKE_ARCHIVE_FILE" ] && [ -f "$FAKE_ARCHIVE_FILE" ]; then cat "$FAKE_ARCHIVE_FILE"; else echo "${FAKE_ARCHIVE_STATE:-inactive}"; fi
 '''
 
 
@@ -272,6 +272,46 @@ class Tick(unittest.TestCase):
         self.assertEqual(done.returncode, 1)
         error = self.failure(done)
         self.assertEqual(feed_collect.failure_reason(error), "lock_busy")
+        self.assertEqual(self.runs(), [])
+
+    def test_a_tick_waiting_for_the_lock_skips_once_the_archive_starts(self):
+        self.flags("native-feed-3", "")
+        self.hold_lock(30)
+        state = self.root / "archive-state"
+        environment = {**os.environ, "PATH": f"{self.root / 'bin'}{os.pathsep}{os.environ['PATH']}",
+                       "FAKE_LOG": str(self.root / "log"), "FAKE_SYSTEMCTL_LOG": str(self.root / "systemctl.log"),
+                       "FAKE_ARCHIVE_FILE": str(state)}
+        started = time.monotonic()
+        waiting = subprocess.Popen(
+            ["bash", str(TICK), "--plan", "native-feed-3", "--config-dir", str(self.root / "etc"),
+             "--state-parent", str(self.root / "lib"), "--scheduler", str(self.root / "scheduler.py"),
+             "--tick-lock", str(self.lock), "--lock-wait-secs", "20", "--lock-recheck-secs", "1"],
+            env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(1.5)
+        state.write_text("activating\n")
+        out, err = waiting.communicate(timeout=30)
+        self.assertEqual(waiting.returncode, 0, err)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(json.loads(out)["reason"], "held_archive_running")
+        self.assertEqual(self.runs(), [])
+
+    def test_a_tick_that_gets_the_lock_while_the_archive_runs_skips(self):
+        # The archive may start while this tick waits behind another and take the lock only after
+        # main's tick: the tick that got the lock first lets it go.
+        self.flags("native-feed-3", "")
+        state, ready = self.root / "archive-state", self.root / "held"
+        # The holder marks the archive as started just before it lets the lock go.
+        holder = subprocess.Popen(["flock", str(self.lock), "sh", "-c",
+                                   f'touch "{ready}"; sleep 1; echo activating > "{state}"'])
+        self.addCleanup(holder.wait)
+        for _ in range(100):
+            if ready.exists():
+                break
+            time.sleep(0.05)
+        done = self.tick("native-feed-3", "--lock-wait-secs", "20", "--lock-recheck-secs", "10",
+                         FAKE_ARCHIVE_FILE=str(state))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout)["reason"], "held_archive_running")
         self.assertEqual(self.runs(), [])
 
     def test_a_dry_run_takes_no_lock_and_never_applies(self):
