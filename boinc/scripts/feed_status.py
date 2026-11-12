@@ -451,7 +451,7 @@ def plan_checks(check, facts, now):
     """Every other plan's tick (#1690), when the controller source reports them (it runs with
     --discover-plans): one `plan_tick:<id>` check per plan, listed in `plan_checks`, with the live plan's rules and its
     own failed runs, same-error count and hourly count, so one plan's failure never hides or
-    resets another's. The id is opaque (feed_collect.plan_ticks); a retired plan has no check, so
+    resets another's. The id is a hash of the unit name (feed_collect.plan_ticks), not a secret; a retired plan has no check, so
     its timers and its alert go with it.
 
     States never fire: a paused native plan (`plan_state` paused, with `paused_age_s`), a draining
