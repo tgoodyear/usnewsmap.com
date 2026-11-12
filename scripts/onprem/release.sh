@@ -264,7 +264,8 @@ case "$STEP" in
     prune_ingest | tee "$RUN/prune-dry-run.log"
     report=$(prune_report "$RUN/prune-dry-run.log")
     # Both versions to keep must be known, and nothing newer: a hand rollback leaves a published
-    # version newer than the serving one, which this fresh state can't see (prune.rs, kept()).
+    # version newer than the serving one, whose run this fresh state doesn't show. Prune also leaves
+    # newer indexes alone (newer_than_serving), but a release's own prune waits for the roll-forward.
     serving=$(jq -r '.kept.serving // empty' <<< "$report") || die "no prune report in $RUN/prune-dry-run.log"
     rollback=$(jq -r '.kept.rollback // empty' <<< "$report")
     newer=$(jq -r '(.kept.newer // []) | length' <<< "$report")
