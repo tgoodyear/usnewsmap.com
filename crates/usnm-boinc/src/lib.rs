@@ -183,6 +183,8 @@ pub(crate) fn atomic_with_permissions(
     }
     f.as_file().sync_all()?;
     f.persist(path).map_err(|e| e.error)?;
+    // Windows can't open a directory as a file, so its entry isn't synced there.
+    #[cfg(unix)]
     File::open(parent)?.sync_all()?;
     Ok(())
 }
