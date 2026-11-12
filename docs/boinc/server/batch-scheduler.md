@@ -158,7 +158,7 @@ No tick runs twice. The old timers are stopped and their services idle before an
 
 1. Pause the new plans ([Pausing every plan](#pausing-every-plan)) and `systemctl disable` their timers.
 2. Copy everything saved in step 2 back to its original path from `/root/controller-units-<date>/`: the unit files and drop-ins (the held-archive unit and its `tick-lock.conf` too), `native-feed-tick.sh` and the `native-feed-*.flags` files.
-3. If the checkout stays on the new commit, add `Environment=USNM_CONTROLLER_UNIT=usnm-boinc-priority-controller` to a `usnm-boinc-held-archive.service` drop-in, since `held-archive.sh` names `@main` by default; if it moves back, follow the checkout move's rollback.
+3. If the checkout stays on the new commit, add `Environment=USNM_CONTROLLER_UNIT=usnm-boinc-priority-controller` to a `usnm-boinc-held-archive.service` drop-in, since `held-archive.sh` names `@main` by default; if it moves back, run only the checkout move's rollback commands up to and including the `sha256sum` check, not its timer restart: `/root/controller-timers.txt` names the per-plan timers, whose `controller-tick.sh` isn't in a checkout from before them. Step 5 starts the old timers.
 4. `systemctl daemon-reload`, after every file above is in place, so the archive starts with the restored environment.
 5. `systemctl enable` each old timer that `enabled.txt` lists as `enabled` (step 9 disabled them, and copying the unit files back doesn't restore that), set the controller source's `--unit` back to `usnm-boinc-priority-controller.service`, start the old timers and the held-archive timer, and check one tick of each. The flags files can stay; the old units don't read them.
 
