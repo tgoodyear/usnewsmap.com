@@ -7,9 +7,11 @@ use std::fmt::Write as _;
 use crate::view::View;
 
 mod assets;
+mod boinc_week;
 mod details;
 mod ecosystem;
 mod fmt;
+mod overview;
 mod throughput;
 
 use assets::{SCRIPT, STYLE};
@@ -17,6 +19,27 @@ use ecosystem::ecosystem_panel;
 pub(crate) use ecosystem::summary_stage;
 use fmt::time;
 pub use fmt::{bytes, esc, int, span};
+
+/// The public page's description and link-preview card. The URLs are the
+/// public name, never the LAN's; the image is served at `/og.png`
+/// ([`crate::OG_IMAGE`]). No figures: they would go stale.
+const SOCIAL_TAGS: &str = concat!(
+    r#"<meta name="description" content="Status of the US News Map historic newspaper collection: scans fetched, pages searchable with our OCR, volunteer computing, accuracy and throughput.">"#,
+    r#"<meta property="og:type" content="website">"#,
+    r#"<meta property="og:site_name" content="US News Map">"#,
+    r#"<meta property="og:title" content="US News Map: OCR status">"#,
+    r#"<meta property="og:description" content="Status of the US News Map historic newspaper collection: scans fetched, pages searchable with our OCR, volunteer computing, accuracy and throughput.">"#,
+    r#"<meta property="og:url" content="https://ocr.usnewsmap.com/">"#,
+    r#"<meta property="og:image" content="https://ocr.usnewsmap.com/og.png">"#,
+    r#"<meta property="og:image:width" content="1200">"#,
+    r#"<meta property="og:image:height" content="630">"#,
+    r#"<meta property="og:image:alt" content="US News Map: OCR status. Decorative bar chart.">"#,
+    r#"<meta name="twitter:card" content="summary_large_image">"#,
+    r#"<meta name="twitter:title" content="US News Map: OCR status">"#,
+    r#"<meta name="twitter:description" content="Status of the US News Map historic newspaper collection: scans fetched, pages searchable with our OCR, volunteer computing, accuracy and throughput.">"#,
+    r#"<meta name="twitter:image" content="https://ocr.usnewsmap.com/og.png">"#,
+    r#"<meta name="twitter:image:alt" content="US News Map: OCR status. Decorative bar chart.">"#,
+);
 
 pub fn render(v: &View) -> String {
     let now = v.generated_at;
@@ -26,15 +49,31 @@ pub fn render(v: &View) -> String {
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
          <noscript><meta http-equiv=\"refresh\" content=\"{}\"></noscript>\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <title>USNewsMap processing</title><style>{STYLE}</style></head><body data-refresh=\"{}\">\
-         <h1>USNewsMap processing</h1><div class=\"sub\">Source acquisition, local OCR, volunteer compute and evaluation. \
-         Read-only; no page text. Made {}; refreshes every {}s. \
-         JSON: <a href=\"/api/view.json\">/api/view.json</a>.</div><div class=\"grid dashboard\">",
+         <title>USNewsMap processing</title>{}<style>{STYLE}</style></head><body data-refresh=\"{}\">\
+         <h1>USNewsMap processing</h1><div class=\"sub\">{} Updated {}; refreshes every {} seconds.{}</div>\
+         <div class=\"grid dashboard\">",
         v.refresh_secs,
+        if v.public { SOCIAL_TAGS } else { "" },
         v.refresh_secs,
+        if v.public {
+            "How the usnewsmap.com newspaper collection stands, and the work to improve its text."
+        } else {
+            "Source acquisition, local OCR, volunteer compute and evaluation. Read-only; no page text."
+        },
         time(now),
-        v.refresh_secs
+        v.refresh_secs,
+        if v.public {
+            ""
+        } else {
+            " JSON: <a href=\"/api/view.json\">/api/view.json</a>."
+        },
     );
+    o.push_str(&overview::sections(v));
+    if v.public {
+        // The public page is the overview alone.
+        let _ = write!(o, "</div><script>{SCRIPT}</script></body></html>");
+        return o;
+    }
     if let Some(w) = &v.warming {
         o.push_str(&warming_panel(w));
     }
@@ -227,7 +266,7 @@ mod tests {
         assert!(!html.contains("Live stages current"));
     }
 
-    fn summary_view() -> View {
+    pub(super) fn summary_view() -> View {
         let dir = tempfile::tempdir().unwrap();
         crate::view::build(
             &mut crate::fetch::Fetch::new(dir.path().to_owned(), None),
@@ -272,6 +311,9 @@ mod tests {
         v.fetch.publish.value = None;
         v.fetch.publish.error = Some("cannot read /var/lib/private/publisher.json".into());
         crate::public::redact(&mut v);
+        // The public page has no operational panels: render the redacted
+        // view's as the LAN would.
+        v.public = false;
         let html = render(&v);
         assert!(html.contains("Publisher metadata unknown"));
         assert!(!html.contains("/var/lib/private"));

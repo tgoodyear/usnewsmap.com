@@ -1,0 +1,18 @@
+# The BOINC week for the OCR dashboard: the last seven days in 3-hour buckets, on the BOINC
+# server, as /usr/local/bin/usnm-boinc-week-collect (scripts/ocr-node/boinc-week-collect.py).
+# Four bounded aggregate queries; changes nothing. Settings in /etc/usnm/boinc-week-collect.env:
+# USNM_BOINC_WEEK_PUSH_URL (http://<dashboard>/api/boinc-week).
+[Unit]
+Description=usnewsmap BOINC week for the OCR dashboard
+Wants=network-online.target
+After=network-online.target
+ConditionFileIsExecutable=/usr/local/bin/usnm-boinc-week-collect
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/usnm/boinc-week-collect.env
+ExecStart=/usr/local/bin/usnm-boinc-week-collect --push-url ${USNM_BOINC_WEEK_PUSH_URL}
+TimeoutStartSec=2min
+Nice=19
+IOSchedulingClass=idle
+MemoryMax=256M

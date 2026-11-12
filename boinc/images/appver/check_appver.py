@@ -29,6 +29,8 @@ NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 # Longer names first: an app is inferred from the main program's name by substring.
 APPS = ("usnm_ocr_native", "usnm_gold_native", "usnm_ndlocr", "usnm_ocr", "usnm_assess", "usnm_gold", "usnm_surya", "usnm_quality", "usnm_qwen_train", "usnm_qwen", "usnm_iris")
 NATIVE_OCR_APPS = ("usnm_ocr_native", "usnm_gold_native")
+# Each platform is its own build, digest and trust (docs/boinc/apps/native-ocr.md).
+NATIVE_OCR_PLATFORMS = ("x86_64-pc-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin", "windows_x86_64")
 NATIVE_OCR_MANIFEST = "usnm_native_build.json"
 NATIVE_OCR_ENGINE = "usnm_tesseract"
 PLATFORMS = (
@@ -109,8 +111,8 @@ def _check_native_ocr(version_dir: Path, spec: ET.Element, app: str, platform: s
     for its content (boinc/scripts/install.py, native_ocr_physical). The manifest's name carries
     its digest, the jobs' engine.image, which the scheduler's Gold gate compares
     (boinc/scripts/gold-engine-routing.h)."""
-    if platform != "x86_64-pc-linux-gnu" or version_dir.name != platform:
-        raise Refused(f"native {app} is built only for x86_64-pc-linux-gnu, with no plan class")
+    if platform not in NATIVE_OCR_PLATFORMS or version_dir.name != platform:
+        raise Refused(f"native {app} is built only for {', '.join(NATIVE_OCR_PLATFORMS)}, with no plan class")
     for f in spec.findall("file"):
         physical = f.findtext("physical_name") or ""
         if not physical or not (version_dir / physical).is_file():
@@ -241,9 +243,10 @@ def check(
             }
             required_server = "llama-server.exe" if resolved_platform == "windows_x86_64" else "llama-server"
             required_extras = (required_server, "llama.lock", "weights.lock")
-            if version_dir.name.endswith("__amd_vulkan_8b"):
+            if version_dir.name.endswith(("__amd_vulkan_8b", "__amd_vulkan_x08")):
                 required_extras += ("usnm-amd-device-map.exe" if resolved_platform == "windows_x86_64" else "usnm-amd-device-map",)
-            if version_dir.name.endswith(("__amd_vulkan_8b", "__nvidia_vulkan_6gb_8b", "__nvidia_vulkan_2b")):
+            if version_dir.name.endswith(("__amd_vulkan_8b", "__amd_vulkan_x08", "__nvidia_vulkan_6gb_8b",
+                                          "__nvidia_vulkan_2b")):
                 required_extras += (("ggml.dll", "ggml-base.dll", "ggml-vulkan.dll") if resolved_platform == "windows_x86_64"
                                     else ("libggml.so", "libggml-base.so", "libggml-vulkan.so"))
             missing_extras = [name for name in required_extras if name not in present_logicals]

@@ -249,6 +249,10 @@ pub(crate) struct OcrSyncArgs {
     /// The API's daily page-id-only request container.
     #[arg(long, env = "USNM_OCR_REQUESTS_URL")]
     requests_url: Option<String>,
+    /// The exchange account's `boinc-handoff` container, read only for the controller's
+    /// held-pages lists: the seeder leaves settled pages out (#1754). Unset: it doesn't.
+    #[arg(long, env = "USNM_OCR_HANDOFF_URL")]
+    handoff_url: Option<String>,
     /// The most parts checked in one run; the rest wait for the next.
     #[arg(long, default_value_t = 2000)]
     max_parts: usize,
@@ -293,6 +297,10 @@ pub(crate) struct OcrSeedArgs {
     /// The exchange account's `ocr-out`, for `--seed-source fetched`.
     #[arg(long, env = "USNM_OCR_OUT_URL")]
     out_url: Option<String>,
+    /// The exchange account's `boinc-handoff`, for the controller's held-pages lists: the
+    /// seeder leaves settled pages out of its window and retries (#1754). Unset: it doesn't.
+    #[arg(long, env = "USNM_OCR_HANDOFF_URL")]
+    handoff_url: Option<String>,
     #[command(flatten)]
     seed: SeedArgs,
     /// Print what would be queued; write and send nothing.
@@ -614,6 +622,7 @@ pub(crate) async fn ocr_sync_command(
         out_url,
         quarantine_url,
         requests_url,
+        handoff_url,
         max_parts,
         chunk,
         max_dead_letters,
@@ -640,6 +649,7 @@ pub(crate) async fn ocr_sync_command(
         quarantine: usnm_store::open(&need(quarantine_url, "--quarantine-url")?)?,
         requests: requests_url.as_deref().map(usnm_store::open).transpose()?,
         queue: usnm_store::queue::open(&need(queue_url, "--queue-url")?)?,
+        handoff: handoff_url.as_deref().map(usnm_store::open).transpose()?,
     };
     let opts = usnm_ocr_local::sync::Options {
         max_parts: *max_parts,
@@ -668,6 +678,7 @@ pub(crate) async fn ocr_seed_command(
     let OcrSeedArgs {
         queue_url,
         out_url,
+        handoff_url,
         seed,
         dry_run,
         max_runtime_secs,
@@ -680,6 +691,7 @@ pub(crate) async fn ocr_seed_command(
     let reference = usnm_store::open(&cli.stores.reference)?;
     let queue = usnm_store::queue::open(queue_url)?;
     let out = out_url.as_deref().map(usnm_store::open).transpose()?;
+    let handoff = handoff_url.as_deref().map(usnm_store::open).transpose()?;
     let american_stories = usnm_ingest::american_stories::SeedTexts::default();
     let stores = usnm_ocr_local::seed::Stores {
         curated: curated.as_ref(),
@@ -687,6 +699,7 @@ pub(crate) async fn ocr_seed_command(
         queue: &queue,
         out: out.as_deref(),
         american_stories: Some(&american_stories),
+        handoff: handoff.as_deref(),
     };
     let report = usnm_ocr_local::seed::run(&state, &owner_id(), &stores, &opts).await?;
     println!("{}", serde_json::to_string_pretty(&report)?);
@@ -906,13 +919,22 @@ mod tests {
             "--seed-pilot",
             "--bulk-window",
             "1000",
+            "--handoff-url",
+            "h",
             "--dry-run",
         ])
         .unwrap();
-        let Command::OcrSeed(OcrSeedArgs { seed, dry_run, .. }) = cli.command else {
+        let Command::OcrSeed(OcrSeedArgs {
+            seed,
+            dry_run,
+            handoff_url,
+            ..
+        }) = cli.command
+        else {
             panic!("not ocr-seed");
         };
         assert!(dry_run);
+        assert_eq!(handoff_url.as_deref(), Some("h"));
         let opts = seed.options(true).unwrap();
         assert_eq!(opts.plan, "pilot-deu");
         assert_eq!(opts.languages, ["deu"]);

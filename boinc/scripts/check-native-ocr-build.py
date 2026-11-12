@@ -2,14 +2,17 @@
 """Check a native OCR build (usnm_ocr_native, usnm_gold_native; docs/boinc/apps/native-ocr.md) before a
 release stages and signs it, and print the identity its jobs and the Gold binding name it by.
 
-  check-native-ocr-build.py --binary usnm_ocr --extra-file usnm_native_build.json=PATH \
-    --extra-file usnm_tesseract=PATH --extra-file tessdata_eng.traineddata=PATH ...
+  check-native-ocr-build.py --platform x86_64-pc-linux-gnu --binary usnm_ocr \
+    --extra-file usnm_native_build.json=PATH --extra-file usnm_tesseract=PATH \
+    --extra-file tessdata_eng.traineddata=PATH ...
 
 The build must read as the container worker does: the manifest's engine_version is the Tesseract
 that ocr/engines/tesseract/Containerfile installs, its models are exactly
 ocr/engines/tesseract/models.lock's, and every file given is the one the manifest lists, by size
-and sha256. The worker, which only --binary gives, and the engine must be x86-64 ELF executables
-or position-independent executables.
+and sha256. The manifest must be for --platform. The worker, which only --binary gives, and the
+engine must be that platform's executables: x86-64 ELF executables or position-independent
+executables on Linux, thin 64-bit Mach-O executables of the platform's architecture on macOS, and
+PE32+ x86-64 executables (not DLLs) on Windows.
 """
 from __future__ import annotations
 
@@ -32,9 +35,18 @@ NOTICE_PREFIX = "notice_"
 # ocr/engines/tesseract/Containerfile pins by hash (ARG CHR_PHOENIX_SUMS).
 NOTICES = {"chr_phoenix": (ROOT / "ocr/models/chr-phoenix/SHA256SUMS", "CHR_PHOENIX_SUMS",
                            ("NOTICE.md", "LICENSE-Apache-2.0.txt"))}
-PLATFORM = "x86_64-pc-linux-gnu"
+# Each platform is its own build, digest and trust (docs/boinc/apps/native-ocr.md).
+PLATFORMS = ("x86_64-pc-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin", "windows_x86_64")
 EM_X86_64 = 0x3E
 ET_EXEC, ET_DYN = 2, 3
+MH_MAGIC_64 = 0xFEEDFACF
+MH_EXECUTE = 2
+CPU_TYPE_X86_64, CPU_TYPE_ARM64 = 0x01000007, 0x0100000C
+IMAGE_FILE_MACHINE_AMD64 = 0x8664
+PE_OPTIONAL_MAGIC_64 = 0x20B
+PE32_PLUS_FIXED_SIZE, SECTION_HEADER_SIZE = 112, 40
+IMAGE_FILE_EXECUTABLE_IMAGE, IMAGE_FILE_DLL = 0x2, 0x2000
+MACH_O_CPU = {"arm64-apple-darwin": CPU_TYPE_ARM64, "x86_64-apple-darwin": CPU_TYPE_X86_64}
 
 
 def locked_models(lock: Path) -> dict[str, str]:
@@ -113,6 +125,55 @@ def is_x86_64_elf(path: Path) -> bool:
     return e_type in (ET_EXEC, ET_DYN) and e_machine == EM_X86_64
 
 
+def is_mach_o_executable(path: Path, cpu: int) -> bool:
+    """A thin 64-bit Mach-O executable for `cpu`: not a universal file, a library or an object."""
+    with path.open("rb") as f:
+        head = f.read(16)
+    if len(head) != 16:
+        return False
+    magic, cputype, _, filetype = struct.unpack("<IIII", head)
+    return magic == MH_MAGIC_64 and cputype == cpu and filetype == MH_EXECUTE
+
+
+def is_x86_64_pe_executable(path: Path) -> bool:
+    """A PE32+ x86-64 executable: not a DLL, a 32-bit image or an object file."""
+    with path.open("rb") as f:
+        size = f.seek(0, 2)
+        f.seek(0)
+        dos = f.read(64)
+        if len(dos) != 64 or dos[:2] != b"MZ":
+            return False
+        (pe_offset,) = struct.unpack_from("<I", dos, 60)
+        f.seek(pe_offset)
+        head = f.read(4 + 20 + 2)
+    if len(head) != 26 or head[:4] != b"PE\0\0":
+        return False
+    machine, sections, _, _, _, optional_size, characteristics = struct.unpack_from("<HHIIIHH", head, 4)
+    (magic,) = struct.unpack_from("<H", head, 24)
+    # The optional header (at least PE32+'s fixed part) and the section table must be in the file.
+    if (sections == 0 or optional_size < PE32_PLUS_FIXED_SIZE
+            or size < pe_offset + 24 + optional_size + SECTION_HEADER_SIZE * sections):
+        return False
+    return (machine == IMAGE_FILE_MACHINE_AMD64 and magic == PE_OPTIONAL_MAGIC_64
+            and bool(characteristics & IMAGE_FILE_EXECUTABLE_IMAGE) and not characteristics & IMAGE_FILE_DLL)
+
+
+def is_executable(path: Path, platform: str) -> bool:
+    if platform == "windows_x86_64":
+        return is_x86_64_pe_executable(path)
+    if platform in MACH_O_CPU:
+        return is_mach_o_executable(path, MACH_O_CPU[platform])
+    return is_x86_64_elf(path)
+
+
+def executable_kind(platform: str) -> str:
+    if platform == "windows_x86_64":
+        return "x86-64 PE32+ executable"
+    if platform in MACH_O_CPU:
+        return f"{platform.split('-')[0]} Mach-O executable"
+    return "x86-64 ELF executable"
+
+
 
 def _no_duplicate_fields(pairs):
     """object_pairs_hook: refuse an object that names a field twice, as the worker's decoder does."""
@@ -123,8 +184,11 @@ def _no_duplicate_fields(pairs):
         fields[key] = value
     return fields
 
-def check(binary: Path, extras: dict[str, Path], lock: Path, containerfile: Path) -> tuple[str, str]:
+def check(binary: Path, extras: dict[str, Path], lock: Path, containerfile: Path,
+          platform: str = "x86_64-pc-linux-gnu") -> tuple[str, str]:
     """Returns the build's (engine.image, engine.base)."""
+    if platform not in PLATFORMS:
+        raise ValueError(f"no native OCR build for {platform}: one of {', '.join(PLATFORMS)}")
     if WORKER in extras:
         raise ValueError(f"the worker is --binary, not --extra-file {WORKER}")
     if MANIFEST not in extras:
@@ -134,8 +198,8 @@ def check(binary: Path, extras: dict[str, Path], lock: Path, containerfile: Path
         manifest = json.loads(raw, object_pairs_hook=_no_duplicate_fields)
     except ValueError:
         manifest = None
-    if not well_formed(manifest) or manifest["v"] != 1 or manifest["platform"] != PLATFORM:
-        raise ValueError(f"{MANIFEST} is not a build manifest for {PLATFORM}")
+    if not well_formed(manifest) or manifest["v"] != 1 or manifest["platform"] != platform:
+        raise ValueError(f"{MANIFEST} is not a build manifest for {platform}")
     files, version = manifest["files"], manifest["engine_version"]
     engine = locked_engine(containerfile)
     if version != engine:
@@ -162,13 +226,14 @@ def check(binary: Path, extras: dict[str, Path], lock: Path, containerfile: Path
         if entry(path) != files[name]:
             raise ValueError(f"{name} differs from the build manifest")
     for name in (WORKER, ENGINE):
-        if not is_x86_64_elf(given[name]):
-            raise ValueError(f"{name} is not an x86-64 ELF executable")
+        if not is_executable(given[name], platform):
+            raise ValueError(f"{name} is not an {executable_kind(platform)}")
     return f"sha256:{hashlib.sha256(raw).hexdigest()}", f"sha256:{files[ENGINE]['sha256']}"
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--platform", default="x86_64-pc-linux-gnu", choices=PLATFORMS)
     ap.add_argument("--binary", required=True, type=Path)
     ap.add_argument("--extra-file", action="append", default=[], metavar="LOGICAL=PATH")
     ap.add_argument("--models-lock", type=Path, default=ROOT / "ocr/engines/tesseract/models.lock")
@@ -181,11 +246,11 @@ def main(argv: list[str] | None = None) -> int:
             ap.error(f"--extra-file must be LOGICAL=PATH, both non-empty, each logical name once: {spec}")
         extras[logical] = Path(path)
     try:
-        image, base = check(a.binary, extras, a.models_lock, a.engine_containerfile)
+        image, base = check(a.binary, extras, a.models_lock, a.engine_containerfile, a.platform)
     except (OSError, ValueError) as e:
         print(f"check-native-ocr-build: {e}", file=sys.stderr)
         return 1
-    print(f"native OCR build: engine.image {image}, engine.base {base}")
+    print(f"native OCR build for {a.platform}: engine.image {image}, engine.base {base}")
     return 0
 
 

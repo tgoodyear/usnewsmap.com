@@ -321,7 +321,8 @@ async fn promote_with(
             for root in &attempts {
                 if collect {
                     let rows = gold::collect::native_results(root, &native).await?;
-                    let s = gold::collect::run_with_native(
+                    let cancelled = gold::collect::cancelled_workunits(root, &native).await?;
+                    let s = gold::collect::run_with_native_cancelled(
                         &gold::collect::Options {
                             root: root.clone(),
                             project: c.project.clone(),
@@ -330,8 +331,11 @@ async fn promote_with(
                         },
                         &rows,
                         &native,
+                        &cancelled,
                     )?;
-                    pending |= s.pending > 0;
+                    // A cancelled unit is no evidence yet: the host is waiting on a unit that
+                    // onboarding will issue, as for a unit still outstanding.
+                    pending |= s.pending > 0 || s.cancelled > 0;
                 } else {
                     pending |= !root.join("out/reports.jsonl").is_file();
                 }

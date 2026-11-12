@@ -3,7 +3,7 @@
 use crate::{
     gpu::{GpuState, NVIDIA_6GB_LAYERS},
     ms,
-    report::redacted_tail,
+    report::{redacted_tail, startup_failure_excerpt},
 };
 use anyhow::{bail, ensure, Context};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -16,13 +16,107 @@ use std::{
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
-use usnm_ocr_contract::qwen::{loop_cut, tail_repetition, MAX_CROP_TEXT, PROMPT};
+#[cfg(test)]
+use usnm_ocr_contract::qwen::PROMPT_VERSION;
+use usnm_ocr_contract::qwen::{
+    loop_cut, prompt, prompt_before_image, tail_repetition, thinking_off, MAX_CROP_TEXT,
+};
 use usnm_ocr_quality::slot::{resolve_slot_file, BoincControl};
 
 pub const ENV_LLAMA_SERVER: &str = "USNM_LLAMA_SERVER";
 
-pub(crate) const CTX_SIZE: u32 = 4096;
 pub(crate) const LOAD_DEADLINE: Duration = Duration::from_secs(300);
+
+/// The connection to `llama-server` broke before a whole reply arrived: an empty or garbled status
+/// line, a reset or early end, or a reply cut short. The process most likely died, so the crop
+/// is worth retrying on a fresh one (see [`classify`]).
+#[derive(Debug)]
+pub(crate) struct Transport(String);
+
+impl std::fmt::Display for Transport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Transport {}
+
+/// `llama-server` answered with an error status: it is alive and refused the request.
+#[derive(Debug)]
+pub(crate) struct HttpStatus(pub(crate) String);
+
+impl std::fmt::Display for HttpStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for HttpStatus {}
+
+/// The crop's time ran out before the reply finished.
+#[derive(Debug)]
+pub(crate) struct Deadline;
+
+impl std::fmt::Display for Deadline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("completion deadline reached")
+    }
+}
+
+impl std::error::Error for Deadline {}
+
+pub(crate) fn transport(msg: &str) -> anyhow::Error {
+    anyhow::Error::new(Transport(msg.to_owned()))
+}
+
+/// What kind of failure a chat completion ended in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FailureClass {
+    /// The connection broke: retry on a restarted `llama-server`.
+    Transport,
+    /// A real HTTP error status from a live server.
+    Status,
+    /// A read timed out or the crop's deadline passed.
+    Deadline,
+    /// Anything else, such as a reply that parsed badly or a refused request body.
+    Other,
+}
+
+/// Sorts a chat-completion error by its causes. Status and deadline win over a transport cause
+/// anywhere in the chain, so neither is ever retried by mistake.
+pub(crate) fn classify(err: &anyhow::Error) -> FailureClass {
+    use std::io::ErrorKind::{
+        BrokenPipe, ConnectionAborted, ConnectionRefused, ConnectionReset, InvalidData,
+        NotConnected, TimedOut, UnexpectedEof, WouldBlock,
+    };
+    let mut class = FailureClass::Other;
+    for cause in err.chain() {
+        if cause.is::<HttpStatus>() {
+            return FailureClass::Status;
+        }
+        let found = if cause.is::<Deadline>() {
+            FailureClass::Deadline
+        } else if cause.is::<Transport>() {
+            FailureClass::Transport
+        } else if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            match io.kind() {
+                TimedOut | WouldBlock => FailureClass::Deadline,
+                ConnectionReset | ConnectionAborted | ConnectionRefused | BrokenPipe
+                | NotConnected | UnexpectedEof | InvalidData => FailureClass::Transport,
+                _ => FailureClass::Other,
+            }
+        } else {
+            FailureClass::Other
+        };
+        if found == FailureClass::Deadline {
+            return found;
+        }
+        if class == FailureClass::Other {
+            class = found;
+        }
+    }
+    class
+}
 
 /// The library search variable and value that let a bundled `llama-server` find its libraries.
 pub(crate) fn library_env(server_bin: &Path) -> Option<(&'static str, std::ffi::OsString)> {
@@ -119,20 +213,37 @@ pub fn http_request(
     let sep = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
-        .context("malformed HTTP response")?;
-    let head = std::str::from_utf8(&raw[..sep]).context("HTTP header UTF-8")?;
+        .ok_or_else(|| transport("malformed HTTP response"))?;
+    let head =
+        std::str::from_utf8(&raw[..sep]).map_err(|_| transport("HTTP header is not UTF-8"))?;
     let status: u16 = head
         .lines()
         .next()
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|c| c.parse().ok())
-        .context("HTTP status code")?;
+        .ok_or_else(|| transport("empty or garbled HTTP status line"))?;
     let mut payload = raw[sep + 4..].to_vec();
+    // The body of an error status is only for the message: a short or badly chunked one must not
+    // hide the status, which is what says the server is alive and refused.
+    let strict = status == 200;
     if head.lines().any(|l| {
         l.to_ascii_lowercase()
             .contains("transfer-encoding: chunked")
     }) {
-        payload = unchunk(&payload)?;
+        match unchunk(&payload) {
+            Ok(p) => payload = p,
+            Err(e) if strict => return Err(transport(&format!("{e:#}"))),
+            Err(_) => {}
+        }
+    } else if let Some(want) = head.lines().find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        k.eq_ignore_ascii_case("content-length")
+            .then(|| v.trim().parse::<usize>().ok())?
+    }) {
+        // The server died partway through the body, or the reply was cut at the size limit.
+        if strict && payload.len() < want && raw.len() < 1024 * 1024 {
+            return Err(transport("HTTP body shorter than its Content-Length"));
+        }
     }
     Ok((status, payload))
 }
@@ -160,6 +271,33 @@ fn unchunk(mut b: &[u8]) -> anyhow::Result<Vec<u8>> {
     }
 }
 
+/// The chat request for one crop under a request version: the image and the
+/// version's prompt in the version's order (Qwen's prompt after the image,
+/// Xiaomi-OCR-0's before it), and thinking off where the version says so.
+pub(crate) fn request_json(png: &[u8], prompt_version: u32, max_tokens: u32) -> serde_json::Value {
+    let url = format!("data:image/png;base64,{}", BASE64.encode(png));
+    let image = serde_json::json!({"type": "image_url", "image_url": {"url": url}});
+    let text = serde_json::json!({"type": "text", "text": prompt(prompt_version)});
+    let content = if prompt_before_image(prompt_version) {
+        [text, image]
+    } else {
+        [image, text]
+    };
+    let mut request = serde_json::json!({
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": max_tokens,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "seed": 42,
+    });
+    if thinking_off(prompt_version) {
+        request["chat_template_kwargs"] = serde_json::json!({"enable_thinking": false});
+    }
+    request
+}
+
+/// A crop's reading with request version 1's prompt (the tests' shorthand).
+#[cfg(test)]
 pub fn chat_completion(
     port: u16,
     png: &[u8],
@@ -168,20 +306,28 @@ pub fn chat_completion(
     guard: bool,
     timeout: Duration,
 ) -> anyhow::Result<(String, u32, String)> {
-    let url = format!("data:image/png;base64,{}", BASE64.encode(png));
-    let mut request = serde_json::json!({
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": url}},
-                {"type": "text", "text": PROMPT},
-            ]
-        }],
-        "max_tokens": max_tokens,
-        "temperature": 0.0,
-        "top_p": 1.0,
-        "seed": 42,
-    });
+    chat_completion_for(
+        port,
+        png,
+        PROMPT_VERSION,
+        max_tokens,
+        image_min_tokens,
+        guard,
+        timeout,
+    )
+}
+
+/// A crop's reading with `prompt_version`'s request ([`request_json`]).
+pub fn chat_completion_for(
+    port: u16,
+    png: &[u8],
+    prompt_version: u32,
+    max_tokens: u32,
+    image_min_tokens: Option<u32>,
+    guard: bool,
+    timeout: Duration,
+) -> anyhow::Result<(String, u32, String)> {
+    let mut request = request_json(png, prompt_version, max_tokens);
     if guard {
         request["stream"] = true.into();
         let body = serde_json::to_vec(&request)?;
@@ -190,10 +336,10 @@ pub fn chat_completion(
     let body = serde_json::to_vec(&request)?;
     let (status, resp) = http_request(port, "POST", "/v1/chat/completions", Some(&body), timeout)?;
     if status != 200 {
-        bail!(
+        return Err(anyhow::Error::new(HttpStatus(format!(
             "llama-server status {status}: {}",
             redacted_tail(&String::from_utf8_lossy(&resp), 256)
-        );
+        ))));
     }
     parse_completion(&resp, max_tokens, image_min_tokens)
 }
@@ -259,12 +405,21 @@ fn read_stream(mut events: impl BufRead, deadline: Instant) -> anyhow::Result<St
     let mut out = Streamed::default();
     let mut line = String::new();
     loop {
-        ensure!(Instant::now() < deadline, "completion deadline reached");
+        if Instant::now() >= deadline {
+            return Err(Deadline.into());
+        }
         line.clear();
         if events.read_line(&mut line)? == 0 {
             // A reply that just ends may be missing text, so it isn't a reading.
-            ensure!(out.finish_reason.is_some(), "completion stream ended early");
+            if out.finish_reason.is_none() {
+                return Err(transport("completion stream ended early"));
+            }
             return Ok(out);
+        }
+        // A line with no newline is the stream's last bytes: unless the reply was complete, the
+        // connection broke inside an event, and a half event is not worth parsing.
+        if !line.ends_with('\n') && out.finish_reason.is_none() && line.trim() != "data: [DONE]" {
+            return Err(transport("completion stream ended mid-event"));
         }
         out.digest.update(line.as_bytes());
         out.bytes += line.len();
@@ -339,11 +494,13 @@ fn guarded_completion(
         .split_whitespace()
         .nth(1)
         .and_then(|c| c.parse().ok())
-        .context("HTTP status code")?;
+        .ok_or_else(|| transport("empty or garbled HTTP status line"))?;
     let mut chunked = false;
     loop {
         let mut h = String::new();
-        ensure!(reader.read_line(&mut h)? > 0, "malformed HTTP response");
+        if reader.read_line(&mut h)? == 0 {
+            return Err(transport("malformed HTTP response"));
+        }
         if h.trim().is_empty() {
             break;
         }
@@ -386,12 +543,13 @@ fn guarded_completion(
 }
 
 fn reply_error<T>(status: u16, body: impl Read) -> anyhow::Result<T> {
+    // Best effort: the status is the failure, and the body only explains it.
     let mut text = Vec::new();
-    body.take(64 * 1024).read_to_end(&mut text)?;
-    bail!(
+    let _ = body.take(64 * 1024).read_to_end(&mut text);
+    Err(anyhow::Error::new(HttpStatus(format!(
         "llama-server status {status}: {}",
         redacted_tail(&String::from_utf8_lossy(&text), 256)
-    )
+    ))))
 }
 
 fn hex_digest(digest: &Sha256) -> String {
@@ -544,6 +702,11 @@ impl Drop for Server {
 }
 
 impl Server {
+    /// Whether the `llama-server` process has ended, however it ended.
+    pub(crate) fn has_exited(&mut self) -> bool {
+        !matches!(self.child.try_wait(), Ok(None))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn start(
         work: &Path,
@@ -554,6 +717,7 @@ impl Server {
         threads: u32,
         load_deadline: Duration,
         image_min_tokens: Option<u32>,
+        ctx_size: u32,
         control: &BoincControl,
     ) -> anyhow::Result<(Self, u64)> {
         if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
@@ -583,7 +747,7 @@ impl Server {
             "--port",
             &port.to_string(),
             "--ctx-size",
-            &CTX_SIZE.to_string(),
+            &ctx_size.to_string(),
             "--temp",
             "0",
             "--seed",
@@ -652,7 +816,7 @@ impl Server {
                 let log_tail = std::fs::read_to_string(&srv.log_path).unwrap_or_default();
                 bail!(
                     "llama-server exited ({status}) before ready: {}",
-                    redacted_tail(&log_tail, 512)
+                    startup_failure_excerpt(&log_tail, 512)
                 );
             }
             if let Ok((200, _)) = http_request(port, "GET", "/health", None, Duration::from_secs(2))
@@ -664,13 +828,86 @@ impl Server {
                 bail!(
                     "llama-server did not become healthy in {}s: {}",
                     load_deadline.as_secs(),
-                    redacted_tail(&log_tail, 512)
+                    startup_failure_excerpt(&log_tail, 512)
                 );
             }
             std::thread::sleep(Duration::from_millis(200));
             if !control.is_suspended() {
                 active_elapsed += step_start.elapsed();
             }
+        }
+    }
+}
+
+/// What starting `llama-server` needs besides the binary, kept so a crop's retry can start it again.
+pub(crate) struct Launch<'a> {
+    pub(crate) work: &'a Path,
+    pub(crate) model_path: &'a Path,
+    pub(crate) mmproj_path: &'a Path,
+    pub(crate) gpu: &'a GpuState,
+    pub(crate) threads: u32,
+    pub(crate) image_min_tokens: Option<u32>,
+    /// `--ctx-size`, from the job's request version.
+    pub(crate) ctx_size: u32,
+    pub(crate) control: &'a BoincControl,
+}
+
+/// The `llama-server` a task talks to: one this app started, which it can start again, or an
+/// outside one on a given port (tests), which it cannot.
+pub(crate) struct Llama {
+    pub(crate) srv: Option<Server>,
+    pub(crate) port: u16,
+    pub(crate) server_bin: Option<PathBuf>,
+}
+
+impl Llama {
+    /// Starts the server, replacing any running one. Returns the load time in milliseconds.
+    pub(crate) fn start(&mut self, l: &Launch<'_>, load_deadline: Duration) -> anyhow::Result<u64> {
+        // The old process goes first: it holds the GPU memory and its log is about to be reused.
+        self.srv = None;
+        let bin = self
+            .server_bin
+            .as_deref()
+            .context("no llama-server to start")?;
+        let (srv, loaded_ms) = Server::start(
+            l.work,
+            bin,
+            l.model_path,
+            l.mmproj_path,
+            l.gpu,
+            l.threads,
+            load_deadline,
+            l.image_min_tokens,
+            l.ctx_size,
+            l.control,
+        )?;
+        self.port = srv.port;
+        self.srv = Some(srv);
+        Ok(loaded_ms)
+    }
+
+    /// Starts a fresh server for a retry. A failure to come back is reported as a broken
+    /// connection, so it spends a retry like any other. With an outside server there is nothing to
+    /// restart and the retry goes to the same port.
+    pub(crate) fn restart(
+        &mut self,
+        l: &Launch<'_>,
+        load_deadline: Duration,
+    ) -> anyhow::Result<()> {
+        if self.server_bin.is_none() {
+            return Ok(());
+        }
+        self.start(l, load_deadline)
+            .map(drop)
+            .map_err(|e| transport(&format!("llama-server did not restart: {e:#}")))
+    }
+
+    /// Whether the server this app started has ended; an outside one is never judged.
+    pub(crate) fn has_exited(&mut self) -> bool {
+        match (&mut self.srv, &self.server_bin) {
+            (Some(srv), _) => srv.has_exited(),
+            (None, Some(_)) => true,
+            (None, None) => false,
         }
     }
 }
@@ -845,6 +1082,150 @@ mod guard_tests {
 mod completion_tests {
     use super::*;
 
+    /// Serves one connection: reads the request, writes `reply` (when given) and closes.
+    fn serve_once(reply: Option<&'static [u8]>) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            // The whole request first: closing with unread bytes would reset the connection and
+            // discard the reply.
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 4096];
+            let mut want = usize::MAX;
+            while seen.len() < want {
+                match s.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => seen.extend_from_slice(&buf[..n]),
+                }
+                if let Some(sep) = seen.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&seen[..sep]).to_ascii_lowercase();
+                    let len = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:")?.trim().parse().ok())
+                        .unwrap_or(0usize);
+                    want = sep + 4 + len;
+                }
+            }
+            if let Some(reply) = reply {
+                let _ = s.write_all(reply);
+            }
+        });
+        port
+    }
+
+    fn ask(port: u16, guard: bool) -> anyhow::Error {
+        chat_completion(port, b"png", 64, None, guard, Duration::from_secs(5)).unwrap_err()
+    }
+
+    #[test]
+    fn a_connection_that_breaks_is_a_transport_failure_on_both_paths() {
+        let cases: [(&str, Option<&'static [u8]>); 5] = [
+            ("closed with no reply", None),
+            ("garbled status line", Some(b"garbage\r\n\r\n")),
+            ("no status line at all", Some(b"\r\n\r\n")),
+            ("header cut off", Some(b"HTTP/1.1 200 OK\r\nContent-Ty")),
+            (
+                "body shorter than its length",
+                Some(b"HTTP/1.1 200 OK\r\nContent-Length: 500\r\n\r\n{\"choices\""),
+            ),
+        ];
+        for (name, reply) in cases {
+            for guard in [false, true] {
+                // The guarded path reads the status line first; a short body is the plain path's.
+                if guard && name == "body shorter than its length" {
+                    continue;
+                }
+                let e = ask(serve_once(reply), guard);
+                assert_eq!(
+                    classify(&e),
+                    FailureClass::Transport,
+                    "{name} (guard {guard}): {e:#}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_refused_connection_and_a_stream_that_ends_early_are_transport_failures() {
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        for guard in [false, true] {
+            assert_eq!(classify(&ask(port, guard)), FailureClass::Transport);
+        }
+        let partial: &'static [u8] =
+            b"HTTP/1.1 200 OK\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"half\"}}]}\n\n";
+        let e = ask(serve_once(Some(partial)), true);
+        assert_eq!(classify(&e), FailureClass::Transport, "{e:#}");
+    }
+
+    #[test]
+    fn an_error_status_stays_a_status_when_its_body_is_cut_short_or_garbled() {
+        let cases: [&'static [u8]; 3] = [
+            b"HTTP/1.1 503 Unavailable\r\nContent-Length: 500\r\n\r\nloading mo",
+            b"HTTP/1.1 503 Unavailable\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nbad",
+            b"HTTP/1.1 503 Unavailable\r\nTransfer-Encoding: chunked\r\n\r\n10\r\nshort",
+        ];
+        for reply in cases {
+            for guard in [false, true] {
+                let e = ask(serve_once(Some(reply)), guard);
+                assert_eq!(classify(&e), FailureClass::Status, "guard {guard}: {e:#}");
+                assert!(
+                    format!("{e:#}").contains("llama-server status 503"),
+                    "{e:#}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_stream_cut_inside_an_event_is_a_transport_failure() {
+        let cut: &'static [u8] =
+            b"HTTP/1.1 200 OK\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: {\"choices\":";
+        let e = ask(serve_once(Some(cut)), true);
+        assert_eq!(classify(&e), FailureClass::Transport, "{e:#}");
+        // A finished reply with trailing junk is still a reading.
+        let done: &'static [u8] = b"HTTP/1.1 200 OK\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]";
+        let (text, ..) = chat_completion(
+            serve_once(Some(done)),
+            b"png",
+            64,
+            None,
+            true,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(text, "ok");
+    }
+
+    #[test]
+    fn an_error_status_and_a_silent_server_are_never_transport_failures() {
+        let refusal: &'static [u8] =
+            b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 4\r\n\r\nboom";
+        for guard in [false, true] {
+            let e = ask(serve_once(Some(refusal)), guard);
+            assert_eq!(classify(&e), FailureClass::Status, "{e:#}");
+            assert!(format!("{e:#}").contains("llama-server status 500"));
+        }
+        // Accepts and never answers: the read times out, which is the deadline's business.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        for guard in [false, true] {
+            let e = chat_completion(port, b"png", 64, None, guard, Duration::from_millis(300))
+                .unwrap_err();
+            assert_eq!(classify(&e), FailureClass::Deadline, "{e:#}");
+        }
+        drop(listener);
+        let e = anyhow::Error::new(Deadline);
+        assert_eq!(classify(&e), FailureClass::Deadline);
+        assert_eq!(
+            classify(&anyhow::anyhow!("chat response JSON")),
+            FailureClass::Other
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn server_launch_uses_partial_layers_and_cpu_projector_only_for_the_explicit_profile() {
@@ -879,6 +1260,8 @@ mod completion_tests {
                 2,
                 Duration::from_secs(2),
                 None,
+                // The context comes from the job's request version (4096, or 16384 for 5).
+                if partial { 4096 } else { 16_384 },
                 &control,
             );
             let error = match result {
@@ -890,6 +1273,7 @@ mod completion_tests {
             let args: Vec<_> = text.lines().collect();
             let value = |name| args[args.iter().position(|arg| *arg == name).unwrap() + 1];
             assert_eq!(value("-ngl"), if partial { "24" } else { "99" });
+            assert_eq!(value("--ctx-size"), if partial { "4096" } else { "16384" });
             assert_eq!(value("--device"), "Vulkan3");
             assert_eq!(args.contains(&"--no-mmproj-offload"), partial);
             assert_eq!(
@@ -1027,5 +1411,29 @@ mod completion_tests {
             serde_json::json!(["tail_periodic_repetition"])
         );
         assert_eq!(m["image_min_tokens_requested"], 1024);
+    }
+
+    #[test]
+    fn each_request_version_sends_its_own_prompt_in_its_own_place() {
+        use usnm_ocr_contract::qwen::{PROMPT, PROMPT_VERSION_LOOP_GUARD, PROMPT_VERSION_XIAOMI};
+        for v in [PROMPT_VERSION, PROMPT_VERSION_LOOP_GUARD] {
+            let r = request_json(b"png", v, 300);
+            let content = &r["messages"][0]["content"];
+            assert_eq!(content[0]["type"], "image_url");
+            assert_eq!(content[1]["text"], PROMPT);
+            assert!(r.get("chat_template_kwargs").is_none());
+            assert_eq!(r["max_tokens"], 300);
+        }
+        let r = request_json(b"png", PROMPT_VERSION_XIAOMI, 2048);
+        let content = &r["messages"][0]["content"];
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "Extract the text in the image.");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(r["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(
+            (r["temperature"].as_f64(), r["seed"].as_u64()),
+            (Some(0.0), Some(42))
+        );
+        assert_eq!(r["max_tokens"], 2048);
     }
 }

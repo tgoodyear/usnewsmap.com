@@ -230,7 +230,7 @@ async fn fetch_list(
     stop: &watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let far = Instant::now() + Duration::from_secs(24 * 3600);
-    let mut resp = engine
+    let resp = engine
         .open(url, None, stop, far)
         .await
         .map_err(|e| match e {
@@ -240,13 +240,18 @@ async fn fetch_list(
             Fail::Stopped | Fail::RangeRefused | Fail::Closed => anyhow::anyhow!("stopped"),
             Fail::Slowed(e) => e,
         })?;
-    let mut body = Vec::new();
-    while let Some(c) = resp.chunk().await? {
-        body.extend_from_slice(&c);
-        if body.len() > 64 << 20 {
-            bail!("the datasets list is over 64 MiB");
-        }
-    }
+    // Through the engine, so the bytes count against the host's daily budget.
+    let body = engine
+        .read_capped(url, resp, 64 << 20, stop)
+        .await
+        .map_err(|e| match e {
+            Fail::Blocked(m) | Fail::Transient(m) | Fail::Checksum(m) => {
+                anyhow::anyhow!("the datasets list: {m}")
+            }
+            Fail::Refused(m) => anyhow::anyhow!("the datasets list (over 64 MiB at most): {m}"),
+            Fail::Stopped | Fail::RangeRefused | Fail::Closed => anyhow::anyhow!("stopped"),
+            Fail::Slowed(e) => e,
+        })?;
     let v: serde_json::Value =
         serde_json::from_slice(&body).context("the datasets list isn't JSON")?;
     parse_list(&v)?;

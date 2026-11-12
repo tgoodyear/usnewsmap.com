@@ -1,0 +1,9 @@
+# The apt base of the native Tesseract build (#1683): the Containerfile's apt-native stage, built
+# once from the Debian snapshot by .github/workflows/tesseract-base.yml and published to
+# ghcr.io/tgoodyear/usnm-tesseract-base. One <build argument>=<image>@sha256:<digest> line.
+# scripts/ci/apt-base.sh --app native prints it for `--build-arg` and, with --check-label, checks
+# the base's labels against the Containerfile: its SNAPSHOT and the hash of its apt-* stage.
+#
+# An empty value means not pinned yet: the build then installs from the snapshot, as the
+# Containerfile's default does.
+NATIVE_BASE=

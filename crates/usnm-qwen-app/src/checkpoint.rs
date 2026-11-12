@@ -19,7 +19,25 @@ pub struct QwenCheckpoint {
     pub readings: Vec<Reading>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub generation_metadata: std::collections::BTreeMap<String, String>,
+    /// How many times this task has asked the BOINC client to restart it after `llama-server`
+    /// kept failing on one crop. Kept here so it survives those restarts and can be bounded.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub temporary_exits: u32,
+    /// How many times this task has restarted `llama-server` to retry a crop.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub llama_restarts: u32,
+    /// Notes on those restarts, newest last, for the diagnostics.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub restart_log: Vec<String>,
 }
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// The most restart notes the checkpoint keeps, and the longest each may be.
+pub const MAX_RESTART_NOTES: usize = 16;
+pub const MAX_RESTART_NOTE: usize = 240;
 
 impl QwenCheckpoint {
     pub fn load_valid(work: &Path, job: &Job, model: &str, device: &str) -> Option<Self> {
@@ -40,6 +58,24 @@ impl QwenCheckpoint {
             }
         }
         Some(cp)
+    }
+
+    /// Adds a note about a `llama-server` restart, dropping the oldest notes past the limit.
+    pub fn note_restart(&mut self, note: &str) {
+        self.llama_restarts += 1;
+        self.log_note(note);
+    }
+
+    /// Adds a note that is not a restart, such as a temporary exit.
+    pub fn log_note(&mut self, note: &str) {
+        let mut end = note.len().min(MAX_RESTART_NOTE);
+        while !note.is_char_boundary(end) {
+            end -= 1;
+        }
+        self.restart_log.push(note[..end].to_owned());
+        if self.restart_log.len() > MAX_RESTART_NOTES {
+            self.restart_log.remove(0);
+        }
     }
 
     pub fn save(&self, work: &Path) -> anyhow::Result<()> {

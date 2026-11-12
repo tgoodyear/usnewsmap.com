@@ -35,6 +35,9 @@ pub struct Summary {
     pub collected: usize,
     pub pending: usize,
     pub failed: usize,
+    /// Units whose workunit was cancelled with no successful result: no evidence either way,
+    /// so they are neither pending nor failed (see `cancelled_workunits`).
+    pub cancelled: usize,
 }
 
 const MAX_NATIVE_JOBS: usize = 1_000;
@@ -43,6 +46,9 @@ const MAX_NATIVE_BYTES: usize = 16 << 20;
 pub const BOINC_SERVER_STATE_OVER: i64 = 5;
 pub const BOINC_ASSIMILATE_STATE_DONE: i64 = 2;
 pub const BOINC_OUTCOME_SUCCESS: i64 = 1;
+/// BOINC's `WU_ERROR_CANCELLED` bit of `workunit.error_mask`, which `cancel_jobs` and
+/// onboarding's retirement of an unreachable host's unit both set.
+pub const BOINC_WU_ERROR_CANCELLED: i64 = 16;
 pub const BOINC_OUTCOME_CLIENT_ERROR: i64 = 3;
 pub const BOINC_EXIT_ABORTED_BY_PROJECT: i64 = 202;
 pub const BOINC_EXIT_ABORTED_VIA_GUI: i64 = 203;
@@ -126,12 +132,7 @@ impl NativeConfig {
     }
 }
 
-/// Read bounded metadata for only this campaign's submitted workunits.
-pub async fn native_results(
-    root: &Path,
-    config: &NativeConfig,
-) -> anyhow::Result<Vec<NativeResult>> {
-    config.validate()?;
+fn submitted_jobs(root: &Path) -> anyhow::Result<BTreeMap<String, Job>> {
     let dir = submit::units_dir(root);
     let mut jobs = BTreeMap::new();
     for entry in std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
@@ -147,18 +148,146 @@ pub async fn native_results(
         job.validate()?;
         jobs.insert(job.workunit(), job);
     }
+    Ok(jobs)
+}
+
+/// Read bounded metadata for only this campaign's submitted workunits.
+pub async fn native_results(
+    root: &Path,
+    config: &NativeConfig,
+) -> anyhow::Result<Vec<NativeResult>> {
+    config.validate()?;
+    let jobs = submitted_jobs(root)?;
     if jobs.is_empty() {
         return Ok(Vec::new());
     }
-    let names = jobs
-        .keys()
-        .map(|name| format!("'{name}'"))
-        .collect::<Vec<_>>()
-        .join(",");
+    let names = quoted_names(&jobs);
+    // A cancelled workunit with no successful result gives no evidence: its rows are left out,
+    // so the unsent results `cancel_jobs` closed never make the snapshot look incomplete.
     let sql = format!(
-        "SELECT a.name,w.name,r.id,r.hostid,r.server_state,r.outcome,r.exit_status,r.sent_time,r.received_time,r.app_version_id,COALESCE(w.canonical_resultid,0),w.assimilate_state,(SELECT COUNT(*) FROM result all_results WHERE all_results.workunitid=w.id) FROM workunit w JOIN app a ON a.id=w.appid JOIN result r ON r.workunitid=w.id WHERE w.name IN ({names}) AND w.assimilate_state=2 AND r.app_version_id>0 ORDER BY r.id LIMIT {}",
+        "SELECT a.name,w.name,r.id,r.hostid,r.server_state,r.outcome,r.exit_status,r.sent_time,r.received_time,r.app_version_id,COALESCE(w.canonical_resultid,0),w.assimilate_state,(SELECT COUNT(*) FROM result all_results WHERE all_results.workunitid=w.id) FROM workunit w JOIN app a ON a.id=w.appid JOIN result r ON r.workunitid=w.id WHERE w.name IN ({names}) AND w.assimilate_state=2 AND r.app_version_id>0 AND NOT ({}) ORDER BY r.id LIMIT {}",
+        cancelled_without_success("w"),
         MAX_NATIVE_RESULTS + 1
     );
+    let stdout = mysql_rows(config, &sql).await?;
+    parse_native_rows(&stdout, &jobs, config)
+}
+
+fn quoted_names(jobs: &BTreeMap<String, Job>) -> String {
+    jobs.keys()
+        .map(|name| format!("'{name}'"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// SQL: the workunit aliased `w` was cancelled and has no successful result. A cancelled unit
+/// that did succeed is judged on its result like any other.
+fn cancelled_without_success(w: &str) -> String {
+    format!(
+        "({w}.error_mask & {BOINC_WU_ERROR_CANCELLED}) <> 0 AND NOT EXISTS \
+         (SELECT 1 FROM result won WHERE won.workunitid={w}.id AND won.server_state={BOINC_SERVER_STATE_OVER} \
+          AND won.outcome={BOINC_OUTCOME_SUCCESS})"
+    )
+}
+
+/// Written in a unit's directory once BOINC has said its workunit is cancelled with no
+/// successful result. BOINC purges old workunits (30 days by default), after which the database
+/// no longer says; the terminal marker in the spool stays, and without this the unit would fail
+/// its host's collection again.
+const CANCELLED_FILE: &str = "cancelled";
+
+/// This campaign's submitted workunits that were cancelled with no successful result, as
+/// `cancel_jobs` and the onboarding retirement of an unreachable host's unit leave them. Such a
+/// unit is no evidence from its host, for or against: the host stays as it was and is judged on
+/// its other units. It is not a failure of the collection.
+///
+/// BOINC is asked for every submitted workunit and is the authority while the workunit exists.
+/// A cancelled one is also recorded in its unit directory, and a workunit BOINC no longer has
+/// counts as cancelled only if it was recorded so: a missing workunit is not a cancelled one.
+pub async fn cancelled_workunits(
+    root: &Path,
+    config: &NativeConfig,
+) -> anyhow::Result<BTreeSet<String>> {
+    config.validate()?;
+    let jobs = submitted_jobs(root)?;
+    if jobs.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let sql = format!(
+        "SELECT w.name, IF({}, 1, 0) FROM workunit w WHERE w.name IN ({}) ORDER BY w.name",
+        cancelled_without_success("w"),
+        quoted_names(&jobs),
+    );
+    let stdout = mysql_rows(config, &sql).await?;
+    settle_cancelled(root, &jobs, &parse_cancelled_rows(&stdout, &jobs)?)
+}
+
+/// Rows of `name, 1|0` for the workunits BOINC still has: whether each is cancelled.
+fn parse_cancelled_rows(
+    text: &str,
+    jobs: &BTreeMap<String, Job>,
+) -> anyhow::Result<BTreeMap<String, bool>> {
+    let mut seen = BTreeMap::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let (name, flag) = line
+            .split_once('\t')
+            .context("invalid Gold cancelled-unit row")?;
+        anyhow::ensure!(
+            jobs.contains_key(name),
+            "unknown Gold workunit in cancelled units"
+        );
+        let cancelled = match flag.trim() {
+            "1" => true,
+            "0" => false,
+            _ => anyhow::bail!("invalid Gold cancelled-unit flag"),
+        };
+        anyhow::ensure!(
+            seen.insert(name.to_owned(), cancelled).is_none(),
+            "duplicate Gold workunit in cancelled units"
+        );
+    }
+    Ok(seen)
+}
+
+/// The cancelled units, given what BOINC said of those it still has (`seen`): a cancelled one
+/// is recorded in its unit directory, one BOINC has and calls live has any record removed, and
+/// one it no longer has is cancelled if it was recorded so.
+fn settle_cancelled(
+    root: &Path,
+    jobs: &BTreeMap<String, Job>,
+    seen: &BTreeMap<String, bool>,
+) -> anyhow::Result<BTreeSet<String>> {
+    let mut cancelled = BTreeSet::new();
+    for (workunit, job) in jobs {
+        let recorded = submit::units_dir(root)
+            .join(format!("{:04}", job.unit))
+            .join(CANCELLED_FILE);
+        let is_cancelled = match seen.get(workunit) {
+            Some(true) => {
+                if !recorded.is_file() {
+                    atomic(&recorded, workunit.as_bytes())?;
+                }
+                true
+            }
+            Some(false) => {
+                // BOINC has it and calls it live (or successful): an old record is stale, and
+                // would otherwise outlive a purge to discard the unit's evidence.
+                if recorded.is_file() {
+                    std::fs::remove_file(&recorded)
+                        .with_context(|| format!("removing {}", recorded.display()))?;
+                }
+                false
+            }
+            None => recorded.is_file(),
+        };
+        if is_cancelled {
+            cancelled.insert(workunit.clone());
+        }
+    }
+    Ok(cancelled)
+}
+
+async fn mysql_rows(config: &NativeConfig, sql: &str) -> anyhow::Result<String> {
     let mut command = Command::new("mysql");
     let child = command
         .arg(format!(
@@ -169,7 +298,7 @@ pub async fn native_results(
         .arg(format!("--ssl-ca={}", config.mysql_ca_file.display()))
         .args(["--batch", "--raw", "--skip-column-names"])
         .arg(format!("--database={}", config.database))
-        .args(["--execute", &sql])
+        .args(["--execute", sql])
         .kill_on_drop(true)
         .output();
     let output = tokio::time::timeout(std::time::Duration::from_secs(60), child)
@@ -183,11 +312,7 @@ pub async fn native_results(
         output.stdout.len() <= MAX_NATIVE_BYTES,
         "Gold native result metadata exceeds its size limit"
     );
-    parse_native_rows(
-        std::str::from_utf8(&output.stdout).context("Gold native result metadata is not UTF-8")?,
-        &jobs,
-        config,
-    )
+    String::from_utf8(output.stdout).context("Gold native result metadata is not UTF-8")
 }
 
 fn parse_native_rows(
@@ -296,7 +421,7 @@ pub(crate) fn validate_complete_result_sets(rows: &[NativeResult]) -> anyhow::Re
 }
 
 pub fn run(opts: &Options) -> anyhow::Result<Summary> {
-    run_inner(opts, None)
+    run_inner(opts, None, &BTreeSet::new())
 }
 
 pub fn run_with_native(
@@ -304,12 +429,24 @@ pub fn run_with_native(
     native: &[NativeResult],
     config: &NativeConfig,
 ) -> anyhow::Result<Summary> {
-    run_inner(opts, Some((native, config)))
+    run_with_native_cancelled(opts, native, config, &BTreeSet::new())
+}
+
+/// `run_with_native`, with the workunits `cancelled_workunits` found. A unit in `cancelled` is
+/// counted in `Summary::cancelled` and contributes no report, whatever the spool holds for it.
+pub fn run_with_native_cancelled(
+    opts: &Options,
+    native: &[NativeResult],
+    config: &NativeConfig,
+    cancelled: &BTreeSet<String>,
+) -> anyhow::Result<Summary> {
+    run_inner(opts, Some((native, config)), cancelled)
 }
 
 fn run_inner(
     opts: &Options,
     native: Option<(&[NativeResult], &NativeConfig)>,
+    cancelled: &BTreeSet<String>,
 ) -> anyhow::Result<Summary> {
     let mut summary = Summary::default();
     let (mut reports, mut crops, mut outcomes) = (String::new(), String::new(), String::new());
@@ -351,9 +488,12 @@ fn run_inner(
                 );
             }
         }
+        // A cancelled unit is no evidence, so a result saved from before it was cancelled (a
+        // client error, say) no longer counts against its host, and what is left is complete.
+        by_result.retain(|(workunit, _), _| !cancelled.contains(workunit));
         validate_complete_result_sets(&by_result.values().cloned().collect::<Vec<_>>())?;
         let mut fresh = BTreeSet::new();
-        for row in rows {
+        for row in rows.iter().filter(|row| !cancelled.contains(&row.workunit)) {
             let key = (row.workunit.clone(), row.result_id);
             anyhow::ensure!(fresh.insert(key.clone()), "duplicate native BOINC result");
             if let Some(saved) = by_result.get(&key) {
@@ -423,6 +563,12 @@ fn run_inner(
     for unit in units {
         let job: Job = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JSON)?)?;
         let wu = job.workunit();
+        // Cancelled with no success: the assimilator's terminal marker (or no marker yet) says
+        // nothing about the host, and its results were left out of the native rows.
+        if cancelled.contains(&wu) {
+            summary.cancelled += 1;
+            continue;
+        }
         if opts.spool.join(format!("{wu}_error")).exists()
             || opts.spool.join(format!("{wu}_no_output_files")).exists()
         {
@@ -775,6 +921,222 @@ mod tests {
             serde_json::to_vec(&report).unwrap(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn a_cancelled_unit_is_no_evidence_and_does_not_fail_the_collection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let (initial, _) = tests::setup(&validate::expected_dir(&project));
+        let prepared = submit::tests::prepared();
+        let image = submit::tests::engine();
+        let jobs = vec![
+            submit::job(&prepared, &image, 0).unwrap(),
+            submit::job(&prepared, &image, 1).unwrap(),
+            submit::job(&prepared, &image, 2).unwrap(),
+        ];
+        validate::add_jobs(&validate::expected_dir(&project), &prepared, &jobs).unwrap();
+        let expected =
+            validate::load_expected(&validate::expected_dir(&project), &initial.manifest_sha256)
+                .unwrap();
+        let root = tmp.path().join("root");
+        for job in &jobs {
+            save_job(&root, job);
+        }
+        let spool = tmp.path().join("spool");
+        std::fs::create_dir_all(&spool).unwrap();
+        // Unit 0 passed. Unit 1 was cancelled before any client had it: the assimilator wrote
+        // its terminal marker (mask 0x10) and BOINC has no sent result for it. Unit 2 was
+        // cancelled and the assimilator has not written its marker yet.
+        save_report(&spool, &jobs[0], &expected, 7, "eng");
+        std::fs::write(
+            spool.join(format!("{}_error", jobs[1].workunit())),
+            "0x10\n",
+        )
+        .unwrap();
+        let config = NativeConfig {
+            mysql_defaults_file: PathBuf::new(),
+            mysql_ca_file: PathBuf::new(),
+            database: "synthetic".into(),
+            language: "eng".into(),
+            profile: "eng".into(),
+        };
+        let native = vec![native(&jobs[0], 101, 7, 1, 100, true, ("eng", "eng"))];
+        let options = |out: &str| Options {
+            root: root.clone(),
+            project: project.clone(),
+            spool: spool.clone(),
+            out: tmp.path().join(out),
+        };
+        // Without the cancelled set a marker with no BOINC results is still refused.
+        assert!(run_with_native(&options("refused"), &native, &config).is_err());
+        let cancelled: BTreeSet<String> = jobs[1..].iter().map(Job::workunit).collect();
+        let out = options("out");
+        let summary = run_with_native_cancelled(&out, &native, &config, &cancelled).unwrap();
+        assert_eq!(
+            (
+                summary.collected,
+                summary.pending,
+                summary.failed,
+                summary.cancelled
+            ),
+            (1, 0, 0, 2)
+        );
+        let reports = std::fs::read_to_string(out.out.join("reports.jsonl")).unwrap();
+        assert_eq!(reports.lines().count(), 1);
+        assert!(reports.contains(&jobs[0].workunit()));
+        for cancelled in &cancelled {
+            assert!(!reports.contains(cancelled.as_str()));
+        }
+        // A host whose only unit was cancelled has an empty, valid evidence set.
+        let only = options("only-cancelled");
+        let alone: BTreeSet<String> = jobs.iter().map(Job::workunit).collect();
+        let summary = run_with_native_cancelled(&only, &[], &config, &alone).unwrap();
+        assert_eq!(
+            (summary.collected, summary.failed, summary.cancelled),
+            (0, 0, 3)
+        );
+        assert_eq!(
+            std::fs::read_to_string(only.out.join("reports.jsonl")).unwrap(),
+            ""
+        );
+        let scope = crate::trust::Scope {
+            language: "eng".into(),
+            profile: "eng".into(),
+            psm: 3,
+            dpi: 300,
+        };
+        let built = crate::trust::Trust::build_with_outcomes(
+            &[only.out.join("reports.jsonl")],
+            &[only.out.join("native-outcomes.jsonl")],
+            1.0,
+            &expected.manifest_sha256,
+            scope,
+        )
+        .unwrap();
+        assert!(built.hosts.is_empty());
+    }
+
+    #[test]
+    fn a_cancelled_units_saved_outcomes_are_dropped_and_its_status_outlives_the_purge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let (initial, _) = tests::setup(&validate::expected_dir(&project));
+        let prepared = submit::tests::prepared();
+        let image = submit::tests::engine();
+        let jobs = vec![
+            submit::job(&prepared, &image, 0).unwrap(),
+            submit::job(&prepared, &image, 1).unwrap(),
+        ];
+        validate::add_jobs(&validate::expected_dir(&project), &prepared, &jobs).unwrap();
+        let expected =
+            validate::load_expected(&validate::expected_dir(&project), &initial.manifest_sha256)
+                .unwrap();
+        let root = tmp.path().join("root");
+        for job in &jobs {
+            save_job(&root, job);
+        }
+        let spool = tmp.path().join("spool");
+        std::fs::create_dir_all(&spool).unwrap();
+        save_report(&spool, &jobs[0], &expected, 7, "eng");
+        std::fs::write(
+            spool.join(format!("{}_error", jobs[1].workunit())),
+            "0x10\n",
+        )
+        .unwrap();
+        let config = NativeConfig {
+            mysql_defaults_file: PathBuf::new(),
+            mysql_ca_file: PathBuf::new(),
+            database: "synthetic".into(),
+            language: "eng".into(),
+            profile: "eng".into(),
+        };
+        // Unit 1 failed on host 7 and was collected so, then it was cancelled.
+        let out = tmp.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let failed = native(&jobs[1], 102, 7, 3, 200, false, ("eng", "eng"));
+        std::fs::write(
+            out.join("native-outcomes.jsonl"),
+            format!("{}\n", serde_json::to_string(&failed).unwrap()),
+        )
+        .unwrap();
+        let options = Options {
+            root: root.clone(),
+            project,
+            spool,
+            out: out.clone(),
+        };
+        let first = vec![native(&jobs[0], 101, 7, 1, 100, true, ("eng", "eng"))];
+        let kept = jobs[1].workunit();
+        // Before it is known cancelled, the saved error is evidence like any other.
+        run_with_native(&options, &first, &config).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(out.join("native-outcomes.jsonl"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
+        let cancelled = BTreeSet::from([kept.clone()]);
+        // Its fresh rows are not used either, in case a caller passes them.
+        let both = vec![first[0].clone(), failed.clone()];
+        let summary = run_with_native_cancelled(&options, &both, &config, &cancelled).unwrap();
+        assert_eq!((summary.collected, summary.cancelled), (1, 1));
+        let outcomes = std::fs::read_to_string(out.join("native-outcomes.jsonl")).unwrap();
+        assert_eq!(outcomes.lines().count(), 1);
+        assert!(!outcomes.contains(&kept));
+
+        // BOINC says the unit is cancelled: it is recorded, and still is once BOINC purges it.
+        let by_name: BTreeMap<_, _> = jobs.iter().map(|j| (j.workunit(), j.clone())).collect();
+        let said = BTreeMap::from([(jobs[0].workunit(), false), (kept.clone(), true)]);
+        assert_eq!(settle_cancelled(&root, &by_name, &said).unwrap(), cancelled);
+        let purged = BTreeMap::new();
+        assert_eq!(
+            settle_cancelled(&root, &by_name, &purged).unwrap(),
+            cancelled
+        );
+        // A workunit BOINC has lost that was never seen cancelled is not a cancelled one.
+        let fresh_root = tmp.path().join("fresh-root");
+        for job in &jobs {
+            save_job(&fresh_root, job);
+        }
+        assert!(settle_cancelled(&fresh_root, &by_name, &purged)
+            .unwrap()
+            .is_empty());
+        // While BOINC has the workunit and calls it live, a stale record doesn't count.
+        let live = BTreeMap::from([(kept.clone(), false)]);
+        assert!(settle_cancelled(&root, &by_name, &live).unwrap().is_empty());
+        // The stale record is gone, so a purge afterwards doesn't bring the cancel back.
+        assert!(settle_cancelled(&root, &by_name, &purged)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn cancelled_unit_rows_are_checked() {
+        let prepared = submit::tests::prepared();
+        let job = submit::job(&prepared, &submit::tests::engine(), 0).unwrap();
+        let jobs = BTreeMap::from([(job.workunit(), job.clone())]);
+        let name = job.workunit();
+        assert_eq!(
+            parse_cancelled_rows(&format!("{name}\t1\n"), &jobs).unwrap(),
+            BTreeMap::from([(name.clone(), true)])
+        );
+        assert_eq!(
+            parse_cancelled_rows(&format!("{name}\t0\n"), &jobs).unwrap(),
+            BTreeMap::from([(name.clone(), false)])
+        );
+        assert!(parse_cancelled_rows("usnm_gold_other\t1\n", &jobs).is_err());
+        assert!(parse_cancelled_rows(&format!("{name}\t2\n"), &jobs).is_err());
+        assert!(parse_cancelled_rows(&name, &jobs).is_err());
+    }
+
+    #[test]
+    fn the_cancelled_filter_matches_onboardings_cancel() {
+        let sql = cancelled_without_success("w");
+        // The bit onboarding's cancel sets, and the success it never cancels over.
+        assert!(sql.contains("w.error_mask & 16"));
+        assert!(sql.contains("won.server_state=5 AND won.outcome=1"));
     }
 
     #[test]

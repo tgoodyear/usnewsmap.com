@@ -456,7 +456,10 @@ const ROWS: &[Row] = &[
         label: "OCR results collected",
         counts: &["ocr_collect_pages"],
         seconds: &["phase_seconds.collect"],
-        scope: "The controller's newly published pages at each passing tick.",
+        scope: "The controller's newly published pages, from the summary line of each tick that \
+                finishes. Pages published in a tick that fails, or in the draining plans' ticks \
+                (their own unit, not read here), aren't counted, so this can sit below the \
+                import count, which is the one to trust.",
         failed: &["phase_failed.collect"],
         attempts: &["phase_runs.collect"],
         failed_unit: "phase runs",
@@ -536,7 +539,7 @@ const ROWS: &[Row] = &[
 ];
 
 /// One step's numbers.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct StepRate {
     pub id: &'static str,
     pub label: &'static str,
@@ -556,6 +559,9 @@ pub struct StepRate {
     /// Hours observed in each bin.
     #[serde(skip)]
     pub bin_known: Vec<u32>,
+    /// The last 7 times 24 full hours, oldest first, from
+    /// [`ThroughputView::days_start`], with the hours observed in each.
+    pub days: Vec<Counted>,
     pub detail: StepDetail,
 }
 
@@ -699,6 +705,8 @@ pub struct ThroughputView {
     pub chart_start: Option<DateTime<Utc>>,
     /// When the first bar of the hourly zoom starts.
     pub hours_start: Option<DateTime<Utc>>,
+    /// When the first of each step's `days` starts.
+    pub days_start: Option<DateTime<Utc>>,
     pub error: Option<String>,
 }
 
@@ -1026,6 +1034,10 @@ pub fn view(
             scope: r.scope,
             bins: bin_values,
             bin_known,
+            days: (0..CHART_HOURS / DAY_HOURS)
+                .rev()
+                .map(|d| Counted::of(range(end - d * DAY_HOURS * HOUR, DAY_HOURS), count_at))
+                .collect(),
             detail,
         });
     }
@@ -1113,6 +1125,7 @@ pub fn view(
         sources,
         chart_start: DateTime::from_timestamp(first, 0),
         hours_start: DateTime::from_timestamp(end - (DAY_HOURS - 1) * HOUR, 0),
+        days_start: DateTime::from_timestamp(end - (CHART_HOURS - 1) * HOUR, 0),
         error: t.error.clone(),
     }
 }
@@ -1682,5 +1695,14 @@ mod tests {
         assert_eq!(s.bins.iter().flatten().count(), 1);
         assert_eq!(s.bins.iter().flatten().sum::<f64>(), 40.0);
         assert_eq!(s.bin_known.iter().sum::<u32>(), 1);
+        // Days are whole hours only: the last ends at the last full hour.
+        assert_eq!(s.days.len(), 7);
+        assert_eq!(s.days[6].value, Some(40.0));
+        assert_eq!(s.days[6].hours_known, 1);
+        assert_eq!(s.days[..6].iter().filter(|d| d.value.is_some()).count(), 0);
+        assert_eq!(
+            v.days_start.unwrap().timestamp(),
+            end - (CHART_HOURS - 1) * HOUR
+        );
     }
 }

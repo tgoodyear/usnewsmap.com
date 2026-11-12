@@ -9,13 +9,27 @@
 # by sha256 (runtime.lock), Python wheels by sha256 (requirements.lock), and the model's files by
 # size and sha256 (model.lock, whose digest is contract.MODEL_MANIFEST_SHA256).
 #
+# The apt bases (#1683). The apt-* stages are the only ones that install from the snapshot.
+# .github/workflows/tesseract-base.yml builds two of them once and publishes them to GHCR:
+# apt-iris-tools (curl, for the fetch stage) and apt-iris (Python, the OpenCL loader and Intel's
+# .debs). boinc/apps/iris/base.lock pins their digests, and scripts/ci/apt-base.sh --app iris turns
+# its lines into the IRIS_TOOLS_BASE and IRIS_BASE build arguments, so a build from pinned bases
+# contacts no Debian mirror. Without them the defaults name the apt-* stages, which install from the
+# snapshot as before and are also how the bases are rebuilt. Each base records SNAPSHOT in its label
+# org.usnewsmap.debian-snapshot and in its apt sources, and in org.usnewsmap.apt-recipe the hash of
+# the apt-* stages' text and runtime.lock: the build fails when the sources name another snapshot,
+# and scripts/ci/apt-base.sh --check-label when either label differs from these files.
+#
 # Build from the repository root (linux/amd64):
 #   docker build -f boinc/apps/iris/Containerfile -t usnm-boinc-iris .
 ARG DEBIAN=debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f
 ARG SNAPSHOT=20261015T000000Z
+ARG IRIS_TOOLS_BASE=apt-iris-tools
+ARG IRIS_BASE=apt-iris
 
-FROM ${DEBIAN} AS base
+FROM ${DEBIAN} AS apt-sources
 ARG SNAPSHOT
+LABEL org.usnewsmap.debian-snapshot=${SNAPSHOT}
 RUN rm -f /etc/apt/sources.list.d/debian.sources \
  && printf '%s\n' \
     "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${SNAPSHOT} trixie main" \
@@ -24,14 +38,37 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
     > /etc/apt/sources.list \
  && printf 'Acquire::Retries "5";\nAcquire::http::Timeout "60";\n' > /etc/apt/apt.conf.d/80-retries
 
-FROM base AS fetch
+FROM apt-sources AS apt-iris-tools
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
-COPY boinc/apps/iris/model.lock boinc/apps/iris/runtime.lock /locks/
-RUN set -eu; mkdir -p /out/model /out/debs; \
+
+# Intel's .debs, each checked against runtime.lock, for apt-iris to install.
+FROM apt-iris-tools AS apt-iris-debs
+COPY boinc/apps/iris/runtime.lock /locks/
+RUN set -eu; mkdir -p /out/debs; \
     grep -v '^#' /locks/runtime.lock | while read -r sum url name; do \
-      case "$name" in LICENSE) dest=/out/LICENSE;; *.deb) dest="/out/debs/$name";; *) exit 1;; esac; \
+      case "$name" in LICENSE) continue;; *.deb) dest="/out/debs/$name";; *) exit 1;; esac; \
+      curl -fsSL --proto '=https' --retry 5 --retry-all-errors --retry-delay 2 -o "$dest" "$url"; \
+      echo "$sum  $dest" | sha256sum -c --quiet -; \
+    done
+
+FROM apt-sources AS apt-iris
+COPY --from=apt-iris-debs /out/debs/ /opt/iris/debs/
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      python3 python3-venv ocl-icd-libopencl1 /opt/iris/debs/*.deb \
+ && rm -rf /var/lib/apt/lists/* /opt/iris/debs \
+ && test -f /etc/OpenCL/vendors/intel.icd
+
+FROM ${IRIS_TOOLS_BASE} AS fetch
+ARG SNAPSHOT
+RUN grep -qxF "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${SNAPSHOT} trixie main" /etc/apt/sources.list \
+      || { echo "the base's Debian snapshot is not SNAPSHOT=$SNAPSHOT (boinc/apps/iris/base.lock)" >&2; exit 1; }
+COPY boinc/apps/iris/model.lock boinc/apps/iris/runtime.lock /locks/
+RUN set -eu; mkdir -p /out/model; \
+    grep -v '^#' /locks/runtime.lock | while read -r sum url name; do \
+      case "$name" in LICENSE) dest=/out/LICENSE;; *.deb) continue;; *) exit 1;; esac; \
       curl -fsSL --proto '=https' --retry 5 --retry-all-errors --retry-delay 2 -o "$dest" "$url"; \
       echo "$sum  $dest" | sha256sum -c --quiet -; \
     done
@@ -45,15 +82,14 @@ RUN set -eu; grep -v '^#' /locks/model.lock | while read -r sum size path; do \
     done; \
     test "$(ls -A /out/model | wc -l)" = "$(grep -vc '^#' /locks/model.lock)" || { echo "model files differ from model.lock" >&2; exit 1; }
 
-FROM base
+FROM ${IRIS_BASE}
+ARG SNAPSHOT
 ARG BUILD_REVISION=unknown
 LABEL org.usnewsmap.iris.app="usnm_iris" org.usnewsmap.iris.plan-class="docker_intel_opencl_4b"
-COPY --from=fetch /out/debs/ /opt/iris/debs/
-RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      python3 python3-venv ocl-icd-libopencl1 /opt/iris/debs/*.deb \
- && rm -rf /var/lib/apt/lists/* /opt/iris/debs \
+RUN grep -qxF "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${SNAPSHOT} trixie main" /etc/apt/sources.list \
+      || { echo "the base's Debian snapshot is not SNAPSHOT=$SNAPSHOT (boinc/apps/iris/base.lock)" >&2; exit 1; } \
  && test -f /etc/OpenCL/vendors/intel.icd \
+ && mkdir -p /opt/iris \
  && dpkg-query -W -f '${Package} ${Version}\n' > /opt/iris/dpkg.txt
 COPY boinc/apps/iris/requirements.lock /opt/iris/requirements.lock
 RUN python3 -m venv /opt/iris/venv \

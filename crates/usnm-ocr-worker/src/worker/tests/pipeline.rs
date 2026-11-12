@@ -59,8 +59,13 @@ async fn writes_alto_and_a_part_the_release_reads() {
     assert_eq!(st.since_start.done, 1);
     assert_eq!(st.since_start.from_loc, 1);
     assert!(st.in_flight.is_empty());
-    assert_eq!(st.recent[0].doc_id, "sn83045462_1890-05-03_ed-1_seq-7");
-    assert!(st.recent[0].uploaded);
+    // Pages finish in no fixed order, so find the entry by its page.
+    let seven = st
+        .recent
+        .iter()
+        .find(|c| c.doc_id == "sn83045462_1890-05-03_ed-1_seq-7")
+        .expect("seq-7 is in the recent list");
+    assert!(seven.uploaded);
 
     let altos = out.list("alto").await.unwrap();
     assert_eq!(altos.len(), 1, "{altos:?}");
@@ -240,7 +245,12 @@ async fn transient_failures_retry_then_dead_letter() {
     let st = w.tracker.status();
     assert!(st.since_start.failed > 0);
     assert_eq!(st.since_start.dead_lettered, 1);
-    assert_eq!(st.recent[0].error_kind.as_deref(), Some("dequeue_count"));
+    let c = st
+        .recent
+        .iter()
+        .find(|c| c.doc_id == "sn83045462_1890-05-03_ed-1_seq-98")
+        .expect("seq-98 is in the recent list");
+    assert_eq!(c.error_kind.as_deref(), Some("dequeue_count"));
     assert!(out.list("pages").await.unwrap().is_empty());
 }
 
@@ -322,7 +332,12 @@ async fn a_jp2_that_crashes_the_engine_is_read_from_its_jpeg() {
     assert_eq!(queue.approximate_count(BULK).await.unwrap(), 0);
     let st = w.tracker.status();
     assert_eq!(st.since_start.done, 1);
-    assert!(st.recent[0].jpeg_fallback);
+    let c = st
+        .recent
+        .iter()
+        .find(|c| c.doc_id == "sn83045462_1890-05-03_ed-1_seq-97")
+        .expect("seq-97 is in the recent list");
+    assert!(c.jpeg_fallback);
     // The ALTO names the JPEG read, with no bag md5.
     let altos = out.list("alto").await.unwrap();
     let alto = String::from_utf8(out.get(&altos[0]).await.unwrap().unwrap()).unwrap();
@@ -355,9 +370,14 @@ async fn a_failed_jpeg_fallback_or_another_exit_takes_the_retry_path() {
         w.handle(m, Instant::now()).await;
         assert_eq!(scans.jpeg_requests.load(SeqCst), jpegs, "{page}");
         let st = w.tracker.status();
-        assert_eq!(st.recent[0].outcome, "failed");
-        assert_eq!(st.recent[0].error_kind.as_deref(), Some("engine"));
-        assert!(!st.recent[0].jpeg_fallback);
+        let c = st
+            .recent
+            .iter()
+            .find(|c| c.doc_id == format!("sn83045462_1890-05-03_ed-1_{page}"))
+            .expect("the page is in the recent list");
+        assert_eq!(c.outcome, "failed");
+        assert_eq!(c.error_kind.as_deref(), Some("engine"));
+        assert!(!c.jpeg_fallback);
         // Left on the queue, to reappear when its visibility runs out.
         assert_eq!(queue.approximate_count(BULK).await.unwrap(), 1);
         let again = queue

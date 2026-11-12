@@ -6,7 +6,7 @@
 #   image-security-check.sh --php-floor VERSION --apache-floor VERSION
 #     [--server-env /etc/usnm-boinc/server.env] [--image IMAGE]
 #     [--mysql-unit /etc/systemd/system/usnm-boinc-mysql.service]
-#     [--mysql-image docker.io/library/mysql:8.4] [--skip-mysql]
+#     [--mysql-image docker.io/library/mysql:8.4] [--mysql-floor VERSION] [--skip-mysql]
 #
 # The image is SERVER_IMAGE from --server-env, or --image. It is a local build, so it is never
 # pulled: a throwaway container from it (podman run --rm, host network) runs apt-get update and
@@ -17,10 +17,22 @@
 # the security archive, UPDATE otherwise, since a security fix can also arrive in a point
 # release); a package apt-get upgrade keeps back because upgrading it needs a new package or a
 # removal (KEPT-BACK; apt prints no Inst line for it, so it is read from the "not upgraded"
-# count); php8.2-common or apache2 older than its floor; or the MySQL digest baked into
-# --mysql-unit differing from what --mysql-image resolves to now (podman pull, as
-# mysql-setup.sh does). The MySQL drift is only reported: rolling it restarts the database
+# count); php8.2-common or apache2 older than its floor; or MySQL behind its tag (below). The
+# MySQL findings are only reported: rolling the database restarts it
 # (docs/boinc/server/onprem.md, "Security updates").
+#
+# MySQL: the digest baked into --mysql-unit is compared with what --mysql-image resolves to now
+# (podman pull, as mysql-setup.sh does). Oracle rebuilds the tag on a base-image refresh without
+# a new MySQL release, so a new digest alone is an informational line (MYSQL-REBUILD), not a
+# failure. These fail:
+#   MYSQL-DRIFT       the tag's MYSQL_VERSION (an environment variable of the image) differs from
+#                     the pinned image's, or either version can't be read, so a same-version
+#                     rebuild can't be shown;
+#   MYSQL-BELOW-FLOOR --mysql-floor is given and the pinned image's MYSQL_VERSION is older than
+#                     it. Set it from a MySQL security advisory (a Critical Patch Update) that
+#                     the pinned version predates; a rebuild of the same version doesn't clear
+#                     it, so the unit stays failed until the database is rolled onto a fixed
+#                     version. Without --mysql-floor there is no such check.
 #
 # --mysql-image must be a name with a tag, as the default is (a registry port is fine). The check
 # asks what the tag resolves to now, so a name with no tag (podman pulls :latest) or a reference
@@ -35,9 +47,10 @@ log() { echo "usnm-image-security-check: $*"; }
 
 PHP_FLOOR="" APACHE_FLOOR="" SERVER_ENV=/etc/usnm-boinc/server.env IMAGE=""
 MYSQL_UNIT=/etc/systemd/system/usnm-boinc-mysql.service MYSQL_IMAGE=docker.io/library/mysql:8.4 SKIP_MYSQL=false
+MYSQL_FLOOR=""
 while [ $# -gt 0 ]; do
   case $1 in
-    --php-floor | --apache-floor | --server-env | --image | --mysql-unit | --mysql-image)
+    --php-floor | --apache-floor | --server-env | --image | --mysql-unit | --mysql-image | --mysql-floor)
       [ $# -ge 2 ] || bad_args "$1 needs a value"
       case $1 in
         --php-floor) PHP_FLOOR=$2 ;;
@@ -46,6 +59,7 @@ while [ $# -gt 0 ]; do
         --image) IMAGE=$2 ;;
         --mysql-unit) MYSQL_UNIT=$2 ;;
         --mysql-image) MYSQL_IMAGE=$2 ;;
+        --mysql-floor) MYSQL_FLOOR=$2 ;;
       esac
       shift 2 ;;
     --skip-mysql) SKIP_MYSQL=true; shift ;;
@@ -59,6 +73,7 @@ image_re='^[A-Za-z0-9._/:@-]{1,200}$'
 last_component_tagged_re='^[^:]+:[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$'
 [[ $PHP_FLOOR =~ $version_re ]] || bad_args "--php-floor: a Debian version, such as 8.2.35-1~deb12u1"
 [[ $APACHE_FLOOR =~ $version_re ]] || bad_args "--apache-floor: a Debian version, such as 2.4.67-1~deb12u3"
+[[ -z $MYSQL_FLOOR || $MYSQL_FLOOR =~ $version_re ]] || bad_args "--mysql-floor: a MySQL version, such as 8.4.13-1.el9"
 [[ -z $IMAGE || $IMAGE =~ $image_re ]] || bad_args "--image: an image name or sha256:<id>"
 [[ $MYSQL_IMAGE =~ $image_re ]] || bad_args "--mysql-image: an image name made only of letters, digits and . _ / : - (up to 200), such as docker.io/library/mysql:8.4"
 # A colon in the last path component starts the tag; earlier, it is a registry port.
@@ -154,6 +169,18 @@ fi
 
 # MySQL: the digest the unit runs against the digest the tag has now. podman pull stores the
 # new image if the tag moved, which is the image the manual roll uses next.
+# MYSQL_VERSION of an image, from its environment, on stdout. Fails when podman does, or when the
+# image has none.
+image_mysql_version() {
+  local env version
+  env=$(podman image inspect "$1" --format '{{range .Config.Env}}{{println .}}{{end}}') || return 1
+  version=$(printf '%s\n' "$env" | sed -n 's/^MYSQL_VERSION=//p' | tail -n 1)
+  [[ $version =~ $version_re ]] || return 1
+  printf '%s\n' "$version"
+}
+# Whether version $1 is at least version $2, in sort -V order.
+version_at_least() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" = "$2" ]; }
+
 if [ "$SKIP_MYSQL" = false ]; then
   digest_re='^sha256:[0-9a-f]{64}$'
   mysql_name=$(image_name "$MYSQL_IMAGE")
@@ -169,10 +196,27 @@ if [ "$SKIP_MYSQL" = false ]; then
     cannot "podman image inspect $MYSQL_IMAGE failed"
   elif ! [[ $current =~ $digest_re ]]; then
     cannot "podman image inspect $MYSQL_IMAGE gave no digest"
-  elif [ "$current" = "$pinned" ]; then
-    log "MySQL $MYSQL_IMAGE is still $pinned"
   else
-    finding "MYSQL-DRIFT $MYSQL_IMAGE is $current now; the unit runs $pinned (a roll restarts the database)"
+    pinned_version="" tag_version=""
+    if pinned_version=$(image_mysql_version "$mysql_name@$pinned"); then
+      if [ -n "$MYSQL_FLOOR" ] && ! version_at_least "$pinned_version" "$MYSQL_FLOOR"; then
+        finding "MYSQL-BELOW-FLOOR the unit runs MySQL $pinned_version ($pinned), older than the floor $MYSQL_FLOOR (a roll restarts the database)"
+      fi
+    elif [ -n "$MYSQL_FLOOR" ]; then
+      cannot "no MYSQL_VERSION for the pinned image $mysql_name@$pinned, to compare with the floor $MYSQL_FLOOR"
+    fi
+    if [ "$current" = "$pinned" ]; then
+      log "MySQL $MYSQL_IMAGE is still $pinned"
+    else
+      tag_version=$(image_mysql_version "$MYSQL_IMAGE") || tag_version=""
+      if [ -n "$pinned_version" ] && [ "$tag_version" = "$pinned_version" ]; then
+        # A rebuild: new digest, same MySQL release. Reported so it is on the record, but it is
+        # not a fix to MySQL itself, so it doesn't fail the unit.
+        log "MYSQL-REBUILD $MYSQL_IMAGE is $current now, a rebuild of MySQL $tag_version; the unit runs $pinned, the same version (informational)"
+      else
+        finding "MYSQL-DRIFT $MYSQL_IMAGE is $current now (MySQL ${tag_version:-unknown}); the unit runs $pinned (MySQL ${pinned_version:-unknown}) (a roll restarts the database)"
+      fi
+    fi
   fi
 fi
 

@@ -1,0 +1,12 @@
+[Unit]
+Description=BOINC batch controller ticks for plan %i (#1690)
+
+[Timer]
+# Five minutes after the last tick of this plan ended, failed or not, so a failed tick is retried
+# on the next one without an operator. Another cadence for one plan goes in a drop-in,
+# usnm-boinc-priority-controller@PLAN.timer.d/.
+OnBootSec=5min
+OnUnitInactiveSec=5min
+
+[Install]
+WantedBy=timers.target

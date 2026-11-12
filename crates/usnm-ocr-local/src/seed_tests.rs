@@ -203,6 +203,24 @@ impl Fx {
             queue: &self.queue,
             out: Some(self.out.as_ref()),
             american_stories: None,
+            handoff: None,
+        };
+        seed::run(&self.state, "test", &stores, opts).await
+    }
+
+    /// One run with the controller's held-pages lists read from `handoff` (#1754).
+    async fn seed_settled(
+        &self,
+        opts: &Options,
+        handoff: &dyn ObjectStore,
+    ) -> anyhow::Result<SeedReport> {
+        let stores = seed::Stores {
+            curated: self.curated.as_ref(),
+            reference: self.reference.as_ref(),
+            queue: &self.queue,
+            out: Some(self.out.as_ref()),
+            american_stories: None,
+            handoff: Some(handoff),
         };
         seed::run(&self.state, "test", &stores, opts).await
     }
@@ -609,6 +627,7 @@ async fn ocr_sync_seeds_after_its_imports() {
         quarantine: open(&fx.dir, "quarantine"),
         requests: None,
         queue: Arc::clone(&fx.queue),
+        handoff: None,
     };
     // No plan: nothing queued.
     let status = sync::run(&fx.state, "test", &stores, &sync::Options::default())
@@ -673,6 +692,7 @@ async fn a_failed_put_leaves_the_rest_not_sent_and_they_go_out_next_run() {
         queue: &flaky,
         out: None,
         american_stories: None,
+        handoff: None,
     };
     let err = seed::run(&fx.state, "test", &stores, &plan(5))
         .await
@@ -976,6 +996,7 @@ async fn a_page_whose_american_stories_text_is_undamaged_is_skipped() {
         queue: &fx.queue,
         out: Some(fx.out.as_ref()),
         american_stories: Some(&texts),
+        handoff: None,
     };
     let opts = Options {
         skip_american_stories: true,
@@ -1340,4 +1361,326 @@ async fn accounting_counts_only_never_queued_verified_pages_as_avoidable() {
     let s = r.supersession.unwrap();
     assert_eq!((s.superseded, s.unverified), (a.avoidable, a.unverified));
     assert_eq!(s.pages, [pages[0].clone()]);
+}
+
+/// A hand-off container holding one plan's held-pages list, as the controller writes it
+/// (`publish_held`): doc id -> message sha256s.
+async fn handoff_with(fx: &Fx, plan: &str, pages: &[String]) -> Arc<dyn ObjectStore> {
+    let handoff = open(&fx.dir, "handoff");
+    put_held_list(handoff.as_ref(), plan, pages).await;
+    handoff
+}
+
+async fn put_held_list(handoff: &dyn ObjectStore, plan: &str, pages: &[String]) {
+    let digest = usnm_ocr_contract::boinc::sha256(b"a message");
+    let body = serde_json::json!({
+        "schema_version": 1,
+        "pages": pages.iter().map(|p| (p.clone(), vec![digest.clone()])).collect::<std::collections::BTreeMap<_, _>>(),
+    });
+    handoff
+        .put_new(
+            &format!("{}{plan}.0000.json", crate::held_pages::HELD_PAGES_PREFIX),
+            serde_json::to_vec(&body).unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+}
+
+/// A page the plan queued 15 days ago with no result (settled or not, it timed out), a
+/// recent one, and one dead-lettered `dequeue_count`.
+async fn settled_fixture(fx: &Fx) -> DateTime<Utc> {
+    let now = Utc::now();
+    let old = now - chrono::Duration::days(15);
+    let rows = vec![
+        // Held and settled, 15 days old: was queued again with a new message.
+        mine(&doc(GER, 3, 1), 1, old),
+        // Settled by a published journal, recent.
+        mine(&doc(GER, 3, 2), 1, now - chrono::Duration::days(2)),
+        // Not settled and timed out: still queued again.
+        mine(&doc(GER, 3, 3), 1, old),
+        // In flight, recent.
+        mine(&doc(GER, 4, 1), 1, now - chrono::Duration::hours(5)),
+        // Failed (dead-lettered, `dequeue_count`): still queued again.
+        mine(&doc(GER, 4, 2), 1, now - chrono::Duration::hours(9)),
+    ];
+    ledger::write_queued(fx.curated.as_ref(), &rows, old, "r1")
+        .await
+        .unwrap();
+    fx.outcome(
+        &doc(GER, 4, 2),
+        DEAD_LETTERED,
+        Some("dequeue_count"),
+        now - chrono::Duration::hours(8),
+    )
+    .await;
+    now
+}
+
+#[tokio::test]
+async fn a_settled_page_is_never_queued_again_after_14_days() {
+    let fx = fixture().await;
+    settled_fixture(&fx).await;
+    let handoff = handoff_with(&fx, "queue-feed-13", &[doc(GER, 3, 1)]).await;
+
+    // Without the lists (before #1754) the 15-day-old page is queued again.
+    let r = fx
+        .seed(&Options {
+            dry_run: true,
+            ..plan(100)
+        })
+        .await
+        .unwrap();
+    assert!(r.requeue_pages.contains(&doc(GER, 3, 1)));
+
+    let r = fx.seed_settled(&plan(100), handoff.as_ref()).await.unwrap();
+    assert_eq!(r.skipped.get("settled_held"), Some(&1));
+    assert_eq!(r.settled_held, 1);
+    assert!(!r.settled_unreadable);
+    // The unsettled timed-out page and the dead letter are queued again as before.
+    assert_eq!(r.requeued.get("timed_out"), Some(&1));
+    assert_eq!(r.requeued.get("dequeue_count"), Some(&1));
+    let l = ledger::load(fx.curated.as_ref()).await.unwrap();
+    assert_eq!(
+        l.queued[&doc(GER, 3, 1)].attempt,
+        1,
+        "no new message or row"
+    );
+    assert_eq!(l.queued[&doc(GER, 3, 3)].attempt, 2);
+    assert_eq!(l.queued[&doc(GER, 4, 2)].attempt, 2);
+    // Nothing for the in-flight page.
+    assert_eq!(l.queued[&doc(GER, 4, 1)].attempt, 1);
+    let sent: Vec<String> = fx
+        .drain()
+        .await
+        .iter()
+        .map(|m| m.key().unwrap().doc_id())
+        .collect();
+    assert!(!sent.contains(&doc(GER, 3, 1)));
+    assert!(sent.contains(&doc(GER, 3, 3)));
+    assert!(sent.contains(&doc(GER, 4, 2)));
+
+    // Another run, later: still left alone.
+    let r = fx.seed_settled(&plan(100), handoff.as_ref()).await.unwrap();
+    assert_eq!(r.skipped.get("settled_held"), Some(&1));
+    assert_eq!(
+        ledger::load(fx.curated.as_ref()).await.unwrap().queued[&doc(GER, 3, 1)].attempt,
+        1
+    );
+}
+
+#[tokio::test]
+async fn settled_pages_take_no_window_slot() {
+    let fx = fixture().await;
+    settled_fixture(&fx).await;
+    // Lists of two plans, merged: a recent settled page and an old one.
+    let handoff = handoff_with(&fx, "queue-feed-13", &[doc(GER, 3, 2)]).await;
+    put_held_list(handoff.as_ref(), "queue-feed-11", &[doc(GER, 3, 1)]).await;
+
+    let before = fx
+        .seed(&Options {
+            dry_run: true,
+            ..plan(100)
+        })
+        .await
+        .unwrap();
+    // The recent settled page and the recent in-flight page both count; the old one has
+    // timed out and the failed one is waiting to be queued again.
+    assert_eq!(before.in_flight, 2);
+    assert_eq!(before.settled_held, 0);
+
+    let r = fx
+        .seed_settled(
+            &Options {
+                dry_run: true,
+                ..plan(100)
+            },
+            handoff.as_ref(),
+        )
+        .await
+        .unwrap();
+    // Only the page in flight holds a slot; the two settled ones (the old one is a retry
+    // candidate, so it is skipped too) are counted apart.
+    assert_eq!(r.in_flight, 1);
+    assert_eq!(r.settled_held, 2);
+    assert_eq!(r.window - r.in_flight.max(r.queue_depth), 99);
+}
+
+#[tokio::test]
+async fn a_settled_page_frees_its_slot_for_a_new_one() {
+    let fx = fixture().await;
+    let now = Utc::now();
+    let rows: Vec<Queued> = [(3, 1), (3, 2), (3, 3)]
+        .iter()
+        .map(|&(d, s)| mine(&doc(GER, d, s), 1, now - chrono::Duration::days(1)))
+        .collect();
+    ledger::write_queued(fx.curated.as_ref(), &rows, now, "r1")
+        .await
+        .unwrap();
+    let handoff = handoff_with(&fx, "queue-feed-13", &[doc(GER, 3, 1), doc(GER, 3, 2)]).await;
+    // A window of 3 is full of recent pages; two settled ones leave two slots.
+    let full = fx.seed(&plan(3)).await.unwrap();
+    assert_eq!(full.queued, 0);
+    let r = fx.seed_settled(&plan(3), handoff.as_ref()).await.unwrap();
+    assert_eq!(r.in_flight, 1);
+    assert_eq!(r.queued, 2);
+}
+
+#[tokio::test]
+async fn held_pages_hidden_messages_do_not_hold_back_a_refill() {
+    let fx = fixture().await;
+    let now = Utc::now();
+    let docs = [doc(GER, 3, 1), doc(GER, 3, 2), doc(GER, 3, 3)];
+    let rows: Vec<Queued> = docs
+        .iter()
+        .map(|d| mine(d, 1, now - chrono::Duration::days(1)))
+        .collect();
+    ledger::write_queued(fx.curated.as_ref(), &rows, now, "r1")
+        .await
+        .unwrap();
+    // The held pages' messages sit hidden on the queue and still count in its depth.
+    for _ in &docs {
+        fx.queue.send(BULK, "held").await.unwrap();
+    }
+    // The window equals the raw depth: held messages would fill it.
+    let opts = Options {
+        refill_below: 2,
+        ..plan(3)
+    };
+    let without = fx.seed(&opts).await.unwrap();
+    assert_eq!(without.queue_depth, 3);
+    assert_eq!(without.queue_ready, 3);
+    assert!(!without.refill);
+    assert_eq!(without.queued, 0);
+
+    let handoff = handoff_with(&fx, "queue-feed-13", &docs).await;
+    let r = fx.seed_settled(&opts, handoff.as_ref()).await.unwrap();
+    assert_eq!(r.queue_depth, 3);
+    assert_eq!(r.settled_held, 3);
+    assert_eq!(r.settled_hidden, 3);
+    assert_eq!(r.queue_ready, 0);
+    assert!(r.refill);
+    assert!(
+        r.queued > 0,
+        "the window has room once held messages are discounted"
+    );
+}
+
+#[tokio::test]
+async fn held_pages_whose_messages_are_gone_do_not_discount_live_work() {
+    let fx = fixture().await;
+    let now = Utc::now();
+    let docs = [doc(GER, 3, 1), doc(GER, 3, 2), doc(GER, 3, 3)];
+    // Held pages queued 30 days ago: a claim has deleted their messages since. The three
+    // messages on the queue are other work.
+    let rows: Vec<Queued> = docs
+        .iter()
+        .map(|d| mine(d, 1, now - chrono::Duration::days(30)))
+        .collect();
+    ledger::write_queued(fx.curated.as_ref(), &rows, now, "r1")
+        .await
+        .unwrap();
+    for _ in &docs {
+        fx.queue.send(BULK, "ready").await.unwrap();
+    }
+    let handoff = handoff_with(&fx, "queue-feed-13", &docs).await;
+    let opts = Options {
+        refill_below: 2,
+        ..plan(10)
+    };
+    let r = fx.seed_settled(&opts, handoff.as_ref()).await.unwrap();
+    assert_eq!(r.settled_held, 3);
+    assert_eq!(r.settled_hidden, 0);
+    assert_eq!(r.queue_ready, 3);
+    assert!(!r.refill);
+}
+
+#[tokio::test]
+async fn unreadable_held_lists_hold_back_only_timed_out_retries() {
+    let fx = fixture().await;
+    settled_fixture(&fx).await;
+    let handoff = open(&fx.dir, "handoff");
+    handoff
+        .put_new(
+            &format!("{}broken.0000.json", crate::held_pages::HELD_PAGES_PREFIX),
+            b"not json".to_vec(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    let r = fx.seed_settled(&plan(100), handoff.as_ref()).await.unwrap();
+    assert!(r.settled_unreadable);
+    assert_eq!(r.settled_held, 0);
+    // Both timed-out pages wait; the dead letter is queued again as always.
+    assert_eq!(r.skipped.get("settled_unknown"), Some(&2));
+    assert_eq!(r.requeued.get("timed_out"), None);
+    assert_eq!(r.requeued.get("dequeue_count"), Some(&1));
+    // New pages still go out.
+    assert!(r.queued > 0);
+    let l = ledger::load(fx.curated.as_ref()).await.unwrap();
+    assert_eq!(l.queued[&doc(GER, 3, 1)].attempt, 1);
+    assert_eq!(l.queued[&doc(GER, 3, 3)].attempt, 1);
+}
+
+#[tokio::test]
+async fn no_held_lists_behaves_as_without_a_hand_off() {
+    let fx = fixture().await;
+    settled_fixture(&fx).await;
+    let handoff = open(&fx.dir, "handoff");
+    let r = fx.seed_settled(&plan(100), handoff.as_ref()).await.unwrap();
+    assert!(!r.settled_unreadable);
+    assert_eq!(r.settled_held, 0);
+    assert_eq!(r.requeued.get("timed_out"), Some(&2));
+}
+
+#[tokio::test]
+async fn ocr_sync_passes_the_hand_off_to_its_seeding() {
+    let fx = fixture().await;
+    settled_fixture(&fx).await;
+    let handoff = handoff_with(&fx, "queue-feed-13", &[doc(GER, 3, 1)]).await;
+    let stores = sync::Stores {
+        curated: Arc::clone(&fx.curated),
+        reference: Arc::clone(&fx.reference),
+        out: open(&fx.dir, "out"),
+        quarantine: open(&fx.dir, "quarantine"),
+        requests: None,
+        queue: Arc::clone(&fx.queue),
+        handoff: Some(handoff),
+    };
+    let opts = sync::Options {
+        seed: plan(100),
+        ..sync::Options::default()
+    };
+    let status = sync::run(&fx.state, "test", &stores, &opts).await.unwrap();
+    let seed = status.seed.unwrap();
+    assert_eq!(seed.settled_held, 1);
+    assert_eq!(seed.skipped.get("settled_held"), Some(&1));
+}
+
+#[tokio::test]
+async fn a_held_page_claimed_late_is_still_discounted() {
+    let fx = fixture().await;
+    let now = Utc::now();
+    let docs = [doc(GER, 3, 1), doc(GER, 3, 2), doc(GER, 3, 3)];
+    // Queued 10 days ago, claimed on day 9 and held under a 7-day lease: its message stays
+    // hidden until day 16.
+    let rows: Vec<Queued> = docs
+        .iter()
+        .map(|d| mine(d, 1, now - chrono::Duration::days(10)))
+        .collect();
+    ledger::write_queued(fx.curated.as_ref(), &rows, now, "r1")
+        .await
+        .unwrap();
+    for _ in &docs {
+        fx.queue.send(BULK, "held").await.unwrap();
+    }
+    let handoff = handoff_with(&fx, "queue-feed-13", &docs).await;
+    let opts = Options {
+        refill_below: 2,
+        ..plan(3)
+    };
+    let r = fx.seed_settled(&opts, handoff.as_ref()).await.unwrap();
+    assert_eq!(r.settled_hidden, 3);
+    assert_eq!(r.queue_ready, 0);
+    assert!(r.refill);
 }

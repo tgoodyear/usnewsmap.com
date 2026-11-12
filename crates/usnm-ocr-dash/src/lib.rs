@@ -4,6 +4,7 @@
 //! and serves one HTML page and the same data as JSON. It never shows page
 //! text: pages appear by doc_id, with counts, sizes, times and engine tags.
 
+pub mod boinc_week;
 pub mod diagrams;
 pub mod feed;
 pub mod fetch;
@@ -48,6 +49,8 @@ pub struct App {
     pub ssets: Mutex<Ssets>,
     pub queues: Mutex<queues::Queues>,
     pub throughput: Mutex<throughput::Throughput>,
+    /// The BOINC server's last seven days, as last pushed.
+    pub boinc_week: Mutex<boinc_week::BoincWeek>,
     pub seed_plan_path: Option<PathBuf>,
     pub seed_plan: Mutex<Option<BTreeMap<String, String>>>,
     pub settings: Settings,
@@ -145,6 +148,7 @@ impl App {
             now,
         );
         v.pipeline = self.pipeline.lock().expect("pipeline lock").view(now);
+        v.boinc_week = self.boinc_week.lock().expect("boinc week lock").view(now);
         v.feed = feed::read(self.settings.feed_health_path.as_deref(), now);
         v.throughput = throughput::view(
             &self.throughput.lock().expect("throughput lock"),
@@ -229,6 +233,25 @@ async fn page(State(app): State<Arc<App>>) -> Response {
 async fn public_page(State(app): State<Arc<App>>) -> Response {
     page_as(app, true).await
 }
+
+/// The link-preview card's image, built from `assets/og.svg` by
+/// `scripts/ocr-dash/render-og.mjs`.
+const OG_IMAGE: &[u8] = include_bytes!("../assets/og.png");
+
+/// `GET /og.png` on the public listener: a day in Cloudflare and browsers.
+async fn og_image() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, OG_CACHE),
+        ],
+        OG_IMAGE,
+    )
+        .into_response()
+}
+
+/// The image never changes between builds: a day, not a minute.
+const OG_CACHE: &str = "public, max-age=86400";
 
 /// The JSON parts the public listener serves.
 pub const PUBLIC_PARTS: &[&str] = &["view", "pipeline", "fetch"];
@@ -360,6 +383,44 @@ async fn put_throughput(
     }
 }
 
+/// The BOINC server pushes its week: only from the address its `boinc`
+/// throughput collector pushes from.
+async fn put_boinc_week(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    body: Bytes,
+) -> Response {
+    let ip = peer.ip().to_canonical();
+    if !app
+        .throughput_pushers
+        .get("boinc")
+        .is_some_and(|a| a.contains(ip))
+    {
+        tracing::info!(peer = %ip, "refused a BOINC week push");
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let now = Utc::now();
+    let week = match boinc_week::parse(&body, now) {
+        Ok(w) => w,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("{e:#}\n")).into_response(),
+    };
+    let saved = tokio::task::spawn_blocking(move || {
+        app.boinc_week
+            .lock()
+            .expect("boinc week lock")
+            .put(week, now)
+    })
+    .await;
+    match saved {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(e)) => {
+            tracing::error!(error = format!("{e:#}"), "can't save the BOINC week");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 async fn put_feed_source(
     State(app): State<Arc<App>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -410,6 +471,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/host/{name}", put(put_host))
         .route("/api/sset/{name}", put(put_sset))
         .route("/api/throughput/{source}", put(put_throughput))
+        .route("/api/boinc-week", put(put_boinc_week))
         .route(
             "/api/feed-source/{source}",
             put(put_feed_source).layer(DefaultBodyLimit::max(feed::MAX_SOURCE_BYTES)),
@@ -422,6 +484,10 @@ pub fn router(app: Arc<App>) -> Router {
 /// Every public response says how long it may be kept: a minute for a
 /// success, not at all for an error (a 404, a 405, a 500).
 async fn public_cache(mut r: Response) -> Response {
+    if r.headers().contains_key(header::CACHE_CONTROL) && r.status().is_success() {
+        // A route that set its own (the card's image).
+        return r;
+    }
     let v = if r.status().is_success() {
         PUBLIC_CACHE
     } else {
@@ -433,7 +499,7 @@ async fn public_cache(mut r: Response) -> Response {
 }
 
 /// The public listener (`--public-listen`), for a tunnel to put on the
-/// internet: GET and HEAD of the page, `/healthz` and
+/// internet: GET and HEAD of the page, `/healthz`, `/og.png` and
 /// `/api/{view,pipeline,fetch}.json`, all redacted ([`public::redact`]).
 /// No push routes, no `--allow` check (only the tunnel reaches it), no
 /// TLS. Anything else is a 404, or a 405 for another method on a route.
@@ -441,6 +507,7 @@ pub fn public_router(app: Arc<App>) -> Router {
     Router::new()
         .route("/", get(public_page))
         .route("/healthz", get(|| async { "ok\n" }))
+        .route("/og.png", get(og_image))
         .route("/api/{part}", get(public_api))
         .layer(DefaultBodyLimit::max(1024))
         .layer(middleware::map_response(public_cache))
@@ -452,7 +519,8 @@ pub fn public_router(app: Arc<App>) -> Router {
 /// with the same path and query, except
 /// the hosts' stats pushes (`PUT /api/host/{name}`), the Serial Set status
 /// push (`PUT /api/sset/{name}`) and the throughput counters
-/// (`PUT /api/throughput/{source}`), which carry no secret,
+/// (`PUT /api/throughput/{source}`) and the BOINC week (`PUT /api/boinc-week`),
+/// which carry no secret,
 /// are checked by address, and come from `curl` that doesn't follow
 /// redirects. The same `--allow` as the page.
 pub fn redirect_router(app: Arc<App>, authority: &str) -> Router {
@@ -468,6 +536,10 @@ pub fn redirect_router(app: Arc<App>, authority: &str) -> Router {
         .route(
             "/api/throughput/{source}",
             put(put_throughput).fallback(redirect.clone()),
+        )
+        .route(
+            "/api/boinc-week",
+            put(put_boinc_week).fallback(redirect.clone()),
         )
         .route(
             "/api/feed-source/{source}",
@@ -496,6 +568,7 @@ mod tests {
             ssets: Mutex::new(Ssets::default()),
             queues: Mutex::new(queues::Queues::default()),
             throughput: Mutex::new(throughput::Throughput::default()),
+            boinc_week: Mutex::new(boinc_week::BoincWeek::default()),
             feed_pushers: BTreeMap::new(),
             feed_source_dir: Mutex::new(None),
             seed_plan_path: None,
@@ -722,12 +795,15 @@ mod tests {
             .contains("a local path"));
         assert!(!body.contains("pve-big"));
         assert!(!body.contains("/etc/usnm"));
-        let (status, html) = call_on(public_router(a), "203.0.113.9", "GET", "/", "")
+        let (status, html) = call_on(public_router(a.clone()), "203.0.113.9", "GET", "/", "")
             .await
             .0;
         assert_eq!(status, StatusCode::OK);
-        assert!(html.contains("Dead-letter message bodies are not read"));
-        assert!(!html.contains("No dead letters visible"));
+        // The queues are an operational panel: on the LAN page only.
+        assert!(!html.contains("Dead-letter"));
+        let (_, lan) = call(a, "198.51.100.50", "GET", "/", "").await;
+        assert!(lan.contains("Dead-letter message bodies are not read"));
+        assert!(!lan.contains("No dead letters visible"));
     }
 
     #[tokio::test]
@@ -1048,6 +1124,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_boinc_week_comes_from_the_boinc_collector_address_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = app(dir.path());
+        Arc::get_mut(&mut a).unwrap().throughput_pushers.insert(
+            "boinc".to_owned(),
+            Allow::new(vec!["198.51.100.15".parse().unwrap()]),
+        );
+        let body = serde_json::to_string(&boinc_week::tests::document(Utc::now())).unwrap();
+        let push = |from| call(a.clone(), from, "PUT", "/api/boinc-week", &body);
+        // The ship collector's address isn't the BOINC server's.
+        assert_eq!(push("198.51.100.14").await.0, StatusCode::FORBIDDEN);
+        assert_eq!(push("203.0.113.3").await.0, StatusCode::FORBIDDEN);
+        let named = body.replacen(
+            "\"volunteers\":4",
+            "\"volunteers\":4,\"users\":[\"tgoodyear\"]",
+            1,
+        );
+        assert_eq!(
+            call(a.clone(), "198.51.100.15", "PUT", "/api/boinc-week", &named)
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(push("198.51.100.15").await.0, StatusCode::NO_CONTENT);
+        // Plain HTTP takes it too.
+        let ((s, _), _) = call_on(
+            redirect_router(a.clone(), "ocr.example.org"),
+            "198.51.100.15",
+            "PUT",
+            "/api/boinc-week",
+            &body,
+        )
+        .await;
+        assert_eq!(s, StatusCode::NO_CONTENT);
+        let (_, page) = call(a.clone(), "198.51.100.50", "GET", "/", "").await;
+        assert!(page.contains("id=\"volunteers\""));
+        assert!(page.contains("class=\"boinc-week\""));
+        assert!(page.contains("Queued jobs"));
+        let (_, json) = call(a.clone(), "198.51.100.50", "GET", "/api/view.json", "").await;
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            v["boinc_week"]["week"]["buckets"].as_array().unwrap().len(),
+            56
+        );
+        // Never pushed on the public listener.
+        let ((s, _), _) = call_on(
+            public_router(a),
+            "198.51.100.15",
+            "PUT",
+            "/api/boinc-week",
+            &body,
+        )
+        .await;
+        // `/api/{part}` is GET only there.
+        assert_eq!(s, StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
     async fn failure_reasons_and_limits_are_scrubbed_on_the_public_listener() {
         let dir = tempfile::tempdir().unwrap();
         let a = app(dir.path());
@@ -1095,6 +1229,11 @@ mod tests {
             assert!(leaks(&body).is_empty(), "{path}: {:?}", leaks(&body));
             for bad in ["pve lab", "pve-lab", "192.0.2", "CT 999"] {
                 assert!(!body.contains(bad), "{bad} in {path}");
+            }
+            // The public page is the overview: the reasons are in its JSON only.
+            if path == "/" {
+                assert!(!body.contains("bridge submit failed"));
+                continue;
             }
             assert!(body.contains("bridge submit failed"));
             assert!(!body.contains("node9"), "{path}");
@@ -1156,6 +1295,7 @@ mod tests {
             ssets: Mutex::new(Ssets::default()),
             queues: Mutex::new(queues::Queues::default()),
             throughput: Mutex::new(throughput::Throughput::default()),
+            boinc_week: Mutex::new(boinc_week::BoincWeek::default()),
             feed_pushers: BTreeMap::new(),
             feed_source_dir: Mutex::new(None),
             seed_plan_path: None,
@@ -1174,6 +1314,11 @@ mod tests {
             sset_pushers: BTreeMap::new(),
             throughput_pushers: BTreeMap::new(),
         });
+        {
+            let week = boinc_week::tests::document(now);
+            let week = boinc_week::parse(&serde_json::to_vec(&week).unwrap(), now).unwrap();
+            a.boinc_week.lock().unwrap().put(week, now).unwrap();
+        }
         let guest = |vmid, kind: &str, name: &str, node: &str| PveGuest {
             vmid,
             kind: kind.into(),
@@ -1295,6 +1440,15 @@ mod tests {
             "usnm-release",
             "usnm-sset.service",
             "seed.env",
+            // Any BOINC account name or host id.
+            "tgoodyear",
+            "boinc-test",
+            "boinc-volunteer",
+            "Issue559",
+            "userid",
+            "hostid",
+            "user_id",
+            "host_id",
         ]
         .iter()
         .filter(|p| body.contains(*p))
@@ -1350,9 +1504,46 @@ mod tests {
             assert!(found.is_empty(), "{uri} shows {found:?}");
         }
         let ((_, page), _) = call_on(public_router(a.clone()), "203.0.113.3", "GET", "/", "").await;
-        assert!(page.contains("scan server"));
-        assert!(page.contains("queue-ocr-20261025t015125"));
-        assert!(page.contains("OCR node 1"));
+        // The public page is the overview: six sections, in order, and
+        // none of the operational panels.
+        let at = |id: &str| {
+            page.find(&format!("id=\"{id}\""))
+                .unwrap_or_else(|| panic!("no {id}"))
+        };
+        let order = [
+            "collection",
+            "fetching",
+            "volunteers",
+            "results",
+            "accuracy",
+            "throughput",
+        ];
+        assert!(order.windows(2).all(|w| at(w[0]) < at(w[1])));
+        assert_eq!(page.matches("<section").count(), order.len());
+        for gone in [
+            "Operational details",
+            "step-throughput",
+            "Across the ecosystem",
+            "replica",
+            "workunit",
+            "controller",
+            "bridge",
+            "scan server",
+            "OCR node",
+            // App ids: the page names kinds of job in words.
+            "usnm_",
+        ] {
+            assert!(!page.contains(gone), "the public page shows {gone}");
+        }
+        // The BOINC week: as counts, its jobs in words.
+        assert_eq!(page.matches("<svg class=\"wk wide\"").count(), 3);
+        assert_eq!(page.matches("<svg class=\"wk narrow\"").count(), 3);
+        assert!(page.contains("AI snippet reading"));
+        assert!(page.contains("jobs checking quality with an AI vision model"));
+        // The LAN keeps the operational panels under the same overview.
+        let (_, lan) = call(a.clone(), "198.51.100.50", "GET", "/", "").await;
+        assert!(lan.contains("id=\"volunteers\""));
+        assert!(lan.contains("Operational details"));
         let ((_, p), _) = call_on(
             public_router(a.clone()),
             "203.0.113.3",
@@ -1395,7 +1586,19 @@ mod tests {
                 );
             }
         }
+        for m in ["GET", "HEAD"] {
+            let r = send(m, "/og.png").await;
+            assert_eq!(r.status(), StatusCode::OK, "{m} /og.png");
+            assert_eq!(r.headers()[header::CONTENT_TYPE], "image/png");
+            assert_eq!(r.headers()[header::CACHE_CONTROL], "public, max-age=86400");
+        }
+        // The card's image: a 1200x630 PNG under 300 KB.
+        assert_eq!(&OG_IMAGE[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(&OG_IMAGE[16..24], &[0, 0, 4, 176, 0, 0, 2, 118]);
+        assert!(OG_IMAGE.len() < 300_000);
         for (m, uri, want) in [
+            ("POST", "/og.png", StatusCode::METHOD_NOT_ALLOWED),
+            ("GET", "/og.svg", StatusCode::NOT_FOUND),
             ("PUT", "/api/host/pve", StatusCode::NOT_FOUND),
             ("PUT", "/api/sset/sset", StatusCode::NOT_FOUND),
             ("GET", "/api/host/pve", StatusCode::NOT_FOUND),
@@ -1419,5 +1622,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
+    }
+
+    #[tokio::test]
+    async fn the_public_page_has_a_link_preview_card_and_the_lan_page_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = app(dir.path());
+        let (_, public) = call_on(public_router(a.clone()), "203.0.113.9", "GET", "/", "")
+            .await
+            .0;
+        for tag in [
+            r#"<meta name="description" content=""#,
+            r#"<meta property="og:type" content="website">"#,
+            r#"<meta property="og:url" content="https://ocr.usnewsmap.com/">"#,
+            r#"<meta property="og:image" content="https://ocr.usnewsmap.com/og.png">"#,
+            r#"<meta property="og:image:width" content="1200">"#,
+            r#"<meta property="og:image:height" content="630">"#,
+            r#"<meta property="og:image:alt" content=""#,
+            r#"<meta name="twitter:card" content="summary_large_image">"#,
+            r#"<meta name="twitter:image" content="https://ocr.usnewsmap.com/og.png">"#,
+            r#"<meta name="twitter:image:alt" content=""#,
+            r#"<meta property="og:title" content="US News Map: OCR status">"#,
+            r#"<meta name="twitter:title" content="US News Map: OCR status">"#,
+            r#"<meta property="og:site_name" content="US News Map">"#,
+            r#"<meta property="og:description" content=""#,
+            r#"<meta name="twitter:description" content=""#,
+        ] {
+            assert!(public.contains(tag), "{tag}");
+        }
+        assert!(leaks(&public).is_empty(), "{:?}", leaks(&public));
+        let (_, lan) = call(a, "198.51.100.50", "GET", "/", "").await;
+        assert!(!lan.contains("og:") && !lan.contains("twitter:"));
     }
 }

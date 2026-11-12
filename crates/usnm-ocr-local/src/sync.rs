@@ -107,6 +107,9 @@ pub struct Stores {
     pub requests: Option<Arc<dyn ObjectStore>>,
     /// The exchange account's queues.
     pub queue: Arc<dyn Queue>,
+    /// The exchange account's `boinc-handoff`, read only for the controller's held-pages
+    /// lists, which the seeder leaves settled pages out by (#1754). `None`: off.
+    pub handoff: Option<Arc<dyn ObjectStore>>,
 }
 
 /// A run's counts.
@@ -880,6 +883,7 @@ async fn run_locked(
             queue: &stores.queue,
             out: Some(stores.out.as_ref()),
             american_stories: opts.american_stories.as_deref(),
+            handoff: stores.handoff.as_deref(),
         };
         Some(super::seed::seed(state, &seed_stores, &seed_opts, Some(lease)).await)
     };

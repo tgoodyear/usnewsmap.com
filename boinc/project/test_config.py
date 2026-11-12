@@ -3,6 +3,7 @@
 from pathlib import Path
 import math
 import os
+import re
 import shlex
 import subprocess
 import tempfile
@@ -87,7 +88,8 @@ class DaemonConfig(unittest.TestCase):
         # A zero weight gives an app one cache slot and no query budget, so the feeder never
         # caches its work. Only an app whose units are all assigned to a host may have it:
         # the scheduler sends assigned work from the database (BOINC 22bbebe, sched_assign.cpp).
-        self.assertEqual(sorted(name for name, weight in weights.items() if weight == 0), ["usnm_gold_native"])
+        self.assertEqual(sorted(name for name, weight in weights.items() if weight == 0),
+                         ["usnm_gold_native", "usnm_ocr_native"])
         # 30 October: 1788-1798 unsent replicas exceeded the former 666-slot Qwen share.
         qwen_ready_results = 1800
         self.assertGreaterEqual(budgets["usnm_qwen"], 4 * qwen_ready_results)
@@ -107,6 +109,12 @@ class DaemonConfig(unittest.TestCase):
             if weight > 0 and name != "usnm_qwen":
                 with self.subTest(app=name):
                     self.assertGreaterEqual(slots[name], 160)
+
+    def test_live_apps_fit_the_feeders_app_table(self):
+        # MAX_APPS in the pinned sched_shmem.h: an eleventh live app stops the feeder at start
+        # (#1780). register-apps.php deprecates the declared-retired apps xadd inserts live.
+        apps = ET.parse(Path(__file__).with_name("project.xml")).findall("app")
+        self.assertLessEqual(sum(app.findtext("deprecated") == "0" for app in apps), 10)
 
     def test_replicas_need_different_hosts_not_different_accounts(self):
         # The project's hosts share one account; a per-account rule starves them on quorum-2 work.
@@ -164,6 +172,8 @@ class DaemonConfig(unittest.TestCase):
         live = ("usnm_gold", "usnm_gold_native", "usnm_ndlocr", "usnm_quality", "usnm_qwen")
         self.assertEqual(daemons, sorted([("sample_trivial_validator", "usnm_ocr"),
                                           ("batch_collect_assimilator", "usnm_ocr"),
+                                          ("sample_trivial_validator", "usnm_ocr_native"),
+                                          ("batch_collect_assimilator", "usnm_ocr_native"),
                                           *(("script_validator", app) for app in live),
                                           *(("batch_collect_assimilator", app) for app in live)]))
         self.assertEqual(links, ["usnm_gold_check", "usnm_ndlocr_check", "usnm_ndlocr_compare",
@@ -234,6 +244,45 @@ class DaemonConfig(unittest.TestCase):
         base = (root.parent / "images/base/Containerfile").read_text()
         self.assertIn("patch-server-gpu-ram-cap.py --source /usr/local/boinc/sched/plan_class_spec.cpp", base)
 
+    def test_xiaomi_classes_are_closed_batch_108_and_mirror_their_qwen_classes(self):
+        # #1776: Xiaomi-OCR-0 (0.8B) units are batch 108, served by these five classes only.
+        root = Path(__file__).parent
+        plans = {p.findtext("name"): p for p in ET.parse(root / "plan_class_spec.xml").findall("plan_class")}
+        mirrors = {"mt_x08": "mt", "apple_gpu_x08": "apple_gpu_8b", "nvidia_vulkan_x08": "nvidia_vulkan_8b",
+                   "intel_vulkan_x08": "intel_vulkan_8b", "amd_vulkan_x08": "amd_vulkan_8b"}
+        own = ("name", "min_batch", "max_batch", "min_wu_id", "max_wu_id", "min_gpu_ram_mb", "gpu_ram_used_mb")
+        gates = lambda p: sorted((c.tag, (c.text or "").strip()) for c in p if c.tag not in own)
+        for name, qwen in mirrors.items():
+            with self.subTest(plan=name):
+                plan = plans[name]
+                # Closed until an operator opens one audited workunit.
+                self.assertEqual((plan.findtext("min_wu_id"), plan.findtext("max_wu_id")), ("2", "1"))
+                self.assertEqual((plan.findtext("min_batch"), plan.findtext("max_batch")), ("108", "108"))
+                self.assertIsNone(plan.find("docker"))
+                self.assertEqual(gates(plan), gates(plans[qwen]))
+                if name == "mt_x08":
+                    self.assertIsNone(plan.find("gpu_type"))
+                    self.assertIsNone(plan.find("min_gpu_ram_mb"))
+                else:
+                    # About 2 GB of GPU memory, which opens 4 GB cards.
+                    self.assertEqual(plan.findtext("min_gpu_ram_mb"), "2000")
+                    self.assertEqual(plan.findtext("gpu_ram_used_mb"), "2000")
+        self.assertEqual(plans["amd_vulkan_x08"].findtext("min_gpu_peak_flops"), "1.5e12")
+        # No other class serves batch 108, and usnm-boinc puts Xiaomi-OCR-0 units in it.
+        for name, plan in plans.items():
+            if name not in mirrors and plan.find("min_batch") is not None:
+                self.assertFalse(int(plan.findtext("min_batch")) <= 108 <= int(plan.findtext("max_batch")), name)
+        submit = (root.parents[1] / "crates/usnm-boinc/src/qwen/submit.rs").read_text()
+        self.assertIn("pub const XIAOMI_BATCH: i32 = 108;", submit)
+        # The refresh keeps a window the cohort helper opened; both know all five classes.
+        refresh = (root.parent / "images/server/refresh-plan-policy.py").read_text()
+        cohort = (root.parent / "scripts/native-qwen-cohort.php").read_text()
+        for name in mirrors:
+            self.assertIn(name, refresh)
+            self.assertIn(name, cohort)
+        # mt takes batch-2 units only, so the scheduler cannot send it a batch-108 or batch-8 unit it would refuse.
+        self.assertEqual((plans["mt"].findtext("min_batch"), plans["mt"].findtext("max_batch")), ("2", "2"))
+
     def test_high_throughput_scheduler_dispatch_limits(self):
         root = ET.parse(Path(__file__).with_name("config.xml.template"))
         self.assertEqual(root.findtext("./config/min_sendwork_interval"), "2")
@@ -253,6 +302,14 @@ class DaemonConfig(unittest.TestCase):
         root = ET.parse(Path(__file__).with_name("config.xml.template"))
         nested = [child.tag for child in root.find("./config") if len(child)]
         self.assertEqual(nested, [])
+
+    def test_no_comment_spells_a_config_tag_the_feed_monitor_counts(self):
+        # feed_collect.py reads one_result_per_host_per_wu only when the file holds exactly one
+        # <config> start tag and one such setting; a comment that spelled either one made every
+        # feed server observation fail with one_result_per_host_missing (2026-11-11).
+        text = Path(__file__).with_name("config.xml.template").read_text()
+        self.assertEqual(len(re.findall(r"<config[\s>/]", text)), 1)
+        self.assertEqual(len(re.findall(r"<one_result_per_host_per_wu[\s>/]", text)), 1)
 
     def test_project_down_replies_ask_clients_back_in_twenty_minutes(self):
         # #1462: without it, BOINC's default (sched_config.cpp L93 at 22bbebe0) tells every client

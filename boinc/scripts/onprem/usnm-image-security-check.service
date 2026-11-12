@@ -1,5 +1,5 @@
 # Checks the BOINC server image against Debian's security archive, and the MySQL pin against its
-# tag (#969), on the BOINC host. A finding fails the unit, which shows in systemctl --failed and
+# tag's MySQL version (a same-version rebuild of the tag doesn't fail it) (#969), on the BOINC host. A finding fails the unit, which shows in systemctl --failed and
 # in the journal: journalctl -u usnm-image-security-check.service. Nothing is rebuilt or
 # restarted. The floors are the PHP_FLOOR and APACHE_FLOOR of the Containerfiles in
 # boinc/images; raise them together (test_image_security_check.py checks they agree).

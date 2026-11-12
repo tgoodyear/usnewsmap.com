@@ -160,6 +160,27 @@ Rebuild the bases when `SNAPSHOT` or a package the `apt-*` stages install change
    runs build both images on both architectures from the new bases.
 6. Publish the worker image as usual once that merges.
 
+The same workflow run builds the apt bases of two more images (#1683), on amd64
+only, which is all either supports, and publishes them to the same package under
+their own tags:
+
+- the native Tesseract build, `boinc/apps/native/Containerfile`: its `apt-native`
+  stage holds the build packages and the unpacked Tesseract source, so the build
+  needs no mirror. Pinned in `boinc/apps/native/base.lock` as `NATIVE_BASE`;
+- the `usnm_iris` image, `boinc/apps/iris/Containerfile`: `apt-iris-tools` (curl,
+  for the stage that fetches the model) and `apt-iris` (Python, the OpenCL loader and
+  Intel's `.deb` files). Pinned in `boinc/apps/iris/base.lock` as `IRIS_TOOLS_BASE`
+  and `IRIS_BASE`, both or neither.
+
+`scripts/ci/apt-base.sh --app native|iris` turns a lock into build arguments and, with
+`--check-label`, checks each base's `org.usnewsmap.debian-snapshot` and
+`org.usnewsmap.apt-recipe` labels against the Containerfile (for iris, the recipe
+also covers `runtime.lock`). `boinc-ocr-native.yml` and `boinc-iris.yml` pass the
+arguments. The rebuild steps above apply: empty the lock when the Containerfile's
+`SNAPSHOT` or its `apt-*` stages change, run the workflow, check provenance, and put
+the `lock` job's lines for each app in a pull request. The package is already
+public, so step 3 is not repeated.
+
 Before changing the installed worker image, stop creating new cohorts. Finish
 exporting and submitting already allocated cohorts with their original image,
 and drain all existing workunits through collection. Resolve uncertain and

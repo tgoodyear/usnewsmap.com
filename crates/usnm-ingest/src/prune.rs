@@ -100,6 +100,9 @@ pub struct Report {
     pub kept_absent: Vec<String>,
     /// Indexes with other names, left alone.
     pub other: Vec<String>,
+    /// Indexes of ours that no kept version names but whose `{date}-{n}` is after the serving
+    /// version's: left alone (see `newer_than`).
+    pub newer_than_serving: Vec<String>,
 }
 
 /// The ids in a JSON array of strings (none if it isn't one).
@@ -263,6 +266,31 @@ pub async fn kept(reference: &dyn ObjectStore, state: &State) -> anyhow::Result<
     })
 }
 
+/// The `(date, n)` an index id ends with (`pages-base-20261015-2`, `congress-20261015-2`), which
+/// is the name of the version that built it (`pages-v20261015-2`).
+fn index_key(index_id: &str) -> Option<(u32, u32)> {
+    let mut parts = index_id.rsplitn(3, '-');
+    let n = parts.next()?.parse().ok()?;
+    let date = parts.next().filter(|d| d.len() == 8)?.parse().ok()?;
+    Some((date, n))
+}
+
+/// Whether `index_id` was built by a version after `serving` (`pages-v{date}-{n}`). Such an index
+/// is never a candidate even when no kept version names it: the runs prune reads may not show
+/// every published version (the on-prem release prunes with a fresh state file that holds only
+/// the serving version's run), and after a rollback by hand a newer version is one to roll
+/// forward to. A stopped rebuild newer than the serving version waits for the next release.
+fn newer_than(serving: &str, index_id: &str) -> bool {
+    let key = |v: &str| -> Option<(u32, u32)> {
+        let (date, n) = v.strip_prefix("pages-v")?.split_once('-')?;
+        Some((date.parse().ok()?, n.parse().ok()?))
+    };
+    match (key(serving), index_key(index_id)) {
+        (Some(s), Some(i)) => i > s,
+        _ => false,
+    }
+}
+
 /// Every index id Quickwit has (`GET /api/v1/indexes`), sorted.
 pub async fn list_indexes(http: &reqwest::Client, base: &str) -> anyhow::Result<Vec<String>> {
     let v: Value = http
@@ -335,7 +363,12 @@ pub async fn prune(
     let (ours, other): (Vec<String>, Vec<String>) = all.iter().cloned().partition(|i| is_ours(i));
     let node = merges::Node { http: &http, base };
     let mut candidates = Vec::new();
-    for id in ours.iter().filter(|i| !kept.indexes.contains(*i)) {
+    let (newer_than_serving, unkept): (Vec<String>, Vec<String>) = ours
+        .iter()
+        .filter(|i| !kept.indexes.contains(*i))
+        .cloned()
+        .partition(|i| newer_than(&kept.serving, i));
+    for id in &unkept {
         let splits = node.splits(id).await?;
         let c = Candidate {
             index_id: id.clone(),
@@ -366,6 +399,7 @@ pub async fn prune(
         total_gib = gib(total_bytes),
         dry_run = !delete,
         other = ?other,
+        newer_than_serving = ?newer_than_serving,
         "prune plan"
     );
 
@@ -386,7 +420,10 @@ pub async fn prune(
                 );
             }
             // The plan never holds a kept index; checked again here.
-            if kept.indexes.contains(&c.index_id) || !is_ours(&c.index_id) {
+            if kept.indexes.contains(&c.index_id)
+                || !is_ours(&c.index_id)
+                || newer_than(&kept.serving, &c.index_id)
+            {
                 bail!("`{}` is kept; refusing to delete it", c.index_id);
             }
             // A delete can outlast the lock (DELETE_TIMEOUT); give it up as
@@ -411,6 +448,7 @@ pub async fn prune(
         deleted,
         kept_absent,
         other,
+        newer_than_serving,
     })
 }
 
@@ -669,6 +707,62 @@ mod tests {
         assert!(k.indexes.contains("pages-base-20261020-1"));
         // Without a snapshot it never reached current.json.
         assert!(!k.indexes.contains("pages-base-20261021-1"));
+    }
+
+    #[tokio::test]
+    async fn an_index_newer_than_the_serving_version_is_left_alone() {
+        // After a hand rollback to pages-v20261008-1 with a state that has only its run (a fresh
+        // state file), the later versions' indexes name no kept version and no run shows them.
+        let e = env().await;
+        put(
+            &e.reference,
+            "current.json",
+            json!({"index_version": "pages-v20261008-1",
+                   "indexes": ["pages-base-20261001-1", "pages-delta-20261008-1"],
+                   "previous_version": "pages-v20261001-1"}),
+        )
+        .await;
+        put(
+            &e.reference,
+            "pages-v20261001-1/manifest.json",
+            json!({"indexes": [{"index_id": "pages-base-20261001-1"}]}),
+        )
+        .await;
+        let run = e.state.run("pages-v20261008-1").await.unwrap().unwrap().0;
+        let fresh = State::new(Arc::new(MemoryDocs::default()));
+        assert!(fresh.create_run(&run).await.unwrap());
+        let (base, deleted) = fake_quickwit(&LIVE).await;
+        let lease = lock_writer(&fresh, "pruner").await.unwrap();
+        let r = prune(&fresh, e.reference.as_ref(), &base, true, &lease)
+            .await
+            .unwrap();
+        unlock_writer(&fresh, "pruner", lease).await.unwrap();
+        assert!(
+            r.kept.newer.is_empty(),
+            "the fresh state shows no newer run"
+        );
+        assert_eq!(
+            r.newer_than_serving,
+            [
+                "congress-20261015-1",
+                "pages-base-20261012-1",
+                "pages-base-20261015-1",
+                "pages-ja-20261015-1"
+            ]
+        );
+        let ids: Vec<&str> = r.candidates.iter().map(|c| c.index_id.as_str()).collect();
+        assert!(ids.is_empty(), "{ids:?}");
+        assert!(deleted.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_version_an_index_ends_with_is_compared_by_number() {
+        assert!(newer_than("pages-v20261015-9", "pages-base-20261015-10"));
+        assert!(newer_than("pages-v20261015-1", "congress-20261016-1"));
+        assert!(!newer_than("pages-v20261015-1", "pages-base-20261015-1"));
+        assert!(!newer_than("pages-v20261015-2", "pages-delta-20261008-7"));
+        assert!(!newer_than("pages-v20261015-1", "pages-odd"));
+        assert!(!newer_than("odd", "pages-base-20261016-1"));
     }
 
     /// A Quickwit node's index API: lists, splits and deletes, recording

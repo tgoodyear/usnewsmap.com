@@ -1,6 +1,6 @@
 # ADR-0015: On-prem OCR workers with Azure Arc identities and an exchange account
 
-- **Status:** Proposed
+- **Status:** Accepted. Built and in use (#1705). Becomes Deprecated or Superseded when the Arc, exchange-account and Storage-queue paths move to pgmq and on-prem hosts (#1367).
 - **Date:** 2026-10 (node grants moved to an Entra group, and monitoring with the Azure Monitor Agent into the nodes' own workspace, 2026-10-10; scans from a local cache, 2026-10-11)
 - **Extends:** ADR-0008 (private networking) and ADR-0009 (Entra identity only)
 - **Amends:** ADR-0009 §2, with one exception: a client secret for Arc onboarding, on a service principal made for one run (decision 1)

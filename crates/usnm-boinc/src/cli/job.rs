@@ -250,10 +250,30 @@ pub struct SubmitArgs {
     /// to it, so an older worker never gets one. Required for a line job, unused otherwise.
     #[arg(long)]
     app_version_num: Option<u32>,
-    /// A line job only: send it to this one host (`--target_host`), one calibrated on the line
-    /// worker. Needs `<enable_assignment>1</enable_assignment>`.
+    /// A line job, or a `usnm_ocr_native` unit (required there): send it to this one host
+    /// (`--target_host`), one calibrated on that worker. Needs
+    /// `<enable_assignment>1</enable_assignment>`.
     #[arg(long)]
     target_host: Option<u64>,
+    /// The BOINC app: `usnm_ocr` (the worker image) or `usnm_ocr_native` (the native build,
+    /// #1780), whose unit is always for `--target-host` and needs `--trust`.
+    #[arg(long, value_enum, default_value_t = SubmitApp::UsnmOcr)]
+    app: SubmitApp,
+    /// The host trust list (`gold/trust.json`): a native unit is created only when it admits
+    /// the target host for the job's exact scope and native digest.
+    #[arg(long)]
+    trust: Option<PathBuf>,
+    /// The live `usnm_ocr_native` version numbers, from the database (registered, not
+    /// deprecated): a native unit is pinned to the newest of them that packages its build.
+    #[arg(long, value_delimiter = ',')]
+    native_versions: Vec<u32>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "snake_case")]
+pub enum SubmitApp {
+    UsnmOcr,
+    UsnmOcrNative,
 }
 
 pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
@@ -268,7 +288,31 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
         cosmos,
         app_version_num,
         target_host,
+        app,
+        trust,
+        native_versions,
     } = args;
+    if app == SubmitApp::UsnmOcrNative {
+        anyhow::ensure!(
+            app_version_num.is_none()
+                && curated_url.is_none()
+                && state_file.is_none()
+                && cosmos.is_none(),
+            "a usnm_ocr_native unit takes no --app-version-num or retry stores"
+        );
+    }
+    anyhow::ensure!(
+        app == SubmitApp::UsnmOcrNative || native_versions.is_empty(),
+        "--native-versions is for usnm_ocr_native units"
+    );
+    let trust = match (app, trust) {
+        (SubmitApp::UsnmOcrNative, Some(path)) => Some(crate::trust::Trust::load(&path)?),
+        (SubmitApp::UsnmOcrNative, None) => {
+            anyhow::bail!("a usnm_ocr_native unit needs --trust, the host trust list")
+        }
+        (SubmitApp::UsnmOcr, Some(_)) => anyhow::bail!("--trust is for usnm_ocr_native units"),
+        (SubmitApp::UsnmOcr, None) => None,
+    };
     let download = match (download_base_url, download_root) {
         (Some(base), Some(root)) => Some(crate::submit::Download::new(&base, &root)?),
         (Some(base), None) => Some(crate::submit::Download::remote(&base)?),
@@ -293,6 +337,19 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
             state,
             curated: curated.as_ref(),
         });
+    if let Some(trust) = &trust {
+        crate::submit::submit_native(
+            &root,
+            &project,
+            &job,
+            download.as_ref(),
+            target_host,
+            trust,
+            &native_versions,
+        )
+        .await?;
+        return Ok(());
+    }
     let pin = match crate::load(&root, &job)?.job.lines {
         Some(_) => app_version_num,
         None => None,
@@ -481,10 +538,12 @@ pub struct LineReportArgs {
 pub fn line_report(args: LineReportArgs) -> anyhow::Result<()> {
     let rows = crate::lines::report(&args.root, args.spool.as_deref())?;
     let mut verdicts = std::collections::BTreeMap::<String, usize>::new();
+    let mut line_merge = std::collections::BTreeMap::<&str, usize>::new();
     let (mut lines, mut model) = (0, 0);
     for row in &rows {
         println!("{}", serde_json::to_string(row)?);
         *verdicts.entry(row.verdict.clone()).or_default() += 1;
+        *line_merge.entry(row.line_merge.verdict).or_default() += 1;
         lines += row.stats.lines;
         model += row.stats.model;
     }
@@ -495,8 +554,112 @@ pub fn line_report(args: LineReportArgs) -> anyhow::Result<()> {
             "lines_read": lines,
             "lines_model": model,
             "lines_fallback": lines - model,
+            "line_merge_verdicts": line_merge,
             "verdicts": verdicts,
         })
     );
+    Ok(())
+}
+
+#[derive(Args)]
+pub struct LinePagesArgs {
+    /// LoC's bulk OCR for the titles, unpacked: `<lccn>/<yyyy>/<mm>/<dd>/ed-<n>/seq-<m>/ocr.xml`.
+    #[arg(long)]
+    loc_alto: PathBuf,
+    /// `<lccn>=<versioned batch>:<reel>`, e.g. `sn83020866=dlc_misctopsn83020866_ver03:print`.
+    #[arg(long = "title", required = true)]
+    titles: Vec<crate::lines::stage::Title>,
+    /// A directory of local scan copies named `<doc_id>.jpg` (LoC's full-size IIIF JPEGs).
+    #[arg(long = "scans")]
+    scans: Vec<PathBuf>,
+    /// JSONL whose `page` fields are the frozen test set's pages (#1620).
+    #[arg(long)]
+    test_lines: Option<PathBuf>,
+    /// The line route's language.
+    #[arg(long, default_value = "chr")]
+    language: String,
+}
+
+/// One JSON line per page, sorted by page key; a summary on stderr.
+pub fn line_pages(args: LinePagesArgs) -> anyhow::Result<()> {
+    let mut test = std::collections::BTreeSet::new();
+    if let Some(path) = &args.test_lines {
+        for line in String::from_utf8(crate::read(path, 64 << 20)?)?.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let v: serde_json::Value = serde_json::from_str(line)?;
+            let page = v["page"]
+                .as_str()
+                .context("a test-set line without a page")?;
+            test.insert(page.to_owned());
+        }
+    }
+    let pages = crate::lines::stage::inventory(
+        &args.loc_alto,
+        &args.titles,
+        &args.scans,
+        &test,
+        &args.language,
+    )?;
+    for p in &pages {
+        println!("{}", serde_json::to_string(p)?);
+    }
+    let with_lines = pages.iter().filter(|p| p.lines > 0).count();
+    let ready = pages
+        .iter()
+        .filter(|p| p.lines > 0 && p.scan.is_some())
+        .count();
+    let test_set = pages.iter().filter(|p| p.test_set).count();
+    eprintln!(
+        "{} pages, {with_lines} with lines to read, {ready} of them with a local scan, {test_set} in the test set",
+        pages.len()
+    );
+    Ok(())
+}
+
+#[derive(Args)]
+pub struct LineStageArgs {
+    /// The page list `line-pages` wrote.
+    #[arg(long)]
+    pages: PathBuf,
+    /// The page keys to stage, one per line: 1 to 100, of one batch.
+    #[arg(long)]
+    select: PathBuf,
+    /// Directories of local scan copies, as for `line-pages`.
+    #[arg(long = "scans", required = true)]
+    scans: Vec<PathBuf>,
+    /// LoC's bulk OCR, unpacked, as for `line-pages`.
+    #[arg(long)]
+    loc_alto: PathBuf,
+    /// The prefetch manifest's directory name under `manifests/`.
+    #[arg(long)]
+    manifest_name: String,
+    /// A new directory for the staging tree.
+    #[arg(long)]
+    out: PathBuf,
+}
+
+/// Writes the staging tree and prints the hand-off export's inputs as `NAME=value` lines.
+pub fn line_stage(args: LineStageArgs) -> anyhow::Result<()> {
+    let inventory = crate::lines::stage::read_inventory(&args.pages)?;
+    let select = String::from_utf8(crate::read(&args.select, 64 * 1024)?)?
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let staged = crate::lines::stage::stage(
+        &inventory,
+        &select,
+        &args.scans,
+        &args.loc_alto,
+        &args.manifest_name,
+        &args.out,
+    )?;
+    println!("HANDOFF_BATCH={}", staged.batch);
+    println!("HANDOFF_MANIFEST={}", staged.manifest);
+    println!("HANDOFF_PAGES={}", staged.pages.join(","));
+    println!("HANDOFF_SCANS={}", staged.scans.join(","));
     Ok(())
 }

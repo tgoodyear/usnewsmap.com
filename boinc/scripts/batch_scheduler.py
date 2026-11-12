@@ -2,6 +2,7 @@
 """One bounded BOINC OCR tick; offline validation unless explicitly --apply."""
 
 import argparse
+import base64
 import concurrent.futures
 import contextlib
 import copy
@@ -10,6 +11,7 @@ import stat
 import functools
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -37,6 +39,11 @@ MAX_ARCHIVED_HELD = 200000
 MAX_EXISTING_WORKUNITS_CEILING = 200000
 MAX_GLOBAL_PENDING = 100000
 DEFAULT_MAX_GLOBAL_PENDING = 1000
+# The sanity bound on a counter in BOINC's server status (parse_server_status). The counters are
+# observations, not limits: a large backlog in another app (a Qwen or quality wave) is still a
+# good status, and capping its counters at MAX_GLOBAL_PENDING failed every OCR tick (#1698). A
+# counter above this is garbage, not a backlog.
+MAX_STATUS_COUNT = 10_000_000
 # The feeder's shared-memory work slots (shmem_work_items in boinc/project/config.xml.template).
 # With --other-app-budget, every app's unassimilated work, counted in full, stays under it (#1474).
 FEEDER_SHMEM_SLOTS = 4096
@@ -44,7 +51,11 @@ MAX_STATUS_BYTES = 1024 * 1024
 MAX_FAILURE_OUTPUT_CHARS = 16384
 MAX_COLLECT_PARALLEL = 8  # handoff-job.sh's COLLECT_PARALLEL
 OCR_APP_NAME = "usnm_ocr"
-SUPPORTED_COHORT_APPS = (OCR_APP_NAME,)
+# The native OCR build's app (#1780, docs/boinc/apps/native-ocr.md): a plan whose `app` it is
+# sends every unit to one of its `native_hosts`, as the trust list admits.
+NATIVE_APP_NAME = "usnm_ocr_native"
+SUPPORTED_COHORT_APPS = (OCR_APP_NAME, NATIVE_APP_NAME)
+MAX_NATIVE_HOSTS = 100
 SURYA_APP_NAME = "usnm_surya"
 SURYA_DEFAULTS = {"timeout_secs": 600, "stage_pages": 50, "submit_units": 200}
 SURYA_REPLICAS = 2  # results per unit: --target_nresults in crates/usnm-boinc/src/surya/submit.rs
@@ -110,7 +121,8 @@ SURYA_REQUIRED = {"campaign", "quality_campaign", "engine_image", "engine_llama"
 OPTIONAL_FIELDS = {
     "app", "platform", "resource", "cohort", "cohorts",
     "low_watermark", "high_watermark", "max_global_pending", "server_status_url", "step_command",
-    "gold_onboarding", "pages_per_unit", "bundle_app_version", "handoff_root",
+    "gold_onboarding", "pages_per_unit", "bundle_app_version", "handoff_root", "native_hosts",
+    "units_per_cpu",
 }
 # OCR bundles (#1059): at most this many pages of one queue in one usnm_ocr workunit
 # (crates/usnm-ocr-contract/src/boinc.rs, bundle::MAX_PAGES), 1 (a page alone) by default.
@@ -154,9 +166,38 @@ def _validate_status_url(url):
 def normalize_cohort_apps(app):
     if not isinstance(app, str) or app not in SUPPORTED_COHORT_APPS:
         raise ConfigError(
-            f"unsupported cohort app; Transport.submit() only dispatches {OCR_APP_NAME} workunits"
+            f"unsupported cohort app; Transport only dispatches {OCR_APP_NAME} (and, for a native "
+            f"plan, {NATIVE_APP_NAME}) workunits"
         )
     return app
+
+
+def _validate_native_plan(config):
+    """A native OCR plan (#1780): queue-fed, single pages only, its `native_hosts` the only hosts
+    its units may go to (none, by default: no units), and nothing that would make a unit any
+    host could get. Every other plan names no native hosts."""
+    native = config.get("app") == NATIVE_APP_NAME
+    if not native:
+        require("native_hosts" not in config, f"native_hosts is for {NATIVE_APP_NAME} plans")
+        require("units_per_cpu" not in config, f"units_per_cpu is for {NATIVE_APP_NAME} plans")
+        for spec in (config.get("cohorts") or {}).values():
+            require(spec.get("app", OCR_APP_NAME) == OCR_APP_NAME,
+                    f"a {NATIVE_APP_NAME} cohort needs a {NATIVE_APP_NAME} plan")
+        return
+    require(type(config.get("units_per_cpu", 1)) is int and 1 <= config.get("units_per_cpu", 1) <= 16,
+            "units_per_cpu: 1 to 16")
+    hosts = config.get("native_hosts")
+    require(isinstance(hosts, list) and len(hosts) <= MAX_NATIVE_HOSTS and
+            all(type(host) is int and 1 <= host <= 9999999999 for host in hosts) and
+            len(set(hosts)) == len(hosts),
+            f"a {NATIVE_APP_NAME} plan needs native_hosts, up to {MAX_NATIVE_HOSTS} distinct host ids "
+            "(an empty list sends nothing)")
+    require(config.get("source") == "queue" and config.get("claim_languages"),
+            f"a {NATIVE_APP_NAME} plan is queue-fed with claim_languages, the scopes its hosts are trusted for")
+    for key in ("cohort", "cohorts", "gold_onboarding", "bundle_app_version"):
+        require(key not in config, f"a {NATIVE_APP_NAME} plan takes no {key}")
+    require(max(config.get("pages_per_unit", {}).values(), default=1) == 1,
+            f"a {NATIVE_APP_NAME} unit is one page")
 
 
 def normalize_cohort_platform(platform):
@@ -204,7 +245,7 @@ def parse_zero_work_replies(raw):
     if raw is None:
         return 0
     if type(raw) is int:
-        return _nonneg_int(raw, MAX_GLOBAL_PENDING, "invalid zero_work_requests count")
+        return _nonneg_int(raw, MAX_STATUS_COUNT, "invalid zero_work_requests count")
     if isinstance(raw, list):
         require(len(raw) <= MAX_JOBS, "oversized zero_work_hosts list")
         return len(raw)
@@ -244,7 +285,7 @@ def parse_server_status(raw):
                 require(not required, f"missing BOINC status <{tag}>")
                 return None
             require(value.isascii() and value.isdecimal(), f"invalid BOINC status <{tag}>")
-            return _nonneg_int(int(value), MAX_GLOBAL_PENDING, f"out-of-range BOINC status <{tag}>")
+            return _nonneg_int(int(value), MAX_STATUS_COUNT, f"out-of-range BOINC status <{tag}>")
 
         apps_nodes = container.findall("tasks_by_app/app")
         if not apps_nodes and container is not root:
@@ -291,8 +332,8 @@ def parse_server_status(raw):
             name = item["name"]
             require(APP_NAME.fullmatch(name) and name not in apps, "invalid/duplicate BOINC app")
             require("unsent" in item and "in_progress" in item, "missing BOINC app queue counters")
-            unsent = _nonneg_int(item["unsent"], MAX_GLOBAL_PENDING, "invalid app unsent count")
-            in_progress = _nonneg_int(item["in_progress"], MAX_GLOBAL_PENDING,
+            unsent = _nonneg_int(item["unsent"], MAX_STATUS_COUNT, "invalid app unsent count")
+            in_progress = _nonneg_int(item["in_progress"], MAX_STATUS_COUNT,
                                       "invalid app in_progress count")
             apps[name] = {"unsent": unsent, "in_progress": in_progress, "runnable": unsent + in_progress}
     elif isinstance(raw_apps, dict):
@@ -301,8 +342,8 @@ def parse_server_status(raw):
             require(isinstance(name, str) and APP_NAME.fullmatch(name) and isinstance(item, dict),
                     "invalid BOINC app entry")
             require("unsent" in item and "in_progress" in item, "missing BOINC app queue counters")
-            unsent = _nonneg_int(item["unsent"], MAX_GLOBAL_PENDING, "invalid app unsent count")
-            in_progress = _nonneg_int(item["in_progress"], MAX_GLOBAL_PENDING,
+            unsent = _nonneg_int(item["unsent"], MAX_STATUS_COUNT, "invalid app unsent count")
+            in_progress = _nonneg_int(item["in_progress"], MAX_STATUS_COUNT,
                                       "invalid app in_progress count")
             apps[name] = {"unsent": unsent, "in_progress": in_progress, "runnable": unsent + in_progress}
     else:
@@ -319,9 +360,9 @@ def parse_server_status(raw):
     return {
         "apps": apps,
         "results_ready_to_send": (sum(a["unsent"] for a in apps.values())
-                                  if ready is None else _nonneg_int(ready)),
+                                  if ready is None else _nonneg_int(ready, MAX_STATUS_COUNT)),
         "results_in_progress": (sum(a["in_progress"] for a in apps.values())
-                                if in_prog is None else _nonneg_int(in_prog)),
+                                if in_prog is None else _nonneg_int(in_prog, MAX_STATUS_COUNT)),
         "zero_work_requests": zero_work,
         "cohorts": cohorts,
     }
@@ -442,6 +483,7 @@ def load_config(path):
                 "local handoff_root requires a queue plan and an absolute directory")
     if "gold_onboarding" in config:
         _validate_gold_onboarding(config["gold_onboarding"])
+    _validate_native_plan(config)
     if "pages_per_unit" in config:
         units = config["pages_per_unit"]
         require(isinstance(units, dict) and units and set(units) <= set(QUEUES) and
@@ -491,9 +533,13 @@ def load_config(path):
     return config
 
 
+# Not allocation: turning these on or changing them needs no migration. A native plan's hosts
+# (#1780) are widened one at a time, by hand.
+UNALLOCATED = ("gold_onboarding", "native_hosts")
+
+
 def digest(config):
-    # Gold onboarding settings are not allocation: turning it on or tuning it needs no migration.
-    allocation = {key: value for key, value in config.items() if key != "gold_onboarding"}
+    allocation = {key: value for key, value in config.items() if key not in UNALLOCATED}
     return hashlib.sha256(json.dumps(allocation, sort_keys=True).encode()).hexdigest()
 
 
@@ -1167,7 +1213,12 @@ class Transport:
 
     @timed("export")
     def export(self, pages, job_ids=()):
+        """Export `pages`, pushing again first any whose scan is not where this export reads it.
+        Returns {page: why its JP2 is cut short at LoC} for the pages that push found cut short
+        (checked as the first push is, with --skip-truncated-scans, #1457): they are not exported,
+        and the caller settles them like a first push's."""
         queue = self.config.get("source") == "queue"
+        truncated_pages = {}
         if queue:
             # A page whose scan went to another destination (the export moved on-prem, or back,
             # after it was pushed) is pushed again where this export reads it.
@@ -1180,9 +1231,13 @@ class Transport:
                             if page.get("scan_base") and (page.get("pushed_to", "container") != dest
                                                           or page.get("supersedes"))})
             if stale:
-                # Not checked again: a page is checked once, when it is first pushed.
-                found, missing, _ = self.push_pages(stale, skip_truncated=False)
+                # Checked as a first push is (#1457): a scan that was cut short, or became so
+                # after its first push, is not sent again.
+                found, missing, truncated = self.push_pages(stale)
                 require(not missing, "a claimed page's scan is gone from the scan server; release it")
+                truncated_pages = {page["page"]: truncated[page["scan_base"]] for page in pages
+                                   if page.get("scan_base") in truncated}
+                pages = [page for page in pages if page["page"] not in truncated_pages]
                 # The push finds each scan's format again: export asks for the file it sent.
                 root = self.config["scans_root"].rstrip("/")
                 pages = [dict(page, scan=f"{root}/{found[page['scan_base']]}")
@@ -1192,6 +1247,8 @@ class Transport:
             for page in pages:
                 argv += ["--scan", page["scan"]]
             self.run(argv, "cached scan push", execution_route="azure/scans")
+        if not pages:
+            return truncated_pages
         # The exporter takes one base batch at a time; queued pages come from many.
         batches = {}
         for page in pages:
@@ -1224,6 +1281,7 @@ class Transport:
             if retried:
                 variables["HANDOFF_DEADLINE_RETRIES"] = ",".join(retried)
             self.step("handoff", "export", **variables)
+        return truncated_pages
 
     @timed("claim")
     def claim(self, count):
@@ -1443,6 +1501,16 @@ class Transport:
             return
         for group in chunks(job_ids):
             self.step("bridge", "submit-remote", JOB_IDS=",".join(group),
+                      HANDOFF_URL=self.handoff_url)
+
+    @timed("submit")
+    def submit_native(self, units):
+        """Submit (job id, host id) pairs as usnm_ocr_native units, each assigned to its host
+        (#1780): NATIVE_UNITS, one bridge execution a step. The bridge creates a unit only if the
+        trust list admits its host, and stops at the first failure."""
+        for group in chunks(units):
+            self.step("bridge", "submit-remote",
+                      NATIVE_UNITS=",".join(f"{job_id}={host}" for job_id, host in group),
                       HANDOFF_URL=self.handoff_url)
 
     @timed("collect")
@@ -1735,12 +1803,16 @@ class QueueFeed:
         # exports the same job id, which BOINC already has, so their messages are kept
         # hidden here too rather than claimed as new work.
         self.sibling_archived = sibling_archived or {}
+        # Messages whose job, in any plan, is settled for good now: published, or kept by a held
+        # scope (doc id -> message sha256s). The tick sets them from the journals before it fills.
+        self.settled_messages = {}
 
     def restore(self):
         self.config["pages"] = [
             {"page": page, "batch": claim["batch"], "scan": claim["scan"],
              "scan_base": claim["scan_base"], "pushed_to": claim.get("pushed_to", "container"),
-             **({"supersedes": claim["supersedes"]} if claim.get("supersedes") else {})}
+             **({"supersedes": claim["supersedes"]} if claim.get("supersedes") else {}),
+             **({"cut_short": True} if "export_truncated" in claim else {})}
             for page, claim in sorted(self.claims.items()) if claim.get("scan")]
 
     @staticmethod
@@ -1769,7 +1841,24 @@ class QueueFeed:
             if isinstance(page, str) and PAGE_KEY.fullmatch(page) and isinstance(message, str) \
                     and ID.fullmatch(message):
                 pages.setdefault(page.replace("/", "_"), set()).add(message)
+        for doc, messages in self.settled_messages.items():
+            pages.setdefault(doc, set()).update(messages)
         return {doc: sorted(messages) for doc, messages in sorted(pages.items())}
+
+    def publish_settled(self):
+        """Put the held-pages list out when it changed, whether or not this tick claims (#1754).
+        `fill` publishes before a claim, but a tick that doesn't claim (the queue is full, a
+        result is held at collection, the plan drains) settles pages too, and the seeder reads
+        the same list to stop counting and retrying them. A failure here only leaves the list
+        as it was: the tick goes on, and the next one tries again."""
+        publish = getattr(self.transport, "publish_held", None)
+        if publish is None:
+            return
+        try:
+            publish(self.held_pages())
+        except (RuntimeError, OSError) as error:
+            print(json.dumps({"event": "boinc_batch_held_pages_unpublished", "schema_version": 1,
+                              "error": str(error)[:500]}), file=sys.stderr, flush=True)
 
     def fill(self, count, selected, owned=None, now=None):
         """Make `count` more pages ready: claim them (less any already claimed but not yet
@@ -1879,7 +1968,10 @@ class QueueFeed:
                 and found["queued_at"] != job["message"].get("queued_at"),
                 f"invalid deadline retry record for job {job['id']} (page {page}, doc {claim['doc_id']}, "
                 f"message {claim['message']})")
-        self.claims[page] = {**self.claims[page], "message": claim["message"], "supersedes": job["id"]}
+        # The retry's scan is pushed and checked again: a cut-short mark of the old attempt goes.
+        self.claims[page] = {**{key: value for key, value in self.claims[page].items()
+                                if key != "export_truncated"},
+                             "message": claim["message"], "supersedes": job["id"]}
         self.state.setdefault("deadline_retries", {})[job["id"]] = {
             "page": page, "message": claim["message"], "queued_at": found["queued_at"],
             "timeout_secs": timeout}
@@ -1899,6 +1991,45 @@ class QueueFeed:
             for page in pages:
                 del self.claims[page]
             self.persist()
+
+    def settle_export_truncated(self, truncated, selected, now, journaled=None):
+        """Pages whose scan export found cut short when it pushed them again (#1457), `truncated`
+        being {page: reason}: dead-lettered and listed as a first push's are, and dropped from
+        `selected` so they aren't waited for. A page this plan already has a journal for (a
+        deadline retry's failed job, or a prepared one) is not settled: its allocation has to stay
+        for the journal's ownership check. It is left claimed, not exported, and logged."""
+        journaled = journaled or {}
+        kept = sorted(page for page in truncated if page in journaled)
+        # A failed journal (a deadline retry's) is settled work and counts for nothing. A prepared
+        # one would count as backlog for good: stop for an operator instead of holding it.
+        live = [page for page in kept if journaled[page]["stage"] != "failed"]
+        require(not live, f"export found {', '.join(live)} cut short, but the plan holds a live journal "
+                "for it; reconcile the journal before the next tick (#1457)")
+        for page in kept:
+            # Kept in the state, so later ticks pass it over and it doesn't take export slots.
+            self.claims[page]["export_truncated"] = truncated[page]
+        if kept:
+            self.persist()
+            self.restore()
+            try:
+                print(json.dumps({"event": "boinc_batch_export_truncated_kept", "schema_version": 1,
+                                  "pages": kept, "message": "cut short at LoC, but the plan holds a journal "
+                                  "for them: not exported, left claimed until the lease runs out"},
+                                 sort_keys=True), file=sys.stderr, flush=True)
+            except (OSError, ValueError):
+                pass
+        truncated = {page: reason for page, reason in truncated.items() if page not in journaled}
+        if not truncated:
+            return
+        for page, reason in truncated.items():
+            claim = self.claims.get(page)
+            require(claim is not None, f"export found {page} cut short, and it has no claim")
+            claim["source_truncated"] = reason
+            claim["scan"] = None
+            selected.pop(page, None)
+        self.persist()
+        self.retry_truncated(now)
+        self.restore()
 
     def retry_truncated(self, now):
         """Dead-letter the claimed pages whose JP2 LoC holds cut short (#1457): released, the
@@ -1932,7 +2063,7 @@ def _select_cohort_entry(mapping, keys, *, allow_single_default=False):
 
 def resolve_watermarks(config, snapshot, status=None, *,
                        low_watermark=None, high_watermark=None, max_global_pending=None,
-                       other_app_budget=None):
+                       other_app_budget=None, native_slots=None):
     cohorts = config.get("cohorts") or {}
     app = normalize_cohort_apps(config.get("app", OCR_APP_NAME))
     platform = normalize_cohort_platform(config.get("platform", "all"))
@@ -1958,6 +2089,9 @@ def resolve_watermarks(config, snapshot, status=None, *,
     require(isinstance(status_cohort, dict), "invalid status cohort entry")
     active_hosts = snapshot.get("cohort_active_hosts",
                                 status_cohort.get("active_hosts", snapshot["active_hosts"]))
+    if native_slots is not None:
+        # A native plan (#1780): only its own hosts with a unit's room count.
+        active_hosts = sum(slots > 0 for slots in native_slots.values())
     _nonneg_int(active_hosts, MAX_GLOBAL_PENDING, "invalid cohort active_hosts")
 
     explicit_high = (high_watermark if high_watermark is not None
@@ -1966,9 +2100,11 @@ def resolve_watermarks(config, snapshot, status=None, *,
                     else cohort_cfg.get("low_watermark", config.get("low_watermark")))
     explicit_global = (max_global_pending if max_global_pending is not None
                        else config.get("max_global_pending"))
+    # A native plan always admits by its own work (#1780): every app's would stop it for good.
+    # It refills as soon as a host has room (low watermark one under the high), to keep CPUs busy.
     cohort_mode = (status is not None or explicit_high is not None or explicit_low is not None or
                    explicit_global is not None or other_app_budget is not None or
-                   "cohorts" in config or "cohort" in config)
+                   "cohorts" in config or "cohort" in config or native_slots is not None)
 
     if explicit_high is not None:
         require(type(explicit_high) is int and 1 <= explicit_high <= MAX_JOBS,
@@ -1988,13 +2124,18 @@ def resolve_watermarks(config, snapshot, status=None, *,
         high_target = 0
         low_target = 0
     else:
-        if explicit_high is not None:
+        if native_slots is not None:
+            # CPU fill: each host's units, at most its CPUs and pages_per_host, within max_pending
+            # (and a high watermark, when one is set).
+            high_target = min(config["max_pending"], sum(native_slots.values()),
+                              MAX_JOBS if explicit_high is None else explicit_high)
+        elif explicit_high is not None:
             high_target = explicit_high
         else:
             high_target = min(config["max_pending"], active_hosts * pages_per_host)
         if explicit_low is not None:
             low_target = min(explicit_low, high_target)
-        elif cohort_mode:
+        elif cohort_mode and native_slots is None:
             low_target = max(0, high_target // 2)
         else:
             low_target = max(0, high_target - 1)
@@ -2260,6 +2401,81 @@ def sibling_archived_held(own_dir, dirs):
     return merged
 
 
+def sibling_claim_messages(own_dir, dirs):
+    """The message sha256s of other plans' claims (--check-state-dir): page -> every sha any of
+    them recorded when `claim pull` took the page's message, as the queue held it. A claim
+    that carries none is left out."""
+    own = Path(own_dir).resolve()
+    merged = {}
+    for directory in dirs:
+        directory = Path(directory).resolve()
+        require(directory != own, "--check-state-dir names this plan's own state directory")
+        claims = json.loads((directory / "state.json").read_text()).get("claims", {})
+        require(isinstance(claims, dict) and len(claims) <= MAX_JOBS,
+                f"{directory}/state.json has no valid claims")
+        for page, claim in claims.items():
+            message = claim.get("message") if isinstance(claim, dict) else None
+            if isinstance(message, str) and ID.fullmatch(message):
+                merged.setdefault(page, set()).add(message)
+    return merged
+
+
+def queue_message_sha256(message):
+    """The sha256 of a journal's queue message as the queue holds it: base64 of its compact JSON,
+    fields in the journal's order, as usnm-boinc's OcrMessage::encode writes it and `claim pull`
+    hashes it. A message that doesn't come out the same (a float written differently) just
+    matches nothing."""
+    text = base64.b64encode(json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode())
+    return hashlib.sha256(text).hexdigest()
+
+
+def claimed_messages(claims, sibling_claims=None):
+    """Page -> the message sha256s `claim pull` recorded for it, in this plan's claims and in the
+    other plans' (--check-state-dir): what settled_messages checks a journal's message against."""
+    found = {page: set(shas) for page, shas in (sibling_claims or {}).items()}
+    for page, claim in (claims or {}).items():
+        message = claim.get("message") if isinstance(claim, dict) else None
+        if isinstance(message, str) and ID.fullmatch(message):
+            found.setdefault(page, set()).add(message)
+    return found
+
+
+def settled_messages(records, claimed=None):
+    """Doc id -> the queue message sha256s of journals, of any plan, settled for good with a
+    result: published, or kept by a held scope (#835). Such a message, back after its lease, is
+    the same message that job ran: the claim step deletes it (held-pages list) rather than claim
+    it again and pass it over as settled elsewhere. A failed, pending or in-flight job's message
+    is never listed.
+
+    The journal's message is not always the queue's byte for byte: the export parses its score
+    as a float and can land one ulp off the number the seeder wrote (13 % of 556 held srp pages,
+    11 Nov 2026), so the sha256 written out again matches nothing. `claimed` (claimed_messages)
+    holds the shas `claim pull` recorded; when the message's own sha256 isn't among a page's
+    claims, a neighbouring score's is tried, and one that is among them is listed too. A sha256
+    nobody claimed is never listed, so a newer message of the page stays new work."""
+    claimed = claimed or {}
+    found = {}
+    for record in records:
+        if not (record.get("stage") == "published" or kept_by_policy(record)):
+            continue
+        message = (record.get("job") or {}).get("message")
+        page = message.get("page") if isinstance(message, dict) else None
+        if isinstance(page, str) and PAGE_KEY.fullmatch(page):
+            shas = found.setdefault(page.replace("/", "_"), set())
+            own = queue_message_sha256(message)
+            shas.add(own)
+            wanted = claimed.get(page, set())
+            score = message.get("score")
+            # A message the page's claims already hold byte for byte needs no neighbour: a claim
+            # of an adjacent score is then another message, and stays new work.
+            if wanted and own not in wanted and type(score) is float and math.isfinite(score):
+                for toward in (math.inf, -math.inf):
+                    sha = queue_message_sha256({**message, "score": math.nextafter(score, toward)})
+                    if sha in wanted:
+                        shas.add(sha)
+    return found
+
+
 def kept_by_policy(record):
     """Collected and kept, not published, because the trust list holds the job's scope (#835):
     nothing is wrong with it, and collecting it again changes nothing until the hold is lifted."""
@@ -2297,15 +2513,53 @@ def held_results(state, held_jobs, now):
     return len(since), int(max((now - at for at in since.values()), default=0))
 
 
+def native_capacity(config, snapshot):
+    """A native plan's room on each of its hosts (#1780): `units_per_cpu` units (default 1) for
+    each CPU the host's client last reported (the inventory's host_cpus), at most pages_per_host.
+    A host not active in the last day, or an inventory from a server image without host_cpus,
+    gets none. A host asks for work only now and then, and backs off when it finds none, so a
+    room of one unit per CPU leaves it idle between ticks; units_per_cpu is what makes the room
+    last."""
+    cpus = snapshot.get("host_cpus", {})
+    require(isinstance(cpus, dict) and len(cpus) <= 100000 and
+            all(isinstance(host, str) and host.isdecimal() and type(n) is int and n >= 0
+                for host, n in cpus.items()), "invalid host CPU inventory")
+    per_cpu = config.get("units_per_cpu", 1)
+    return {host: min(cpus.get(str(host), 0) * per_cpu, config["pages_per_host"])
+            for host in config["native_hosts"]}
+
+
+def assign_native_hosts(job_ids, slots, outstanding):
+    """(job id, host) for as many of `job_ids` as the hosts have room for: each to the host with
+    the most room left (the lowest id on a tie), never past a host's slots. `outstanding` (host
+    -> its units not yet settled) is updated."""
+    units = []
+    for job_id in job_ids:
+        room = {host: n - outstanding.get(host, 0) for host, n in slots.items()}
+        host = max(sorted(room), key=lambda h: room[h], default=None)
+        if host is None or room[host] <= 0:
+            break
+        outstanding[host] = outstanding.get(host, 0) + 1
+        units.append((job_id, host))
+    return units
+
+
 def tick(config, state, transport, persist, now=None, *, drain=False, dead_letter_failed=False,
          low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None,
-         refill_cap=None, other_app_budget=None, sibling_archived=None):
+         refill_cap=None, other_app_budget=None, sibling_archived=None, sibling_claims=None,
+         resume_native=False):
     if config.get("app") == SURYA_APP_NAME:
         require(refill_cap is None, "--refill-cap is for OCR plans")
         require(other_app_budget is None, "--other-app-budget is for OCR plans")
         return surya_tick(config, state, transport, persist, now, drain=drain,
                           low_watermark=low_watermark, high_watermark=high_watermark,
                           server_status=server_status)
+    # A native plan (#1780): its units go only to its native_hosts, and a native result it can't
+    # publish pauses it rather than stopping the tick.
+    native = config.get("app") == NATIVE_APP_NAME
+    require(native or not resume_native, f"--resume-native is for {NATIVE_APP_NAME} plans")
+    if resume_native and state.pop("native_paused", None) is not None:
+        persist()
     # Claims, exports and submits per tick (#1447). Collection still takes up to batch_size, so a
     # shorter tick doesn't leave held results that stop the next refill.
     refill = config["batch_size"] if refill_cap is None else min(config["batch_size"], refill_cap)
@@ -2322,6 +2576,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         warn_near_cap("archived_held", len(feed.archived_held), MAX_ARCHIVED_HELD, now)
     for key in ("pending_workunits", "active_hosts"):
         require(type(snapshot[key]) is int and snapshot[key] >= 0, "invalid capacity inventory")
+    native_slots = native_capacity(config, snapshot) if native else None
     pending_jobs = snapshot["pending_jobs"]
     require(isinstance(pending_jobs, list) and len(pending_jobs) <= MAX_JOBS and
             all(isinstance(job_id, str) and ID.fullmatch(job_id) for job_id in pending_jobs) and
@@ -2503,21 +2758,52 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             require(re.fullmatch(r"/[A-Za-z0-9_./-]+/results/[A-Za-z0-9_./-]+", spool)
                     and ".." not in spool, "invalid assimilator spool")
             to_collect.append((job_id, spool))
-    if hasattr(transport, "collect_batch"):
-        transport.collect_batch(to_collect)
-    else:
-        for job_id, spool in to_collect:
-            transport.collect(job_id, spool)
+    collect_error = None
+    try:
+        if hasattr(transport, "collect_batch"):
+            transport.collect_batch(to_collect)
+        else:
+            for job_id, spool in to_collect:
+                transport.collect(job_id, spool)
+    except RuntimeError as error:
+        # A native plan goes on below, if the failure left a result unpublished.
+        if not native:
+            raise
+        collect_error = error
     count = len(to_collect)
     if count:
         records = read_records()
         owned = own(records)
+    if native:
+        # A native result a collect attempt didn't publish (the trust list doesn't admit its host
+        # for the native build, or its collect failed), or one kept under a held scope, stays as
+        # it is, unpublished. While any is there, this plan stays paused with an alert, whether it
+        # came in this tick or before, and --resume-native can't lift that; the tick goes on, and
+        # container plans are untouched (#1780). A result not yet tried (past batch_size) is only
+        # collection backlog: the attempted ones are kept on record (native_unpublished).
+        collected = {job_id for job_id, _ in to_collect}
+        unsettled = {record["job"]["id"] for record in owned.values() if not settled(record)}
+        unpublished = sorted(unsettled & (collected | set(state.get("native_unpublished", []))))
+        state["native_unpublished"] = unpublished
+        kept = sorted(record["job"]["id"] for record in owned.values() if kept_by_policy(record))
+        if collect_error is not None and not collected & set(unpublished):
+            raise collect_error
+        if unpublished or kept:
+            reasons = (["collect left a native result unpublished"
+                        + (f" ({collect_error})" if collect_error is not None else "")] if unpublished else [])
+            reasons += ["a native result is kept by a held scope"] if kept else []
+            since = (state.get("native_paused") or {}).get("at", int(now))
+            state["native_paused"] = {"at": since, "reason": "; ".join(reasons),
+                                      "jobs": (unpublished + kept)[:5]}
+            persist()
+    native_paused = state.get("native_paused") if native else None
     settle_failed(owned)
     status = _extract_status(snapshot, transport, server_status=server_status, drain=drain)
     cohort_info = resolve_watermarks(
         config, snapshot, status,
         low_watermark=low_watermark, high_watermark=high_watermark,
         max_global_pending=max_global_pending, other_app_budget=other_app_budget,
+        native_slots=native_slots,
     )
     ocr_app = cohort_info["app"]
     active_hosts = cohort_info["active_hosts"]
@@ -2558,7 +2844,14 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     other_workunits = other_app_workunits(snapshot, ocr_app)
     budgeted_other = other_workunits or 0
     ocr_in_flight += bundled_pages
-    cohort_pending = ocr_in_flight + uncollected_not_pending + len(missing)
+    cohort_uncollected = uncollected_not_pending
+    if native:
+        # Only this plan's own work is the native plan's (#1780): every plan's units are named
+        # usnm_<job>, and container work isn't its to count. The global cap still counts it all.
+        ocr_in_flight = sum(record["job"]["id"] in pending_jobs for record in owned.values())
+        cohort_uncollected = sum(not settled(record) and record["job"]["id"] not in pending_jobs
+                                 for record in owned.values())
+    cohort_pending = ocr_in_flight + cohort_uncollected + len(missing)
     global_pending = global_in_flight + uncollected_not_pending + len(missing)
     global_pending_counted = counted_pending(cohort_info, global_pending, budgeted_other)
     cohort_pending_results = (max(ocr_workunits, ocr_status_results) + bundled_pages
@@ -2585,9 +2878,15 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     global_free = max(0, global_room(cohort_info, global_pending, budgeted_other))
     free = min(cohort_free, global_free)
     submitted = 0
-    if target and not held and not drain and not gold_ran:
+    if feed:
+        # Every tick, so the list stays current when this one claims nothing (#1754).
+        feed.settled_messages = settled_messages(records, claimed_messages(state.get("claims"), sibling_claims))
+        feed.publish_settled()
+    if target and not held and not drain and not gold_ran and not native_paused:
         if free > 0:
             if feed:
+                feed.settled_messages = settled_messages(
+                    records, claimed_messages(state.get("claims"), sibling_claims))
                 feed.fill(min(refill, free), selected, owned, now)
                 # The fresh claims are allocated now: one another plan's journal is for is passed
                 # over and reported, even when nothing else is exported (#1685).
@@ -2608,6 +2907,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # Never a page any other plan's journal is for, a page claimed this tick included (#1685).
         foreign = {record["job"]["message"]["page"] for record in records if record["plan"] != config["plan"]}
         export = [page for page in config["pages"] if page["page"] in selected and
+                  not page.get("cut_short") and
                   page["page"] not in foreign and
                   (page["page"] not in owned or retried(page) or
                    (owned[page["page"]]["stage"] == "prepared"
@@ -2620,7 +2920,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                             if record["job"]["message"]["page"] in pages]
                 require(len(journals) <= STEP_IDS,
                         "too many existing journals for selected pages; reconcile history")
-                transport.export(group, journals)
+                truncated = transport.export(group, journals)
+                if truncated and feed:
+                    feed.settle_export_truncated(truncated, selected, now, owned)
+                    export = [page for page in export if page["page"] not in truncated]
             records = read_records()
             owned = own(records)
             stuck = sorted(page["page"] for page in export if retried(page))
@@ -2636,7 +2939,13 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         backlog = sum(not settled(record) and
                       record["job"]["id"] not in pending_jobs | candidates for record in records)
         backlog += sum(page not in owned and page not in conflicts for page in selected)
-        cohort_submit_room = max(0, target - ocr_in_flight - backlog)
+        cohort_backlog = backlog
+        if native:
+            cohort_backlog = sum(not settled(record) and
+                                 record["job"]["id"] not in pending_jobs | candidates
+                                 for record in owned.values())
+            cohort_backlog += sum(page not in owned and page not in conflicts for page in selected)
+        cohort_submit_room = max(0, target - ocr_in_flight - cohort_backlog)
         global_submit_room = max(0, global_room(cohort_info, global_in_flight + backlog, budgeted_other))
         submit_limit = min(refill, cohort_submit_room, global_submit_room)
         to_submit = []
@@ -2649,7 +2958,38 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                 require(job_id not in existing_jobs,
                         "SQL/journal mismatch; reconcile existing work before any automatic submission")
                 to_submit.append(job_id)
-        if hasattr(transport, "submit_batch"):
+        if native:
+            # Each unit to one of the plan's hosts with room: its CPUs, at most pages_per_host,
+            # less its units not yet settled. Recorded before submission, so a tick that stops
+            # in it leaves the choice on record; a reserved job is assigned again each tick.
+            targets = state.setdefault("native_targets", {})
+            open_jobs = {record["job"]["id"] for record in owned.values() if not settled(record)}
+            for job_id in [job_id for job_id in targets if job_id not in open_jobs]:
+                del targets[job_id]
+            # A job still reserved here (this tick's, or one a refused batch left past it) has no
+            # unit yet, so takes no host's room; it is assigned again when it is submitted.
+            outstanding = {}
+            for job_id, host in targets.items():
+                if job_id not in candidates:
+                    outstanding[host] = outstanding.get(host, 0) + 1
+            units = assign_native_hosts(to_submit, native_slots, outstanding)
+            for job_id, host in units:
+                targets[job_id] = host
+            persist()
+            to_submit = [job_id for job_id, _ in units]
+            if units:
+                try:
+                    transport.submit_native(units)
+                except RuntimeError as error:
+                    # Refused by trust at submission, or failed: that job and the ones after it
+                    # were not created. The plan pauses with an alert (an uncertain one stops
+                    # the next tick before any submission, as for every plan).
+                    state["native_paused"] = {"at": int(now), "reason": f"native submission failed ({error})",
+                                              "jobs": to_submit[:5]}
+                    persist()
+                    native_paused = state["native_paused"]
+                    to_submit = []
+        elif hasattr(transport, "submit_batch"):
             if max(config.get("pages_per_unit", {}).values(), default=1) > 1:
                 by_id = {record["job"]["id"]: record for record in owned.values()}
                 units = units_of(config, [by_id[j] for j in to_submit])
@@ -2675,7 +3015,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
 
     post_uncollected_not_pending = sum(
         not settled(record) and record["job"]["id"] not in pending_jobs
-        for record in records
+        for record in (owned.values() if native else records)
     )
     post_missing = sum(page not in owned and page not in conflicts for page in selected)
     post_cohort_pending = ocr_in_flight + post_uncollected_not_pending + post_missing
@@ -2688,6 +3028,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     if drain:
         backpressure = True
         backpressure_reason = "draining"
+    elif native_paused:
+        backpressure = True
+        backpressure_reason = "native_paused"
     elif held > 0:
         backpressure = True
         backpressure_reason = "collection_backlog"
@@ -2696,7 +3039,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         backpressure_reason = "gold_tick"
     elif target == 0:
         backpressure = True
-        backpressure_reason = "no_active_hosts"
+        backpressure_reason = "no_native_hosts" if native else "no_active_hosts"
     elif cohort_mode and global_block:
         backpressure = True
         backpressure_reason = global_block
@@ -2751,6 +3094,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         alerts.append({"code": "ownership_conflict", "pages": len(disputed),
                        "first": [{"page": page, "other_plans": conflicts[page]["plans"]}
                                  for page in disputed[:5]]})
+    if native_paused:
+        alerts.append({"code": "native_paused", "app": NATIVE_APP_NAME, **native_paused,
+                       "message": "native OCR paused; inspect the held results, then --resume-native"})
     for run in gold_runs:
         for step, outcome in run["steps"].items():
             if outcome not in ("ok", GOLD_SKIPPED_AT_CAP):
@@ -2769,7 +3115,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     started = state.setdefault("started_at", now)
     state["published"] = published
     persist()
-    return with_timings({
+    event = {
         "event": "boinc_batch_tick", "schema_version": 1, "at": int(now), "plan": config["plan"],
         "draining": drain,
         "active_hosts": active_hosts, "target_pending": target,
@@ -2820,7 +3166,16 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         "zero_work_requests": zero_work_requests,
         "starvation_alert": starvation_alert,
         "alerts": alerts,
-    }, transport)
+    }
+    if native:
+        targets = state.get("native_targets", {})
+        event["native"] = {
+            "hosts": config["native_hosts"],
+            "slots": {str(host): n for host, n in native_slots.items()},
+            "outstanding": {str(host): sum(h == host for h in targets.values()) for host in config["native_hosts"]},
+            "paused": native_paused,
+        }
+    return with_timings(event, transport)
 
 
 def main(argv=None):
@@ -2878,6 +3233,10 @@ def main(argv=None):
                         help="claim pages in this source language too, beside the configuration's "
                              "claim_languages, without changing the allocation digest; repeat for more. "
                              "Use it for a language whose scope trust.json holds or trusts")
+    parser.add_argument("--resume-native", action="store_true",
+                        help=f"a {NATIVE_APP_NAME} plan paused on a native result it could not publish, or "
+                             "a refused submission (#1780): clear the pause and go on; a result still held "
+                             "pauses it again")
     parser.add_argument("--rest-journals", action="store_true",
                         help="list and fetch journals over the storage REST API with az's token")
     parser.add_argument("--onprem-handoff", action="append", choices=sorted(ONPREM_HANDOFF), default=[],
@@ -2916,6 +3275,8 @@ def main(argv=None):
                     and not set(args.claim_language) & set(config["claim_languages"])
                     and all(re.fullmatch(r"[a-z]{3}", l) for l in args.claim_language),
                     "--claim-language adds new three-letter codes to the configuration's claim_languages")
+        require(not args.resume_native or config.get("app") == NATIVE_APP_NAME,
+                f"--resume-native is for {NATIVE_APP_NAME} plans")
         require(1 <= args.collect_parallel <= MAX_COLLECT_PARALLEL, "invalid --collect-parallel")
         require(args.collect_parallel == 1 or args.batch_collect, "--collect-parallel needs --batch-collect")
         surya = config.get("app") == SURYA_APP_NAME
@@ -2962,6 +3323,11 @@ def main(argv=None):
                 plan_event["other_app_budget"] = args.other_app_budget
             if config.get("claim_languages"):
                 plan_event["claim_languages"] = config["claim_languages"] + args.claim_language
+            if config.get("app") == NATIVE_APP_NAME:
+                plan_event["app"] = NATIVE_APP_NAME
+                plan_event["native_hosts"] = config["native_hosts"]
+                plan_event["pages_per_host"] = config["pages_per_host"]
+                plan_event["units_per_cpu"] = config.get("units_per_cpu", 1)
             print(json.dumps(plan_event))
             return 0
         args.state_dir = args.state_dir.resolve()
@@ -2989,6 +3355,8 @@ def main(argv=None):
                 extra_claim_languages=tuple(args.claim_language),
             )
             tick_kwargs = {"drain": args.drain, "dead_letter_failed": args.dead_letter_failed}
+            if args.resume_native:
+                tick_kwargs["resume_native"] = True
             if args.low_watermark is not None:
                 tick_kwargs["low_watermark"] = args.low_watermark
             if args.high_watermark is not None:
@@ -3004,6 +3372,7 @@ def main(argv=None):
                 # with the journals this tick lists.
                 if args.check_state_dir:
                     tick_kwargs["sibling_archived"] = sibling_archived_held(args.state_dir, args.check_state_dir)
+                    tick_kwargs["sibling_claims"] = sibling_claim_messages(args.state_dir, args.check_state_dir)
                 event = tick(config, state, transport, lambda: save(path, state), **tick_kwargs)
             # Again after the lease is released, so the line counts the release too.
             event["timings"] = timings.summary()

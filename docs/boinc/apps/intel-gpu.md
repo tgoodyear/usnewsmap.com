@@ -228,6 +228,19 @@ replaced it.
   120 s later, with the driver libraries now in the page cache. A counter in the slot allows
   three such postponements, after which the timeout ends `no_gpu`. The deadline and device
   matching are unchanged.
+- **Dropped connections.** On Computer 9 `llama-server` now and then hangs up on a request
+  ("chat completion failed: HTTP status code", or "malformed HTTP response"), with no
+  out-of-memory report, at about 0.3% of crops. The app treats an empty or garbled status line,
+  a reset or early end of the connection, a reply cut short, or a `llama-server` that has exited
+  as a broken connection, and only those. It starts a fresh `llama-server` and asks for the same
+  crop again, up to twice. If the crop still fails, it writes `boinc_temporary_exit` (60 s) and
+  exits without finishing; the client restarts the task, which resumes after the last completed
+  crop in `qwen_checkpoint.json`. The checkpoint counts these exits (`temporary_exits`) and the
+  restarts (`llama_restarts`); after three exits the next failure ends the task as `failed`, as
+  before. A real HTTP error status from `llama-server`, a deadline, and a reply that arrives but
+  is invalid still fail at once. The counts appear in the result's `diag` (`llama_restarts`,
+  `temporary_exits`) when they are not zero, and each restart is in `diag.txt` with the server
+  log's tail from before it.
 
 OpenCL is not a reliable memory gate for integrated GPUs. On Computer 9, OpenCL reported
 15,135,723,520 bytes (nearly all system RAM), while Vulkan reported a 7,917 MiB heap with

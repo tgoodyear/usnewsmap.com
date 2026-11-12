@@ -1,8 +1,11 @@
 <?php
 // Operator-only dispatch window; never changes account preferences or scientific rows.
 // shared_8b opens Intel/NVIDIA Vulkan classes over the same audited, bounded workunit range.
-const NATIVE_QWEN_CLASSES = ["nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b", "amd_vulkan_8b"];
-const INDEPENDENT_QWEN_CLASSES = ["amd_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b"];
+// Xiaomi-OCR-0 (0.8B) classes (#1776): batch-108 workunits, shipped closed, opened one audited
+// workunit at a time like the other independent classes and never generally.
+const NATIVE_XIAOMI_CLASSES = ["mt_x08", "apple_gpu_x08", "nvidia_vulkan_x08", "intel_vulkan_x08", "amd_vulkan_x08"];
+const NATIVE_QWEN_CLASSES = ["nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b", "amd_vulkan_8b", ...NATIVE_XIAOMI_CLASSES];
+const INDEPENDENT_QWEN_CLASSES = ["amd_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b", ...NATIVE_XIAOMI_CLASSES];
 // Native classes that run the 2B model on batch-2 workunits; the rest run 8B on batch 8.
 const NATIVE_QWEN_2B_CLASSES = ["nvidia_cuda_2b", "nvidia_vulkan_2b"];
 const SHARED_QWEN_CLASSES = ["intel_vulkan_8b", "nvidia_vulkan_8b"];
@@ -260,9 +263,11 @@ function native_qwen_cohort_validate($workunit, $results, $plan_class, $ordinary
     if ($ordinary_canary && $plan_class !== "amd_vulkan_8b") {
         throw new RuntimeException("Ordinary canary is for amd_vulkan_8b only");
     }
+    $xiaomi = in_array($plan_class, NATIVE_XIAOMI_CLASSES, true);
     $model = in_array($plan_class, NATIVE_QWEN_2B_CLASSES, true) ? "2b" : "8b";
-    $batch = $model === "2b" ? 2 : 8;
-    $disk = $model === "2b" ? 12884901888 : 19327352832;
+    $batch = $xiaomi ? 108 : ($model === "2b" ? 2 : 8);
+    // The 0.8B model's units carry the same disk bound as the 2B's (Target::disk_bound in usnm-boinc).
+    $disk = $xiaomi || $model === "2b" ? 12884901888 : 19327352832;
     if (intval($workunit->batch) !== $batch || intval($workunit->rsc_disk_bound) !== $disk
         || intval($workunit->min_quorum) !== 2 || intval($workunit->target_nresults) !== 2
         || intval($workunit->canonical_resultid) !== 0 || intval($workunit->error_mask) !== 0
@@ -303,6 +308,8 @@ function native_qwen_reservation_guard($original, $updated) {
     $new = new DOMXPath($after);
     foreach (array_merge(NATIVE_QWEN_CLASSES, ["docker_nvidia_cuda_8b"]) as $name) {
         $node = $new->query("//plan_class[name='$name']")->item(0);
+        // A policy from before the Xiaomi classes (#1776) has none of them; that is not a lease problem.
+        if (!$node && in_array($name, NATIVE_XIAOMI_CLASSES, true)) continue;
         $low = $node ? $new->query("min_wu_id", $node) : null;
         $high = $node ? $new->query("max_wu_id", $node) : null;
         if (!$low || $low->length !== 1 || $high->length !== 1

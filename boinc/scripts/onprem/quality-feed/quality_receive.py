@@ -162,21 +162,29 @@ def main(argv=None):
     if not docs:
         fail("empty sample")
 
+    # On the share each chown is a synchronous write to disk, and even an lstat of every entry in
+    # texts/ (thousands of files from earlier chunks) cost minutes a chunk. So own only what this
+    # run created or moved: the files it moves in, the directories and places.txt it may have
+    # made, the chunk's own incoming tree, and camp itself. Earlier chunks' entries were owned
+    # by their runs and are never walked.
+    touched = []
     for sub in ("scans", "texts"):
         os.makedirs(os.path.join(camp, sub), exist_ok=True)
+        touched.append(os.path.join(camp, sub))
         for name in os.listdir(os.path.join(inc, sub)):
-            os.replace(os.path.join(inc, sub, name), os.path.join(camp, sub, name))
+            dest = os.path.join(camp, sub, name)
+            os.replace(os.path.join(inc, sub, name), dest)
+            touched.append(dest)
     places = os.path.join(camp, "places.txt")
     if not os.path.exists(places):
         shutil.copyfile(os.path.join(a.share, "quality", a.places_from, "places.txt"), places)
-    for root, dirs, files in os.walk(camp):
-        if root == camp:
-            # Staging's own trees: never walked, they only grow.
-            dirs[:] = [d for d in dirs if d not in ("units", "pages")]
-        # On the share each chown is a synchronous write to disk, and texts/ holds thousands of
-        # files, so only what isn't the owner's yet: without this check, half an hour a chunk.
-        for n in dirs + files:
-            own(os.path.join(root, n))
+    touched.append(places)
+    touched.append(os.path.dirname(inc))
+    for root, dirs, files in os.walk(inc):
+        touched.append(root)
+        touched.extend(os.path.join(root, n) for n in files)
+    for path in touched:
+        own(path)
     own(camp)
     with open(os.path.join(inc, "langs.txt")) as f:
         langs = f.read().strip()

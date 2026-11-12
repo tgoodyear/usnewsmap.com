@@ -1159,6 +1159,7 @@ mod tests {
             scope: "",
             bins: Vec::new(),
             bin_known: Vec::new(),
+            days: Vec::new(),
             detail: Default::default(),
         }
     }

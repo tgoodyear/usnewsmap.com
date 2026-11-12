@@ -105,7 +105,14 @@ jobs:
       # against LoC's ALTO 3.1 schema.
       - name: Stored ALTO against alto-3-1.xsd
         run: |
-          command -v xmllint >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q libxml2-utils; }
+          command -v xmllint >/dev/null || {
+            for attempt in 1 2 3; do
+              sudo apt-get -o Acquire::Retries=3 update -q \
+                && sudo apt-get -o Acquire::Retries=3 install -y -q libxml2-utils && break
+              [ "$attempt" = 3 ] && exit 1
+              sleep $((attempt * 10))
+            done
+          }
           xmllint --noout --schema crates/usnm-alto/xsd/alto-3-1.xsd crates/usnm-alto/tests/golden/*.xml
       # The damage metric and its word lists are behind a feature nothing in
       # the workspace turns on yet (12 §12.5 Step 4).
@@ -231,7 +238,13 @@ jobs:
           USNM_QWEN_MYSQL_PORT: '3307'
       # The app version's signature checks and the installer (no server needed).
       - name: Install scheduler gate test headers
-        run: sudo apt-get update -q && sudo apt-get install -y -q nlohmann-json3-dev
+        run: |
+          for attempt in 1 2 3; do
+            sudo apt-get -o Acquire::Retries=3 update -q \
+              && sudo apt-get -o Acquire::Retries=3 install -y -q nlohmann-json3-dev && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep $((attempt * 10))
+          done
       # The other boinc/scripts tests run in the infra job (scripts/ci/run-unit-tests.py), which
       # every contrib change also triggers. The gold-routing test is left out of that run: it
       # compiles C++ against the header installed above.
@@ -396,7 +409,8 @@ jobs:
 
   # The fallback Worker in front of the tunnel (ADR-0027, #1098): its node:test tests, which
   # run offline on Node's own test runner, native Cache API/HTMLRewriter integration with
-  # pinned Wrangler, and shellcheck of its deploy script. No package.json or npm cache.
+  # pinned Wrangler, and shellcheck of its deploy script. No package.json or npm cache. The BOINC
+  # dashboard feed Worker (edge/boinc-feed) has only its node:test tests, run here by path.
   edge:
     name: edge (fallback worker tests)
     needs: changes
@@ -410,6 +424,7 @@ jobs:
         with:
           node-version: 24
       - run: node --test edge/fallback-worker/*.test.mjs
+      - run: node --test edge/boinc-feed/worker.test.mjs
       - run: npx --yes --package=wrangler@4.154.0 --call 'node edge/fallback-worker/native-integration.mjs'
         env:
           WRANGLER_SEND_METRICS: "false"
@@ -433,7 +448,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      - run: node --test edge/check/worker.test.mjs edge/check/layout.test.mjs edge/check/languages.test.mjs
+      - run: node --test edge/check/worker.test.mjs edge/check/layout.test.mjs edge/check/languages.test.mjs edge/check/deploy.test.mjs
       - name: Wrangler dry-run build
         working-directory: edge/check
         run: npx --yes wrangler@4.154.0 deploy --dry-run --outdir "$RUNNER_TEMP/check-build"
@@ -441,7 +456,13 @@ jobs:
           WRANGLER_SEND_METRICS: "false"
       - run: shellcheck -x -S warning edge/check/*.sh edge/check/backup/backup.sh
       - run: python3 -m py_compile edge/check/tools/*.py
-      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends python3-pil
+      - run: |
+          for attempt in 1 2 3; do
+            sudo apt-get -o Acquire::Retries=3 update -qq \
+              && sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends python3-pil && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep $((attempt * 10))
+          done
       # Fails if Pillow is missing rather than skipping the end-to-end build test.
       - run: /usr/bin/python3 -c 'import PIL' && /usr/bin/python3 -m unittest discover -s edge/check/tools -v
 
@@ -932,12 +953,20 @@ jobs:
         run: |
           python3 -m unittest -v scripts/ocr-node/test_install_data_flow.py
           python3 -m unittest -v scripts/ocr-node/test_throughput_collect.py
+          python3 -m unittest -v scripts/ocr-node/test_boinc_week_collect.py
           python3 -m unittest -v scripts/ocr-node/test_sset_status.py
           python3 -m pip install --quiet --break-system-packages pillow==13.0.0
+          python3 -m pip install --quiet --break-system-packages -r scripts/pictures/requirements.txt
           python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_cache.py
           python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_list.py
           python3 -m unittest -v scripts/ocr-node/test_repair_reading_order.py
           python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_quality_campaign.py
+          python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_quality_feed.py
+          python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_quality_receive.py
+          python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_quality_results.py
+          python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_quality_results_partial.py
+          python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_quality_retention.py
+          python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_qwen_provenance.py
           shellcheck -x -S warning scripts/ocr-node/reboot-if-needed.sh scripts/ocr-node/push-boinc-scan.sh \
             scripts/ocr-node/check-scan-archive.sh scripts/ocr-node/grant-archive-uploader.sh \
             scripts/ocr-node/install-archive-host.sh scripts/ocr-node/restore-drill.sh
@@ -946,7 +975,8 @@ jobs:
         run: |
           shellcheck -x -S warning boinc/scripts/start-boinc-bridge.sh boinc/scripts/provision-boinc.sh boinc/scripts/boinc-app-release.sh \
             boinc/scripts/onprem/image-security-check.sh boinc/scripts/onprem/lan-tls/*.sh \
-            boinc/scripts/onprem/feed-monitor/*.sh scripts/ci/feed-monitor-release.sh
+            boinc/scripts/onprem/feed-monitor/*.sh scripts/ci/feed-monitor-release.sh \
+            boinc/scripts/onprem/controller/*.sh
           sudo python3 -m unittest -v boinc/scripts/onprem/test_lan_tls_sync.py
       # Every setting infra/main.bicepparam reads is in the schema, and the
       # committed files hold only known public ones, typed and sorted (#295).

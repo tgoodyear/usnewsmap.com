@@ -59,6 +59,16 @@
 //! **Pilot.** `pilot` limits a plan to one group (one language, or a list
 //! of batches) and a budget of at most [`PILOT_MAX_PAGES`] pages (Step 11).
 //!
+//! **Settled pages** (#1754). A page whose work the batch controller has settled for good
+//! (published, or kept by a held trust scope, archived or not) is on the controller's
+//! held-pages lists in the hand-off container ([`crate::held_pages`]), and `claim pull`
+//! deletes its queue message. With `Stores::handoff` the seeder reads those lists, takes
+//! such a page out of the window count and never queues it again, however long it has had
+//! no result: a second message for it would be claimed as new work and stop the controller's
+//! tick on the message conflict. Pages in flight or failed are on no list and are untouched.
+//! If the lists can't be read, no page timed out is queued again that run, and the window
+//! counts as before. Without `Stores::handoff` the seeder behaves as it did.
+//!
 //! Every message gets its ledger row first, as `ocr-enqueue` writes them.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -85,6 +95,7 @@ use usnm_store::queue::{Queue, BULK};
 use usnm_store::ObjectStore;
 
 use super::enqueue::{self, message_language, QueueReport, MAX_PAGES};
+use super::held_pages::{self, HeldPages};
 use super::ledger::{self, Ledger, Queued, DEAD_LETTERED, IMPORTED, NOT_SENT, UNROUTABLE};
 use super::supersession;
 use super::sync::Lease;
@@ -99,6 +110,16 @@ pub const DAMAGE_FLOOR: f64 = 0.1;
 pub const MIN_DAMAGE: f64 = 0.25;
 /// Days a page may stay outstanding before it is queued again.
 pub const REQUEUE_AFTER_DAYS: i64 = 14;
+
+/// The longest lease a claim may take, in days: `usnm-boinc`'s claim refuses more than
+/// 7 days (its `claim` module, the check on `Options::lease`).
+pub const MAX_CLAIM_LEASE_DAYS: i64 = 7;
+
+/// How long a settled page's message is assumed to stay hidden on `ocr-bulk`, counted from
+/// when the page was queued: up to [`REQUEUE_AFTER_DAYS`] to be claimed, then hidden for the
+/// claim's lease. The seeder can't read the claim, so a message a claim has already deleted
+/// may still be discounted inside this bound.
+pub const HELD_HIDDEN_DAYS: i64 = REQUEUE_AFTER_DAYS + MAX_CLAIM_LEASE_DAYS;
 /// Times a page is queued again after a timeout or a `dequeue_count`
 /// dead letter.
 pub const MAX_REQUEUES: u32 = 3;
@@ -708,6 +729,37 @@ fn in_flight(q: &Queued, ledger: &Ledger, now: DateTime<Utc>) -> bool {
         && (q.retry_run.is_some() || now - q.queued_at < chrono::Duration::days(REQUEUE_AFTER_DAYS))
 }
 
+/// The pages the controller has settled (#1754), as this run could read them.
+enum Settled {
+    /// No hand-off store was given.
+    Off,
+    Known(HeldPages),
+    /// The lists couldn't be read.
+    Unreadable,
+}
+
+impl Settled {
+    async fn load(handoff: Option<&dyn ObjectStore>) -> Self {
+        let Some(handoff) = handoff else {
+            return Self::Off;
+        };
+        match held_pages::load_held_pages(handoff).await {
+            Ok(pages) => Self::Known(pages.unwrap_or_default()),
+            Err(e) => {
+                tracing::warn!(
+                    error = %format!("{e:#}"),
+                    "the controller's held-pages lists are unreadable; pages that timed out aren't queued again this run"
+                );
+                Self::Unreadable
+            }
+        }
+    }
+
+    fn has(&self, doc_id: &str) -> bool {
+        matches!(self, Self::Known(pages) if pages.contains_key(doc_id))
+    }
+}
+
 /// What a seeding run queued from one unit.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UnitReport {
@@ -730,9 +782,26 @@ pub struct SeedReport {
     pub refill_below: u64,
     /// `ocr-bulk`'s approximate message count, hidden ones included.
     pub queue_depth: u64,
+    /// `queue_depth` less `settled_hidden`: the depth the refill check and the window use
+    /// (#1613).
+    #[serde(default)]
+    pub queue_ready: u64,
+    /// Settled pages queued less than [`HELD_HIDDEN_DAYS`] days ago, whose messages may still be hidden
+    /// on `ocr-bulk` and counted in `queue_depth`. A claim deletes a settled page's message
+    /// once its lease runs out, so older ones are no longer in the depth.
+    #[serde(default)]
+    pub settled_hidden: u64,
     /// Bulk pages the ledger has outstanding (not timed out or waiting out
     /// an `unroutable` dead letter).
     pub in_flight: u64,
+    /// Bulk pages the ledger has outstanding that the controller has settled (published or
+    /// kept by a held scope; #1754): left out of `in_flight` and never queued again.
+    #[serde(default)]
+    pub settled_held: u64,
+    /// The controller's held-pages lists couldn't be read, so pages that timed out weren't
+    /// queued again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub settled_unreadable: bool,
     /// Whether the queue was under the refill threshold: a run tops up only
     /// then (a dry run reports what it would queue either way).
     pub refill: bool,
@@ -1048,6 +1117,9 @@ pub struct Stores<'a> {
     pub out: Option<&'a dyn ObjectStore>,
     /// American Stories' texts; needed only with `skip_american_stories`.
     pub american_stories: Option<&'a dyn AmericanStories>,
+    /// The exchange account's `boinc-handoff`, for the controller's held-pages lists
+    /// (#1754). Only `scheduler/held-pages/` is read. `None`: no page is treated as settled.
+    pub handoff: Option<&'a dyn ObjectStore>,
 }
 
 /// `usnm-ingest ocr-seed`: one seeding run, under the `ocr-sync` lock
@@ -1171,22 +1243,50 @@ pub(super) async fn seed(
         .approximate_count(BULK)
         .await
         .context("the seeder needs ocr-bulk's message count")?;
+    let settled = Settled::load(stores.handoff).await;
+    report.settled_unreadable = matches!(settled, Settled::Unreadable);
+    // A settled page holds no window slot: its message is deleted when it comes back.
+    report.settled_held = ledger
+        .queued
+        .values()
+        .filter(|q| {
+            q.reason == Reason::Bulk.as_str()
+                && ledger.outstanding(&q.doc_id).is_some()
+                && settled.has(&q.doc_id)
+        })
+        .count() as u64;
     report.in_flight = ledger
         .queued
         .values()
-        .filter(|q| in_flight(q, &ledger, now))
+        .filter(|q| in_flight(q, &ledger, now) && !settled.has(&q.doc_id))
         .count() as u64;
-    report.refill = report.queue_depth < report.refill_below;
+    // A held page's message stays hidden on the queue and is counted in its depth; it is
+    // not work waiting for a worker (#1613).
+    report.settled_hidden = ledger
+        .queued
+        .values()
+        .filter(|q| {
+            q.reason == Reason::Bulk.as_str()
+                && ledger.outstanding(&q.doc_id).is_some()
+                && settled.has(&q.doc_id)
+                && now - q.queued_at < chrono::Duration::days(HELD_HIDDEN_DAYS)
+        })
+        .count() as u64;
+    report.queue_ready = report.queue_depth.saturating_sub(report.settled_hidden);
+    report.refill = report.queue_ready < report.refill_below;
     if !report.refill && !opts.dry_run {
         tracing::info!(
             plan = opts.plan,
             queue_depth = report.queue_depth,
+            settled_held = report.settled_held,
+            settled_hidden = report.settled_hidden,
+            queue_ready = report.queue_ready,
             refill_below = report.refill_below,
             "ocr-bulk is full enough; nothing seeded"
         );
         return Ok(report);
     }
-    let outstanding = report.in_flight.max(report.queue_depth);
+    let outstanding = report.in_flight.max(report.queue_ready);
     let mut free = report
         .window
         .saturating_sub(outstanding)
@@ -1212,6 +1312,16 @@ pub(super) async fn seed(
         let Some((why, limited)) = retry_kind(q, &ledger, now) else {
             continue;
         };
+        // A settled page's work is done and owned by the controller: a new message for it
+        // would be claimed as new work and stop the tick (#1754).
+        if settled.has(&q.doc_id) {
+            skip(&mut report, "settled_held", 1);
+            continue;
+        }
+        if why == "timed_out" && matches!(settled, Settled::Unreadable) {
+            skip(&mut report, "settled_unknown", 1);
+            continue;
+        }
         if limited {
             let unroutable = ledger.unroutable_cycles(&q.doc_id);
             let used = attempt(&q.doc_id)
@@ -1640,6 +1750,9 @@ pub(super) async fn seed(
         window = report.window,
         in_flight = report.in_flight,
         queue_depth = report.queue_depth,
+        settled_held = report.settled_held,
+        settled_hidden = report.settled_hidden,
+        queue_ready = report.queue_ready,
         skipped = ?report.skipped,
         supersession = ?report.supersession,
         ledger = ?report.ledger,

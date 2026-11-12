@@ -1,0 +1,14 @@
+// The BOINC dashboard feed Worker's configuration (README.md). It has no bindings, no secrets and
+// no routes: it answers on its workers.dev name, and the project site's config points at that.
+{
+  "name": "usnm-boinc-feed-dev",
+  "main": "worker.mjs",
+  // Pinned, so a runtime change cannot alter the Worker's behaviour unnoticed.
+  "compatibility_date": "2026-10-01",
+
+  "workers_dev": true,
+  "preview_urls": false,
+
+  // Logs stay off. The Worker logs a reason when an upstream request fails, never an address or a body.
+  "observability": { "enabled": false }
+}

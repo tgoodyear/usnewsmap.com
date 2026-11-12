@@ -1,0 +1,11 @@
+# The hand-off retention step on the BOINC host (CT 230): frees the held `pages` copy of each
+# OCR bundle once nothing reads it. Journalled in /var/lib/usnm-handoff-retention.
+[Unit]
+Description=usnewsmap hand-off retention (held copies of submitted OCR bundles' scans)
+
+[Service]
+Type=oneshot
+ExecStart=/opt/usnm-handoff-retention/handoff-retention.sh
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=30min

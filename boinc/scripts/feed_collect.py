@@ -1114,6 +1114,10 @@ def client(data_dir, port, session=None):
 def controller(unit, maintenance=()):
     """The controller's last tick and last failure, from its unit's journal and systemd.
 
+    `unit` is one plan's unit (usnm-boinc-priority-controller@main.service for the live plan,
+    #1690): every plan ticks in a unit of its own, so a draining or native plan's failed ticks
+    never count towards the live plan's failed_in_a_row.
+
     `maintenance` are units that pause the controller to do its upkeep, such as the daily
     held-page archive (#835): their failures count as the controller's, and while one runs, or
     for 15 minutes after it ends, a tick that is overdue because of the pause isn't unknown."""
@@ -1958,7 +1962,10 @@ def main(argv=None):
     p.add_argument("--data-dir", type=Path, required=True)
     p.add_argument("--port", type=int, default=31416)
     p = sub.add_parser("controller")
-    p.add_argument("--unit", default="usnm-boinc-priority-controller.service")
+    p.add_argument("--unit", default="usnm-boinc-priority-controller@main.service",
+                   help="The live plan's tick unit; each plan ticks in its own "
+                        "usnm-boinc-priority-controller@PLAN.service (#1690), so another plan's failures "
+                        "don't count as this one's")
     p.add_argument("--maintenance-unit", action="append", default=[],
                    help="A unit that pauses the controller for upkeep, such as the held-page archive (#835): "
                         "its failures count as the controller's, and its pause isn't a missing tick")

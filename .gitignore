@@ -23,6 +23,10 @@ __pycache__/
 docs/reports/**/*.csv
 docs/reports/**/*.json
 docs/reports/**/*.jsonl
+# The line jobs' page list (#1621), a small inventory the runbook reads.
+!docs/reports/2026-11-cherokee/phoenix-pages.jsonl
+# The Advocate holdings counts (#1623), 43 lines.
+!docs/reports/2026-11-cherokee/advocate-holdings.jsonl
 docs/reports/**/*.parquet
 docs/reports/**/*.txt
 docs/reports/**/*.gz

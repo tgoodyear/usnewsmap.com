@@ -139,6 +139,8 @@
         <min_core_client_version>80211</min_core_client_version>
         <min_ncpus>4</min_ncpus>
         <max_threads>8</max_threads>
+        <min_batch>2</min_batch>
+        <max_batch>2</max_batch>
     </plan_class>
     <!-- Apple Silicon Metal GPU class for usnm_qwen (#533). Upstream sched/plan_class_spec.cpp
          checks gpu_type == "apple" for device eligibility and gpu_type == "apple_gpu" when
@@ -288,6 +290,77 @@
         <ngpus>1</ngpus>
         <min_batch>2</min_batch>
         <max_batch>2</max_batch>
+        <avg_ncpus>2</avg_ncpus>
+    </plan_class>
+    <!-- Xiaomi-OCR-0 (0.8B) classes for usnm_qwen (#1776): batch-108 workunits only, each pinned
+         to the Xiaomi-OCR-0 model at request version 5. The app reads such a unit with that model
+         or not at all, and these classes read nothing else. They mirror the 8B classes' gates at
+         about 2 GB of GPU memory, which admits 4 GB cards. All five are closed until an operator
+         opens one audited workunit, and no version is released for them yet. -->
+    <plan_class>
+        <name>mt_x08</name>
+        <min_wu_id>2</min_wu_id>
+        <max_wu_id>1</max_wu_id>
+        <min_core_client_version>80211</min_core_client_version>
+        <min_ncpus>4</min_ncpus>
+        <max_threads>8</max_threads>
+        <min_batch>108</min_batch>
+        <max_batch>108</max_batch>
+    </plan_class>
+    <plan_class>
+        <name>apple_gpu_x08</name>
+        <min_wu_id>2</min_wu_id>
+        <max_wu_id>1</max_wu_id>
+        <gpu_type>apple</gpu_type>
+        <min_core_client_version>80211</min_core_client_version>
+        <min_gpu_ram_mb>2000</min_gpu_ram_mb>
+        <gpu_ram_used_mb>2000</gpu_ram_used_mb>
+        <min_batch>108</min_batch>
+        <max_batch>108</max_batch>
+        <avg_ncpus>2</avg_ncpus>
+    </plan_class>
+    <plan_class>
+        <name>nvidia_vulkan_x08</name>
+        <min_wu_id>2</min_wu_id>
+        <max_wu_id>1</max_wu_id>
+        <gpu_type>nvidia</gpu_type>
+        <cuda/>
+        <!-- CUDA detects/assigns the NVIDIA device; execution uses bundled Vulkan. -->
+        <min_core_client_version>80211</min_core_client_version>
+        <min_gpu_ram_mb>2000</min_gpu_ram_mb>
+        <gpu_ram_used_mb>2000</gpu_ram_used_mb>
+        <min_batch>108</min_batch>
+        <max_batch>108</max_batch>
+        <avg_ncpus>2</avg_ncpus>
+    </plan_class>
+    <plan_class>
+        <name>intel_vulkan_x08</name>
+        <min_wu_id>2</min_wu_id>
+        <max_wu_id>1</max_wu_id>
+        <gpu_type>intel</gpu_type>
+        <opencl/>
+        <min_core_client_version>80211</min_core_client_version>
+        <min_gpu_ram_mb>2000</min_gpu_ram_mb>
+        <gpu_ram_used_mb>2000</gpu_ram_used_mb>
+        <min_batch>108</min_batch>
+        <max_batch>108</max_batch>
+        <avg_ncpus>2</avg_ncpus>
+    </plan_class>
+    <plan_class>
+        <name>amd_vulkan_x08</name>
+        <min_wu_id>2</min_wu_id>
+        <max_wu_id>1</max_wu_id>
+        <gpu_type>ati</gpu_type>
+        <opencl/>
+        <min_core_client_version>80211</min_core_client_version>
+        <!-- The same peak-FLOPS floor as amd_vulkan_8b keeps integrated Radeons, which report
+             shared system RAM as GPU RAM, off this class until they are measured. -->
+        <min_gpu_peak_flops>1.5e12</min_gpu_peak_flops>
+        <min_gpu_ram_mb>2000</min_gpu_ram_mb>
+        <gpu_ram_used_mb>2000</gpu_ram_used_mb>
+        <ngpus>1</ngpus>
+        <min_batch>108</min_batch>
+        <max_batch>108</max_batch>
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
 </plan_classes>

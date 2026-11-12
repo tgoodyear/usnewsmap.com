@@ -3810,6 +3810,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-normalization",
+ "usnm-alto",
  "usnm-api",
  "usnm-congress",
  "usnm-core",

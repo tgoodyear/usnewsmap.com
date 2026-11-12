@@ -224,7 +224,8 @@ pub async fn run(command: GoldCommands) -> anyhow::Result<()> {
                         profile,
                     };
                     let rows = x::collect::native_results(&options.root, &config).await?;
-                    x::collect::run_with_native(&options, &rows, &config)?
+                    let cancelled = x::collect::cancelled_workunits(&options.root, &config).await?;
+                    x::collect::run_with_native_cancelled(&options, &rows, &config, &cancelled)?
                 }
                 (None, None, None, None, None) => x::collect::run(&options)?,
                 _ => {

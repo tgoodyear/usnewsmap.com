@@ -327,6 +327,7 @@ async fn fixture_with_batch(with_tables: bool, batch: &str) -> Fx {
             quarantine,
             requests: Some(Arc::clone(&requests)),
             queue: Arc::clone(&queue),
+            handoff: None,
         },
         out,
         requests,

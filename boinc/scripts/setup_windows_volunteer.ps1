@@ -217,7 +217,9 @@ function Get-WindowsReadiness([string]$DataDirectory, [bool]$CpuAllowed, [bool]$
     # loader (#1672). NVIDIA cards from 5,500 MB up to that get nvidia_vulkan_6gb_8b,
     # the slower partial-offload build (#1234). No Windows version is currently
     # available for the Intel class; when one is, admit it here. Keep this in step
-    # with the live app versions.
+    # with the live app versions. NVIDIA is admitted ahead of its release: no Windows
+    # nvidia_vulkan version was live on 9 November 2026 (#1672), so an NVIDIA-only
+    # PC gets no GPU work until one is released.
     $gpus = @(Get-GpuAdapters)
     $gpu = $null
     if (Test-VulkanLoader) {

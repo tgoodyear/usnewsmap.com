@@ -8,8 +8,10 @@ only: it needs flock and sha256sum.
 import json
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -23,6 +25,10 @@ from pathlib import Path
 args = sys.argv[1:]
 log = Path(os.environ["FAKE_LOG"])
 log.open("a").write("tool " + " ".join(args) + "\n")
+if os.environ.get("FAKE_TICK_LOCK"):
+    import subprocess
+    free = subprocess.run(["flock", "-n", os.environ["FAKE_TICK_LOCK"], "true"]).returncode == 0
+    log.open("a").write("tick lock " + ("free" if free else "held") + "\n")
 archive = Path(args[args.index("--archive-dir") + 1])
 left = Path(os.environ["FAKE_LEFT"])
 n = int(left.read_text())
@@ -71,6 +77,8 @@ echo "systemctl $*" >> "$FAKE_LOG"
 case "$1" in
   is-active)
     case "$2" in
+      # The shared unit from before #1690, when a test sets it apart.
+      usnm-boinc-priority-controller.timer) cat "${FAKE_LEGACY_TIMER:-$FAKE_TIMER}" ;;
       *.timer) cat "$FAKE_TIMER" ;;
       *) echo inactive ;;
     esac ;;
@@ -123,12 +131,12 @@ class HeldArchive(unittest.TestCase):
         done = self.run_archive()
         self.assertEqual(done.returncode, 0, done.stderr)
         log = self.log()
-        self.assertIn("systemctl stop usnm-boinc-priority-controller.timer", log)
-        stop = log.index("systemctl stop usnm-boinc-priority-controller.timer")
+        self.assertIn("systemctl stop usnm-boinc-priority-controller@main.timer", log)
+        stop = log.index("systemctl stop usnm-boinc-priority-controller@main.timer")
         first_apply = next(i for i, line in enumerate(log) if line.startswith("tool dispatch") and "--apply" in line)
         self.assertLess(stop, first_apply)
-        self.assertEqual(log[-2:], ["systemctl start usnm-boinc-priority-controller.timer",
-                                    "systemctl start --no-block usnm-boinc-priority-controller.service"])
+        self.assertEqual(log[-2:], ["systemctl start usnm-boinc-priority-controller@main.timer",
+                                    "systemctl start --no-block usnm-boinc-priority-controller@main.service"])
         steps = [line for line in log if line.startswith("step ")]
         self.assertEqual(steps, [f"step -- --env prod --target archive --step bridge --var ARCHIVE_BATCH={n} "
                                  "--wait-mins 1" for n in ("0001", "0002")])
@@ -156,6 +164,30 @@ class HeldArchive(unittest.TestCase):
                              for line in self.log()))
         self.assertEqual((self.root / "timer").read_text().strip(), "inactive")
 
+    def test_the_main_plans_unit_is_the_default(self):
+        done = self.run_archive()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        tool = [line for line in self.log() if line.startswith("tool dispatch")]
+        self.assertTrue(tool and all("--controller-unit usnm-boinc-priority-controller@main" in line
+                                     for line in tool))
+
+    def test_a_controller_still_on_the_shared_unit_fails_instead_of_skipping(self):
+        # #1690: before the host moves to the per-plan units, the main plan's timer isn't there
+        # but the shared one ticks. That isn't an operator's pause: skipping would let the
+        # journals reach the cap unnoticed.
+        (self.root / "timer").write_text("inactive\n")
+        (self.root / "legacy").write_text("active\n")
+        done = self.run_archive(FAKE_LEGACY_TIMER=str(self.root / "legacy"))
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("migrate to the per-plan units", done.stdout)
+        self.assertFalse(any(line.startswith(("tool", "step", "systemctl stop", "systemctl start"))
+                             for line in self.log()))
+        # Named on purpose, the shared unit is still archived around.
+        done = self.run_archive(FAKE_LEGACY_TIMER=str(self.root / "legacy"),
+                                USNM_CONTROLLER_UNIT="usnm-boinc-priority-controller")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("systemctl stop usnm-boinc-priority-controller.timer", self.log())
+
     def test_a_failed_bridge_fails_the_run_resumes_and_is_retried_first_next_time(self):
         done = self.run_archive(FAKE_BRIDGE_FAILS="1")
         self.assertNotEqual(done.returncode, 0)
@@ -174,6 +206,81 @@ class HeldArchive(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("the dispatch step failed", done.stderr)
         self.assertEqual((self.root / "timer").read_text().strip(), "active")
+
+    def hold_tick_lock(self, tick, seconds):
+        """A tick queued on the lock: it holds it for `seconds`, logs its release, and has the
+        lock before this returns."""
+        ready = self.root / "holder-ready"
+        holder = subprocess.Popen(["flock", str(tick), "sh", "-c",
+                                   f'touch "{ready}"; sleep {seconds}; echo "holder released" >> "$FAKE_LOG"'],
+                                  env={**os.environ, "FAKE_LOG": str(self.root / "log")},
+                                  start_new_session=True)
+        # flock, sh and sleep together: killing only the flock wrapper would leave its children
+        # holding the lock and writing into a removed directory after tearDown.
+        self.addCleanup(self.end_group, holder)
+        for _ in range(500):
+            if ready.exists():
+                break
+            time.sleep(0.01)
+        self.assertTrue(ready.exists(), "the holder never took the tick lock")
+        return holder
+
+    @staticmethod
+    def end_group(process):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+
+    def test_a_tick_lock_is_waited_for_then_held_through_the_run(self):
+        # The run must wait for a tick already holding the lock, then hold it itself for
+        # every dispatch, and release it only once it has resumed the controller.
+        tick = self.root / "tick.lock"
+        holder = self.hold_tick_lock(tick, 2)
+        done = self.run_archive("--tick-lock", str(tick), FAKE_TICK_LOCK=str(tick))
+        holder.wait()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        log = self.log()
+        first_tool = next(i for i, line in enumerate(log) if line.startswith("tool "))
+        self.assertLess(log.index("holder released"), first_tool, log)
+        self.assertIn("tick lock held", log)
+        self.assertNotIn("tick lock free", log)
+        self.assertEqual(log[-2:], ["systemctl start usnm-boinc-priority-controller@main.timer",
+                                    "systemctl start --no-block usnm-boinc-priority-controller@main.service"])
+        self.assertEqual(subprocess.run(["flock", "-n", str(tick), "true"]).returncode, 0)
+
+    def test_a_stop_while_waiting_for_the_tick_lock_resumes_at_once(self):
+        tick = self.root / "tick.lock"
+        holder = self.hold_tick_lock(tick, 30)
+        root = self.root
+        run = subprocess.Popen(
+            ["bash", str(SCRIPT), "--config", str(root / "config.json"), "--state-dir", str(root / "state"),
+             "--archive-dir", str(root / "archive"), "--tool", str(root / "tool.py"), "--wait-mins", "1",
+             "--tick-lock", str(tick)],
+            env={**os.environ, "PATH": f"{root / 'bin'}{os.pathsep}{os.environ['PATH']}",
+                 "FAKE_LOG": str(root / "log"), "FAKE_TIMER": str(root / "timer"),
+                 "FAKE_LEFT": str(root / "left"), "USNM_HELD_ARCHIVE_LOCK": str(root / "lock")},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            time.sleep(2)
+            started = time.monotonic()
+            run.send_signal(signal.SIGTERM)
+            run.communicate(timeout=10)
+            self.assertLess(time.monotonic() - started, 5)
+            self.assertEqual(run.returncode, 143)
+            self.assertFalse(any(line.startswith("tool ") for line in self.log()))
+            self.assertEqual((self.root / "timer").read_text().strip(), "active")
+        finally:
+            if run.poll() is None:
+                run.kill()
+                run.wait()
+
+    def test_without_a_tick_lock_nothing_is_held(self):
+        tick = self.root / "tick.lock"
+        done = self.run_archive(FAKE_TICK_LOCK=str(tick))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("tick lock held", self.log())
 
     def test_a_failed_restart_fails_an_otherwise_good_run(self):
         done = self.run_archive(FAKE_START_FAILS="1")
@@ -247,7 +354,7 @@ class HeldArchive(unittest.TestCase):
         self.assertEqual(proc.returncode, 143)
         log = self.log()
         released = log.index("tool released the lease")
-        self.assertLess(released, log.index("systemctl start usnm-boinc-priority-controller.timer"))
+        self.assertLess(released, log.index("systemctl start usnm-boinc-priority-controller@main.timer"))
         self.assertEqual((root / "timer").read_text().strip(), "active")
 
     def test_a_stop_during_the_bridge_ends_it_and_resumes(self):

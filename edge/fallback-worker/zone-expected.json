@@ -3,6 +3,9 @@
     "check.usnewsmap.com": "usnm-check",
     "healthcheck.usnewsmap.com": "usnm-fallback"
   },
+  "foreign_route_hosts": [
+    "boinc-dev.usnewsmap.com"
+  ],
   "routes": {
     "api.usnewsmap.com/*": {
       "request_limit_fail_open": true,
