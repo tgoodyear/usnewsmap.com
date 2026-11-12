@@ -187,7 +187,7 @@ pub enum QualityCommands {
         /// Start no further dirty unit once the run has taken this many seconds (a unit already
         /// started finishes); the rest is deferred like `--max-dirty-units`. Bounds how long a
         /// pass holds the server's step lock.
-        #[arg(long, value_name = "SECONDS")]
+        #[arg(long, value_name = "SECONDS", requires = "cache")]
         max_compute_secs: Option<u64>,
         /// Compute and store row parts without publishing, so the run needs no step lock; the
         /// locked publication that follows finds them cached. Prints no tables.

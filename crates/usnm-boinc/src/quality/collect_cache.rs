@@ -14,6 +14,19 @@ use usnm_ocr_contract::{quality::Job, qwen};
 
 const FORMAT: &[u8] = b"quality-row-part-v4";
 
+/// An input was rewritten while it was keyed. A run under the step lock treats it as a failure; a
+/// warming run, which has no lock to keep inputs still, skips the unit and keys it again.
+#[derive(Debug)]
+pub(super) struct InputChanged(pub(super) &'static str);
+
+impl std::fmt::Display for InputChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for InputChanged {}
+
 #[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct FileIdentity {
@@ -95,7 +108,7 @@ fn input_digest(dir: &Path, path: &Path, input: &mut File) -> anyhow::Result<Vec
             let digest = contents(input)?;
             ensure!(
                 FileIdentity::read(input)? == identity,
-                "input changed while hashing"
+                InputChanged("input changed while hashing")
             );
             let rows = serde_json::to_string(&InputDigest {
                 identity: identity.clone(),
@@ -119,7 +132,7 @@ fn input_digest(dir: &Path, path: &Path, input: &mut File) -> anyhow::Result<Vec
     ensure!(
         FileIdentity::read(input)? == identity
             && FileIdentity::read(&File::open(path)?)? == identity,
-        "input changed while fingerprinting"
+        InputChanged("input changed while fingerprinting")
     );
     Ok(digest)
 }
@@ -497,7 +510,7 @@ impl Cache {
         }
         ensure!(
             serde_json::from_slice::<Job>(&std::fs::read(unit.join(super::JOB_FILE))?)? == *job,
-            "QUALITY job changed during collection"
+            InputChanged("QUALITY job changed during collection")
         );
         let mut inputs = [
             super::JOB_FILE,

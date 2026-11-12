@@ -1299,6 +1299,12 @@ pub fn inventory(
     Ok(result)
 }
 
+fn is_input_change(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<super::collect_cache::InputChanged>()
+        .is_some()
+}
+
 /// `collect_units`, refusing an incomplete publication: a deferred unit is an error.
 pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
     let (collected, progress) = collect_units(opts)?;
@@ -1316,8 +1322,8 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
         "--max-dirty-units must be positive"
     );
     anyhow::ensure!(
-        !opts.warm_only || opts.cache.is_some(),
-        "--warm-only needs --cache"
+        !(opts.warm_only || opts.max_compute.is_some()) || opts.cache.is_some(),
+        "--warm-only and --max-compute-secs need --cache"
     );
     let started = std::time::Instant::now();
     let cache = opts
@@ -1370,10 +1376,20 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
             summary.pending += 1;
             continue;
         }
-        let key = cache
+        let key = match cache
             .as_ref()
             .map(|c| c.key(&unit, &job, &files))
-            .transpose()?;
+            .transpose()
+        {
+            Ok(key) => key,
+            // Rewritten while keyed, and a warming run has no step lock to keep it still: leave
+            // it for the next round, which the driver is told to run.
+            Err(e) if opts.warm_only && is_input_change(&e) => {
+                deferred = true;
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         if let (Some(cache), Some(key)) = (&cache, &key) {
             cache.track(&unit, &files, key);
             if opts.warm_only {
@@ -1578,16 +1594,25 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
                 unchanged = unchanged && cache.readings_unchanged(&bp.doc_id)?;
             }
             if !unchanged {
-                // Published from what was read, collected again next run.
+                // Published from what was read, collected again next run. A warming run has
+                // nothing to publish, so the unit is for its next round.
+                deferred |= opts.warm_only;
                 continue;
             }
-            if &cache.key(&unit, &job, &files)? != key {
+            match cache.key(&unit, &job, &files) {
+                Ok(again) if &again == key => {}
                 // Rewritten while it was read. A warming run has no step lock to keep inputs
-                // still and publishes nothing, so the next run keys the unit afresh.
-                if opts.warm_only {
+                // still and publishes nothing, so the next round keys the unit afresh.
+                Ok(_) if opts.warm_only => {
+                    deferred = true;
                     continue;
                 }
-                anyhow::bail!("{wu}: collection inputs changed; no part published");
+                Err(e) if opts.warm_only && is_input_change(&e) => {
+                    deferred = true;
+                    continue;
+                }
+                Ok(_) => anyhow::bail!("{wu}: collection inputs changed; no part published"),
+                Err(e) => return Err(e),
             }
             cache.store(
                 key,
@@ -2401,6 +2426,21 @@ pub(super) mod tests {
             .unwrap()
             .join("pages.parquet")
             .exists());
+        // Without a cache there are no parts to compute ahead of time, so a budget is refused
+        // rather than ignored.
+        assert!(collect_units(&Options {
+            cache: None,
+            ..bounded.clone()
+        })
+        .is_err());
+        // Only a key that failed because an input was rewritten is one a warming run skips.
+        let rewritten = anyhow::Error::new(super::super::collect_cache::InputChanged(
+            "input changed while hashing",
+        ));
+        assert!(is_input_change(&rewritten));
+        assert!(!is_input_change(&anyhow::anyhow!(
+            "input changed while hashing"
+        )));
         // Warmed without a budget, the same budget publishes: nothing is left to compute.
         run(&Options {
             max_compute: None,
