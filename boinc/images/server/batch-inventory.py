@@ -34,8 +34,13 @@ def max_existing_workunits(environ=None):
 # Unassimilated workunits are counted once, per app, so the total and each app's share are one
 # read: a submission between two counts can't make other apps' work look larger than all of it
 # (#1474). Workunits of no known app have an empty name and count only in the total.
+# Each active host's CPU count (`p_ncpus`, as its client last reported it) follows the count, so
+# a native OCR plan can give a host one unit per CPU (#1780).
 QUERY = """
 SELECT COUNT(*) FROM host WHERE rpc_time > UNIX_TIMESTAMP() - 86400;
+SELECT 'host', id, p_ncpus FROM host WHERE rpc_time > UNIX_TIMESTAMP() - 86400
+ ORDER BY id
+ LIMIT {host_limit};
 SELECT 'minver', min_version FROM app WHERE name = 'usnm_ocr';
 SELECT 'version', platform.name, app_version.plan_class, app_version.version_num
  FROM app_version JOIN app ON app.id = app_version.appid
@@ -56,7 +61,22 @@ SELECT name, assimilate_state FROM workunit
 
 def query(limit=DEFAULT_MAX_EXISTING_WORKUNITS):
     """QUERY reading one existing workunit past `limit`, so an oversized inventory is seen."""
-    return QUERY.replace("{limit}", str(limit + 1)).replace("{version_limit}", str(MAX_VERSIONS + 1))
+    return (QUERY.replace("{limit}", str(limit + 1)).replace("{version_limit}", str(MAX_VERSIONS + 1))
+            .replace("{host_limit}", str(MAX_HOSTS + 1)))
+
+
+# Active hosts whose CPU count is reported, read one past so an oversized list is seen.
+MAX_HOSTS = 2000
+HOST_ROW = re.compile(r"host\t([1-9][0-9]{0,9})\t(-?[0-9]{1,9})")
+
+
+def host_cpus(rows):
+    """{host id: CPUs} from the host rows. A negative count (no report yet) is 0. Raises on
+    anything malformed, a repeated host, or more than MAX_HOSTS."""
+    matches = [HOST_ROW.fullmatch(row) for row in rows]
+    if not all(matches) or len(matches) > MAX_HOSTS or len({m[1] for m in matches}) != len(matches):
+        raise ValueError("invalid host inventory")
+    return {m[1]: max(0, int(m[2])) for m in matches}
 
 
 # The usnm_ocr versions the feeder can load (#1687): its app's min_version and every version not
@@ -130,7 +150,7 @@ def _ids(values, message):
 
 def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
               pending_bundles=(), existing_bundles=None, pending_by_app=None,
-              existing_limit=DEFAULT_MAX_EXISTING_WORKUNITS, app_versions=None):
+              existing_limit=DEFAULT_MAX_EXISTING_WORKUNITS, app_versions=None, cpus=None):
     """pending_ids/existing_ids are single-page workunits' job ids; pending_bundles and
     existing_bundles are OCR bundle workunits' bundle ids (#1059), reported as their pages,
     which the server's journals name (record["bundle"]). pending_by_app is each app's
@@ -235,6 +255,9 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
         payload["pending_workunits_by_app"] = pending_by_app
     if app_versions is not None:
         payload["ocr_app_versions"] = app_versions
+    if cpus is not None:
+        # Host id (a string, as JSON keys are) -> its CPU count, active hosts only (#1780).
+        payload["host_cpus"] = cpus
     return payload
 
 
@@ -260,7 +283,9 @@ def main():
     hosts = output[0] if output else ""
     apps = [APP_ROW.fullmatch(value) for value in output[1:] if value.startswith("app\t")]
     versioned = [value for value in output[1:] if value.startswith(("minver\t", "version\t"))]
-    names = [value for value in output[1:] if not value.startswith(("app\t", "minver\t", "version\t"))]
+    cpus = host_cpus([value for value in output[1:] if value.startswith("host\t")])
+    names = [value for value in output[1:]
+             if not value.startswith(("app\t", "minver\t", "version\t", "host\t"))]
     if not hosts.isdecimal() or not all(apps) or len({app[1] for app in apps}) != len(apps) or \
             any(not re.fullmatch(r"usnm_(ocrb_)?[0-9a-f]{64}\t-?[0-9]+", value) for value in names):
         raise ValueError("invalid database inventory")
@@ -281,7 +306,8 @@ def main():
                         [name for name, state in bundles if state != 2],
                         [name for name, _ in bundles],
                         pending_by_app={app[1]: int(app[2]) for app in apps if app[1]},
-                        existing_limit=existing_limit, app_versions=ocr_app_versions(versioned))
+                        existing_limit=existing_limit, app_versions=ocr_app_versions(versioned),
+                        cpus=cpus)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, sort_keys=True) + "\n")
 

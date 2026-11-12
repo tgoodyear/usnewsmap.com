@@ -45,7 +45,11 @@ MAX_STATUS_BYTES = 1024 * 1024
 MAX_FAILURE_OUTPUT_CHARS = 16384
 MAX_COLLECT_PARALLEL = 8  # handoff-job.sh's COLLECT_PARALLEL
 OCR_APP_NAME = "usnm_ocr"
-SUPPORTED_COHORT_APPS = (OCR_APP_NAME,)
+# The native OCR build's app (#1780, docs/boinc/apps/native-ocr.md): a plan whose `app` it is
+# sends every unit to one of its `native_hosts`, as the trust list admits.
+NATIVE_APP_NAME = "usnm_ocr_native"
+SUPPORTED_COHORT_APPS = (OCR_APP_NAME, NATIVE_APP_NAME)
+MAX_NATIVE_HOSTS = 100
 SURYA_APP_NAME = "usnm_surya"
 SURYA_DEFAULTS = {"timeout_secs": 600, "stage_pages": 50, "submit_units": 200}
 SURYA_REPLICAS = 2  # results per unit: --target_nresults in crates/usnm-boinc/src/surya/submit.rs
@@ -111,7 +115,7 @@ SURYA_REQUIRED = {"campaign", "quality_campaign", "engine_image", "engine_llama"
 OPTIONAL_FIELDS = {
     "app", "platform", "resource", "cohort", "cohorts",
     "low_watermark", "high_watermark", "max_global_pending", "server_status_url", "step_command",
-    "gold_onboarding", "pages_per_unit", "bundle_app_version", "handoff_root",
+    "gold_onboarding", "pages_per_unit", "bundle_app_version", "handoff_root", "native_hosts",
 }
 # OCR bundles (#1059): at most this many pages of one queue in one usnm_ocr workunit
 # (crates/usnm-ocr-contract/src/boinc.rs, bundle::MAX_PAGES), 1 (a page alone) by default.
@@ -155,9 +159,35 @@ def _validate_status_url(url):
 def normalize_cohort_apps(app):
     if not isinstance(app, str) or app not in SUPPORTED_COHORT_APPS:
         raise ConfigError(
-            f"unsupported cohort app; Transport.submit() only dispatches {OCR_APP_NAME} workunits"
+            f"unsupported cohort app; Transport only dispatches {OCR_APP_NAME} (and, for a native "
+            f"plan, {NATIVE_APP_NAME}) workunits"
         )
     return app
+
+
+def _validate_native_plan(config):
+    """A native OCR plan (#1780): queue-fed, single pages only, its `native_hosts` the only hosts
+    its units may go to (none, by default: no units), and nothing that would make a unit any
+    host could get. Every other plan names no native hosts."""
+    native = config.get("app") == NATIVE_APP_NAME
+    if not native:
+        require("native_hosts" not in config, f"native_hosts is for {NATIVE_APP_NAME} plans")
+        for spec in (config.get("cohorts") or {}).values():
+            require(spec.get("app", OCR_APP_NAME) == OCR_APP_NAME,
+                    f"a {NATIVE_APP_NAME} cohort needs a {NATIVE_APP_NAME} plan")
+        return
+    hosts = config.get("native_hosts")
+    require(isinstance(hosts, list) and len(hosts) <= MAX_NATIVE_HOSTS and
+            all(type(host) is int and 1 <= host <= 9999999999 for host in hosts) and
+            len(set(hosts)) == len(hosts),
+            f"a {NATIVE_APP_NAME} plan needs native_hosts, up to {MAX_NATIVE_HOSTS} distinct host ids "
+            "(an empty list sends nothing)")
+    require(config.get("source") == "queue" and config.get("claim_languages"),
+            f"a {NATIVE_APP_NAME} plan is queue-fed with claim_languages, the scopes its hosts are trusted for")
+    for key in ("cohort", "cohorts", "gold_onboarding", "bundle_app_version"):
+        require(key not in config, f"a {NATIVE_APP_NAME} plan takes no {key}")
+    require(max(config.get("pages_per_unit", {}).values(), default=1) == 1,
+            f"a {NATIVE_APP_NAME} unit is one page")
 
 
 def normalize_cohort_platform(platform):
@@ -443,6 +473,7 @@ def load_config(path):
                 "local handoff_root requires a queue plan and an absolute directory")
     if "gold_onboarding" in config:
         _validate_gold_onboarding(config["gold_onboarding"])
+    _validate_native_plan(config)
     if "pages_per_unit" in config:
         units = config["pages_per_unit"]
         require(isinstance(units, dict) and units and set(units) <= set(QUEUES) and
@@ -492,9 +523,13 @@ def load_config(path):
     return config
 
 
+# Not allocation: turning these on or changing them needs no migration. A native plan's hosts
+# (#1780) are widened one at a time, by hand.
+UNALLOCATED = ("gold_onboarding", "native_hosts")
+
+
 def digest(config):
-    # Gold onboarding settings are not allocation: turning it on or tuning it needs no migration.
-    allocation = {key: value for key, value in config.items() if key != "gold_onboarding"}
+    allocation = {key: value for key, value in config.items() if key not in UNALLOCATED}
     return hashlib.sha256(json.dumps(allocation, sort_keys=True).encode()).hexdigest()
 
 
@@ -1446,6 +1481,16 @@ class Transport:
             self.step("bridge", "submit-remote", JOB_IDS=",".join(group),
                       HANDOFF_URL=self.handoff_url)
 
+    @timed("submit")
+    def submit_native(self, units):
+        """Submit (job id, host id) pairs as usnm_ocr_native units, each assigned to its host
+        (#1780): NATIVE_UNITS, one bridge execution a step. The bridge creates a unit only if the
+        trust list admits its host, and stops at the first failure."""
+        for group in chunks(units):
+            self.step("bridge", "submit-remote",
+                      NATIVE_UNITS=",".join(f"{job_id}={host}" for job_id, host in group),
+                      HANDOFF_URL=self.handoff_url)
+
     @timed("collect")
     def collect_batch(self, pairs):
         """Collect these (job, spool) pairs. With both flags off, exactly the per-job flow
@@ -1953,7 +1998,7 @@ def _select_cohort_entry(mapping, keys, *, allow_single_default=False):
 
 def resolve_watermarks(config, snapshot, status=None, *,
                        low_watermark=None, high_watermark=None, max_global_pending=None,
-                       other_app_budget=None):
+                       other_app_budget=None, native_slots=None):
     cohorts = config.get("cohorts") or {}
     app = normalize_cohort_apps(config.get("app", OCR_APP_NAME))
     platform = normalize_cohort_platform(config.get("platform", "all"))
@@ -1979,6 +2024,9 @@ def resolve_watermarks(config, snapshot, status=None, *,
     require(isinstance(status_cohort, dict), "invalid status cohort entry")
     active_hosts = snapshot.get("cohort_active_hosts",
                                 status_cohort.get("active_hosts", snapshot["active_hosts"]))
+    if native_slots is not None:
+        # A native plan (#1780): only its own hosts with a unit's room count.
+        active_hosts = sum(slots > 0 for slots in native_slots.values())
     _nonneg_int(active_hosts, MAX_GLOBAL_PENDING, "invalid cohort active_hosts")
 
     explicit_high = (high_watermark if high_watermark is not None
@@ -1987,9 +2035,11 @@ def resolve_watermarks(config, snapshot, status=None, *,
                     else cohort_cfg.get("low_watermark", config.get("low_watermark")))
     explicit_global = (max_global_pending if max_global_pending is not None
                        else config.get("max_global_pending"))
+    # A native plan always admits by its own work (#1780): every app's would stop it for good.
+    # It refills as soon as a host has room (low watermark one under the high), to keep CPUs busy.
     cohort_mode = (status is not None or explicit_high is not None or explicit_low is not None or
                    explicit_global is not None or other_app_budget is not None or
-                   "cohorts" in config or "cohort" in config)
+                   "cohorts" in config or "cohort" in config or native_slots is not None)
 
     if explicit_high is not None:
         require(type(explicit_high) is int and 1 <= explicit_high <= MAX_JOBS,
@@ -2009,13 +2059,18 @@ def resolve_watermarks(config, snapshot, status=None, *,
         high_target = 0
         low_target = 0
     else:
-        if explicit_high is not None:
+        if native_slots is not None:
+            # CPU fill: each host's units, at most its CPUs and pages_per_host, within max_pending
+            # (and a high watermark, when one is set).
+            high_target = min(config["max_pending"], sum(native_slots.values()),
+                              MAX_JOBS if explicit_high is None else explicit_high)
+        elif explicit_high is not None:
             high_target = explicit_high
         else:
             high_target = min(config["max_pending"], active_hosts * pages_per_host)
         if explicit_low is not None:
             low_target = min(explicit_low, high_target)
-        elif cohort_mode:
+        elif cohort_mode and native_slots is None:
             low_target = max(0, high_target // 2)
         else:
             low_target = max(0, high_target - 1)
@@ -2344,15 +2399,47 @@ def held_results(state, held_jobs, now):
     return len(since), int(max((now - at for at in since.values()), default=0))
 
 
+def native_capacity(config, snapshot):
+    """A native plan's room on each of its hosts (#1780): one unit per CPU the host's client last
+    reported (the inventory's host_cpus), at most pages_per_host. A host not active in the last
+    day, or an inventory from a server image without host_cpus, gets none."""
+    cpus = snapshot.get("host_cpus", {})
+    require(isinstance(cpus, dict) and len(cpus) <= 100000 and
+            all(isinstance(host, str) and host.isdecimal() and type(n) is int and n >= 0
+                for host, n in cpus.items()), "invalid host CPU inventory")
+    return {host: min(cpus.get(str(host), 0), config["pages_per_host"]) for host in config["native_hosts"]}
+
+
+def assign_native_hosts(job_ids, slots, outstanding):
+    """(job id, host) for as many of `job_ids` as the hosts have room for: each to the host with
+    the most room left (the lowest id on a tie), never past a host's slots. `outstanding` (host
+    -> its units not yet settled) is updated."""
+    units = []
+    for job_id in job_ids:
+        room = {host: n - outstanding.get(host, 0) for host, n in slots.items()}
+        host = max(sorted(room), key=lambda h: room[h], default=None)
+        if host is None or room[host] <= 0:
+            break
+        outstanding[host] = outstanding.get(host, 0) + 1
+        units.append((job_id, host))
+    return units
+
+
 def tick(config, state, transport, persist, now=None, *, drain=False, dead_letter_failed=False,
          low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None,
-         refill_cap=None, other_app_budget=None, sibling_archived=None):
+         refill_cap=None, other_app_budget=None, sibling_archived=None, resume_native=False):
     if config.get("app") == SURYA_APP_NAME:
         require(refill_cap is None, "--refill-cap is for OCR plans")
         require(other_app_budget is None, "--other-app-budget is for OCR plans")
         return surya_tick(config, state, transport, persist, now, drain=drain,
                           low_watermark=low_watermark, high_watermark=high_watermark,
                           server_status=server_status)
+    # A native plan (#1780): its units go only to its native_hosts, and a native result it can't
+    # publish pauses it rather than stopping the tick.
+    native = config.get("app") == NATIVE_APP_NAME
+    require(native or not resume_native, f"--resume-native is for {NATIVE_APP_NAME} plans")
+    if resume_native and state.pop("native_paused", None) is not None:
+        persist()
     # Claims, exports and submits per tick (#1447). Collection still takes up to batch_size, so a
     # shorter tick doesn't leave held results that stop the next refill.
     refill = config["batch_size"] if refill_cap is None else min(config["batch_size"], refill_cap)
@@ -2369,6 +2456,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         warn_near_cap("archived_held", len(feed.archived_held), MAX_ARCHIVED_HELD, now)
     for key in ("pending_workunits", "active_hosts"):
         require(type(snapshot[key]) is int and snapshot[key] >= 0, "invalid capacity inventory")
+    native_slots = native_capacity(config, snapshot) if native else None
     pending_jobs = snapshot["pending_jobs"]
     require(isinstance(pending_jobs, list) and len(pending_jobs) <= MAX_JOBS and
             all(isinstance(job_id, str) and ID.fullmatch(job_id) for job_id in pending_jobs) and
@@ -2550,21 +2638,49 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             require(re.fullmatch(r"/[A-Za-z0-9_./-]+/results/[A-Za-z0-9_./-]+", spool)
                     and ".." not in spool, "invalid assimilator spool")
             to_collect.append((job_id, spool))
-    if hasattr(transport, "collect_batch"):
-        transport.collect_batch(to_collect)
-    else:
-        for job_id, spool in to_collect:
-            transport.collect(job_id, spool)
+    kept_before = {record["job"]["id"] for record in owned.values() if kept_by_policy(record)}
+    collect_error = None
+    try:
+        if hasattr(transport, "collect_batch"):
+            transport.collect_batch(to_collect)
+        else:
+            for job_id, spool in to_collect:
+                transport.collect(job_id, spool)
+    except RuntimeError as error:
+        # A native plan goes on below, if the failure left a result unpublished.
+        if not native:
+            raise
+        collect_error = error
     count = len(to_collect)
     if count:
         records = read_records()
         owned = own(records)
+    if native and to_collect:
+        # A native result collection didn't publish (the trust list doesn't admit its host for
+        # the native build, or its collect failed) or kept under a held scope stays as it is,
+        # unpublished. It pauses this plan, with an alert, until an operator resumes it
+        # (--resume-native); the tick goes on, and container plans are untouched (#1780).
+        by_id = {record["job"]["id"]: record for record in owned.values()}
+        collected = [job_id for job_id, _ in to_collect if job_id in by_id]
+        unpublished = sorted(j for j in collected if not settled(by_id[j]))
+        kept = sorted(j for j in collected if kept_by_policy(by_id[j]) and j not in kept_before)
+        if collect_error is not None and not unpublished:
+            raise collect_error
+        if unpublished or kept:
+            reasons = (["collect left a native result unpublished"
+                        + (f" ({collect_error})" if collect_error is not None else "")] if unpublished else [])
+            reasons += ["a native result is kept by a held scope"] if kept else []
+            state["native_paused"] = {"at": int(now), "reason": "; ".join(reasons),
+                                      "jobs": (unpublished + kept)[:5]}
+            persist()
+    native_paused = state.get("native_paused") if native else None
     settle_failed(owned)
     status = _extract_status(snapshot, transport, server_status=server_status, drain=drain)
     cohort_info = resolve_watermarks(
         config, snapshot, status,
         low_watermark=low_watermark, high_watermark=high_watermark,
         max_global_pending=max_global_pending, other_app_budget=other_app_budget,
+        native_slots=native_slots,
     )
     ocr_app = cohort_info["app"]
     active_hosts = cohort_info["active_hosts"]
@@ -2605,7 +2721,14 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     other_workunits = other_app_workunits(snapshot, ocr_app)
     budgeted_other = other_workunits or 0
     ocr_in_flight += bundled_pages
-    cohort_pending = ocr_in_flight + uncollected_not_pending + len(missing)
+    cohort_uncollected = uncollected_not_pending
+    if native:
+        # Only this plan's own work is the native plan's (#1780): every plan's units are named
+        # usnm_<job>, and container work isn't its to count. The global cap still counts it all.
+        ocr_in_flight = sum(record["job"]["id"] in pending_jobs for record in owned.values())
+        cohort_uncollected = sum(not settled(record) and record["job"]["id"] not in pending_jobs
+                                 for record in owned.values())
+    cohort_pending = ocr_in_flight + cohort_uncollected + len(missing)
     global_pending = global_in_flight + uncollected_not_pending + len(missing)
     global_pending_counted = counted_pending(cohort_info, global_pending, budgeted_other)
     cohort_pending_results = (max(ocr_workunits, ocr_status_results) + bundled_pages
@@ -2636,7 +2759,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # Every tick, so the list stays current when this one claims nothing (#1754).
         feed.settled_messages = settled_messages(records)
         feed.publish_settled()
-    if target and not held and not drain and not gold_ran:
+    if target and not held and not drain and not gold_ran and not native_paused:
         if free > 0:
             if feed:
                 feed.settled_messages = settled_messages(records)
@@ -2688,7 +2811,13 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         backlog = sum(not settled(record) and
                       record["job"]["id"] not in pending_jobs | candidates for record in records)
         backlog += sum(page not in owned and page not in conflicts for page in selected)
-        cohort_submit_room = max(0, target - ocr_in_flight - backlog)
+        cohort_backlog = backlog
+        if native:
+            cohort_backlog = sum(not settled(record) and
+                                 record["job"]["id"] not in pending_jobs | candidates
+                                 for record in owned.values())
+            cohort_backlog += sum(page not in owned and page not in conflicts for page in selected)
+        cohort_submit_room = max(0, target - ocr_in_flight - cohort_backlog)
         global_submit_room = max(0, global_room(cohort_info, global_in_flight + backlog, budgeted_other))
         submit_limit = min(refill, cohort_submit_room, global_submit_room)
         to_submit = []
@@ -2701,7 +2830,36 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                 require(job_id not in existing_jobs,
                         "SQL/journal mismatch; reconcile existing work before any automatic submission")
                 to_submit.append(job_id)
-        if hasattr(transport, "submit_batch"):
+        if native:
+            # Each unit to one of the plan's hosts with room: its CPUs, at most pages_per_host,
+            # less its units not yet settled. Recorded before submission, so a tick that stops
+            # in it leaves the choice on record; a reserved job is assigned again each tick.
+            targets = state.setdefault("native_targets", {})
+            open_jobs = {record["job"]["id"] for record in owned.values() if not settled(record)}
+            for job_id in [job_id for job_id in targets if job_id not in open_jobs]:
+                del targets[job_id]
+            outstanding = {}
+            for job_id, host in targets.items():
+                if job_id not in to_submit:
+                    outstanding[host] = outstanding.get(host, 0) + 1
+            units = assign_native_hosts(to_submit, native_slots, outstanding)
+            for job_id, host in units:
+                targets[job_id] = host
+            persist()
+            to_submit = [job_id for job_id, _ in units]
+            if units:
+                try:
+                    transport.submit_native(units)
+                except RuntimeError as error:
+                    # Refused by trust at submission, or failed: that job and the ones after it
+                    # were not created. The plan pauses with an alert (an uncertain one stops
+                    # the next tick before any submission, as for every plan).
+                    state["native_paused"] = {"at": int(now), "reason": f"native submission failed ({error})",
+                                              "jobs": to_submit[:5]}
+                    persist()
+                    native_paused = state["native_paused"]
+                    to_submit = []
+        elif hasattr(transport, "submit_batch"):
             if max(config.get("pages_per_unit", {}).values(), default=1) > 1:
                 by_id = {record["job"]["id"]: record for record in owned.values()}
                 units = units_of(config, [by_id[j] for j in to_submit])
@@ -2727,7 +2885,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
 
     post_uncollected_not_pending = sum(
         not settled(record) and record["job"]["id"] not in pending_jobs
-        for record in records
+        for record in (owned.values() if native else records)
     )
     post_missing = sum(page not in owned and page not in conflicts for page in selected)
     post_cohort_pending = ocr_in_flight + post_uncollected_not_pending + post_missing
@@ -2740,6 +2898,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     if drain:
         backpressure = True
         backpressure_reason = "draining"
+    elif native_paused:
+        backpressure = True
+        backpressure_reason = "native_paused"
     elif held > 0:
         backpressure = True
         backpressure_reason = "collection_backlog"
@@ -2748,7 +2909,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         backpressure_reason = "gold_tick"
     elif target == 0:
         backpressure = True
-        backpressure_reason = "no_active_hosts"
+        backpressure_reason = "no_native_hosts" if native else "no_active_hosts"
     elif cohort_mode and global_block:
         backpressure = True
         backpressure_reason = global_block
@@ -2803,6 +2964,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         alerts.append({"code": "ownership_conflict", "pages": len(disputed),
                        "first": [{"page": page, "other_plans": conflicts[page]["plans"]}
                                  for page in disputed[:5]]})
+    if native_paused:
+        alerts.append({"code": "native_paused", "app": NATIVE_APP_NAME, **native_paused,
+                       "message": "native OCR paused; inspect the held results, then --resume-native"})
     for run in gold_runs:
         for step, outcome in run["steps"].items():
             if outcome not in ("ok", GOLD_SKIPPED_AT_CAP):
@@ -2821,7 +2985,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     started = state.setdefault("started_at", now)
     state["published"] = published
     persist()
-    return with_timings({
+    event = {
         "event": "boinc_batch_tick", "schema_version": 1, "at": int(now), "plan": config["plan"],
         "draining": drain,
         "active_hosts": active_hosts, "target_pending": target,
@@ -2872,7 +3036,16 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         "zero_work_requests": zero_work_requests,
         "starvation_alert": starvation_alert,
         "alerts": alerts,
-    }, transport)
+    }
+    if native:
+        targets = state.get("native_targets", {})
+        event["native"] = {
+            "hosts": config["native_hosts"],
+            "slots": {str(host): n for host, n in native_slots.items()},
+            "outstanding": {str(host): sum(h == host for h in targets.values()) for host in config["native_hosts"]},
+            "paused": native_paused,
+        }
+    return with_timings(event, transport)
 
 
 def main(argv=None):
@@ -2930,6 +3103,10 @@ def main(argv=None):
                         help="claim pages in this source language too, beside the configuration's "
                              "claim_languages, without changing the allocation digest; repeat for more. "
                              "Use it for a language whose scope trust.json holds or trusts")
+    parser.add_argument("--resume-native", action="store_true",
+                        help=f"a {NATIVE_APP_NAME} plan paused on a native result it could not publish, or "
+                             "a refused submission (#1780): clear the pause and go on; a result still held "
+                             "pauses it again")
     parser.add_argument("--rest-journals", action="store_true",
                         help="list and fetch journals over the storage REST API with az's token")
     parser.add_argument("--onprem-handoff", action="append", choices=sorted(ONPREM_HANDOFF), default=[],
@@ -2968,6 +3145,8 @@ def main(argv=None):
                     and not set(args.claim_language) & set(config["claim_languages"])
                     and all(re.fullmatch(r"[a-z]{3}", l) for l in args.claim_language),
                     "--claim-language adds new three-letter codes to the configuration's claim_languages")
+        require(not args.resume_native or config.get("app") == NATIVE_APP_NAME,
+                f"--resume-native is for {NATIVE_APP_NAME} plans")
         require(1 <= args.collect_parallel <= MAX_COLLECT_PARALLEL, "invalid --collect-parallel")
         require(args.collect_parallel == 1 or args.batch_collect, "--collect-parallel needs --batch-collect")
         surya = config.get("app") == SURYA_APP_NAME
@@ -3014,6 +3193,10 @@ def main(argv=None):
                 plan_event["other_app_budget"] = args.other_app_budget
             if config.get("claim_languages"):
                 plan_event["claim_languages"] = config["claim_languages"] + args.claim_language
+            if config.get("app") == NATIVE_APP_NAME:
+                plan_event["app"] = NATIVE_APP_NAME
+                plan_event["native_hosts"] = config["native_hosts"]
+                plan_event["pages_per_host"] = config["pages_per_host"]
             print(json.dumps(plan_event))
             return 0
         args.state_dir = args.state_dir.resolve()
@@ -3041,6 +3224,8 @@ def main(argv=None):
                 extra_claim_languages=tuple(args.claim_language),
             )
             tick_kwargs = {"drain": args.drain, "dead_letter_failed": args.dead_letter_failed}
+            if args.resume_native:
+                tick_kwargs["resume_native"] = True
             if args.low_watermark is not None:
                 tick_kwargs["low_watermark"] = args.low_watermark
             if args.high_watermark is not None:

@@ -5,8 +5,8 @@
 //
 // At the pinned BOINC commit (22bbebe, tools/xadd) xadd inserts an app with only its name and
 // user_friendly_name, so the database gives it weight 1. An app added at weight 0
-// (usnm_gold_native, docs/boinc/apps/native-ocr.md) would then shrink every other app's feeder query
-// budget. This sets the declared weight on each app that has no app version yet (one xadd just
+// (usnm_gold_native and usnm_ocr_native, docs/boinc/apps/native-ocr.md) would then shrink every
+// other app's feeder query budget. This sets the declared weight on each app that has no app version yet (one xadd just
 // added, or one an earlier run added and then failed on), reads it back, and fails if it doesn't
 // hold, all before the feeder restarts with the new app.
 //

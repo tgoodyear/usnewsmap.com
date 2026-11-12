@@ -144,6 +144,11 @@
 #                               A line job (#1621) needs LINE_APP_VERSION=<version_num>, the
 #                               docker_lines usnm_ocr version, and takes LINE_TARGET_HOST=<id>
 #                               to send it to one calibrated host; it goes in batch 1621.
+#                               NATIVE_UNITS=<id>=<host>[,...] (up to 100) submits each job as a
+#                               usnm_ocr_native unit (#1780) assigned to that host, only if
+#                               $SHARE_DIR/gold/trust.json admits the host for the job's scope and
+#                               native digest; stops at the first failure, as JOB_IDS does. One job
+#                               alone takes JOB_ID and NATIVE_TARGET_HOST=<host>.
 #                               JOB_UNITS=<id>[+<id>...][,...] (up to 100 ids, up to 32 a unit)
 #                               submits each +-joined group as one OCR bundle workunit (#1059,
 #                               docs/boinc/apps/ocr-bundles.md), pinned to BUNDLE_APP_VERSION (the
@@ -207,7 +212,7 @@ scan_args=()
 if [ -d /project/handoff-scans/keep ]; then
   scan_args=(--scans /project/handoff-scans)
 fi
-if [ "$step" = submit-remote ] && { [ -n "${JOB_IDS:-}" ] || [ -n "${JOB_UNITS:-}" ]; }; then
+if [ "$step" = submit-remote ] && { [ -n "${JOB_IDS:-}" ] || [ -n "${JOB_UNITS:-}" ] || [ -n "${NATIVE_UNITS:-}" ]; }; then
   fetch_secrets
   render_config
   export BRIDGE_SECRETS_READY=1
@@ -222,6 +227,22 @@ if [ "$step" = submit-remote ] && [ -n "${JOB_IDS:-}" ]; then
   for id in "${batch_ids[@]}"; do
     log "submit-remote $id"
     JOB_ID=$id JOB_IDS="" "${BASH_SOURCE[0]}" || fail "submit-remote stopped at $id; the jobs after it were not submitted"
+  done
+  exit 0
+fi
+# Native OCR units (#1780): each job of NATIVE_UNITS goes to its one host, through the
+# single-job path, so the trust check and every other check are the same as for one job.
+if [ "$step" = submit-remote ] && [ -n "${NATIVE_UNITS:-}" ]; then
+  [ -z "${JOB_ID:-}" ] && [ -z "${JOB_IDS:-}" ] && [ -z "${JOB_UNITS:-}" ] && [ -z "${NATIVE_TARGET_HOST:-}" ] ||
+    fail "set NATIVE_UNITS alone, not with JOB_ID, JOB_IDS, JOB_UNITS or NATIVE_TARGET_HOST"
+  [[ $NATIVE_UNITS =~ ^[0-9a-f]{64}=[1-9][0-9]{0,9}(,[0-9a-f]{64}=[1-9][0-9]{0,9}){0,99}$ ]] ||
+    fail "NATIVE_UNITS is 1 to 100 comma-separated <job id>=<host id>"
+  IFS=, read -r -a native_units <<< "$NATIVE_UNITS"
+  for unit in "${native_units[@]}"; do
+    id=${unit%%=*} host=${unit#*=}
+    log "submit-remote $id as usnm_ocr_native for host $host"
+    JOB_ID=$id NATIVE_TARGET_HOST=$host NATIVE_UNITS="" "${BASH_SOURCE[0]}" ||
+      fail "submit-remote stopped at $id; the jobs after it were not submitted"
   done
   exit 0
 fi
@@ -660,6 +681,16 @@ submit_ocr_job() {
     [ -n "${LINE_APP_VERSION:-}" ] || fail "LINE_TARGET_HOST goes with LINE_APP_VERSION"
     [[ $LINE_TARGET_HOST =~ ^[1-9][0-9]*$ ]] || fail "LINE_TARGET_HOST must be positive"
     native_args+=(--target-host "$LINE_TARGET_HOST")
+  fi
+  # A native unit (#1780) is always assigned to one host, and usnm-boinc creates it only when the
+  # trust list admits that host for the job's scope and native digest.
+  if [ -n "${NATIVE_TARGET_HOST:-}" ]; then
+    [ -z "${LINE_APP_VERSION:-}${LINE_TARGET_HOST:-}" ] ||
+      fail "a native unit takes no LINE_APP_VERSION or LINE_TARGET_HOST"
+    [[ $NATIVE_TARGET_HOST =~ ^[1-9][0-9]{0,9}$ ]] || fail "NATIVE_TARGET_HOST must be positive"
+    [ -f "$SHARE_DIR/gold/trust.json" ] || fail "a native unit needs the trust list $SHARE_DIR/gold/trust.json"
+    # In place of the arguments above: a native unit is never a retry, so takes no retry stores.
+    native_args=(--app usnm_ocr_native --target-host "$NATIVE_TARGET_HOST" --trust "$SHARE_DIR/gold/trust.json")
   fi
   exec usnm-boinc submit --root "$HANDOFF_DIR" --project "$PROJ" --job "$JOB_ID" ${native_args[@]+"${native_args[@]}"}
 }

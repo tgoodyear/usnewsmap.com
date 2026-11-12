@@ -149,8 +149,12 @@ lock_code_trees() {
 # replica's hostname is stable for the life of its process (it is re-rendered at each start).
 render_config() {
   local daemons
+  # usnm_ocr and its native app usnm_ocr_native (#1780) use BOINC's stock trivial validator; the
+  # hand-off collect checks each result against its job and the trust list.
   daemons='<daemon><cmd>sample_trivial_validator --app usnm_ocr</cmd><output>sample_trivial_validator_usnm_ocr.log</output><pid_file>sample_trivial_validator_usnm_ocr.pid</pid_file></daemon>
-        <daemon><cmd>batch_collect_assimilator --app usnm_ocr</cmd><output>batch_collect_assimilator_usnm_ocr.log</output><pid_file>batch_collect_assimilator_usnm_ocr.pid</pid_file></daemon>'
+        <daemon><cmd>batch_collect_assimilator --app usnm_ocr</cmd><output>batch_collect_assimilator_usnm_ocr.log</output><pid_file>batch_collect_assimilator_usnm_ocr.pid</pid_file></daemon>
+        <daemon><cmd>sample_trivial_validator --app usnm_ocr_native</cmd><output>sample_trivial_validator_usnm_ocr_native.log</output><pid_file>sample_trivial_validator_usnm_ocr_native.pid</pid_file></daemon>
+        <daemon><cmd>batch_collect_assimilator --app usnm_ocr_native</cmd><output>batch_collect_assimilator_usnm_ocr_native.log</output><pid_file>batch_collect_assimilator_usnm_ocr_native.pid</pid_file></daemon>'
   # The gold check (#462, and its native app usnm_gold_native, #1418), NDL OCR, QUALITY and Qwen validate with usnm-boinc, which only the bridge image carries.
   # A server run from that image adds their daemons and links the validator scripts into bin/.
   # The retired usnm_assess, usnm_surya, usnm_iris and usnm_qwen_train have none (#1449): see

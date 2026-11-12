@@ -1978,7 +1978,7 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         text = open(bridge).read()
         marker = "# End of the batch modes (#932).\n"
         self.assertIn(marker, text)
-        stub = ('printf "single %s %s %s\\n" "$step" "${JOB_ID:-}" "${HANDOFF_SPOOL:-}" >> "$STUB_LOG"\n'
+        stub = ('printf "single %s %s %s %s\\n" "$step" "${JOB_ID:-}" "${HANDOFF_SPOOL:-}" "${NATIVE_TARGET_HOST:-}" >> "$STUB_LOG"\n'
                 f'[ "${{JOB_ID:-}}" != {fail_job} ] || exit 4\nexit 0\n')
         # Key Vault and the config: stubs that log, so a test can count what a batch fetches (#958).
         lib_line = f". {os.path.join(ROOT, 'boinc/images/server/lib.sh')}\n"
@@ -2010,6 +2010,74 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         # One fetch of every secret and one config for the whole batch; no per-job Key Vault read.
         stubs = [c for c in self.calls() if c.startswith("stub ")]
         self.assertEqual(stubs, ["stub fetch_secrets", "stub render_config"])
+
+    def test_bridge_native_units_go_one_by_one_to_their_hosts(self):
+        # #1780: NATIVE_UNITS submits each job as a usnm_ocr_native unit for its host, through the
+        # single-job path, and stops at the first failure as JOB_IDS does.
+        j1, j2, j3 = "1" * 64, "2" * 64, "3" * 64
+        bridge, env = self.bridge_batch_copy(j2)
+        r = subprocess.run([bridge], cwd=ROOT, env={**env, "BRIDGE_STEP": "submit-remote",
+                                                    "NATIVE_UNITS": f"{j1}=13,{j2}=13,{j3}=7"},
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(f"submit-remote stopped at {j2}", r.stderr)
+        self.assertEqual([c.split()[1:] for c in self.calls() if c.startswith("single ")],
+                         [["submit-remote", j1, "13"], ["submit-remote", j2, "13"]])
+        stubs = [c for c in self.calls() if c.startswith("stub ")]
+        self.assertEqual(stubs, ["stub fetch_secrets", "stub render_config"])
+        # A unit with no host, host 0, or mixed with the other batch modes runs nothing.
+        for extra in ({"NATIVE_UNITS": j1}, {"NATIVE_UNITS": f"{j1}="}, {"NATIVE_UNITS": f"{j1}=0"},
+                      {"NATIVE_UNITS": f"{j1}=13", "JOB_ID": j1},
+                      {"NATIVE_UNITS": f"{j1}=13", "JOB_IDS": j1},
+                      {"NATIVE_UNITS": f"{j1}=13", "NATIVE_TARGET_HOST": "13"}):
+            with self.subTest(extra=extra):
+                os.remove(self.log)
+                r = subprocess.run([bridge], cwd=ROOT, env={**env, "BRIDGE_STEP": "submit-remote", **extra},
+                                   capture_output=True, text=True)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertFalse([c for c in self.calls() if c.startswith("single ")])
+
+    def test_bridge_native_unit_submits_with_its_host_and_the_trust_list(self):
+        # #1780: the single-job path gives usnm-boinc the native app, the host and the trust list,
+        # and never the line pin or retry stores.
+        text = open(BRIDGE_JOB_SCRIPT).read()
+        function = "submit_ocr_job() {" + text.split("submit_ocr_job() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        bindir = os.path.join(self.tmp, "native-bin")
+        os.makedirs(bindir)
+        with open(os.path.join(bindir, "usnm-boinc"), "w") as f:
+            f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_LOG"\n')
+        os.chmod(os.path.join(bindir, "usnm-boinc"), 0o755)
+        share = os.path.join(self.tmp, "native-share")
+        os.makedirs(os.path.join(share, "gold"))
+        script = 'fail() { echo "error: $*" >&2; exit 1; }\n' + function + "submit_ocr_job\n"
+        env = {**self.env, "PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log,
+               "HANDOFF_DIR": "/h", "PROJ": "/p", "JOB_ID": "1" * 64, "SHARE_DIR": share,
+               "COSMOS_ENDPOINT": "https://c.documents.azure.com:443/", "CURATED_URL": "https://d/curated"}
+
+        def run(**extra):
+            if os.path.exists(self.log):
+                os.remove(self.log)
+            return subprocess.run(["bash", "-euo", "pipefail", "-c", script], env={**env, **extra},
+                                  capture_output=True, text=True)
+
+        r = run(NATIVE_TARGET_HOST="13")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("needs the trust list", r.stderr)
+        self.assertEqual(self.calls(), [])
+        open(os.path.join(share, "gold/trust.json"), "w").close()
+        r = run(NATIVE_TARGET_HOST="13")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.calls(), [f"submit --root /h --project /p --job {'1' * 64} --app usnm_ocr_native "
+                                        f"--target-host 13 --trust {share}/gold/trust.json"])
+        for extra in ({"NATIVE_TARGET_HOST": "0"}, {"NATIVE_TARGET_HOST": "x"},
+                      {"NATIVE_TARGET_HOST": "13", "LINE_APP_VERSION": "108"}):
+            with self.subTest(extra=extra):
+                self.assertEqual(run(**extra).returncode, 1)
+                self.assertEqual(self.calls(), [])
+        # Without a host it is a container unit, as before.
+        r = run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("usnm_ocr_native", self.calls()[0])
 
     def test_bridge_spool_out_batch_goes_on_past_a_failed_job(self):
         j1, j2, j3 = "1" * 64, "2" * 64, "3" * 64

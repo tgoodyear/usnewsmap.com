@@ -124,6 +124,23 @@ pub async fn submit_pinned(
     submit_placed(root, project, id, download, native, pin, None).await
 }
 
+/// The BOINC app of the native OCR build, which needs no container runtime (#1418,
+/// docs/boinc/apps/native-ocr.md). Its units are only ever assigned to one host.
+pub const NATIVE_APP: &str = "usnm_ocr_native";
+
+/// Which app a single-page unit goes to.
+#[derive(Clone, Copy)]
+enum Build<'a> {
+    /// `usnm_ocr`, the worker image.
+    Container,
+    /// [`NATIVE_APP`]: always for one host (`--target_host`), and only one `trust` already
+    /// admits for the job's exact scope and native digest.
+    Native {
+        host: Option<u64>,
+        trust: &'a crate::trust::Trust,
+    },
+}
+
 /// [`submit_pinned`], and for a line job optionally targeted at one host (`--target_host`,
 /// which needs `<enable_assignment>`): a targeted job never enters the feeder's array, so only
 /// that host, calibrated on the line worker, can get it.
@@ -135,6 +152,59 @@ pub async fn submit_placed(
     native: Option<&RetryNative<'_>>,
     pin: Option<u32>,
     target_host: Option<u64>,
+) -> anyhow::Result<()> {
+    submit_unit(
+        root,
+        project,
+        id,
+        download,
+        native,
+        pin,
+        target_host,
+        Build::Container,
+    )
+    .await
+}
+
+/// Submits job `id` as a [`NATIVE_APP`] unit for `target_host` (#1780). A native unit is always
+/// targeted: with no host it is refused. Before anything is staged or created, `trust` must
+/// admit the host for the job's exact scope and native digest ([`crate::trust::Trust::refuse_job`]),
+/// so a host that isn't trusted for the native build is never sent a page. Line jobs, retries
+/// and bundles stay container work.
+pub async fn submit_native(
+    root: &Path,
+    project: &Path,
+    id: &str,
+    download: Option<&Download>,
+    target_host: Option<u64>,
+    trust: &crate::trust::Trust,
+) -> anyhow::Result<()> {
+    submit_unit(
+        root,
+        project,
+        id,
+        download,
+        None,
+        None,
+        target_host,
+        Build::Native {
+            host: target_host,
+            trust,
+        },
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn submit_unit(
+    root: &Path,
+    project: &Path,
+    id: &str,
+    download: Option<&Download>,
+    native: Option<&RetryNative<'_>>,
+    pin: Option<u32>,
+    target_host: Option<u64>,
+    build: Build<'_>,
 ) -> anyhow::Result<()> {
     let _lock = Lock::take(root)?;
     let project = project.canonicalize()?;
@@ -149,6 +219,26 @@ pub async fn submit_placed(
     } else {
         pin.filter(|v| *v > 0)
     };
+    let app = match build {
+        Build::Container => "usnm_ocr",
+        Build::Native { host, trust } => {
+            let Some(host) = host else {
+                anyhow::bail!(
+                    "a {NATIVE_APP} unit needs --target-host: native units are only ever assigned to one host"
+                );
+            };
+            ensure!(host > 0, "--target-host must be positive");
+            ensure!(
+                record.job.lines.is_none() && !is_retry && record.bundle.is_none(),
+                "line jobs, retries and bundles are container work, never {NATIVE_APP} units"
+            );
+            if let Some(reason) = trust.refuse_job(&record.job, Some(host)) {
+                anyhow::bail!("trust refuses host {host} for this {NATIVE_APP} job: {reason}");
+            }
+            NATIVE_APP
+        }
+    };
+    let native_unit = matches!(build, Build::Native { .. });
     ensure!(
         record.job.lines.is_none() || is_retry || pin.is_some(),
         "a line job needs --app-version-num, the usnm_ocr version whose worker reads line jobs"
@@ -156,8 +246,8 @@ pub async fn submit_placed(
     if let Some(host) = target_host {
         ensure!(host > 0, "--target-host must be positive");
         ensure!(
-            record.job.lines.is_some(),
-            "only a line job can be targeted at a host"
+            native_unit || record.job.lines.is_some(),
+            "only a line job or a {NATIVE_APP} unit can be targeted at a host"
         );
         let config = std::fs::read_to_string(project.join("config.xml"))?;
         ensure!(
@@ -241,7 +331,7 @@ pub async fn submit_placed(
             let mut command = Command::new(project.join("bin/create_work"));
             command.current_dir(&project).args([
                 "--appname",
-                "usnm_ocr",
+                app,
                 "--wu_name",
                 &record.job.workunit(),
                 "--wu_template",
@@ -371,6 +461,133 @@ pub fn reconcile(root: &Path, id: &str, present: bool) -> anyhow::Result<()> {
         save(root, record)?;
     }
     Ok(())
+}
+
+/// Native OCR units (#1780): always for one host, and only one trust admits.
+#[cfg(all(test, unix))]
+mod native_tests {
+    use super::*;
+    use crate::bundle::submit::tests::Server;
+    use crate::bundle::work::tests::job;
+
+    const ASSIGNMENT: &str =
+        "<boinc><config><enable_assignment>1</enable_assignment></config></boinc>";
+
+    /// A list that trusts `hosts` for `image` in the test jobs' eng/eng scope.
+    fn trust_for(dir: &Path, image: &str, hosts: &[u64]) -> crate::trust::Trust {
+        let path = dir.join("trust.json");
+        let list = serde_json::json!({
+            "hosts": {image: hosts},
+            "manifest_sha256": "b".repeat(64),
+            "scope": {"language": "eng", "profile": "eng", "psm": 3, "dpi": 300},
+            "max_cer": 0.08734328574534386,
+            "v": 4
+        });
+        std::fs::write(&path, serde_json::to_vec(&list).unwrap()).unwrap();
+        crate::trust::Trust::load(&path).unwrap()
+    }
+
+    /// Trusts `hosts` for the test jobs' own digest.
+    fn trust(dir: &Path, hosts: &[u64]) -> crate::trust::Trust {
+        trust_for(dir, &job(1).engine.image, hosts)
+    }
+
+    fn stage(s: &Server, id: &str) -> Stage {
+        load(&s.root, id).unwrap().stage
+    }
+
+    #[tokio::test]
+    async fn a_native_unit_without_a_target_host_is_refused() {
+        let (s, ids) = Server::new(&[1]);
+        std::fs::write(s.project.join("config.xml"), ASSIGNMENT).unwrap();
+        let trust = trust(&s.root, &[13]);
+        let error = submit_native(&s.root, &s.project, &ids[0], None, None, &trust)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("needs --target-host"),
+            "{error:#}"
+        );
+        assert!(
+            submit_native(&s.root, &s.project, &ids[0], None, Some(0), &trust)
+                .await
+                .is_err()
+        );
+        assert!(s.calls().is_empty());
+        assert_eq!(stage(&s, &ids[0]), Stage::Reserved);
+    }
+
+    #[tokio::test]
+    async fn a_host_trust_refuses_gets_nothing_created() {
+        let (s, ids) = Server::new(&[1]);
+        std::fs::write(s.project.join("config.xml"), ASSIGNMENT).unwrap();
+        // Host 5 isn't on the list, and host 13 trusted for another build (the worker image)
+        // isn't trusted for this one.
+        let other = format!("sha256:{}", "c".repeat(64));
+        for (image, host) in [(job(1).engine.image, 5), (other, 13)] {
+            let trust = trust_for(&s.root, &image, &[13]);
+            let error = submit_native(&s.root, &s.project, &ids[0], None, Some(host), &trust)
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("trust refuses host"),
+                "{error:#}"
+            );
+        }
+        assert!(s.calls().is_empty());
+        assert!(std::fs::read_dir(s.project.join("download"))
+            .unwrap()
+            .next()
+            .is_none());
+        assert_eq!(stage(&s, &ids[0]), Stage::Reserved);
+    }
+
+    #[tokio::test]
+    async fn a_trusted_host_gets_one_assigned_native_unit() {
+        let (s, ids) = Server::new(&[1]);
+        let trust = trust(&s.root, &[13]);
+        // Without assignment the unit could go to any host.
+        std::fs::write(s.project.join("config.xml"), "<boinc><config/></boinc>").unwrap();
+        assert!(
+            submit_native(&s.root, &s.project, &ids[0], None, Some(13), &trust)
+                .await
+                .is_err()
+        );
+        assert!(s.calls().is_empty());
+        std::fs::write(s.project.join("config.xml"), ASSIGNMENT).unwrap();
+        submit_native(&s.root, &s.project, &ids[0], None, Some(13), &trust)
+            .await
+            .unwrap();
+        let calls = s.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(
+            calls[0].starts_with(&format!("--appname {NATIVE_APP} ")),
+            "{}",
+            calls[0]
+        );
+        assert!(calls[0].contains(&format!("--wu_name usnm_{}", ids[0])));
+        assert!(calls[0].contains("--target_host 13"));
+        assert!(!calls[0].contains("--app_version_num"));
+        assert_eq!(stage(&s, &ids[0]), Stage::Submitted);
+    }
+
+    #[tokio::test]
+    async fn container_units_are_unchanged() {
+        let (s, ids) = Server::new(&[1]);
+        submit(&s.root, &s.project, &ids[0]).await.unwrap();
+        let calls = s.calls();
+        assert!(calls[0].starts_with("--appname usnm_ocr "), "{}", calls[0]);
+        assert!(!calls[0].contains("--target_host"));
+        // A container page job still can't be targeted.
+        let (s, ids) = Server::new(&[2]);
+        std::fs::write(s.project.join("config.xml"), ASSIGNMENT).unwrap();
+        assert!(
+            submit_placed(&s.root, &s.project, &ids[0], None, None, None, Some(13))
+                .await
+                .is_err()
+        );
+        assert!(s.calls().is_empty());
+    }
 }
 
 #[cfg(test)]
