@@ -9,7 +9,7 @@ use usnm_ocr_contract::boinc::{self, Job, ResultManifest};
 use usnm_ocr_worker::engine::{self, Engine, Runner, Tesseract, TesseractOptions};
 
 pub async fn run(work: &Path) -> anyhow::Result<()> {
-    let work = crate::plain_path(work.canonicalize()?);
+    let work = crate::plain_path(work.canonicalize().context("the slot's path")?);
     if work.join(crate::assess::JOB_FILE).exists() {
         return crate::assess::work::run(&work).await;
     }

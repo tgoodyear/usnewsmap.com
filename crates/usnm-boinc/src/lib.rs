@@ -56,7 +56,10 @@ pub mod worker;
 /// Bounded regular-file reads, also used for untrusted volunteer output.
 pub fn read(path: &Path, max: usize) -> anyhow::Result<Vec<u8>> {
     ensure!(
-        std::fs::symlink_metadata(path)?.file_type().is_file(),
+        std::fs::symlink_metadata(path)
+            .with_context(|| format!("reading {}", path.display()))?
+            .file_type()
+            .is_file(),
         "not a regular file"
     );
     let mut options = OpenOptions::new();
@@ -66,7 +69,9 @@ pub fn read(path: &Path, max: usize) -> anyhow::Result<Vec<u8>> {
         use std::os::unix::fs::OpenOptionsExt;
         options.custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32);
     }
-    let f = options.open(path)?;
+    let f = options
+        .open(path)
+        .with_context(|| format!("reading {}", path.display()))?;
     ensure!(
         f.metadata()?.is_file() && f.metadata()?.len() <= max as u64,
         "file over size limit"
