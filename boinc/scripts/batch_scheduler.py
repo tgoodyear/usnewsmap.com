@@ -1213,7 +1213,12 @@ class Transport:
 
     @timed("export")
     def export(self, pages, job_ids=()):
+        """Export `pages`, pushing again first any whose scan is not where this export reads it.
+        Returns {page: why its JP2 is cut short at LoC} for the pages that push found cut short
+        (checked as the first push is, with --skip-truncated-scans, #1457): they are not exported,
+        and the caller settles them like a first push's."""
         queue = self.config.get("source") == "queue"
+        truncated_pages = {}
         if queue:
             # A page whose scan went to another destination (the export moved on-prem, or back,
             # after it was pushed) is pushed again where this export reads it.
@@ -1226,9 +1231,13 @@ class Transport:
                             if page.get("scan_base") and (page.get("pushed_to", "container") != dest
                                                           or page.get("supersedes"))})
             if stale:
-                # Not checked again: a page is checked once, when it is first pushed.
-                found, missing, _ = self.push_pages(stale, skip_truncated=False)
+                # Checked as a first push is (#1457): a scan that was cut short, or became so
+                # after its first push, is not sent again.
+                found, missing, truncated = self.push_pages(stale)
                 require(not missing, "a claimed page's scan is gone from the scan server; release it")
+                truncated_pages = {page["page"]: truncated[page["scan_base"]] for page in pages
+                                   if page.get("scan_base") in truncated}
+                pages = [page for page in pages if page["page"] not in truncated_pages]
                 # The push finds each scan's format again: export asks for the file it sent.
                 root = self.config["scans_root"].rstrip("/")
                 pages = [dict(page, scan=f"{root}/{found[page['scan_base']]}")
@@ -1238,6 +1247,8 @@ class Transport:
             for page in pages:
                 argv += ["--scan", page["scan"]]
             self.run(argv, "cached scan push", execution_route="azure/scans")
+        if not pages:
+            return truncated_pages
         # The exporter takes one base batch at a time; queued pages come from many.
         batches = {}
         for page in pages:
@@ -1270,6 +1281,7 @@ class Transport:
             if retried:
                 variables["HANDOFF_DEADLINE_RETRIES"] = ",".join(retried)
             self.step("handoff", "export", **variables)
+        return truncated_pages
 
     @timed("claim")
     def claim(self, count):
@@ -1799,7 +1811,8 @@ class QueueFeed:
         self.config["pages"] = [
             {"page": page, "batch": claim["batch"], "scan": claim["scan"],
              "scan_base": claim["scan_base"], "pushed_to": claim.get("pushed_to", "container"),
-             **({"supersedes": claim["supersedes"]} if claim.get("supersedes") else {})}
+             **({"supersedes": claim["supersedes"]} if claim.get("supersedes") else {}),
+             **({"cut_short": True} if "export_truncated" in claim else {})}
             for page, claim in sorted(self.claims.items()) if claim.get("scan")]
 
     @staticmethod
@@ -1955,7 +1968,10 @@ class QueueFeed:
                 and found["queued_at"] != job["message"].get("queued_at"),
                 f"invalid deadline retry record for job {job['id']} (page {page}, doc {claim['doc_id']}, "
                 f"message {claim['message']})")
-        self.claims[page] = {**self.claims[page], "message": claim["message"], "supersedes": job["id"]}
+        # The retry's scan is pushed and checked again: a cut-short mark of the old attempt goes.
+        self.claims[page] = {**{key: value for key, value in self.claims[page].items()
+                                if key != "export_truncated"},
+                             "message": claim["message"], "supersedes": job["id"]}
         self.state.setdefault("deadline_retries", {})[job["id"]] = {
             "page": page, "message": claim["message"], "queued_at": found["queued_at"],
             "timeout_secs": timeout}
@@ -1975,6 +1991,45 @@ class QueueFeed:
             for page in pages:
                 del self.claims[page]
             self.persist()
+
+    def settle_export_truncated(self, truncated, selected, now, journaled=None):
+        """Pages whose scan export found cut short when it pushed them again (#1457), `truncated`
+        being {page: reason}: dead-lettered and listed as a first push's are, and dropped from
+        `selected` so they aren't waited for. A page this plan already has a journal for (a
+        deadline retry's failed job, or a prepared one) is not settled: its allocation has to stay
+        for the journal's ownership check. It is left claimed, not exported, and logged."""
+        journaled = journaled or {}
+        kept = sorted(page for page in truncated if page in journaled)
+        # A failed journal (a deadline retry's) is settled work and counts for nothing. A prepared
+        # one would count as backlog for good: stop for an operator instead of holding it.
+        live = [page for page in kept if journaled[page]["stage"] != "failed"]
+        require(not live, f"export found {', '.join(live)} cut short, but the plan holds a live journal "
+                "for it; reconcile the journal before the next tick (#1457)")
+        for page in kept:
+            # Kept in the state, so later ticks pass it over and it doesn't take export slots.
+            self.claims[page]["export_truncated"] = truncated[page]
+        if kept:
+            self.persist()
+            self.restore()
+            try:
+                print(json.dumps({"event": "boinc_batch_export_truncated_kept", "schema_version": 1,
+                                  "pages": kept, "message": "cut short at LoC, but the plan holds a journal "
+                                  "for them: not exported, left claimed until the lease runs out"},
+                                 sort_keys=True), file=sys.stderr, flush=True)
+            except (OSError, ValueError):
+                pass
+        truncated = {page: reason for page, reason in truncated.items() if page not in journaled}
+        if not truncated:
+            return
+        for page, reason in truncated.items():
+            claim = self.claims.get(page)
+            require(claim is not None, f"export found {page} cut short, and it has no claim")
+            claim["source_truncated"] = reason
+            claim["scan"] = None
+            selected.pop(page, None)
+        self.persist()
+        self.retry_truncated(now)
+        self.restore()
 
     def retry_truncated(self, now):
         """Dead-letter the claimed pages whose JP2 LoC holds cut short (#1457): released, the
@@ -2852,6 +2907,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # Never a page any other plan's journal is for, a page claimed this tick included (#1685).
         foreign = {record["job"]["message"]["page"] for record in records if record["plan"] != config["plan"]}
         export = [page for page in config["pages"] if page["page"] in selected and
+                  not page.get("cut_short") and
                   page["page"] not in foreign and
                   (page["page"] not in owned or retried(page) or
                    (owned[page["page"]]["stage"] == "prepared"
@@ -2864,7 +2920,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                             if record["job"]["message"]["page"] in pages]
                 require(len(journals) <= STEP_IDS,
                         "too many existing journals for selected pages; reconcile history")
-                transport.export(group, journals)
+                truncated = transport.export(group, journals)
+                if truncated and feed:
+                    feed.settle_export_truncated(truncated, selected, now, owned)
+                    export = [page for page in export if page["page"] not in truncated]
             records = read_records()
             owned = own(records)
             stuck = sorted(page["page"] for page in export if retried(page))

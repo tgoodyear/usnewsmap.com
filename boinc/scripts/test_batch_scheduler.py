@@ -2300,6 +2300,56 @@ class QueueModeTests(unittest.TestCase):
         self.assertEqual(len(self.fake.jobs), 3)
         self.assertEqual(self.fake.claimed[2:], ["sn12345678/1900-01-01/ed-1/seq-3", "sn12345678/1900-01-01/ed-1/seq-4"])
 
+    def test_a_page_export_finds_cut_short_on_a_re_push_is_settled_like_a_first_push(self):
+        # #1457: the first push passed it; export's re-push found it cut short.
+        page = "sn12345678/1900-01-01/ed-1/seq-1"
+        reason = "the codestream ends without an EOC marker after 1 of 4 tiles"
+        original = self.fake.export
+
+        def export(pages, job_ids=()):
+            cut = {p["page"]: reason for p in pages if p["page"] == page}
+            original([p for p in pages if p["page"] not in cut], job_ids)
+            return cut
+        self.fake.export = export
+        self.tick()
+        self.assertIn(("dead-letter-truncated", [("sn12345678_1900-01-01_ed-1_seq-1", f"{1:064x}")]),
+                      self.fake.actions)
+        self.assertEqual(self.fake.released, [])
+        self.assertNotIn(page, self.state["claims"])
+        self.assertNotIn(page, self.state["selected"])
+        self.assertEqual(self.state["source_truncated"][page]["reason"], reason)
+        self.assertEqual(len(self.fake.jobs), 1)
+
+    def test_a_cut_short_page_with_a_journal_keeps_its_allocation(self):
+        # The journal fails the ownership check if its page's allocation goes. A failed journal
+        # (a deadline retry's) is settled work: the page stays claimed, is not exported, is not
+        # dead-lettered, and later ticks pass it over. A live journal stops the tick for an
+        # operator: it would count as backlog for good.
+        page = "sn12345678/1900-01-01/ed-1/seq-1"
+        self.tick()
+        row = next(r for r in self.fake.rows if r["job"]["message"]["page"] == page)
+        row["stage"] = "prepared"
+        self.fake.export = lambda pages, job_ids=(): {page: "cut short"}
+        with self.assertRaisesRegex(ValueError, "live journal"):
+            self.tick()
+        self.assertFalse([a for a in self.fake.actions if a[0] == "dead-letter-truncated"])
+        self.assertIn(page, self.state["claims"])
+        self.assertNotIn("source_truncated", self.state)
+        row["stage"] = "failed"
+        self.state.setdefault("dead_lettered", {})[row["job"]["id"]] = int(NOW)
+        self.state["claims"][page]["supersedes"] = row["job"]["id"]
+        calls = []
+        self.fake.export = lambda pages, job_ids=(): calls.append([p["page"] for p in pages]) or {page: "cut short"}
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.tick()
+        self.assertIn("boinc_batch_export_truncated_kept", err.getvalue())
+        self.assertIn(page, self.state["claims"])
+        self.assertNotIn("source_truncated", self.state)
+        self.assertFalse([a for a in self.fake.actions if a[0] == "dead-letter-truncated"])
+        # Later ticks don't offer it to export.
+        self.fake.export = lambda pages, job_ids=(): self.assertNotIn(page, [p["page"] for p in pages])
+        self.tick()
+
     def test_a_failed_truncated_dead_letter_is_retried_and_never_pushed_again(self):
         base = "keep/test_batch/sn12345678/1900-01-01/1/1"
         self.fake.truncated = {base: "the codestream ends inside its main header"}
@@ -2640,6 +2690,32 @@ class QueueModeTests(unittest.TestCase):
         self.assertIn(("collect", retried[0]["job"]["id"]), self.fake.actions)
         self.assertEqual(self.fake.rows[self.fake.rows.index(retried[0])]["stage"], "published")
         self.assertNotIn(retried[0]["job"]["id"], self.state["dead_lettered"])
+
+    def test_a_deadline_retry_of_a_page_kept_as_cut_short_is_exported_again_and_checked(self):
+        # #1457: the old attempt's re-push found the scan cut short, and the page was kept. The
+        # operator's retry takes the claim without that mark: whole now, it is exported; still
+        # cut short, it is skipped and kept again.
+        for whole in (True, False):
+            with self.subTest(whole=whole):
+                self.state = {}
+                failed, newer = self.dead_lettered_page()
+                page, failed_id = newer["page"], failed["job"]["id"]
+                self.state["claims"][page]["export_truncated"] = "the codestream ends inside its main header"
+                self.fake.retries[(failed_id, "e" * 64)] = self.retry_record(failed, newer)
+                if not whole:
+                    self.fake.export = lambda pages, job_ids=(): {page: "still cut short"}
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.tick()
+                claim = self.state["claims"][page]
+                self.assertEqual(claim["message"], "e" * 64)
+                if whole:
+                    self.assertNotIn("export_truncated", claim)
+                    self.assertIn(("export-retry", page, failed_id), self.fake.actions)
+                else:
+                    self.assertIn("boinc_batch_export_truncated_kept", err.getvalue())
+                    self.assertEqual(claim["export_truncated"], "still cut short")
+                    self.assertNotIn("source_truncated", self.state)
+                self.assertFalse([a for a in self.fake.actions if a[0] == "dead-letter-truncated"])
 
     def test_a_retried_job_that_fails_again_is_dead_lettered_as_usual(self):
         failed, newer = self.dead_lettered_page()
@@ -3347,7 +3423,6 @@ class TimingsTests(unittest.TestCase):
         self.assertIn("--skip-truncated", run.call_args.args[0])
         self.assertEqual(transport.timings.summary()["scan_pages"]["azure"],
                          {"pushed": 1, "missing": 0, "source_truncated": 1})
-        # Re-pushing a page already checked (export, after the destination moved) checks nothing.
         self.assertNotIn("--skip-truncated", transport.push_args(skip_truncated=False))
         # The dead letter names the pages.
         with patch.object(transport, "step") as step:
@@ -3950,8 +4025,8 @@ class QueueTransportTests(unittest.TestCase):
         found = {"keep/dlc_aaa/sn1/1890-05-03/1/1": "keep/dlc_aaa/sn1/1890-05-03/1/1.jpg"}
         with patch.object(t, "push_pages", return_value=(found, [], {})) as push, patch.object(t, "step") as step:
             t.export(pages, [])
-        # Checked once, when first pushed (#1457): not again here.
-        push.assert_called_once_with(["keep/dlc_aaa/sn1/1890-05-03/1/1"], skip_truncated=False)
+        # Checked as a first push is (#1457): whatever the Transport was set to.
+        push.assert_called_once_with(["keep/dlc_aaa/sn1/1890-05-03/1/1"])
         # The export asks for the format the push found now.
         self.assertEqual(step.call_args.kwargs["HANDOFF_SCANS"],
                          "keep/dlc_aaa/sn1/1890-05-03/1/1.jpg,keep/dlc_aaa/sn1/1890-05-03/1/2.jp2")
@@ -3960,6 +4035,64 @@ class QueueTransportTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "gone from the scan server"):
                 t.export(pages, [])
             step.assert_not_called()
+
+    def stale_export_fixture(self, skip_truncated):
+        cfg = queue_config()
+        cfg["step_command"] = ["ssh", "root@boinc.example", "--"]
+        cfg["scans_root"] = "/tank/ocr/scans"
+        t = batch.Transport(cfg, Path("."), onprem_handoff=("export",), skip_truncated=skip_truncated)
+        base = "keep/dlc_aaa/sn1/1890-05-03/1/%d"
+        pages = [{"page": f"sn1/1890-05-03/ed-1/seq-{n}", "batch": "dlc_aaa", "pushed_to": "container",
+                  "scan_base": base % n, "scan": f"/tank/ocr/scans/{base % n}.jp2"} for n in (1, 2)]
+        return t, pages, base
+
+    def test_a_stale_re_push_of_a_good_scan_exports_it(self):
+        t, pages, base = self.stale_export_fixture(True)
+        out = f"pushed {base % 1}.jp2\n"
+        with patch.object(batch.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, out, "")) as run, \
+                patch.object(t, "step") as step:
+            self.assertEqual(t.export(pages[:1], []), {})
+        # The re-push checks the JP2 as the first push does.
+        self.assertIn("--skip-truncated", run.call_args.args[0])
+        self.assertEqual(step.call_args.kwargs["HANDOFF_SCANS"], base % 1 + ".jp2")
+
+    def test_a_stale_re_push_without_the_flag_checks_nothing_as_before(self):
+        t, pages, base = self.stale_export_fixture(False)
+        out = f"pushed {base % 1}.jp2\n"
+        with patch.object(batch.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, out, "")) as run, \
+                patch.object(t, "step") as step:
+            self.assertEqual(t.export(pages[:1], []), {})
+        self.assertNotIn("--skip-truncated", run.call_args.args[0])
+        step.assert_called_once()
+
+    def test_a_stale_re_push_of_a_truncated_scan_is_skipped_and_named(self):
+        t, pages, base = self.stale_export_fixture(True)
+        out = f"truncated {(base % 1)[5:]} the codestream ends inside its main header\npushed {base % 2}.jp2\n"
+        with patch.object(batch.subprocess, "run", return_value=subprocess.CompletedProcess([], 3, out, "")), \
+                patch.object(t, "step") as step:
+            truncated = t.export(pages, [])
+        self.assertEqual(truncated, {pages[0]["page"]: "the codestream ends inside its main header"})
+        # Only the good page is exported.
+        self.assertEqual(step.call_args.kwargs["HANDOFF_PAGES"], pages[1]["page"])
+        self.assertEqual(step.call_args.kwargs["HANDOFF_SCANS"], base % 2 + ".jp2")
+        self.assertEqual(t.timings.summary()["scan_pages"]["onprem"]["source_truncated"], 1)
+        # Nothing is exported when every page is cut short.
+        with patch.object(batch.subprocess, "run", return_value=subprocess.CompletedProcess([], 3, out.splitlines()[0] + "\n", "")), \
+                patch.object(t, "step") as step:
+            self.assertEqual(t.export(pages[:1], []), truncated)
+        step.assert_not_called()
+
+    def test_a_scan_truncated_after_its_first_push_is_not_sent_again(self):
+        # A deadline retry's page was pushed, and passed, for its failed job: its copy on the
+        # scan server is cut short now.
+        t, pages, base = self.stale_export_fixture(True)
+        page = dict(pages[0], pushed_to="onprem", supersedes="c" * 64)
+        out = f"truncated {(base % 1)[5:]} the 'jp2c' box declares 9 bytes past the end of the file\n"
+        with patch.object(batch.subprocess, "run", return_value=subprocess.CompletedProcess([], 3, out, "")), \
+                patch.object(t, "step") as step:
+            self.assertEqual(t.export([page], []),
+                             {page["page"]: "the 'jp2c' box declares 9 bytes past the end of the file"})
+        step.assert_not_called()
 
     def test_a_deadline_retry_pushes_its_scan_again_and_names_its_failed_job(self):
         # #1417: the retried page's scan was pushed for its failed job, days ago.
@@ -3976,7 +4109,7 @@ class QueueTransportTests(unittest.TestCase):
         found = {"keep/dlc_aaa/sn1/1890-05-03/1/1": "keep/dlc_aaa/sn1/1890-05-03/1/1.jp2"}
         with patch.object(t, "push_pages", return_value=(found, [], {})) as push, patch.object(t, "step") as step:
             t.export([retried, plain], [])
-        push.assert_called_once_with(["keep/dlc_aaa/sn1/1890-05-03/1/1"], skip_truncated=False)
+        push.assert_called_once_with(["keep/dlc_aaa/sn1/1890-05-03/1/1"])
         sent = {call.kwargs["HANDOFF_BATCH"]: call.kwargs for call in step.call_args_list}
         self.assertEqual(sent["dlc_aaa"]["HANDOFF_DEADLINE_RETRIES"], "c" * 64)
         self.assertNotIn("HANDOFF_DEADLINE_RETRIES", sent["dlc_bbb"])
