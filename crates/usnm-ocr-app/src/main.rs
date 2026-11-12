@@ -4,15 +4,15 @@
 //! control channel and runs the unit in a child (`unit`) that reads pages with the same code as
 //! `usnm-boinc work` in the container. The child reaches Tesseract through a `tesseract` link
 //! to this same file, which sets the page's limits and execs the bundled engine.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use clap::{Parser, Subcommand};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use usnm_boinc::native;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Parser)]
 #[command(
     name = "usnm_ocr",
@@ -23,7 +23,7 @@ struct Cli {
     command: Option<Command>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Subcommand)]
 enum Command {
     /// Run the unit in the current directory. The task's parent process starts this.
@@ -34,7 +34,7 @@ enum Command {
         /// The `usnm_ocr` executable.
         #[arg(long)]
         worker: PathBuf,
-        /// The static Tesseract built by boinc/apps/native/Containerfile.
+        /// The static Tesseract: boinc/apps/native/Containerfile on Linux, build-tesseract-macos.sh on macOS.
         #[arg(long)]
         tesseract: PathBuf,
         /// A directory holding every model in the Tesseract lock.
@@ -46,7 +46,7 @@ enum Command {
     },
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run() -> anyhow::Result<()> {
     match Cli::parse().command {
         None => native::run_slot(Path::new(".")),
@@ -68,14 +68,14 @@ fn run() -> anyhow::Result<()> {
     }
 }
 
-/// Only Linux x86_64 is built for now (docs/boinc/apps/native-ocr.md).
-#[cfg(not(target_os = "linux"))]
+/// Linux and macOS only for now: Windows is a follow-up (docs/boinc/apps/native-ocr.md).
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn main() -> ExitCode {
-    eprintln!("usnm_ocr runs on Linux only");
+    eprintln!("usnm_ocr runs on Linux and macOS only");
     ExitCode::FAILURE
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn main() -> ExitCode {
     // Started through the `tesseract` link: this only returns if the engine can't start.
     if native::is_engine_launch() {

@@ -14,7 +14,8 @@ done
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-image="sha256:$(sha256sum "$build/usnm_native_build.json" | cut -d' ' -f1)"
+sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d' ' -f1; }
+image="sha256:$(sha256 "$build/usnm_native_build.json")"
 
 slot() {
   mkdir "$work/$1"

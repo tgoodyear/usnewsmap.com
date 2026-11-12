@@ -2,7 +2,7 @@
 
 Issue [#1418](https://github.com/tgoodyear/usnewsmap.com/issues/1418). `usnm_ocr` and `usnm_gold` ship only as container apps, so a host without Docker or Podman can't read pages. This doc covers the Linux x86_64 build that needs no container runtime, how a host running it can earn trust, and what has to happen before any host gets it.
 
-Nothing here is released. No app version exists, no plan class changed, and no unit has been sent to a host. Windows and macOS aren't built ([Other platforms](#other-platforms)).
+`usnm_gold_native` 1.0 is published for `x86_64-pc-linux-gnu` (rollout step 2). `usnm_ocr_native` isn't registered, and no native OCR unit has been sent to a host. CI also builds macOS; Windows isn't built ([Native usnm_ocr on more platforms](#native-usnm_ocr-on-more-platforms)).
 
 ## The build
 
@@ -152,14 +152,66 @@ Each step needs the one before it.
 
 To roll back at any step, stop creating native work. Units already out finish and collect under their own digest, or stay held. Nothing touches the container apps.
 
-## Other platforms
+## Native usnm_ocr on more platforms
 
-The design keeps Windows and macOS open, and neither is built.
+On 11 November 2026 the volunteer CPUs were about 5% busy. Over 6 hours they had about 600 CPU-thread-hours and ran about 31 hours of CPU tasks. `usnm_ocr`, the bulk CPU app, has container versions only, so a host without Docker or Podman gets no OCR. The idle hosts were a Linux host with 24 threads and no Docker, and three Windows hosts with 24, 16 and 16 threads.
 
-- **Build identity.** `platform` is in the manifest, and the binding table is keyed by platform, so each platform is its own digest and starts with its own trust.
-- **Windows.** The worker needs a job object in place of process groups and rlimits, and a copy in place of the `tesseract` link. `BoincControl` already handles the Windows channel. Debian's libraries don't apply, so Tesseract has to be built from the same versions with another toolchain and C library.
-- **macOS.** Same shape as Linux, and the same toolchain point, with Mach-O and ad hoc signing as `usnm_quality` has.
-- **Parity.** A different libm and compiler mean byte-identical output can't be assumed, so these need their own parity comparison.
+Linux already has its build (above) and needs only the dispatch: `usnm_ocr_native` isn't registered, and nothing creates its units (rollout step 5). CI (`boinc-ocr-native.yml`) now builds macOS for arm64 and x86_64, and neither is released yet. Windows is a follow-up, [#1779](https://github.com/tgoodyear/usnewsmap.com/issues/1779).
+
+### The worker on each platform
+
+Every platform runs the same worker, `usnm_ocr` from `crates/usnm-ocr-app`, which runs `crate::worker::run` against the job files the container uses (`request.json`, a bundle, or a gold job). The submit side doesn't change. A native unit is a container unit whose `engine.image` names the native build's digest, and it goes to `usnm_ocr_native` or `usnm_gold_native`, never to `usnm_ocr`.
+
+| Platform              | Worker                | Tesseract                                                        | Supervision                                     |
+| --------------------- | --------------------- | ---------------------------------------------------------------- | ----------------------------------------------- |
+| `x86_64-pc-linux-gnu` | static musl           | Debian's static libraries (`boinc/apps/native/Containerfile`)    | process group, parent-death signal, rlimits     |
+| `arm64-apple-darwin`  | Mach-O, ad hoc signed | pinned upstream sources (`boinc/apps/native/macos-sources.lock`) | process group, a parent watcher thread, rlimits |
+| `x86_64-apple-darwin` | Mach-O, ad hoc signed | the same sources, built on an Intel runner                       | as arm64                                        |
+| `windows_x86_64`      | not built             | the same sources with MSVC and a static CRT (planned)            | a job object (planned)                          |
+
+**Plan class.** None, as on Linux. A task uses one BOINC CPU (`OMP_THREAD_LIMIT=1`, one page or bundle at a time), and the client runs as many tasks as the host lets it, so a 24-thread host can run 24. An `mt` class would need an OpenMP Tesseract, which the parity run didn't measure, and gains nothing when the client already fills every CPU with one-thread tasks. `check_appver.py` refuses a plan class on these apps.
+
+**No closed class.** The `min_wu_id`/`max_wu_id` cohort mechanism is for Qwen's GPU classes. Native OCR has other gates. Its apps are separate, so no container unit can reach a native version. Every unit is assigned to one host. Submission checks that host's trust for the build, and the gold hook refuses a build with no binding in `gold-engine-platforms.json`. A published macOS version with no binding gets no work.
+
+### Identity and validation
+
+`platform` is in the manifest, and the worker refuses a manifest for any platform but its own (`native::PLATFORM`). So each platform's build has its own digest, `engine.image`, and its own `engine.base`, the Tesseract executable's sha256. Nothing cross-validates. `usnm_ocr` has `target_nresults` 1, and trust is per digest, so a macOS result is never compared byte for byte with a container or Linux result to accept it. A macOS host earns trust for the macOS digest through native gold, as a Linux host does for the Linux digest. After that, independent-host spot checks compare CER, not bytes.
+
+Off Linux, output identical to the container's can't be assumed:
+
+- **macOS** uses upstream sources without Debian's patches, Apple's clang and libm, no OpenMP, libjpeg-turbo without SIMD, libtiff with only zlib and JPEG, and no GIF. The scans are JPEG and JP2. It is built from the same versions as the Linux build: Tesseract 5.5.0, Leptonica 1.84.1, libjpeg-turbo 2.1.5, libpng 1.6.48, libtiff 4.7.0, OpenJPEG 2.5.3, libwebp 1.5.0.
+- **Windows** will add MSVC and its C runtime.
+
+So before any host gets a platform's build, that build needs its own parity run against the container worker on the same pages, and its own run of the calibrated challenge. The per-crop edit counts are compared with the container's, as for Linux. If they aren't identical, the threshold doesn't carry over and that platform stops for a calibration decision.
+
+### macOS
+
+`boinc/apps/native/build-tesseract-macos.sh --out DIR --work DIR` checks out each source at its locked commit and refuses a tag that has moved. It builds static libraries into its own prefix with CMake, ignoring Homebrew's, and links one executable. Then it checks that the executable loads only `/usr/lib` and `/System` libraries, is a Mach-O executable of the machine's architecture, and reports Tesseract 5.5.0. The deployment target is macOS 11.0. CI builds arm64 on `macos-15` and x86_64 on `macos-15-intel`, each on its own architecture, because Tesseract's CMake picks its SIMD files from the host processor.
+
+The worker differs from Linux in three places:
+
+| Linux                                          | macOS                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Parent-death signal on the unit and the engine | A thread in the unit kills the group once the task's parent has gone. While the group is stopped, the parent's death orphans it and the kernel sends its stopped members `SIGHUP` and `SIGCONT`, which ends them. The client also kills a task's descendants. An engine whose unit alone died keeps running until its CPU limit. |
+| `RLIMIT_AS` of 1536 MiB on the engine          | Not set. macOS doesn't enforce it, so the client's `rsc_memory_bound` is the only memory bound.                                                                                                                                                                                                                                  |
+| `no_new_privs`                                 | No equivalent.                                                                                                                                                                                                                                                                                                                   |
+
+`RLIMIT_CPU`, `RLIMIT_FSIZE`, the open-file limit and `RLIMIT_CORE` are the same. CI runs the `native::` tests and the smoke test on both architectures. Neither has run under a real macOS BOINC client.
+
+### Windows
+
+Planned in [#1779](https://github.com/tgoodyear/usnewsmap.com/issues/1779). A job object with `KILL_ON_JOB_CLOSE` replaces the process group and the parent-death signal. Its per-process memory, CPU time and process count limits replace the rlimits, and they also cover the container's `--pids-limit`. The worker runs `usnm_tesseract.exe` directly rather than through a link. Tesseract comes from the same pinned sources, built with MSVC and a static CRT. The issue rejects UB-Mannheim's installers, which are prebuilt and ship many DLLs, and vcpkg, which would be a second way to pin the same libraries.
+
+### Release on each platform
+
+Each step needs the one before it. Steps 2 to 6 are the rollout above, repeated for each platform's digest.
+
+1. Merge the build and the release tooling. `install.py`, `check_appver.py`, `publish-appver.sh`, `boinc-app-release.sh` and `check-native-ocr-build.py --platform` accept `x86_64-pc-linux-gnu`, `arm64-apple-darwin` and `x86_64-apple-darwin` for both apps. This changes nothing on the server.
+2. Parity on a project-controlled machine of that platform: pages through the native build and the container worker (`native_ocr_parity.py`), then the calibrated challenge.
+3. Add the build's binding (the identity `check-native-ocr-build.py` prints) to `gold-engine-platforms.json`, and rebuild the server image.
+4. Publish `usnm_gold_native` for the platform with `boinc-app-release.sh --platform <platform> --build-dir <artifact>/build`, then run gold for named hosts with `GOLD_NATIVE_HOSTS`.
+5. Build the native OCR dispatch (rollout step 5, [#1780](https://github.com/tgoodyear/usnewsmap.com/issues/1780)), then register and publish `usnm_ocr_native`.
+6. Canary on one trusted host, then widen by hand.
 
 ## Reproducing
 

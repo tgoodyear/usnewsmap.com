@@ -35,7 +35,7 @@ pub mod gold;
 pub mod handoff;
 pub mod host_trust;
 pub mod lines;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod native;
 pub mod ndlocr;
 pub mod quality;
@@ -73,7 +73,7 @@ pub fn read(path: &Path, max: usize) -> anyhow::Result<Vec<u8>> {
     Ok(bytes)
 }
 /// As [`read`], for a file the BOINC client may have placed behind a symlink.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn read_following(path: &Path, max: usize) -> anyhow::Result<Vec<u8>> {
     let f = File::open(path).with_context(|| format!("reading {}", path.display()))?;
     ensure!(

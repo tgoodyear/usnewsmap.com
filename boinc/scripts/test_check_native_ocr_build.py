@@ -55,12 +55,14 @@ class CheckNativeOcrBuild(unittest.TestCase):
             name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()} for name, data in self.files.items()}}
         (self.build / "usnm_native_build.json").write_text(json.dumps({**manifest, **changes}))
 
-    def run_check(self, *names):
+    def run_check(self, *names, platform=None):
         argv = ["--binary", str(self.build / "usnm_ocr"), "--models-lock", str(self.lock),
                 "--engine-containerfile", str(self.containerfile)]
         for name in names or ("usnm_native_build.json", "usnm_tesseract", "tessdata_eng.traineddata",
                               "notice_chr_phoenix_NOTICE.md", "notice_chr_phoenix_LICENSE-Apache-2.0.txt"):
             argv += ["--extra-file", f"{name}={self.build / name}"]
+        if platform:
+            argv += ["--platform", platform]
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = module.main(argv)
@@ -118,6 +120,35 @@ class CheckNativeOcrBuild(unittest.TestCase):
         (self.build / "usnm_tesseract").write_bytes(self.files["usnm_tesseract"])
         self.write_manifest()
         self.assertEqual(self.run_check()[0], 0)
+
+    def test_a_macos_build_is_checked_for_its_own_platform_and_architecture(self):
+        def mach_o(cpu, filetype=module.MH_EXECUTE, magic=module.MH_MAGIC_64):
+            return struct.pack("<IIII", magic, cpu, 0, filetype)
+        arm, x86 = mach_o(module.CPU_TYPE_ARM64), mach_o(module.CPU_TYPE_X86_64)
+        for platform, good, other in (("arm64-apple-darwin", arm, x86), ("x86_64-apple-darwin", x86, arm)):
+            with self.subTest(platform=platform):
+                for name in ("usnm_ocr", "usnm_tesseract"):
+                    self.files[name] = good + name.encode()
+                    (self.build / name).write_bytes(self.files[name])
+                self.write_manifest(platform=platform)
+                code, out = self.run_check(platform=platform)
+                self.assertEqual(code, 0, out)
+                self.assertIn(f"native OCR build for {platform}: engine.image", out)
+                # A manifest for another platform, or the Linux default, is refused.
+                self.assertIn("is not a build manifest for x86_64-pc-linux-gnu", self.run_check()[1])
+                self.write_manifest(platform="x86_64-pc-linux-gnu")
+                self.assertIn(f"is not a build manifest for {platform}", self.run_check(platform=platform)[1])
+                # The other architecture, a universal file, a library and an ELF file are refused.
+                kind = f"{platform.split('-')[0]} Mach-O executable"
+                for data in (other, mach_o(0, magic=0xBEBAFECA), mach_o(module.MACH_O_CPU[platform], filetype=6), ELF):
+                    self.files["usnm_tesseract"] = data + b"engine"
+                    (self.build / "usnm_tesseract").write_bytes(self.files["usnm_tesseract"])
+                    self.write_manifest(platform=platform)
+                    self.assertIn(f"usnm_tesseract is not an {kind}", self.run_check(platform=platform)[1])
+
+    def test_refuses_a_platform_with_no_native_build(self):
+        with self.assertRaisesRegex(ValueError, "no native OCR build for windows_x86_64"):
+            module.check(self.build / "usnm_ocr", {}, self.lock, self.containerfile, "windows_x86_64")
 
     def test_the_worker_comes_only_from_binary(self):
         (self.build / "invalid").write_bytes(b"not the worker")
