@@ -111,6 +111,24 @@ pub fn components(ink: &Ink) -> Vec<[u32; 5]> {
     out
 }
 
+/// The crop a word is cut from: its columns `wx0..wx1` widened by 15% of the line's height
+/// (`ly1 - ly0`, at least 2 px) on each side, and the line's rows `ly0..ly1` widened the same.
+/// All in scan pixels, clamped to a scan of `width` by `height`. `None` for a crop of 2 px or less.
+pub fn word_crop(
+    wx0: f64,
+    wx1: f64,
+    ly0: f64,
+    ly1: f64,
+    width: u32,
+    height: u32,
+) -> Option<[u32; 4]> {
+    let pad = (0.15 * (ly1 - ly0)).max(2.0);
+    let clamp = |v: f64, hi: u32| v.max(0.0).min(f64::from(hi)) as u32;
+    let (x0, x1) = (clamp(wx0 - pad, width), clamp(wx1 + pad, width));
+    let (y0, y1) = (clamp(ly0 - pad, height), clamp(ly1 + pad, height));
+    (x1 > x0 + 2 && y1 > y0 + 2).then_some([x0, y0, x1, y1])
+}
+
 /// The boxes of `n` glyphs in a word crop, left to right, or `None` when
 /// the split isn't plausible. Components are kept when they sit in the
 /// word's text band; ones stacked over each other merge; punctuation and
@@ -301,6 +319,28 @@ mod tests {
             }
         }
         img
+    }
+
+    #[test]
+    fn word_crops_are_padded_and_clamped() {
+        // A 40 px line pads by 6 px; a 10 px line by the 2 px minimum.
+        assert_eq!(
+            word_crop(100.0, 200.0, 50.0, 90.0, 1000, 1000),
+            Some([94, 44, 206, 96])
+        );
+        assert_eq!(
+            word_crop(100.0, 200.0, 50.0, 60.0, 1000, 1000),
+            Some([98, 48, 202, 62])
+        );
+        assert_eq!(
+            word_crop(-5.0, 20.0, 0.0, 40.0, 1000, 30),
+            Some([0, 0, 26, 30])
+        );
+        assert_eq!(
+            word_crop(100.0, 101.0, 50.0, 51.0, 1000, 1000),
+            Some([98, 48, 103, 53])
+        );
+        assert_eq!(word_crop(990.0, 995.0, 50.0, 51.0, 990, 1000), None);
     }
 
     #[test]

@@ -4,7 +4,8 @@ Input (--lines) is JSON lines, one printed line each:
 
   {"id": "<line id>", "image": "<line image, relative to --images>", "page": "<lccn>/<date>/ed-N/seq-N",
    "source": "<page URL>", "label": "<shown above the line>",
-   "a": "<reading a>", "a_words": [{"text": "...", "box": [x, y, w, h]}, ...], "b": "<reading b>"}
+   "a": "<reading a>", "a_words": [{"text": "...", "box": [x, y, w, h]}, ...], "b": "<reading b>",
+   "a_is": "<optional: what reading a is on this line>", "b_is": "<optional>"}
 
 `a_words` are reading a's words in reading order with their boxes in the line image's pixels, as OCR
 layout files (ALTO, hOCR) give them. Reading b only needs its text: its words are paired with a's by
@@ -13,12 +14,14 @@ with no partner at least --min-similarity alike (one reading split, joined, drop
 out, and so is a word with no letter or digit in either reading, or a pair of one- or two-letter readings
 with no letter in common (specks, picture texture).
 
+A line's own `a_is` and `b_is` replace --a-is and --b-is, for sets whose readings come from different sources.
+
 Writes OUT_DIR/clips/<lang>/<set>/{lines,words}/..., OUT_DIR/tasks.jsonl and OUT_DIR/language.json (the
---language-config without its build-only fields, and no example letters). Needs Pillow.
+--language-config without its build-only fields; example letters only from --examples). Needs Pillow.
 
   python3 build_tasks.py --lines lines.jsonl --images DIR --lang yi --set loc-yidj2-v1 \
     --a-is loc --b-is yidj2 --language-config languages/yi.json --out-dir OUT \
-    [--equivalent װ=וו ...] [--min-similarity 0.34] [--skip-punctuation-only]
+    [--equivalent װ=וו ...] [--min-similarity 0.34] [--skip-punctuation-only] [--examples examples.json]
 """
 import argparse
 import difflib
@@ -172,6 +175,8 @@ def main() -> None:
     ap.add_argument("--equivalent", action="append", help="LETTER=LETTERS that print alike, e.g. װ=וו; repeatable. "
                     "Added to the config's `equivalents`")
     ap.add_argument("--min-similarity", type=float, default=0.34, help="leave out pairs less alike than this (0-1)")
+    ap.add_argument("--examples", help="JSON {letter: [clip key, ...]} for language.json's `examples`: pictures already on the "
+                    "site (for example the ones /api/languages/chr serves), so a new set shows the same letter pictures")
     ap.add_argument("--quality", type=int, default=85, help="JPEG quality of the clips")
     ap.add_argument("--skip-punctuation-only", action="store_true",
                     help="leave out pairs whose letters and digits are the same (they differ only in punctuation)")
@@ -195,7 +200,15 @@ def main() -> None:
             lines += 1
             a_words = [clean(w["text"]) for w in ln["a_words"]]
             b_words = clean(ln["b"]).split()
-            pairs, left = pair_words(a_words, b_words, equivalents, a.min_similarity)
+            if "words" in ln:
+                # The line says which words differ (the Cherokee sets build a and b from one word list, changing
+                # only those), so pair them by position: aligning would re-pair repeated words and shift the ids.
+                if len(a_words) != len(b_words):
+                    raise SystemExit(f"{ln['id']}: `words` needs readings of equal length")
+                pairs = [(k, b_words[k]) for k in ln["words"] if a_words[k] != b_words[k]]
+                left = 0
+            else:
+                pairs, left = pair_words(a_words, b_words, equivalents, a.min_similarity)
             kept = [(k, wb) for k, wb in pairs
                     if has_letter(a_words[k]) and has_letter(wb) and not stray_marks(a_words[k], wb, equivalents)
                     and not (a.skip_punctuation_only
@@ -222,12 +235,12 @@ def main() -> None:
                     "line": line_key, "word": word_key,
                     "box": [round(x / W, 4), round(y / H, 4), round(w / W, 4), round(h / H, 4)],
                     "a": ta, "b": wb,
-                    "a_diff": ad, "b_diff": bd, "a_is": a.a_is, "b_is": a.b_is,
+                    "a_diff": ad, "b_diff": bd, "a_is": ln.get("a_is", a.a_is), "b_is": ln.get("b_is", a.b_is),
                 }, ensure_ascii=False) + "\n")
                 tasks += 1
 
     language = {k: v for k, v in cfg.items() if k not in BUILD_ONLY}
-    language.setdefault("examples", {})
+    language["examples"] = json.load(open(a.examples, encoding="utf-8")) if a.examples else {}
     # The page sets these spellings with no gap inside, so it gets the mapping the comparison used,
     # --equivalent additions included.
     language.pop("equivalents", None)

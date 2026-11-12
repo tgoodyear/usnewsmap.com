@@ -1,0 +1,11 @@
+{
+  "intro": "These words come from the Cherokee Phoenix (1828–1834), printed in Sequoyah's syllabary. Each one has a letter that is rare in this paper's text, or whose shape is in question, so we have few clear examples of how the paper printed it. Pick the reading whose letters match the print. Checked words become labelled pictures of those letters, which we use to train OCR on this paper's type. Some words ask only about the first letter, Ꮎ or Ꮐ: the New Testament spelling uses Ꮎ, but this paper may have used Ꮐ in the same words.",
+  "name": "Cherokee: rare letters",
+  "notes": {
+    "Ꭺ": "has a crossbar",
+    "Ꮎ": "inside a word this paper prints it like θ; at the start of a word the print is a G-shaped letter, and some words here ask whether that letter is Ꮎ or Ꮐ",
+    "Ꮐ": "the 1828 and 1835 type specimens draw it as a plain Latin G",
+    "Ꮩ": "this paper prints it as Λ, an A with no crossbar"
+  },
+  "title": "Cherokee Phoenix"
+}
