@@ -1779,3 +1779,210 @@ async fn an_unlisted_file_reports_its_checksum_and_keeps_under_its_ceiling() {
     assert!(!job.dest.exists());
     assert!(only_parts(&r.out()).is_empty());
 }
+
+// ---- the daily byte budget (#1413) ----
+
+fn budget_policy_text(extra: &str) -> String {
+    format!(
+        "hosts = [\"a.example\"]\nlabel = \"x\"\nrequests_per_minute = 2\n{extra}\n\
+         [push_back]\ndefault_hold_secs = 1\nhtml = true\nmax_hold_secs = 1\nstatuses = []\n"
+    )
+}
+
+#[test]
+fn a_daily_byte_budget_is_parsed_and_checked() {
+    let parse = |extra: &str| Policy::parse("x", &budget_policy_text(extra));
+    assert_eq!(parse("").unwrap().daily_byte_budget, None);
+    assert_eq!(
+        parse("daily_byte_budget = 5000000000")
+            .unwrap()
+            .daily_byte_budget,
+        Some(5_000_000_000)
+    );
+    // Zero would allow nothing, which is a policy mistake, not a budget.
+    let e = format!("{:#}", parse("daily_byte_budget = 0").unwrap_err());
+    assert!(e.contains("daily byte budget of zero"), "{e}");
+    assert!(parse("daily_byte_budget = -1").is_err());
+    assert!(parse("daily_byte_budget = \"a lot\"").is_err());
+}
+
+/// The numbers are a pending decision: no built-in policy sets a budget yet.
+#[test]
+fn no_built_in_policy_sets_a_daily_byte_budget() {
+    for p in Policies::builtin().iter() {
+        assert_eq!(p.daily_byte_budget, None, "{}", p.name);
+    }
+}
+
+#[test]
+fn a_ledger_counts_by_utc_day_and_a_file_ledger_survives_a_restart() {
+    let mem = MemoryLedger::default();
+    assert_eq!(mem.used("2026-11-12").unwrap(), 0);
+    assert_eq!(mem.add("2026-11-12", 5).unwrap(), 5);
+    assert_eq!(mem.add("2026-11-12", 7).unwrap(), 12);
+    assert_eq!(mem.used("2026-11-13").unwrap(), 0);
+    assert_eq!(mem.add("2026-11-13", 1).unwrap(), 1);
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("x.bytes");
+    assert_eq!(
+        FileLedger::new(path.clone()).add("2026-11-12", 5).unwrap(),
+        5
+    );
+    let again = FileLedger::new(path.clone());
+    assert_eq!(again.used("2026-11-12").unwrap(), 5);
+    assert_eq!(again.add("2026-11-12", 5).unwrap(), 10);
+    // The next day starts from zero, and the old day is gone.
+    assert_eq!(again.used("2026-11-13").unwrap(), 0);
+    assert_eq!(again.add("2026-11-13", 3).unwrap(), 3);
+    assert_eq!(again.used("2026-11-12").unwrap(), 0);
+    // A file that can't be read is an error, never a fresh day.
+    std::fs::write(&path, "not json").unwrap();
+    assert!(again.used("2026-11-13").is_err());
+}
+
+type Moving = Arc<std::sync::Mutex<chrono::DateTime<chrono::Utc>>>;
+
+fn day(s: &str) -> chrono::DateTime<chrono::Utc> {
+    s.parse().unwrap()
+}
+
+fn moving(start: &str) -> (Moving, Clock) {
+    let now: Moving = Arc::new(std::sync::Mutex::new(day(start)));
+    let c = Arc::clone(&now);
+    (now, Arc::new(move || *c.lock().unwrap()))
+}
+
+fn budget_jobs(r: &Rig, names: &[&str]) -> Vec<Job> {
+    names
+        .iter()
+        .map(|n| Job {
+            name: format!("{n}.tar.bz2"),
+            size: 100,
+            sha256: None,
+            dest: r.out().join(format!("{n}.tar.bz2")),
+            sources: vec![format!("{}/loc/{n}.tar.bz2", r.root)],
+        })
+        .collect()
+}
+
+async fn run_jobs(r: &Rig, engine: Engine, jobs: Vec<Job>) -> anyhow::Result<Status> {
+    std::fs::create_dir_all(r.out()).unwrap();
+    let (_tx, rx) = no_stop();
+    run::run(
+        Arc::new(engine),
+        Arc::new(FileJobs::new(jobs, r.out().join("s.json"), None)),
+        run::RunOptions {
+            part_dir: r.out(),
+            out: r.out(),
+            workers: 1,
+            run_for: Duration::from_secs(60),
+            min_free_bytes: 0,
+            limit: None,
+            max_checksum_failures: None,
+        },
+        Status::default(),
+        rx,
+    )
+    .await
+}
+
+fn budget_rig_files(r: &mut Rig) {
+    for n in ["a", "b", "c"] {
+        r.s.put(&format!("/loc/{n}.tar.bz2"), b"six..!".to_vec());
+    }
+}
+
+/// Two 6-byte files pass 10 bytes. The third isn't asked for, in this run or a later
+/// one that day, and goes when the UTC day turns.
+#[tokio::test]
+async fn a_spent_daily_budget_stops_the_host_until_the_next_utc_day() {
+    let mut r = Rig::new().await;
+    budget_rig_files(&mut r);
+    let dir = r.dir.path().join("budgets");
+    let p = test_policy("budgeted", "127.0.0.1", "daily_byte_budget = 10\n");
+    let (now, clock) = moving("2026-11-12T23:58:00Z");
+    let engine = engine_with(p.clone(), &dir).with_clock(Arc::clone(&clock));
+    let s = run_jobs(&r, engine, budget_jobs(&r, &["a", "b", "c"]))
+        .await
+        .expect("a spent budget is no error");
+    assert_eq!(s.fetched_this_run, 2);
+    assert_eq!(s.state, "byte_budget");
+    assert!(
+        s.failed
+            .iter()
+            .any(|m| m.contains("daily byte budget spent (12 of 10 bytes on 2026-11-12 UTC)")),
+        "{:?}",
+        s.failed
+    );
+    assert_eq!(r.s.hits("/loc/c.tar.bz2"), 0);
+
+    // Another run, another process, the same day: nothing is asked for.
+    let engine = engine_with(p.clone(), &dir).with_clock(Arc::clone(&clock));
+    let s = run_jobs(&r, engine, budget_jobs(&r, &["c"])).await.unwrap();
+    assert_eq!((s.fetched_this_run, s.state.as_str()), (0, "byte_budget"));
+    assert_eq!(r.s.hits("/loc/c.tar.bz2"), 0);
+
+    // Past midnight UTC it starts from zero.
+    *now.lock().unwrap() = day("2026-11-13T00:01:00Z");
+    let engine = engine_with(p, &dir).with_clock(clock);
+    let s = run_jobs(&r, engine, budget_jobs(&r, &["c"])).await.unwrap();
+    assert_eq!(s.fetched_this_run, 1);
+    assert_ne!(s.state, "byte_budget");
+    assert!(r.out().join("c.tar.bz2").exists());
+}
+
+/// The budget also holds a single request: spent, the engine goes nowhere near the host.
+#[tokio::test]
+async fn a_spent_daily_budget_refuses_a_fetch_before_any_request() {
+    let mut r = Rig::new().await;
+    budget_rig_files(&mut r);
+    let dir = r.dir.path().join("budgets");
+    let p = test_policy("budgeted", "127.0.0.1", "daily_byte_budget = 6\n");
+    let (now, clock) = moving("2026-11-12T12:00:00Z");
+    let engine = engine_with(p, &dir).with_clock(clock);
+    let job = unlisted(&r, "a", 100);
+    assert!(fetch_one(&r, &engine, &job, "/loc/a.tar.bz2").await.is_ok());
+    let job = unlisted(&r, "b", 100);
+    let e = fetch_one(&r, &engine, &job, "/loc/b.tar.bz2").await;
+    assert!(matches!(e, Err(Fail::Closed)), "{e:?}");
+    assert_eq!(r.s.hits("/loc/b.tar.bz2"), 0);
+    *now.lock().unwrap() = day("2026-11-13T00:00:00Z");
+    assert!(fetch_one(&r, &engine, &job, "/loc/b.tar.bz2").await.is_ok());
+}
+
+/// A host with no budget set behaves as before: no limit, and no ledger kept.
+#[tokio::test]
+async fn a_host_with_no_daily_budget_is_not_limited() {
+    let mut r = Rig::new().await;
+    budget_rig_files(&mut r);
+    let dir = r.dir.path().join("budgets");
+    let p = test_policy("open", "127.0.0.1", "");
+    let engine = engine_with(p, &dir);
+    let s = run_jobs(&r, engine, budget_jobs(&r, &["a", "b", "c"]))
+        .await
+        .unwrap();
+    assert_eq!(s.fetched_this_run, 3);
+    assert_ne!(s.state, "byte_budget");
+    assert!(!dir.join("open.bytes.json").exists());
+}
+
+/// A ledger that can't be read stops the host: a budget that forgot its count is no budget.
+#[tokio::test]
+async fn an_unreadable_ledger_stops_the_host() {
+    let mut r = Rig::new().await;
+    budget_rig_files(&mut r);
+    let dir = r.dir.path().join("budgets");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("budgeted.bytes.json"), "garbage").unwrap();
+    let p = test_policy("budgeted", "127.0.0.1", "daily_byte_budget = 1000\n");
+    let engine = engine_with(p, &dir);
+    let s = run_jobs(&r, engine, budget_jobs(&r, &["a"])).await.unwrap();
+    assert_eq!((s.fetched_this_run, s.state.as_str()), (0, "byte_budget"));
+    assert!(
+        s.failed.iter().any(|m| m.contains("unreadable")),
+        "{:?}",
+        s.failed
+    );
+    assert_eq!(r.s.hits("/loc/a.tar.bz2"), 0);
+}

@@ -230,6 +230,15 @@ impl Shared {
                 self.close(&gate, "slowed", e);
                 continue;
             }
+            // A spent daily byte budget ends this host's part of the run, as a push-back
+            // does, but is no error: the next run after the UTC day turns goes on.
+            if let Some(why) = gate.byte_budget_spent() {
+                tracing::warn!(policy = %policy, "{why}");
+                self.failed(why);
+                self.end("byte_budget", None);
+                gate.close();
+                continue;
+            }
             // A partial that won't be resumed goes before the space is counted.
             let have = if gate.policy.resume {
                 tokio::fs::metadata(&part).await.map_or(0, |m| m.len())
