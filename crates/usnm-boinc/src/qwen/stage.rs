@@ -41,6 +41,11 @@ pub struct Options {
     /// version can't read it ends the job with a unit error, so stage a
     /// version only once every dispatchable app version reads it.
     pub prompt_version: u32,
+    /// The model every staged job is pinned to, by name in `engine.models`
+    /// (#1776); `None` leaves the choice to the host's plan class. A root
+    /// holds one request version and one pin: a page staged with others is
+    /// refused rather than skipped, so stage each reader into its own root.
+    pub model: Option<String>,
     pub max_pages: usize,
     /// Pack staged pages into multi-page bundle workunits of up to this many pages
     /// (1 to [`MAX_BUNDLE_PAGES`]).
@@ -345,6 +350,7 @@ pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Res
         };
         if let Some(existing) = existing {
             check_retained_source(&opts.quality_root, &page, existing)?;
+            check_same_reader(existing, opts)?;
             summary.already += 1;
             continue;
         }
@@ -398,6 +404,7 @@ pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Res
             max_tokens_per_1000px2: opts.max_tokens_per_1000px2,
             pages: vec![],
             prompt_version: opts.prompt_version,
+            model: opts.model.clone(),
         };
         job.id = job.identity()?;
         job.validate_source_candidate()
@@ -823,11 +830,51 @@ pub fn local_unit(
         max_tokens_per_1000px2,
         pages: vec![],
         prompt_version: PROMPT_VERSION,
+        model: None,
     };
     job.id = job.identity()?;
     job.validate()?;
     atomic(&dir.join(JOB_FILE), &serde_json::to_vec_pretty(&job)?)?;
     Ok(job)
+}
+
+/// Refuses a page already staged in this root for another reader: a
+/// different pinned model, or a different request version where either is
+/// Xiaomi-OCR-0's. Skipping it would leave the page unread by the reader
+/// asked for. Qwen roots restaged at another unpinned request version keep
+/// skipping their staged pages, as they always have.
+fn check_same_reader(unit: &Path, opts: &Options) -> anyhow::Result<()> {
+    let path = unit.join(JOB_FILE);
+    if !path.is_file() {
+        return Ok(());
+    }
+    let xiaomi = |v: u32| v == usnm_ocr_contract::qwen::PROMPT_VERSION_XIAOMI;
+    let job: Job = match serde_json::from_slice(&read(&path, MAX_JOB_JSON)?) {
+        Ok(job) => job,
+        // Legacy evidence that isn't a job keeps being skipped by an unpinned Qwen run; a
+        // pinned or version 5 run can't tell whose it is, so it refuses.
+        Err(_) if opts.model.is_none() && !xiaomi(opts.prompt_version) => return Ok(()),
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!(
+                    "{}: staged qwen.json is not a job; stage each reader into its own --root",
+                    unit.display()
+                )
+            })
+        }
+    };
+    let other_version = job.prompt_version != opts.prompt_version
+        && (xiaomi(job.prompt_version) || xiaomi(opts.prompt_version));
+    ensure!(
+        job.model == opts.model && !other_version,
+        "{}: staged for model {:?} at request version {}, not {:?} at {}; stage each reader into its own --root",
+        unit.display(),
+        job.model,
+        job.prompt_version,
+        opts.model,
+        opts.prompt_version
+    );
+    Ok(())
 }
 
 /// Whether `a` and `b` share the settings a bundle runs every page with
@@ -839,18 +886,24 @@ fn same_settings(a: &Job, b: &Job) -> bool {
         && a.cpu_timeout_secs == b.cpu_timeout_secs
         && a.max_tokens_per_1000px2 == b.max_tokens_per_1000px2
         && a.prompt_version == b.prompt_version
+        && a.model == b.model
 }
 
 /// [`same_settings`] as a sort key.
 fn settings_key(j: &Job) -> anyhow::Result<String> {
-    Ok(serde_json::to_string(&(
+    let key = serde_json::to_string(&(
         j.v,
         &j.engine,
         j.gpu_timeout_secs,
         j.cpu_timeout_secs,
         j.max_tokens_per_1000px2,
         j.prompt_version,
-    ))?)
+    ))?;
+    // Unpinned pages keep the key they always had.
+    Ok(match &j.model {
+        Some(model) => format!("{key}{}", serde_json::to_string(model)?),
+        None => key,
+    })
 }
 
 /// The bundle job for `pages` (staged single-page jobs, in bundle order),
@@ -900,6 +953,7 @@ fn bundle_job(pages: &[Job], blob: Input) -> anyhow::Result<Job> {
         max_tokens_per_1000px2: first.max_tokens_per_1000px2,
         pages: bundle_pages,
         prompt_version: first.prompt_version,
+        model: first.model.clone(),
     };
     job.id = job.identity()?;
     Ok(job)
@@ -1459,6 +1513,7 @@ pub(crate) mod tests {
             cpu_timeout_secs: 7200,
             max_tokens_per_1000px2: 4,
             prompt_version: usnm_ocr_contract::qwen::PROMPT_VERSION_LOOP_GUARD,
+            model: None,
             max_pages: 20,
             bundle_size: 1,
             page_records: None,
@@ -1469,6 +1524,70 @@ pub(crate) mod tests {
         let job: Job = serde_json::from_slice(&std::fs::read(out.join(JOB_FILE)).unwrap()).unwrap();
         job.validate().unwrap();
         assert_eq!(job.prompt_version, opts.prompt_version);
+    }
+
+    #[tokio::test]
+    async fn stages_pinned_readers_on_the_same_crops_each_in_its_own_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let qroot = tmp.path().join("quality");
+        let doc = "sn83045462_1890-05-03_ed-1_seq-1";
+        let unit = crate::quality::units(&qroot).join(doc);
+        crate::quality::work::tests::unit(&unit);
+        let opts = |root: &str, model: Option<&str>| {
+            let (models, prompt_version) = super::super::stage_reader(model, None).unwrap();
+            Options {
+                quality_root: qroot.clone(),
+                root: tmp.path().join(root),
+                engine: Engine { models, ..engine() },
+                gpu_timeout_secs: 1800,
+                cpu_timeout_secs: 7200,
+                max_tokens_per_1000px2: 4,
+                prompt_version,
+                model: model.map(str::to_owned),
+                max_pages: 20,
+                bundle_size: 1,
+                page_records: None,
+                max_hold_secs: 0,
+            }
+        };
+        let staged = |o: &Options| -> Job {
+            serde_json::from_slice(&std::fs::read(units(&o.root).join(doc).join(JOB_FILE)).unwrap())
+                .unwrap()
+        };
+        let x = opts("xiaomi", Some(super::super::XIAOMI_MODEL));
+        let q8 = opts("q8", Some("qwen3-vl-8b-q4km"));
+        let q2 = opts("q2", Some("qwen3-vl-2b-q8"));
+        for o in [&x, &q8, &q2] {
+            assert_eq!(run(o).await.unwrap().staged, 1);
+        }
+        let (jx, j8, j2) = (staged(&x), staged(&q8), staged(&q2));
+        for j in [&jx, &j8, &j2] {
+            j.validate().unwrap();
+        }
+        assert_eq!(
+            (jx.prompt_version, jx.model.as_deref()),
+            (5, Some("xiaomi-ocr-0-q8"))
+        );
+        assert_eq!(jx.engine.models, super::super::xiaomi_models());
+        assert_eq!(j8.model.as_deref(), Some("qwen3-vl-8b-q4km"));
+        assert_eq!(j2.model.as_deref(), Some("qwen3-vl-2b-q8"));
+        // The same crops for every reader (#968), in units of their own.
+        assert!(jx.crops == j8.crops && j8.crops == j2.crops);
+        assert!(jx.id != j8.id && j8.id != j2.id);
+        // Restaging a root for the reader it holds skips the page as before.
+        assert_eq!(run(&x).await.unwrap().already, 1);
+        // Another reader into a root that holds one is refused, not skipped.
+        for (o, other) in [
+            (&x, Some("qwen3-vl-8b-q4km")),
+            (&q8, None),
+            (&q2, Some(super::super::XIAOMI_MODEL)),
+        ] {
+            let mut wrong = opts("unused", other);
+            wrong.root = o.root.clone();
+            let err = run(&wrong).await.unwrap_err();
+            assert!(format!("{err:#}").contains("its own --root"), "{err:#}");
+        }
+        assert_eq!(staged(&x), jx);
     }
 
     #[tokio::test]
@@ -1487,6 +1606,7 @@ pub(crate) mod tests {
             cpu_timeout_secs: 7200,
             max_tokens_per_1000px2: 4,
             prompt_version: PROMPT_VERSION,
+            model: None,
             max_pages: 20,
             bundle_size: 1,
             page_records: None,
@@ -1551,6 +1671,7 @@ pub(crate) mod tests {
             cpu_timeout_secs: 7200,
             max_tokens_per_1000px2: 4,
             prompt_version: PROMPT_VERSION,
+            model: None,
             max_pages: 20,
             bundle_size: 2,
             page_records: None,
@@ -1618,6 +1739,7 @@ pub(crate) mod tests {
             cpu_timeout_secs: 7200,
             max_tokens_per_1000px2: 4,
             prompt_version: PROMPT_VERSION,
+            model: None,
             max_pages: 1,
             bundle_size: 1,
             page_records: None,
@@ -1660,6 +1782,7 @@ pub(crate) mod tests {
             cpu_timeout_secs: 7200,
             max_tokens_per_1000px2: 4,
             prompt_version: PROMPT_VERSION,
+            model: None,
             max_pages: 20,
             bundle_size: 1,
             page_records: None,
@@ -1806,6 +1929,7 @@ pub(crate) mod tests {
                 cpu_timeout_secs: 7200,
                 max_tokens_per_1000px2: 4,
                 prompt_version: PROMPT_VERSION,
+                model: None,
                 max_pages: 1,
                 bundle_size,
                 page_records: None,
@@ -1926,6 +2050,7 @@ pub(crate) mod tests {
             cpu_timeout_secs: 7200,
             max_tokens_per_1000px2: 4,
             prompt_version: PROMPT_VERSION,
+            model: None,
             max_pages: 20,
             bundle_size: 2,
             page_records: None,
@@ -2015,6 +2140,7 @@ pub(crate) mod tests {
             max_tokens_per_1000px2: 4,
             pages: vec![],
             prompt_version: PROMPT_VERSION,
+            model: None,
         };
         job.id = job.identity().unwrap();
         job.validate().unwrap();

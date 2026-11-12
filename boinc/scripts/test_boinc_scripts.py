@@ -1110,6 +1110,36 @@ class AppReleaseArgs(unittest.TestCase):
                         else:
                             self.assertIn(f"native --plan-class {plan} is not supported", r.stderr)
 
+    def test_native_xiaomi_classes_allow_the_platforms_of_their_qwen_classes(self):
+        # #1776: releasable later; mt_x08 on every platform, the GPU classes where their 8B class runs.
+        platforms = ("x86_64-pc-linux-gnu", "windows_x86_64", "aarch64-unknown-linux-gnu",
+                     "arm64-apple-darwin", "x86_64-apple-darwin")
+        allowed = {
+            "mt_x08": set(platforms),
+            "apple_gpu_x08": {"arm64-apple-darwin"},
+            "nvidia_vulkan_x08": {"x86_64-pc-linux-gnu", "windows_x86_64"},
+            "intel_vulkan_x08": {"x86_64-pc-linux-gnu", "windows_x86_64"},
+            "amd_vulkan_x08": {"x86_64-pc-linux-gnu", "windows_x86_64"},
+        }
+        with tempfile.TemporaryDirectory(dir=ROOT) as folder:
+            binary = Path(folder) / "usnm_qwen"
+            binary.write_bytes(b"fixture")
+            for plan, ok in allowed.items():
+                for platform in platforms:
+                    with self.subTest(plan=plan, platform=platform):
+                        r = subprocess.run(
+                            [APP_RELEASE_SCRIPT, "--env", "prod", "--version", "1.0",
+                             "--signing-host", "fixture.invalid", "--app", "usnm_qwen",
+                             "--kind", "native", "--binary", str(binary),
+                             "--plan-class", plan, "--platform", platform],
+                            cwd=ROOT, capture_output=True, text=True,
+                        )
+                        self.assertNotEqual(r.returncode, 0)
+                        if platform in ok:
+                            self.assertIn("requires --extra-file llama-server", r.stderr)
+                        else:
+                            self.assertIn(f"native --plan-class {plan} is not supported", r.stderr)
+
     def test_onprem_host_and_ct_are_validated(self):
         # #961: checked with the other arguments, before the settings are read.
         r = subprocess.run(

@@ -72,6 +72,56 @@ pub fn default_models() -> Vec<Model> {
     ]
 }
 
+/// GPU memory, in MB, free on the host's GPU for Xiaomi-OCR-0 (0.8B at Q8_0
+/// with an F16 projector), which opens 4 GB cards (#1776).
+pub const GPU_MB_FOR_XIAOMI: u32 = 2000;
+/// Xiaomi-OCR-0's model name, and its GGUF and projector as Study 9's
+/// conversion named them (`docs/reports/2026-11-gpu-studies/scripts/s9/convert.sh`).
+pub const XIAOMI_MODEL: &str = "xiaomi-ocr-0-q8";
+pub const XIAOMI_FILE: &str = "xiaomi-ocr-0-q8_0.gguf";
+pub const XIAOMI_MMPROJ: &str = "mmproj-xiaomi-ocr-0-f16.gguf";
+
+/// The models a Xiaomi-OCR-0 unit lists: Xiaomi-OCR-0 alone, so no host can
+/// read it with a Qwen file.
+pub fn xiaomi_models() -> Vec<Model> {
+    vec![Model {
+        file: XIAOMI_FILE.into(),
+        min_gpu_mb: GPU_MB_FOR_XIAOMI,
+        mmproj: XIAOMI_MMPROJ.into(),
+        name: XIAOMI_MODEL.into(),
+    }]
+}
+
+/// The engine models and request version `qwen stage` stages for a pin:
+/// Xiaomi-OCR-0 alone at request version 5, or the Qwen models at the
+/// version asked for (1 by default). Job validation refuses any other mix.
+pub fn stage_reader(
+    model: Option<&str>,
+    prompt_version: Option<u32>,
+) -> anyhow::Result<(Vec<Model>, u32)> {
+    use usnm_ocr_contract::qwen::{is_xiaomi_model, PROMPT_VERSION, PROMPT_VERSION_XIAOMI};
+    match model {
+        Some(m) if is_xiaomi_model(m) => {
+            ensure!(m == XIAOMI_MODEL, "unknown Xiaomi-OCR-0 build {m}");
+            let v = prompt_version.unwrap_or(PROMPT_VERSION_XIAOMI);
+            ensure!(
+                v == PROMPT_VERSION_XIAOMI,
+                "Xiaomi-OCR-0 reads with request version {PROMPT_VERSION_XIAOMI} only"
+            );
+            Ok((xiaomi_models(), v))
+        }
+        Some(m) => {
+            let models = default_models();
+            ensure!(
+                models.iter().any(|x| x.name == m),
+                "--model {m} is not one of the staged models"
+            );
+            Ok((models, prompt_version.unwrap_or(PROMPT_VERSION)))
+        }
+        None => Ok((default_models(), prompt_version.unwrap_or(PROMPT_VERSION))),
+    }
+}
+
 /// The model for a host: on a GPU with `free_mb` free, the first whose
 /// `min_gpu_mb` fits; on CPU, the last (the smallest).
 pub fn choose_model(models: &[Model], gpu_free_mb: Option<u64>) -> Option<&Model> {
@@ -157,5 +207,24 @@ mod tests {
         assert!(payload_model(&models[..1], "2b", None).is_none());
         assert!(payload_model(&models, "all", Some(24000)).is_none());
         assert_eq!(outputs(), ["readings.json", "result.json", "diag.txt"]);
+    }
+
+    #[test]
+    fn stage_reader_pairs_each_pin_with_its_models_and_request() {
+        let (m, v) = stage_reader(Some(XIAOMI_MODEL), None).unwrap();
+        assert_eq!(v, 5);
+        assert_eq!(m.len(), 1);
+        assert_eq!(
+            (m[0].file.as_str(), m[0].mmproj.as_str(), m[0].min_gpu_mb),
+            (XIAOMI_FILE, XIAOMI_MMPROJ, 2000)
+        );
+        assert!(stage_reader(Some(XIAOMI_MODEL), Some(4)).is_err());
+        assert!(stage_reader(Some("xiaomi-ocr-0-f16"), None).is_err());
+        for pin in ["qwen3-vl-8b-q4km", "qwen3-vl-2b-q8"] {
+            let (m, v) = stage_reader(Some(pin), Some(3)).unwrap();
+            assert_eq!((m, v), (default_models(), 3));
+        }
+        assert!(stage_reader(Some("qwen3-vl-4b"), None).is_err());
+        assert_eq!(stage_reader(None, None).unwrap(), (default_models(), 1));
     }
 }

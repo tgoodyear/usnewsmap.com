@@ -10,12 +10,45 @@ use chrono::{DateTime, NaiveDateTime};
 use super::fmt::{esc, int, time};
 use crate::boinc_week::{Bucket, WeekView, BUCKET_HOURS};
 
-const WIDTH: f64 = 1040.0;
-const LEFT: f64 = 48.0;
-const RIGHT: f64 = 12.0;
 const TOP: f64 = 8.0;
 /// Room for the day labels under the last chart.
 const AXIS: f64 = 22.0;
+/// Pixels one character of an axis label takes, about, at 11px.
+const CHAR: f64 = 6.2;
+
+/// How the charts are laid out: the page draws each twice, a wide one and a
+/// narrow one, and the stylesheet shows one. The narrow one is drawn at the
+/// width of a phone, so its text is the size of the page's own, not a wide
+/// chart's scaled down to a third.
+#[derive(Clone, Copy)]
+struct Geo {
+    class: &'static str,
+    width: f64,
+    left: f64,
+    right: f64,
+    /// The three charts' plot heights: queued, active, completed.
+    heights: [f64; 3],
+    /// How a day is named under the last chart.
+    day: &'static str,
+}
+
+const WIDE: Geo = Geo {
+    class: "wide",
+    width: 1040.0,
+    left: 56.0,
+    right: 12.0,
+    heights: [150.0, 130.0, 150.0],
+    day: "%a %b %-d",
+};
+
+const NARROW: Geo = Geo {
+    class: "narrow",
+    width: 360.0,
+    left: 52.0,
+    right: 8.0,
+    heights: [170.0, 150.0, 170.0],
+    day: "%b %-d",
+};
 
 /// US Eastern wall time at `at`, from the offset the server gave.
 fn local(at: i64, offset_minutes: i32) -> NaiveDateTime {
@@ -29,7 +62,7 @@ fn when(b: &Bucket) -> NaiveDateTime {
 }
 
 /// A round top for an axis: 1, 2, 2.5 or 5 times a power of ten.
-fn nice(max: u64) -> u64 {
+pub(super) fn nice(max: u64) -> u64 {
     let max = max.max(1);
     let mut p = 1u64;
     while p.saturating_mul(10) <= max {
@@ -44,7 +77,7 @@ fn nice(max: u64) -> u64 {
 }
 
 /// The gridlines' values: fifths of the top (quarters of a 2), else halves.
-fn ticks(top: u64) -> Vec<u64> {
+pub(super) fn ticks(top: u64) -> Vec<u64> {
     let lead = top / 10u64.pow(top.max(1).ilog10());
     let parts = if lead == 2 && !top.is_multiple_of(25) {
         4
@@ -59,6 +92,7 @@ fn ticks(top: u64) -> Vec<u64> {
 
 struct Chart<'a> {
     buckets: &'a [Bucket],
+    geo: Geo,
     height: f64,
     top: u64,
     axis: bool,
@@ -66,11 +100,11 @@ struct Chart<'a> {
 
 impl Chart<'_> {
     fn step(&self) -> f64 {
-        (WIDTH - LEFT - RIGHT) / self.buckets.len() as f64
+        (self.geo.width - self.geo.left - self.geo.right) / self.buckets.len() as f64
     }
 
     fn x(&self, i: usize) -> f64 {
-        LEFT + self.step() * (i as f64 + 0.5)
+        self.geo.left + self.step() * (i as f64 + 0.5)
     }
 
     fn y(&self, v: u64) -> f64 {
@@ -80,44 +114,61 @@ impl Chart<'_> {
     /// The frame: gridlines with their values, a line at each Eastern
     /// midnight, and under the last chart the days.
     fn open(&self, o: &mut String, label: &str, ys: &str) {
+        let Geo {
+            class,
+            width,
+            left,
+            right,
+            ..
+        } = self.geo;
         let total = self.height + if self.axis { AXIS } else { 6.0 };
         let _ = write!(
             o,
-            "<svg class=\"wk\" viewBox=\"0 0 {WIDTH} {total}\" role=\"img\" aria-label=\"{}\" data-ys=\"{ys}\">",
-            esc(label)
+            "<svg class=\"wk {class}\" viewBox=\"0 0 {width} {total}\" role=\"img\" aria-label=\"{}\" \
+             data-left=\"{left}\" data-step=\"{:.4}\" data-ys=\"{ys}\">",
+            esc(label),
+            self.step()
         );
         for v in ticks(self.top) {
             let y = self.y(v);
             let _ = write!(
                 o,
-                "<line class=\"{}\" x1=\"{LEFT}\" x2=\"{}\" y1=\"{y:.1}\" y2=\"{y:.1}\"/>\
+                "<line class=\"{}\" x1=\"{left}\" x2=\"{}\" y1=\"{y:.1}\" y2=\"{y:.1}\"/>\
                  <text x=\"{}\" y=\"{:.1}\" text-anchor=\"end\">{}</text>",
                 if v == 0 { "wk-axis" } else { "wk-grid" },
-                WIDTH - RIGHT,
-                LEFT - 6.0,
+                width - right,
+                left - 6.0,
                 y + 4.0,
                 int(v)
             );
         }
+        // Where the last day's label ended, so the next doesn't overlap it.
+        let mut taken = f64::MIN;
         for (i, b) in self.buckets.iter().enumerate() {
             let at = when(b);
             if at.format("%H").to_string() != "00" {
                 continue;
             }
-            let x = LEFT + self.step() * i as f64;
+            let x = left + self.step() * i as f64;
             let _ = write!(
                 o,
                 "<line class=\"wk-grid\" x1=\"{x:.1}\" x2=\"{x:.1}\" y1=\"{TOP}\" y2=\"{}\"/>",
                 self.height
             );
             if self.axis {
-                let _ = write!(
-                    o,
-                    "<text x=\"{:.1}\" y=\"{:.1}\">{}</text>",
-                    x + 3.0,
-                    self.height + 15.0,
-                    at.format("%a %b %-d")
-                );
+                let name = at.format(self.geo.day).to_string();
+                let size = name.len() as f64 * CHAR;
+                // Beside its line, pulled in from the chart's edge, and left
+                // out where that would run into the day before's name.
+                let from = (x + 3.0).min(width - right - size);
+                if from >= taken + 4.0 {
+                    taken = from + size;
+                    let _ = write!(
+                        o,
+                        "<text x=\"{from:.1}\" y=\"{:.1}\">{name}</text>",
+                        self.height + 15.0
+                    );
+                }
             }
         }
     }
@@ -285,11 +336,11 @@ fn tip(buckets: &[Bucket], i: usize) -> String {
     o
 }
 
-/// The tips and the geometry the script needs, as JSON that can't end the
-/// `<script>` element it sits in.
-fn data(buckets: &[Bucket], step: f64) -> String {
+/// The tips the script needs, as JSON that can't end the `<script>` element
+/// it sits in. Each chart carries its own geometry, for the crosshair.
+fn data(buckets: &[Bucket]) -> String {
     let tips: Vec<String> = (0..buckets.len()).map(|i| tip(buckets, i)).collect();
-    serde_json::json!({"left": LEFT, "n": buckets.len(), "step": step, "tips": tips})
+    serde_json::json!({"n": buckets.len(), "tips": tips})
         .to_string()
         .replace('<', "\\u003c")
         .replace('>', "\\u003e")
@@ -335,24 +386,42 @@ pub(super) fn charts(v: &WeekView) -> String {
     let hosts = |x: &Bucket| x.hosts;
     let completed = |x: &Bucket| x.completed_total();
 
+    // Each chart is drawn at both widths; the stylesheet shows one.
+    // The left margin fits the longest axis label of the three, so the
+    // charts' time axes line up and no label is cut off.
+    let tops = [
+        nice(max(&queued)),
+        nice(max(&volunteers).max(max(&volunteer_hosts)).max(max(&hosts))),
+        nice(max(&completed)),
+    ];
+    let room = tops.iter().map(|t| int(*t).len()).max().unwrap_or(1) as f64 * CHAR + 12.0;
+    let each = |which: usize, top: u64, axis: bool| {
+        [WIDE, NARROW].map(|geo| Chart {
+            buckets: b,
+            geo: Geo {
+                left: geo.left.max(room.ceil()),
+                ..geo
+            },
+            height: geo.heights[which],
+            top,
+            axis,
+        })
+    };
+
     o.push_str(
-        "<div class=\"wk-charts table-wide\" tabindex=\"0\" role=\"region\" aria-label=\"BOINC week charts\">\
+        "<div class=\"wk-charts\" role=\"group\" aria-label=\"BOINC week charts\">\
          <h3>Queued jobs</h3>\
          <p class=\"note\">Jobs waiting for a volunteer's computer</p>",
     );
-    let c = Chart {
-        buckets: b,
-        height: 150.0,
-        top: nice(max(&queued)),
-        axis: false,
-    };
-    c.open(
-        &mut o,
-        "Queued jobs, the last 7 days in 3-hour steps",
-        &c.ys(&[&queued]),
-    );
-    c.line(&mut o, "s1", queued);
-    c.close(&mut o, &["s1"]);
+    for c in each(0, tops[0], false) {
+        c.open(
+            &mut o,
+            "Queued jobs, the last 7 days in 3-hour steps",
+            &c.ys(&[&queued]),
+        );
+        c.line(&mut o, "s1", queued);
+        c.close(&mut o, &["s1"]);
+    }
 
     o.push_str(
         "<h3>Active volunteers and computers</h3><p class=\"note\">\
@@ -360,50 +429,41 @@ pub(super) fn charts(v: &WeekView) -> String {
          <span class=\"key wk-key s2\"></span>Volunteer computers \
          <span class=\"key wk-key s3\"></span>All computers, the project's own included</p>",
     );
-    let top = nice(max(&volunteers).max(max(&volunteer_hosts)).max(max(&hosts)));
-    let c = Chart {
-        buckets: b,
-        height: 130.0,
-        top,
-        axis: false,
-    };
-    c.open(
-        &mut o,
-        "Active volunteers, volunteer computers and all computers, the last 7 days in 3-hour steps",
-        &c.ys(&[&volunteers, &volunteer_hosts, &hosts]),
-    );
-    c.line(&mut o, "s1", volunteers);
-    c.line(&mut o, "s2", volunteer_hosts);
-    c.line(&mut o, "s3", hosts);
-    c.close(&mut o, &["s1", "s2", "s3"]);
+    for c in each(1, tops[1], false) {
+        c.open(
+            &mut o,
+            "Active volunteers, volunteer computers and all computers, the last 7 days in 3-hour steps",
+            &c.ys(&[&volunteers, &volunteer_hosts, &hosts]),
+        );
+        c.line(&mut o, "s1", volunteers);
+        c.line(&mut o, "s2", volunteer_hosts);
+        c.line(&mut o, "s3", hosts);
+        c.close(&mut o, &["s1", "s2", "s3"]);
+    }
 
     o.push_str(
         "<h3>Completed jobs</h3><p class=\"note\">Jobs a computer returned successfully</p>",
     );
-    let c = Chart {
-        buckets: b,
-        height: 150.0,
-        top: nice(max(&completed)),
-        axis: true,
-    };
-    c.open(
-        &mut o,
-        "Completed jobs, the last 7 days in 3-hour steps",
-        "",
-    );
-    c.bars(&mut o, completed);
-    c.close(&mut o, &[]);
+    for c in each(2, tops[2], true) {
+        c.open(
+            &mut o,
+            "Completed jobs, the last 7 days in 3-hour steps",
+            "",
+        );
+        c.bars(&mut o, completed);
+        c.close(&mut o, &[]);
+    }
     let _ = write!(
         o,
         "<script type=\"application/json\" class=\"wk-data\">{}</script></div>",
-        data(b, c.step())
+        data(b)
     );
 
     o.push_str(
         "<p class=\"note\">A volunteer or computer counts as active if it was sent a job or returned one \
          in those 3 hours. The project's own accounts and computers don't count as volunteers. The newest \
-         3 hours are still filling, so their bar is faded and the figures above leave them out. Hover or \
-         tap a chart for the numbers by kind of job.</p>",
+         3 hours are still filling, so their bar is faded and the figures above leave them out. Hover, tap or \
+         drag along a chart for the numbers by kind of job.</p>",
     );
 
     o.push_str(
@@ -436,7 +496,7 @@ pub(super) fn charts(v: &WeekView) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
 
     #[test]
     fn axis_tops_are_round() {
@@ -457,6 +517,88 @@ mod tests {
         assert_eq!(ticks(2500), [0, 500, 1000, 1500, 2000, 2500]);
     }
 
+    /// The day names under a chart, with where each starts and ends.
+    fn day_labels(html: &str, class: &str) -> Vec<(f64, f64, String)> {
+        let svg = html
+            .split(&format!("<svg class=\"wk {class}\""))
+            .nth(3)
+            .unwrap()
+            .split("</svg>")
+            .next()
+            .unwrap();
+        svg.split("<text x=\"")
+            .skip(1)
+            .filter(|t| !t.contains("text-anchor"))
+            .map(|t| {
+                let x: f64 = t.split('"').next().unwrap().parse().unwrap();
+                let name = t.split('>').nth(1).unwrap().split('<').next().unwrap();
+                (x, x + name.len() as f64 * CHAR, name.to_owned())
+            })
+            .collect()
+    }
+
+    /// A week as the BOINC server cuts it: 3-hour buckets that start at
+    /// Eastern midnight (05:00 UTC in winter), the last one still filling.
+    fn eastern_week(now: DateTime<Utc>) -> WeekView {
+        let five = now.timestamp() - 5 * 3600;
+        let end = (five.div_euclid(10800) + 1) * 10800 + 5 * 3600;
+        let buckets: Vec<_> = (0..56)
+            .map(|i| {
+                serde_json::json!({
+                    "accounts": 4, "hosts": 7, "volunteers": 2, "volunteer_hosts": 3,
+                    "completed": {"usnm_quality": 200 + i}, "queued": {"usnm_qwen": 1700 - i},
+                    "partial": i == 55, "start": end - (56 - i) * 10800, "utc_offset_minutes": -300,
+                })
+            })
+            .collect();
+        let doc = serde_json::json!({"schema": 1, "generated_at": now.timestamp(), "bucket_hours": 3, "buckets": buckets});
+        let week = crate::boinc_week::parse(&serde_json::to_vec(&doc).unwrap(), now).unwrap();
+        WeekView {
+            generated_at: DateTime::from_timestamp(week.generated_at, 0),
+            week: Some(week),
+            ..WeekView::default()
+        }
+    }
+
+    #[test]
+    fn day_names_stay_on_the_chart_and_apart_at_both_widths() {
+        // Through a day, from just after Eastern midnight, when the newest
+        // day has no room for its name, to its end.
+        for hours in 0..24 {
+            let now = DateTime::parse_from_rfc3339("2026-11-12T05:10:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+                + Duration::hours(hours);
+            let html = charts(&eastern_week(now));
+            for (class, geo) in [("wide", WIDE), ("narrow", NARROW)] {
+                let names = day_labels(&html, class);
+                // Six whole days at least; the newest once there is room.
+                assert!(names.len() >= 6, "{now} {class}: {names:?}");
+                for (from, to, name) in &names {
+                    assert!(
+                        *from >= geo.left && *to <= geo.width - geo.right + 0.01,
+                        "{now} {class} {name}"
+                    );
+                }
+                for pair in names.windows(2) {
+                    assert!(
+                        pair[0].1 + 4.0 <= pair[1].0 + 0.01,
+                        "{now} {class}: {pair:?}"
+                    );
+                }
+            }
+        }
+        // The narrow chart's names carry no weekday, so a week's seven fit
+        // across a phone; the wide chart's do.
+        let html = charts(&eastern_week(Utc::now()));
+        assert!(day_labels(&html, "narrow")
+            .iter()
+            .all(|(_, _, n)| n.split(' ').count() == 2));
+        assert!(day_labels(&html, "wide")
+            .iter()
+            .all(|(_, _, n)| n.split(' ').count() == 3));
+    }
+
     #[test]
     fn draws_three_charts_on_one_axis_with_tips_and_a_table() {
         let now = Utc::now();
@@ -469,20 +611,27 @@ mod tests {
         };
         let html = charts(&v);
         assert!(html.contains("class=\"boinc-week\""));
-        assert_eq!(html.matches("<svg class=\"wk\"").count(), 3);
-        assert_eq!(html.matches("class=\"wk-line").count(), 4);
-        assert_eq!(html.matches("class=\"wk-bar").count(), 56);
-        assert_eq!(html.matches("wk-bar wk-partial").count(), 1);
+        // Each chart at two widths.
+        assert_eq!(html.matches("<svg class=\"wk wide\"").count(), 3);
+        assert_eq!(html.matches("<svg class=\"wk narrow\"").count(), 3);
+        assert_eq!(html.matches("class=\"wk-line").count(), 8);
+        assert_eq!(html.matches("class=\"wk-bar").count(), 112);
+        assert_eq!(html.matches("wk-bar wk-partial").count(), 2);
         assert_eq!(html.matches("<tr><td>").count(), 56);
         // The table has what the tips have, for keyboards and screen readers.
         assert!(html.contains("<td>AI snippet reading 1,700</td>"));
         // Day labels on the last chart only, one a day.
         assert!(html.matches("<text x=").count() >= 7);
+        // The charts fit their panel at either width; nothing scrolls.
+        assert!(!html.contains("class=\"wk-charts table-wide\""));
         let data = html.split("class=\"wk-data\">").nth(1).unwrap();
         let data = data.split("</script>").next().unwrap();
         assert!(!data.contains('<'));
         let d: serde_json::Value = serde_json::from_str(data).unwrap();
         assert_eq!(d["n"], 56);
+        // The crosshair's geometry is on each chart, for its own width.
+        assert!(html.contains("data-left=\"56\""));
+        assert!(html.contains("data-left=\"52\""));
         let tip = d["tips"][55].as_str().unwrap();
         assert!(tip.contains("(so far)"));
         assert!(tip.contains("AI snippet reading"));

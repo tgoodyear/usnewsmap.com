@@ -304,10 +304,12 @@ ships closed. Its own window admits one batch-2 workunit staged with
 
 Every `boinc-quality-native.yml` run uploads the release inputs as the
 `boinc-native-qwen-nvidia_vulkan_2b` artifact. `boinc/scripts/qwen_vulkan_bundle.py`
-builds them from that commit's musl `usnm_qwen` and the `llama.lock`-pinned archive (links
-copied as files, the two locks added); its `release.json` holds the on-prem manifest's
-`release` and `worker` entries. CI checks that the runtime is byte for byte the one already
-signed for `nvidia_vulkan_6gb_8b`. Download the artifact of the merged commit, then verify it
+builds them from that commit's musl `usnm_qwen`, the `llama.lock`-pinned archive (links
+copied as files, the two locks added) and the `libgomp.lock`-pinned `libgomp.so.1` with its
+notice (`--libgomp-deb`, the package at the lock's URL); its `release.json` holds the on-prem
+manifest's `release` and `worker` entries. The byte-for-byte runtime check against the signed
+`nvidia_vulkan_6gb_8b` manifest returns with the first signed b12084 manifest (usnm_qwen 1.20).
+Download the artifact of the merged commit, then verify it
 and hand its files to the release script (on-prem flags as in step 4):
 
 ```sh
@@ -357,7 +359,7 @@ Microsoft Authenticode signatures and records versions and hashes in
 `VC_REDIST_SOURCE.json` and `SHA256SUMS`. Stage these DLLs as signed
 `--extra-file` members too; staging rejects a missing mandatory CUDA or CRT
 dependency, including the portable `ggml-cpu-x64.dll` backend and its
-`libomp140.x86_64.dll` dependency from the pinned llama archive (CPU backend
+`libomp.dll` dependency from the pinned llama archive (CPU backend
 discovery is required even for CUDA offload; optimized CPU variants are optional).
 No volunteer should install a CUDA toolkit or manually fetch DLLs. The NVIDIA
 driver's `nvcuda.dll` and Windows system APIs remain platform prerequisites.

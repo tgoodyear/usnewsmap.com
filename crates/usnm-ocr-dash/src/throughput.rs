@@ -456,7 +456,10 @@ const ROWS: &[Row] = &[
         label: "OCR results collected",
         counts: &["ocr_collect_pages"],
         seconds: &["phase_seconds.collect"],
-        scope: "The controller's newly published pages at each passing tick.",
+        scope: "The controller's newly published pages, from the summary line of each tick that \
+                finishes. Pages published in a tick that fails, or in the draining plans' ticks \
+                (their own unit, not read here), aren't counted, so this can sit below the \
+                import count, which is the one to trust.",
         failed: &["phase_failed.collect"],
         attempts: &["phase_runs.collect"],
         failed_unit: "phase runs",

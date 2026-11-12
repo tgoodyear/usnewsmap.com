@@ -1,0 +1,22 @@
+# Lists the scans whose copy is confirmed on the storage host (scan_confirm.py publish), for the
+# hand-off retention step on the BOINC host: sha256 values only, in the handoff-scans share the
+# BOINC host mounts. Reads /tank/ocr/scans and /cold/ocr-scans; writes only the list.
+[Unit]
+Description=usnewsmap scan confirmation list for hand-off retention
+
+[Service]
+Type=oneshot
+User=ocrdata
+Group=ocrdata
+ExecStart=/usr/bin/python3 -I /opt/usnm-scan-confirm/scan_confirm.py publish \
+  --index /tank/ocr/scans/index-full.jsonl --root /tank/ocr/scans --root /cold/ocr-scans \
+  --out /tank/boinc-bulk/handoff-scans/scan-confirmed/confirmed-sha256.txt
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=3h
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/tank/ocr/scans /cold/ocr-scans
+ReadWritePaths=/tank/boinc-bulk/handoff-scans/scan-confirmed
