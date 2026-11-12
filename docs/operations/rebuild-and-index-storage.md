@@ -136,11 +136,58 @@ On a failure or timeout after step 2 the release restores the config (a cancelle
 
 **Why E4.** On Consumption (7.5 GiB with the scratch share's init container) the writer ran out of memory 6.5 h into a rebuild (#172). E4 gives 3.0 vCPU, 25 GiB, a 6 GiB heap, 120 s commit timeout and 4 GiB queue (`USNM_WRITER_HEAP`, `USNM_WRITER_COMMIT_SECS`, `USNM_WRITER_QUEUE`, from `infra/modules/ingestjobs.bicep`), so splits reach the 30,000 target instead of being cut small every 30 s. The queue's WAL truncates only on commit; at 600 s it filled and Quickwit refused pages with "no shards available". At 120 s it holds about 2 minutes of pages.
 
+### Prune from the on-prem release
+
+The release's `prune` step (#1703) runs `usnm-ingest prune` from the release container, against the index account, after a release is verified. It is off in prod until the maintainer provisions the grant and sets `USNM_RELEASE_PRUNE=true` on the host. Merging the change that added it altered no setting and no role.
+
+**What it does.** `scripts/onprem/release.sh --step prune --app-url URL --index-version V` does this in order:
+
+1. Refuses unless `USNM_RELEASE_PRUNE=true` is in its environment.
+2. Runs the `ready` step: the app at `URL` must answer `/readyz` and serve `V`.
+3. Runs `usnm-ingest prune` as a dry run through a Quickwit node on `azure://qw-index`, with a fresh state file `DIR/prune-state.json`. The log, ending in the JSON report, is `DIR/prune-dry-run.log`: each candidate's splits, documents and size, and the total.
+4. Refuses, deleting nothing, unless the report shows `V` as serving, a rollback version that isn't `V`, and no published version newer than `V`. That is: both versions to keep must be known. The lake's `current.json` supplies both. A newer published version means someone rolled `current.json` back by hand, so the step stops: roll forward first, then prune. The fresh state file can't show a newer version's run, so `prune` has a second guard (#1703): it never deletes an index whose `{date}-{n}` is after the serving version's, named by a kept version or not (the report lists them as `newer_than_serving`). A stopped rebuild newer than the serving version is therefore pruned only after the next release.
+5. With `--delete`, runs `prune --delete`, which plans again and rechecks what it keeps before each delete (see above). Its log is `DIR/prune.log`. Without `--delete` the step ends after the dry run.
+
+The state is a file because the release's Arc identity has no grant on the Cosmos `ops` container, where the writer lock lives. So this prune takes no cross-host lock, just as the release doesn't ([above](#full-rebuild-on-prem)): keep ingest jobs and schedules off, and don't run it beside a release.
+
+**Provision the grant.** Both `USNM_ONPREM_RELEASE` and `USNM_ONPREM_RELEASE_PRUNE` must be `true`: the first is what grants the release anything and opens the index account to `USNM_OCR_NODE_IPS`, and prod has it `false` between releases. In `infra/env/prod.json` set the two, merge through a pull request, then:
+
+```sh
+scripts/azure/provision.sh --env prod --what-if --api-tag=live
+```
+
+Read the what-if before provisioning. It should add, and change nothing else beyond the release grants you already know:
+
+- the custom role `usnm-release-pruner-role-prod` (`modules/release-pruner-role.bicep`; one data action, blob delete). It is created whenever `USNM_ONPREM_RELEASE_HOST` is set, and grants nothing alone;
+- one role assignment of it to the release host's identity, scoped to the `qw-index` container of the index account, with a condition that limits deletes to blobs whose path starts with `pages-` or `congress-`.
+
+An assignment at any wider scope, on another container or account, or of a built-in role, is wrong: stop. Then run the same command without `--what-if`.
+
+**Turn the step on, and run a dry run.** On the release container, as `usnm` in the `himds` group like the other steps, with `USNM_RELEASE_PRUNE=true` in the environment:
+
+```sh
+export USNM_RELEASE_PRUNE=true
+scripts/onprem/release.sh --run-dir "$R" --step prune --app-url https://<app host> --index-version pages-v<date>-<n>
+less "$R/prune-dry-run.log"     # what is kept, each candidate, the total
+```
+
+The dry run needs only read access and checks that Quickwit can reach the account with the host's identity. Check that `prune keeps` names the serving version and the rollback you expect, and review the candidates. Then delete by adding `--delete`. The first delete in a new setup deserves one look at `DIR/prune.log`: each `deleted index` line is one index gone. If Quickwit's delete fails with a 403, the condition refused a blob path outside `pages-*` and `congress-*` (or the role isn't provisioned yet); look at the failing path before widening anything. This path was written against the code and the Bicep, and has not yet run against the real account.
+
+**What the grant lets a compromised host destroy.** The index account has no blob soft delete, no container soft delete and no versioning (`modules/index-storage.bicep` sets all three off), so a deleted blob is gone. With the grant on, a host that holds the release identity can delete every blob under `pages-*` and `congress-*` in `qw-index`, which is every index version in the Azure copy, the serving one and the rollback included. It can already overwrite any blob there with the writer role; delete adds removal, not new reach. What limits it:
+
+- The assignment is on `qw-index` only, and its condition names the two prefixes. It can't delete anything at the container root, the lake (`curated`, `reference`, so not `current.json`), the Cosmos records or any other account. The role has no container action, so it can't delete the container or the account.
+- Authentication is Entra ID only (no keys, no SAS), so the identity is what matters. The network is a weaker limit than it may look: the index account's firewall allows `USNM_OCR_NODE_IPS` while `USNM_ONPREM_RELEASE` is on, but it accepts every network when `USNM_DATA_ALL_NETWORKS` and `USNM_DATA_PRIVATE_ENDPOINTS` are both `true` (`dataEveryNetwork` in `infra/main.bicep`). Check `infra/env/prod.json` for the current values; don't count on the firewall.
+- The loss is recoverable: public traffic serves from the on-prem index, and the Azure copy is a cold spare. [`restore`](#restoring-serving-to-azure) copies the serving version back from the run directory that built it, and a rebuild makes a new one.
+
+Keep the grant off between prunes: set `USNM_ONPREM_RELEASE_PRUNE` back to `false` (and `USNM_ONPREM_RELEASE` too, when no release is under way).
+
+**Undo the grant.** Set `USNM_ONPREM_RELEASE_PRUNE` to `false` in `infra/env/prod.json`, merge, run `scripts/azure/provision.sh --env prod --what-if --api-tag=live` (it should show only the assignment going away), then without `--what-if`. The custom role stays while `USNM_ONPREM_RELEASE_HOST` is set, for the reason the writer role does; it grants nothing without the assignment. The provision is the way to remove it: the role assignment belongs to the deployment stack, whose deny settings may refuse a direct `az role assignment delete`, so this page doesn't give that command. If the host's identity is compromised, also disconnect its Arc machine and clear `USNM_ONPREM_RELEASE_HOST` (a private setting) before provisioning.
+
 ### Full rebuild on-prem
 
 The on-prem release container `usnm-release` (#283, #917; home-infra `scripts/lab/release-ct.sh`, on Arc as `usnm-release-arcs-<env>` via `release-ct-arc.sh`) builds a staged version on local ZFS (`/srv/usnm`, not NFS), and `usnm-ingest publish-staged` copies it to the index account and lake. No Azure compute runs; E4, scratch and the 96 h timeout don't apply. Use the [checklist](#full-rebuild); [Index storage cutover](#index-storage-cutover) applies from step 3.
 
-Its Arc identity (`USNM_ONPREM_RELEASE`, `USNM_ONPREM_RELEASE_HOST`, `modules/onprem-release.bicep`) gets read on `curated`; read on `reference` with writes only under `pages-v*/` and to `index-storage-pending.json`; write without delete on the index account's `qw-index`; Cosmos DB Data Contributor on `index_runs` only (which can also delete its items); AcrPull for the pinned Quickwit image. The lake and index account open to `USNM_OCR_NODE_IPS`; Cosmos needs `USNM_COSMOS_ONPREM_ACCESS` (on in prod) or `USNM_ONPREM_SERVING`, or the record gets 403. Provision before the first release. Turning it off removes the grants and closes the index account; `modules/release-writer-role.bicep` stays while `USNM_ONPREM_RELEASE_HOST` is set (the stack can't delete a custom role with its own deny assignment). The Cosmos writer lock isn't taken, so keep ingest and prune jobs and schedules off.
+Its Arc identity (`USNM_ONPREM_RELEASE`, `USNM_ONPREM_RELEASE_HOST`, `modules/onprem-release.bicep`) gets read on `curated`; read on `reference` with writes only under `pages-v*/` and to `index-storage-pending.json`; write without delete on the index account's `qw-index` (delete too, under `pages-*` and `congress-*` only, with `USNM_ONPREM_RELEASE_PRUNE`: [Prune from the on-prem release](#prune-from-the-on-prem-release)); Cosmos DB Data Contributor on `index_runs` only (which can also delete its items); AcrPull for the pinned Quickwit image. The lake and index account open to `USNM_OCR_NODE_IPS`; Cosmos needs `USNM_COSMOS_ONPREM_ACCESS` (on in prod) or `USNM_ONPREM_SERVING`, or the record gets 403. Provision before the first release. Turning it off removes the grants and closes the index account; `modules/release-writer-role.bicep` stays while `USNM_ONPREM_RELEASE_HOST` is set (the stack can't delete a custom role with its own deny assignment). The Cosmos writer lock isn't taken, so keep ingest and prune jobs and schedules off.
 
 As `usnm` in the container, use one run directory per release, and start the long step as a unit so it outlives the session:
 
@@ -310,9 +357,9 @@ Releases never delete indexes, so `qw-index` accumulates old versions and stoppe
 
 A kept version's indexes are those named by `current.json`, its pipeline-state run, its manifest's `indexes`, and its `pages-ja-{date}-{n}` and `congress-{date}-{n}` ids. Other `pages-…` and `congress-…` indexes are deleted; other names (such as `otel-…`) are ignored. Deletes go through Quickwit (`DELETE /api/v1/indexes/{id}`), which removes split files and metastore entry together, never raw blob deletes.
 
-Without `--delete` it is a dry run listing each candidate (splits, documents, size) and the total. It takes the writer lock, so it fails with ``lock `quickwit-writer` is held by …`` during a release, and a release can't take the lock while prune holds it. It refuses when `current.json` is unreadable or empty, the serving version has no run, the rollback's indexes aren't named by its run or manifest, or a manifest's `indexes` isn't a list of `index_id`s. With `--delete` it rechecks before each delete and stops if what it keeps has changed, and stops its Quickwit node if the lock can't be renewed, so `--delete` needs `--quickwit-bin`; `--quickwit-url` is for dry runs only.
+It also leaves alone any index built after the serving version (its `{date}-{n}` is later), listed as `newer_than_serving`. Without `--delete` it is a dry run listing each candidate (splits, documents, size) and the total. It takes the writer lock, so it fails with ``lock `quickwit-writer` is held by …`` during a release, and a release can't take the lock while prune holds it. It refuses when `current.json` is unreadable or empty, the serving version has no run, the rollback's indexes aren't named by its run or manifest, or a manifest's `indexes` isn't a list of `index_id`s. With `--delete` it rechecks before each delete and stops if what it keeps has changed, and stops its Quickwit node if the lock can't be renewed, so `--delete` needs `--quickwit-bin`; `--quickwit-url` is for dry runs only.
 
-Prune is the one ingest command not moved on-prem (#917): it deletes in Azure's `qw-index`, where no on-prem identity may delete. It needs the ingest job, which prod no longer has (`USNM_INGEST_JOBS` is `false`), so the commands below apply only where the job exists. In prod the retired versions were removed under [#245](https://github.com/tgoodyear/usnewsmap.com/issues/245) instead, and the index account keeps one current release for the Azure spare ([ADR-0029](../design/adr/0029-onprem-primary-azure-failover.md) decisions 5 and 6).
+Prune did not move on-prem with the other ingest commands (#917): it deletes in Azure's `qw-index`, where the release identity may not delete unless the prune grant is on. Without that grant it needs the ingest job, which prod no longer has (`USNM_INGEST_JOBS` is `false`), so the commands below apply only where the job exists. In prod the retired versions were removed under [#245](https://github.com/tgoodyear/usnewsmap.com/issues/245), and the index account keeps one current release for the Azure spare ([ADR-0029](../design/adr/0029-onprem-primary-azure-failover.md) decisions 5 and 6). Later pruning in prod goes through the on-prem release's prune step, [below](#prune-from-the-on-prem-release) (#1703).
 
 Don't roll `current.json` back by hand during prune: rollbacks don't take the lock, and prune checks what it keeps only before each delete, so a version made serving during a delete of its index loses it. Run it as an ingest-job execution (`scripts/azure/start-job.sh`) after a release is checked, with no ingest or backfill running; it needs no scratch share. You need `az` access to start the job (the maintainer's Contributor on the resource group) and read logs. Dry run first:
 

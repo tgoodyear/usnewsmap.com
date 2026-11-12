@@ -10,6 +10,7 @@
 #   scripts/onprem/release.sh --run-dir DIR --step publish (--dry-run | --cosmos-endpoint URL)
 #   scripts/onprem/release.sh --run-dir DIR --step restore [--dry-run]
 #   scripts/onprem/release.sh --run-dir DIR --step ready --app-url URL --index-version V
+#   scripts/onprem/release.sh --run-dir DIR --step prune --app-url URL --index-version V [--delete]
 #
 # mirror   copies the lake's current.json, catalog/ and the serving
 #          version's snapshot into DIR/reference.
@@ -52,6 +53,18 @@
 #          USNM_READY_WAIT_SECS apart (default 10), and exits 1 if it never
 #          does. Run it before pointing a Worker at the app. It needs only
 #          curl and jq.
+# prune    removes the index versions older than the rollback from the index
+#          account (usnm-ingest prune, #1703), after a release is verified. Off
+#          unless USNM_RELEASE_PRUNE=true, and it needs the host's prune role
+#          (USNM_ONPREM_RELEASE_PRUNE). It runs the ready step first, so the
+#          app at --app-url must serve V; then a dry run that lists what it
+#          would delete and what it keeps. It refuses unless the lake's
+#          current.json names V as serving and a rollback version, and no
+#          published version is newer than V. Without --delete it stops after
+#          the dry run (the report is in DIR/prune-dry-run.log). With --delete
+#          it then deletes, keeping V and its rollback. The pipeline state is a
+#          fresh file in DIR (the Cosmos writer lock isn't taken: keep ingest
+#          jobs off, and never run it beside a release).
 #
 # Settings come from the environment, with prod's defaults: USNM_LAKE
 # (stusnmdffapzy), USNM_INDEX_ACCOUNT (usnmqwstprodffapzy), USNM_INGEST
@@ -63,8 +76,8 @@
 # identity: usnm must be in the himds group.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '2,63s/^# \{0,1\}//p' "$0" >&2; exit 2; }
-RUN="" STEP="" SAMPLE="" SPLIT_DOCS=60000 DRY_RUN=false VERSION="" APP_URL="" COSMOS_ENDPOINT=${USNM_COSMOS_ENDPOINT:-}
+usage() { sed -n '2,77s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+RUN="" STEP="" SAMPLE="" SPLIT_DOCS=60000 DRY_RUN=false VERSION="" APP_URL="" DELETE=false COSMOS_ENDPOINT=${USNM_COSMOS_ENDPOINT:-}
 while [ $# -gt 0 ]; do
   case "$1" in
     --run-dir) RUN=${2:-}; shift 2 ;;
@@ -75,6 +88,7 @@ while [ $# -gt 0 ]; do
     --app-url) APP_URL=${2:-}; shift 2 ;;
     --cosmos-endpoint) COSMOS_ENDPOINT=${2:-}; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
+    --delete) DELETE=true; shift ;;
     -h|--help) usage ;;
     *) die "unknown option $1" ;;
   esac
@@ -226,5 +240,53 @@ case "$STEP" in
     done
     die "$APP_URL isn't ready on $VERSION after $READY_TRIES tries: $last"
     ;;
-  *) die "--step: mirror, seed, release, finish, publish, restore or ready" ;;
+  prune)
+    [ "${USNM_RELEASE_PRUNE:-false}" = true ] ||
+      die "--step prune is off: set USNM_RELEASE_PRUNE=true once the host has the prune role (USNM_ONPREM_RELEASE_PRUNE; docs/operations/rebuild-and-index-storage.md, \"Prune from the on-prem release\")"
+    { [ "$DRY_RUN" != true ] || [ "$DELETE" != true ]; } || die "--step prune: --dry-run and --delete conflict; without --delete the step is a dry run"
+    [ -n "$APP_URL" ] || die "--step prune needs --app-url (the app that serves the version)"
+    [ -n "$VERSION" ] || die "--step prune needs --index-version (the version the app serves)"
+    [ -x "$QUICKWIT" ] || die "no quickwit at $QUICKWIT"
+    command -v jq > /dev/null 2>&1 || die "--step prune needs jq"
+    command -v awk > /dev/null 2>&1 || die "--step prune needs awk"
+    # After a release is verified: the app answers on the version. Its own errors say why not.
+    "$0" --run-dir "$RUN" --step ready --app-url "$APP_URL" --index-version "$VERSION"
+    # Pipeline state is a fresh file: prune reads the serving version's run from its snapshot, and
+    # the Arc identity has no grant on the Cosmos `ops` container, where the writer lock lives.
+    rm -f "$RUN/prune-state.json"
+    prune_ingest() {
+      QW_AZURE_STORAGE_ACCOUNT="$INDEX_ACCOUNT" "$INGEST" --state-file "$RUN/prune-state.json" \
+        --curated "$CURATED" --reference "$LAKE_URL/reference" \
+        prune --quickwit-bin "$QUICKWIT" --quickwit-metastore azure://qw-index \
+        --quickwit-index-root azure://qw-index "$@"
+    }
+    prune_report() { # the pretty JSON report that ends the log, from its last line that is just "{"
+      awk '/^\{$/ { buf = "" } { buf = buf $0 "\n" } END { printf "%s", buf }' "$1"
+    }
+    prune_ingest | tee "$RUN/prune-dry-run.log"
+    report=$(prune_report "$RUN/prune-dry-run.log")
+    # Both versions to keep must be known, and nothing newer: a hand rollback leaves a published
+    # version newer than the serving one, whose run this fresh state doesn't show. Prune also leaves
+    # newer indexes alone (newer_than_serving), but a release's own prune waits for the roll-forward.
+    jq -e 'type == "object" and (.kept | type) == "object" and (.dry_run | type) == "boolean"' <<< "$report" > /dev/null 2>&1 ||
+      die "no prune report (a JSON object with kept and dry_run) ends $RUN/prune-dry-run.log: nothing is deleted"
+    serving=$(jq -r '.kept.serving // empty' <<< "$report")
+    rollback=$(jq -r '.kept.rollback // empty' <<< "$report")
+    newer=$(jq -r '(.kept.newer // []) | length' <<< "$report")
+    was_dry=$(jq -r '.dry_run' <<< "$report")
+    [ "$was_dry" = true ] || die "the prune dry run reports dry_run=$was_dry: nothing is deleted"
+    [ "$serving" = "$VERSION" ] || die "the lake serves ${serving:-no version}, not $VERSION: nothing is deleted"
+    [[ $rollback =~ ^pages-v[0-9]{8}-[0-9]+$ ]] ||
+      die "current.json names no rollback version (${rollback:-none}): can't identify both versions to keep, nothing is deleted"
+    [ "$rollback" != "$VERSION" ] || die "the rollback is the serving version: nothing is deleted"
+    [ "$newer" = 0 ] || die "$newer published version(s) are newer than $VERSION (a hand rollback?): nothing is deleted"
+    echo "prune keeps $VERSION (serving) and $rollback (rollback); candidates and sizes are above"
+    if [ "$DELETE" != true ]; then
+      echo "dry run only: rerun with --delete to delete the candidates"
+      exit 0
+    fi
+    # The delete run plans again and rechecks what it keeps before each delete.
+    prune_ingest --delete | tee "$RUN/prune.log"
+    ;;
+  *) die "--step: mirror, seed, release, finish, publish, restore, ready or prune" ;;
 esac

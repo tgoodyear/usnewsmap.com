@@ -13,6 +13,12 @@
 //   Never current.json: promotion stays the operator's step;
 // - the index account's qw-index: the same role, unconditioned (splits,
 //   each index's metastore.json and the metastore's manifest.json);
+// - with pruneRoleName (#1703, USNM_ONPREM_RELEASE_PRUNE), the index account's qw-index
+//   also gets the prune role (modules/release-pruner-role.bicep: blob delete,
+//   nothing else), conditioned to blobs under pages-* and congress-*, the
+//   index ids `usnm-ingest prune` may delete (crates/usnm-ingest/src/prune.rs,
+//   PREFIXES). Not the metastore's own files at the container root, and no
+//   other container or account;
 // - Cosmos: Data Contributor on the index_runs container only (#1096, ADR-0027
 //   settled decision 5): `usnm-ingest import-staged-run` records the
 //   published version's run, so /v1/versions and /datasets list it. Not ops
@@ -31,6 +37,8 @@ param cosmosName string
 param principalId string
 @description('Name (a GUID) of the release writer role (modules/release-writer-role.bicep).')
 param writerRoleName string
+@description('Name (a GUID) of the prune role (modules/release-pruner-role.bicep). Empty: no delete grant.')
+param pruneRoleName string = ''
 var blobs = 'Microsoft.Storage/storageAccounts/blobServices/containers/blobs'
 var blobDataReader = '2a2b9908-6ea1-4ae2-8e65-a410df84e7d1'
 var acrPull = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
@@ -48,6 +56,24 @@ var referenceCondition = join(
     '('
     ' @Resource[${blobs}:path] StringStartsWith \'pages-v\''
     ' OR @Resource[${blobs}:path] StringEquals \'index-storage-pending.json\''
+    ')'
+  ],
+  '\n'
+)
+
+// ABAC (condition version 2.0): deletes only of blobs under an index prefix
+// prune may delete (PREFIXES in prune.rs).
+// Same form as referenceCondition. The prune role has the delete data action and no other, so
+// the first clause (any other action) has nothing to match; it is what the form needs to be valid.
+var pruneCondition = join(
+  [
+    '('
+    ' !(ActionMatches{\'${blobs}/delete\'})'
+    ')'
+    'OR'
+    '('
+    ' @Resource[${blobs}:path] StringStartsWith \'pages-\''
+    ' OR @Resource[${blobs}:path] StringStartsWith \'congress-\''
     ')'
   ],
   '\n'
@@ -122,6 +148,19 @@ resource indexWrite 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     principalType: 'ServicePrincipal'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', writerRoleName)
     description: 'The on-prem release (#283): copies staged indexes into qw-index; no delete.'
+  }
+}
+
+resource indexPrune 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(pruneRoleName)) {
+  scope: index::blobService::qwIndex
+  name: guid(index::blobService::qwIndex.id, principalId, 'release-pruner')
+  properties: {
+    principalId: principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', pruneRoleName)
+    description: 'The on-prem release (#1703): deletes blobs of old index versions (pages-*, congress-*) in qw-index, for usnm-ingest prune.'
+    conditionVersion: '2.0'
+    condition: pruneCondition
   }
 }
 
