@@ -987,19 +987,24 @@ mod tests {
         x.id = x.identity().unwrap();
         x.validate().unwrap();
 
-        // weights.lock has no Xiaomi-OCR-0 entry yet, so nothing can be sent.
-        let err = create_work_args_with_lock(&x, Target::NativeXiaomi, EMBEDDED_WEIGHTS_LOCK)
-            .unwrap_err();
+        // A lock without Xiaomi-OCR-0's lines sends nothing.
+        let qwen_only: String = EMBEDDED_WEIGHTS_LOCK
+            .lines()
+            .filter(|l| !l.contains("xiaomi-ocr-0"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let err = create_work_args_with_lock(&x, Target::NativeXiaomi, &qwen_only).unwrap_err();
         assert!(
             format!("{err:#}").contains("missing xiaomi-ocr-0-q8_0.gguf in weights.lock"),
             "{err:#}"
         );
-        let (model_sha, mmproj_sha) = ("d".repeat(64), "e".repeat(64));
-        let lock = format!(
-            "{EMBEDDED_WEIGHTS_LOCK}xiaomi-ocr-0-q8_0.gguf https://example.invalid/m {model_sha}\n\
-             mmproj-xiaomi-ocr-0-f16.gguf https://example.invalid/p {mmproj_sha}\n"
+        // The embedded lock pins Study 9's GGUF and projector (#1776).
+        let (model_sha, mmproj_sha) = (
+            "61f0667bb08342f99fa83b56df7f5808b21aea3ebf6bae03462610b7d519b34a",
+            "77dc7cf20404cf95ae9015634d818159382549a69f655f798f803eb7ec08ac4e",
         );
-        let args = create_work_args_with_lock(&x, Target::NativeXiaomi, &lock).unwrap();
+        let args =
+            create_work_args_with_lock(&x, Target::NativeXiaomi, EMBEDDED_WEIGHTS_LOCK).unwrap();
         assert!(args.contains(&"templates/usnm_qwen_x08_in".to_string()));
         assert!(args.windows(2).any(|w| w == ["--batch", "108"]));
         assert_eq!(Target::NativeXiaomi.batch(), XIAOMI_BATCH);
@@ -1010,8 +1015,8 @@ mod tests {
         assert!(args.ends_with(&[
             format!("{}_page_jpg", x.id),
             format!("{}_qwen_json", x.id),
-            model_physical_name("xiaomi-ocr-0-q8_0.gguf", &model_sha),
-            model_physical_name("mmproj-xiaomi-ocr-0-f16.gguf", &mmproj_sha),
+            model_physical_name("xiaomi-ocr-0-q8_0.gguf", model_sha),
+            model_physical_name("mmproj-xiaomi-ocr-0-f16.gguf", mmproj_sha),
         ]));
         // The template's sticky files are the pinned model's.
         // Read, not embedded: the binary never carries this template (install.py copies it).

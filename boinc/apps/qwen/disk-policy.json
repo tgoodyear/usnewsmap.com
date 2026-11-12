@@ -13,7 +13,7 @@
   "base_unpacked_bound_bytes": 8589934592,
   "image_overhead_bound_bytes": 536870912,
   "native_bundle_bound_bytes": 2147483648,
-  "weights_identity": "sha256:969266d1c24656977e06a6efacae04deac6d5093c77227fe55ac28975035cddd",
+  "weights_identity": "sha256:f614f48b7a5154307ae5c34164a93e720b57bae02d16cc12ccd4d8aa60c242db",
   "warm_incremental_bytes": 2147483648,
   "native_warm_incremental_bytes": 4294967296,
   "reserve_bytes": 2147483648,
@@ -35,6 +35,10 @@
       "native_cold_bytes": 19327352832
     },
     "x08": {
+      "files": {
+        "mmproj-xiaomi-ocr-0-f16.gguf": 204986560,
+        "xiaomi-ocr-0-q8_0.gguf": 811842912
+      },
       "native_cold_bytes": 12884901888
     }
   }

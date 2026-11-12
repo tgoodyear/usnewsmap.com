@@ -131,8 +131,9 @@ class QwenDiskTest(unittest.TestCase):
         locked = {line.split()[0] for line in lock.splitlines() if line and not line.startswith("#")} - {"LICENSE"}
         files_2b = set(p["models"]["2b"]["files"])
         files_8b = set(p["models"]["8b"]["files"])
-        self.assertFalse(files_2b & files_8b)
-        self.assertEqual(files_2b | files_8b, locked)
+        files_x08 = set(p["models"]["x08"]["files"])
+        self.assertFalse(files_2b & files_8b or (files_2b | files_8b) & files_x08)
+        self.assertEqual(files_2b | files_8b | files_x08, locked)
 
     def registry(self, model="2b", env_model=None, extra=0, legacy=False):
         p = disk.policy()

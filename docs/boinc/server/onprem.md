@@ -616,7 +616,7 @@ about the same upload rate over that period.
 
 ## Qwen model files on R2
 
-The four Qwen model files are too large for Cloudflare's cache (512 MB on the plans the zone can use) and are the largest repeat downloads, so they're also hosted in the public R2 bucket `usnm-boinc-models`, at `https://models.usnewsmap.com`. Workunits don't change. The Single Redirect `usnm_boinc_models_r2` sends those exact `/usnmocr_download/<dir>/<name>` paths to the object of the same name with a `302`. The BOINC client follows it. The rule runs at Cloudflare, so a client that reaches the server directly downloads from the server. [Project-run clients](#project-run-clients) do that, so all four files must stay on the server while they use the LAN path. Other clients follow the redirect.
+The four Qwen model files are too large for Cloudflare's cache (512 MB on the plans the zone can use) and are the largest repeat downloads, so they're also hosted in the public R2 bucket `usnm-boinc-models`, at `https://models.usnewsmap.com`. Xiaomi-OCR-0's GGUF and projector (#1776) are hosted there too, so every model file comes the same way. Workunits don't change. The Single Redirect `usnm_boinc_models_r2` sends those exact `/usnmocr_download/<dir>/<name>` paths to the object of the same name with a `302`. The BOINC client follows it. The rule runs at Cloudflare, so a client that reaches the server directly downloads from the server. [Project-run clients](#project-run-clients) do that, so all six files must stay on the server while they use the LAN path. Other clients follow the redirect.
 
 The rule lists exact paths on purpose, so a file that isn't in the bucket keeps coming from the server. The server's copies stay in place as the source of truth.
 
