@@ -10,6 +10,9 @@
 # pair vouched for (#1434). Removing the file restores the strict rule. A `usnm-boinc` next to this
 # script's target is used in place of the image's, so a pinned build can validate.
 #
+# `strict-v2` (#1463) is the strict rule where a crop with no letter or digit on either side is
+# neutral: a pair, or a bundle page, agrees only if a crop with a word passed. It keeps no crop states.
+#
 # A bundle unit needs every page to agree unless <project>/qwen/bundle-verdict holds `page-v1`
 # (#1435): then a pair that judged and recorded every page and agreed on at least half of them
 # settles the unit, and `qwen stage --page-records` packs its disagreeing pages again. A binary
@@ -38,6 +41,9 @@ case "$rule" in
     exec "$bin" qwen compare --files "$1" "$2" "$3" --files2 "$4" "$5" "$6" \
       --log "$dir/pairs.jsonl" --pages "$dir/pages" \
       --rule crop-consensus-v2 --crop-states "$dir/crop-states" ${7:+"$7"} ${8:+"$8"} ;;
+  strict-v2)
+    exec "$bin" qwen compare --files "$1" "$2" "$3" --files2 "$4" "$5" "$6" \
+      --log "$dir/pairs.jsonl" --pages "$dir/pages" --rule strict-v2 ${7:+"$7"} ${8:+"$8"} ;;
   strict-v1) ;;
   *) echo "usnm_qwen_compare: unknown rule '$rule' in $dir/validator-rule; using strict-v1" >&2 ;;
 esac
