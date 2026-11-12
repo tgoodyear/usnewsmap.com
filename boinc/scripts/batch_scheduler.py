@@ -2778,7 +2778,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             try:
                 print(json.dumps({"event": "boinc_batch_collected", "schema_version": 1,
                                   "at": int(now), "plan": config["plan"], "pages": pages,
-                                  "published": total}, sort_keys=True), file=sys.stderr, flush=True)
+                                  "published": total, "previous": state.get("published", 0)}, sort_keys=True), file=sys.stderr, flush=True)
             except (OSError, ValueError):
                 pass
 

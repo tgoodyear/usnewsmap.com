@@ -279,7 +279,8 @@ def collect_controller(window, entries):
         if kind == "boinc_batch_collected":
             if (plan, at) not in collected:
                 collected.add((plan, at))
-                owed.setdefault(plan, []).append((number(event.get("pages")), event.get("published")))
+                owed.setdefault(plan, []).append((number(event.get("pages")), event.get("published"),
+                                                  event.get("previous")))
                 window.add("ocr_collect_pages", logged, number(event.get("pages")))
         elif kind == "boinc_batch_phase":
             phase = event.get("phase")
@@ -310,8 +311,13 @@ def collect_controller(window, entries):
                 total, newly = event.get("published"), number(event.get("newly_published"))
                 # What the summary's baseline doesn't hold yet: collects past it.
                 baseline = total - newly if type(total) is int else None
-                counted = sum(pages for pages, seen in owed.pop(plan, [])
-                              if baseline is None or type(seen) is not int or seen > baseline)
+                # A collect line is still owed if the state its tick started from (`previous`) is
+                # the summary's baseline: no tick since then moved it. Archiving lowers the count
+                # but not that comparison; without `previous` (an older line) its total is compared.
+                counted = sum(pages for pages, seen, previous in owed.pop(plan, [])
+                              if baseline is None
+                              or (baseline == previous if type(previous) is int
+                                  else type(seen) is not int or seen > baseline))
                 window.add("ocr_collect_pages", at, max(0, newly - counted))
                 # A new plan starts its count again.
                 if plan in selected:

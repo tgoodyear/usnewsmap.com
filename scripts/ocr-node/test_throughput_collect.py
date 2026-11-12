@@ -30,9 +30,10 @@ def tick(at, plan="p", selected=10, published=2, seconds=30.0, total=None, **ext
                        "timings": {"tick_seconds": seconds}, **extra})
 
 
-def collected(at, plan, pages, total=None):
+def collected(at, plan, pages, total=None, previous=None):
     return json.dumps({"event": "boinc_batch_collected", "at": at, "plan": plan, "pages": pages,
-                       **({} if total is None else {"published": total})})
+                       **({} if total is None else {"published": total}),
+                       **({} if previous is None else {"previous": previous})})
 
 
 def sync_line(message, **fields):
@@ -327,6 +328,24 @@ class ControllerTests(unittest.TestCase):
                    (at + 60, "u", tick(at, plan="live", published=7, total=37))]
         collector.collect_controller(w, entries)
         self.assertEqual(w.series["ocr_collect_pages"][2], 7 + 30)
+
+    def test_a_lost_summary_then_archiving_does_not_suppress_new_pages(self):
+        w = window()
+        at = THIS_HOUR + 100
+        # A collect of two pages (100 published, from a state of 98) whose tick lost its summary
+        # after persisting; 90 pages are archived; five more are published by hand.
+        entries = [(at, "u", collected(at - 600, "live", 2, 100, 98)),
+                   (at + 60, "u", tick(at, plan="live", published=5, total=15))]
+        collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_collect_pages"][2], 2 + 5)
+
+    def test_a_failed_tick_that_persisted_nothing_is_still_credited_with_previous(self):
+        w = window()
+        at = THIS_HOUR + 100
+        entries = [(at, "u", collected(at - 600, "live", 2, 32, 30)),
+                   (at + 60, "u", tick(at, plan="live", published=2, total=32))]
+        collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_collect_pages"][2], 2)
 
     def test_a_scheduler_that_logs_no_collects_counts_by_its_own_baseline_after_archiving(self):
         w = window()
