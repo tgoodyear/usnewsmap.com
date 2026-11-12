@@ -446,7 +446,7 @@ def validate_plans(plans, now):
         if plan["error"] not in (None, PLANS_ERROR) or (plan["error"] is not None) != (plan["state"] == "unknown"):
             raise ValueError("invalid plan error")
         if plan["tick"] is not None:
-            validate_tick(plan["tick"], now, plan["window_s"])
+            validate_tick(plan["tick"], now, plan["window_s"] + MAX_AGE)  # the document ages too
             if "failed_in_a_row" not in plan["tick"] or "failed_last_hour" not in plan["tick"] \
                     or "same_error_in_a_row" not in plan["tick"]:
                 raise ValueError("invalid plan tick")

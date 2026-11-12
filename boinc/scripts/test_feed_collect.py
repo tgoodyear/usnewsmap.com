@@ -2697,6 +2697,13 @@ class PlanTickTests(unittest.TestCase):
         (entry,) = self.observe({self.QUEUE: {"events": [(NOW - 20, {**surya, "draining": True})]}})
         self.assertEqual((entry["kind"], entry["state"]), ("drain", "draining"))
 
+    def test_a_plan_tick_aging_while_the_document_is_collected_does_not_drop_it(self):
+        plans = self.observe({self.QUEUE: self.healthy()})
+        old = {**plans[0], "tick": {**plans[0]["tick"], "finished_at": NOW - plans[0]["window_s"] + 5}}
+        C.validate_plans([old], NOW + 120)
+        with self.assertRaises(ValueError):
+            C.validate_plans([old], NOW + 120 + C.MAX_AGE)
+
     def test_a_plan_in_both_layouts_is_two_entries_and_the_document_still_validates(self):
         units = {self.NATIVE: self.healthy(native=True), self.NATIVE_AFTER: self.healthy(native=True)}
         plans = self.observe(units, main=self.MAIN_AFTER)
