@@ -61,9 +61,10 @@ elif "lvs" in args:
         "SHIP_TEST_POOL_FREE_BYTES", str(100 * 1024**3)), "data_percent": "0"}]}]}))
 elif "/project/ops/qwen-feed/qwen_submit.py" in args:
     preflight = "--preflight" in args
-    phase = "preflight" if preflight else "locked_recheck"
-    code = int(os.environ.get("SHIP_TEST_PREFLIGHT_EXIT" if preflight
-                              else "SHIP_TEST_PUBLISH_EXIT", "0"))
+    prepare = "--phase" in args and args[args.index("--phase") + 1] == "prepare"
+    phase = "preflight" if preflight else "prepared" if prepare else "locked_recheck"
+    code = int(os.environ.get("SHIP_TEST_PREFLIGHT_EXIT" if preflight else
+                              "SHIP_TEST_PREPARE_EXIT" if prepare else "SHIP_TEST_PUBLISH_EXIT", "0"))
     print(json.dumps({"phase": phase, "status": "deferred" if code == 75 else "admitted",
                       "reason": "fresh_original_watermark" if code == 75 else None}))
     sys.exit(code)
@@ -143,7 +144,7 @@ elif "python3" in args and "-" in args:
                 result = self.run_ship(self.GUARDED, langs=langs)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 native = self.native_calls()
-                self.assertEqual(len(native), 2)
+                self.assertEqual(len(native), 3)
                 for call in native:
                     self.assertEqual(call[call.index("--campaign") + 1], root)
                     self.assertEqual(call[call.index("--prompt-version") + 1], version)
@@ -184,9 +185,10 @@ elif "python3" in args and "-" in args:
                 (self.root / "calls.jsonl").unlink(missing_ok=True)
                 result = self.run_ship([*self.GUARDED, *extra], langs="srp\n")
                 self.assertEqual(result.returncode, 0, result.stderr)
-                preflight, publish = self.native_calls()
+                preflight, prepare, publish = self.native_calls()
                 self.assertIn("--preflight", preflight)
                 self.assertNotIn("--submit-binary", preflight)
+                self.assertNotIn("--submit-binary", prepare)
                 self.assertEqual(publish[publish.index("--submit-binary") + 1] if expected else None, expected)
                 self.assertEqual(publish.count("--submit-binary"), 1 if expected else 0)
 
@@ -200,7 +202,7 @@ elif "python3" in args and "-" in args:
                 result = self.run_ship([*self.GUARDED, *extra], langs=langs)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 native = self.native_calls()
-                self.assertEqual(len(native), 2)
+                self.assertEqual(len(native), 3)
                 for call in native:
                     self.assertEqual(call.count("--bundle-size"), 1 if expected else 0)
                     if expected:
@@ -217,7 +219,7 @@ elif "python3" in args and "-" in args:
                 self.assertFalse((self.root / "calls.jsonl").exists())
 
     def test_page_records_reach_the_bundled_publication_only(self):
-        # #1435: the preflight never stages, so only the publishing call names the records.
+        # #1435: the preflight never stages, so only the staging and publishing calls name the records.
         pages = "/project/usnmocr/qwen/pages"
         for extra, langs, expected in ((["--qwen-bundle-size", "32", "--qwen-page-records", pages], "srp\n", pages),
                                        (["--qwen-bundle-size", "32", "--qwen-page-records", pages], "yid\n", None),
@@ -226,9 +228,10 @@ elif "python3" in args and "-" in args:
                 (self.root / "calls.jsonl").unlink(missing_ok=True)
                 result = self.run_ship([*self.GUARDED, *extra], langs=langs)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                preflight, publish = self.native_calls()
+                preflight, prepare, publish = self.native_calls()
                 self.assertNotIn("--page-records", preflight)
-                self.assertEqual(publish[publish.index("--page-records") + 1] if expected else None, expected)
+                for call in (prepare, publish):
+                    self.assertEqual(call[call.index("--page-records") + 1] if expected else None, expected)
         for extra in (["--qwen-page-records", pages], ["--qwen-bundle-size", "8", "--qwen-page-records", "pages"]):
             with self.subTest(extra=extra):
                 (self.root / "calls.jsonl").unlink(missing_ok=True)
@@ -252,11 +255,15 @@ elif "python3" in args and "-" in args:
             path = self.root / "calls.jsonl"
             return self.native_calls() if path.exists() else []
         drain = ship(["--qwen-bundle-size", "32", "--qwen-page-records", "/project/usnmocr/qwen/pages"], True)
-        self.assertEqual(len(drain), 1)
-        self.assertIn("--held-only", drain[0])
-        self.assertEqual(drain[0][drain[0].index("--campaign") + 1], "guard-v3")
-        self.assertEqual(drain[0][drain[0].index("--bundle-size") + 1], "32")
-        self.assertIn("--page-records", drain[0])
+        self.assertEqual(len(drain), 2)
+        self.assertEqual([c[c.index("--phase") + 1] for c in drain], ["prepare", "publish"])
+        self.assertNotIn("/run/usnm-boinc-step.lock", drain[0])
+        self.assertIn("/run/usnm-boinc-step.lock", drain[1])
+        for call in drain:
+            self.assertIn("--held-only", call)
+            self.assertEqual(call[call.index("--campaign") + 1], "guard-v3")
+            self.assertEqual(call[call.index("--bundle-size") + 1], "32")
+            self.assertIn("--page-records", call)
         # Nothing held, or no bundles: no call.
         self.assertEqual(ship(["--qwen-bundle-size", "32"], False), [])
         self.assertEqual(ship([], True), [])
@@ -455,6 +462,32 @@ sed -i.bak 1d {minutes}
         result = self.run_ship([])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((self.root / "outbox/test/c00001/READY").exists())
+
+    def test_native_staging_runs_outside_the_step_lock_and_publication_inside_it(self):
+        result = self.run_ship([])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        preflight, prepare, publish = self.native_calls()
+        self.assertIn("--preflight", preflight)
+        self.assertEqual(prepare[prepare.index("--phase") + 1], "prepare")
+        self.assertEqual(publish[publish.index("--phase") + 1], "publish")
+        self.assertNotIn("flock", prepare)
+        self.assertNotIn("/run/usnm-boinc-step.lock", prepare)
+        self.assertIn("flock", publish)
+        self.assertIn("/run/usnm-boinc-step.lock", publish)
+        for call in (prepare, publish):
+            self.assertEqual(call[call.index("--sample") + 1], "/project/quality/test/incoming/c00001/sample.jsonl")
+        self.assertLess(result.stderr.index("native staging, outside the step lock"),
+                        result.stderr.index("native submission waiting for normal project mutex"))
+
+    def test_a_deferred_staging_never_takes_the_step_lock(self):
+        self.env["SHIP_TEST_PREPARE_EXIT"] = "75"
+        result = self.run_ship([])
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertIn("native staging deferred; READY retained", result.stderr)
+        self.assertTrue((self.root / "outbox/test/c00001/READY").exists())
+        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+        self.assertFalse(any("/run/usnm-boinc-step.lock" in c for c in calls))
+        self.assertFalse(any("--max-units" in c or "--after-submit" in c for c in calls))
 
     def test_uncertainty_is_not_misclassified_as_normal_preflight_backpressure(self):
         self.env["SHIP_TEST_PREFLIGHT_EXIT"] = "1"

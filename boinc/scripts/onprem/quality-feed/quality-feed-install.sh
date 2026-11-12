@@ -80,6 +80,7 @@ scp -q "$HERE/quality_feed.py" "$HERE/scan_quarantine.py" "$HERE/quality_campaig
   "$HERE/quality-ship.sh" "$HERE/quality_receive.py" "$HERE/usnm-quality-ship.service" \
   "$HERE/quality_results.py" "$HERE/quality_results_partial.py" "$HERE/quality-results-pull.sh" \
   "$HERE/usnm-quality-results.service" "$HERE/usnm-quality-results.timer" \
+  "$HERE/usnm-quality-inventory.service" "$HERE/usnm-quality-inventory.timer" \
   "$HERE/usnm-quality-ship.timer" "$HERE/../../../../scripts/onprem/quality/load.py" \
   "$HERE/usnm-quality-agree-load.service" "$HERE/usnm-quality-agree-load.timer" \
   "$HERE/usnm-quality-refresh.service" "$HERE/usnm-quality-refresh.timer" \
@@ -150,13 +151,14 @@ install -m 0644 "$stage/quality_receive.py" /opt/usnm-quality-feed/quality_recei
 install -m 0644 "$stage/usnm-quality-ship.service" "$stage/usnm-quality-ship.timer" /etc/systemd/system/
 install -m 0755 "$stage/quality_results.py" "$stage/quality_results_partial.py" \
   "$stage/quality-results-pull.sh" /opt/usnm-quality-feed/
-install -m 0644 "$stage/usnm-quality-results.service" "$stage/usnm-quality-results.timer" /etc/systemd/system/
+install -m 0644 "$stage/usnm-quality-results.service" "$stage/usnm-quality-results.timer" \
+  "$stage/usnm-quality-inventory.service" "$stage/usnm-quality-inventory.timer" /etc/systemd/system/
 printf 'CTID=%s\n' "$ct" > /etc/usnm/quality-results.env
 printf 'CAMPAIGN=%s\nENGINE_IMAGE=%s\nMAX_UNSENT=%s\nMAX_CHUNKS=%s\nBUNDLE_SIZE=%s\n' \
   "$campaign" "$engine" "$unsent" "$chunks" "$bundle" > /etc/usnm/quality-ship.env
 systemctl daemon-reload
 if in_ct test -s /etc/usnm/quality-db/dsn; then
-  systemctl enable --now usnm-quality-results.timer
+  systemctl enable --now usnm-quality-results.timer usnm-quality-inventory.timer
 fi
 rm -rf "$stage"
 if [ "$follow" = true ]; then

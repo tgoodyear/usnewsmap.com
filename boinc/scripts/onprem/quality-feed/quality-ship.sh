@@ -334,6 +334,20 @@ while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
   if [ -n "$QWEN_PLAN" ]; then
     # Native admission, shared models, scientific identities and DB quorum are checked
     # before cleanup; failures leave the original READY chunk and receipts intact.
+    # Admission, staging and the shared models' checksums need no step lock, so they run first
+    # (phase prepare); the lock covers only admission again and create_work (phase publish).
+    log "$chunk: native staging, outside the step lock"
+    if in_ct podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
+      --campaign "$target" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
+      --sample "$sample" --max-pages "$n" --max-ready "$QWEN_MAX_READY" --prompt-version "$version" \
+      ${bundle:+--bundle-size "$bundle"} ${bundle:+${PAGE_RECORDS:+--page-records "$PAGE_RECORDS"}} \
+      --phase prepare; then
+      :
+    else
+      rc=$?
+      [ "$rc" -ne 75 ] || log "$chunk: native staging deferred; READY retained; no acknowledgement"
+      exit "$rc"
+    fi
     wait_for_step_window
     log "$chunk: native submission waiting for normal project mutex"
     if in_ct flock -w "$LOCK_WAIT" -E 75 /run/usnm-boinc-step.lock sh -c \
@@ -342,7 +356,7 @@ while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
       --campaign "$target" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
       --sample "$sample" --max-pages "$n" --max-ready "$QWEN_MAX_READY" --prompt-version "$version" \
       ${bundle:+--bundle-size "$bundle"} ${bundle:+${PAGE_RECORDS:+--page-records "$PAGE_RECORDS"}} \
-      ${SUBMIT_BINARY:+--submit-binary "$SUBMIT_BINARY"}; then
+      ${SUBMIT_BINARY:+--submit-binary "$SUBMIT_BINARY"} --phase publish; then
       :
     else
       rc=$?
@@ -386,13 +400,22 @@ in_window() {
 if [ "$WHAT_IF" = false ] && [ -n "$QWEN_PLAN" ] && [ -n "$QWEN_BUNDLE" ] && [ "$shipped" -eq 0 ] && in_window &&
   in_ct sh -c 'for d in "$1"/units/*/; do [ -e "$d/qwen.json" ] && [ ! -e "$d/submitted" ] && exit 0; done
     ls "$1"/pages/*/held >/dev/null 2>&1' sh "/srv/usnm-boinc/project/qwen/$QWEN_ROOT"; then
+  held_args=(--campaign "$QWEN_ROOT" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS"
+    --max-pages 1 --max-ready "$QWEN_MAX_READY" --prompt-version "$PROMPT"
+    --bundle-size "$QWEN_BUNDLE" ${PAGE_RECORDS:+--page-records "$PAGE_RECORDS"}
+    ${SUBMIT_BINARY:+--submit-binary "$SUBMIT_BINARY"} --held-only)
+  if in_ct podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
+    "${held_args[@]}" --phase prepare; then
+    :
+  else
+    rc=$?
+    [ "$rc" -ne 75 ] || log "held pages: staging deferred"
+    exit "$rc"
+  fi
   wait_for_step_window
   if in_ct flock -w "$LOCK_WAIT" -E 75 /run/usnm-boinc-step.lock \
     podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
-    --campaign "$QWEN_ROOT" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
-    --max-pages 1 --max-ready "$QWEN_MAX_READY" --prompt-version "$PROMPT" \
-    --bundle-size "$QWEN_BUNDLE" ${PAGE_RECORDS:+--page-records "$PAGE_RECORDS"} \
-    ${SUBMIT_BINARY:+--submit-binary "$SUBMIT_BINARY"} --held-only; then
+    "${held_args[@]}" --phase publish; then
     :
   else
     rc=$?

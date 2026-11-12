@@ -112,6 +112,14 @@ pub enum QwenCommands {
         target: crate::qwen::submit::Target,
         #[arg(long)]
         model_dir: Option<PathBuf>,
+        /// Stage and verify the shared model files against weights.lock, submit nothing, and exit.
+        /// It takes no step lock; run it before the submission that does.
+        #[arg(long, conflicts_with = "models_prechecked")]
+        models_only: bool,
+        /// The model files were verified by an earlier `--models-only` run: accept a staged file of
+        /// its source's size instead of hashing several GiB again, and fail on one that is missing.
+        #[arg(long)]
+        models_prechecked: bool,
     },
     /// Write a unit from a local page and ALTO, to check a host or the image without LoC or BOINC.
     /// Inside the worker image the engine values default to the image's own.
@@ -331,18 +339,27 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             max_units,
             target,
             model_dir,
+            models_only,
+            models_prechecked,
         } => {
-            let s = x::submit::run_selected(
-                &x::submit::Options {
-                    root,
-                    project,
-                    max_units,
-                    target,
-                    model_dir,
+            let opts = x::submit::Options {
+                root,
+                project,
+                max_units,
+                target,
+                model_dir,
+                models: if models_prechecked {
+                    x::submit::Models::Prechecked
+                } else {
+                    x::submit::Models::Verify
                 },
-                members.as_deref(),
-            )
-            .await?;
+            };
+            if models_only {
+                x::submit::stage_shared_models(&opts).await?;
+                eprintln!("models staged");
+                return Ok(());
+            }
+            let s = x::submit::run_selected(&opts, members.as_deref()).await?;
             eprintln!("{s:?}");
         }
         QwenCommands::LocalUnit {

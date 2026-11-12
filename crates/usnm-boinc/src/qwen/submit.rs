@@ -153,6 +153,21 @@ pub struct Options {
     pub max_units: usize,
     pub target: Target,
     pub model_dir: Option<PathBuf>,
+    /// Whether the shared model files are read again here (see [`Models`]).
+    pub models: Models,
+}
+
+/// What a submission does about the shared model files in the download hierarchy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Models {
+    /// Stage them, and hash a file that is already there against `weights.lock`: several GiB read
+    /// every run.
+    #[default]
+    Verify,
+    /// An earlier [`stage_shared_models`] run verified them, so a file already there with its
+    /// source's size will do and none is hashed. Anything missing or of another size is an error,
+    /// never a copy: a submission that holds the bridge step lock must not spend minutes on it.
+    Prechecked,
 }
 
 #[derive(Debug, Default)]
@@ -331,6 +346,7 @@ async fn stage_shared_model_streaming(
     physical: &str,
     src: &Path,
     expected_sha256: &str,
+    models: Models,
 ) -> anyhow::Result<()> {
     let output = Command::new(project.join("bin/dir_hier_path"))
         .arg(physical)
@@ -346,6 +362,16 @@ async fn stage_shared_model_streaming(
     } else {
         project.join(rel_or_abs)
     };
+    if models == Models::Prechecked {
+        let source_len = std::fs::metadata(src).ok().map(|m| m.len());
+        ensure!(
+            dst.is_file()
+                && source_len.is_none_or(|len| std::fs::metadata(&dst).is_ok_and(|m| m.len() == len)),
+            "{} is not staged with its source's size; stage the models first (`qwen submit --models-only`)",
+            dst.display()
+        );
+        return Ok(());
+    }
     if dst.is_file() && sha256_file_streaming(&dst).is_ok_and(|d| d == expected_sha256) {
         return Ok(());
     }
@@ -412,6 +438,7 @@ async fn stage_shared_models_with_lock(
     model_dir: Option<&Path>,
     target: Target,
     weights_lock_text: &str,
+    models: Models,
 ) -> anyhow::Result<()> {
     if matches!(target, Target::Container | Target::Container8b) {
         return Ok(());
@@ -424,7 +451,7 @@ async fn stage_shared_models_with_lock(
             .with_context(|| format!("missing {file} in weights.lock"))?;
         let physical = model_physical_name(file, expected);
         let path = dir.join(file);
-        stage_shared_model_streaming(project, &physical, &path, expected).await?;
+        stage_shared_model_streaming(project, &physical, &path, expected, models).await?;
     }
     Ok(())
 }
@@ -450,6 +477,21 @@ pub fn benchmark_work_args_for_target(job: &Job, target: Target) -> anyhow::Resu
 
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
     run_with_lock(opts, EMBEDDED_WEIGHTS_LOCK).await
+}
+
+/// Stages and verifies the target's shared model files and submits nothing. It needs no step
+/// lock: files are published whole and named by their digests. A later submission with
+/// [`Models::Prechecked`] then reads none of them.
+pub async fn stage_shared_models(opts: &Options) -> anyhow::Result<()> {
+    let project = opts.project.canonicalize()?;
+    stage_shared_models_with_lock(
+        &project,
+        opts.model_dir.as_deref(),
+        opts.target,
+        EMBEDDED_WEIGHTS_LOCK,
+        Models::Verify,
+    )
+    .await
 }
 
 pub async fn run_with_lock(opts: &Options, weights_lock_text: &str) -> anyhow::Result<Summary> {
@@ -526,6 +568,7 @@ async fn run_selected_with_lock(
                 opts.model_dir.as_deref(),
                 opts.target,
                 weights_lock_text,
+                opts.models,
             )
             .await?;
             models_staged = true;
@@ -608,6 +651,7 @@ mod tests {
             max_units: 1,
             target: Target::Container,
             model_dir: None,
+            models: Models::Verify,
         };
         assert_eq!(
             run_selected(&opts, Some(&members)).await.unwrap().submitted,
@@ -927,6 +971,7 @@ mod tests {
             Some(&model_dir),
             Target::Native8b,
             EMBEDDED_WEIGHTS_LOCK,
+            Models::Verify,
         )
         .await
         .unwrap_err();
@@ -943,9 +988,15 @@ mod tests {
              Qwen3-VL-2B-Instruct-Q8_0.gguf https://example.invalid/2b.gguf {sha_2b}\n\
              mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf https://example.invalid/2b.mmproj {sha_2b_mm}\n",
         );
-        stage_shared_models_with_lock(&project, Some(&model_dir), Target::Native8b, &lock)
-            .await
-            .unwrap();
+        stage_shared_models_with_lock(
+            &project,
+            Some(&model_dir),
+            Target::Native8b,
+            &lock,
+            Models::Verify,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             std::fs::read(download_dir.join(model_physical_name(
                 "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
@@ -963,9 +1014,15 @@ mod tests {
             mmproj_8b
         );
 
-        stage_shared_models_with_lock(&project, Some(&model_dir), Target::Native2b, &lock)
-            .await
-            .unwrap();
+        stage_shared_models_with_lock(
+            &project,
+            Some(&model_dir),
+            Target::Native2b,
+            &lock,
+            Models::Verify,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             std::fs::read(download_dir.join(model_physical_name(
                 "Qwen3-VL-2B-Instruct-Q8_0.gguf",
@@ -983,11 +1040,63 @@ mod tests {
             mmproj_2b
         );
 
+        // A submission after a verifying run needs no hashing: a staged file of the source's size
+        // will do, and a missing or truncated one is an error rather than a copy.
+        stage_shared_models_with_lock(
+            &project,
+            Some(&model_dir),
+            Target::Native2b,
+            &lock,
+            Models::Prechecked,
+        )
+        .await
+        .unwrap();
+        let staged = download_dir.join(model_physical_name(
+            "Qwen3-VL-2B-Instruct-Q8_0.gguf",
+            &sha_2b,
+        ));
+        std::fs::write(&staged, &gguf_2b[..gguf_2b.len() - 1]).unwrap();
+        let err = stage_shared_models_with_lock(
+            &project,
+            Some(&model_dir),
+            Target::Native2b,
+            &lock,
+            Models::Prechecked,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("--models-only"));
+        std::fs::remove_file(&staged).unwrap();
+        assert!(stage_shared_models_with_lock(
+            &project,
+            Some(&model_dir),
+            Target::Native2b,
+            &lock,
+            Models::Prechecked
+        )
+        .await
+        .is_err());
+        stage_shared_models_with_lock(
+            &project,
+            Some(&model_dir),
+            Target::Native2b,
+            &lock,
+            Models::Verify,
+        )
+        .await
+        .unwrap();
+
         // Existing verified downloads are reused in place without reading/copying from model_dir.
         std::fs::remove_dir_all(&model_dir).unwrap();
-        stage_shared_models_with_lock(&project, Some(&model_dir), Target::Native2b, &lock)
-            .await
-            .unwrap();
+        stage_shared_models_with_lock(
+            &project,
+            Some(&model_dir),
+            Target::Native2b,
+            &lock,
+            Models::Verify,
+        )
+        .await
+        .unwrap();
 
         // When no work is pending (empty units directory or max_units == 0), run_with_lock
         // does not stage models at all.
@@ -1000,6 +1109,7 @@ mod tests {
                 max_units: 10,
                 target: Target::Native8b,
                 model_dir: Some(tmp.path().join("nonexistent-models")),
+                models: Models::Verify,
             },
             &lock,
         )

@@ -445,7 +445,8 @@ def host_pass(args):
         remote += ["--qwen-campaign", args.qwen_campaign]
     frontier = getattr(args, "completion_frontier", False)
     if frontier:
-        host_refresh_inventory(args)
+        if not getattr(args, "no_inline_inventory", False):
+            host_refresh_inventory(args)
         remote += ["--completion-frontier"]
         if state.get("frontier_ack"):
             remote += ["--frontier-ack", json.dumps(state["frontier_ack"], separators=(",", ":"))]
@@ -547,6 +548,14 @@ def main(argv=None):
     mode.add_argument("--remote", action="store_true")
     mode.add_argument("--load", action="store_true")
     mode.add_argument("--remote-inventory", action="store_true", help=argparse.SUPPRESS)
+    mode.add_argument("--refresh-inventory-only", action="store_true",
+                      help="host side: refresh the full scheduling inventory when it is due, under its own lock "
+                           "(usnm-quality-inventory.service), and load nothing")
+    parser.add_argument("--no-inline-inventory", action="store_true",
+                        help="a loading run never refreshes the inventory itself: its own service does, so the "
+                             "refresh's 13 minutes or more neither stop loading nor hold the host lock")
+    parser.add_argument("--inventory-lock", type=Path, default=None,
+                        help="host lock of --refresh-inventory-only (default /run/usnm-quality-inventory-CAMPAIGN.lock)")
     parser.add_argument("--campaign", required=True)
     parser.add_argument("--engine-image")
     parser.add_argument("--qwen-campaign")
@@ -582,7 +591,7 @@ def main(argv=None):
             or ".." in Path(args.collector).parts
             or (args.snapshot and not SNAPSHOT.fullmatch(args.snapshot))
             or ((args.remote or args.load) and not args.snapshot)
-            or (not (args.remote or args.remote_inventory)
+            or (not (args.remote or args.remote_inventory or args.refresh_inventory_only)
                 and not re.fullmatch(r"sha256:[a-f0-9]{64}", args.engine_image or ""))
             or not 60 <= args.inventory_budget_secs <= 7200
             or args.inventory_refresh_secs < 60
@@ -593,6 +602,15 @@ def main(argv=None):
     os.umask(0o077)
     if args.remote_inventory:
         report = refresh_inventory(args)
+    elif args.refresh_inventory_only:
+        lock_path = args.inventory_lock or Path(f"/run/usnm-quality-inventory-{args.campaign}.lock")
+        with lock_path.open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print(json.dumps({"phase": "inventory_lock_busy", "exit": 75}), file=sys.stderr, flush=True)
+                raise SystemExit(75) from None
+            report = host_refresh_inventory(args) or {"campaign": args.campaign, "phase": "inventory_not_due"}
     elif args.remote:
         report = scoped_collect(args)
     elif args.load:
