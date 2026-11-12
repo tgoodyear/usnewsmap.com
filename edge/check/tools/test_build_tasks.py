@@ -140,6 +140,31 @@ class Build(unittest.TestCase):
             lang = json.load(open(os.path.join(out, "language.json"), encoding="utf-8"))
             self.assertEqual(lang, {"name": "Yiddish", "dir": "rtl", "examples": {}, "equivalents": {"װ": "וו"}})
 
+    def test_line_sources_and_examples(self):
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow not installed")
+        with tempfile.TemporaryDirectory() as d:
+            Image.new("L", (200, 40), 255).save(os.path.join(d, "l1.png"))
+            line = {"id": "p1_l1", "image": "l1.png", "page": "sn1/1828-03-06/ed-1/seq-3", "a": "ᎠᎴ ᎣᏂᏃ",
+                    "a_words": [{"text": "ᎠᎴ", "box": [150, 5, 40, 30]}, {"text": "ᎣᏂᏃ", "box": [60, 5, 80, 30]}],
+                    "b": "ᎠᎴ ᎣᏂᏗ", "a_is": "ocr", "b_is": "word_list"}
+            for name, body in (("lines.jsonl", json.dumps(line, ensure_ascii=False) + "\n"), ("cfg.json", json.dumps({"name": "Cherokee"})),
+                               ("ex.json", json.dumps({"Ꭰ": ["chr/x/examples/13a0_0.png"]}, ensure_ascii=False))):
+                with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+                    f.write(body)
+            out = os.path.join(d, "out")
+            subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "build_tasks.py"), "--lines", os.path.join(d, "lines.jsonl"),
+                            "--images", d, "--lang", "chr-rare", "--set", "t1", "--a-is", "loc", "--b-is", "chr_phoenix",
+                            "--language-config", os.path.join(d, "cfg.json"), "--examples", os.path.join(d, "ex.json"), "--out-dir", out],
+                           check=True, capture_output=True)
+            with open(os.path.join(out, "tasks.jsonl"), encoding="utf-8") as f:
+                (t,) = [json.loads(x) for x in f]
+            self.assertEqual((t["id"], t["a_is"], t["b_is"]), ("chr-rare/t1/p1_l1~1", "ocr", "word_list"))
+            with open(os.path.join(out, "language.json"), encoding="utf-8") as f:
+                self.assertEqual(json.load(f), {"name": "Cherokee", "examples": {"Ꭰ": ["chr/x/examples/13a0_0.png"]}})
+
 
 if __name__ == "__main__":
     unittest.main()

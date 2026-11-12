@@ -25,6 +25,9 @@ docs/reports/**/*.json
 docs/reports/**/*.jsonl
 # The line jobs' page list (#1621), a small inventory the runbook reads.
 !docs/reports/2026-11-cherokee/phoenix-pages.jsonl
+# The lines and word boxes loaded on check.usnewsmap.com's Phoenix sets, which the scorer and `usnm-glyphs add-checked` read.
+!docs/reports/2026-11-cherokee/check-lines-manifest.jsonl
+!docs/reports/2026-11-cherokee/check-glyph-index.jsonl
 docs/reports/**/*.parquet
 docs/reports/**/*.txt
 docs/reports/**/*.gz

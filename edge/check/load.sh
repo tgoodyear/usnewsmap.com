@@ -22,7 +22,7 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$VAULT" ] && [ -n "$HOST" ] && [ -n "$DIR" ] && [[ "$LANG_CODE" =~ ^[a-z]{2,3}$ ]] || { echo "usage: $0 --vault NAME --host USER@HOST --dir DIR --lang CODE [--seed FILE]" >&2; exit 2; }
+[ -n "$VAULT" ] && [ -n "$HOST" ] && [ -n "$DIR" ] && [[ "$LANG_CODE" =~ ^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$ ]] || { echo "usage: $0 --vault NAME --host USER@HOST --dir DIR --lang CODE [--seed FILE]" >&2; exit 2; }
 
 TOKEN=$(az keyvault secret show --vault-name "$VAULT" -n usnm-prod-check-admin-token --query value -o tsv)
 [ -n "$TOKEN" ] || { echo "no admin token in $VAULT" >&2; exit 1; }

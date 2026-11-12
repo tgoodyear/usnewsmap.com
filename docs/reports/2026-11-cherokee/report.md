@@ -226,6 +226,13 @@ The GHN-only pages have no layout. Find text lines with a layout model, classify
 - **Test-set pages.** 29 of the 190 pages are test-set pages (13 in export 2, 10 in export 3, 6 in export 4). The production run read them as approved, so their numbers are production output. The model's training lines were cut from the other 161. None of this measures how well the model reads unseen pages; step 3's test does that.
 - **Search.** `collect` publishes each accepted page to the OCR output (`ocr-out`); the 190 parts have not been listed to confirm it. The pages reach search at the next full rebuild. Whether they wait for the planned one or get one of their own is open.
 
+**Check tasks for the re-read, 12 November ([#1620](https://github.com/tgoodyear/usnewsmap.com/issues/1620)).** The 70 fully checked lines are too few to measure the model against LoC (95% page bootstrap −4.9 to +1.9 points). The first check took about 12 answers per resolved line (833 answers, 70 lines). check.usnewsmap.com now has two new Cherokee pages built from the production readings. Both leave the first Cherokee set and its 833 answers as they were.
+
+- **[Disputed lines](https://check.usnewsmap.com/chr-lines)**, 680 tasks, one per line: lines where `chr_phoenix` and LoC differ in exactly one word, on the 29 test-set pages only (312 news lines, 368 lines that reprint the New Testament). A line is resolved once that word settles on one of the two readings, which needs at least three answers with two thirds agreeing. The target is 300 fully resolved held-out lines. With the first hand check's rate of "neither" answers (179 of 575 words), the 680 lines should give more than 400. [`scripts/chr_disputes_score.py`](scripts/chr_disputes_score.py) reads the site's export and [`check-lines-manifest.jsonl`](check-lines-manifest.jsonl) and reports lines resolved against 300, answers per resolved line, and each reading's letter error against the checked text, with their difference and page-bootstrap intervals. The checked text is LoC's line with the disputed word settled, so errors both readings share are not seen.
+- **[Rare letters](https://check.usnewsmap.com/chr-rare)**, 367 tasks, on pages outside the test set: 247 words for the letters the glyph bank has none or almost none of (Ꮊ 15, Ꮌ 32, Ꮚ 40, Ꮛ 40, Ꮬ 40, Ꮯ 39, Ꮾ 41; no candidate word for Ꮍ), and 120 words for the Ꮐ-for-Ꮎ question (words the New Testament spells with a first-letter Ꮎ, such as ᎾᏍᎩ, with Ꮎ against Ꮐ). The page's notes describe the type specimens' shapes in words and don't reproduce the plates. `usnm-glyphs add-checked` turns the settled words into labelled glyphs for the next training round, never from a test-set page.
+
+The selection, the build commands and the glyph step are in [`edge/check/README.md`](../../../edge/check/README.md#the-phoenix-re-read-sets-1620-1621).
+
 **Machine admission.** Each machine ran gold units on the model's worker image (`840487b2…`) and was admitted when its English gold reports passed, under a line-job trust scope of its own (#1753): `chr/chr_phoenix`, with the same `max_cer` (0.0873) as English. Only that entry of `gold/trust.json` changed, checked against a backup each time, and English trust stayed byte for byte as it was.
 
 - One of our machines passed with 20 of 20 gold units, each at 0.0716 character error. It ran the test batch and exports 2 and 3 alone.
@@ -263,6 +270,7 @@ python3 $S/chr_letter_pairs.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar d
 python3 $S/chr_dict_compare.py --out-dir $D/dict-compare/out --refs $D/eval/nt-reference/nt-engine-sample/refs --wordlists ocr/ja-ocr/wordlists --baseline A_stock
 python3 $S/chr_checked_score.py --answers $D/hand-check/glyph-check-answers.jsonl --engine loc=$D/hand-check/loc.jsonl --engine stock=$D/testset-v2/baselines/tesseract-chr-stock.jsonl --out checked-v1.json
 python3 scripts/ocr-survey/cherokee_testset.py score --lines $D/testset-v2/crops/lines.jsonl --pred loc --pred chr_phoenix=$D/readings/phoenix-round2-psm13.jsonl --tier silver
+python3 $S/chr_disputes_score.py --export check-chr-lines.jsonl --manifest docs/reports/2026-11-cherokee/check-lines-manifest.jsonl --target 300
 python3 $S/chr_ocr_variant_recall.py --tar dlc_misctopsn83020866_ver03.tar.bz2 --tar dlc_misctopsn83020874_ver02.tar.bz2 --wordlists ocr/ja-ocr/wordlists
 ```
 

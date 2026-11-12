@@ -17,6 +17,7 @@ Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language, Yiddish (Ne
 | `tools/yiddish_lines.py`      | Makes `build_tasks.py`'s input for Yiddish: LoC's ALTO against our `yidj2` model.   |
 | `tools/serbian_lines.py`      | Makes `build_tasks.py`'s input for Serbian: LoC's ALTO against our held BOINC ALTO. |
 | `tools/from_tap_data.py`      | Turns a glyph-check data file (Cherokee) into tasks, clips and a configuration.     |
+| `tools/phoenix_lines.py`      | Picks Cherokee lines from LoC's ALTO and our production re-read for `build_tasks.py`. |
 | `languages/<code>.json`       | A language's name, intro, writing direction and letter notes, plus build options.   |
 | `load.sh`, `set-secrets.sh`   | Loading data and setting secrets, run by hand.                                      |
 
@@ -91,6 +92,50 @@ podman run --rm -v "$PWD:/work" usnm-check-tools python3 tools/build_tasks.py --
 ```
 
 The first set (8 November 2026) is 140 pages, 20 per decade, up to 4 lines each: 488 lines and 939 words.
+
+## The Phoenix re-read sets (#1620, #1621)
+
+The 190 _Phoenix_ pages that `chr_phoenix` re-read in production have two readings of every Cherokee line: LoC's and ours. Two more Cherokee languages hold tasks made from them. Each has its own queue and page, and the first Cherokee set (`chr`, its tasks and answers) is untouched.
+
+| Language, page       | Set           | Tasks | What                                                                                                                                                |
+| -------------------- | ------------- | ----: | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `chr-lines` (`/chr-lines`) | `disputes-v1` |   680 | The one word where the two readings differ, on lines that differ in that word only. The 29 pages of test set v2 only: 312 news lines and 368 lines that reprint the New Testament. |
+| `chr-rare` (`/chr-rare`)   | `rare-v1`     |   247 | Words with a letter the glyph bank has few or no samples of, on pages outside the test set. Tasks per letter: Ꮊ 15, Ꮌ 32, Ꮚ 40, Ꮛ 40, Ꮬ 40, Ꮯ 39, Ꮾ 41. Ꮍ has no candidate word. |
+| `chr-rare`           | `nah-v1`      |   120 | A word's first letter: the New Testament spelling with Ꮎ against the same word with Ꮐ, on pages outside the test set.                             |
+
+**Disputes.** `phoenix_lines.py disputes` pairs each line of LoC's ALTO with the re-read's line at the same position (the re-read numbers its lines afresh, but keeps LoC's line boxes) and keeps lines where both readings have the same number of syllabary words, at least three, and exactly one word differs. A pair is left out when both words are one or two letters with none in common, when they are less than half alike, or when they differ only in a word-initial G-shaped letter (that is the Ꮐ question below). A line with one disputed word is fully resolved when that word settles on one of the two readings, which takes three answers at best. A line with two disputed words needs six. About a third of the first hand check's disputed words ended in "neither", which leaves the line open, so only one-word lines are loaded. News lines are the ones the test set did not align to the New Testament. Lines with more than one differing word are not loaded.
+
+**Rare letters.** `phoenix_lines.py rare` takes words from the 161 pages outside the test set, since the glyph bank never takes a test-set page. A word is a candidate in one of three cases. In `ours-loc`, the readings differ and one of them has the letter. In `agree`, both readings have the letter, and the second reading swaps it for a letter the readings trade it with elsewhere (a swap that gives a New Testament form is preferred). In `word-list`, LoC's word is not a New Testament form, OCR reads it rarely, and putting the letter in makes a New Testament form. Candidates are dealt round-robin over pages, at most two a page and 40 a letter. `phoenix_lines.py nah` takes words whose first letter OCR reads as Ꮎ or one of the G-shaped letters Ꮹ, Ꮳ, Ᏻ, Ꮐ, where the New Testament spells the word with Ꮎ and not Ꮐ (ᎾᏍᎩ read ᏩᏍᎩ): reading a has Ꮎ, reading b has Ꮐ. The language's notes describe the type specimens' shapes in words; the specimen plates themselves are not reproduced.
+
+```sh
+D=/scratch/usnm-chr/check-tasks   # on the build host: prod-alto/ holds the 190 re-read ALTO files
+for m in disputes rare nah; do
+  podman run --rm --user $(id -u usnm):$(id -g usnm) -v /scratch/usnm-chr:/chr:ro -v $D:/work usnm-check-tools python3 -I /work/phoenix_lines.py $m \
+    --prod-alto /work/prod-alto --loc-alto /chr/bank/loc --scans /chr/bank/images --pages /work/pages.jsonl \
+    --test-lines /chr/testset/crops/lines.jsonl --wordlist /work/chr-attested.txt --out-dir /work/out
+done   # rare takes --per-letter 40 --per-page 2, nah --per-letter 120 --per-page 3
+python3 tools/build_tasks.py --lines out/disputes/lines.jsonl --images out/disputes --lang chr-lines --set disputes-v1 --a-is loc --b-is chr_phoenix \
+  --language-config languages/chr-lines.json --examples examples.json --out-dir out/chr-lines-disputes-v1
+```
+
+`examples.json` holds the letter pictures `/api/languages/chr` already serves (the `chr-rare` copy keeps one of Ꮎ's three, the θ-shaped one, so the pictures don't say what the first letter should look like). Load each set from the operator's machine as [below](#loading-a-language), with `--lang chr-lines` or `--lang chr-rare`. `phoenix_lines.py` also writes `manifest.jsonl` (every word of both readings of each loaded line) and, for `rare` and `nah`, `glyph-index.jsonl` (each word's box on the scan); the report's directory keeps copies as `check-lines-manifest.jsonl` and `check-glyph-index.jsonl`.
+
+**Scoring.** `docs/reports/2026-11-cherokee/scripts/chr_disputes_score.py` recomputes the held-out score as answers arrive:
+
+```sh
+curl -s 'https://check.usnewsmap.com/api/export?lang=chr-lines' > check-chr-lines.jsonl
+python3 docs/reports/2026-11-cherokee/scripts/chr_disputes_score.py --export check-chr-lines.jsonl \
+  --manifest docs/reports/2026-11-cherokee/check-lines-manifest.jsonl --target 300
+```
+
+Its `progress` block counts lines fully resolved against the target of 300, the lines that settled without a winner or are still waiting, answers per resolved line, and how many resolved lines the loaded ones are expected to give. `score` gives each reading's letter error against the checked text and their difference with page-bootstrap intervals; the checked text is LoC's line with the disputed word replaced by the settled reading, so errors both readings share are not seen.
+
+**Glyph bank.** `usnm-glyphs add-checked` turns the settled `chr-rare` words into labelled glyphs for the next training round. It cuts each word that checkers settled on reading `a` or `b` from its scan, splits it into one glyph per letter of that reading, and writes a new bank beside the old one. It never takes a glyph from a test-set page (`--exclude-manifest`). Rows from it carry `how: "checked"`, and `clean` keeps them whatever their neighbours say.
+
+```sh
+usnm-glyphs add-checked --bank bank --out bank-checked --export check-chr-rare.jsonl \
+  --index check-glyph-index.jsonl --images images --exclude-manifest testset/v2/manifest.json
+```
 
 ## Loading a language
 
