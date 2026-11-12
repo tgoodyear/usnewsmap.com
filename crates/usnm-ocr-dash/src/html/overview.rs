@@ -63,6 +63,28 @@ fn stage(v: &View, id: &str) -> Option<u64> {
     summary_stage(v, id).and_then(|s| s.count)
 }
 
+/// The data-flow catalog's window for its total stages, in hours: 14 days
+/// (`LIVE_WINDOW_HOURS` in `scripts/corpus/data_catalog.py`).
+const FORTNIGHT_HOURS: u64 = 336;
+
+/// A total stage's 14-day count, if the catalog had every hour of the window.
+/// The stage's detail says `Last 336 hours, N reported.`; with fewer than all
+/// reported the count is an undercount, so it isn't shown as 14 days.
+fn fortnight(v: &View, id: &str) -> Option<u64> {
+    let s = summary_stage(v, id)?;
+    let (window, reported) = reported_hours(&s.detail)?;
+    (window == FORTNIGHT_HOURS && reported == window)
+        .then_some(s.count)
+        .flatten()
+}
+
+/// `(336, 330)` from `Last 336 hours, 330 reported. ...`.
+fn reported_hours(detail: &str) -> Option<(u64, u64)> {
+    let (window, rest) = detail.strip_prefix("Last ")?.split_once(" hours, ")?;
+    let (reported, _) = rest.split_once(" reported.")?;
+    Some((window.parse().ok()?, reported.parse().ok()?))
+}
+
 fn count_or(n: Option<u64>) -> String {
     n.map_or_else(|| "not known".to_owned(), int)
 }
@@ -74,14 +96,6 @@ fn pct(part: u64, whole: u64) -> String {
     } else {
         format!("{p:.2}%")
     }
-}
-
-/// A step's count over the last 7 days, if every hour of it was observed.
-fn week(v: &View, id: &str) -> Option<u64> {
-    let w = step(v, id)?.detail.last_week;
-    (w.hours_known as i64 == crate::throughput::CHART_HOURS)
-        .then_some(w.value?)
-        .map(|n| n.round() as u64)
 }
 
 fn step<'a>(v: &'a View, id: &str) -> Option<&'a StepRate> {
@@ -510,18 +524,20 @@ fn join(parts: &[String]) -> String {
 
 fn results(v: &View, o: &mut String) {
     open(o, "results", "Results");
-    // The import log's own count (`ocr-sync`, one line per committed import),
-    // the same hourly counts as the throughput section, so the two agree. The
-    // collect step isn't shown: it adds up the controller's finished ticks and
-    // runs below what is imported (`docs/operations/onprem-ocr.md`).
-    let imported = week(v, "ocr_import");
+    // The data-flow snapshot's 14-day totals: the catalog adds up the same
+    // hourly counts as the throughput section, whole hours, and refreshes
+    // them hourly. A total the snapshot doesn't carry fresh, or has not every
+    // hour of, reads "not known". The collect step isn't shown: it adds up
+    // the controller's finished ticks and runs below what is imported
+    // (`docs/operations/onprem-ocr.md`).
+    let imported = fortnight(v, "imported");
     let searchable = stage(v, "indexed");
-    let scored = week(v, "quality_load");
+    let scored = fortnight(v, "quality_loaded");
     o.push_str("<ol class=\"flow\">");
     for (n, label) in [
         (
             imported,
-            "OCR pages imported into our text collection, last 7 days",
+            "OCR pages imported into our text collection, last 14 days",
         ),
         (searchable, "pages where search uses our OCR text, so far"),
     ] {
@@ -538,8 +554,10 @@ fn results(v: &View, o: &mut String) {
         "<p>Volunteers' OCR comes back to our server, where each page is checked before it is imported. \
          The second number is a running total, so it also counts pages imported earlier. An automatic \
          check scores our text for each page against the Library's. Search uses ours when it scores \
-         clearly better, so not every imported page is used. In the same 7 days the quality checks \
-         scored {} pages; the scores let us rank pages for OCR by how poor the Library's text is.</p>",
+         clearly better, so not every imported page is used. In the same 14 days the two kinds of \
+         quality check, comparing texts and the AI vision model, loaded results for {} pages between \
+         them (a page both read counts twice); the scores let us rank pages for OCR by how poor the \
+         Library's text is.</p>",
         count_or(scored)
     );
     o.push_str("</section>");
@@ -799,47 +817,125 @@ mod tests {
         assert!(o.contains("viewBox=\"0 0 360 ") && o.contains("viewBox=\"0 0 1040 "));
     }
 
-    #[test]
-    fn results_count_imports_and_say_why_the_two_numbers_differ() {
+    /// A view whose snapshot carries the catalog's 14-day total stages, each
+    /// as the catalog words it, with `reported` of the 336 hours.
+    fn view_with_totals(reported: u64) -> View {
         let mut v = super::super::tests::summary_view();
-        let hours = crate::throughput::CHART_HOURS as u32;
-        v.throughput.steps = vec![
-            StepRate {
-                id: "ocr_import",
-                detail: crate::throughput::StepDetail {
-                    last_week: Counted {
-                        value: Some(7265.0),
-                        hours_known: hours,
-                    },
-                    ..Default::default()
-                },
-                ..StepRate::default()
-            },
+        let detail = |text: &str| format!("Last 336 hours, {reported} reported. {text}");
+        let mut source = crate::pipeline::tests::fixture(v.generated_at);
+        source["stages"] = serde_json::json!([
+            {"id":"imported","label":"OCR pages in committed imports, last 14 days","count":14015,
+             "state":"observed","detail":detail("From ocr-sync's log."),"max_age_secs":10800},
             // The tick-based count runs below the import's and isn't shown.
-            StepRate {
-                id: "ocr_collect",
-                detail: crate::throughput::StepDetail {
-                    last_week: Counted {
-                        value: Some(2706.0),
-                        hours_known: hours,
-                    },
-                    ..Default::default()
+            {"id":"collected","label":"OCR pages collected through hand-off checks, last 14 days","count":9374,
+             "state":"observed","detail":detail("Jobs the hand-off marked published."),"max_age_secs":10800},
+            {"id":"quality_loaded","label":"Quality and Qwen pages loaded, last 14 days","count":553466,
+             "state":"observed","detail":detail("Pages of finished units loaded."),"max_age_secs":10800},
+            {"id":"indexed","label":"Indexed","count":21290,"state":"observed",
+             "detail":"Serving index pages: pages whose searchable text is our OCR."}
+        ]);
+        let snapshot =
+            crate::pipeline::parse(&serde_json::to_vec(&source).unwrap(), v.generated_at).unwrap();
+        v.pipeline.stage_freshness = snapshot
+            .stages
+            .iter()
+            .map(|s| crate::pipeline::StageFreshness {
+                id: s.id.clone(),
+                age_secs: Some(5400),
+                stale: false,
+                historical: false,
+            })
+            .collect();
+        v.pipeline.snapshot = Some(snapshot);
+        v
+    }
+
+    #[test]
+    fn results_are_the_catalogs_14_day_totals_and_say_why_the_two_numbers_differ() {
+        // The 7-day step counts differ; Results must not use them.
+        let mut v7 = view_with_totals(336);
+        let hours = crate::throughput::CHART_HOURS as u32;
+        v7.throughput.steps = vec![StepRate {
+            id: "ocr_import",
+            detail: crate::throughput::StepDetail {
+                last_week: Counted {
+                    value: Some(7265.0),
+                    hours_known: hours,
                 },
-                ..StepRate::default()
+                ..Default::default()
             },
-        ];
+            ..StepRate::default()
+        }];
+        let mut o = String::new();
+        results(&v7, &mut o);
+        assert!(o.contains(">14,015<"), "{o}");
+        assert!(!o.contains("7,265"), "{o}");
+        assert!(o.contains("OCR pages imported into our text collection, last 14 days"));
+        assert!(!o.contains("last 7 days") && !o.contains("same 7 days"));
+        assert!(o.contains(">21,290<") && o.contains("so far"));
+        assert!(o.contains("running total"));
+        // Quality and Qwen loads together, said as two kinds of check.
+        assert!(o.contains("In the same 14 days"), "{o}");
+        assert!(
+            o.contains("loaded results for 553,466 pages between them"),
+            "{o}"
+        );
+        assert!(o.contains("a page both read counts twice"));
+        // The controller-tick count is not shown.
+        assert!(!o.contains("9,374") && !o.contains("returned and checked"));
+        let mut o = String::new();
+        throughput(&v7, &mut o);
+        assert!(!o.contains("returned and checked"));
+        // The same through the public page's redaction.
+        let mut public = view_with_totals(336);
+        crate::public::redact(&mut public);
+        let mut o = String::new();
+        results(&public, &mut o);
+        assert!(o.contains(">14,015<") && o.contains("553,466"), "{o}");
+    }
+
+    #[test]
+    fn results_say_not_known_for_a_stale_stage_or_one_missing_hours() {
+        // Every hour but one: an undercount, not 14 days.
+        let mut o = String::new();
+        results(&view_with_totals(335), &mut o);
+        assert!(!o.contains("14,015") && !o.contains("553,466"), "{o}");
+        assert_eq!(o.matches("not known").count(), 2, "{o}");
+        assert!(o.contains(">21,290<"), "{o}");
+        // A stage the dashboard calls stale: the snapshot's old count stays out.
+        let mut v = view_with_totals(336);
+        v.pipeline
+            .stage_freshness
+            .iter_mut()
+            .filter(|f| f.id != "indexed")
+            .for_each(|f| f.stale = true);
         let mut o = String::new();
         results(&v, &mut o);
-        assert!(o.contains(">7,265<"), "{o}");
-        assert!(o.contains("OCR pages imported into our text collection, last 7 days"));
-        assert!(o.contains("so far"));
-        assert!(o.contains("running total"));
-        assert!(!o.contains("The first number"));
-        assert!(!o.contains("2,706"));
-        assert!(!o.contains("returned and checked"));
+        assert!(!o.contains("14,015") && !o.contains("553,466"), "{o}");
+        assert_eq!(o.matches("not known").count(), 2, "{o}");
+        // No snapshot at all.
+        let mut v = super::super::tests::summary_view();
+        v.pipeline.snapshot = None;
         let mut o = String::new();
-        throughput(&v, &mut o);
-        assert!(!o.contains("returned and checked"));
+        results(&v, &mut o);
+        assert_eq!(o.matches("not known").count(), 3, "{o}");
+    }
+
+    #[test]
+    fn reported_hours_read_the_catalogs_detail() {
+        assert_eq!(
+            reported_hours("Last 336 hours, 330 reported. From ocr-sync's log."),
+            Some((336, 330))
+        );
+        for bad in [
+            "",
+            "Last 336 hours.",
+            "Last x hours, 3 reported.",
+            "Last 336 hours, 3 seen.",
+            "Newest hour only.",
+        ] {
+            assert_eq!(reported_hours(bad), None, "{bad}");
+        }
     }
 
     #[test]
