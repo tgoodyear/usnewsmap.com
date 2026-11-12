@@ -1,5 +1,6 @@
 """Tests for the hand-off retention step, with no BOINC state."""
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -23,15 +24,35 @@ class Root:
         (self.root / "jobs").mkdir(parents=True)
         (self.root / "bundles").mkdir()
         self.journal = Path(base) / "journal.jsonl"
+        self.confirmed_path = Path(base) / "confirmed.txt"
+        # The digests of scans the storage host has confirmed another copy of.
+        self.confirmed = set()
 
-    def bundle(self, n, pages=b"scans", age=OLD):
+    def bundle(self, n, pages=b"scans", age=OLD, scans=None, confirm=True):
+        """A bundle holding `scans` (default: one scan, `pages`) back to back, with a manifest."""
+        scans = scans or [pages]
         bid = f"{n:064x}"
         d = self.root / "bundles" / bid
         d.mkdir()
-        (d / "ocr_bundle.json").write_text("{}")
-        (d / "pages").write_bytes(pages)
+        entries, offset = [], 0
+        for scan in scans:
+            sha = hashlib.sha256(scan).hexdigest()
+            entries.append({"job": {"scan": {"sha256": sha, "bytes": len(scan)}}, "offset": offset})
+            offset += len(scan)
+            if confirm:
+                self.confirmed.add(sha)
+        (d / "ocr_bundle.json").write_text(json.dumps({"v": 1, "id": bid, "pages": entries}))
+        (d / "pages").write_bytes(b"".join(scans))
         os.utime(d / "pages", (age, age))
         return bid, d
+
+    def write_confirmed(self, age=0):
+        shas = sorted(self.confirmed)
+        header = {"v": 1, "confirmed": len(shas)}
+        self.confirmed_path.write_text("# " + json.dumps(header) + "\n" + "".join(x + "\n" for x in shas))
+        if age:
+            t = time.time() - age
+            os.utime(self.confirmed_path, (t, t))
 
     def job(self, n, bundle=None, stage="submitted"):
         d = self.root / "jobs" / f"{n:064x}"
@@ -44,11 +65,16 @@ class Root:
         return d
 
     def run(self, *extra):
+        if not self.confirmed_path.exists():
+            self.write_confirmed()
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             hr.main(["prune-bundles", "--root", str(self.root), "--journal", str(self.journal),
-                     *extra])
+                     "--confirmed", str(self.confirmed_path), *extra])
         return json.loads(out.getvalue())
+
+    def journal_lines(self):
+        return [json.loads(x) for x in self.journal.read_text().splitlines()]
 
 
 class PruneBundles(unittest.TestCase):
@@ -180,9 +206,88 @@ class PruneBundles(unittest.TestCase):
 
     def test_refuses_something_that_is_not_a_handoff_root(self):
         with self.assertRaises(SystemExit):
-            hr.main(["prune-bundles", "--root", self.tmp.name, "--journal", "/dev/null"])
+            hr.main(["prune-bundles", "--root", self.tmp.name, "--journal", "/dev/null",
+                     "--confirmed", str(self.r.confirmed_path)])
         with self.assertRaises(SystemExit):
             self.r.run("--min-age-hours", "0")
+
+    def test_a_scan_with_no_other_copy_keeps_the_bundle_and_is_journalled_once(self):
+        ok, d_ok = self.r.bundle(1, scans=[b"one", b"two"])
+        lone, d_lone = self.r.bundle(2, scans=[b"three", b"four"], confirm=False)
+        self.r.confirmed.add(hashlib.sha256(b"three").hexdigest())  # one of its two scans only
+        summary = self.r.run("--delete")
+        self.assertEqual(summary["bundles"], 1)
+        self.assertEqual(summary["kept"], {"no other copy of a scan": 1})
+        self.assertFalse((d_ok / "pages").exists())
+        self.assertEqual((d_lone / "pages").read_bytes(), b"threefour")
+        kept = [x for x in self.r.journal_lines() if x["action"] == "kept: no other copy"]
+        self.assertEqual(len(kept), 1)
+        self.assertEqual((kept[0]["bundle"], kept[0]["scans"], kept[0]["unconfirmed"]), (lone, 2, 1))
+        self.assertEqual(kept[0]["unconfirmed_sha256"], [hashlib.sha256(b"four").hexdigest()])
+        # A second run keeps it again without another journal line.
+        self.r.run("--delete")
+        kept = [x for x in self.r.journal_lines() if x["action"] == "kept: no other copy"]
+        self.assertEqual(len(kept), 1)
+
+    def test_nothing_confirmed_deletes_nothing(self):
+        self.r.bundle(1, confirm=False)
+        self.r.bundle(2, confirm=False)
+        summary = self.r.run("--delete")
+        self.assertEqual(summary["bundles"], 0)
+        self.assertEqual(len(list((self.r.root / "bundles").glob("*/pages"))), 2)
+        self.assertFalse(any(x["action"] in ("deleting", "deleted") for x in self.r.journal_lines()))
+
+    def test_a_dry_run_reports_the_unconfirmed_and_journals_nothing(self):
+        self.r.bundle(1, confirm=False)
+        summary = self.r.run()
+        self.assertEqual((summary["bundles"], summary["kept"]), (0, {"no other copy of a scan": 1}))
+        self.assertFalse(self.r.journal.exists())
+
+    def test_a_bundle_without_a_usable_manifest_is_kept(self):
+        _, d1 = self.r.bundle(1)
+        (d1 / "ocr_bundle.json").unlink()
+        _, d2 = self.r.bundle(2)
+        (d2 / "ocr_bundle.json").write_text("{not json")
+        _, d3 = self.r.bundle(3)
+        (d3 / "ocr_bundle.json").write_text(json.dumps({"pages": []}))
+        summary = self.r.run("--delete")
+        self.assertEqual(summary["bundles"], 0)
+        self.assertEqual(sum(summary["kept"].values()), 3)
+        for d in (d1, d2, d3):
+            self.assertTrue((d / "pages").exists())
+
+    def test_pages_that_differ_from_the_manifest_are_kept(self):
+        _, d = self.r.bundle(1, scans=[b"abc", b"def"])
+        (d / "pages").write_bytes(b"abcdeX")  # same size, other content
+        os.utime(d / "pages", (OLD, OLD))
+        _, d2 = self.r.bundle(2, scans=[b"ghi"])
+        (d2 / "pages").write_bytes(b"ghij")  # other size
+        os.utime(d2 / "pages", (OLD, OLD))
+        summary = self.r.run("--delete")
+        self.assertEqual(summary["bundles"], 0)
+        self.assertTrue((d / "pages").exists() and (d2 / "pages").exists())
+        self.assertEqual({x["action"] for x in self.r.journal_lines()},
+                         {"kept: pages differs from its manifest's scans",
+                          "kept: pages is not the size its manifest gives"})
+
+    def test_a_missing_stale_or_torn_confirmation_list_stops_the_run(self):
+        _, d = self.r.bundle(1)
+        with self.assertRaises(SystemExit):
+            hr.main(["prune-bundles", "--root", str(self.r.root), "--journal", str(self.r.journal),
+                     "--confirmed", str(self.r.confirmed_path), "--delete"])
+        self.r.write_confirmed(age=30 * 3600)
+        with self.assertRaises(SystemExit):
+            self.r.run("--delete")
+        self.r.write_confirmed()
+        # A list cut short: its header counts more digests than follow.
+        self.r.confirmed_path.write_text("# " + json.dumps({"v": 1, "confirmed": 99}) + "\n")
+        with self.assertRaises(SystemExit):
+            self.r.run("--delete")
+        self.r.confirmed_path.write_text("not a header\n")
+        with self.assertRaises(SystemExit):
+            self.r.run("--delete")
+        self.assertTrue((d / "pages").exists())
+        self.assertFalse(self.r.journal.exists())
 
 
 if __name__ == "__main__":

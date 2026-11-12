@@ -1,0 +1,10 @@
+[Unit]
+Description=usnewsmap scan confirmation list, every 6 hours
+
+[Timer]
+OnBootSec=15min
+OnUnitInactiveSec=6h
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

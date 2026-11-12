@@ -14,8 +14,9 @@ grew on the BOINC host's root disk. The step frees only `pages`. It keeps `ocr_b
 jobs/ (durable recovery state: archive_history.py moves those, nothing deletes them), and
 every scan, staged or not.
 
-  handoff_retention.py prune-bundles --root DIR --journal FILE [--min-age-hours H]
-      [--commit SHA] [--delete] [--max-bundles N] [--max-bytes N]
+  handoff_retention.py prune-bundles --root DIR --journal FILE --confirmed FILE
+      [--min-age-hours H] [--max-confirmed-age-hours H] [--commit SHA] [--delete]
+      [--max-bundles N] [--max-bytes N]
 
 A bundle's `pages` goes only when:
   - the bundle's directory is a real directory named by a sha256, and `pages` in it is a
@@ -23,7 +24,16 @@ A bundle's `pages` goes only when:
     submit that wrote it but has not yet saved the page journals is never caught;
   - no job journal under <root>/jobs names the bundle (`bundle`) in a stage before
     `submitted`: a `prepared`, `reserved` or `submitting` member is still being submitted.
-    A bundle no journal names, because archive_history.py moved them, qualifies.
+    A bundle no journal names, because archive_history.py moved them, qualifies;
+  - every scan in it has another copy. The BOINC host cannot see /tank/ocr (and must not read
+    it), so scan_confirm.py runs on the storage host and writes --confirmed: the sha256 of
+    each scan it found under keep/ or buffer/ of /tank/ocr/scans or /cold/ocr-scans, matched to
+    the fetcher's index-full.jsonl, with the file's size and sidecar digest. Here the bundle's
+    ocr_bundle.json is read, `pages` is cut by it and each slice's sha256 must equal the
+    manifest's and be in --confirmed. A bundle with a scan not confirmed, a `pages` that does
+    not match its manifest, or no manifest is kept and, with --delete, journalled once as
+    "kept: no other copy" (or the reason). A --confirmed file that is missing, malformed or
+    older than --max-confirmed-age-hours (default 24) stops the run before anything is deleted.
 The journals are all read first; a job directory that is not a directory, or whose record.json
 is missing, unreadable or not a job record (an object with a stage), stops the run before anything is deleted. Only a job directory that has
 vanished (the archive moved it) is skipped. Without --delete it changes nothing and reports what it would free. With --delete
@@ -33,6 +43,7 @@ bound a run; a file that would pass --max-bytes ends the run before it is touche
 root on the BOINC host: the files are root's 0600.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -83,6 +94,56 @@ def bundle_stages(root):
     return held
 
 
+def load_confirmed(path, max_age, now):
+    """The confirmation list's sha256 values, as a set. Stops the run if it can't be trusted."""
+    try:
+        st = os.stat(path)
+        with open(path) as f:
+            first = f.readline()
+            digests = {line.strip() for line in f}
+    except OSError as e:
+        sys.exit(f"error: the scan confirmation list {path} is unreadable ({e}); nothing deleted")
+    if not first.startswith("# "):
+        sys.exit(f"error: {path} is not a scan confirmation list; nothing deleted")
+    try:
+        header = json.loads(first[2:])
+        if header["v"] != 1 or header["confirmed"] != len(digests):
+            raise ValueError("version or count")
+    except (ValueError, KeyError, TypeError) as e:
+        sys.exit(f"error: {path} is torn or has an unreadable header ({e}); nothing deleted")
+    if now - st.st_mtime > max_age:
+        sys.exit(f"error: the scan confirmation list {path} is older than the limit "
+                 f"({round((now - st.st_mtime) / 3600, 1)} h); nothing deleted")
+    return digests
+
+
+def bundle_scans(directory, pages_path, size):
+    """The manifest's scan digests for a bundle, after checking `pages` is what it describes.
+
+    Returns (digests, None), or (None, why not): no readable manifest, or `pages` not the
+    manifest's scans end to end.
+    """
+    try:
+        with open(os.path.join(directory, "ocr_bundle.json")) as f:
+            manifest = json.load(f)
+        scans = [(p["job"]["scan"]["sha256"], p["job"]["scan"]["bytes"], p["offset"])
+                 for p in manifest["pages"]]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, "no readable ocr_bundle.json to name its scans"
+    if not scans or not all(isinstance(s, str) and BUNDLE_ID.fullmatch(s) and isinstance(n, int)
+                            and isinstance(o, int) for s, n, o in scans):
+        return None, "ocr_bundle.json does not name its scans"
+    if sum(n for _, n, _ in scans) != size:
+        return None, "pages is not the size its manifest gives"
+    with open(pages_path, "rb") as f:
+        for sha, n, offset in scans:
+            f.seek(offset)
+            data = f.read(n)
+            if len(data) != n or hashlib.sha256(data).hexdigest() != sha:
+                return None, "pages differs from its manifest's scans"
+    return {sha for sha, _, _ in scans}, None
+
+
 def candidates(root, min_age, now):
     """(bundle id, path of its pages, bytes, why not) for each bundle with a pages file."""
     held = bundle_stages(root)
@@ -113,13 +174,51 @@ def candidates(root, min_age, now):
             yield name, path, st.st_size, None
 
 
+def journalled_keeps(path):
+    """Bundles an earlier run already journalled as kept, so a timer does not repeat them."""
+    seen = set()
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and str(r.get("action", "")).startswith("kept"):
+                    seen.add((r.get("bundle"), r.get("action")))
+    except FileNotFoundError:
+        pass
+    return seen
+
+
 def prune_bundles(a):
     now = time.time()
     totals = {"bundles": 0, "bytes": 0, "kept": {}, "stopped": None}
+    confirmed = load_confirmed(a.confirmed, a.max_confirmed_age_hours * 3600, now)
+    seen = journalled_keeps(a.journal) if a.delete else set()
     journal = open(a.journal, "a") if a.delete else None
     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
     try:
         for bundle, path, size, why in candidates(a.root, a.min_age_hours * 3600, now):
+            if not why:
+                # The last check, so only a bundle otherwise ready to go reads its pages.
+                scans, why = bundle_scans(os.path.dirname(path), path, size)
+                if scans is not None:
+                    have = scans & confirmed
+                    if have != scans:
+                        action = "kept: no other copy"
+                        why = "no other copy of a scan"
+                        if journal and (bundle, action) not in seen:
+                            journal_line(journal, {
+                                "time": stamp, "commit": a.commit, "bundle": bundle,
+                                "file": PAGES, "bytes": size, "action": action,
+                                "scans": len(scans), "unconfirmed": len(scans - have),
+                                "unconfirmed_sha256": sorted(scans - have)})
+                            seen.add((bundle, action))
+                elif journal and (bundle, "kept: " + why) not in seen:
+                    journal_line(journal, {"time": stamp, "commit": a.commit, "bundle": bundle,
+                                           "file": PAGES, "bytes": size, "action": "kept: " + why})
+                    seen.add((bundle, "kept: " + why))
             if why:
                 totals["kept"][why] = totals["kept"].get(why, 0) + 1
                 continue
@@ -153,7 +252,10 @@ def main(argv=None):
     pb = sub.add_parser("prune-bundles")
     pb.add_argument("--root", required=True, help="the hand-off root: holds jobs/ and bundles/")
     pb.add_argument("--journal", required=True)
+    pb.add_argument("--confirmed", required=True,
+                    help="scan_confirm.py's list of the scans with another copy")
     pb.add_argument("--min-age-hours", type=float, default=2.0)
+    pb.add_argument("--max-confirmed-age-hours", type=float, default=24.0)
     pb.add_argument("--commit", default="unknown")
     pb.add_argument("--delete", action="store_true")
     pb.add_argument("--max-bundles", type=int, default=5000)
