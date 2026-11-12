@@ -1,0 +1,13 @@
+[Unit]
+Description=BOINC batch controller ticks for plan %i (#1690)
+
+[Timer]
+# Five minutes after the last tick of this plan ended, failed or not, so a failed tick is retried
+# on the next one without an operator. These are fallbacks: install.sh writes each plan's own
+# cadence (@every and @boot in its flags file, or its kind's default) to
+# usnm-boinc-priority-controller@PLAN.timer.d/cadence.conf.
+OnBootSec=5min
+OnUnitInactiveSec=5min
+
+[Install]
+WantedBy=timers.target

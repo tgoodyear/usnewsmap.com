@@ -17,7 +17,9 @@
 # of rust/quickwit/web/image/fixtures. The v1 lock is embedded in the Rust
 # mirror CLI, and it and reviewed selections also build the bridge.
 # edge: the Cloudflare fallback Worker (edge/fallback-worker/: JavaScript, its Wrangler config
-# and deploy script), whose job runs its node:test tests and shellchecks the script (ADR-0027, #1098).
+# and deploy script), whose job runs its node:test tests and shellchecks the script (ADR-0027, #1098),
+# and the BOINC dashboard feed Worker (edge/boinc-feed/: JavaScript, fixtures and Wrangler config),
+# whose node:test tests run in the same job.
 # check: check.usnewsmap.com (edge/check/: its Worker, page, language configurations, scripts and
 # task-building tools; #1620), whose job tests, lints and dry-run builds them.
 # boinc_pages: the BOINC project's own web pages (boinc/project/html/), which
@@ -291,11 +293,11 @@ boinc_ndlocr='^(ocr/engines/ndlocr-lite/|boinc/apps/ndlocr-lite/|boinc/scripts/s
 # usnm-ocr-contract's tests read the v1 contract files. The Linux NVIDIA 2B release inputs
 # are assembled by qwen_vulkan_bundle.py within the disk policy's bundle bound and checked
 # against the 6 GB release's runtime (#1234).
-boinc_native='^(ocr/contract/|boinc/apps/qwen/(amd-device-map\.cpp|disk-policy\.json)$|boinc/scripts/(test_amd_device_map\.py|patch_amd_vulkan_identity\.py|build_amd_vulkan_runtime\.ps1|(test_)?qwen_vulkan_bundle\.py)$|boinc/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b\.json$|rust-toolchain\.toml$)'
+boinc_native='^(ocr/contract/|boinc/apps/qwen/(amd-device-map\.cpp|disk-policy\.json|libgomp\.lock)$|boinc/apps/qwen/licenses/|boinc/scripts/(test_amd_device_map\.py|patch_amd_vulkan_identity\.py|build_amd_vulkan_runtime\.ps1|(test_)?qwen_vulkan_bundle\.py)$|boinc/infra/boinc/releases/prod-onprem-usnm_qwen-nvidia_vulkan_6gb_8b\.json$|rust-toolchain\.toml$)'
 # The native OCR app (boinc-ocr-native.yml) builds usnm-ocr-app and the static Tesseract,
 # fetches the locked models for its smoke test, and checks and stages the build as a release
 # would, against the container engine's version.
-boinc_ocr_native='^(boinc/apps/native/|boinc/scripts/(smoke-native-ocr\.sh|check-native-ocr-build\.py|install\.py)$|boinc/images/appver/check_appver\.py$|ocr/engines/tesseract/(models\.lock|Containerfile)$|rust-toolchain\.toml$|\.dockerignore$)'
+boinc_ocr_native='^(boinc/apps/native/|boinc/scripts/(smoke-native-ocr\.sh|check-native-ocr-build\.py|install\.py)$|scripts/ci/apt-base\.sh$|boinc/images/appver/check_appver\.py$|ocr/engines/tesseract/(models\.lock|Containerfile)$|rust-toolchain\.toml$|\.dockerignore$)'
 # The page-language detector's test on text of known language (05 §5.5.8):
 # the detector, its word lists and the language table it reads them by, its
 # crate's manifest and the lock file, the samples and their test, and the
@@ -305,9 +307,9 @@ page_language='^(crates/usnm-core/src/page_language/|crates/usnm-core/src/lang\.
 # documentation, above), and the workflow, which matches earlier.
 contrib='^(boinc/|web/public/\.well-known/|fixtures/ocr-gold/(selections/|bundle-v[12]\.lock\.json$)|scripts/ocr-survey/transcription\.py$|infra/workbooks/boinc\.json$|crates/usnm-boinc/|scripts/ci/check-boinc-server-image\.sh$)'
 ocr_gold='^(scripts/ocr-survey/|fixtures/ocr-gold/|crates/usnm-ocr-survey/tests/golden/)'
-# The fallback Worker: its source, tests, Wrangler config and deploy script (its README counts as
-# documentation, above).
-edge='^edge/fallback-worker/'
+# The fallback Worker and the BOINC dashboard feed Worker: their source, tests, fixtures, Wrangler
+# configs and deploy script (their READMEs count as documentation, above).
+edge='^edge/(fallback-worker|boinc-feed)/'
 # check.usnewsmap.com: everything under edge/check/ but its Markdown.
 check='^edge/check/'
 # closure_crates ROOT...: the directories of the workspace crates the roots

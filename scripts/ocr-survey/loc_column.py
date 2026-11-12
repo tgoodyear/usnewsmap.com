@@ -18,13 +18,15 @@ and those of `gold.py cut` (page_id `<lccn>_<date>_ed-<n>_seq-<n>`, files `<page
 The page image is checked against the manifest's `page_image_sha256` and only its JPEG header is
 read, for the size the box is in. Writes, into --out (which must not exist):
 
-  outputs.jsonl   one row {"crop_id", "id", "text"} per aligned crop: `crop_id` for gold.py and
-                  `usnm-ocr-survey score`, `id` for `bench-score` and the GPU studies' scorer
+  outputs.jsonl   one row {"crop_id", "id", "text"} per Chronicling America crop: `crop_id` for
+                  gold.py and `usnm-ocr-survey score`, `id` for `bench-score` and the GPU studies'
+                  scorer. A crop that is missing or failed gets an explicit empty text, so it stays
+                  in every scorer's denominator (those scorers skip ids with no row)
   loc-column.json per-crop status (aligned, missing, error, not-chronicling-america), the ALTO's
                   SHA-256 and processing software, and the SHA-256 of the manifest, the outputs and
                   the alto-crop binary
 
-A crop with no row in outputs.jsonl is scored as empty by every scorer. Exit status 1 when any
+The status of an empty-text row is "missing" or "error" in loc-column.json. Exit status 1 when any
 Chronicling America crop is missing or failed, after writing both files.
 """
 
@@ -92,7 +94,7 @@ def alto_crop(binary: str, alto: Path, box: list, size: tuple[int, int], empty: 
 
 
 def column(rows: list[dict], alto_dir: Path, image_dir: Path, binary: str) -> tuple[list[dict], list[dict]]:
-    """(outputs, statuses) for the manifest's rows, in manifest order."""
+    """(outputs, statuses) for the manifest's rows, in manifest order. Failed crops get empty text."""
     outputs, statuses = [], []
     with tempfile.TemporaryDirectory() as tmp:
         empty = Path(tmp) / "empty.txt"
@@ -107,6 +109,7 @@ def column(rows: list[dict], alto_dir: Path, image_dir: Path, binary: str) -> tu
             if not alto.is_file() or not image.is_file():
                 statuses.append({"crop_id": cid, "status": "missing", "page_id": row["page_id"],
                                  "reason": "no ALTO" if not alto.is_file() else "no page image"})
+                outputs.append({"crop_id": cid, "id": cid, "text": ""})
                 continue
             try:
                 box = row.get("box")
@@ -129,6 +132,7 @@ def column(rows: list[dict], alto_dir: Path, image_dir: Path, binary: str) -> tu
                 # The checksum message names no file; say which.
                 reason = re.sub(r"^input ", "page image ", str(e))
                 statuses.append({"crop_id": cid, "status": "error", "page_id": row["page_id"], "reason": reason})
+                outputs.append({"crop_id": cid, "id": cid, "text": ""})
                 continue
             outputs.append({"crop_id": cid, "id": cid, "text": result["alto_text"]})
             statuses.append(entry)

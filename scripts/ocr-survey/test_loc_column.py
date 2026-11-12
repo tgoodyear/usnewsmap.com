@@ -124,6 +124,9 @@ class Batch(unittest.TestCase):
             {"crop_id": "pub-overproof-ca-001", "id": "pub-overproof-ca-001",
              "text": "sn1-reel1-0001-0001.xml 10,0,95,40"},
             {"crop_id": "eng-01", "id": "eng-01", "text": "sn84026749_1900-01-01_ed-1_seq-2.xml 5,5,50,60"},
+            {"crop_id": "pub-overproof-ca-002", "id": "pub-overproof-ca-002", "text": ""},
+            {"crop_id": "pub-overproof-ca-003", "id": "pub-overproof-ca-003", "text": ""},
+            {"crop_id": "pub-overproof-ca-004", "id": "pub-overproof-ca-004", "text": ""},
         ])
         report = json.loads((self.out / "loc-column.json").read_text())
         self.assertEqual(report["counts"], {"aligned": 2, "error": 2, "missing": 1, "not-chronicling-america": 1})

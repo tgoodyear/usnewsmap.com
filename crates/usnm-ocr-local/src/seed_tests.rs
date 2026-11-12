@@ -1527,6 +1527,75 @@ async fn a_settled_page_frees_its_slot_for_a_new_one() {
 }
 
 #[tokio::test]
+async fn held_pages_hidden_messages_do_not_hold_back_a_refill() {
+    let fx = fixture().await;
+    let now = Utc::now();
+    let docs = [doc(GER, 3, 1), doc(GER, 3, 2), doc(GER, 3, 3)];
+    let rows: Vec<Queued> = docs
+        .iter()
+        .map(|d| mine(d, 1, now - chrono::Duration::days(1)))
+        .collect();
+    ledger::write_queued(fx.curated.as_ref(), &rows, now, "r1")
+        .await
+        .unwrap();
+    // The held pages' messages sit hidden on the queue and still count in its depth.
+    for _ in &docs {
+        fx.queue.send(BULK, "held").await.unwrap();
+    }
+    // The window equals the raw depth: held messages would fill it.
+    let opts = Options {
+        refill_below: 2,
+        ..plan(3)
+    };
+    let without = fx.seed(&opts).await.unwrap();
+    assert_eq!(without.queue_depth, 3);
+    assert_eq!(without.queue_ready, 3);
+    assert!(!without.refill);
+    assert_eq!(without.queued, 0);
+
+    let handoff = handoff_with(&fx, "queue-feed-13", &docs).await;
+    let r = fx.seed_settled(&opts, handoff.as_ref()).await.unwrap();
+    assert_eq!(r.queue_depth, 3);
+    assert_eq!(r.settled_held, 3);
+    assert_eq!(r.settled_hidden, 3);
+    assert_eq!(r.queue_ready, 0);
+    assert!(r.refill);
+    assert!(
+        r.queued > 0,
+        "the window has room once held messages are discounted"
+    );
+}
+
+#[tokio::test]
+async fn held_pages_whose_messages_are_gone_do_not_discount_live_work() {
+    let fx = fixture().await;
+    let now = Utc::now();
+    let docs = [doc(GER, 3, 1), doc(GER, 3, 2), doc(GER, 3, 3)];
+    // Held pages queued 30 days ago: a claim has deleted their messages since. The three
+    // messages on the queue are other work.
+    let rows: Vec<Queued> = docs
+        .iter()
+        .map(|d| mine(d, 1, now - chrono::Duration::days(30)))
+        .collect();
+    ledger::write_queued(fx.curated.as_ref(), &rows, now, "r1")
+        .await
+        .unwrap();
+    for _ in &docs {
+        fx.queue.send(BULK, "ready").await.unwrap();
+    }
+    let handoff = handoff_with(&fx, "queue-feed-13", &docs).await;
+    let opts = Options {
+        refill_below: 2,
+        ..plan(10)
+    };
+    let r = fx.seed_settled(&opts, handoff.as_ref()).await.unwrap();
+    assert_eq!(r.settled_held, 3);
+    assert_eq!(r.settled_hidden, 0);
+    assert_eq!(r.queue_ready, 3);
+    assert!(!r.refill);
+}
+
+#[tokio::test]
 async fn unreadable_held_lists_hold_back_only_timed_out_retries() {
     let fx = fixture().await;
     settled_fixture(&fx).await;
@@ -1586,4 +1655,32 @@ async fn ocr_sync_passes_the_hand_off_to_its_seeding() {
     let seed = status.seed.unwrap();
     assert_eq!(seed.settled_held, 1);
     assert_eq!(seed.skipped.get("settled_held"), Some(&1));
+}
+
+#[tokio::test]
+async fn a_held_page_claimed_late_is_still_discounted() {
+    let fx = fixture().await;
+    let now = Utc::now();
+    let docs = [doc(GER, 3, 1), doc(GER, 3, 2), doc(GER, 3, 3)];
+    // Queued 10 days ago, claimed on day 9 and held under a 7-day lease: its message stays
+    // hidden until day 16.
+    let rows: Vec<Queued> = docs
+        .iter()
+        .map(|d| mine(d, 1, now - chrono::Duration::days(10)))
+        .collect();
+    ledger::write_queued(fx.curated.as_ref(), &rows, now, "r1")
+        .await
+        .unwrap();
+    for _ in &docs {
+        fx.queue.send(BULK, "held").await.unwrap();
+    }
+    let handoff = handoff_with(&fx, "queue-feed-13", &docs).await;
+    let opts = Options {
+        refill_below: 2,
+        ..plan(3)
+    };
+    let r = fx.seed_settled(&opts, handoff.as_ref()).await.unwrap();
+    assert_eq!(r.settled_hidden, 3);
+    assert_eq!(r.queue_ready, 0);
+    assert!(r.refill);
 }

@@ -210,6 +210,8 @@ scripts/start-boinc-bridge.sh --env prod --step qwen-benchmark-collect \
   --var QWEN_SPOOL=/project/usnmocr/results/0 --wait-mins 15
 ```
 
+`qwen-benchmark-prepare` and `qwen-benchmark-stage` also take `QWEN_DOC_IDS`, either `legacy` or `sample`; any other value fails before any work. The default, `legacy`, adds nothing to the `qwen benchmark-stage` command line, so ids stay `benchmark-<sha256>`. `sample` passes `--doc-ids sample`, which names each crop by its dataset sample id. Use it only with a new `QWEN_CAMPAIGN`: staging an existing campaign with the other spelling is refused. The bridge image must be rebuilt before the variable has any effect (#983).
+
 `qwen-benchmark-prepare` replaces manual placement of the dataset and engine for
 a reviewed selection. It resolves the committed hash-only audit under
 `fixtures/ocr-gold/selections/` against the existing converted public cache at

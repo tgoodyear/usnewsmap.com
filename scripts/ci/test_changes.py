@@ -772,6 +772,15 @@ class BuildInputs(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertGreaterEqual(self.select(path), jobs)
 
+    def test_the_native_build_runs_for_its_apt_base_and_the_script_that_reads_it(self):
+        # The native build's apt base (#1683): its lock is under boinc/apps/native/, and the script
+        # that reads both locks starts the native build too (boinc-iris.yml isn't selector-gated).
+        for path in ["boinc/apps/native/base.lock", "scripts/ci/apt-base.sh"]:
+            with self.subTest(path=path):
+                on = self.select(path)
+                self.assertIn("boinc_ocr_native", on)
+                self.assertFalse(on & {"boinc_worker", "boinc_qwen", "boinc_surya", "boinc_ndlocr", "image"}, on)
+
     def test_the_tesseract_image_runs_the_worker_image_and_release_only(self):
         # The native OCR build also runs: it's checked against this image's Tesseract version.
         on = self.select("ocr/engines/tesseract/Containerfile")
@@ -995,6 +1004,7 @@ class BuildInputs(unittest.TestCase):
     def test_the_native_apps_run_for_the_files_they_embed_or_their_tests_read(self):
         for path in ["boinc/apps/qwen/llama.lock", "boinc/apps/qwen/weights.lock", "ocr/contract/v1/schema.json",
                      "boinc/apps/qwen/amd-device-map.cpp", "boinc/apps/qwen/disk-policy.json",
+                     "boinc/apps/qwen/libgomp.lock", "boinc/apps/qwen/licenses/gcc-12.3.0/COPYING3",
                      "boinc/scripts/test_amd_device_map.py",
                      "boinc/scripts/patch_amd_vulkan_identity.py", "boinc/scripts/build_amd_vulkan_runtime.ps1",
                      "boinc/scripts/qwen_vulkan_bundle.py", "boinc/scripts/test_qwen_vulkan_bundle.py",
@@ -1042,6 +1052,14 @@ class BuildInputs(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(self.select(path), {"edge", "code", "infra"})
         self.assertEqual(self.select("edge/fallback-worker/README.md"), {"markdown"})
+
+    def test_the_boinc_feed_worker_runs_in_the_edge_job(self):
+        # Its tests run in the edge job, by path; its README is documentation.
+        for path in ["edge/boinc-feed/worker.mjs", "edge/boinc-feed/worker.test.mjs",
+                     "edge/boinc-feed/wrangler.jsonc", "edge/boinc-feed/fixtures/view.json"]:
+            with self.subTest(path=path):
+                self.assertEqual(self.select(path), {"edge", "code", "infra"})
+        self.assertEqual(self.select("edge/boinc-feed/README.md"), {"markdown"})
 
     def test_the_check_site_runs_its_own_job_and_not_the_fallback_workers(self):
         # #1620: check.usnewsmap.com's Worker, page, language configurations, scripts and tools.

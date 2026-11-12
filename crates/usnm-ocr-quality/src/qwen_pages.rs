@@ -166,6 +166,7 @@ mod tests {
             max_tokens_per_1000px2: 4,
             pages: bundle_pages,
             prompt_version: 1,
+            model: None,
         };
         (job, blob)
     }

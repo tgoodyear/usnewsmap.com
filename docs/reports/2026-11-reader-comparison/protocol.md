@@ -4,7 +4,7 @@ Written and committed on 11 November 2026, before any reader ran for this compar
 
 ## Purpose
 
-This comparison produces one table of CER and WER by language and reader, with every reader on the same human-transcribed crops, held out where a held-out set exists. The readers are LoC's ALTO, Tesseract, Qwen3-VL 8B, Qwen3-VL 2B and Xiaomi-OCR-0.
+This comparison produces one table of CER and WER by language and reader, with every reader on the same human-transcribed crops, held out where a held-out set exists. The readers are LoC's ALTO, Tesseract, Qwen3-VL 8B, Qwen3-VL 2B, Xiaomi-OCR-0 and American Stories.
 
 The numbers compared so far come from different sets. Tesseract's 9.0% is from the GPU studies' 612 crops, mostly NZZ and Reichsanzeiger, where LoC wasn't scored. LoC's 9.22% and Tesseract's 3.68% are from English `overproof-ca`. Qwen 8B's 2.17% is from 35 of those crops, not 345. Tesseract ran at PSM 6 in the GPU studies and the October pilot, while gold units run PSM 3. This comparison puts every reader on the same crops, with the same scorer.
 
@@ -46,10 +46,11 @@ One `gold.py`-format directory per set (`manifest.jsonl`, `crops.jsonl`, `images
 | Reader | Where it runs | Settings |
 | --- | --- | --- |
 | LoC ALTO | On our side, no BOINC | `scripts/ocr-survey/loc_column.py`, below. `en-op` only |
-| Tesseract 5.5.0 | BOINC, CPU hosts, hypothesis-mode unit | `eng`, `fra`, `fin`, `swe`, or `frak2021` for German, by the set's language. PSM 6 primary, PSM 3 secondary. 300 DPI, LSTM engine |
+| Tesseract (version recorded at run time; 5.5.0 today, 5.5.4 after #1835) | BOINC, CPU hosts, hypothesis-mode unit | `eng`, `fra`, `fin`, `swe`, or `frak2021` for German, by the set's language. PSM 6 primary, PSM 3 secondary. 300 DPI, LSTM engine |
 | Qwen3-VL 8B Q4_K_M | BOINC `usnm_qwen`, GPU and CPU hosts | The production request version (3, with the loop guard) on the llama.cpp b12084 runtime of #1774. No language hint |
 | Qwen3-VL 2B Q8_0 | BOINC `usnm_qwen`, GPU and CPU hosts | As 8B, with a per-unit model pin (plan step 5) so both read the same staged crops |
-| Xiaomi-OCR-0, Q8_0 GGUF | BOINC `usnm_qwen`, GPU and CPU hosts | As shipped by #1776: Study 9's region prompt, at most 2,048 output tokens, the `stop` guard |
+| Xiaomi-OCR-0, Q8_0 GGUF | BOINC `usnm_qwen`, GPU and CPU hosts | As shipped by #1776: Study 9's region prompt, at most 2,048 output tokens, the `stop` guard. Marked pending in the results until that release exists; no production release is made for this comparison |
+| American Stories | Published dataset text, no host | `en-op` only: the dataset's article text for the same Chronicling America pages, matched to each crop by box. Reported on the crops it aligns to, with the unaligned crops scored as empty beside it, as for LoC |
 
 **Tesseract PSM.** PSM 6 is primary because every earlier crop comparison used it, Tesseract's 3.68% and 9.0% included. PSM 3 is what gold units run, so it's secondary. Each set uses one language profile. Study 3's combined `fra+fin+swe` profile isn't repeated.
 
@@ -84,9 +85,9 @@ If the CPU batch of a reader doesn't finish within 14 days of submission, it's r
 
 ## LoC column
 
-`scripts/ocr-survey/loc_column.py --manifest M --alto-dir D --out O` runs `usnm-ocr-survey alto-crop` on every Chronicling America crop of a `gold.py` manifest. For each crop it uses LoC's ALTO for the page, the crop's box and the page image's size, and keeps the clipped ALTO's text (`alto_text`). The text is the words whose box centre is in the crop, in the ALTO's reading order, with a kept line hyphen at the end of its line ([A crop against its text](../../ocr/gold-set.md#a-crop-against-its-text)). It writes `outputs.jsonl`, rows `{"crop_id", "id", "text"}` that every scorer here reads, and `loc-column.json`, with each crop's status and the hashes above.
+`scripts/ocr-survey/loc_column.py --manifest M --alto-dir D --out O` runs `usnm-ocr-survey alto-crop` on every Chronicling America crop of a `gold.py` manifest. For each crop it uses LoC's ALTO for the page, the crop's box and the page image's size, and keeps the clipped ALTO's text (`alto_text`). The text is the words whose box centre is in the crop, in the ALTO's reading order, with a kept line hyphen at the end of its line ([A crop against its text](../../ocr/gold-set.md#a-crop-against-its-text)). It writes `outputs.jsonl`, one row per Chronicling America crop, `{"crop_id", "id", "text"}` that every scorer here reads, and `loc-column.json`, with each crop's status and the hashes above.
 
-The ALTO is the one `gold.py public-fetch` fetched for `en-op`, the same files its boxes came from. A crop the tool can't align (missing ALTO, page image checksum mismatch, or a refusal from `alto-crop`) has no output and scores as empty, by the rule below. Its id and reason are listed. A missing LoC reading means our alignment failed, and LoC's text isn't at fault. So if any crop is missing, LoC is also reported on the aligned crops, labelled as such.
+The ALTO is the one `gold.py public-fetch` fetched for `en-op`, the same files its boxes came from. A crop the tool can't align (missing ALTO, page image checksum mismatch, or a refusal from `alto-crop`) gets an explicit empty-text row, because the scorers skip ids with no row, and scores as empty by the rule below. Its id and reason are listed. A missing LoC reading means our alignment failed, and LoC's text isn't at fault. So if any crop is missing, LoC is also reported on the aligned crops, labelled as such.
 
 The October pilot's 9.22% for LoC came from a different extraction. A different number here can come from the extraction rule alone, and isn't a change in LoC's text.
 
@@ -119,7 +120,7 @@ Secondary: the same on each second-use set; Tesseract PSM 3 against PSM 6; the C
 6. **German.** Every German set has been read before, so German results are provisional: `de-rz81` is labelled "Study 11 use" and the others "second use". They stand until the German transcriptions of plan step 8 can confirm them.
 7. **Scope.** Too few crops to decide is a valid result. This protocol makes recommendations; the maintainer decides any change to production.
 
-American Stories and CHURRO aren't readers in this comparison. The Czech, Serbian, Polish, Russian and Yiddish crops out for transcription join by amendment once their transcriptions are checked.
+CHURRO isn't a reader in this comparison. The Czech, Serbian, Polish, Russian and Yiddish crops out for transcription join by amendment once their transcriptions are checked.
 
 ## Budget
 

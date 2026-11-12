@@ -52,6 +52,16 @@ pub const NOTICES: &[(&str, &[&str], &str)] = &[(
     include_str!("../../../ocr/models/chr-phoenix/SHA256SUMS"),
 )];
 pub const MANIFEST_VERSION: u32 = 1;
+/// The BOINC platform this worker is built for, which its manifest names. Each platform is its
+/// own build, with its own digest and its own trust.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub const PLATFORM: &str = "x86_64-pc-linux-gnu";
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub const PLATFORM: &str = "aarch64-unknown-linux-gnu";
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub const PLATFORM: &str = "arm64-apple-darwin";
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+pub const PLATFORM: &str = "x86_64-apple-darwin";
 const MAX_MANIFEST: usize = 64 << 10;
 const MAX_BUILD_FILE: u64 = 256 << 20;
 
@@ -146,10 +156,7 @@ fn locked_notices() -> anyhow::Result<BTreeMap<String, (String, String)>> {
 impl Manifest {
     fn validate(&self) -> anyhow::Result<()> {
         ensure!(self.v == MANIFEST_VERSION, "unsupported build manifest");
-        ensure!(
-            self.platform == "x86_64-pc-linux-gnu",
-            "unsupported build platform"
-        );
+        ensure!(self.platform == PLATFORM, "unsupported build platform");
         for (name, file) in &self.files {
             ensure!(
                 is_sha256(&file.sha256) && (1..=MAX_BUILD_FILE).contains(&file.bytes),
@@ -227,7 +234,7 @@ pub fn write_manifest(
     let manifest = Manifest {
         engine_version,
         files,
-        platform: "x86_64-pc-linux-gnu".into(),
+        platform: PLATFORM.into(),
         v: MANIFEST_VERSION,
     };
     let bytes = serde_json::to_vec_pretty(&manifest)?;
@@ -535,15 +542,38 @@ pub fn run_slot(work: &Path) -> anyhow::Result<()> {
 pub async fn run_unit(work: &Path) -> anyhow::Result<()> {
     // The client can kill the parent alone, even with this group stopped, when only a signal
     // from the kernel still reaches it. The engine sets the same in `exec_engine`.
+    #[cfg(target_os = "linux")]
     rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))?;
-    ensure!(
-        std::env::var(PARENT_ENV)?
-            == rustix::process::getppid()
-                .map(|pid| pid.as_raw_pid().to_string())
-                .unwrap_or_default(),
-        "the task's parent has gone"
-    );
+    let parent = std::env::var(PARENT_ENV)?;
+    ensure!(parent == parent_pid(), "the task's parent has gone");
+    #[cfg(target_os = "macos")]
+    watch_parent(parent);
     crate::worker::run(work).await
+}
+
+fn parent_pid() -> String {
+    rustix::process::getppid()
+        .map(|pid| pid.as_raw_pid().to_string())
+        .unwrap_or_default()
+}
+
+/// macOS has no parent-death signal, so a thread of the unit stands in for it while the group
+/// runs: once the task's parent has gone, it kills the group, the engine with it. While the
+/// group is stopped this thread is stopped too. The parent's death then leaves the group
+/// orphaned with stopped members, and the kernel sends each of them `SIGHUP` and `SIGCONT`
+/// (POSIX orphaned process groups), whose default action ends them. The client also kills a
+/// task's descendants when it aborts or quits one.
+#[cfg(target_os = "macos")]
+fn watch_parent(parent: String) {
+    std::thread::spawn(move || loop {
+        if parent_pid() != parent {
+            let _ = rustix::process::kill_process_group(
+                rustix::process::getpgrp(),
+                rustix::process::Signal::KILL,
+            );
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    });
 }
 
 /// Whether this process was started through the `tesseract` link.
@@ -573,8 +603,11 @@ pub fn exec_engine() -> anyhow::Error {
         use rustix::process::Resource;
         let real = std::env::var_os(REAL_TESSERACT_ENV).context("no engine named")?;
         let cpu: u64 = std::env::var(CPU_DEADLINE_ENV)?.parse()?;
-        rustix::thread::set_no_new_privs(true)?;
-        rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))?;
+        #[cfg(target_os = "linux")]
+        {
+            rustix::thread::set_no_new_privs(true)?;
+            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::KILL))?;
+        }
         // The unit leads this process group. If it died before the line above, nothing else
         // would stop this engine.
         ensure!(
@@ -583,6 +616,9 @@ pub fn exec_engine() -> anyhow::Error {
         );
         // CPU time, not wall time: a suspended task stops its engine, and this stops with it.
         limit(Resource::Cpu, cpu, cpu + 5)?;
+        // macOS keeps an address-space limit but doesn't enforce it, so there the client's
+        // `rsc_memory_bound` is the only memory bound (docs/boinc/apps/native-ocr.md).
+        #[cfg(target_os = "linux")]
         limit(Resource::As, MEMORY_BYTES, MEMORY_BYTES)?;
         limit(Resource::Fsize, FILE_BYTES, FILE_BYTES)?;
         limit(Resource::Nofile, OPEN_FILES, OPEN_FILES)?;

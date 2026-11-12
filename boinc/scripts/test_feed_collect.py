@@ -6,6 +6,7 @@ import json
 import tempfile
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import socket
@@ -965,7 +966,7 @@ class MaintenanceTests(unittest.TestCase):
 
     ARCHIVE = "usnm-boinc-held-archive.service"
 
-    def observe(self, events=(), native=(), archive=None, **status):
+    def observe(self, events=(), native=(), archive=None, unit="usnm-boinc-priority-controller.service", **status):
         properties = {"LoadState": "loaded", "SubState": "dead", "Result": "success",
                       "ExecMainStartTimestampMonotonic": 100000000,
                       "ExecMainExitTimestampMonotonic": 120000000}
@@ -981,7 +982,7 @@ class MaintenanceTests(unittest.TestCase):
         with patch.object(C, "run", side_effect=outputs) as run, \
                 patch.object(C.time, "time", return_value=NOW), \
                 patch.object(C.time, "clock_gettime", return_value=5000):
-            tick = C.controller("usnm-boinc-priority-controller.service", (self.ARCHIVE,))
+            tick = C.controller(unit, (self.ARCHIVE,))
         return tick, run
 
     def test_both_journals_are_read_and_an_archive_failure_is_the_controllers(self):
@@ -1028,6 +1029,24 @@ class MaintenanceTests(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(ValueError, "no recent completed controller tick"):
                         self.observe(old, archive=archive)
+
+    def test_another_plans_unit_is_not_the_live_plans(self):
+        # One unit per plan (#1690): a native or draining plan's failed ticks, in its own unit,
+        # never count towards the live plan's streak, and systemd is asked about the live unit.
+        main = "usnm-boinc-priority-controller@main.service"
+        native = "usnm-boinc-priority-controller@native-feed-3.service"
+        lines = [(NOW - 300 + n, native, {"event": "boinc_batch_failure", "error": "hand-off storage failed"})
+                 for n in range(3)]
+        lines.append((NOW - 4, main, {"event": "boinc_batch_tick", "timings": {"tick_seconds": 2}}))
+        tick, run = self.observe(lines, unit=main)
+        self.assertEqual((tick["ok"], tick["failed_in_a_row"], tick["controller_failure_at"]), (True, 0, 0))
+        self.assertEqual(run.call_args_list[1].args[0][:3], ["systemctl", "show", main])
+
+    def test_the_live_plans_unit_is_the_default(self):
+        with patch.object(C, "controller", return_value={"ok": True}) as controller, \
+                tempfile.TemporaryDirectory() as folder:
+            self.assertEqual(C.main(["controller", "--output", str(Path(folder) / "controller.json")]), 0)
+        controller.assert_called_once_with("usnm-boinc-priority-controller@main.service", ())
 
     def test_a_maintenance_unit_must_be_another_service(self):
         for maintenance in (("usnm-boinc-priority-controller.service",), ("bad unit",), ("x.timer",)):
@@ -2422,3 +2441,372 @@ class CohortTests(unittest.TestCase):
                 self.assertEqual((checked["state"], checked["backlog"]), ("healthy", 0))
         with self.assertRaisesRegex(ValueError, "qwen_admission"):
             C.collect(dict(config, qwen_admission="yes"))
+
+
+TIMER_5MIN = "{ OnBootUSec=5min ; next_elapse=x } { OnUnitInactiveUSec=5min ; next_elapse=x }"
+TIMER_30MIN = "{ OnBootUSec=30min ; next_elapse=x } { OnUnitInactiveUSec=30min ; next_elapse=x }"
+
+
+class PlanTickTests(unittest.TestCase):
+    """Every other plan's tick health (#1690), in both unit layouts."""
+    MAIN = "usnm-boinc-priority-controller.service"
+    MAIN_AFTER = "usnm-boinc-priority-controller@main.service"
+    QUEUE = "usnm-boinc-priority-controller@queue-feed-10.service"
+    NATIVE_AFTER = "usnm-boinc-priority-controller@native-feed-3.service"
+    NATIVE = "usnm-boinc-native-feed@native-feed-3.service"
+    DRAIN = "usnm-boinc-drain.service"
+    NAMES = ("queue-feed-10", "native-feed-3", "main")
+
+    @staticmethod
+    def tick(plan="p", draining=False, pending=0, backlog=0, paused=None, native=False):
+        event = {"event": "boinc_batch_tick", "plan": plan, "draining": draining, "observed_pending": pending,
+                 "collection_backlog": backlog, "ownership_conflicts": 0, "timings": {"tick_seconds": 30}}
+        if native:
+            event["native"] = {"hosts": [1], "paused": paused}
+        return event
+
+    def failed_runs(self, *ends, error="hand-off storage failed"):
+        """Failed runs ending at `ends`: a failure line and systemd's line a second later."""
+        entries = []
+        for n, at in enumerate(ends):
+            entries.append((at, {"_SYSTEMD_INVOCATION_ID": "f%d" % n, "MESSAGE": json.dumps(
+                {"event": "boinc_batch_failure", "error": error, "timings": {"tick_seconds": 30}})}))
+        return entries
+
+    def host(self, units, listed=None, broken=()):
+        """A fake `run` for a host whose plan units are `units`: {unit: {"events": [(at, event)],
+        "entries": [(at, journal entry)], "status": {...}}}. `listed` is what systemctl list-units
+        prints (default: every unit's service and timer); `broken` units fail to read."""
+        listing = "\n".join(f"{unit} loaded active waiting x" for unit in (listed if listed is not None else
+                            [u for unit in units for u in (unit, unit.replace(".service", ".timer"))]))
+
+        def run(argv, **kwargs):
+            if argv[:2] == ["systemctl", "list-units"]:
+                return listing.encode()
+            unit = argv[argv.index("-u") + 1] if "-u" in argv else argv[2]
+            if unit.endswith(".timer"):
+                return ("TimersMonotonic=" + units[unit.replace(".timer", ".service")].get("timer", "")).encode()
+            if unit in broken:
+                raise TimeoutError("source timeout")
+            record = units[unit]
+            if argv[0] == "journalctl":
+                rows = [{"__REALTIME_TIMESTAMP": str(at * 1000000), "MESSAGE": json.dumps(event)}
+                        for at, event in record.get("events", ())]
+                rows += [{"__REALTIME_TIMESTAMP": str(at * 1000000), **entry} for at, entry in record.get("entries", ())]
+                return "\n".join(json.dumps(row) for row in sorted(
+                    rows, key=lambda row: int(row["__REALTIME_TIMESTAMP"]))).encode()
+            properties = {"LoadState": "loaded", "SubState": "dead", "Result": "success",
+                          "ExecMainStartTimestampMonotonic": 100000000, "ExecMainExitTimestampMonotonic": 120000000,
+                          **record.get("status", {})}
+            return "\n".join(f"{key}={value}" for key, value in properties.items()).encode()
+        return run
+
+    def observe(self, units, main=MAIN, at=NOW, **kwargs):
+        with patch.object(C, "run", side_effect=self.host(units, **kwargs)), \
+                patch.object(C.time, "time", return_value=at):
+            return C.plan_ticks(main)
+
+    def healthy(self, **kwargs):
+        return {"events": [(NOW - 20, self.tick(**kwargs))]}
+
+    def failing(self, runs=2, **kwargs):
+        return {"events": [(NOW - 700, self.tick())], "entries": self.failed_runs(*[NOW - 60 * n for n in range(runs, 0, -1)]),
+                "status": {"SubState": "failed", "Result": "exit-code"}, **kwargs}
+
+    def evaluate(self, plans, previous=None, elapsed=0, **facts):
+        document = {"schema_version": 1, "source": "controller", "observed_at": NOW + elapsed,
+                    "tick": {"ok": True, "seconds": 5, "finished_at": NOW + elapsed}, "plans": plans, **facts}
+        C.fresh(document, NOW + elapsed, "controller")
+        checks, state = F.evaluate({"tick": document["tick"], **{k: v for k, v in document.items() if k.startswith("plans")}},
+                                   previous or {}, NOW + elapsed, 1000 + elapsed, "boot", "cfg")
+        self.assertFalse([c for c in checks["checks"] if c["code"].startswith("plan_")])
+        return {check["code"]: check for check in checks.get("plan_checks", ()) + checks["checks"]}, \
+            json.loads(json.dumps(state))
+
+    def test_two_plans_one_failing_alerts_only_for_that_plan(self):
+        plans = self.observe({self.QUEUE: self.failing(), self.NATIVE_AFTER: self.healthy(native=True)})
+        self.assertEqual({plan["id"] for plan in plans}.__len__(), 2)
+        checks, _ = self.evaluate(plans)
+        failing = {code: check for code, check in checks.items() if code.startswith("plan_tick:") and check["state"] == "firing"}
+        self.assertEqual(len(failing), 1)
+        (check,) = failing.values()
+        self.assertEqual((check["failed_in_a_row"], check["reason"], check["kind"]), (2, "handoff_failed", "queue"))
+        healthy = [c for code, c in checks.items() if code.startswith("plan_tick:") and c["state"] == "healthy"]
+        # A healthy plan is logged as its state alone: the line is one syslog message.
+        self.assertEqual([(c["kind"], "failed_in_a_row" in c) for c in healthy], [("native", False)])
+        self.assertEqual(checks["controller_tick"]["state"], "healthy")
+        self.assertEqual((checks["plan_discovery"]["plans"], checks["plan_discovery"]["active"]), (2, 2))
+
+    def test_one_plans_failure_neither_hides_nor_resets_anothers(self):
+        plans = lambda queue, native: self.observe({self.QUEUE: queue, self.NATIVE_AFTER: native})
+        # The queue plan has failed once; then the native plan fails twice. Each has its own count.
+        one = self.failing(runs=1)
+        both = plans(one, self.failing(runs=2, events=[(NOW - 700, self.tick(native=True))]))
+        checks, state = self.evaluate(both)
+        by_kind = {c["kind"]: c for code, c in checks.items() if code.startswith("plan_tick:")}
+        self.assertEqual((by_kind["queue"]["state"], by_kind["native"]["state"]), ("healthy", "firing"))
+        self.assertEqual((by_kind["queue"]["failed_in_a_row"], by_kind["native"]["failed_in_a_row"]), (1, 2))
+        # The native plan recovers; the queue plan's second failure fires on its own count.
+        again = plans(self.failing(runs=2), self.healthy(native=True))
+        checks, _ = self.evaluate(again, state, elapsed=60)
+        by_kind = {c["kind"]: c for code, c in checks.items() if code.startswith("plan_tick:")}
+        self.assertEqual((by_kind["queue"]["state"], by_kind["native"]["state"]), ("firing", "healthy"))
+
+    def test_the_same_error_in_a_row_is_sticky_per_plan(self):
+        plans = self.observe({self.QUEUE: {**self.failing(runs=3)}, self.NATIVE_AFTER: self.failing(
+            runs=2, events=[(NOW - 700, self.tick(native=True))])})
+        checks, _ = self.evaluate(plans)
+        sticky = {c["kind"]: c["sticky"] for code, c in checks.items() if code.startswith("plan_tick:")}
+        self.assertEqual(sticky, {"queue": True, "native": False})
+
+    def test_a_paused_native_plan_is_a_state_with_its_age_not_a_failure(self):
+        paused = {"at": NOW - 5400, "reason": "collect left a native result unpublished (host 7 job 123)", "jobs": ["j1"]}
+        plans = self.observe({self.NATIVE: self.healthy(native=True, paused=paused, pending=3)})
+        (plan,) = plans
+        self.assertEqual((plan["kind"], plan["state"], plan["paused_at"]), ("native", "paused", NOW - 5400))
+        checks, _ = self.evaluate(plans)
+        (check,) = [c for code, c in checks.items() if code.startswith("plan_tick:")]
+        self.assertEqual((check["state"], check["plan_state"], check["paused_age_s"]), ("healthy", "paused", 5400))
+        self.assertEqual(checks["plan_discovery"]["paused"], 1)
+        self.assertNotIn("host 7", json.dumps(plans))
+        self.assertIn('boinc_feed_paused_age_s{check="%s"} 5400' % check["code"],
+                      F.metrics({"observed_at": NOW, "checks": [check]}))
+        # Resumed: the next tick has no pause.
+        resumed = self.observe({self.NATIVE: self.healthy(native=True)})
+        self.assertEqual((resumed[0]["state"], resumed[0]["paused_at"]), ("active", None))
+
+    def test_a_paused_plan_whose_ticks_fail_still_alerts(self):
+        paused = {"at": NOW - 60, "reason": "x", "jobs": []}
+        plan = self.failing(runs=2, events=[(NOW - 700, self.tick(native=True, paused=paused))])
+        checks, _ = self.evaluate(self.observe({self.NATIVE: plan}))
+        (check,) = [c for code, c in checks.items() if code.startswith("plan_tick:")]
+        self.assertEqual((check["state"], check["plan_state"]), ("firing", "paused"))
+
+    def test_a_drain_is_draining_until_nothing_is_pending_then_drained_and_quiet(self):
+        for kwargs, state in (({"pending": 40}, "draining"), ({"backlog": 2}, "draining"), ({}, "drained")):
+            with self.subTest(state=state):
+                plans = self.observe({self.QUEUE: self.healthy(draining=True, **kwargs)})
+                self.assertEqual((plans[0]["kind"], plans[0]["state"]), ("drain", state))
+                checks, _ = self.evaluate(plans)
+                (check,) = [c for code, c in checks.items() if code.startswith("plan_tick:")]
+                self.assertEqual((check["state"], check["plan_state"]), ("healthy", state))
+
+    def test_a_plan_without_a_recent_tick_is_idle_not_unknown_or_firing(self):
+        old = {"events": [(NOW - 3000, self.tick())], "timer": TIMER_5MIN}
+        plans = self.observe({self.QUEUE: old})
+        self.assertEqual((plans[0]["state"], plans[0]["tick"]), ("active", None))
+        checks, _ = self.evaluate(plans)
+        (check,) = [c for code, c in checks.items() if code.startswith("plan_tick:")]
+        self.assertEqual(check["state"], "healthy")
+        plans = self.observe({self.QUEUE: {}})
+        self.assertEqual(plans[0]["state"], "idle")
+        self.assertEqual(self.evaluate(plans)[0]["plan_discovery"]["idle"], 1)
+
+    def test_a_plan_that_disappears_takes_its_check_and_its_timer_with_it(self):
+        units = {self.QUEUE: self.failing(), self.NATIVE_AFTER: self.healthy(native=True)}
+        checks, state = self.evaluate(self.observe(units))
+        codes = {code for code in checks if code.startswith("plan_tick:")}
+        self.assertEqual(len(codes), 2)
+        firing = next(code for code in codes if checks[code]["state"] == "firing")
+        self.assertIn(firing, state["conditions"])
+        # The failing plan is retired: its unit and timer are gone from systemd.
+        retired = self.observe(units, listed=[self.NATIVE_AFTER, self.NATIVE_AFTER.replace(".service", ".timer")])
+        checks, state = self.evaluate(retired, state, elapsed=60)
+        self.assertEqual({code for code in checks if code.startswith("plan_tick:")}, codes - {firing})
+        self.assertNotIn(firing, state["conditions"])
+        self.assertEqual(checks["plan_discovery"]["plans"], 1)
+        # A plan added later is found with nothing configured, and starts from nothing.
+        checks, _ = self.evaluate(self.observe(units), state, elapsed=120)
+        self.assertEqual(checks[firing]["duration_s"], 0)
+
+    def test_before_the_migration_the_native_and_draining_plans_are_found_by_their_units(self):
+        units = {self.NATIVE: self.healthy(native=True), self.DRAIN: self.failing(),
+                 "usnm-boinc-priority-controller@x.service": self.healthy()}
+        listed = [self.NATIVE.replace(".service", ".timer"), self.NATIVE, self.DRAIN, self.DRAIN.replace(".service", ".timer"),
+                  self.MAIN, self.MAIN.replace(".service", ".timer"), "usnm-boinc-held-archive.service",
+                  "usnm-boinc-native-feed@.service"]
+        plans = self.observe(units, listed=listed)
+        self.assertEqual(sorted((p["kind"], p["state"]) for p in plans), [("drain", "active"), ("native", "active")])
+        # The shared service is the live plan's, never a plan of its own.
+        self.assertEqual(len(plans), 2)
+        checks, _ = self.evaluate(plans)
+        self.assertEqual(sorted(c["state"] for code, c in checks.items() if code.startswith("plan_tick:")),
+                         ["firing", "healthy"])
+
+    def test_after_the_migration_every_plan_but_main_is_a_template_instance(self):
+        units = {self.QUEUE: self.healthy(draining=True), self.NATIVE_AFTER: self.healthy(native=True),
+                 self.MAIN_AFTER: self.healthy()}
+        listed = [name for unit in units for name in (unit, unit.replace(".service", ".timer"))]
+        plans = self.observe(units, main=self.MAIN_AFTER, listed=listed)
+        self.assertEqual(sorted((p["kind"], p["state"]) for p in plans), [("drain", "drained"), ("native", "active")])
+        # The same host read with the old main name finds @main as one more plan.
+        self.assertEqual(len(self.observe(units, main=self.MAIN, listed=listed)), 3)
+
+    def test_a_plan_on_a_slow_timer_keeps_alerting_between_its_ticks(self):
+        # A drain on a 30-minute timer, failing: the last failure is 28 minutes old, then 48.
+        drain = self.failing(runs=2, timer=TIMER_30MIN)
+        drain["entries"] = self.failed_runs(NOW - 3500, NOW - 1700)
+        drain["events"] = [(NOW - 5000, self.tick(draining=True, pending=4))]
+        state = {}
+        for elapsed in (0, 1200):
+            plans = self.observe({self.DRAIN: drain}, at=NOW + elapsed)
+            self.assertEqual(plans[0]["window_s"], 3900)
+            checks, state = self.evaluate(plans, state, elapsed=elapsed)
+            (check,) = [c for code, c in checks.items() if code.startswith("plan_tick:")]
+            self.assertEqual((elapsed, check["state"], check["failed_in_a_row"]), (elapsed, "firing", 2))
+        # The same failures on a 5-minute timer have left the 15-minute window by then.
+        quick = {**drain, "timer": TIMER_5MIN}
+        self.assertEqual(self.observe({self.QUEUE: quick}, at=NOW + 1200)[0]["window_s"], 900)
+        self.assertIsNone(self.observe({self.QUEUE: quick}, at=NOW + 1200)[0]["tick"])
+        # Once the failures are older than the window the plan is no longer judged.
+        self.assertIsNone(self.observe({self.DRAIN: drain}, at=NOW + 3000)[0]["tick"])
+
+    def test_the_window_follows_the_timer_with_a_documented_fallback(self):
+        for timer, window in ((TIMER_5MIN, 900), (TIMER_30MIN, 3900),
+                              ("{ OnUnitActiveUSec=1h 30min ; next_elapse=x }", 6900),
+                              ("{ OnUnitInactiveUSec=1d ; next_elapse=x }", 6900),
+                              ("{ OnBootUSec=5min ; next_elapse=x }", C.PLAN_FALLBACK_WINDOW_S), ("", C.PLAN_FALLBACK_WINDOW_S)):
+            with self.subTest(timer=timer):
+                self.assertEqual(self.observe({self.DRAIN: {"timer": timer}})[0]["window_s"], window)
+        with patch.object(C, "run", side_effect=OSError):
+            self.assertEqual(C.plan_window(self.DRAIN), C.PLAN_FALLBACK_WINDOW_S)
+
+    def test_a_tick_waiting_on_the_tick_lock_is_not_a_hang_and_a_slow_one_needs_thirty_minutes(self):
+        running = {"events": [(NOW - 5000, self.tick())], "status": {
+            "SubState": "running", "ExecMainStartTimestampMonotonic": 1000000000, "ExecMainExitTimestampMonotonic": 0}}
+        for waited, state in ((1750, "healthy"), (F.PLAN_HANG_S, "healthy"), (F.PLAN_HANG_S + 1, "firing")):
+            with self.subTest(waited=waited), patch.object(C.time, "clock_gettime", return_value=1000 + waited):
+                checks, _ = self.evaluate(self.observe({self.QUEUE: running}))
+                (check,) = [c for code, c in checks.items() if code.startswith("plan_tick:")]
+                self.assertEqual(check["state"], state)
+        self.assertGreater(F.PLAN_HANG_S, 1800)
+        # Finished ticks of 16 and 21 minutes are not slow for a plan, one of 31 minutes is.
+        for seconds, failed in ((983, 0), (1233, 0), (1860, 1)):
+            event = {**self.tick(), "timings": {"tick_seconds": seconds}}
+            plans = self.observe({self.QUEUE: {"events": [(NOW - 30, event)]}})
+            self.assertEqual(plans[0]["tick"]["failed_in_a_row"], failed)
+
+    def test_a_successful_surya_tick_clears_the_streak_and_sets_the_plan_state(self):
+        surya = {"event": "boinc_surya_tick", "plan": "s", "draining": False, "timings": {"tick_seconds": 40}}
+        plan = self.failing(runs=2, events=[(NOW - 20, surya)])
+        (entry,) = self.observe({self.QUEUE: plan})
+        self.assertEqual((entry["state"], entry["tick"]["failed_in_a_row"]), ("active", 0))
+        slow = {**surya, "timings": {"tick_seconds": 1900}}
+        (entry,) = self.observe({self.QUEUE: {"events": [(NOW - 20, slow)]}})
+        self.assertEqual(entry["tick"]["failed_in_a_row"], 1)
+        (entry,) = self.observe({self.QUEUE: {"events": [(NOW - 20, {**surya, "draining": True})]}})
+        self.assertEqual((entry["kind"], entry["state"]), ("drain", "draining"))
+
+    def test_a_plan_tick_aging_while_the_document_is_collected_does_not_drop_it(self):
+        plans = self.observe({self.QUEUE: self.healthy()})
+        old = {**plans[0], "tick": {**plans[0]["tick"], "finished_at": NOW - plans[0]["window_s"] + 5}}
+        C.validate_plans([old], NOW + 120)
+        with self.assertRaises(ValueError):
+            C.validate_plans([old], NOW + 120 + C.MAX_AGE)
+
+    def test_a_plan_in_both_layouts_is_two_entries_and_the_document_still_validates(self):
+        units = {self.NATIVE: self.healthy(native=True), self.NATIVE_AFTER: self.healthy(native=True)}
+        plans = self.observe(units, main=self.MAIN_AFTER)
+        self.assertEqual(len({plan["id"] for plan in plans}), 2)
+        self.evaluate(plans)
+        with patch.object(C.hashlib, "sha256") as digest:
+            digest.return_value.hexdigest.return_value = "0123456789abcdef" * 4
+            plans = self.observe(units, main=self.MAIN_AFTER)
+        self.assertEqual(sorted(len(plan["id"]) for plan in plans), [8, 16])
+        self.evaluate(plans)
+
+    def test_every_instance_name_the_scheduler_accepts_is_found(self):
+        names = ("Native-1", "-drain", "a" * 64)
+        units = {f"usnm-boinc-priority-controller@{name}.service": self.healthy() for name in names}
+        self.assertEqual(len(self.observe(units)), 3)
+        too_long = {f"usnm-boinc-priority-controller@{'a' * 65}.service": self.healthy(),
+                    "usnm-boinc-priority-controller@bad_name.service": self.healthy()}
+        self.assertEqual(self.observe(too_long), [])
+
+    def test_plans_not_reached_within_the_budget_are_unknown_and_nothing_more_is_read(self):
+        units = {self.QUEUE: self.healthy(), self.NATIVE_AFTER: self.healthy(native=True)}
+        reads = []
+        fake = self.host(units)
+        with patch.object(C, "run", side_effect=lambda argv, **kw: reads.append(argv[:2]) or fake(argv, **kw)), \
+                patch.object(C, "PLAN_BUDGET_S", 0), patch.object(C.time, "time", return_value=NOW):
+            plans = C.plan_ticks(self.MAIN)
+        self.assertEqual([plan["state"] for plan in plans], ["unknown", "unknown"])
+        self.assertEqual(reads, [["systemctl", "list-units"]])
+        self.assertIsNone(C.READ_DEADLINE)
+        C.validate_plans(plans, NOW)
+        # While the plans are read, a read that would start after the deadline never does.
+        with patch.object(C, "READ_DEADLINE", time.monotonic() - 1), patch.object(C.subprocess, "Popen") as popen:
+            with self.assertRaises(TimeoutError):
+                C.run(["true"])
+        popen.assert_not_called()
+
+    def test_no_plan_name_leaves_the_host(self):
+        units = {self.QUEUE: self.failing(), self.NATIVE_AFTER: self.healthy(native=True, paused={"at": NOW - 9, "reason": "r"})}
+        plans = self.observe(units)
+        checks, _ = self.evaluate(plans)
+        text = json.dumps([plans, checks])
+        for name in ("queue-feed-10", "native-feed-3", "usnm-boinc"):
+            self.assertNotIn(name, text)
+        self.assertTrue(all(re.fullmatch(r"plan_tick:[0-9a-f]{8}|plan_discovery|[a-z_]+", code) for code in checks))
+
+    def test_an_unreadable_plan_is_unknown_and_the_others_are_still_read(self):
+        units = {self.QUEUE: self.healthy(), self.NATIVE_AFTER: self.failing()}
+        plans = self.observe(units, broken=(self.QUEUE,))
+        self.assertEqual(sorted(p["state"] for p in plans), ["active", "unknown"])
+        checks, _ = self.evaluate(plans)
+        self.assertEqual(sorted(c["state"] for code, c in checks.items() if code.startswith("plan_tick:")),
+                         ["firing", "unknown"])
+
+    def test_discovery_failing_is_reported_without_replacing_the_live_plans_tick(self):
+        with fixture() as root:
+            output = root / "controller.json"
+            tick = {"ok": True, "seconds": 5, "finished_at": NOW}
+            for fails, key in ((False, "plans"), (True, "plans_error")):
+                with patch.object(C, "controller", return_value=tick), \
+                        patch.object(C, "plan_ticks", side_effect=OSError("x") if fails else None, return_value=[]), \
+                        patch.object(C.time, "time", return_value=NOW):
+                    C.main(["controller", "--discover-plans", "--output", str(output)])
+                document = json.loads(output.read_text())
+                self.assertEqual((document["tick"], key in document), (tick, True))
+            self.assertEqual(document["plans_error"], C.PLANS_ERROR)
+            with patch.object(C, "controller", return_value=tick), patch.object(C.time, "time", return_value=NOW):
+                C.main(["controller", "--output", str(output)])
+            self.assertNotIn("plans", json.loads(output.read_text()))
+        document = {"tick": tick, "plans_error": C.PLANS_ERROR}
+        evaluated, _ = F.evaluate(document, {}, NOW, 1000, "boot", "cfg")
+        discovery = next(c for c in evaluated["plan_checks"] if c["code"] == "plan_discovery")
+        self.assertEqual((discovery["state"], discovery["reason"]), ("unknown", C.PLANS_ERROR))
+
+    def test_a_document_without_plans_changes_nothing(self):
+        document, _ = F.evaluate({"tick": {"ok": True, "seconds": 5}}, {}, NOW, 1000, "boot", "cfg")
+        self.assertNotIn("plan_checks", document)
+        self.assertFalse([c for c in document["checks"] if c["code"].startswith("plan_")])
+
+    def test_malformed_plan_documents_are_rejected(self):
+        good = {"id": "0123abcd", "kind": "queue", "state": "active", "paused_at": None, "tick": None, "error": None,
+                "window_s": 900}
+        C.validate_plans([good], NOW)
+        for bad in ({"id": "queue-feed-10"}, {"window_s": 60}, {"window_s": 9000}, {"kind": "other"}, {"state": "paused"}, {"state": "unknown"},
+                    {"state": "paused", "paused_at": NOW + 5}, {"extra": 1},
+                    {"tick": {"ok": True, "seconds": 1, "finished_at": NOW}}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                C.validate_plans([{**good, **bad}], NOW)
+        with self.assertRaises(ValueError):
+            C.validate_plans([good, good], NOW)
+        with self.assertRaises(ValueError):
+            C.validate_plans([{**good, "id": "%08x" % n} for n in range(C.MAX_PLANS + 1)], NOW)
+
+    def test_the_plans_ride_beside_the_checks_the_dashboard_knows_and_the_alert_reads_both(self):
+        plans = self.observe({self.QUEUE: self.failing(), self.NATIVE_AFTER: self.healthy(native=True)})
+        document, _ = F.evaluate({"tick": {"ok": True, "seconds": 5}, "plans": plans}, {}, NOW, 1000, "boot", "cfg")
+        known = {"qwen_refill_window", "usnm_ocr_no_work", "usnm_qwen_no_work", "cpu_shortage", "gpu_shortage",
+                 "controller_tick", "collection"}
+        self.assertTrue({c["code"] for c in document["checks"]} <= known)
+        self.assertEqual(len(document["plan_checks"]), 3)
+        self.assertFalse(document["healthy"] and any(c["state"] == "firing" for c in document["plan_checks"]))
+        self.assertLess(len(json.dumps(document)), 4000)
+        module = (ROOT / "infra/modules/boinc-feed-alerts.bicep").read_text()
+        self.assertIn("array_concat(Feed.checks, iff(isnull(Feed.plan_checks), dynamic([]), Feed.plan_checks))", module)
+
+    def test_the_status_states_match_the_collectors(self):
+        self.assertEqual(F.PLAN_STATES_SEEN, C.PLAN_STATES)

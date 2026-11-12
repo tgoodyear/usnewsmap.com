@@ -110,6 +110,16 @@ pub const DAMAGE_FLOOR: f64 = 0.1;
 pub const MIN_DAMAGE: f64 = 0.25;
 /// Days a page may stay outstanding before it is queued again.
 pub const REQUEUE_AFTER_DAYS: i64 = 14;
+
+/// The longest lease a claim may take, in days: `usnm-boinc`'s claim refuses more than
+/// 7 days (its `claim` module, the check on `Options::lease`).
+pub const MAX_CLAIM_LEASE_DAYS: i64 = 7;
+
+/// How long a settled page's message is assumed to stay hidden on `ocr-bulk`, counted from
+/// when the page was queued: up to [`REQUEUE_AFTER_DAYS`] to be claimed, then hidden for the
+/// claim's lease. The seeder can't read the claim, so a message a claim has already deleted
+/// may still be discounted inside this bound.
+pub const HELD_HIDDEN_DAYS: i64 = REQUEUE_AFTER_DAYS + MAX_CLAIM_LEASE_DAYS;
 /// Times a page is queued again after a timeout or a `dequeue_count`
 /// dead letter.
 pub const MAX_REQUEUES: u32 = 3;
@@ -772,6 +782,15 @@ pub struct SeedReport {
     pub refill_below: u64,
     /// `ocr-bulk`'s approximate message count, hidden ones included.
     pub queue_depth: u64,
+    /// `queue_depth` less `settled_hidden`: the depth the refill check and the window use
+    /// (#1613).
+    #[serde(default)]
+    pub queue_ready: u64,
+    /// Settled pages queued less than [`HELD_HIDDEN_DAYS`] days ago, whose messages may still be hidden
+    /// on `ocr-bulk` and counted in `queue_depth`. A claim deletes a settled page's message
+    /// once its lease runs out, so older ones are no longer in the depth.
+    #[serde(default)]
+    pub settled_hidden: u64,
     /// Bulk pages the ledger has outstanding (not timed out or waiting out
     /// an `unroutable` dead letter).
     pub in_flight: u64,
@@ -1241,17 +1260,33 @@ pub(super) async fn seed(
         .values()
         .filter(|q| in_flight(q, &ledger, now) && !settled.has(&q.doc_id))
         .count() as u64;
-    report.refill = report.queue_depth < report.refill_below;
+    // A held page's message stays hidden on the queue and is counted in its depth; it is
+    // not work waiting for a worker (#1613).
+    report.settled_hidden = ledger
+        .queued
+        .values()
+        .filter(|q| {
+            q.reason == Reason::Bulk.as_str()
+                && ledger.outstanding(&q.doc_id).is_some()
+                && settled.has(&q.doc_id)
+                && now - q.queued_at < chrono::Duration::days(HELD_HIDDEN_DAYS)
+        })
+        .count() as u64;
+    report.queue_ready = report.queue_depth.saturating_sub(report.settled_hidden);
+    report.refill = report.queue_ready < report.refill_below;
     if !report.refill && !opts.dry_run {
         tracing::info!(
             plan = opts.plan,
             queue_depth = report.queue_depth,
+            settled_held = report.settled_held,
+            settled_hidden = report.settled_hidden,
+            queue_ready = report.queue_ready,
             refill_below = report.refill_below,
             "ocr-bulk is full enough; nothing seeded"
         );
         return Ok(report);
     }
-    let outstanding = report.in_flight.max(report.queue_depth);
+    let outstanding = report.in_flight.max(report.queue_ready);
     let mut free = report
         .window
         .saturating_sub(outstanding)
@@ -1715,6 +1750,9 @@ pub(super) async fn seed(
         window = report.window,
         in_flight = report.in_flight,
         queue_depth = report.queue_depth,
+        settled_held = report.settled_held,
+        settled_hidden = report.settled_hidden,
+        queue_ready = report.queue_ready,
         skipped = ?report.skipped,
         supersession = ?report.supersession,
         ledger = ?report.ledger,

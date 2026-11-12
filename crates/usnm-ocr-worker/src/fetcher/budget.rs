@@ -14,6 +14,7 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 
+use super::daily::{ByteLedger, FileLedger, MemoryLedger};
 use super::policy::Policy;
 use crate::loc::global::{GlobalPacer, State};
 
@@ -117,6 +118,11 @@ impl Budget for GlobalPacer {
 /// Where each policy's budget comes from.
 pub trait Budgets: Send + Sync {
     fn budget(&self, policy: &Policy) -> anyhow::Result<Arc<dyn Budget>>;
+    /// Where `policy`'s daily byte count is kept, for a policy that sets a
+    /// `daily_byte_budget`. By default it lasts as long as this process.
+    fn ledger(&self, _policy: &Policy) -> anyhow::Result<Arc<dyn ByteLedger>> {
+        Ok(Arc::new(MemoryLedger::default()))
+    }
 }
 
 /// Budgets in state files: a named file for a policy that has one, otherwise
@@ -142,7 +148,27 @@ impl FileBudgets {
     }
 }
 
+impl FileBudgets {
+    /// `<budget file>.bytes` for a named file, otherwise `<dir>/<policy>.bytes.json`.
+    fn ledger_path(&self, policy: &Policy) -> anyhow::Result<PathBuf> {
+        if let Some((file, _)) = self.named.get(&policy.name) {
+            let mut name = file.as_os_str().to_owned();
+            name.push(".bytes");
+            return Ok(PathBuf::from(name));
+        }
+        let dir = self
+            .dir
+            .as_ref()
+            .with_context(|| format!("no budget file for policy {}", policy.name))?;
+        Ok(dir.join(format!("{}.bytes.json", policy.name)))
+    }
+}
+
 impl Budgets for FileBudgets {
+    fn ledger(&self, policy: &Policy) -> anyhow::Result<Arc<dyn ByteLedger>> {
+        Ok(Arc::new(FileLedger::new(self.ledger_path(policy)?)))
+    }
+
     fn budget(&self, policy: &Policy) -> anyhow::Result<Arc<dyn Budget>> {
         let (file, stamp) = match self.named.get(&policy.name) {
             Some((f, s)) => (f.clone(), s.clone()),

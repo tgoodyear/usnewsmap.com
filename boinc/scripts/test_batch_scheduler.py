@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -1644,6 +1645,338 @@ def claim_of(saved, page):
                               if page in state.get("claims", {})))
 
 
+def native_config(hosts=(13,)):
+    value = queue_config()
+    value.update(app="usnm_ocr_native", native_hosts=list(hosts), claim_languages=["eng"],
+                 batch_size=10, max_pending=40, pages_per_host=4)
+    return value
+
+
+class NativeFake(QueueFake):
+    """The queue and BOINC behind a native OCR plan (#1780): an inventory with each active host's
+    CPUs, and native submission, which the bridge refuses for a host trust doesn't admit."""
+
+    def __init__(self, waiting, cpus):
+        super().__init__(waiting)
+        self.cpus = dict(cpus)
+        self.refuse = set()
+
+    def inventory(self):
+        snapshot = super().inventory()
+        if self.cpus is not None:
+            snapshot["host_cpus"] = {str(host): n for host, n in self.cpus.items()}
+        return snapshot
+
+    def submit(self, job_id):
+        raise AssertionError("a native plan never submits a container unit")
+
+    def submit_native(self, units):
+        self.actions.append(("submit-native", list(units)))
+        for job_id, host in units:
+            if host in self.refuse:
+                raise RuntimeError(f"trust refuses host {host}")
+            self.jobs[job_id] = {"stage": "submitted", "spool": None}
+
+
+class NativePlanTests(unittest.TestCase):
+    def setUp(self):
+        self.config = native_config()
+        self.state = {}
+        self.fake = NativeFake([message(number) for number in range(1, 40)], {13: 24})
+        self.fake.assertions = []
+
+    def tick(self, **kwargs):
+        return batch.tick(self.config, self.state, self.fake, lambda: None, NOW, **kwargs)
+
+    def native_submissions(self):
+        return [unit for action in self.fake.actions if action[0] == "submit-native" for unit in action[1]]
+
+    def results_in(self):
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/0"
+
+    def test_an_empty_host_list_sends_nothing(self):
+        self.config["native_hosts"] = []
+        event = self.tick()
+        self.assertEqual(self.fake.actions, [])
+        self.assertEqual((event["target_pending"], event["backpressure_reason"]), (0, "no_native_hosts"))
+        self.assertEqual(event["native"]["hosts"], [])
+
+    def test_cpu_fill_gives_each_host_its_cpus_up_to_pages_per_host(self):
+        # Host 13 has 24 CPUs, capped at 4; host 5 has 2; host 9 hasn't been seen for a day.
+        self.config["native_hosts"] = [13, 5, 9]
+        self.fake.cpus = {13: 24, 5: 2, 3: 8}
+        event = self.tick()
+        self.assertEqual(event["target_pending"], 6)
+        hosts = [host for _, host in self.native_submissions()]
+        self.assertEqual(sorted(hosts), [5, 5, 13, 13, 13, 13])
+        self.assertEqual(event["native"]["slots"], {"13": 4, "5": 2, "9": 0})
+        self.assertEqual(event["native"]["outstanding"], {"13": 4, "5": 2, "9": 0})
+        # Full: the next tick sends nothing more.
+        self.fake.actions.clear()
+        self.tick()
+        self.assertEqual(self.native_submissions(), [])
+        # A published result frees its host's slot, and only that host gets the next unit.
+        done = next(job for job, host in self.state["native_targets"].items() if host == 5)
+        self.fake.jobs[done]["spool"] = "/project/usnmocr/results/0"
+        self.fake.actions.clear()
+        self.tick()
+        self.assertEqual([host for _, host in self.native_submissions()], [5])
+        self.assertNotIn(done, self.state["native_targets"])
+
+    def test_units_per_cpu_widens_a_hosts_room_up_to_pages_per_host(self):
+        # Host 13 has 24 CPUs: 3 units each is 72, capped at pages_per_host; host 5 has 2 CPUs: 6.
+        self.config.update(native_hosts=[13, 5], units_per_cpu=3, pages_per_host=50, max_pending=100)
+        self.fake.cpus = {13: 24, 5: 2}
+        event = self.tick()
+        self.assertEqual(event["native"]["slots"], {"13": 50, "5": 6})
+        self.assertEqual(event["target_pending"], 56)
+
+    def test_max_pending_bounds_the_plan_below_its_hosts_cpus(self):
+        self.config.update(pages_per_host=24, max_pending=5)
+        event = self.tick()
+        self.assertEqual(event["target_pending"], 5)
+        self.assertEqual(len(self.native_submissions()), 5)
+
+    def test_the_global_cap_bounds_the_plan_too(self):
+        self.fake.other = 3
+        event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, max_global_pending=5)
+        self.assertEqual(len(self.native_submissions()), 2)
+        self.assertEqual(event["max_global_pending"], 5)
+
+    def test_other_apps_work_does_not_count_against_the_plans_own_bound(self):
+        # 3000 container and GPU workunits pending: the native plan still fills its hosts, under
+        # the global cap.
+        self.fake.other = 3000
+        event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, max_global_pending=5000)
+        self.assertEqual(len(self.native_submissions()), 4)
+        self.assertEqual(event["cohort_pending"], 0)
+        # Its hosts are full, and at the global cap it would send nothing either way.
+        self.fake.actions.clear()
+        event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, max_global_pending=3002)
+        self.assertEqual(self.native_submissions(), [])
+        self.assertEqual(event["backpressure_reason"], "global_safety_cap")
+
+    def test_every_unit_is_assigned_to_a_listed_host(self):
+        self.config["native_hosts"] = [13, 14]
+        self.fake.cpus = {13: 3, 14: 3}
+        self.tick()
+        units = self.native_submissions()
+        self.assertEqual(len(units), 6)
+        self.assertTrue(all(host in (13, 14) for _, host in units))
+        self.assertEqual(dict(units), self.state["native_targets"])
+
+    def test_an_inventory_without_host_cpus_sends_nothing(self):
+        self.fake.cpus = None
+        event = self.tick()
+        self.assertEqual(self.native_submissions(), [])
+        self.assertEqual(event["backpressure_reason"], "no_native_hosts")
+
+    def test_a_held_native_result_pauses_the_plan_and_alerts_without_stopping_the_tick(self):
+        self.tick()
+        self.results_in()
+        self.fake.hold = True
+        self.fake.actions.clear()
+        event = self.tick()
+        self.assertEqual(event["backpressure_reason"], "native_paused")
+        (alert,) = [a for a in event["alerts"] if a["code"] == "native_paused"]
+        self.assertIn("unpublished", alert["reason"])
+        self.assertEqual(alert["app"], "usnm_ocr_native")
+        self.assertEqual(event["native"]["paused"]["jobs"], alert["jobs"])
+        self.assertFalse([a for a in self.fake.actions if a[0] in ("claim", "export", "submit-native")])
+        self.assertTrue(all(row["stage"] != "published" for row in self.fake.rows))
+        # Paused until an operator resumes it, even once the result could be published.
+        self.fake.hold = False
+        self.fake.actions.clear()
+        event = self.tick()
+        self.assertEqual(event["backpressure_reason"], "native_paused")
+        self.assertFalse([a for a in self.fake.actions if a[0] in ("claim", "submit-native")])
+        event = self.tick(resume_native=True)
+        self.assertNotIn("native_paused", self.state)
+        self.assertNotEqual(event["backpressure_reason"], "native_paused")
+        self.assertTrue(self.native_submissions())
+        # Only a native plan can be resumed; a container plan still stops on a held result
+        # (test_trust_hold_and_terminal_failures_stop_feed).
+        with self.assertRaisesRegex(ValueError, "--resume-native"):
+            batch.tick(queue_config(), {}, QueueFake([]), lambda: None, NOW, resume_native=True)
+
+    def test_resuming_while_a_result_is_still_held_pauses_again(self):
+        self.tick()
+        self.results_in()
+        self.fake.hold = True
+        self.tick()
+        self.fake.actions.clear()
+        event = self.tick(resume_native=True)
+        self.assertEqual(event["backpressure_reason"], "native_paused")
+        self.assertEqual(self.native_submissions(), [])
+
+    def test_results_past_batch_size_are_backlog_not_a_pause(self):
+        # Ten results in, collected four a tick.
+        self.config["pages_per_host"] = 24
+        self.tick()
+        self.config["batch_size"] = 4
+        self.assertEqual(len(self.fake.jobs), 10)
+        self.results_in()
+        event = self.tick()
+        self.assertNotIn("native_paused", self.state)
+        self.assertEqual(event["backpressure_reason"], "collection_backlog")
+        event = self.tick()
+        self.assertNotIn("native_paused", self.state)
+        self.assertEqual(self.state["native_unpublished"], [])
+
+    def test_an_earlier_unpublished_result_keeps_the_plan_paused_after_resume(self):
+        self.tick()
+        self.results_in()
+        self.fake.hold = True
+        self.tick()
+        held = list(self.state["native_unpublished"])
+        self.assertTrue(held)
+        # Resumed in a tick that collects nothing (no spool reported): still paused.
+        for job in self.fake.jobs.values():
+            job["spool"] = None
+        self.fake.actions.clear()
+        event = self.tick(resume_native=True)
+        self.assertEqual(event["backpressure_reason"], "native_paused")
+        self.assertEqual(self.native_submissions(), [])
+
+    def test_a_native_result_kept_by_a_held_scope_pauses_the_plan(self):
+        self.tick()
+        self.results_in()
+        self.fake.scope_held = True
+        event = self.tick()
+        self.assertEqual(event["backpressure_reason"], "native_paused")
+        self.assertIn("held scope", self.state["native_paused"]["reason"])
+        # Kept results are never collected again, and they still keep the plan paused: a resume
+        # while they are there pauses it again, and claims nothing.
+        self.fake.actions.clear()
+        event = self.tick(resume_native=True)
+        self.assertFalse([a for a in self.fake.actions if a[0] in ("collect", "claim", "submit-native")])
+        self.assertEqual(event["backpressure_reason"], "native_paused")
+
+    def test_a_refused_submission_creates_nothing_and_pauses_the_plan(self):
+        self.fake.refuse = {13}
+        event = self.tick()
+        self.assertEqual(self.fake.jobs, {})
+        self.assertEqual(event["backpressure_reason"], "native_paused")
+        self.assertIn("trust refuses host 13", self.state["native_paused"]["reason"])
+        self.fake.actions.clear()
+        self.tick()
+        self.assertEqual(self.native_submissions(), [])
+
+    def test_reservations_a_refused_batch_left_take_no_hosts_room(self):
+        # Host 5 refused: its batch's jobs stay reserved, assigned on record. With host 5 taken
+        # off the list and the plan resumed, they all go to host 13, which has nothing out.
+        self.config["native_hosts"] = [5, 13]
+        self.fake.cpus = {5: 4, 13: 4}
+        self.fake.refuse = {5}
+        self.tick()
+        self.assertEqual(self.fake.jobs, {})
+        self.assertEqual(len(self.state["native_targets"]), 8)
+        self.config["native_hosts"] = [13]
+        self.config["batch_size"] = 2
+        self.fake.refuse = set()
+        self.fake.actions.clear()
+        self.tick(resume_native=True)
+        self.assertEqual([host for _, host in self.native_submissions()], [13, 13])
+
+    def test_a_collect_failure_that_publishes_everything_still_stops_the_tick(self):
+        self.tick()
+        self.results_in()
+
+        def collect(job_id, spool):
+            # Every result is published, and the step still fails: nothing is held to pause on.
+            for row in self.fake.rows:
+                row["stage"] = "published"
+            raise RuntimeError("late transport error")
+        self.fake.collect = collect
+        with self.assertRaisesRegex(RuntimeError, "late transport error"):
+            self.tick()
+
+    def test_config_validation_and_digest(self):
+        path = Path(tempfile.mkdtemp()) / "native.json"
+        self.addCleanup(shutil.rmtree, path.parent)
+
+        def load(value):
+            path.write_text(json.dumps({k: v for k, v in value.items()
+                                        if k != "pages" or value.get("source") != "queue"}))
+            return batch.load_config(path)
+
+        loaded = load(self.config)
+        self.assertEqual(loaded["native_hosts"], [13])
+        self.assertEqual(load(native_config(hosts=()))["native_hosts"], [])
+        self.assertEqual(load({**self.config, "units_per_cpu": 4})["units_per_cpu"], 4)
+        # A plan without it keeps its digest; one with it is a different allocation.
+        self.assertNotEqual(batch.digest(self.config), batch.digest({**self.config, "units_per_cpu": 4}))
+        # Widening the hosts one at a time needs no migration.
+        self.assertEqual(batch.digest(native_config(hosts=(13,))), batch.digest(native_config(hosts=(13, 5))))
+        bad = [
+            {k: v for k, v in self.config.items() if k != "native_hosts"},
+            {**self.config, "native_hosts": [13, 13]},
+            {**self.config, "native_hosts": [0]},
+            {**self.config, "native_hosts": ["13"]},
+            {**self.config, "native_hosts": list(range(1, batch.MAX_NATIVE_HOSTS + 2))},
+            {k: v for k, v in self.config.items() if k != "claim_languages"},
+            {**self.config, "pages_per_unit": {"ocr-bulk": 4}, "bundle_app_version": 106},
+            {**self.config, "bundle_app_version": 106},
+            {**queue_config(), "native_hosts": [13]},
+            {**self.config, "units_per_cpu": 0},
+            {**self.config, "units_per_cpu": 17},
+            {**self.config, "units_per_cpu": True},
+            {**self.config, "units_per_cpu": "2"},
+            {**queue_config(), "units_per_cpu": 2},
+            {**queue_config(), "cohorts": {"native": {"app": "usnm_ocr_native"}}},
+        ]
+        for value in bad:
+            with self.subTest(value={k: value[k] for k in value if k not in queue_config()}):
+                with self.assertRaises(ValueError):
+                    load(value)
+        # Only a queue-fed plan can be native.
+        pages = config()
+        pages.update(app="usnm_ocr_native", native_hosts=[13])
+        with self.assertRaises(ValueError):
+            load(pages)
+
+    def test_dry_run_shows_the_hosts_and_resume_is_passed_to_the_tick(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        path = directory / "native.json"
+        path.write_text(json.dumps({k: v for k, v in self.config.items() if k != "pages"}))
+        output = io.StringIO()
+        with patch.object(batch.subprocess, "run", side_effect=AssertionError("offline")), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(batch.main(["--config", str(path), "--state-dir", str(directory / "s")]), 0)
+        plan = json.loads(output.getvalue())
+        self.assertEqual((plan["app"], plan["native_hosts"], plan["pages_per_host"]),
+                         ("usnm_ocr_native", [13], 4))
+        with patch.object(batch.Transport, "lock", return_value=contextlib.nullcontext()), \
+                patch.object(batch, "tick", return_value={}) as tick, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(batch.main(["--config", str(path), "--state-dir", str(directory / "s"),
+                                         "--apply", "--resume-native"]), 0)
+        self.assertTrue(tick.call_args.kwargs["resume_native"])
+        container = directory / "container.json"
+        container.write_text(json.dumps({k: v for k, v in queue_config().items() if k != "pages"}))
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(batch.main(["--config", str(container), "--state-dir", str(directory / "c"),
+                                         "--resume-native"]), 1)
+        self.assertIn("--resume-native is for usnm_ocr_native plans", err.getvalue())
+
+    def test_transport_sends_each_unit_with_its_host(self):
+        transport = batch.Transport(self.config, Path("."))
+        units = [(f"{n:064x}", 13) for n in range(1, 102)]
+        with patch.object(transport, "step") as step:
+            transport.submit_native(units)
+        self.assertEqual([c.args[:2] for c in step.call_args_list], [("bridge", "submit-remote")] * 2)
+        first = step.call_args_list[0].kwargs["NATIVE_UNITS"].split(",")
+        self.assertEqual((len(first), first[0]), (100, f"{1:064x}=13"))
+        self.assertEqual(step.call_args_list[1].kwargs["NATIVE_UNITS"], f"{101:064x}=13")
+
+    def test_assign_native_hosts_never_passes_a_hosts_room(self):
+        self.assertEqual(batch.assign_native_hosts(["a", "b", "c", "d"], {5: 2, 13: 1}, {13: 1}),
+                         [("a", 5), ("b", 5)])
+        self.assertEqual(batch.assign_native_hosts(["a"], {}, {}), [])
+
+
 class QueueModeTests(unittest.TestCase):
     def setUp(self):
         self.config = queue_config()
@@ -1966,6 +2299,56 @@ class QueueModeTests(unittest.TestCase):
         self.assertEqual(len([a for a in self.fake.actions if a[0] == "dead-letter-truncated"]), 1)
         self.assertEqual(len(self.fake.jobs), 3)
         self.assertEqual(self.fake.claimed[2:], ["sn12345678/1900-01-01/ed-1/seq-3", "sn12345678/1900-01-01/ed-1/seq-4"])
+
+    def test_a_page_export_finds_cut_short_on_a_re_push_is_settled_like_a_first_push(self):
+        # #1457: the first push passed it; export's re-push found it cut short.
+        page = "sn12345678/1900-01-01/ed-1/seq-1"
+        reason = "the codestream ends without an EOC marker after 1 of 4 tiles"
+        original = self.fake.export
+
+        def export(pages, job_ids=()):
+            cut = {p["page"]: reason for p in pages if p["page"] == page}
+            original([p for p in pages if p["page"] not in cut], job_ids)
+            return cut
+        self.fake.export = export
+        self.tick()
+        self.assertIn(("dead-letter-truncated", [("sn12345678_1900-01-01_ed-1_seq-1", f"{1:064x}")]),
+                      self.fake.actions)
+        self.assertEqual(self.fake.released, [])
+        self.assertNotIn(page, self.state["claims"])
+        self.assertNotIn(page, self.state["selected"])
+        self.assertEqual(self.state["source_truncated"][page]["reason"], reason)
+        self.assertEqual(len(self.fake.jobs), 1)
+
+    def test_a_cut_short_page_with_a_journal_keeps_its_allocation(self):
+        # The journal fails the ownership check if its page's allocation goes. A failed journal
+        # (a deadline retry's) is settled work: the page stays claimed, is not exported, is not
+        # dead-lettered, and later ticks pass it over. A live journal stops the tick for an
+        # operator: it would count as backlog for good.
+        page = "sn12345678/1900-01-01/ed-1/seq-1"
+        self.tick()
+        row = next(r for r in self.fake.rows if r["job"]["message"]["page"] == page)
+        row["stage"] = "prepared"
+        self.fake.export = lambda pages, job_ids=(): {page: "cut short"}
+        with self.assertRaisesRegex(ValueError, "live journal"):
+            self.tick()
+        self.assertFalse([a for a in self.fake.actions if a[0] == "dead-letter-truncated"])
+        self.assertIn(page, self.state["claims"])
+        self.assertNotIn("source_truncated", self.state)
+        row["stage"] = "failed"
+        self.state.setdefault("dead_lettered", {})[row["job"]["id"]] = int(NOW)
+        self.state["claims"][page]["supersedes"] = row["job"]["id"]
+        calls = []
+        self.fake.export = lambda pages, job_ids=(): calls.append([p["page"] for p in pages]) or {page: "cut short"}
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.tick()
+        self.assertIn("boinc_batch_export_truncated_kept", err.getvalue())
+        self.assertIn(page, self.state["claims"])
+        self.assertNotIn("source_truncated", self.state)
+        self.assertFalse([a for a in self.fake.actions if a[0] == "dead-letter-truncated"])
+        # Later ticks don't offer it to export.
+        self.fake.export = lambda pages, job_ids=(): self.assertNotIn(page, [p["page"] for p in pages])
+        self.tick()
 
     def test_a_failed_truncated_dead_letter_is_retried_and_never_pushed_again(self):
         base = "keep/test_batch/sn12345678/1900-01-01/1/1"
@@ -2308,6 +2691,32 @@ class QueueModeTests(unittest.TestCase):
         self.assertEqual(self.fake.rows[self.fake.rows.index(retried[0])]["stage"], "published")
         self.assertNotIn(retried[0]["job"]["id"], self.state["dead_lettered"])
 
+    def test_a_deadline_retry_of_a_page_kept_as_cut_short_is_exported_again_and_checked(self):
+        # #1457: the old attempt's re-push found the scan cut short, and the page was kept. The
+        # operator's retry takes the claim without that mark: whole now, it is exported; still
+        # cut short, it is skipped and kept again.
+        for whole in (True, False):
+            with self.subTest(whole=whole):
+                self.state = {}
+                failed, newer = self.dead_lettered_page()
+                page, failed_id = newer["page"], failed["job"]["id"]
+                self.state["claims"][page]["export_truncated"] = "the codestream ends inside its main header"
+                self.fake.retries[(failed_id, "e" * 64)] = self.retry_record(failed, newer)
+                if not whole:
+                    self.fake.export = lambda pages, job_ids=(): {page: "still cut short"}
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.tick()
+                claim = self.state["claims"][page]
+                self.assertEqual(claim["message"], "e" * 64)
+                if whole:
+                    self.assertNotIn("export_truncated", claim)
+                    self.assertIn(("export-retry", page, failed_id), self.fake.actions)
+                else:
+                    self.assertIn("boinc_batch_export_truncated_kept", err.getvalue())
+                    self.assertEqual(claim["export_truncated"], "still cut short")
+                    self.assertNotIn("source_truncated", self.state)
+                self.assertFalse([a for a in self.fake.actions if a[0] == "dead-letter-truncated"])
+
     def test_a_retried_job_that_fails_again_is_dead_lettered_as_usual(self):
         failed, newer = self.dead_lettered_page()
         failed_id = failed["job"]["id"]
@@ -2434,6 +2843,52 @@ class QueueModeTests(unittest.TestCase):
         feed.settled_messages = found
         self.assertEqual(feed.held_pages()["sn1_1900-01-01_ed-1_seq-1"],
                          sorted(found["sn1_1900-01-01_ed-1_seq-1"]))
+
+    def test_a_journal_message_a_float_ulp_off_is_settled_by_the_claims_sha(self):
+        # 11 Nov 2026: the export parsed the queue message's score one ulp off for 13 % of the
+        # held srp pages, so the journal's message hashed to nothing `claim pull` had recorded.
+        sent = {"v": 1, "page": "sn85055101/1947-04-04/ed-1/seq-1", "batch": "dlc_friendship",
+                "language": "srp", "reason": "bulk", "score": 0.23529411764705882,
+                "queued_at": "2026-11-08T01:06:34.682771Z"}
+        journaled = {**sent, "score": math.nextafter(sent["score"], -math.inf)}
+        self.assertNotEqual(sent["score"], journaled["score"])
+        record = {"plan": "queue-feed-11", "stage": "reserved", "held": "scope held",
+                  "job": {"id": "a" * 64, "message": journaled}}
+        doc = "sn85055101_1947-04-04_ed-1_seq-1"
+        claimed = {sent["page"]: {batch.queue_message_sha256(sent)}}
+        self.assertEqual(batch.settled_messages([record], claimed)[doc],
+                         {batch.queue_message_sha256(journaled), batch.queue_message_sha256(sent)})
+        # With no claim to confirm it, only the journal's own sha256 is listed.
+        self.assertEqual(batch.settled_messages([record])[doc], {batch.queue_message_sha256(journaled)})
+        # A claim of another message of the page (a later enqueue) stays new work.
+        later = {**sent, "queued_at": "2026-11-20T01:06:34.682771Z"}
+        self.assertEqual(batch.settled_messages([record], {sent["page"]: {batch.queue_message_sha256(later)}})[doc],
+                         {batch.queue_message_sha256(journaled)})
+        # The journal's own sha256 among the claims: an adjacent score's claim is another message.
+        adjacent = {**sent, "score": math.nextafter(journaled["score"], -math.inf)}
+        both = {sent["page"]: {batch.queue_message_sha256(journaled), batch.queue_message_sha256(adjacent)}}
+        self.assertEqual(batch.settled_messages([record], both)[doc], {batch.queue_message_sha256(journaled)})
+        # An exact match needs no neighbour; a claim without a float score matches as before.
+        exact = {"plan": "queue-feed-11", "stage": "published", "job": {"id": "b" * 64, "message": sent}}
+        self.assertEqual(batch.settled_messages([exact], claimed)[doc], {batch.queue_message_sha256(sent)})
+
+    def test_claimed_messages_join_this_plans_claims_and_the_siblings(self):
+        sha = lambda c: c * 64
+        with tempfile.TemporaryDirectory() as tmp:
+            own, other = Path(tmp) / "own", Path(tmp) / "other"
+            other.mkdir()
+            (other / "state.json").write_text(json.dumps({"claims": {
+                "sn1/1900-01-01/ed-1/seq-1": {"message": sha("a")},
+                "sn1/1900-01-01/ed-1/seq-2": {"message": None},
+                "sn1/1900-01-01/ed-1/seq-3": {"message": "not a digest"}}}))
+            sibling = batch.sibling_claim_messages(own, [other])
+            self.assertEqual(sibling, {"sn1/1900-01-01/ed-1/seq-1": {sha("a")}})
+            joined = batch.claimed_messages({"sn1/1900-01-01/ed-1/seq-1": {"message": sha("b")},
+                                             "sn1/1900-01-01/ed-1/seq-4": {"message": sha("c")}}, sibling)
+            self.assertEqual(joined, {"sn1/1900-01-01/ed-1/seq-1": {sha("a"), sha("b")},
+                                      "sn1/1900-01-01/ed-1/seq-4": {sha("c")}})
+            with self.assertRaises(ValueError):
+                batch.sibling_claim_messages(other, [other])
 
     def test_the_held_pages_list_goes_out_before_the_claim(self):
         # #1751: archived held pages' messages, here and in a sibling plan, are named with their
@@ -2968,7 +3423,6 @@ class TimingsTests(unittest.TestCase):
         self.assertIn("--skip-truncated", run.call_args.args[0])
         self.assertEqual(transport.timings.summary()["scan_pages"]["azure"],
                          {"pushed": 1, "missing": 0, "source_truncated": 1})
-        # Re-pushing a page already checked (export, after the destination moved) checks nothing.
         self.assertNotIn("--skip-truncated", transport.push_args(skip_truncated=False))
         # The dead letter names the pages.
         with patch.object(transport, "step") as step:
@@ -3571,8 +4025,8 @@ class QueueTransportTests(unittest.TestCase):
         found = {"keep/dlc_aaa/sn1/1890-05-03/1/1": "keep/dlc_aaa/sn1/1890-05-03/1/1.jpg"}
         with patch.object(t, "push_pages", return_value=(found, [], {})) as push, patch.object(t, "step") as step:
             t.export(pages, [])
-        # Checked once, when first pushed (#1457): not again here.
-        push.assert_called_once_with(["keep/dlc_aaa/sn1/1890-05-03/1/1"], skip_truncated=False)
+        # Checked as a first push is (#1457): whatever the Transport was set to.
+        push.assert_called_once_with(["keep/dlc_aaa/sn1/1890-05-03/1/1"])
         # The export asks for the format the push found now.
         self.assertEqual(step.call_args.kwargs["HANDOFF_SCANS"],
                          "keep/dlc_aaa/sn1/1890-05-03/1/1.jpg,keep/dlc_aaa/sn1/1890-05-03/1/2.jp2")
@@ -3581,6 +4035,64 @@ class QueueTransportTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "gone from the scan server"):
                 t.export(pages, [])
             step.assert_not_called()
+
+    def stale_export_fixture(self, skip_truncated):
+        cfg = queue_config()
+        cfg["step_command"] = ["ssh", "root@boinc.example", "--"]
+        cfg["scans_root"] = "/tank/ocr/scans"
+        t = batch.Transport(cfg, Path("."), onprem_handoff=("export",), skip_truncated=skip_truncated)
+        base = "keep/dlc_aaa/sn1/1890-05-03/1/%d"
+        pages = [{"page": f"sn1/1890-05-03/ed-1/seq-{n}", "batch": "dlc_aaa", "pushed_to": "container",
+                  "scan_base": base % n, "scan": f"/tank/ocr/scans/{base % n}.jp2"} for n in (1, 2)]
+        return t, pages, base
+
+    def test_a_stale_re_push_of_a_good_scan_exports_it(self):
+        t, pages, base = self.stale_export_fixture(True)
+        out = f"pushed {base % 1}.jp2\n"
+        with patch.object(batch.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, out, "")) as run, \
+                patch.object(t, "step") as step:
+            self.assertEqual(t.export(pages[:1], []), {})
+        # The re-push checks the JP2 as the first push does.
+        self.assertIn("--skip-truncated", run.call_args.args[0])
+        self.assertEqual(step.call_args.kwargs["HANDOFF_SCANS"], base % 1 + ".jp2")
+
+    def test_a_stale_re_push_without_the_flag_checks_nothing_as_before(self):
+        t, pages, base = self.stale_export_fixture(False)
+        out = f"pushed {base % 1}.jp2\n"
+        with patch.object(batch.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, out, "")) as run, \
+                patch.object(t, "step") as step:
+            self.assertEqual(t.export(pages[:1], []), {})
+        self.assertNotIn("--skip-truncated", run.call_args.args[0])
+        step.assert_called_once()
+
+    def test_a_stale_re_push_of_a_truncated_scan_is_skipped_and_named(self):
+        t, pages, base = self.stale_export_fixture(True)
+        out = f"truncated {(base % 1)[5:]} the codestream ends inside its main header\npushed {base % 2}.jp2\n"
+        with patch.object(batch.subprocess, "run", return_value=subprocess.CompletedProcess([], 3, out, "")), \
+                patch.object(t, "step") as step:
+            truncated = t.export(pages, [])
+        self.assertEqual(truncated, {pages[0]["page"]: "the codestream ends inside its main header"})
+        # Only the good page is exported.
+        self.assertEqual(step.call_args.kwargs["HANDOFF_PAGES"], pages[1]["page"])
+        self.assertEqual(step.call_args.kwargs["HANDOFF_SCANS"], base % 2 + ".jp2")
+        self.assertEqual(t.timings.summary()["scan_pages"]["onprem"]["source_truncated"], 1)
+        # Nothing is exported when every page is cut short.
+        with patch.object(batch.subprocess, "run", return_value=subprocess.CompletedProcess([], 3, out.splitlines()[0] + "\n", "")), \
+                patch.object(t, "step") as step:
+            self.assertEqual(t.export(pages[:1], []), truncated)
+        step.assert_not_called()
+
+    def test_a_scan_truncated_after_its_first_push_is_not_sent_again(self):
+        # A deadline retry's page was pushed, and passed, for its failed job: its copy on the
+        # scan server is cut short now.
+        t, pages, base = self.stale_export_fixture(True)
+        page = dict(pages[0], pushed_to="onprem", supersedes="c" * 64)
+        out = f"truncated {(base % 1)[5:]} the 'jp2c' box declares 9 bytes past the end of the file\n"
+        with patch.object(batch.subprocess, "run", return_value=subprocess.CompletedProcess([], 3, out, "")), \
+                patch.object(t, "step") as step:
+            self.assertEqual(t.export([page], []),
+                             {page["page"]: "the 'jp2c' box declares 9 bytes past the end of the file"})
+        step.assert_not_called()
 
     def test_a_deadline_retry_pushes_its_scan_again_and_names_its_failed_job(self):
         # #1417: the retried page's scan was pushed for its failed job, days ago.
@@ -3597,7 +4109,7 @@ class QueueTransportTests(unittest.TestCase):
         found = {"keep/dlc_aaa/sn1/1890-05-03/1/1": "keep/dlc_aaa/sn1/1890-05-03/1/1.jp2"}
         with patch.object(t, "push_pages", return_value=(found, [], {})) as push, patch.object(t, "step") as step:
             t.export([retried, plain], [])
-        push.assert_called_once_with(["keep/dlc_aaa/sn1/1890-05-03/1/1"], skip_truncated=False)
+        push.assert_called_once_with(["keep/dlc_aaa/sn1/1890-05-03/1/1"])
         sent = {call.kwargs["HANDOFF_BATCH"]: call.kwargs for call in step.call_args_list}
         self.assertEqual(sent["dlc_aaa"]["HANDOFF_DEADLINE_RETRIES"], "c" * 64)
         self.assertNotIn("HANDOFF_DEADLINE_RETRIES", sent["dlc_bbb"])
@@ -3810,6 +4322,48 @@ class CohortWatermarksAndStarvationTests(unittest.TestCase):
         self.assertFalse(event["backpressure"])
         self.assertEqual(qfake.actions[0], ("claim", 2))
         self.assertEqual(len(qfake.jobs), 2)
+
+    def test_a_backlog_in_another_app_past_the_global_cap_is_backpressure_not_a_failure(self):
+        # #1698: status counters were bounded by MAX_GLOBAL_PENDING (100,000), so a larger
+        # backlog in another app failed every OCR tick with "out-of-range BOINC status".
+        big = batch.MAX_GLOBAL_PENDING + 50_000
+        self.fake.other = big
+        xml = status_xml(ocr_unsent=0, ocr_in_progress=0, qwen_unsent=big,
+                         quality_unsent=0, quality_in_progress=0, train_unsent=0)
+        self.assertEqual(batch.parse_server_status(xml.encode())["apps"]["usnm_qwen"]["unsent"], big)
+        blocked = self.tick(low_watermark=1, high_watermark=4, max_global_pending=3000, server_status=xml)
+        self.assertEqual(blocked["backpressure_reason"], "global_safety_cap")
+        self.assertEqual(self.fake.actions, [])
+
+    def test_status_counters_are_bounded_by_the_status_ceiling(self):
+        top = batch.MAX_STATUS_COUNT
+        self.assertGreater(top, batch.MAX_GLOBAL_PENDING)
+        app = "<app><name>usnm_qwen</name><unsent>{0}</unsent><in_progress>0</in_progress></app>"
+        xml = ("<server_status><database_file_states><results_ready_to_send>{0}</results_ready_to_send>"
+               "<zero_work_requests>{0}</zero_work_requests><tasks_by_app>" + app +
+               "</tasks_by_app></database_file_states></server_status>")
+        parsed = batch.parse_server_status(xml.format(top).encode())
+        self.assertEqual((parsed["apps"]["usnm_qwen"]["unsent"], parsed["results_ready_to_send"],
+                          parsed["zero_work_requests"]), (top, top, top))
+        good = (
+            {"tasks_by_app": [{"name": "usnm_qwen", "unsent": top, "in_progress": top}]},
+            {"apps": {"usnm_qwen": {"unsent": top, "in_progress": 0}}, "results_ready_to_send": top,
+             "results_in_progress": top, "zero_work_requests": top},
+        )
+        for status in good:
+            with self.subTest(status=status):
+                self.assertEqual(batch.parse_server_status(status)["apps"]["usnm_qwen"]["unsent"], top)
+        bad = (
+            xml.format(top + 1).encode(),
+            {"tasks_by_app": [{"name": "usnm_qwen", "unsent": top + 1, "in_progress": 0}]},
+            {"apps": {"usnm_qwen": {"unsent": 0, "in_progress": top + 1}}},
+            {"apps": {"usnm_qwen": {"unsent": 0, "in_progress": 0}}, "results_ready_to_send": top + 1},
+            {"apps": {"usnm_qwen": {"unsent": 0, "in_progress": 0}}, "results_in_progress": top + 1},
+            {"apps": {"usnm_qwen": {"unsent": 0, "in_progress": 0}}, "zero_work_requests": top + 1},
+        )
+        for status in bad:
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                batch.parse_server_status(status)
 
     def test_global_safety_cap_halts_refill_with_explicit_diagnostic_reason(self):
         # 456 unsent usnm_qwen tasks exceed max_global_pending=400 even though usnm_ocr is 0/0.

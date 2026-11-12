@@ -8,6 +8,7 @@ on:
       - .github/workflows/boinc-ocr-native.yml
       - boinc/apps/native/**
       - boinc/scripts/smoke-native-ocr.sh
+      - scripts/ci/apt-base.sh
       - boinc/scripts/check-native-ocr-build.py
       - boinc/scripts/install.py
       - boinc/images/appver/check_appver.py
@@ -80,7 +81,13 @@ jobs:
           -p usnm-ocr-app --bin usnm_ocr --example native_fixture
       - name: Build the static Tesseract
         run: |
-          docker build -f boinc/apps/native/Containerfile -t usnm-tesseract-native boinc/apps/native
+          # The pinned apt base (boinc/apps/native/base.lock, #1683), its snapshot label checked.
+          # None while the lock is empty: the build then installs from the Debian snapshot.
+          lines=$(scripts/ci/apt-base.sh --app native --check-label docker)
+          bases=()
+          while IFS= read -r line; do [ -z "$line" ] || bases+=(--build-arg "$line"); done <<< "$lines"
+          echo "apt base: ${lines:-none pinned, installing from the Debian snapshot}"
+          docker build "${bases[@]}" -f boinc/apps/native/Containerfile -t usnm-tesseract-native boinc/apps/native
           mkdir build
           docker run --rm --network=none usnm-tesseract-native cat /out/usnm_tesseract > build/usnm_tesseract
           docker run --rm --network=none usnm-tesseract-native cat /out/usnm_tesseract.packages > usnm_tesseract.packages
@@ -150,4 +157,107 @@ jobs:
             build/
             build.txt
             usnm_tesseract.packages
+          if-no-files-found: error
+  # The macOS builds (docs/boinc/apps/native-ocr.md, Native usnm_ocr on more platforms): the same
+  # worker, and Tesseract built from the sources boinc/apps/native/macos-sources.lock pins. Each
+  # runner builds for its own architecture. Each build is its own identity: nothing here compares
+  # it with the Linux build or with the container's.
+  macos:
+    needs: inputs
+    if: needs.inputs.outputs.build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            boinc_platform: arm64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            boinc_platform: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Test the native worker
+        run: cargo test --locked --target "${{ matrix.target }}" -p usnm-boinc --lib "native::"
+      - name: Build the worker
+        run: >-
+          cargo build --release --locked --target "${{ matrix.target }}"
+          -p usnm-ocr-app --bin usnm_ocr --example native_fixture
+      - name: Build Tesseract from the pinned sources
+        run: |
+          boinc/apps/native/build-tesseract-macos.sh --out engine --work "$RUNNER_TEMP/tesseract"
+          mkdir build
+          cp engine/usnm_tesseract build/usnm_tesseract
+          cat engine/usnm_tesseract.sources
+      - name: Fetch the locked models
+        run: |
+          mkdir tessdata
+          grep '^tessdata/' ocr/engines/tesseract/models.lock | while read -r name url sum; do
+            curl -fsSL --retry 10 --retry-all-errors --retry-delay 5 -o "$name" "$url"
+            echo "$sum  $name" | shasum -a 256 --check --quiet
+            cp "$name" "build/tessdata_${name#tessdata/}"
+          done
+      - name: Fetch the models' notices
+        run: |
+          base=$(sed -n 's/^ARG CHR_PHOENIX_RELEASE=//p' ocr/engines/tesseract/Containerfile)
+          sums=$(sed -n 's/^ARG CHR_PHOENIX_SUMS=//p' ocr/engines/tesseract/Containerfile)
+          mkdir -p tessdata/notices/chr_phoenix
+          cd tessdata/notices/chr_phoenix
+          for name in SHA256SUMS NOTICE.md LICENSE-Apache-2.0.txt; do
+            curl -fsSL --retry 10 --retry-all-errors --retry-delay 5 -o "$name" "$base/$name"
+          done
+          echo "$sums  SHA256SUMS" | shasum -a 256 --check --quiet
+          grep -E '  (NOTICE\.md|LICENSE-Apache-2\.0\.txt)$' SHA256SUMS > checked
+          [ "$(wc -l < checked)" -eq 2 ]
+          shasum -a 256 --check --quiet checked
+          for name in NOTICE.md LICENSE-Apache-2.0.txt; do
+            cp "$name" "$GITHUB_WORKSPACE/build/notice_chr_phoenix_$name"
+          done
+      - name: Make the build manifest
+        shell: bash
+        run: |
+          cp "target/${{ matrix.target }}/release/usnm_ocr" build/usnm_ocr
+          codesign --force --sign - build/usnm_ocr
+          build/usnm_ocr manifest --worker build/usnm_ocr --tesseract "$PWD/build/usnm_tesseract" \
+            --tessdata tessdata --out build/usnm_native_build.json | tee build.txt
+      - name: Read a page, and refuse a job for another build
+        run: >-
+          boinc/scripts/smoke-native-ocr.sh --build build
+          --fixture "target/${{ matrix.target }}/release/examples/native_fixture"
+      - name: Check and stage the build as a release would
+        shell: bash
+        run: |
+          platform="${{ matrix.boinc_platform }}"
+          extras=()
+          for f in build/*; do [ "${f##*/}" = usnm_ocr ] || extras+=(--extra-file "${f##*/}=$f"); done
+          python3 boinc/scripts/check-native-ocr-build.py --platform "$platform" --binary build/usnm_ocr \
+            "${extras[@]}" | tee -a build.txt
+          mkdir release
+          echo unused > release/code_sign_public
+          for app in usnm_ocr_native usnm_gold_native; do
+            mkdir -p "release/$app" "release/$app-sigs"
+            touch "release/$app/config.xml"
+            python3 boinc/scripts/install.py --project "$PWD/release/$app" --kind native --app "$app" \
+              --version 1.0 --platform "$platform" --binary build/usnm_ocr --bundle-dir build
+            d="release/$app/apps/$app/1.0/$platform"
+            for f in "$d"/*; do [ "${f##*/}" = version.xml ] || echo unsigned > "release/$app-sigs/${f##*/}.sig"; done
+            python3 boinc/images/appver/check_appver.py --kind native --app "$app" \
+              --platform "$platform" --version-dir "$d" --sigs "release/$app-sigs" \
+              --public-key release/code_sign_public --crypt-prog /usr/bin/true
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: boinc-ocr-native-${{ matrix.boinc_platform }}
+          path: |
+            build/
+            build.txt
+            engine/usnm_tesseract.sources
           if-no-files-found: error

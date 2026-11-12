@@ -15,6 +15,7 @@ use tokio::sync::{watch, Semaphore};
 use tokio::time::Instant;
 
 use super::budget::{Budget, Budgets};
+use super::daily::{Clock, DailyBytes};
 use super::job::Job;
 use super::plain;
 use super::policy::{Policies, Policy, ServingProbe};
@@ -241,6 +242,8 @@ pub(super) struct Gate {
     slots: Semaphore,
     pub(super) cap: Arc<ByteCap>,
     in_a_row: AtomicU32,
+    /// The policy's `daily_byte_budget` and what it has used; None with no budget set.
+    daily: Option<DailyBytes>,
     /// True once this run asks the host nothing more, which also wakes every
     /// request waiting for its turn: a hold can last an hour.
     closed: watch::Sender<bool>,
@@ -261,6 +264,24 @@ impl Gate {
 
     pub(super) fn is_closed(&self) -> bool {
         *self.closed.borrow()
+    }
+
+    /// Why nothing more goes to this host today: its daily byte budget is spent.
+    /// Always None for a policy with no budget.
+    pub(super) fn byte_budget_spent(&self) -> Option<String> {
+        self.daily.as_ref().and_then(DailyBytes::spent)
+    }
+
+    fn note_bytes(&self, n: u64) {
+        if let Some(d) = &self.daily {
+            d.note(n);
+        }
+    }
+
+    fn flush_bytes(&self) {
+        if let Some(d) = &self.daily {
+            d.flush();
+        }
     }
 
     /// An error while this budget is slowed (a push-back to any process):
@@ -325,6 +346,10 @@ impl Gate {
             return Err(Fail::Stopped);
         }
         if self.is_closed() {
+            return Err(Fail::Closed);
+        }
+        if let Some(why) = self.byte_budget_spent() {
+            tracing::warn!(policy = %self.policy.name, url = %at, "{why}");
             return Err(Fail::Closed);
         }
         // The waits above can outlast a push-back to another process: checked again
@@ -468,6 +493,8 @@ pub struct Engine {
     budgets: Box<dyn Budgets>,
     gates: tokio::sync::Mutex<HashMap<String, Arc<Gate>>>,
     opts: EngineOptions,
+    /// The UTC day's clock, for daily byte budgets.
+    clock: Clock,
 }
 
 impl Engine {
@@ -497,7 +524,15 @@ impl Engine {
             budgets,
             gates: tokio::sync::Mutex::new(HashMap::new()),
             opts,
+            clock: Arc::new(chrono::Utc::now),
         })
+    }
+
+    /// Take the date for daily byte budgets from `clock`, which tests move across midnight.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// `url`'s policy state, set up on first use.
@@ -526,6 +561,21 @@ impl Engine {
         if let (Some(p), true) = (&policy.serving_probe, cap.current().is_some()) {
             guard(self.probe_http.clone(), p.clone(), &cap);
         }
+        let daily = match policy.daily_byte_budget {
+            Some(limit) => {
+                let ledger = self
+                    .budgets
+                    .ledger(policy)
+                    .map_err(|e| Fail::Refused(format!("{e:#}")))?;
+                Some(DailyBytes::new(
+                    &policy.label,
+                    limit,
+                    ledger,
+                    Arc::clone(&self.clock),
+                ))
+            }
+            None => None,
+        };
         let g = Arc::new(Gate {
             policy: policy.clone(),
             budget,
@@ -534,6 +584,7 @@ impl Engine {
             slots: Semaphore::new(policy.concurrency as usize),
             cap,
             in_a_row: AtomicU32::new(0),
+            daily,
             closed: watch::channel(false).0,
         });
         gates.insert(policy.name.clone(), Arc::clone(&g));
@@ -559,11 +610,24 @@ impl Engine {
     pub async fn read_capped(
         &self,
         url: &str,
-        mut resp: reqwest::Response,
+        resp: reqwest::Response,
         max: usize,
         stop: &watch::Receiver<bool>,
     ) -> Result<bytes::Bytes, Fail> {
         let gate = self.gate_for(url).await?;
+        let read = self.read_capped_in(&gate, url, resp, max, stop).await;
+        gate.flush_bytes();
+        read
+    }
+
+    async fn read_capped_in(
+        &self,
+        gate: &Gate,
+        url: &str,
+        mut resp: reqwest::Response,
+        max: usize,
+        stop: &watch::Receiver<bool>,
+    ) -> Result<bytes::Bytes, Fail> {
         gate.cap.refresh();
         // Over `max` is the same answer every time, so it's refused, not retried.
         if resp.content_length().is_some_and(|n| n > max as u64) {
@@ -579,6 +643,8 @@ impl Engine {
             let Some(chunk) = chunk else {
                 return Ok(bytes::Bytes::from(body));
             };
+            // Counted as it arrives, whether or not it is kept.
+            gate.note_bytes(chunk.len() as u64);
             if body.len() + chunk.len() > max {
                 return Err(Fail::Refused(format!("{url}: response over {max} bytes")));
             }
@@ -730,7 +796,10 @@ impl Engine {
                 room,
                 came: &came,
             };
-            let m = match self.attempt(&gate, this).await {
+            let tried = self.attempt(&gate, this).await;
+            // Bytes count against the daily budget whether or not the attempt succeeded.
+            gate.flush_bytes();
+            let m = match tried {
                 Ok(g) => {
                     gate.in_a_row.store(0, Ordering::Relaxed);
                     return Ok(g);
@@ -863,6 +932,7 @@ impl Engine {
                 };
                 have += chunk.len() as u64;
                 came.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                gate.note_bytes(chunk.len() as u64);
                 if have > job.size {
                     remove(part).await;
                     return Err(if job.sha256.is_some() {

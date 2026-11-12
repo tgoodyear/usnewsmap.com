@@ -33,6 +33,19 @@
         <target_nresults>1</target_nresults>
     </app>
     <app>
+        <name>usnm_ocr_native</name>
+        <user_friendly_name>usnewsmap OCR, native Linux build (Tesseract with no container runtime, one page per task)</user_friendly_name>
+        <min_version>0</min_version>
+        <deprecated>0</deprecated>
+        <homogeneous_redundancy>0</homogeneous_redundancy>
+        <!-- Weight 0, as usnm_gold_native: every unit is created with target_host for one host
+             trust admits (#1780), and the scheduler sends assigned work from the database, not
+             the feeder's cache (docs/boinc/apps/native-ocr.md, Rollout step 5). -->
+        <weight>0</weight>
+        <beta>0</beta>
+        <target_nresults>1</target_nresults>
+    </app>
+    <app>
         <name>usnm_gold_native</name>
         <user_friendly_name>usnewsmap OCR gold check, native Linux build (no container runtime)</user_friendly_name>
         <min_version>0</min_version>
@@ -50,7 +63,7 @@
         <name>usnm_surya</name>
         <user_friendly_name>usnewsmap Surya 2 OCR test (CPU and NVIDIA GPU, one page per task)</user_friendly_name>
         <min_version>0</min_version>
-        <deprecated>0</deprecated>
+        <deprecated>1</deprecated>
         <homogeneous_redundancy>0</homogeneous_redundancy>
         <weight>1</weight>
         <beta>0</beta>

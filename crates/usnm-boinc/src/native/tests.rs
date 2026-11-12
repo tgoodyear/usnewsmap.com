@@ -24,7 +24,7 @@ fn manifest() -> Manifest {
     Manifest {
         engine_version: "5.5.0".into(),
         files,
-        platform: "x86_64-pc-linux-gnu".into(),
+        platform: PLATFORM.into(),
         v: MANIFEST_VERSION,
     }
 }
@@ -209,6 +209,25 @@ fn send(dir: &Path, message: &str) {
     .unwrap();
 }
 
+/// Whether the process runs, a zombie counting as gone.
+#[cfg(target_os = "linux")]
+fn alive(pid: &str) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| !s.contains(") Z "))
+}
+
+/// Whether the process runs, a zombie counting as gone: `ps` prints nothing for a process
+/// that has gone and `Z` for a zombie.
+#[cfg(target_os = "macos")]
+fn alive(pid: &str) -> bool {
+    Command::new("ps")
+        .args(["-o", "stat=", "-p", pid])
+        .output()
+        .is_ok_and(|o| {
+            let stat = String::from_utf8_lossy(&o.stdout);
+            !stat.trim().is_empty() && !stat.trim_start().starts_with('Z')
+        })
+}
+
 #[test]
 fn a_quit_stops_the_whole_group_without_finishing() {
     let (dir, control) = client_slot();
@@ -224,9 +243,8 @@ fn a_quit_stops_the_whole_group_without_finishing() {
     client.join().unwrap();
     assert_eq!(ended, Ended::Stopped("quit"));
     let grandchild = std::fs::read_to_string(pid).unwrap();
-    let state = format!("/proc/{}/stat", grandchild.trim());
     let deadline = Instant::now() + Duration::from_secs(5);
-    while std::fs::read_to_string(&state).is_ok_and(|s| !s.contains(") Z ")) {
+    while alive(grandchild.trim()) {
         assert!(Instant::now() < deadline, "the engine outlived the task");
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -278,4 +296,102 @@ fn a_suspended_page_stays_stopped_and_carries_on() {
     client.join().unwrap();
     assert_eq!(starts.load(Ordering::SeqCst), 1);
     assert!(marker.exists());
+}
+
+/// macOS has no parent-death signal (`watch_parent`). These run the unit's real layout in
+/// subprocesses of this test binary: a stand-in task parent starts the unit in its own process
+/// group, as `run_slot` does, and the unit starts an engine-like child in that group. Killing
+/// the parent alone must end both, whether the group is running or stopped by a suspension.
+#[cfg(target_os = "macos")]
+mod parent_death {
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    const ROLE_ENV: &str = "USNM_TEST_PARENT_DEATH_ROLE";
+    const PIDS_ENV: &str = "USNM_TEST_PARENT_DEATH_PIDS";
+    const HELPER: &str = "native::tests::parent_death::helper";
+
+    fn rerun(role: &str, pids: &Path) -> Command {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", HELPER, "--nocapture", "--test-threads=1"])
+            .env(ROLE_ENV, role)
+            .env(PIDS_ENV, pids)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null());
+        command
+    }
+
+    /// Not a test of its own: the parent and unit roles of the tests below.
+    #[test]
+    fn helper() {
+        let Ok(role) = std::env::var(ROLE_ENV) else {
+            return;
+        };
+        let pids = std::path::PathBuf::from(std::env::var(PIDS_ENV).unwrap());
+        match role.as_str() {
+            "parent" => {
+                use std::os::unix::process::CommandExt;
+                let _unit = rerun("unit", &pids).process_group(0).spawn().unwrap();
+                std::thread::sleep(Duration::from_secs(120));
+            }
+            "unit" => {
+                super::super::watch_parent(super::super::parent_pid());
+                let engine = Command::new("/bin/sleep").arg("120").spawn().unwrap();
+                let line = format!("{} {}\n", std::process::id(), engine.id());
+                std::fs::write(pids.with_extension("tmp"), line).unwrap();
+                std::fs::rename(pids.with_extension("tmp"), &pids).unwrap();
+                std::thread::sleep(Duration::from_secs(120));
+            }
+            other => panic!("unknown role {other}"),
+        }
+    }
+
+    fn alive(pid: i32) -> bool {
+        rustix::process::test_kill_process(rustix::process::Pid::from_raw(pid).unwrap()).is_ok()
+    }
+
+    fn wait_until(what: &str, done: impl Fn() -> bool) {
+        let start = Instant::now();
+        while !done() {
+            assert!(start.elapsed() < Duration::from_secs(10), "{what}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn the_unit_and_engine_end_with_the_parent(stop_group_first: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let pids = dir.path().join("pids");
+        let mut parent = rerun("parent", &pids).spawn().unwrap();
+        wait_until("the unit never started", || pids.exists());
+        let text = std::fs::read_to_string(&pids).unwrap();
+        let [unit, engine]: [i32; 2] = text
+            .split_whitespace()
+            .map(|pid| pid.parse().unwrap())
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        let group = rustix::process::Pid::from_raw(unit).unwrap();
+        if stop_group_first {
+            // A suspension stops the whole group, the unit's watching thread with it.
+            rustix::process::kill_process_group(group, rustix::process::Signal::STOP).unwrap();
+        }
+        // The client can kill the parent alone.
+        parent.kill().unwrap();
+        parent.wait().unwrap();
+        wait_until("the unit outlived its parent", || !alive(unit));
+        wait_until("the engine outlived its parent", || !alive(engine));
+        let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+    }
+
+    #[test]
+    fn a_running_unit_and_its_engine_end_when_the_parent_is_killed() {
+        the_unit_and_engine_end_with_the_parent(false);
+    }
+
+    #[test]
+    fn a_stopped_unit_and_its_engine_end_when_the_parent_is_killed() {
+        the_unit_and_engine_end_with_the_parent(true);
+    }
 }

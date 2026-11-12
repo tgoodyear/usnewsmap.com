@@ -111,10 +111,13 @@
 #   BRIDGE_STEP=qwen-summary    writes <campaign>/summary.md from <project>/qwen
 #   BRIDGE_STEP=qwen-benchmark-stage QWEN_CROPS=<campaign>/test/crops.jsonl
 #                               QWEN_ENGINE=<campaign>/engine.json [QWEN_MAX=20]
+#                               [QWEN_DOC_IDS=legacy|sample] (default legacy; sample names each crop
+#                               by its dataset sample id and needs a new QWEN_CAMPAIGN, #983)
 #                               stages public gold crops; references stay on the share
 #   BRIDGE_STEP=qwen-benchmark-prepare [QWEN_SELECTION=transcription-audited-20261015]
 #                               resolves a committed audit against the converted gold cache,
 #                               verifies private references and stages without submitting work
+#                               [QWEN_DOC_IDS=legacy|sample] as for qwen-benchmark-stage
 #   BRIDGE_STEP=qwen-benchmark-collect QWEN_SPOOL=<canonical assimilator directory>
 #                               writes coverage and CER/WER to <campaign>/out
 #   BRIDGE_STEP=train-prepare TRAIN_CAMPAIGN=<name> TRAIN_WORKER_IMAGE=<public digest>
@@ -144,6 +147,11 @@
 #                               A line job (#1621) needs LINE_APP_VERSION=<version_num>, the
 #                               docker_lines usnm_ocr version, and takes LINE_TARGET_HOST=<id>
 #                               to send it to one calibrated host; it goes in batch 1621.
+#                               NATIVE_UNITS=<id>=<host>[,...] (up to 100) submits each job as a
+#                               usnm_ocr_native unit (#1780) assigned to that host, only if
+#                               $SHARE_DIR/gold/trust.json admits the host for the job's scope and
+#                               native digest; stops at the first failure, as JOB_IDS does. One job
+#                               alone takes JOB_ID and NATIVE_TARGET_HOST=<host>.
 #                               JOB_UNITS=<id>[+<id>...][,...] (up to 100 ids, up to 32 a unit)
 #                               submits each +-joined group as one OCR bundle workunit (#1059,
 #                               docs/boinc/apps/ocr-bundles.md), pinned to BUNDLE_APP_VERSION (the
@@ -207,7 +215,7 @@ scan_args=()
 if [ -d /project/handoff-scans/keep ]; then
   scan_args=(--scans /project/handoff-scans)
 fi
-if [ "$step" = submit-remote ] && { [ -n "${JOB_IDS:-}" ] || [ -n "${JOB_UNITS:-}" ]; }; then
+if [ "$step" = submit-remote ] && { [ -n "${JOB_IDS:-}" ] || [ -n "${JOB_UNITS:-}" ] || [ -n "${NATIVE_UNITS:-}" ]; }; then
   fetch_secrets
   render_config
   export BRIDGE_SECRETS_READY=1
@@ -222,6 +230,22 @@ if [ "$step" = submit-remote ] && [ -n "${JOB_IDS:-}" ]; then
   for id in "${batch_ids[@]}"; do
     log "submit-remote $id"
     JOB_ID=$id JOB_IDS="" "${BASH_SOURCE[0]}" || fail "submit-remote stopped at $id; the jobs after it were not submitted"
+  done
+  exit 0
+fi
+# Native OCR units (#1780): each job of NATIVE_UNITS goes to its one host, through the
+# single-job path, so the trust check and every other check are the same as for one job.
+if [ "$step" = submit-remote ] && [ -n "${NATIVE_UNITS:-}" ]; then
+  [ -z "${JOB_ID:-}" ] && [ -z "${JOB_IDS:-}" ] && [ -z "${JOB_UNITS:-}" ] && [ -z "${NATIVE_TARGET_HOST:-}" ] ||
+    fail "set NATIVE_UNITS alone, not with JOB_ID, JOB_IDS, JOB_UNITS or NATIVE_TARGET_HOST"
+  [[ $NATIVE_UNITS =~ ^[0-9a-f]{64}=[1-9][0-9]{0,9}(,[0-9a-f]{64}=[1-9][0-9]{0,9}){0,99}$ ]] ||
+    fail "NATIVE_UNITS is 1 to 100 comma-separated <job id>=<host id>"
+  IFS=, read -r -a native_units <<< "$NATIVE_UNITS"
+  for unit in "${native_units[@]}"; do
+    id=${unit%%=*} host=${unit#*=}
+    log "submit-remote $id as usnm_ocr_native for host $host"
+    JOB_ID=$id NATIVE_TARGET_HOST=$host NATIVE_UNITS="" "${BASH_SOURCE[0]}" ||
+      fail "submit-remote stopped at $id; the jobs after it were not submitted"
   done
   exit 0
 fi
@@ -295,6 +319,16 @@ if [[ "$step" == qwen-* ]]; then
   [[ "${QWEN_CAMPAIGN:-}" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "QWEN_CAMPAIGN must be 1-41 of [a-z0-9-]"
   QWEN="$SHARE_DIR/qwen/$QWEN_CAMPAIGN"
 fi
+# QWEN_DOC_IDS picks how benchmark staging spells each crop's doc_id (#983). The default,
+# legacy, adds no argument, so the command line is the one staged before the setting existed.
+doc_ids_args=()
+qwen_doc_ids_args() {
+  case "${QWEN_DOC_IDS:-legacy}" in
+    legacy) ;;
+    sample) doc_ids_args=(--doc-ids sample) ;;
+    *) fail "QWEN_DOC_IDS must be legacy or sample" ;;
+  esac
+}
 IRIS=""
 if [[ "$step" == iris-bundle-* ]]; then
   [[ "${IRIS_CAMPAIGN:-}" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || fail "IRIS_CAMPAIGN must be 1-41 of [a-z0-9-]"
@@ -490,17 +524,21 @@ case "$step" in
       --engine-weights "${QWEN_ENGINE_WEIGHTS:?set QWEN_ENGINE_WEIGHTS}" \
       --max-pages "${QWEN_MAX:-20}" --bundle-size "${QWEN_BUNDLE_SIZE:-16}" ;;
   qwen-benchmark-prepare)
+    qwen_doc_ids_args
     selection="${QWEN_SELECTION:-transcription-audited-20261015}"
     [[ "$selection" =~ ^[a-z0-9][a-z0-9-]{0,60}$ ]] || fail "invalid reviewed selection name"
     python3 /usr/local/lib/usnm-boinc/gold/scripts/ocr-survey/transcription.py \
       --selection "/usr/local/lib/usnm-boinc/gold/selections/$selection.json" \
       --cache "$SHARE_DIR/gold/build-v1/out" --out "$QWEN"
     exec usnm-boinc qwen benchmark-stage --root "$QWEN" \
-      --crops "$QWEN/test/crops.jsonl" --engine "$QWEN/engine.json" --max-crops "${QWEN_MAX:-20}" ;;
+      --crops "$QWEN/test/crops.jsonl" --engine "$QWEN/engine.json" --max-crops "${QWEN_MAX:-20}" \
+      ${doc_ids_args[@]+"${doc_ids_args[@]}"} ;;
   qwen-benchmark-stage)
+    qwen_doc_ids_args
     exec usnm-boinc qwen benchmark-stage --root "$QWEN" \
       --crops "${QWEN_CROPS:-$QWEN/test/crops.jsonl}" \
-      --engine "${QWEN_ENGINE:-$QWEN/engine.json}" --max-crops "${QWEN_MAX:-20}" ;;
+      --engine "${QWEN_ENGINE:-$QWEN/engine.json}" --max-crops "${QWEN_MAX:-20}" \
+      ${doc_ids_args[@]+"${doc_ids_args[@]}"} ;;
   qwen-benchmark-collect)
     exec usnm-boinc qwen benchmark-collect --root "$QWEN" \
       --spool "${QWEN_SPOOL:?set QWEN_SPOOL}" --out "$QWEN/out" ;;
@@ -660,6 +698,29 @@ submit_ocr_job() {
     [ -n "${LINE_APP_VERSION:-}" ] || fail "LINE_TARGET_HOST goes with LINE_APP_VERSION"
     [[ $LINE_TARGET_HOST =~ ^[1-9][0-9]*$ ]] || fail "LINE_TARGET_HOST must be positive"
     native_args+=(--target-host "$LINE_TARGET_HOST")
+  fi
+  # A native unit (#1780) is always assigned to one host, and usnm-boinc creates it only when the
+  # trust list admits that host for the job's scope and native digest.
+  if [ -n "${NATIVE_TARGET_HOST:-}" ]; then
+    [ -z "${LINE_APP_VERSION:-}${LINE_TARGET_HOST:-}" ] ||
+      fail "a native unit takes no LINE_APP_VERSION or LINE_TARGET_HOST"
+    [[ $NATIVE_TARGET_HOST =~ ^[1-9][0-9]{0,9}$ ]] || fail "NATIVE_TARGET_HOST must be positive"
+    [ -f "$SHARE_DIR/gold/trust.json" ] || fail "a native unit needs the trust list $SHARE_DIR/gold/trust.json"
+    # The native versions the feeder loads, as stock sched_shmem.cpp picks them (and
+    # served_versions in batch_scheduler.py): not deprecated, and every one at or above the app's
+    # min_version when it is set, otherwise only the highest of its platform and plan class.
+    # usnm-boinc pins the unit to the newest of them that packages its build, so a directory a
+    # failed publication left, a held version or an outranked one is never chosen.
+    write_mycnf
+    versions=$(mysql --defaults-extra-file="$mycnf" --ssl --ssl-verify-server-cert \
+      --ssl-ca=/usr/local/share/usnm/mysql-ca.pem --batch --skip-column-names "$DB_NAME" \
+      -e "SELECT COALESCE(GROUP_CONCAT(v.version_num ORDER BY v.version_num), '') FROM app_version v JOIN app a ON a.id = v.appid WHERE a.name = 'usnm_ocr_native' AND v.deprecated = 0 AND ((a.min_version > 0 AND v.version_num >= a.min_version) OR (a.min_version = 0 AND v.version_num = (SELECT MAX(w.version_num) FROM app_version w WHERE w.appid = v.appid AND w.platformid = v.platformid AND w.plan_class = v.plan_class AND w.deprecated = 0)))") ||
+      fail "could not read the usnm_ocr_native versions"
+    rm -f "$mycnf"
+    [[ $versions =~ ^[1-9][0-9]{0,8}(,[1-9][0-9]{0,8})*$ ]] || fail "no loaded usnm_ocr_native version is registered"
+    # In place of the arguments above: a native unit is never a retry, so takes no retry stores.
+    native_args=(--app usnm_ocr_native --target-host "$NATIVE_TARGET_HOST" --trust "$SHARE_DIR/gold/trust.json"
+      --native-versions "$versions")
   fi
   exec usnm-boinc submit --root "$HANDOFF_DIR" --project "$PROJ" --job "$JOB_ID" ${native_args[@]+"${native_args[@]}"}
 }

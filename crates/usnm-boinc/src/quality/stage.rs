@@ -1187,6 +1187,7 @@ pub(crate) mod tests {
             cpu_timeout_secs: 7200,
             max_tokens_per_1000px2: 4,
             prompt_version: 3,
+            model: None,
             max_pages: 2,
             bundle_size: 1,
             page_records: None,

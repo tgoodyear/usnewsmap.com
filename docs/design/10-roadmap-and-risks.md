@@ -75,6 +75,7 @@ gantt
 ## 10.4 Open questions for the maintainer
 
 1. **Speed vs budget.** At the $80 ceiling, Quickwit on a 1–2 vCPU sidecar is the only search option; managed AI Search (~$2–6k/mo) is out of reach. Are slower uncached searches for very common words (5–15 s) acceptable, or should the searcher start at 2 vCPU / 4 GiB? With private networking (~$17/mo, [ADR-0008](adr/0008-private-networking.md)) the 2 vCPU option puts a typical month at ~$87–102, over $80. The choices are: raise the ceiling to ~$100; keep private networking and the 1 vCPU searcher (~$72); or trade private endpoints for search speed.
+   **Decision, 12 November 2026 (#1704):** the ceiling is raised to $105 a month. It was $80. After the 6 November cuts (#308), prod's recurring cost is estimated at about $105 ([09 §9.5](09-operations-security-cost.md#the-cost-ceiling)), and the choices recorded here were to raise the ceiling, move the spare's index to the Cool tier, or keep cutting. The Cool tier is not taken: the October releases came 2 to 12 days apart, and Cool breaks even at about 18 days ([ADR-0008](adr/0008-private-networking.md)). The rest of this question keeps its $80 wording as history.
 2. **Branding and credits.** Keep the "US News Map" name and credit the original GTRI and eHistory team and Prof. Saunt?
 3. **Domain.** Confirm control of `usnewsmap.com` (the registrar account), and whether `usnewsmap.net` (used for legacy Solr hosts) is still held.
 4. **Legacy repo.** Archive `tgoodyear/usnewsmap` with a README pointing to the new project, after revoking the exposed keys.
@@ -85,7 +86,7 @@ gantt
 
 - [ ] All P0 features live; counts verified against brute force on the golden set
 - [ ] SLOs met for 14 consecutive days in beta
-- [ ] Cost < $80 per month for 2 consecutive months (actual)
+- [ ] Cost under the ceiling for 2 consecutive months (actual): $105 a month since 12 November 2026, $80 before
 - [ ] Runbooks rehearsed: full re-index, index rollback, app rollback
 - [ ] Accessibility audit (WCAG 2.2 AA) passed
 - [x] Legacy keys revoked (October 2026)

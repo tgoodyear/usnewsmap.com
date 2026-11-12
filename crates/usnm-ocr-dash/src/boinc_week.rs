@@ -42,7 +42,7 @@ pub struct Week {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "BucketWire")]
 pub struct Bucket {
     /// Epoch seconds; a US Eastern 3-hour boundary.
     pub start: i64,
@@ -55,11 +55,43 @@ pub struct Bucket {
     /// Successful results received in the bucket, by app.
     pub completed: BTreeMap<String, u64>,
     /// Accounts and machines that were sent or reported a result in the bucket.
-    pub accounts: u64,
-    pub hosts: u64,
-    /// The same without the project's own accounts and their machines.
     pub volunteers: u64,
-    pub volunteer_hosts: u64,
+    pub hosts: u64,
+}
+
+/// A bucket as pushed or stored. Documents from before every account counted
+/// as a volunteer have `accounts` (everyone) beside a smaller `volunteers`
+/// and a `volunteer_hosts`; they read as `volunteers = accounts` and `hosts`
+/// as sent, until the collector's next push replaces them.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BucketWire {
+    start: i64,
+    utc_offset_minutes: i32,
+    partial: bool,
+    queued: BTreeMap<String, u64>,
+    completed: BTreeMap<String, u64>,
+    volunteers: u64,
+    hosts: u64,
+    #[serde(default)]
+    accounts: Option<u64>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    volunteer_hosts: Option<u64>,
+}
+
+impl From<BucketWire> for Bucket {
+    fn from(w: BucketWire) -> Self {
+        Bucket {
+            start: w.start,
+            utc_offset_minutes: w.utc_offset_minutes,
+            partial: w.partial,
+            queued: w.queued,
+            completed: w.completed,
+            volunteers: w.accounts.unwrap_or(w.volunteers),
+            hosts: w.hosts,
+        }
+    }
 }
 
 impl Bucket {
@@ -156,14 +188,8 @@ fn check(w: &Week, now: DateTime<Utc>) -> anyhow::Result<()> {
             ensure!(apps.values().all(|n| *n <= MAX_COUNT), "bad count");
         }
         ensure!(
-            [b.accounts, b.hosts, b.volunteers, b.volunteer_hosts]
-                .iter()
-                .all(|n| *n <= MAX_COUNT),
+            b.volunteers <= MAX_COUNT && b.hosts <= MAX_COUNT,
             "bad count"
-        );
-        ensure!(
-            b.volunteers <= b.accounts && b.volunteer_hosts <= b.hosts,
-            "more volunteers than accounts"
         );
     }
     Ok(())
@@ -276,7 +302,7 @@ pub(crate) mod tests {
             .map(|i| {
                 let start = end - (56 - i) * 10800;
                 json!({
-                    "accounts": 4, "hosts": 7, "volunteers": 2, "volunteer_hosts": 3,
+                    "hosts": 7, "volunteers": 4,
                     "completed": {"usnm_quality": 200 + i, "usnm_qwen": 30},
                     "queued": {"usnm_qwen": 1700 - i},
                     "partial": i == 55, "start": start, "utc_offset_minutes": -300,
@@ -284,6 +310,24 @@ pub(crate) mod tests {
             })
             .collect();
         json!({"schema": 1, "generated_at": now.timestamp(), "bucket_hours": 3, "buckets": buckets})
+    }
+
+    #[test]
+    fn the_old_shape_reads_with_everyone_counted() {
+        let now = Utc::now();
+        let mut d = document(now);
+        for b in d["buckets"].as_array_mut().unwrap() {
+            b["accounts"] = json!(4);
+            b["volunteers"] = json!(2);
+            b["volunteer_hosts"] = json!(3);
+            b["hosts"] = json!(7);
+        }
+        let w = parse(&serde_json::to_vec(&d).unwrap(), now).unwrap();
+        assert_eq!((w.buckets[0].volunteers, w.buckets[0].hosts), (4, 7));
+        // Saved again, it has the new shape only.
+        let saved = serde_json::to_value(&w).unwrap();
+        assert!(saved["buckets"][0].get("accounts").is_none());
+        assert!(saved["buckets"][0].get("volunteer_hosts").is_none());
     }
 
     #[test]
@@ -320,7 +364,7 @@ pub(crate) mod tests {
         ));
         assert!(refused(&|d| d["generated_utc_offset_minutes"] = json!(5000)));
         assert!(refused(
-            &|d| d["buckets"][0]["accounts"] = json!("boinc-test")
+            &|d| d["buckets"][0]["volunteers"] = json!("boinc-test")
         ));
         // And the rest holds together.
         assert!(refused(&|d| d["schema"] = json!(2)));
@@ -331,7 +375,9 @@ pub(crate) mod tests {
         assert!(refused(
             &|d| d["buckets"][1]["start"] = d["buckets"][0]["start"].clone()
         ));
-        assert!(refused(&|d| d["buckets"][0]["volunteers"] = json!(5)));
+        assert!(refused(
+            &|d| d["buckets"][0]["volunteers"] = json!(2_000_000_000u64)
+        ));
         assert!(refused(&|d| d["buckets"] = json!([])));
     }
 

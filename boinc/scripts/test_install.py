@@ -289,6 +289,17 @@ class InstallTest(unittest.TestCase):
             ("nvidia_vulkan_2b", "x86_64-pc-linux-gnu", True, "usnm_qwen_2b_in"),
             ("amd_vulkan_8b", "x86_64-pc-linux-gnu", True, "usnm_qwen_8b_in"),
             ("amd_vulkan_8b", "windows_x86_64", True, "usnm_qwen_8b_in"),
+            # Xiaomi-OCR-0 (#1776): the classes each Qwen class above mirrors, with its own template.
+            ("mt_x08", "x86_64-pc-linux-gnu", False, "usnm_qwen_x08_in"),
+            ("mt_x08", "windows_x86_64", False, "usnm_qwen_x08_in"),
+            ("mt_x08", "arm64-apple-darwin", False, "usnm_qwen_x08_in"),
+            ("apple_gpu_x08", "arm64-apple-darwin", True, "usnm_qwen_x08_in"),
+            ("nvidia_vulkan_x08", "x86_64-pc-linux-gnu", True, "usnm_qwen_x08_in"),
+            ("nvidia_vulkan_x08", "windows_x86_64", True, "usnm_qwen_x08_in"),
+            ("intel_vulkan_x08", "x86_64-pc-linux-gnu", True, "usnm_qwen_x08_in"),
+            ("intel_vulkan_x08", "windows_x86_64", True, "usnm_qwen_x08_in"),
+            ("amd_vulkan_x08", "x86_64-pc-linux-gnu", True, "usnm_qwen_x08_in"),
+            ("amd_vulkan_x08", "windows_x86_64", True, "usnm_qwen_x08_in"),
         ):
             bin_for_plat = bin_win if platform == "windows_x86_64" else bin_unix
             ext = ".exe" if platform == "windows_x86_64" else ""
@@ -299,12 +310,22 @@ class InstallTest(unittest.TestCase):
                 f"llama.lock={llama_lock}",
                 f"weights.lock={weights_lock}",
             ]
-            if plan_class == "amd_vulkan_8b":
+            server_libraries = {
+                "windows_x86_64": ("llama-server-impl.dll", "llama-common.dll"),
+                "arm64-apple-darwin": ("libllama-server-impl.dylib", "libllama-common.0.dylib"),
+            }.get(platform, ("libllama-server-impl.so", "libllama-common.so.0"))
+            extras.extend(f"{name}={srv_src}" for name in server_libraries)
+            for missing in server_libraries:
+                with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, missing):
+                    module.install(self.project, version="2.0", app="usnm_qwen", plan_class=plan_class,
+                                   platform=platform, kind="native", binary=bin_for_plat,
+                                   extra_files=[e for e in extras if not e.startswith(missing + "=")])
+            if plan_class in ("amd_vulkan_8b", "amd_vulkan_x08"):
                 with self.assertRaisesRegex(ValueError, "requires --extra-file.*usnm-amd-device-map"):
                     module.install(self.project, version="2.0", app="usnm_qwen", plan_class=plan_class,
                                    platform=platform, kind="native", binary=bin_for_plat, extra_files=extras)
                 extras.append(f"usnm-amd-device-map{ext}={srv_src}")
-            if plan_class in ("amd_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b"):
+            if plan_class in ("amd_vulkan_8b", "amd_vulkan_x08", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b"):
                 if platform != "windows_x86_64":
                     libraries = ("libggml.so", "libggml-base.so", "libggml-vulkan.so")
                     extras.extend(f"{name}={srv_src}" for name in libraries)
@@ -315,12 +336,16 @@ class InstallTest(unittest.TestCase):
                                            extra_files=[e for e in extras if not e.startswith(missing + "=")])
             runtime = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
             llama_dlls = ("ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll",
-                          "ggml-cpu-x64.dll", "libomp140.x86_64.dll")
+                          "ggml-cpu-x64.dll", "libomp.dll")
             backend = (
                 ("ggml-vulkan.dll",) if plan_class in ("intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b",
-                                                        "amd_vulkan_8b")
+                                                        "amd_vulkan_8b", "intel_vulkan_x08", "nvidia_vulkan_x08",
+                                                        "amd_vulkan_x08")
                 else ("ggml-cuda.dll", "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll")
             )
+            # CPU-only classes take only the Microsoft runtime on Windows.
+            if plan_class in ("mt", "mt_x08"):
+                backend, llama_dlls = (), ()
             dll_names = runtime + llama_dlls + backend if platform == "windows_x86_64" else ()
             extras.extend(f"{name}={llama_srv_win}" for name in dll_names)
             for missing in dll_names:
@@ -435,6 +460,21 @@ class InstallTest(unittest.TestCase):
         self.assertEqual(files["usnm_native_build.json"].findtext("physical_name"), manifest)
         self.assertIsNone(files["tessdata_eng.traineddata"].find("copy_file"))
         self.assertEqual(sorted(p.name for p in (self.project / "templates").iterdir()), ["usnm_gold_out"])
+
+    def test_native_ocr_stages_on_macos_and_windows_and_not_on_linux_arm64(self):
+        worker, build, digest = self.native_ocr_build()
+        for platform in ("arm64-apple-darwin", "x86_64-apple-darwin", "windows_x86_64"):
+            with self.subTest(platform=platform):
+                target = module.install(self.project, None, None, "1.0", app="usnm_ocr_native", kind="native",
+                                        platform=platform, binary=worker, bundle_dir=build)
+                self.assertEqual(target.name, platform)
+                ext = ".exe" if platform == "windows_x86_64" else ""
+                self.assertTrue((target / f"usnm_ocr_native_1.0_{platform}{ext}").is_file())
+                self.assertTrue((target / f"usnm_native_build_{digest}.json").is_file())
+        for platform in ("aarch64-unknown-linux-gnu",):
+            with self.subTest(platform=platform), self.assertRaisesRegex(ValueError, "not supported on"):
+                module.install(self.project, None, None, "1.1", app="usnm_gold_native", kind="native",
+                               platform=platform, binary=worker, bundle_dir=build)
 
     def test_native_ocr_refuses_files_the_manifest_does_not_list(self):
         worker, build, _ = self.native_ocr_build()
@@ -551,8 +591,11 @@ class InstallTest(unittest.TestCase):
              "--build-dir replaces --binary and --extra-file"),
             (["--app", "usnm_ocr_native", "--kind", "native", "--build-dir", str(build), "--plan-class", "mt"],
              "--app and --plan-class for --kind native must be"),
-            (["--app", "usnm_gold_native", "--kind", "native", "--build-dir", str(build), "--platform", "windows_x86_64"],
+            (["--app", "usnm_gold_native", "--kind", "native", "--build-dir", str(build), "--platform", "aarch64-unknown-linux-gnu"],
              "native usnm_gold_native is built only for x86_64-pc-linux-gnu"),
+            # Windows is accepted; the fixture's manifest isn't a Windows build.
+            (["--app", "usnm_gold_native", "--kind", "native", "--build-dir", str(build), "--platform", "windows_x86_64"],
+             "is not a build manifest for windows_x86_64"),
             # The fixture's engine and models aren't the container worker's.
             (["--app", "usnm_ocr_native", "--kind", "native", "--build-dir", str(build)],
              "the native OCR build isn't the container worker's engine and models"),

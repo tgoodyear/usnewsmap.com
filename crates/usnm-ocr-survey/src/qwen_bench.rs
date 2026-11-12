@@ -160,6 +160,7 @@ pub fn stage(o: &StageOptions) -> anyhow::Result<Staged> {
             max_tokens_per_1000px2: MAX_TOKENS_PER_1000PX2,
             pages,
             prompt_version: PROMPT_VERSION,
+            model: None,
         };
         job.id = job.identity()?;
         job.validate()?;

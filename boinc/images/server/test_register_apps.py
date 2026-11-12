@@ -38,6 +38,12 @@ class BoincApp {
             file_put_contents(getenv("STUB_DB"), json_encode($rows));
             return true;
         }
+        if (preg_match("/^deprecated=1$/", $clause)) {
+            $rows = self::rows();
+            foreach ($rows as &$row) if ($row["name"] === $this->name) $row["deprecated"] = "1";
+            file_put_contents(getenv("STUB_DB"), json_encode($rows));
+            return true;
+        }
         preg_match("/^weight=([0-9]+)$/", $clause, $m) or die("bad update $clause\n");
         $rows = self::rows();
         foreach ($rows as &$row) if ($row["name"] === $this->name) $row["weight"] = $m[1];
@@ -92,10 +98,11 @@ class RegisterApps(unittest.TestCase):
         return result, {row["name"]: row["weight"] for row in json.loads(self.db.read_text())}
 
     def live(self):
-        # The registered apps as on 6 November: every app but usnm_gold_native, weights as declared.
+        # The registered apps as on 11 November: every app but usnm_ocr_native (#1780), weights as
+        # declared. usnm_gold_native has had a version since 6 November (#1607).
         rows = []
         for name, weight in self.declared().items():
-            if name != "usnm_gold_native":
+            if name != "usnm_ocr_native":
                 # usnm_assess has no app version on the live server.
                 rows.append({"id": len(rows) + 1, "name": name, "weight": str(weight), "deprecated": "0",
                              "versions": 0 if name == "usnm_assess" else 1})
@@ -108,10 +115,36 @@ class RegisterApps(unittest.TestCase):
     def test_a_new_app_gets_its_declared_weight_and_the_rest_are_unchanged(self):
         result, weights = self.run_script(self.live())
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("added app: usnm_gold_native", result.stdout)
-        self.assertIn("set weight of app usnm_gold_native, which has no app version, to 0", result.stdout)
-        self.assertEqual(weights["usnm_gold_native"], "0")
+        self.assertIn("added app: usnm_ocr_native", result.stdout)
+        self.assertIn("set weight of app usnm_ocr_native, which has no app version, to 0", result.stdout)
+        self.assertEqual(weights["usnm_ocr_native"], "0")
         self.assertEqual(weights, {name: str(weight) for name, weight in self.declared().items()})
+
+    def test_a_new_project_gets_only_the_live_apps_project_xml_declares(self):
+        # #1780: xadd inserts every app live, and the feeder holds at most MAX_APPS (10) live apps.
+        result, _ = self.run_script([])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = {row["name"]: row["deprecated"] for row in json.loads(self.db.read_text())}
+        declared = {app.findtext("name"): app.findtext("deprecated")
+                    for app in ET.parse(PROJECT_XML).findall("app")}
+        self.assertEqual(rows, declared)
+        self.assertLessEqual(sum(value == "0" for value in rows.values()), 10)
+        for name in ("usnm_assess", "usnm_iris"):
+            self.assertIn(f"deprecated app {name}, which has no app version", result.stdout)
+
+    def test_an_app_with_versions_or_retired_by_hand_keeps_its_state(self):
+        rows = self.live()
+        for row in rows:
+            if row["name"] == "usnm_iris":
+                row["deprecated"], row["versions"] = "0", 1
+            if row["name"] == "usnm_surya":
+                row["deprecated"] = "1"
+        result, _ = self.run_script(rows)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        after = {row["name"]: row["deprecated"] for row in json.loads(self.db.read_text())}
+        self.assertEqual((after["usnm_iris"], after["usnm_surya"]), ("0", "1"))
+        self.assertIn("app usnm_iris is live in the database and deprecated in project.xml; not changed",
+                      result.stdout)
 
     def test_an_operator_set_min_version_survives_registration(self):
         # #1687: app-version-hold.php --action min-version keeps 106 loaded beside 107; xadd
@@ -136,7 +169,7 @@ class RegisterApps(unittest.TestCase):
         self.assertEqual(reset["usnm_ocr"], "0")
 
     def test_a_rerun_changes_nothing(self):
-        rows = self.live() + [{"id": 99, "name": "usnm_gold_native", "weight": "0", "deprecated": "0", "versions": 0}]
+        rows = self.live() + [{"id": 99, "name": "usnm_ocr_native", "weight": "0", "deprecated": "0", "versions": 0}]
         result, weights = self.run_script(rows)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("set weight", result.stdout)
@@ -152,27 +185,27 @@ class RegisterApps(unittest.TestCase):
         self.assertIn("app usnm_qwen has weight 8 in the database and 16 in project.xml; not changed, "
                       "it has app versions", result.stdout)
         self.assertEqual(weights["usnm_qwen"], "8")
-        self.assertEqual(weights["usnm_gold_native"], "0")
+        self.assertEqual(weights["usnm_ocr_native"], "0")
 
     def test_a_retry_after_a_failed_run_still_sets_the_weight(self):
         # xadd added the app at weight 1 and the run stopped before setting it: the app has no
         # version yet, so a rerun sets it.
-        rows = self.live() + [{"id": 99, "name": "usnm_gold_native", "weight": "1", "deprecated": "0", "versions": 0}]
+        rows = self.live() + [{"id": 99, "name": "usnm_ocr_native", "weight": "1", "deprecated": "0", "versions": 0}]
         result, weights = self.run_script(rows)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("app usnm_gold_native already in DB", result.stdout)
-        self.assertEqual(weights["usnm_gold_native"], "0")
+        self.assertIn("app usnm_ocr_native already in DB", result.stdout)
+        self.assertEqual(weights["usnm_ocr_native"], "0")
 
     def test_a_weight_that_does_not_hold_fails(self):
         result, weights = self.run_script(self.live(), STUB_IGNORE_UPDATE="1")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("app usnm_gold_native has no app version, but its weight isn't 0", result.stderr)
+        self.assertIn("app usnm_ocr_native has no app version, but its weight isn't 0", result.stderr)
 
     def test_an_xadd_failure_fails_before_any_weight_is_set(self):
         result, weights = self.run_script(self.live(), STUB_XADD_STATUS="3")
         self.assertEqual(result.returncode, 1)
         self.assertIn("bin/xadd exited 3", result.stderr)
-        self.assertNotIn("usnm_gold_native", weights)
+        self.assertNotIn("usnm_ocr_native", weights)
 
     def test_the_step_and_a_new_project_register_through_it(self):
         bridge = (HERE / "bridge-job.sh").read_text()
@@ -186,8 +219,8 @@ class RegisterApps(unittest.TestCase):
         (self.project / "project.xml").write_text(xml.replace("<weight>0</weight>", "", 1))
         result, weights = self.run_script(self.live())
         self.assertEqual(result.returncode, 1)
-        self.assertIn("app usnm_gold_native needs a <weight>", result.stderr)
-        self.assertNotIn("usnm_gold_native", weights)
+        self.assertIn("app usnm_ocr_native needs a <weight>", result.stderr)
+        self.assertNotIn("usnm_ocr_native", weights)
 
 
 

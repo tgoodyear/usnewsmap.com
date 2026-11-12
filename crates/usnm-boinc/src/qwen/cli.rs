@@ -73,8 +73,14 @@ pub enum QwenCommands {
         #[arg(long, default_value_t = 4)]
         max_tokens_per_1000px2: u32,
         /// The request version to stage. Every dispatchable app version must read it.
-        #[arg(long, default_value_t = usnm_ocr_contract::qwen::PROMPT_VERSION)]
-        prompt_version: u32,
+        /// Defaults to 5 with a Xiaomi-OCR-0 `--model`, else 1.
+        #[arg(long)]
+        prompt_version: Option<u32>,
+        /// Pin every staged job to this model, by name (`xiaomi-ocr-0-q8`,
+        /// `qwen3-vl-8b-q4km`, `qwen3-vl-2b-q8`); hosts refuse to read it with
+        /// any other. Without it the host's plan class chooses, as before.
+        #[arg(long)]
+        model: Option<String>,
         #[arg(long, default_value_t = 20)]
         max_pages: usize,
         /// Pack staged pages into multi-page bundle workunits of up to this many pages (1 to 32),
@@ -286,11 +292,13 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             cpu_timeout_secs,
             max_tokens_per_1000px2,
             prompt_version,
+            model,
             max_pages,
             bundle_size,
             page_records,
             max_hold_secs,
         } => {
+            let (models, prompt_version) = x::stage_reader(model.as_deref(), prompt_version)?;
             let s = x::stage::run_selected(
                 &x::stage::Options {
                     quality_root,
@@ -298,13 +306,14 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
                     engine: usnm_ocr_contract::qwen::Engine {
                         image: engine_image,
                         llama: engine_llama,
-                        models: x::default_models(),
+                        models,
                         weights: engine_weights,
                     },
                     gpu_timeout_secs,
                     cpu_timeout_secs,
                     max_tokens_per_1000px2,
                     prompt_version,
+                    model,
                     max_pages,
                     bundle_size,
                     page_records,

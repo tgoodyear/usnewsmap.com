@@ -1110,6 +1110,36 @@ class AppReleaseArgs(unittest.TestCase):
                         else:
                             self.assertIn(f"native --plan-class {plan} is not supported", r.stderr)
 
+    def test_native_xiaomi_classes_allow_the_platforms_of_their_qwen_classes(self):
+        # #1776: releasable later; mt_x08 on every platform, the GPU classes where their 8B class runs.
+        platforms = ("x86_64-pc-linux-gnu", "windows_x86_64", "aarch64-unknown-linux-gnu",
+                     "arm64-apple-darwin", "x86_64-apple-darwin")
+        allowed = {
+            "mt_x08": set(platforms),
+            "apple_gpu_x08": {"arm64-apple-darwin"},
+            "nvidia_vulkan_x08": {"x86_64-pc-linux-gnu", "windows_x86_64"},
+            "intel_vulkan_x08": {"x86_64-pc-linux-gnu", "windows_x86_64"},
+            "amd_vulkan_x08": {"x86_64-pc-linux-gnu", "windows_x86_64"},
+        }
+        with tempfile.TemporaryDirectory(dir=ROOT) as folder:
+            binary = Path(folder) / "usnm_qwen"
+            binary.write_bytes(b"fixture")
+            for plan, ok in allowed.items():
+                for platform in platforms:
+                    with self.subTest(plan=plan, platform=platform):
+                        r = subprocess.run(
+                            [APP_RELEASE_SCRIPT, "--env", "prod", "--version", "1.0",
+                             "--signing-host", "fixture.invalid", "--app", "usnm_qwen",
+                             "--kind", "native", "--binary", str(binary),
+                             "--plan-class", plan, "--platform", platform],
+                            cwd=ROOT, capture_output=True, text=True,
+                        )
+                        self.assertNotEqual(r.returncode, 0)
+                        if platform in ok:
+                            self.assertIn("requires --extra-file llama-server", r.stderr)
+                        else:
+                            self.assertIn(f"native --plan-class {plan} is not supported", r.stderr)
+
     def test_onprem_host_and_ct_are_validated(self):
         # #961: checked with the other arguments, before the settings are read.
         r = subprocess.run(
@@ -1978,7 +2008,7 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         text = open(bridge).read()
         marker = "# End of the batch modes (#932).\n"
         self.assertIn(marker, text)
-        stub = ('printf "single %s %s %s\\n" "$step" "${JOB_ID:-}" "${HANDOFF_SPOOL:-}" >> "$STUB_LOG"\n'
+        stub = ('printf "single %s %s %s %s\\n" "$step" "${JOB_ID:-}" "${HANDOFF_SPOOL:-}" "${NATIVE_TARGET_HOST:-}" >> "$STUB_LOG"\n'
                 f'[ "${{JOB_ID:-}}" != {fail_job} ] || exit 4\nexit 0\n')
         # Key Vault and the config: stubs that log, so a test can count what a batch fetches (#958).
         lib_line = f". {os.path.join(ROOT, 'boinc/images/server/lib.sh')}\n"
@@ -2010,6 +2040,92 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         # One fetch of every secret and one config for the whole batch; no per-job Key Vault read.
         stubs = [c for c in self.calls() if c.startswith("stub ")]
         self.assertEqual(stubs, ["stub fetch_secrets", "stub render_config"])
+
+    def test_bridge_native_units_go_one_by_one_to_their_hosts(self):
+        # #1780: NATIVE_UNITS submits each job as a usnm_ocr_native unit for its host, through the
+        # single-job path, and stops at the first failure as JOB_IDS does.
+        j1, j2, j3 = "1" * 64, "2" * 64, "3" * 64
+        bridge, env = self.bridge_batch_copy(j2)
+        r = subprocess.run([bridge], cwd=ROOT, env={**env, "BRIDGE_STEP": "submit-remote",
+                                                    "NATIVE_UNITS": f"{j1}=13,{j2}=13,{j3}=7"},
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(f"submit-remote stopped at {j2}", r.stderr)
+        self.assertEqual([c.split()[1:] for c in self.calls() if c.startswith("single ")],
+                         [["submit-remote", j1, "13"], ["submit-remote", j2, "13"]])
+        stubs = [c for c in self.calls() if c.startswith("stub ")]
+        self.assertEqual(stubs, ["stub fetch_secrets", "stub render_config"])
+        # A unit with no host, host 0, or mixed with the other batch modes runs nothing.
+        for extra in ({"NATIVE_UNITS": j1}, {"NATIVE_UNITS": f"{j1}="}, {"NATIVE_UNITS": f"{j1}=0"},
+                      {"NATIVE_UNITS": f"{j1}=13", "JOB_ID": j1},
+                      {"NATIVE_UNITS": f"{j1}=13", "JOB_IDS": j1},
+                      {"NATIVE_UNITS": f"{j1}=13", "NATIVE_TARGET_HOST": "13"}):
+            with self.subTest(extra=extra):
+                os.remove(self.log)
+                r = subprocess.run([bridge], cwd=ROOT, env={**env, "BRIDGE_STEP": "submit-remote", **extra},
+                                   capture_output=True, text=True)
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertFalse([c for c in self.calls() if c.startswith("single ")])
+
+    def test_bridge_native_unit_submits_with_its_host_and_the_trust_list(self):
+        # #1780: the single-job path gives usnm-boinc the native app, the host and the trust list,
+        # and never the line pin or retry stores.
+        text = open(BRIDGE_JOB_SCRIPT).read()
+        function = "submit_ocr_job() {" + text.split("submit_ocr_job() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        bindir = os.path.join(self.tmp, "native-bin")
+        os.makedirs(bindir)
+        with open(os.path.join(bindir, "usnm-boinc"), "w") as f:
+            f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_LOG"\n')
+        os.chmod(os.path.join(bindir, "usnm-boinc"), 0o755)
+        # The database's loaded usnm_ocr_native versions; the query keeps only what the feeder
+        # loads (sched_shmem.cpp): not deprecated, at or above min_version, else the highest.
+        with open(os.path.join(bindir, "mysql"), "w") as f:
+            f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_LOG.sql"\nprintf "%s\\n" "$STUB_VERSIONS"\n')
+        os.chmod(os.path.join(bindir, "mysql"), 0o755)
+        share = os.path.join(self.tmp, "native-share")
+        os.makedirs(os.path.join(share, "gold"))
+        script = ('fail() { echo "error: $*" >&2; exit 1; }\n'
+                  f'write_mycnf() {{ mycnf={self.tmp}/native.cnf; : > "$mycnf"; }}\n' + function + "submit_ocr_job\n")
+        env = {**self.env, "PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log,
+               "HANDOFF_DIR": "/h", "PROJ": "/p", "JOB_ID": "1" * 64, "SHARE_DIR": share,
+               "DB_NAME": "usnmocr", "STUB_VERSIONS": "100,101",
+               "COSMOS_ENDPOINT": "https://c.documents.azure.com:443/", "CURATED_URL": "https://d/curated"}
+
+        def run(**extra):
+            if os.path.exists(self.log):
+                os.remove(self.log)
+            return subprocess.run(["bash", "-euo", "pipefail", "-c", script], env={**env, **extra},
+                                  capture_output=True, text=True)
+
+        r = run(NATIVE_TARGET_HOST="13")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("needs the trust list", r.stderr)
+        self.assertEqual(self.calls(), [])
+        open(os.path.join(share, "gold/trust.json"), "w").close()
+        r = run(NATIVE_TARGET_HOST="13")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.calls(), [f"submit --root /h --project /p --job {'1' * 64} --app usnm_ocr_native "
+                                        f"--target-host 13 --trust {share}/gold/trust.json --native-versions 100,101"])
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "native.cnf")))
+        with open(self.log + ".sql") as f:
+            query = f.read()
+        for clause in ("v.deprecated = 0", "a.min_version > 0 AND v.version_num >= a.min_version",
+                       "SELECT MAX(w.version_num)", "w.plan_class = v.plan_class"):
+            self.assertIn(clause, query)
+        # No live native version registered: nothing is submitted.
+        r = run(NATIVE_TARGET_HOST="13", STUB_VERSIONS="")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no loaded usnm_ocr_native version", r.stderr)
+        self.assertEqual(self.calls(), [])
+        for extra in ({"NATIVE_TARGET_HOST": "0"}, {"NATIVE_TARGET_HOST": "x"},
+                      {"NATIVE_TARGET_HOST": "13", "LINE_APP_VERSION": "108"}):
+            with self.subTest(extra=extra):
+                self.assertEqual(run(**extra).returncode, 1)
+                self.assertEqual(self.calls(), [])
+        # Without a host it is a container unit, as before.
+        r = run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("usnm_ocr_native", self.calls()[0])
 
     def test_bridge_spool_out_batch_goes_on_past_a_failed_job(self):
         j1, j2, j3 = "1" * 64, "2" * 64, "3" * 64
@@ -2182,6 +2298,33 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertTrue(any("--crops " + share + "/qwen/pilot-1/test/crops.jsonl" in c for c in self.calls()))
         self.assertTrue(any("--out " + share + "/qwen/pilot-1/out" in c for c in self.calls()))
 
+        # #983: QWEN_DOC_IDS defaults to legacy and then adds nothing to the command line.
+        for step in ("qwen-benchmark-stage",):
+            for doc_ids, flag in (("", None), ("legacy", None), ("sample", "--doc-ids sample")):
+                before = len(self.calls())
+                r = subprocess.run(
+                    [bridge_copy], cwd=ROOT,
+                    env={**base, "BRIDGE_STEP": step, **({"QWEN_DOC_IDS": doc_ids} if doc_ids else {})},
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(r.returncode, 0, r.stderr)
+                (call,) = self.calls()[before:]
+                self.assertIn("qwen benchmark-stage", call)
+                if flag is None:
+                    self.assertNotIn("--doc-ids", call)
+                    self.assertTrue(call.endswith("--max-crops 20"), call)
+                else:
+                    self.assertTrue(call.endswith("--max-crops 20 " + flag), call)
+            before = len(self.calls())
+            r = subprocess.run(
+                [bridge_copy], cwd=ROOT,
+                env={**base, "BRIDGE_STEP": step, "QWEN_DOC_IDS": "benchmark"},
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("QWEN_DOC_IDS must be legacy or sample", r.stderr)
+            self.assertEqual(len(self.calls()), before)
+
         python_stub = os.path.join(self.tmp, "bin", "python3")
         with open(python_stub, "w") as dst:
             dst.write('#!/usr/bin/env bash\nprintf "prepare %s\\n" "$*" >> "$STUB_LOG"\nexit "${PREP_FAIL:-0}"\n')
@@ -2202,6 +2345,23 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
                 self.assertNotIn("submit", " ".join(calls))
             else:
                 self.assertEqual(len(calls), 1)
+        before = len(self.calls())
+        r = subprocess.run(
+            [bridge_copy], cwd=ROOT,
+            env={**base, "BRIDGE_STEP": "qwen-benchmark-prepare", "QWEN_DOC_IDS": "sample"},
+            capture_output=True, text=True,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.calls()[before:][1].endswith("--doc-ids sample"))
+        before = len(self.calls())
+        r = subprocess.run(
+            [bridge_copy], cwd=ROOT,
+            env={**base, "BRIDGE_STEP": "qwen-benchmark-prepare", "QWEN_DOC_IDS": "bad"},
+            capture_output=True, text=True,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(len(self.calls()), before, "validation fails before any work")
+
         r = subprocess.run(
             [bridge_copy], cwd=ROOT,
             env={**base, "BRIDGE_STEP": "qwen-benchmark-prepare", "QWEN_SELECTION": "../other"},

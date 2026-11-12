@@ -391,6 +391,8 @@ A row whose `page_url` does not have this shape is kept, with the identity left 
 
 **Verified baseline.** The [local Beyond Words evaluator](../operations/pictures.md#verified-beyond-words-baseline) hashes the pinned canonical metadata and all retained picture parts, preserves the published train/validation split, excludes physical training overlap and post-1 December 2019 pages, and scores only the five verified classes. It reports fixed-threshold class-aware and geometry-only annotation agreement, not AP or engine accuracy. Missing retained predictions leave coverage unknown. No images are fetched, and no frame is treated as a page sequence number. Engine illustration/text-loss scoring and the picture layer's join, indexing and UI remain separate acceptance gates.
 
+**Region scorer** (`usnm-ingest pictures-score`, `pictures::score`; [operations](../operations/pictures.md#region-scorer)). It compares predicted regions, ALTO `illustration` blocks and Newspaper Navigator boxes keyed to a Beyond Words image, with that image's verified picture boxes: one-to-one matches at a stated IoU, with precision and recall per page and in total, geometry only. It reads local files and fetches nothing. No evaluation with real data has been run yet.
+
 ## 4.12 Penn State's Pennsylvania Newspaper Archive (#1592)
 
 Penn State, an NDNP awardee (`pst_` batches at LoC), serves its own Open ONI site, the Pennsylvania Newspaper Archive (`panewsarchive.psu.edu`): 266 batches, about 1.24M pages. A survey for #1592 found about 857k of those pages missing from our corpus, about 295k of them from before 1931. They are on the site only, so `oni-fetch` brings them in as batches `curate` reads.

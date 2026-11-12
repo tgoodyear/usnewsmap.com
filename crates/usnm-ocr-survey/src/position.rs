@@ -101,6 +101,51 @@ pub fn words(page: &Page) -> Vec<PageWord> {
     out
 }
 
+/// The page's text in reading order, as [`usnm_alto::text`] writes it, with a hyphen at the end
+/// of a text block joined to the next block's first word. [`text::normalize`] joins a hyphen
+/// only before a single line break, and a block break is two, so a word broken across blocks
+/// (a column's last line into the next column's first) came out as `Clare` and `mont` with the
+/// hyphen dropped. This rule belongs to the word-position scorer: `text::normalize` is shared
+/// with `score` and the golden test against gold.py, and stays as it is.
+///
+/// The join needs an ASCII `-` after a Latin letter, the one hyphen `text::normalize` joins at a
+/// line's end. A dash (en, em, minus, `⸗`), a hyphen after a digit or a non-Latin letter, and a
+/// block that ends in anything else are left as they are.
+pub fn page_text(page: &Page) -> String {
+    let t = usnm_alto::text(page);
+    let mut out = String::with_capacity(t.len());
+    let mut parts = t.split("\n\n").peekable();
+    while let Some(block) = parts.next() {
+        out.push_str(block);
+        if parts.peek().is_some() {
+            out.push_str(if ends_in_letter_hyphen(block) {
+                "\n"
+            } else {
+                "\n\n"
+            });
+        }
+    }
+    out
+}
+
+/// Whether `s` ends in `-` straight after a Latin letter, counting a letter with combining marks
+/// after it (`e` and U+0301) as the letter, so that it gives the same answer as the NFC form
+/// `text::normalize` makes of it (`\u{e9}`).
+fn ends_in_letter_hyphen(s: &str) -> bool {
+    let mut it = s.chars().rev();
+    it.next() == Some('-')
+        && it
+            .find(|c| !matches!(c, '\u{300}'..='\u{36F}'))
+            .is_some_and(is_latin_letter)
+}
+
+/// A letter of the Latin script: Basic Latin through Latin Extended-B, and Latin Extended
+/// Additional (long s, ligatures and the accented letters of Fraktur-era text).
+fn is_latin_letter(c: char) -> bool {
+    c.is_alphabetic()
+        && matches!(c, '\u{41}'..='\u{24F}' | '\u{1E00}'..='\u{1EFF}' | '\u{FB00}'..='\u{FB06}')
+}
+
 /// The intersection over union of two boxes; 0 when neither has any area.
 pub fn iou(a: &Rect, b: &Rect) -> f64 {
     let w = (a.x1.min(b.x1) - a.x0.max(b.x0)).max(0.0);
@@ -371,8 +416,8 @@ pub fn compare(reference: &Page, hypothesis: &Page, list_unmatched: bool) -> Com
         })
     };
     let text_order = score::counts(
-        &text::normalize(&usnm_alto::text(reference), false),
-        &text::normalize(&usnm_alto::text(&hyp_page), false),
+        &text::normalize(&page_text(reference), false),
+        &text::normalize(&page_text(&hyp_page), false),
     );
     Comparison {
         min_iou: MIN_IOU,
@@ -485,7 +530,7 @@ pub struct CropScore {
 /// dropped), and the rates are over it.
 pub fn crop(page: &Page, rect: &Rect, crop_text: &str, text_is_reference: bool) -> CropScore {
     let clipped = clip(page, rect);
-    let alto_text = usnm_alto::text(&clipped);
+    let alto_text = page_text(&clipped);
     let alto = text::normalize(&alto_text, false);
     let other = text::normalize(crop_text, text_is_reference);
     let counts = if text_is_reference {
@@ -853,6 +898,89 @@ mod tests {
         assert_eq!(s.alto_text, "inter-\ntoday");
         assert_eq!(s.text_order.cer, Some(0.0));
         assert_eq!(s.bag.dice, 1.0);
+    }
+
+    /// One line per block, each block a column of its own, `hyphen` set on the first.
+    fn two_blocks(first: &str, hyphen: bool, second: &str) -> Page {
+        let a: [W<'_>; 1] = [(first, [100, 100, 200, 130])];
+        let b: [W<'_>; 1] = [(second, [600, 100, 700, 130])];
+        page(&[&[(&a[..], hyphen)], &[(&b[..], false)]])
+    }
+
+    fn joined(first: &str, hyphen: bool, second: &str) -> String {
+        text::normalize(&page_text(&two_blocks(first, hyphen, second)), false)
+    }
+
+    #[test]
+    fn a_hyphen_ending_a_block_joins_the_next_block() {
+        assert_eq!(joined("Clare", true, "mont"), "Claremont");
+        // The hyphen as part of the word's text, without an ALTO HYP element.
+        assert_eq!(joined("Clare-", false, "mont"), "Claremont");
+        // The shared normalization alone drops the hyphen and leaves the word split.
+        let p = two_blocks("Clare", true, "mont");
+        assert_eq!(text::normalize(&usnm_alto::text(&p), false), "Clare mont");
+    }
+
+    #[test]
+    fn the_join_is_the_same_for_composed_and_combining_accents() {
+        let composed = joined("r\u{e9}-", false, "unir");
+        let combining = joined("re\u{301}-", false, "unir");
+        assert_eq!(composed, "r\u{e9}unir");
+        assert_eq!(combining, composed);
+        // A combining mark on a non-Latin letter still leaves it alone.
+        assert_eq!(joined("\u{3b1}\u{301}-", false, "x"), "\u{3ac} x");
+    }
+
+    #[test]
+    fn a_hyphenated_compound_inside_a_line_is_not_joined() {
+        assert_eq!(joined("well-known", false, "fact"), "well-known fact");
+        let a: [W<'_>; 2] = [
+            ("a", [100, 100, 150, 130]),
+            ("mother-in-law", [160, 100, 300, 130]),
+        ];
+        let p = page(&[&[(&a[..], false)]]);
+        assert_eq!(text::normalize(&page_text(&p), false), "a mother-in-law");
+    }
+
+    #[test]
+    fn dashes_that_are_not_hyphens_do_not_join() {
+        for dash in ["\u{2013}", "\u{2014}", "\u{2212}", "\u{2E17}", "\u{2E17}"] {
+            let first = format!("Clare{dash}");
+            assert_eq!(
+                joined(&first, false, "mont"),
+                format!("{first} mont"),
+                "{dash:?}"
+            );
+        }
+        // A hyphen after a digit, or alone, is not joined; it is treated as `text::normalize`
+        // always has, which drops a hyphen before a block break.
+        assert_eq!(joined("1900-", false, "01"), "1900 01");
+        assert_eq!(joined("-", false, "mont"), "mont");
+    }
+
+    #[test]
+    fn non_latin_scripts_are_left_alone() {
+        for first in [
+            "\u{43f}\u{440}\u{438}-",
+            "\u{3b1}\u{3b2}-",
+            "\u{5d0}\u{5d1}-",
+            "\u{3042}-",
+            "\u{13a0}\u{13a1}-",
+        ] {
+            let p = two_blocks(first, false, "mont");
+            let unchanged = text::normalize(&usnm_alto::text(&p), false);
+            assert_eq!(joined(first, false, "mont"), unchanged, "{first}");
+            assert!(unchanged.ends_with(" mont"), "{first}");
+        }
+    }
+
+    #[test]
+    fn crop_and_compare_use_the_block_join() {
+        let p = two_blocks("Clare", true, "mont");
+        let s = crop(&p, &Rect::new(0.0, 0.0, 1000.0, 1000.0), "Claremont", false);
+        assert_eq!(s.text_order.cer, Some(0.0));
+        let same = compare(&p, &p, false);
+        assert_eq!(same.text_order.cer, Some(0.0));
     }
 
     #[test]

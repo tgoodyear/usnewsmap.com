@@ -115,7 +115,8 @@ class MainTest(unittest.TestCase):
         health = module.split("var queries = [", 1)[1].split("name: alertNames.missing", 1)[0]
         health = health.split("| union (", 1)[0]
         self.assertIn("State == 'unknown' and isnotempty(Cause), Cause,", health)
-        self.assertIn("Code == 'controller_tick' and isnotempty(Reason), strcat(Code, ':', Reason),", health)
+        self.assertIn("(Code == 'controller_tick' or Code startswith 'plan_tick:') and isnotempty(Reason),", health)
+        self.assertIn("strcat(Code, ':', Reason),", health)
         # collection only when something it counts has no cause row; an older evaluator's line
         # (no uncovered) still sends it.
         self.assertIn("(Code != 'collection' or Uncovered > 0)", health)

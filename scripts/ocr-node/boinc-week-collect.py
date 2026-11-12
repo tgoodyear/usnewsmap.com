@@ -2,7 +2,7 @@
 """The BOINC week for the OCR dashboard: the last seven days in 3-hour buckets.
 
     boinc-week-collect.py --push-url http://<dashboard>/api/boinc-week
-        [--project-users 2,3,5,6] [--out FILE] [--now EPOCH]
+        [--out FILE] [--now EPOCH]
 
 Reads the BOINC database on the server's own connection settings (four bounded, read-only
 aggregate queries over the `result` table, which db_purge keeps for 30 days) and writes one small
@@ -14,10 +14,8 @@ next boundary and is partial. Per bucket:
               state 5 with no sent_time) is taken to have left at its mod_time, so this part is
               approximate.
   completed   successful results (outcome 1) received in the bucket, by app.
-  accounts, hosts
+  volunteers, hosts
               distinct accounts and machines that were sent or reported a result in the bucket.
-  volunteers, volunteer_hosts
-              the same without the project's own accounts (--project-users) and their machines.
 
 The document holds counts and app names only: no account, host or result ids, names or addresses
 leave the server. With --push-url it PUTs the document to usnm-ocrdash, which takes it only from
@@ -101,7 +99,7 @@ def offset_minutes(at):
     return int(datetime.fromtimestamp(at, EASTERN).utcoffset().total_seconds() // 60)
 
 
-def aggregate(rows, now, project_users):
+def aggregate(rows, now):
     starts, end = edges(now)
     apps = {int(key): name for key, name in rows["apps"].items() if APP_NAME.fullmatch(name)}
     bounds = starts + [end]
@@ -147,22 +145,17 @@ def aggregate(rows, now, project_users):
             done = buckets[index]["completed"]
             done[name] = done.get(name, 0) + count
 
-    active = [(set(), set(), set(), set()) for _ in starts]
+    active = [(set(), set()) for _ in starts]
     for hour, user, host in rows["active"]:
         index = bucket(hour)
         if index is None:
             continue
-        accounts, hosts, volunteers, volunteer_hosts = active[index]
-        accounts.add(user)
+        users, hosts = active[index]
+        users.add(user)
         hosts.add(host)
-        if user not in project_users:
-            volunteers.add(user)
-            volunteer_hosts.add(host)
-    for b, (accounts, hosts, volunteers, volunteer_hosts) in zip(buckets, active):
-        b["accounts"] = len(accounts)
+    for b, (users, hosts) in zip(buckets, active):
+        b["volunteers"] = len(users)
         b["hosts"] = len(hosts)
-        b["volunteers"] = len(volunteers)
-        b["volunteer_hosts"] = len(volunteer_hosts)
         b["completed"] = dict(sorted(b["completed"].items()))
         b["queued"] = dict(sorted(b["queued"].items()))
     return {"bucket_hours": BUCKET_HOURS, "buckets": buckets, "generated_at": int(now),
@@ -178,13 +171,6 @@ def boinc_rows(since):
     return json.loads(output[output.index("{"):])
 
 
-def users(text):
-    try:
-        return {int(part) for part in text.split(",") if part.strip()}
-    except ValueError:
-        raise argparse.ArgumentTypeError("comma-separated BOINC user ids") from None
-
-
 def write(path, document):
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -198,13 +184,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--push-url", help="PUT the document to the dashboard")
     parser.add_argument("--out", help="also write the document here")
-    parser.add_argument("--project-users", type=users, default=set(),
-                        help="the project's own BOINC user ids, comma-separated, left out of the volunteer counts")
     parser.add_argument("--now", type=int, help="the time to collect at, for tests")
     args = parser.parse_args()
     now = args.now if args.now is not None else int(datetime.now(timezone.utc).timestamp())
     starts, _ = edges(now)
-    document = aggregate(boinc_rows(starts[0]), now, args.project_users)
+    document = aggregate(boinc_rows(starts[0]), now)
     if args.out:
         write(args.out, document)
     if args.push_url:

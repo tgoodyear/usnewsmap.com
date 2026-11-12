@@ -227,8 +227,9 @@ const SERVER_STATE_UNSENT: i64 = 2;
 const SERVER_STATE_IN_PROGRESS: i64 = 4;
 /// BOINC's `RESULT_OUTCOME_DIDNT_NEED`: how `cancel_jobs` closes an unsent result.
 const OUTCOME_DIDNT_NEED: i64 = 5;
-/// BOINC's `WU_ERROR_CANCELLED` bit of `workunit.error_mask`, which `cancel_jobs` sets.
-const WU_ERROR_CANCELLED: i64 = 16;
+/// BOINC's `WU_ERROR_CANCELLED` bit of `workunit.error_mask`, which `cancel_jobs` sets; gold
+/// collection reads the same bit (`gold::collect::cancelled_workunits`).
+const WU_ERROR_CANCELLED: i64 = gold::collect::BOINC_WU_ERROR_CANCELLED;
 /// `assignment.target_type` of an assignment to one host.
 const TARGET_HOST: i64 = 1;
 
