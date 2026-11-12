@@ -5,8 +5,15 @@ Runs on the preparation host, never on a workstation. Collection holds CT230's b
 lock; a separate host lock serializes the whole collect/pull/load pass. Failed or timed
 out phases never advance to loading an old snapshot. The existing summary refresh timer
 continues to publish ranking updates.
+
+With --warm-without-lock the lock is held only to publish. The row parts are computed first,
+without it, by `quality collect --warm-only` (parts are keyed on the hashes of their inputs, so
+nothing needs keeping still), and the locked collection then finds them cached: it re-keys the
+units, checks nothing changed and writes the tables, under a compute budget and a hard timeout
+that bound how long the lock is held (#PRNUM).
 """
 import argparse
+import datetime
 import fcntl
 import json
 import os
@@ -21,6 +28,19 @@ import uuid
 
 HERE = Path(__file__).resolve().parent
 LOCK_ACQUIRED = "USNM_QUALITY_STEP_LOCK_ACQUIRED"
+LOCK_RELEASED = "USNM_QUALITY_STEP_LOCK_RELEASED"
+
+
+def stamp(lines, receipt):
+    """The UTC time on a receipt line, or None."""
+    for line in lines:
+        if line.startswith(receipt + " "):
+            try:
+                return datetime.datetime.strptime(line.split()[1], "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=datetime.timezone.utc)
+            except ValueError:
+                return None
+    return None
 
 
 def replay_collection_diagnostics(stderr):
@@ -28,23 +48,44 @@ def replay_collection_diagnostics(stderr):
         stderr = stderr.decode("utf-8", errors="replace")
     if stderr:
         print(stderr, file=sys.stderr, end="", flush=True)
-    return any(line.startswith(LOCK_ACQUIRED + " ") for line in (stderr or "").splitlines())
+    lines = (stderr or "").splitlines()
+    taken, released = stamp(lines, LOCK_ACQUIRED), stamp(lines, LOCK_RELEASED)
+    if taken and released:
+        # What the other steps waited behind, to the second.
+        print(json.dumps({"phase": "step_lock_held", "seconds": (released - taken).total_seconds()}),
+              file=sys.stderr, flush=True)
+    return any(line.startswith(LOCK_ACQUIRED + " ") for line in lines)
 
 
-def collect(args, command):
+def progress_of(stderr):
+    """The collector's own progress line (`quality collect` prints one to stderr), or None."""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    for line in reversed((stderr or "").splitlines()):
+        if line.startswith('{"phase":'):
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event.get("progress"), dict):
+                return event["progress"]
+    return None
+
+
+def collect(args, command, limit=1260):
     wait = args.step_lock_wait_secs
     ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
            f"root@{args.server_host}", shlex.join(command)]
     if not wait:
-        subprocess.run(ssh, check=True, timeout=1260)
+        subprocess.run(ssh, check=True, timeout=limit)
         return
     print(json.dumps({"phase": "step_lock_wait", "budget_seconds": wait}), file=sys.stderr, flush=True)
     try:
-        result = subprocess.run(ssh, stderr=subprocess.PIPE, text=True, timeout=1260 + wait)
+        result = subprocess.run(ssh, stderr=subprocess.PIPE, text=True, timeout=limit + wait)
     except subprocess.TimeoutExpired as error:
         acquired = replay_collection_diagnostics(error.stderr)
         print(json.dumps({"phase": "collection_transport_timeout",
-                          "budget_seconds": 1260 + wait, "step_lock_acquired": acquired}),
+                          "budget_seconds": limit + wait, "step_lock_acquired": acquired}),
               file=sys.stderr, flush=True)
         raise
     acquired = replay_collection_diagnostics(result.stderr)
@@ -52,6 +93,13 @@ def collect(args, command):
         print(json.dumps({"phase": "step_lock_timeout", "budget_seconds": wait}),
               file=sys.stderr, flush=True)
     elif result.returncode:
+        progress = progress_of(result.stderr) if acquired else None
+        if progress and progress.get("deferred"):
+            # More arrived since the parts were warmed than the locked run may compute. Nothing
+            # was published or loaded; the next run warms them without the lock.
+            print(json.dumps({"phase": "collection_deferred", "dirty": progress.get("dirty")}),
+                  file=sys.stderr, flush=True)
+            raise subprocess.CalledProcessError(75, result.args, stderr=result.stderr)
         print(json.dumps({"phase": "collection_failed" if acquired else "remote_admission_failed",
                           "exit": result.returncode}), file=sys.stderr, flush=True)
     result.check_returncode()
@@ -80,9 +128,72 @@ def transfer(command, timeout=300):
             raise subprocess.CalledProcessError(code, command)
 
 
+def warm_parts(args, collect_args):
+    """Compute and cache the row parts without the step lock, as many rounds as the budget allows.
+
+    Each round is `quality collect --warm-only`, niced, which computes dirty units for up to
+    --warm-round-secs and prints a progress line saying whether any were left. The step lock is
+    for the publication that follows. A failed round fails the root, so the lock is never taken
+    for a collection already known to fail."""
+    ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", f"root@{args.server_host}"]
+    deadline = time.monotonic() + args.warm_budget_secs
+    rounds = 0
+    while True:
+        remaining = deadline - time.monotonic()
+        if rounds and remaining < 60:
+            print(json.dumps({"phase": "warm_budget_spent", "rounds": rounds}), file=sys.stderr, flush=True)
+            return
+        compute = max(30, int(min(args.warm_round_secs, remaining - 30)))
+        # A unit started before the compute budget finishes, so the kill waits well past it.
+        kill_after = compute + 300
+        command = [
+            "pct", "exec", str(args.server_ct), "--", "podman", "exec", "usnm-boinc-server",
+            "nice", "-n", "15", "timeout", "--signal=TERM", "--kill-after=30s", f"{kill_after}s",
+            *collect_args, "--warm-only", "--max-dirty-units", "100000",
+            "--max-compute-secs", str(compute),
+        ]
+        print(json.dumps({"phase": "warm_round", "round": rounds + 1, "compute_secs": compute}),
+              file=sys.stderr, flush=True)
+        result = subprocess.run([*ssh, shlex.join(command)], stderr=subprocess.PIPE, text=True,
+                                timeout=kill_after + 60)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr, end="", flush=True)
+        result.check_returncode()
+        rounds += 1
+        progress = progress_of(result.stderr)
+        if progress is None:
+            raise RuntimeError("warm round reported no progress; refusing to publish")
+        if not progress.get("deferred"):
+            return
+
+
 def run(args):
     root = f"/project/quality/{args.campaign}"
     qwen_root = f"/project/qwen/{args.qwen_campaign}" if args.qwen_campaign else root + "/no-qwen"
+    warm = bool(getattr(args, "warm_without_lock", False))
+    if warm and not args.incremental:
+        raise ValueError("--warm-without-lock needs --incremental: parts are what it warms")
+    # The locked collection's whole life: its compute budget, then the remote kill, so the lock
+    # is held for at most about locked_timeout seconds however the collector behaves.
+    locked_timeout = getattr(args, "locked_timeout_secs", 150) if warm else 20 * 60
+    collect_args = [
+        args.collector, "quality", "collect", "--campaign", args.campaign,
+        "--root", root, "--spool", "/project/usnmocr/results/0",
+        "--qwen-root", qwen_root,
+        "--qwen-spool", "/project/usnmocr/results/8" if args.qwen_campaign else root + "/no-qwen",
+    ]
+    crop_states = getattr(args, "qwen_crop_states", None)
+    if args.qwen_campaign and crop_states:
+        # Only the crops an agreeing crop-consensus-v2 pair vouched for join (#1434).
+        collect_args.extend(["--qwen-crop-states", crop_states])
+    pages = getattr(args, "qwen_pages", None)
+    if args.qwen_campaign and pages:
+        # A bundle with no canonical result joins the pages a pair agreed on (#1435).
+        collect_args.extend(["--qwen-pages", pages])
+    if args.incremental:
+        collect_args.extend(["--cache", root + "/collected-parts"])
+    if warm:
+        warm_parts(args, collect_args)
     command = [
         "pct", "exec", str(args.server_ct), "--",
         "flock",
@@ -91,32 +202,23 @@ def run(args):
         command += [
             "-w", str(args.step_lock_wait_secs), "-E", "75", "/run/usnm-boinc-step.lock",
             "sh", "-c",
-            'printf "%s %s\\n" ' + LOCK_ACQUIRED + ' "$(date -u +%FT%TZ)" >&2; exec "$@"',
+            # Not exec: the shell stays to say when the lock is let go, so the hold is on record.
+            'printf "%s %s\\n" ' + LOCK_ACQUIRED + ' "$(date -u +%FT%TZ)" >&2; "$@"; code=$?; '
+            'printf "%s %s\\n" ' + LOCK_RELEASED + ' "$(date -u +%FT%TZ)" >&2; exit $code',
             "sh",
         ]
     else:
         command += ["-n", "/run/usnm-boinc-step.lock"]
     command += [
         "podman", "exec", "usnm-boinc-server",
-        "timeout", "--signal=TERM", "--kill-after=30s", "20m",
-        args.collector, "quality", "collect", "--campaign", args.campaign,
-        "--root", root, "--spool", "/project/usnmocr/results/0",
-        "--qwen-root", qwen_root,
-        "--qwen-spool", "/project/usnmocr/results/8" if args.qwen_campaign else root + "/no-qwen",
-        "--out-dir", root + "/out",
+        "timeout", "--signal=TERM", "--kill-after=30s", f"{locked_timeout}s" if warm else "20m",
+        *collect_args, "--out-dir", root + "/out",
     ]
-    crop_states = getattr(args, "qwen_crop_states", None)
-    if args.qwen_campaign and crop_states:
-        # Only the crops an agreeing crop-consensus-v2 pair vouched for join (#1434).
-        command.extend(["--qwen-crop-states", crop_states])
-    pages = getattr(args, "qwen_pages", None)
-    if args.qwen_campaign and pages:
-        # A bundle with no canonical result joins the pages a pair agreed on (#1435).
-        command.extend(["--qwen-pages", pages])
     if args.incremental:
-        command.extend(["--cache", root + "/collected-parts",
-                        "--max-dirty-units", str(args.max_dirty_units)])
-    collect(args, command)
+        command.extend(["--max-dirty-units", str(args.max_dirty_units)])
+        if warm:
+            command.extend(["--max-compute-secs", str(args.locked_compute_secs)])
+    collect(args, command, limit=locked_timeout + 60 if warm else 1260)
     snapshot = uuid.uuid4().hex
     transfer(["bash", str(HERE / "quality-results-pull.sh"),
               "--campaign", args.campaign, "--server-host", args.server_host,
@@ -189,6 +291,19 @@ def main(argv=None):
     parser.add_argument("--max-dirty-units", type=int, default=8)
     parser.add_argument("--step-lock-wait-secs", type=int, default=0,
                         help="bounded collection-only step-lock admission, 0 (nonblocking) to 60 seconds")
+    parser.add_argument("--warm-without-lock", action="store_true",
+                        help="compute row parts first without the step lock (`quality collect "
+                             "--warm-only`, so the collector must be from #PRNUM on); the lock is then "
+                             "held only to publish. Needs --incremental")
+    parser.add_argument("--warm-budget-secs", type=int, default=1500,
+                        help="most seconds of warming rounds per root before the locked collection")
+    parser.add_argument("--warm-round-secs", type=int, default=600,
+                        help="compute budget of one warming round; each round also reads every input once")
+    parser.add_argument("--locked-compute-secs", type=int, default=45,
+                        help="with --warm-without-lock: start no dirty unit under the lock after this long")
+    parser.add_argument("--locked-timeout-secs", type=int, default=150,
+                        help="with --warm-without-lock: TERM for the collection under the lock, "
+                             "and so the longest it holds it (KILL follows 30 s later)")
     parser.add_argument("--collector", default="usnm-boinc",
                         help="native collector executable inside the server (dedicated persistent path in services)")
     parser.add_argument("--server-host", default="pve.tjg.fyi")
@@ -204,6 +319,11 @@ def main(argv=None):
             or min(args.ctid, args.server_ct, args.max_dirty_units) < 1
             or not 0 <= args.step_lock_wait_secs <= 60):
         parser.error("invalid campaign, engine image, server host, container id, dirty-unit or lock-wait bound")
+    if args.warm_without_lock and not (args.incremental and args.step_lock_wait_secs):
+        parser.error("--warm-without-lock needs --incremental and --step-lock-wait-secs")
+    if (not 60 <= args.warm_budget_secs <= 6 * 3600 or not 30 <= args.warm_round_secs <= 3600
+            or not 10 <= args.locked_compute_secs <= 600 or not 30 <= args.locked_timeout_secs <= 600):
+        parser.error("invalid warm or locked time bound")
     if args.qwen_campaign and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", args.qwen_campaign):
         parser.error("invalid native Qwen campaign")
     if args.qwen_crop_states and not re.fullmatch(r"/[A-Za-z0-9._/-]+", args.qwen_crop_states):

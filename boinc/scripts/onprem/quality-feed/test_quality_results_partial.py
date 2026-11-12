@@ -188,6 +188,21 @@ class PartialTest(unittest.TestCase):
         write.assert_not_called()
         self.assertEqual(state.read_bytes(), original)
 
+    def test_the_hold_is_journaled_from_the_acquire_and_release_times(self):
+        stderr = (partial.LOCK_ACQUIRED + " 2026-11-12T08:00:00Z\ndiagnostic\n"
+                  + partial.LOCK_RELEASED + " 2026-11-12T08:00:41Z\n").encode()
+        with mock.patch.object(partial.sys, "stderr", new_callable=io.StringIO) as log:
+            self.assertTrue(partial.replay_collection_diagnostics(stderr))
+        held = [json.loads(line) for line in log.getvalue().splitlines() if "step_lock_held" in line]
+        self.assertEqual(held, [{"phase": "step_lock_held", "seconds": 41.0}])
+        # A receipt with no time, or one cut short by a kill, is still an acquisition.
+        with mock.patch.object(partial.sys, "stderr", new_callable=io.StringIO) as log:
+            self.assertTrue(partial.replay_collection_diagnostics((partial.LOCK_ACQUIRED + "\n").encode()))
+            self.assertTrue(partial.replay_collection_diagnostics(
+                (partial.LOCK_ACQUIRED + " 2026-11-12T08:00:00Z\n").encode()))
+        self.assertNotIn("step_lock_held", log.getvalue())
+        self.assertFalse(partial.replay_collection_diagnostics(b"remote diagnostic\n"))
+
     def test_host_lock_deferral_never_starts_remote_work(self):
         lock_path = self.root / "host.lock"
         with lock_path.open("a") as lock:

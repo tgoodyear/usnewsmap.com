@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Certificate-upsert one verified QUALITY unit without replacing a complete campaign snapshot."""
 import argparse
+import datetime
 import fcntl
 import hashlib
 import json
@@ -18,6 +19,7 @@ FILES = ("pages.parquet", "crops.parquet", "summary.md")
 UNIT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,255}")
 SNAPSHOT = re.compile(r"[a-f0-9]{32}")
 LOCK_ACQUIRED = "USNM_QUALITY_PARTIAL_STEP_LOCK_ACQUIRED"
+LOCK_RELEASED = "USNM_QUALITY_PARTIAL_STEP_LOCK_RELEASED"
 FRONTIER_LIMIT = 10_000
 REMOTE_WORK_SECONDS = 220  # Leave 20 seconds before the outer TERM for durable failure progress.
 # Each native call within a pass. A large bundle's re-check over NFS can pass 120 s (#1655);
@@ -35,11 +37,29 @@ RUN_BUDGET_SECONDS = 600
 UNIT_GAP_SECONDS = 5
 
 
+def stamp(lines, receipt):
+    """The UTC time on a receipt line, or None (a bare receipt line has none)."""
+    for line in lines:
+        if line.startswith(receipt + " "):
+            try:
+                return datetime.datetime.strptime(line.split()[1], "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=datetime.timezone.utc)
+            except ValueError:
+                return None
+    return None
+
+
 def replay_collection_diagnostics(stderr):
     stderr = stderr or b""
     if stderr:
         print(stderr.decode("utf-8", errors="replace"), file=sys.stderr, end="", flush=True)
-    return LOCK_ACQUIRED.encode() in stderr.splitlines()
+    lines = stderr.decode("utf-8", errors="replace").splitlines()
+    taken, released = stamp(lines, LOCK_ACQUIRED), stamp(lines, LOCK_RELEASED)
+    if taken and released:
+        # What the other steps waited behind, to the second.
+        print(json.dumps({"phase": "step_lock_held", "seconds": (released - taken).total_seconds()}),
+              file=sys.stderr, flush=True)
+    return any(line == LOCK_ACQUIRED or line.startswith(LOCK_ACQUIRED + " ") for line in lines)
 
 
 def digest(path):
@@ -432,7 +452,9 @@ def host_pass(args):
     remote = [
         "pct", "exec", str(args.server_ct), "--", "flock", "-n", "-E", "75",
         "/run/usnm-boinc-step.lock", "sh", "-c",
-        'printf "%s\\n" ' + LOCK_ACQUIRED + ' >&2; exec "$@"', "sh",
+        # Not exec: the shell stays to say when the lock is let go, so the hold is on record.
+        'printf "%s %s\\n" ' + LOCK_ACQUIRED + ' "$(date -u +%FT%TZ)" >&2; "$@"; code=$?; '
+        'printf "%s %s\\n" ' + LOCK_RELEASED + ' "$(date -u +%FT%TZ)" >&2; exit $code', "sh",
         "podman", "exec", "-i", "usnm-boinc-server",
         "timeout", "--signal=TERM", "--kill-after=10s", "240s", "python3", "-", "--remote",
         *common, "--collector", args.collector,

@@ -99,6 +99,31 @@ pub struct Options {
     pub cache: Option<PathBuf>,
     /// Maximum dirty canonical units computed before refusing an incomplete publication.
     pub max_dirty_units: usize,
+    /// Start no further dirty unit once the run has taken this long. A unit already started
+    /// finishes. The deferral is reported like `max_dirty_units`, so a pass running under the
+    /// server's step lock can bound how long it holds it and leave the rest to the next one.
+    pub max_compute: Option<std::time::Duration>,
+    /// Compute and store row parts only, publishing nothing. Cached units are not read back and
+    /// the end-of-run checks that the step lock keeps still are skipped, so this is safe
+    /// without the lock: a part is keyed on the hashes of its inputs, which are checked again
+    /// after the rows are computed, and a part keyed on inputs that were rewritten meanwhile is
+    /// never used by a later publication. Needs `cache`.
+    pub warm_only: bool,
+}
+
+/// What a collection did besides its rows, for the operator and the driver.
+#[derive(Debug, Default, Clone, PartialEq, serde::Serialize)]
+pub struct Progress {
+    /// Units whose rows were computed (and cached) by this run.
+    pub dirty: usize,
+    /// Whether a unit was left for a later run by `max_dirty_units` or `max_compute`.
+    pub deferred: bool,
+    /// Seconds reading every Qwen and Surya dependency into the cache's inventory.
+    pub inventory_secs: f64,
+    /// Seconds keying, loading and computing units.
+    pub units_secs: f64,
+    /// Seconds re-keying every unit before publication.
+    pub verify_secs: f64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1274,18 +1299,35 @@ pub fn inventory(
     Ok(result)
 }
 
+/// `collect_units`, refusing an incomplete publication: a deferred unit is an error.
 pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
+    let (collected, progress) = collect_units(opts)?;
+    anyhow::ensure!(
+        !progress.deferred,
+        "collection cache warmed {} dirty units; at least 1 deferred; no incomplete snapshot published",
+        progress.dirty
+    );
+    Ok(collected)
+}
+
+pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
     anyhow::ensure!(
         opts.max_dirty_units > 0,
         "--max-dirty-units must be positive"
     );
+    anyhow::ensure!(
+        !opts.warm_only || opts.cache.is_some(),
+        "--warm-only needs --cache"
+    );
+    let started = std::time::Instant::now();
     let cache = opts
         .cache
         .as_ref()
         .map(|dir| super::collect_cache::Cache::new(dir, opts))
         .transpose()?;
+    let inventory_secs = started.elapsed().as_secs_f64();
     let mut dirty = 0;
-    let mut deferred = 0;
+    let mut deferred = false;
     let mut summary = Summary::default();
     let mut pages = Vec::new();
     let mut crop_table = Vec::new();
@@ -1313,7 +1355,7 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
     unit_dirs.sort();
     for unit in unit_dirs {
         if cache.is_some() && dirty >= opts.max_dirty_units {
-            deferred += 1;
+            deferred = true;
             break;
         }
         let job: Job = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB_JSON)?)
@@ -1334,11 +1376,19 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
             .transpose()?;
         if let (Some(cache), Some(key)) = (&cache, &key) {
             cache.track(&unit, &files, key);
-            if let Some(part) = cache.load(key)? {
+            if opts.warm_only {
+                if cache.has(key) {
+                    continue;
+                }
+            } else if let Some(part) = cache.load(key)? {
                 summary.add(&part.summary);
                 pages.extend(part.pages);
                 crop_table.extend(part.crops);
                 continue;
+            }
+            if opts.max_compute.is_some_and(|max| started.elapsed() >= max) {
+                deferred = true;
+                break;
             }
             dirty += 1;
         }
@@ -1531,10 +1581,14 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
                 // Published from what was read, collected again next run.
                 continue;
             }
-            anyhow::ensure!(
-                &cache.key(&unit, &job, &files)? == key,
-                "{wu}: collection inputs changed; no part published"
-            );
+            if &cache.key(&unit, &job, &files)? != key {
+                // Rewritten while it was read. A warming run has no step lock to keep inputs
+                // still and publishes nothing, so the next run keys the unit afresh.
+                if opts.warm_only {
+                    continue;
+                }
+                anyhow::bail!("{wu}: collection inputs changed; no part published");
+            }
             cache.store(
                 key,
                 &super::collect_cache::Part {
@@ -1545,20 +1599,29 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
             )?;
         }
     }
-    anyhow::ensure!(
-        deferred == 0,
-        "collection cache warmed {dirty} dirty units; at least {deferred} deferred; no incomplete snapshot published"
-    );
-    if let Some(cache) = &cache {
+    let units_secs = started.elapsed().as_secs_f64() - inventory_secs;
+    let mut verify_secs = 0.0;
+    if let (Some(cache), false, false) = (&cache, opts.warm_only, deferred) {
+        let verifying = std::time::Instant::now();
         cache.verify()?;
+        verify_secs = verifying.elapsed().as_secs_f64();
     }
     summary.page_rows = pages.len();
     summary.crop_rows = crop_table.len();
-    Ok(Collected {
-        summary,
-        pages,
-        crops: crop_table,
-    })
+    Ok((
+        Collected {
+            summary,
+            pages,
+            crops: crop_table,
+        },
+        Progress {
+            dirty,
+            deferred,
+            inventory_secs: round6(inventory_secs),
+            units_secs: round6(units_secs),
+            verify_secs: round6(verify_secs),
+        },
+    ))
 }
 
 /// The three files of a campaign, by name.
@@ -1587,15 +1650,36 @@ pub fn files(
 
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
     anyhow::ensure!(
-        opts.out_dir.is_some() != opts.curated_url.is_some(),
+        opts.warm_only || opts.out_dir.is_some() != opts.curated_url.is_some(),
         "one of --out-dir and --curated-url"
+    );
+    anyhow::ensure!(
+        !opts.warm_only || (opts.out_dir.is_none() && opts.curated_url.is_none()),
+        "--warm-only publishes nothing"
     );
     anyhow::ensure!(
         usnm_store::is_safe_segment(&opts.campaign),
         "invalid campaign name {:?}",
         opts.campaign
     );
-    let c = collect(opts)?;
+    let (c, progress) = collect_units(opts)?;
+    // One JSON line the driver and the operator read: where the time went, and whether a unit
+    // was left for the next run. Stdout stays free for the caller's own output.
+    eprintln!(
+        "{}",
+        serde_json::json!({
+            "phase": if opts.warm_only { "warm" } else { "collect" },
+            "progress": progress,
+        })
+    );
+    if opts.warm_only {
+        return Ok(c.summary);
+    }
+    anyhow::ensure!(
+        !progress.deferred,
+        "collection cache warmed {} dirty units; at least 1 deferred; no incomplete snapshot published",
+        progress.dirty
+    );
     let out = files(&opts.campaign, &c)?;
     if let Some(dir) = &opts.out_dir {
         for (name, bytes, _) in &out {
@@ -1970,6 +2054,8 @@ pub(super) mod tests {
             curated_url: None,
             cache: None,
             max_dirty_units: 8,
+            max_compute: None,
+            warm_only: false,
         })
         .unwrap();
         assert_eq!(
@@ -2190,6 +2276,8 @@ pub(super) mod tests {
             curated_url: None,
             cache: Some(root.join("cache")),
             max_dirty_units: 1,
+            max_compute: None,
+            warm_only: false,
         };
         canonical(&unit, &job, &opts.spool);
         (opts, unit, job)
@@ -2250,6 +2338,77 @@ pub(super) mod tests {
             .collect::<Vec<_>>();
         files.sort();
         files
+    }
+
+    #[tokio::test]
+    async fn warm_only_stores_parts_without_publishing_and_a_later_run_publishes_them_clean() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, _, _) = cached_fixture(dir.path()).await;
+        let warm = Options {
+            warm_only: true,
+            out_dir: None,
+            ..opts.clone()
+        };
+        let (_, progress) = collect_units(&warm).unwrap();
+        assert_eq!((progress.dirty, progress.deferred), (1, false));
+        assert_eq!(parts(&opts).len(), 1);
+        assert!(!opts.out_dir.as_ref().unwrap().exists());
+        // Everything is cached now: a second warm computes nothing and a publication,
+        // which would fail on any dirty unit with a zero compute budget, succeeds.
+        let (_, again) = collect_units(&warm).unwrap();
+        assert_eq!((again.dirty, again.deferred), (0, false));
+        let bounded = Options {
+            max_compute: Some(std::time::Duration::ZERO),
+            ..opts.clone()
+        };
+        let summary = run(&bounded).await.unwrap();
+        assert_eq!(summary.pages, 1);
+        assert!(opts
+            .out_dir
+            .as_ref()
+            .unwrap()
+            .join("pages.parquet")
+            .exists());
+        // A warming run publishes nowhere, and needs a cache to warm.
+        assert!(run(&Options {
+            out_dir: Some(dir.path().join("elsewhere")),
+            ..warm.clone()
+        })
+        .await
+        .is_err());
+        assert!(collect_units(&Options {
+            cache: None,
+            ..warm
+        })
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn compute_budget_defers_dirty_units_but_not_cached_ones() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, _, _) = cached_fixture(dir.path()).await;
+        let bounded = Options {
+            max_compute: Some(std::time::Duration::ZERO),
+            max_dirty_units: 8,
+            ..opts.clone()
+        };
+        let error = run(&bounded).await.unwrap_err().to_string();
+        assert!(error.contains("deferred"), "{error}");
+        assert!(parts(&opts).is_empty());
+        assert!(!opts
+            .out_dir
+            .as_ref()
+            .unwrap()
+            .join("pages.parquet")
+            .exists());
+        // Warmed without a budget, the same budget publishes: nothing is left to compute.
+        run(&Options {
+            max_compute: None,
+            ..bounded.clone()
+        })
+        .await
+        .unwrap();
+        run(&bounded).await.unwrap();
     }
 
     #[tokio::test]
@@ -3172,6 +3331,8 @@ pub(super) mod tests {
             curated_url: None,
             cache: None,
             max_dirty_units: 8,
+            max_compute: None,
+            warm_only: false,
         };
         let cached = Options {
             cache: Some(tmp.path().join("cache")),

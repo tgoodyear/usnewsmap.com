@@ -676,6 +676,12 @@ impl Cache {
         Ok(Some(serde_json::from_str(&envelope.rows)?))
     }
 
+    /// Whether a part is stored under `key`; its contents are not read. For a warming run, which
+    /// publishes nothing: a part that fails its checks is found by the publication that reads it.
+    pub fn has(&self, key: &str) -> bool {
+        self.dir.join(format!("{key}.json")).is_file()
+    }
+
     pub fn store(&self, key: &str, part: &Part) -> anyhow::Result<()> {
         let rows = serde_json::to_string(part)?;
         let envelope = Envelope {
