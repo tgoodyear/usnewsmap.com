@@ -31,6 +31,8 @@ curated store, and nothing is rebuilt by writing it.
 - `engine` is optional: with it, only that engine's readings of the listed
   pages are withdrawn, so another engine's reading of the same page can still
   win. Give the full tag or the short key (`<family>/<version> <profile>`).
+- An empty page list is refused, so a filter that selects nothing cannot
+  widen the revocation to every page of the engine.
 - A file the release cannot read stops the release.
 
 ## Producing the list from the decoded table
@@ -58,7 +60,7 @@ awk -F'\t' 'NR > 1 && $2 == "tesseract/5.5.0 frak2021" && (
     ($7 == "worst" && ($5 == 1890 || $5 == 1900)) ||
     (($7 == "moderate" || $7 == "low") && $5 >= 1870 && $5 <= 1910)
   ) { print $1 }' "$T" | sort -u > /var/tmp/revoke-doc-ids.txt
-wc -l /var/tmp/revoke-doc-ids.txt
+wc -l /var/tmp/revoke-doc-ids.txt   # must not be 0
 ```
 
 Compare the count with the cell counts in the comparison before going on.

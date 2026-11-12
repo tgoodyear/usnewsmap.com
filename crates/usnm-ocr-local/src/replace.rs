@@ -306,12 +306,12 @@ pub struct Revocation {
     /// row matches when its page is listed here or in `doc_hashes`. Needs
     /// `at` and `source`. Combine with `engine` to withdraw only that
     /// engine's readings of the listed pages.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub doc_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_ids: Option<Vec<String>>,
     /// The same by `usnm_state::ocr_local::doc_hash`, 16 lowercase hex
     /// digits each, the keys `ocr_local_pages.bin` holds.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub doc_hashes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_hashes: Option<Vec<String>>,
     /// When the decision was made (a page list's provenance).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<DateTime<Utc>>,
@@ -342,7 +342,7 @@ impl Revocation {
 
     /// Whether it names pages.
     pub fn has_pages(&self) -> bool {
-        !self.doc_ids.is_empty() || !self.doc_hashes.is_empty()
+        self.doc_ids.is_some() || self.doc_hashes.is_some()
     }
 
     /// How many distinct pages it names.
@@ -361,18 +361,21 @@ impl Revocation {
             bail!("names no node, engine, run, time or page");
         }
         self.listed.clear();
-        for id in &self.doc_ids {
+        for id in self.doc_ids.iter().flatten() {
             if id.trim().is_empty() || id.trim() != id {
                 bail!("lists an empty doc id or one with spaces around it: `{id}`");
             }
             self.listed.insert(doc_hash(id));
         }
-        for h in &self.doc_hashes {
+        for h in self.doc_hashes.iter().flatten() {
             if h.len() != 16 || !h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
                 bail!("has a doc hash that isn't 16 lowercase hex digits: `{h}`");
             }
             self.listed
                 .insert(u64::from_str_radix(h, 16).context("doc hash")?);
+        }
+        if self.has_pages() && self.listed.is_empty() {
+            bail!("has an empty page list, which would match every row instead of none");
         }
         if self.has_pages()
             && (self.at.is_none() || self.source.as_ref().is_none_or(|s| s.trim().is_empty()))
@@ -703,6 +706,14 @@ mod tests {
         }))
         .unwrap();
         assert!(!scoped.matches(&x, "r"), "the engine must match too");
+        // An empty list must not widen the revocation to the whole engine.
+        for key in ["doc_ids", "doc_hashes"] {
+            assert!(checked(json!({
+                "reason": "r", "reference": "#835", "at": "2026-11-12T15:00:00Z",
+                "source": "s", "engine": "tesseract/5.5.1 eng", (key): [],
+            }))
+            .is_err());
+        }
         // Provenance is required, and hashes must be well formed.
         assert!(checked(json!({
             "reason": "r", "reference": "#835", "doc_ids": [x.doc_id],
