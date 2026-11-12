@@ -2334,6 +2334,8 @@ class QueueModeTests(unittest.TestCase):
         self.assertFalse([a for a in self.fake.actions if a[0] == "dead-letter-truncated"])
         self.assertIn(page, self.state["claims"])
         self.assertNotIn("source_truncated", self.state)
+        # Later ticks pass it over: it is not offered to export again.
+        self.fake.export = lambda pages, job_ids=(): self.assertNotIn(page, [p["page"] for p in pages])
         self.tick()
 
     def test_a_failed_truncated_dead_letter_is_retried_and_never_pushed_again(self):

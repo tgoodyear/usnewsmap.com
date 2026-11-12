@@ -1806,7 +1806,8 @@ class QueueFeed:
         self.config["pages"] = [
             {"page": page, "batch": claim["batch"], "scan": claim["scan"],
              "scan_base": claim["scan_base"], "pushed_to": claim.get("pushed_to", "container"),
-             **({"supersedes": claim["supersedes"]} if claim.get("supersedes") else {})}
+             **({"supersedes": claim["supersedes"]} if claim.get("supersedes") else {}),
+             **({"cut_short": True} if claim.get("export_truncated") else {})}
             for page, claim in sorted(self.claims.items()) if claim.get("scan")]
 
     @staticmethod
@@ -1990,7 +1991,12 @@ class QueueFeed:
         deadline retry's failed job, or a prepared one) is not settled: its allocation has to stay
         for the journal's ownership check. It is left claimed, not exported, and logged."""
         kept = sorted(page for page in truncated if page in journaled)
+        for page in kept:
+            # Kept in the state, so later ticks pass it over and it doesn't take export slots.
+            self.claims[page]["export_truncated"] = truncated[page]
         if kept:
+            self.persist()
+            self.restore()
             try:
                 print(json.dumps({"event": "boinc_batch_export_truncated_kept", "schema_version": 1,
                                   "pages": kept, "message": "cut short at LoC, but the plan holds a journal "
@@ -2885,6 +2891,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # Never a page any other plan's journal is for, a page claimed this tick included (#1685).
         foreign = {record["job"]["message"]["page"] for record in records if record["plan"] != config["plan"]}
         export = [page for page in config["pages"] if page["page"] in selected and
+                  not page.get("cut_short") and
                   page["page"] not in foreign and
                   (page["page"] not in owned or retried(page) or
                    (owned[page["page"]]["stage"] == "prepared"
