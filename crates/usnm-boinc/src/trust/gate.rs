@@ -174,6 +174,29 @@ impl Trust {
         }
     }
 
+    /// [`Trust::refuse_job`] for a native unit (#1418): the host must also be on a build whose
+    /// own run of the scope's calibrated challenge is recorded in `builds`. A native digest
+    /// with no passing run is refused even if the list names hosts for it.
+    pub fn refuse_native_job(
+        &self,
+        job: &usnm_ocr_contract::boinc::Job,
+        host_id: Option<u64>,
+        builds: &super::BuildTrust,
+    ) -> Option<String> {
+        if let Some(reason) = self.refuse_job(job, host_id) {
+            return Some(reason);
+        }
+        let Some(policy) = self.job_policy(job) else {
+            return Some("no calibrated policy for this job".into());
+        };
+        builds.refuse(
+            &job.engine.image,
+            policy.manifest_sha256,
+            policy.max_cer,
+            true,
+        )
+    }
+
     /// Why `job`'s exact `(language, profile, psm, dpi)` scope is held from publication (#835),
     /// if it is: its result is kept and never published, whatever host returned it.
     ///

@@ -392,7 +392,27 @@ fn native_gold_earns_trust_for_its_own_build_at_the_same_threshold() {
     let outcomes = dir.path().join("outcomes.jsonl");
     std::fs::write(&reports, [r13, r5].join("\n")).unwrap();
     std::fs::write(&outcomes, [native_app(o13), native_app(o5)].join("\n")).unwrap();
-    let built = Trust::build_with_outcomes(
+    // The native build has its own recorded run of this challenge (#1418).
+    let builds = super::builds::with_build(
+        super::BuildTrust::embedded().unwrap().clone(),
+        &native,
+        "x86_64-pc-linux-gnu",
+        &manifest,
+        max_cer,
+        Some(5929),
+    );
+    let built = Trust::build_with_builds(
+        std::slice::from_ref(&reports),
+        std::slice::from_ref(&outcomes),
+        max_cer,
+        &manifest,
+        scope(),
+        &builds,
+    )
+    .unwrap();
+    assert_eq!(built.hosts[&native], BTreeSet::from([13]));
+    // Without that record, the same passing gold admits nobody for the native build.
+    let unrecorded = Trust::build_with_outcomes(
         std::slice::from_ref(&reports),
         std::slice::from_ref(&outcomes),
         max_cer,
@@ -400,7 +420,7 @@ fn native_gold_earns_trust_for_its_own_build_at_the_same_threshold() {
         scope(),
     )
     .unwrap();
-    assert_eq!(built.hosts[&native], BTreeSet::from([13]));
+    assert!(!unrecorded.hosts.contains_key(&native));
     // A native pass says nothing about the worker image, or the other way round.
     assert!(!built.hosts.contains_key(&worker));
     assert!(built
@@ -434,6 +454,106 @@ fn native_gold_earns_trust_for_its_own_build_at_the_same_threshold() {
         scope(),
     )
     .is_err());
+}
+
+#[test]
+fn native_gold_admits_per_digest_and_never_across_platforms() {
+    let macos = "sha256:78065a0a43d8f8bf67c00c014ae2b0540d51d0038e4050dbbd509e14b63fa836";
+    let linux = "sha256:4d6e2a3be41b3b9c9cf50e6404c6f056177cef547e9d9675298ee1fec94cc5d1";
+    let windows = format!("sha256:{}", "7".repeat(64));
+    let manifest = "d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f";
+    let max_cer = 0.08734328574534386;
+    let dir = tempfile::tempdir().unwrap();
+    let native_app = |outcome: String| outcome.replace("\"usnm_gold\"", "\"usnm_gold_native\"");
+    // Host 13 passes gold on Linux, host 21 on macOS, host 30 on a Windows build.
+    let rows: Vec<_> = [
+        ('a', 1, linux, 13),
+        ('b', 2, macos, 21),
+        ('c', 3, windows.as_str(), 30),
+    ]
+    .into_iter()
+    .map(|(c, id, image, host)| {
+        native_report_and_outcome(
+            c,
+            id,
+            image,
+            host,
+            manifest,
+            "eng",
+            "eng",
+            0.07,
+            1_700_000_000,
+        )
+    })
+    .collect();
+    let reports = dir.path().join("reports.jsonl");
+    let outcomes = dir.path().join("outcomes.jsonl");
+    std::fs::write(
+        &reports,
+        rows.iter()
+            .map(|(r, _)| r.clone())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        &outcomes,
+        rows.iter()
+            .map(|(_, o)| native_app(o.clone()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .unwrap();
+    let build = |builds: &super::BuildTrust| {
+        Trust::build_with_builds(
+            std::slice::from_ref(&reports),
+            std::slice::from_ref(&outcomes),
+            max_cer,
+            manifest,
+            scope(),
+            builds,
+        )
+        .unwrap()
+    };
+    // Each host is trusted for its own digest only. Windows has no recorded run yet.
+    let built = build(super::BuildTrust::embedded().unwrap());
+    assert_eq!(built.hosts[linux], BTreeSet::from([13]));
+    assert_eq!(built.hosts[macos], BTreeSet::from([21]));
+    assert!(!built.hosts.contains_key(&windows));
+    for (image, host) in [(linux, 21), (macos, 13), (linux, 30)] {
+        assert!(built
+            .refuse_job(&job(image, "eng", "eng"), Some(host))
+            .is_some());
+    }
+    // With its run recorded, Windows follows the same path.
+    let recorded = super::builds::with_build(
+        super::BuildTrust::embedded().unwrap().clone(),
+        &windows,
+        "windows_x86_64",
+        manifest,
+        max_cer,
+        Some(6000),
+    );
+    assert_eq!(build(&recorded).hosts[&windows], BTreeSet::from([30]));
+    // A native job is refused on a recorded build without a passing run, even for a host the
+    // list names.
+    let failed = super::builds::with_build(
+        super::BuildTrust::embedded().unwrap().clone(),
+        &windows,
+        "windows_x86_64",
+        manifest,
+        max_cer,
+        Some(7300),
+    );
+    let listed = build(&recorded);
+    let job = job(&windows, "eng", "eng");
+    assert!(listed
+        .refuse_native_job(&job, Some(30), &recorded)
+        .is_none());
+    assert!(listed.refuse_native_job(&job, Some(30), &failed).is_some());
+    assert!(listed
+        .refuse_native_job(&job, Some(30), super::BuildTrust::embedded().unwrap())
+        .is_some());
 }
 
 #[test]

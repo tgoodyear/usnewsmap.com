@@ -451,6 +451,7 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
     let trust = Trust::load_or_none_trusted(&c.trust)?;
     let prepared = gold::prepare::read(&c.prepared)?;
     gold::submit::job(&prepared, &c.engine, 0)?;
+    super::refuse_native_campaign(c, &trust, scope, crate::trust::BuildTrust::embedded()?)?;
     let app = if c.native_hosts.is_empty() {
         gold::submit::APP
     } else {

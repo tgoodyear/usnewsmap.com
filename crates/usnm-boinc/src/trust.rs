@@ -29,17 +29,24 @@
 //! host claimed by the uploaded report. It remains a BOINC quality signal, not an identity check.
 //! Native outcome snapshots are accepted only when every result of an assimilated workunit is
 //! present.
+//!
+//! Trust is per build digest (#1418): a host is trusted for the exact `engine.image` its gold ran
+//! on. A native build is trusted only once its own run of the scope's calibrated challenge is
+//! recorded in `boinc/project/native-build-trust.json` ([`BuildTrust`]), and results compare
+//! byte for byte only within one digest or across a pair listed there.
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 mod build;
+pub(crate) mod builds;
 mod gate;
 mod promote;
 #[cfg(test)]
 mod tests;
 
+pub use builds::BuildTrust;
 use gate::immutable_image;
 pub use gate::{collect, quarantine_dir, Collected};
 pub use promote::Admission;

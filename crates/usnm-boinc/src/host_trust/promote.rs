@@ -295,6 +295,7 @@ async fn promote_with(
         &policy.scope == scope && policy.manifest_sha256 == prepared.manifest_sha256,
         "the onboarding campaign is not the scope's calibrated challenge; nothing promoted"
     );
+    super::refuse_native_campaign(c, &trust, scope, crate::trust::BuildTrust::embedded()?)?;
     let image = &c.engine.image;
     let trusted = policy.hosts.get(image).cloned().unwrap_or_default();
     let (campaign_root, legacy_root) = campaign_roots(c, &prepared, scope)?;

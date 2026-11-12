@@ -211,7 +211,9 @@ async fn stage_inputs(c: &Config, job: &boinc::Job, workunit: &str) -> anyhow::R
     Ok(())
 }
 
-fn result(job: &boinc::Job, spool: &Path, workunit: &str) -> anyhow::Result<String> {
+/// A spot-check member's build (the `engine.image` its result manifest names) and its normalized
+/// text.
+fn result(job: &boinc::Job, spool: &Path, workunit: &str) -> anyhow::Result<(String, String)> {
     let file = |name| spool.join(format!("{workunit}__file_{name}"));
     ensure!(
         !spool.join(format!("{workunit}_error")).exists()
@@ -224,7 +226,24 @@ fn result(job: &boinc::Job, spool: &Path, workunit: &str) -> anyhow::Result<Stri
     let alto = read(&file("layout.xml"), boinc::MAX_ALTO)?;
     manifest.matches(job, &text, &alto)?;
     usnm_ocr_local::checks::check_alto(&alto).map_err(|r| anyhow::anyhow!("{}", r.code()))?;
-    crate::normalized_text(job, &text)
+    Ok((manifest.engine.image, crate::normalized_text(job, &text)?))
+}
+
+/// Whether two results agree, each its build and its text. Text is compared only between
+/// results of one build, or of two builds `builds` lists as equivalent (#1418): output from
+/// builds not shown to be identical is never compared byte for byte, so this fails.
+fn agree(
+    builds: &crate::trust::BuildTrust,
+    a: &(String, String),
+    b: &(String, String),
+) -> anyhow::Result<bool> {
+    ensure!(
+        builds.comparable(&a.0, &b.0),
+        "results from builds {} and {} are not comparable byte for byte",
+        a.0,
+        b.0
+    );
+    Ok(a.1 == b.1)
 }
 
 /// A conservative two-host quorum: both canonical hosts must still be trusted and produce
@@ -267,7 +286,7 @@ pub async fn spot_compare(
     );
     let a = result(&record.job, original_spool, &record.job.workunit())?;
     let b = result(&record.job, spot_spool, &spot.workunit)?;
-    let agrees = a == b;
+    let agrees = agree(crate::trust::BuildTrust::embedded()?, &a, &b)?;
     atomic(
         &path.join("comparison.json"),
         &serde_json::to_vec_pretty(&serde_json::json!({
@@ -298,6 +317,25 @@ mod tests {
             max_cer: 0.1,
             policies: Vec::new(),
             v: crate::trust::TRUST_VERSION,
+        }
+    }
+
+    #[test]
+    fn results_compare_only_within_a_digest_or_a_listed_pair() {
+        let builds = crate::trust::BuildTrust::embedded().unwrap();
+        let linux = "sha256:4d6e2a3be41b3b9c9cf50e6404c6f056177cef547e9d9675298ee1fec94cc5d1";
+        let worker = "sha256:247c131a599403645c4c96782c0556dc27f27a5d991c764b4b9565182a8c71aa";
+        let macos = "sha256:78065a0a43d8f8bf67c00c014ae2b0540d51d0038e4050dbbd509e14b63fa836";
+        let windows = format!("sha256:{}", "7".repeat(64));
+        let r = |image: &str, text: &str| (image.to_owned(), text.to_owned());
+        assert!(agree(builds, &r(macos, "a"), &r(macos, "a")).unwrap());
+        assert!(!agree(builds, &r(macos, "a"), &r(macos, "b")).unwrap());
+        // Linux and the worker image it was shown identical to, as today.
+        assert!(agree(builds, &r(linux, "a"), &r(worker, "a")).unwrap());
+        assert!(!agree(builds, &r(worker, "a"), &r(linux, "b")).unwrap());
+        // No pair across platforms is listed, whatever the text.
+        for (a, b) in [(macos, linux), (macos, worker), (windows.as_str(), linux)] {
+            assert!(agree(builds, &r(a, "a"), &r(b, "a")).is_err(), "{a} {b}");
         }
     }
 
@@ -448,7 +486,8 @@ mod tests {
         let spool = tmp.path();
         let read = |job: &boinc::Job, text: &str| {
             returned(job, spool, "wu", text);
-            let got = result(job, spool, "wu").unwrap();
+            let (image, got) = result(job, spool, "wu").unwrap();
+            assert_eq!(image, job.engine.image);
             assert_eq!(got, crate::normalized_text(job, text.as_bytes()).unwrap());
             got
         };
