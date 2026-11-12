@@ -117,6 +117,7 @@ OPTIONAL_FIELDS = {
     "app", "platform", "resource", "cohort", "cohorts",
     "low_watermark", "high_watermark", "max_global_pending", "server_status_url", "step_command",
     "gold_onboarding", "pages_per_unit", "bundle_app_version", "handoff_root", "native_hosts",
+    "units_per_cpu",
 }
 # OCR bundles (#1059): at most this many pages of one queue in one usnm_ocr workunit
 # (crates/usnm-ocr-contract/src/boinc.rs, bundle::MAX_PAGES), 1 (a page alone) by default.
@@ -173,10 +174,13 @@ def _validate_native_plan(config):
     native = config.get("app") == NATIVE_APP_NAME
     if not native:
         require("native_hosts" not in config, f"native_hosts is for {NATIVE_APP_NAME} plans")
+        require("units_per_cpu" not in config, f"units_per_cpu is for {NATIVE_APP_NAME} plans")
         for spec in (config.get("cohorts") or {}).values():
             require(spec.get("app", OCR_APP_NAME) == OCR_APP_NAME,
                     f"a {NATIVE_APP_NAME} cohort needs a {NATIVE_APP_NAME} plan")
         return
+    require(type(config.get("units_per_cpu", 1)) is int and 1 <= config.get("units_per_cpu", 1) <= 16,
+            "units_per_cpu: 1 to 16")
     hosts = config.get("native_hosts")
     require(isinstance(hosts, list) and len(hosts) <= MAX_NATIVE_HOSTS and
             all(type(host) is int and 1 <= host <= 9999999999 for host in hosts) and
@@ -2450,14 +2454,19 @@ def held_results(state, held_jobs, now):
 
 
 def native_capacity(config, snapshot):
-    """A native plan's room on each of its hosts (#1780): one unit per CPU the host's client last
-    reported (the inventory's host_cpus), at most pages_per_host. A host not active in the last
-    day, or an inventory from a server image without host_cpus, gets none."""
+    """A native plan's room on each of its hosts (#1780): `units_per_cpu` units (default 1) for
+    each CPU the host's client last reported (the inventory's host_cpus), at most pages_per_host.
+    A host not active in the last day, or an inventory from a server image without host_cpus,
+    gets none. A host asks for work only now and then, and backs off when it finds none, so a
+    room of one unit per CPU leaves it idle between ticks; units_per_cpu is what makes the room
+    last."""
     cpus = snapshot.get("host_cpus", {})
     require(isinstance(cpus, dict) and len(cpus) <= 100000 and
             all(isinstance(host, str) and host.isdecimal() and type(n) is int and n >= 0
                 for host, n in cpus.items()), "invalid host CPU inventory")
-    return {host: min(cpus.get(str(host), 0), config["pages_per_host"]) for host in config["native_hosts"]}
+    per_cpu = config.get("units_per_cpu", 1)
+    return {host: min(cpus.get(str(host), 0) * per_cpu, config["pages_per_host"])
+            for host in config["native_hosts"]}
 
 
 def assign_native_hosts(job_ids, slots, outstanding):
@@ -3254,6 +3263,7 @@ def main(argv=None):
                 plan_event["app"] = NATIVE_APP_NAME
                 plan_event["native_hosts"] = config["native_hosts"]
                 plan_event["pages_per_host"] = config["pages_per_host"]
+                plan_event["units_per_cpu"] = config.get("units_per_cpu", 1)
             print(json.dumps(plan_event))
             return 0
         args.state_dir = args.state_dir.resolve()
