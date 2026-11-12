@@ -1808,6 +1808,12 @@ class NativePlanTests(unittest.TestCase):
         event = self.tick()
         self.assertEqual(event["backpressure_reason"], "native_paused")
         self.assertIn("held scope", self.state["native_paused"]["reason"])
+        # Kept results are never collected again, and they still keep the plan paused: a resume
+        # while they are there pauses it again, and claims nothing.
+        self.fake.actions.clear()
+        event = self.tick(resume_native=True)
+        self.assertFalse([a for a in self.fake.actions if a[0] in ("collect", "claim", "submit-native")])
+        self.assertEqual(event["backpressure_reason"], "native_paused")
 
     def test_a_refused_submission_creates_nothing_and_pauses_the_plan(self):
         self.fake.refuse = {13}

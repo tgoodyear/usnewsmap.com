@@ -195,6 +195,49 @@ pub async fn submit_native(
     .await
 }
 
+/// The `version_num` of the newest [`NATIVE_APP`] version in `project` that packages the build
+/// `image` names: one whose directory (`apps/usnm_ocr_native/<major.minor>/<platform>/`) holds
+/// its manifest under the physical name that carries the digest (`usnm_native_build_<sha256>.json`,
+/// boinc/scripts/install.py). A unit is pinned to it, so the scheduler never sends it a newer
+/// build whose worker would refuse the job. None packages it: an error.
+fn native_version(project: &Path, image: &str) -> anyhow::Result<u32> {
+    let digest = image
+        .strip_prefix("sha256:")
+        .filter(|d| usnm_ocr_contract::boinc::is_sha256(d))
+        .context("a native job's engine.image is sha256:<64 hex>")?;
+    let manifest = format!("usnm_native_build_{digest}.json");
+    let mut found = None;
+    let apps = project.join("apps").join(NATIVE_APP);
+    for version in std::fs::read_dir(&apps).into_iter().flatten() {
+        let version = version?;
+        let name = version.file_name();
+        let Some((major, minor)) = name.to_str().and_then(|n| n.split_once('.')) else {
+            continue;
+        };
+        let (Ok(major), Ok(minor)) = (major.parse::<u32>(), minor.parse::<u32>()) else {
+            continue;
+        };
+        if minor >= 100 || !version.file_type()?.is_dir() {
+            continue;
+        }
+        for platform in std::fs::read_dir(version.path())? {
+            let dir = platform?.path();
+            let listed = std::fs::read_to_string(dir.join("version.xml"))
+                .is_ok_and(|xml| xml.contains(&manifest));
+            if dir.join(&manifest).is_file() || listed {
+                let number = 100 * major + minor;
+                found = Some(found.map_or(number, |n: u32| n.max(number)));
+            }
+        }
+    }
+    found.with_context(|| {
+        format!(
+            "no {NATIVE_APP} version in {} packages the build {image}",
+            apps.display()
+        )
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn submit_unit(
     root: &Path,
@@ -239,6 +282,13 @@ async fn submit_unit(
         }
     };
     let native_unit = matches!(build, Build::Native { .. });
+    // A native unit is pinned to the version that packages its build (#1780): with more than one
+    // published, the scheduler would otherwise pick the newest.
+    let pin = if native_unit {
+        Some(native_version(&project, &record.job.engine.image)?)
+    } else {
+        pin
+    };
     ensure!(
         record.job.lines.is_none() || is_retry || pin.is_some(),
         "a line job needs --app-version-num, the usnm_ocr version whose worker reads line jobs"
@@ -492,6 +542,19 @@ mod native_tests {
         trust_for(dir, &job(1).engine.image, hosts)
     }
 
+    /// Publishes native version `version` of the build `image` names into the project.
+    fn publish(s: &Server, version: &str, image: &str) {
+        let dir = s
+            .project
+            .join("apps")
+            .join(NATIVE_APP)
+            .join(version)
+            .join("x86_64-pc-linux-gnu");
+        std::fs::create_dir_all(&dir).unwrap();
+        let digest = image.strip_prefix("sha256:").unwrap();
+        std::fs::write(dir.join(format!("usnm_native_build_{digest}.json")), "{}").unwrap();
+    }
+
     fn stage(s: &Server, id: &str) -> Stage {
         load(&s.root, id).unwrap().stage
     }
@@ -555,6 +618,19 @@ mod native_tests {
         );
         assert!(s.calls().is_empty());
         std::fs::write(s.project.join("config.xml"), ASSIGNMENT).unwrap();
+        // No published version packages the job's build: nothing is created.
+        publish(&s, "1.1", &format!("sha256:{}", "c".repeat(64)));
+        let error = submit_native(&s.root, &s.project, &ids[0], None, Some(13), &trust)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("packages the build"),
+            "{error:#}"
+        );
+        assert!(s.calls().is_empty());
+        assert_eq!(stage(&s, &ids[0]), Stage::Reserved);
+        // 1.0 packages it, beside the newer 1.1 of another build: the unit is pinned to 1.0.
+        publish(&s, "1.0", &job(1).engine.image);
         submit_native(&s.root, &s.project, &ids[0], None, Some(13), &trust)
             .await
             .unwrap();
@@ -567,7 +643,7 @@ mod native_tests {
         );
         assert!(calls[0].contains(&format!("--wu_name usnm_{}", ids[0])));
         assert!(calls[0].contains("--target_host 13"));
-        assert!(!calls[0].contains("--app_version_num"));
+        assert!(calls[0].contains("--app_version_num 100 "), "{}", calls[0]);
         assert_eq!(stage(&s, &ids[0]), Stage::Submitted);
     }
 

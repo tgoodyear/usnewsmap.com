@@ -2638,7 +2638,6 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             require(re.fullmatch(r"/[A-Za-z0-9_./-]+/results/[A-Za-z0-9_./-]+", spool)
                     and ".." not in spool, "invalid assimilator spool")
             to_collect.append((job_id, spool))
-    kept_before = {record["job"]["id"] for record in owned.values() if kept_by_policy(record)}
     collect_error = None
     try:
         if hasattr(transport, "collect_batch"):
@@ -2655,22 +2654,25 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     if count:
         records = read_records()
         owned = own(records)
-    if native and to_collect:
+    if native:
         # A native result collection didn't publish (the trust list doesn't admit its host for
-        # the native build, or its collect failed) or kept under a held scope stays as it is,
-        # unpublished. It pauses this plan, with an alert, until an operator resumes it
-        # (--resume-native); the tick goes on, and container plans are untouched (#1780).
-        by_id = {record["job"]["id"]: record for record in owned.values()}
-        collected = [job_id for job_id, _ in to_collect if job_id in by_id]
-        unpublished = sorted(j for j in collected if not settled(by_id[j]))
-        kept = sorted(j for j in collected if kept_by_policy(by_id[j]) and j not in kept_before)
-        if collect_error is not None and not unpublished:
+        # the native build, or its collect failed), or one kept under a held scope, stays as it
+        # is, unpublished. While any is there, this plan stays paused with an alert, whether it
+        # came in this tick or before, and --resume-native can't lift that; the tick goes on, and
+        # container plans are untouched (#1780).
+        collected = {job_id for job_id, _ in to_collect}
+        unpublished = sorted(record["job"]["id"] for record in owned.values() if not settled(record)
+                             and (record["job"]["id"] in collected
+                                  or server.get(record["job"]["id"], {}).get("spool")))
+        kept = sorted(record["job"]["id"] for record in owned.values() if kept_by_policy(record))
+        if collect_error is not None and not collected & set(unpublished):
             raise collect_error
         if unpublished or kept:
             reasons = (["collect left a native result unpublished"
                         + (f" ({collect_error})" if collect_error is not None else "")] if unpublished else [])
             reasons += ["a native result is kept by a held scope"] if kept else []
-            state["native_paused"] = {"at": int(now), "reason": "; ".join(reasons),
+            since = (state.get("native_paused") or {}).get("at", int(now))
+            state["native_paused"] = {"at": since, "reason": "; ".join(reasons),
                                       "jobs": (unpublished + kept)[:5]}
             persist()
     native_paused = state.get("native_paused") if native else None
