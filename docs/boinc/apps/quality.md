@@ -669,7 +669,7 @@ A unit names its runtime in `engine.llama`: the digest of the `ubuntu-vulkan-x64
 
 1. Stop the Qwen feed's submissions and let the unsent old-engine replicas run out (`server_state=2` for `appid=6`). Keep the refill window renewing so Intel keeps reading.
 2. Publish the new version for every class that is open, on every platform, through the [release path](app-release.md). A class left on the old version can't read new units.
-3. Point the feed at a new engine plan (the old one with `engine.llama` replaced) and at new roots; a root keeps one engine. Set the refill's `APP_VERSION_NUM`, `NVIDIA_APP_VERSION`, `INTEL_APP_VERSION` and `CAMPAIGN_ARGS` to match. `qwen-auto-cohort.py` admits the engine of the llama.lock its `--app-version-num` ships (`engine_for`).
+3. Point the feed at a new engine plan (the old one with `engine.llama` replaced) and at new roots; a root keeps one engine. In the refill's `/etc/usnm-boinc/qwen-cohort-auto.env`, add `--app-version-num 120 --nvidia-app-version ID --intel-app-version ID` (the new versions' `app_version` ids) to `CAMPAIGN_ARGS`: `usnm-qwen-cohort-auto.service` forwards only `CAMPAIGN_ARGS`, and without them `qwen-auto-cohort.py` keeps its defaults (`--app-version-num 114`, so b8799) and admits nothing against the new versions. It admits the engine of the llama.lock its `--app-version-num` ships (`engine_for`).
 4. Submit a small batch first and check each class's first results (exit status, `USNM_QWEN_FAILURE`, empty readings) before the feed resumes at its normal rate.
 
 A replica of an old-engine unit that is resent after step 2 (a timeout or an error) fails on the new app with `unit is for llama ...`, so publish only once almost nothing old is in flight.
