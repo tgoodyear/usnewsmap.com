@@ -89,8 +89,8 @@ PLATFORMS = (
 )
 
 # The platforms the native OCR build exists for (docs/boinc/apps/native-ocr.md): each is its
-# own build, digest and trust. One BOINC CPU, so no plan class. Windows is not built yet.
-NATIVE_OCR_PLATFORMS = ("x86_64-pc-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin")
+# own build, digest and trust. One BOINC CPU, so no plan class.
+NATIVE_OCR_PLATFORMS = ("x86_64-pc-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin", "windows_x86_64")
 
 NATIVE_PLAN_CLASSES = {
     ("usnm_quality", ""): PLATFORMS,

@@ -297,7 +297,7 @@ boinc_native='^(ocr/contract/|boinc/apps/qwen/(amd-device-map\.cpp|disk-policy\.
 # The native OCR app (boinc-ocr-native.yml) builds usnm-ocr-app and the static Tesseract,
 # fetches the locked models for its smoke test, and checks and stages the build as a release
 # would, against the container engine's version.
-boinc_ocr_native='^(boinc/apps/native/|boinc/scripts/(smoke-native-ocr\.sh|check-native-ocr-build\.py|install\.py)$|boinc/images/appver/check_appver\.py$|ocr/engines/tesseract/(models\.lock|Containerfile)$|rust-toolchain\.toml$|\.dockerignore$)'
+boinc_ocr_native='^(boinc/apps/native/|boinc/scripts/(smoke-native-ocr\.sh|check-native-ocr-build\.py|install\.py)$|scripts/ci/apt-base\.sh$|boinc/images/appver/check_appver\.py$|ocr/engines/tesseract/(models\.lock|Containerfile)$|rust-toolchain\.toml$|\.dockerignore$)'
 # The page-language detector's test on text of known language (05 §5.5.8):
 # the detector, its word lists and the language table it reads them by, its
 # crate's manifest and the lock file, the samples and their test, and the

@@ -11,7 +11,8 @@ that ocr/engines/tesseract/Containerfile installs, its models are exactly
 ocr/engines/tesseract/models.lock's, and every file given is the one the manifest lists, by size
 and sha256. The manifest must be for --platform. The worker, which only --binary gives, and the
 engine must be that platform's executables: x86-64 ELF executables or position-independent
-executables on Linux, and thin 64-bit Mach-O executables of the platform's architecture on macOS.
+executables on Linux, thin 64-bit Mach-O executables of the platform's architecture on macOS, and
+PE32+ x86-64 executables (not DLLs) on Windows.
 """
 from __future__ import annotations
 
@@ -35,12 +36,16 @@ NOTICE_PREFIX = "notice_"
 NOTICES = {"chr_phoenix": (ROOT / "ocr/models/chr-phoenix/SHA256SUMS", "CHR_PHOENIX_SUMS",
                            ("NOTICE.md", "LICENSE-Apache-2.0.txt"))}
 # Each platform is its own build, digest and trust (docs/boinc/apps/native-ocr.md).
-PLATFORMS = ("x86_64-pc-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin")
+PLATFORMS = ("x86_64-pc-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin", "windows_x86_64")
 EM_X86_64 = 0x3E
 ET_EXEC, ET_DYN = 2, 3
 MH_MAGIC_64 = 0xFEEDFACF
 MH_EXECUTE = 2
 CPU_TYPE_X86_64, CPU_TYPE_ARM64 = 0x01000007, 0x0100000C
+IMAGE_FILE_MACHINE_AMD64 = 0x8664
+PE_OPTIONAL_MAGIC_64 = 0x20B
+PE32_PLUS_FIXED_SIZE, SECTION_HEADER_SIZE = 112, 40
+IMAGE_FILE_EXECUTABLE_IMAGE, IMAGE_FILE_DLL = 0x2, 0x2000
 MACH_O_CPU = {"arm64-apple-darwin": CPU_TYPE_ARM64, "x86_64-apple-darwin": CPU_TYPE_X86_64}
 
 
@@ -130,13 +135,40 @@ def is_mach_o_executable(path: Path, cpu: int) -> bool:
     return magic == MH_MAGIC_64 and cputype == cpu and filetype == MH_EXECUTE
 
 
+def is_x86_64_pe_executable(path: Path) -> bool:
+    """A PE32+ x86-64 executable: not a DLL, a 32-bit image or an object file."""
+    with path.open("rb") as f:
+        size = f.seek(0, 2)
+        f.seek(0)
+        dos = f.read(64)
+        if len(dos) != 64 or dos[:2] != b"MZ":
+            return False
+        (pe_offset,) = struct.unpack_from("<I", dos, 60)
+        f.seek(pe_offset)
+        head = f.read(4 + 20 + 2)
+    if len(head) != 26 or head[:4] != b"PE\0\0":
+        return False
+    machine, sections, _, _, _, optional_size, characteristics = struct.unpack_from("<HHIIIHH", head, 4)
+    (magic,) = struct.unpack_from("<H", head, 24)
+    # The optional header (at least PE32+'s fixed part) and the section table must be in the file.
+    if (sections == 0 or optional_size < PE32_PLUS_FIXED_SIZE
+            or size < pe_offset + 24 + optional_size + SECTION_HEADER_SIZE * sections):
+        return False
+    return (machine == IMAGE_FILE_MACHINE_AMD64 and magic == PE_OPTIONAL_MAGIC_64
+            and bool(characteristics & IMAGE_FILE_EXECUTABLE_IMAGE) and not characteristics & IMAGE_FILE_DLL)
+
+
 def is_executable(path: Path, platform: str) -> bool:
+    if platform == "windows_x86_64":
+        return is_x86_64_pe_executable(path)
     if platform in MACH_O_CPU:
         return is_mach_o_executable(path, MACH_O_CPU[platform])
     return is_x86_64_elf(path)
 
 
 def executable_kind(platform: str) -> str:
+    if platform == "windows_x86_64":
+        return "x86-64 PE32+ executable"
     if platform in MACH_O_CPU:
         return f"{platform.split('-')[0]} Mach-O executable"
     return "x86-64 ELF executable"

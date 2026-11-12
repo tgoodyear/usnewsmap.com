@@ -313,11 +313,11 @@ flowchart LR
 
 ## 8.7 Environments
 
-| Env     | Corpus                             | Scale                                                                         | Cost target             |
-| ------- | ---------------------------------- | ----------------------------------------------------------------------------- | ----------------------- |
-| `dev`   | 1M-page sample (ten diverse years) | `ca-usnm` min 0 (accepts a cold start of several seconds); ingest on ACI Spot | ≤ $10/mo                |
-| `prod`  | Full                               | As in §8.1                                                                    | < $80/mo (typical ~$72) |
-| _Local_ | 10k-page fixture                   | `docker compose` (Quickwit + API + Azurite)                                   | $0                      |
+| Env     | Corpus                             | Scale                                                                         | Cost target                                      |
+| ------- | ---------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------ |
+| `dev`   | 1M-page sample (ten diverse years) | `ca-usnm` min 0 (accepts a cold start of several seconds); ingest on ACI Spot | ≤ $10/mo                                         |
+| `prod`  | Full                               | As in §8.1                                                                    | < $105/mo (was $80; typical ~$72 at design time) |
+| _Local_ | 10k-page fixture                   | `docker compose` (Quickwit + API + Azurite)                                   | $0                                               |
 
 ## 8.8 Domain and DNS
 

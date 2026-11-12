@@ -1,0 +1,11 @@
+# The apt bases of the usnm_iris image (#1683): the Containerfile's apt-iris-tools and apt-iris
+# stages, built once from the Debian snapshot by .github/workflows/tesseract-base.yml and published
+# to ghcr.io/tgoodyear/usnm-tesseract-base. One <build argument>=<image>@sha256:<digest> per line.
+# scripts/ci/apt-base.sh --app iris prints them for `--build-arg` and, with --check-label, checks
+# each base's labels against the Containerfile: its SNAPSHOT and the hash of its apt-* stages and
+# runtime.lock.
+#
+# An empty value means not pinned yet: the build then installs from the snapshot, as the
+# Containerfile's defaults do. Both are pinned or neither.
+IRIS_TOOLS_BASE=
+IRIS_BASE=
