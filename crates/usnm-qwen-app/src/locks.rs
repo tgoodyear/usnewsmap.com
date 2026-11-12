@@ -315,7 +315,9 @@ fn resolve_pinned<'a>(
             m.file, m.mmproj
         )
     })?;
-    verify_weights(work, m, &mp, &mmp)?;
+    verify_weights(work, m, &mp, &mmp).with_context(|| {
+        format!("{PIN_REFUSED}: the unit is pinned to {pin}, whose files don't match weights.lock")
+    })?;
     Ok((m, mp, mmp))
 }
 

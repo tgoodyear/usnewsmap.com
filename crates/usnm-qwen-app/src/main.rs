@@ -1241,6 +1241,21 @@ mod tests {
             assert!(model.ends_with("xiaomi-ocr-0-q8_0.gguf"));
             assert!(mmproj.ends_with("mmproj-xiaomi-ocr-0-f16.gguf"));
         }
+        // A pinned file that doesn't match weights.lock is a pin refusal too, so the
+        // failure report flags it.
+        let mismatched = tmp.path().join("mismatched");
+        write_xiaomi_unit(&mismatched);
+        write_model_files(&mismatched, &[xiaomi_model()]);
+        std::fs::write(
+            mismatched.join(&xiaomi_model().file),
+            b"not the pinned weights",
+        )
+        .unwrap();
+        let err =
+            resolve_model(&mismatched, &all, Some(16000), true, Some("mt_x08"), pin).unwrap_err();
+        let err = format!("{err:#}");
+        assert!(err.starts_with(PIN_REFUSED), "{err}");
+        assert!(err.contains("sha256 mismatch"), "{err}");
         // A Qwen class never reads a Xiaomi unit, and an _x08 class never reads anything else.
         for plan in ["mt", "nvidia_vulkan_8b", "nvidia_vulkan_2b", "apple_gpu_8b"] {
             let err = resolve_model(&slot, &all, Some(16000), true, Some(plan), pin).unwrap_err();
