@@ -82,3 +82,5 @@ try {
 } finally {
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
+# The last program run was the worker that was meant to fail: its exit code is not the script's.
+exit 0
