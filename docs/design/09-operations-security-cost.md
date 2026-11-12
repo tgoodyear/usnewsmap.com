@@ -227,7 +227,7 @@ L1 × 1 partition costs about **$2,800 per month** (about $5,600 with 2 replicas
 
 ### Cost controls
 
-- Budget alerts at $60/$70/$78 (actual and forecast)
+- Budget of $105 a month (was $80 until 12 November 2026) with actual-spend alerts at 50%, 75% and 93.75% and a forecast alert at 100% (`infra/modules/budget.bicep`)
 - `maxReplicas: 2` on the only always-on app
 - Log Analytics daily cap
 - Curated data kept in Cool storage; raw archives not retained
