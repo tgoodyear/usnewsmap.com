@@ -21,5 +21,5 @@ docs/notes/2026-11-05-german-trust-hold.json text eol=lf
 # shell steps read the lock line by line, where a carriage return would be part of a hash.
 ocr/engines/tesseract/models.lock text eol=lf
 ocr/engines/tesseract/Containerfile text eol=lf
-ocr/models/chr-phoenix/SHA256SUMS text eol=lf
+ocr/models/chr-phoenix/* text eol=lf
 boinc/apps/native/*.lock text eol=lf
