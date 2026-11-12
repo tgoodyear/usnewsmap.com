@@ -100,7 +100,28 @@ impl Target {
             job.doc_id,
             job.prompt_version
         );
+        // A native worker reads with the model its plan class carries, out of the job's engine:
+        // an unpinned job whose engine lacks the target's model would only fail there.
+        if let Some(name) = self
+            .qwen_model()
+            .filter(|_| !matches!(self, Self::Container | Self::Container8b))
+        {
+            ensure!(
+                job.engine.models.iter().any(|m| m.name == name),
+                "{}: the job's engine has no {name} model for the {self:?} target",
+                job.doc_id
+            );
+        }
         Ok(())
+    }
+
+    /// The Qwen model a target reads with, by the name an engine lists it under.
+    fn qwen_model(self) -> Option<&'static str> {
+        match self {
+            Self::Container | Self::Native2b => Some("qwen3-vl-2b-q8"),
+            Self::Container8b | Self::Native8b => Some("qwen3-vl-8b-q4km"),
+            Self::NativeXiaomi => None,
+        }
     }
 
     /// BOINC `workunit.batch` identifier passed via `create_work --batch` so
@@ -467,7 +488,17 @@ pub fn benchmark_work_args(job: &Job) -> Vec<String> {
 }
 
 pub fn benchmark_work_args_for_target(job: &Job, target: Target) -> anyhow::Result<Vec<String>> {
-    let mut args = create_work_args_with_lock(job, target, EMBEDDED_WEIGHTS_LOCK)?;
+    benchmark_work_args_with_lock(job, target, EMBEDDED_WEIGHTS_LOCK)
+}
+
+/// [`benchmark_work_args_for_target`] with the `weights.lock` the models were staged under, so
+/// the digest-qualified model names `create_work` is given are the ones staged.
+pub fn benchmark_work_args_with_lock(
+    job: &Job,
+    target: Target,
+    weights_lock_text: &str,
+) -> anyhow::Result<Vec<String>> {
+    let mut args = create_work_args_with_lock(job, target, weights_lock_text)?;
     let (benchmark_template, _) = target.benchmark_template();
     let template = args
         .iter_mut()
@@ -526,7 +557,7 @@ async fn run_selected_with_lock(
         );
         let benchmark = opts.root.join("benchmark.json").exists();
         let work_args = if benchmark {
-            benchmark_work_args_for_target(&job, opts.target)?
+            benchmark_work_args_with_lock(&job, opts.target, weights_lock_text)?
         } else {
             create_work_args_with_lock(&job, opts.target, weights_lock_text)?
         };
@@ -744,6 +775,33 @@ mod tests {
                 let e = benchmark_work_args_for_target(&j, target).unwrap_err();
                 assert!(format!("{e:#}").contains("request version"), "{e:#}");
                 assert!(create_work_args_with_lock(&j, target, EMBEDDED_WEIGHTS_LOCK).is_err());
+            }
+            // A native target needs its model in the job's engine.
+            let mut one_model = j.clone();
+            one_model
+                .engine
+                .models
+                .retain(|m| m.name == "qwen3-vl-2b-q8");
+            assert!(benchmark_work_args_for_target(&one_model, Target::Native2b).is_ok());
+            let e = benchmark_work_args_for_target(&one_model, Target::Native8b).unwrap_err();
+            assert!(
+                format!("{e:#}").contains("no qwen3-vl-8b-q4km model"),
+                "{e:#}"
+            );
+            // The model names follow the lock the models are staged under.
+            let mut lock = String::new();
+            for (file, sha) in parse_weights_lock(EMBEDDED_WEIGHTS_LOCK).unwrap() {
+                lock += &format!(
+                    "{file} https://example.invalid/{file} {}\n",
+                    sha.replace('0', "1")
+                );
+            }
+            let args = benchmark_work_args_with_lock(&j, Target::Native8b, &lock).unwrap();
+            let embedded = benchmark_work_args_for_target(&j, Target::Native8b).unwrap();
+            assert_ne!(args, embedded);
+            for file in Target::Native8b.model_files() {
+                let sha = &parse_weights_lock(&lock).unwrap()[*file];
+                assert!(args.contains(&model_physical_name(file, sha)), "{args:?}");
             }
             for (target, batch) in [(Target::Native8b, "8"), (Target::Native2b, "2")] {
                 let args = benchmark_work_args_for_target(&j, target).unwrap();
