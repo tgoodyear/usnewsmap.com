@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#f6f4ef"/>
+  <rect width="1200" height="96" fill="#ffffff"/>
+  <rect y="96" width="1200" height="2" fill="#d6d2c8"/>
+  <g transform="translate(48 22) scale(1.7)"><path d="M25.5,15.2L26.3,19.3L23.7,15.9L21.7,16L21.1,16L20.4,16.2L17.7,16.7L14.2,19L12.8,16.5L9.8,14.8L8.2,14.9L4.9,13.3L1.7,11.3L0.8,7.6L1.2,5.3L2.5,2.4L2.4,0.8L6.1,1.3L6.6,1.4L12.4,2.3L15.7,2.4L19.5,3L18.3,4.1L19.1,4.1L20.7,5.1L20.7,7L20.9,7.6L21.3,7.5L21.4,5.3L22.7,4.7L23.1,7.3L24.7,6.9L25,6.6L28,3.9L28.9,3.7L29,3.4L29.5,1.7L31.2,3.2L29.7,5L29.8,6.2L29.7,6L29.4,6.4L28.5,6.9L28.3,7.1L28.3,7.3L27.7,8.1L28.2,8.9L28.1,9.2L27.9,9.3L27,9L28,10.4L26.8,12.6L25.6,14.2Z" fill="none" stroke="#8a6d3b" stroke-width="2.5" stroke-linejoin="round" transform="translate(1.5 7.5)"/></g>
+  <text x="128" y="64" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="40" font-weight="700" fill="#1d232b">US News Map</text>
+  <text x="48" y="252" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="104" font-weight="700" fill="#1f3a5f">OCR status</text>
+  <text x="48" y="326" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="38" fill="#56606b">Scans fetched, pages searchable,</text>
+  <text x="48" y="376" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="38" fill="#56606b">and volunteer computing.</text>
+  <rect x="48" y="461" width="34" height="99" fill="#9aa7b5"/>
+  <rect x="92" y="454" width="34" height="106" fill="#9aa7b5"/>
+  <rect x="136" y="438" width="34" height="122" fill="#9aa7b5"/>
+  <rect x="180" y="468" width="34" height="92" fill="#9aa7b5"/>
+  <rect x="224" y="428" width="34" height="132" fill="#c4374a"/>
+  <rect x="268" y="444" width="34" height="116" fill="#c4374a"/>
+  <rect x="312" y="474" width="34" height="86" fill="#9aa7b5"/>
+  <rect x="356" y="481" width="34" height="79" fill="#9aa7b5"/>
+  <rect x="400" y="494" width="34" height="66" fill="#9aa7b5"/>
+  <rect x="444" y="507" width="34" height="53" fill="#9aa7b5"/>
+  <rect x="488" y="509" width="34" height="51" fill="#9aa7b5"/>
+  <rect x="532" y="461" width="34" height="99" fill="#c4374a"/>
+  <rect x="576" y="514" width="34" height="46" fill="#9aa7b5"/>
+  <rect x="620" y="519" width="34" height="41" fill="#9aa7b5"/>
+  <rect x="664" y="527" width="34" height="33" fill="#9aa7b5"/>
+  <rect x="708" y="518" width="34" height="42" fill="#9aa7b5"/>
+  <rect x="752" y="512" width="34" height="48" fill="#9aa7b5"/>
+  <rect x="796" y="527" width="34" height="33" fill="#9aa7b5"/>
+  <rect x="840" y="534" width="34" height="26" fill="#9aa7b5"/>
+  <rect x="884" y="528" width="34" height="32" fill="#9aa7b5"/>
+  <rect x="928" y="536" width="34" height="24" fill="#9aa7b5"/>
+  <rect x="972" y="540" width="34" height="20" fill="#9aa7b5"/>
+  <rect x="1016" y="531" width="34" height="29" fill="#9aa7b5"/>
+  <rect x="1060" y="544" width="34" height="16" fill="#9aa7b5"/>
+  <rect x="1104" y="548" width="34" height="12" fill="#9aa7b5"/>
+  <rect x="48" y="560" width="1104" height="3" fill="#56606b"/>
+  <text x="48" y="604" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="28" fill="#56606b">ocr.usnewsmap.com</text>
+</svg>

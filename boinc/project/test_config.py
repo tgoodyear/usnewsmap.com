@@ -274,12 +274,14 @@ class DaemonConfig(unittest.TestCase):
                 self.assertFalse(int(plan.findtext("min_batch")) <= 108 <= int(plan.findtext("max_batch")), name)
         submit = (root.parents[1] / "crates/usnm-boinc/src/qwen/submit.rs").read_text()
         self.assertIn("pub const XIAOMI_BATCH: i32 = 108;", submit)
-        # Refresh resets them to the image's closed bounds: no cohort helper opens them yet.
+        # The refresh keeps a window the cohort helper opened; both know all five classes.
         refresh = (root.parent / "images/server/refresh-plan-policy.py").read_text()
         cohort = (root.parent / "scripts/native-qwen-cohort.php").read_text()
         for name in mirrors:
-            self.assertNotIn(name, refresh)
-            self.assertNotIn(name, cohort)
+            self.assertIn(name, refresh)
+            self.assertIn(name, cohort)
+        # mt takes batch-2 units only, so the scheduler cannot send it a batch-108 or batch-8 unit it would refuse.
+        self.assertEqual((plans["mt"].findtext("min_batch"), plans["mt"].findtext("max_batch")), ("2", "2"))
 
     def test_high_throughput_scheduler_dispatch_limits(self):
         root = ET.parse(Path(__file__).with_name("config.xml.template"))

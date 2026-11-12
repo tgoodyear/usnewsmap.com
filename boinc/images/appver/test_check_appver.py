@@ -321,8 +321,8 @@ class CheckAppver(unittest.TestCase):
                 spec = ca.ET.parse(directory / "version.xml").getroot()
                 self.assertEqual(ca._infer_app_and_platform(Path("staged"), spec), (app, "x86_64-pc-linux-gnu"))
 
-    def test_native_ocr_version_passes_on_macos_for_its_own_platform(self):
-        for platform in ("arm64-apple-darwin", "x86_64-apple-darwin"):
+    def test_native_ocr_version_passes_on_macos_and_windows_for_its_own_platform(self):
+        for platform in ("arm64-apple-darwin", "x86_64-apple-darwin", "windows_x86_64"):
             directory, sigs = self.stage_native_ocr("usnm_ocr_native", platform=platform)
             self.sign_all(directory, sigs)
             with self.subTest(platform=platform):
@@ -340,8 +340,8 @@ class CheckAppver(unittest.TestCase):
         with self.assertRaisesRegex(ca.Refused, "is not a build manifest for arm64-apple-darwin"):
             ca.check(directory, sigs, self.key, str(self.crypt), kind="native",
                      app="usnm_gold_native", platform="arm64-apple-darwin")
-        with self.assertRaisesRegex(ValueError, "not supported on windows_x86_64"):
-            self.stage_native_ocr("usnm_ocr_native", platform="windows_x86_64")
+        with self.assertRaisesRegex(ValueError, "not supported on aarch64-unknown-linux-gnu"):
+            self.stage_native_ocr("usnm_ocr_native", platform="aarch64-unknown-linux-gnu")
 
     def test_native_ocr_refuses_a_manifest_that_names_a_field_twice(self):
         # The worker's decoder refuses a field named twice, so this does too, even when the

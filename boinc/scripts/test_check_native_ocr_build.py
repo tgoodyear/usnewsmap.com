@@ -146,9 +146,47 @@ class CheckNativeOcrBuild(unittest.TestCase):
                     self.write_manifest(platform=platform)
                     self.assertIn(f"usnm_tesseract is not an {kind}", self.run_check(platform=platform)[1])
 
+    def test_a_windows_build_is_checked_for_a_pe32_plus_x86_64_executable(self):
+        def pe(machine=module.IMAGE_FILE_MACHINE_AMD64, magic=module.PE_OPTIONAL_MAGIC_64,
+               characteristics=module.IMAGE_FILE_EXECUTABLE_IMAGE, pe_offset=0x80,
+               optional_size=240, sections=1):
+            dos = b"MZ" + bytes(58) + struct.pack("<I", pe_offset)
+            coff = struct.pack("<HHIIIHH", machine, sections, 0, 0, 0, optional_size, characteristics)
+            return dos + bytes(pe_offset - 64) + b"PE\0\0" + coff + struct.pack("<H", magic) + bytes(optional_size - 2 + 40 * sections)
+        for name in ("usnm_ocr", "usnm_tesseract"):
+            self.files[name] = pe() + name.encode()
+            (self.build / name).write_bytes(self.files[name])
+        self.write_manifest(platform="windows_x86_64")
+        code, out = self.run_check(platform="windows_x86_64")
+        self.assertEqual(code, 0, out)
+        self.assertIn("native OCR build for windows_x86_64: engine.image", out)
+        # A manifest for another platform, or the Linux default, is refused.
+        self.assertIn("is not a build manifest for x86_64-pc-linux-gnu", self.run_check()[1])
+        self.write_manifest(platform="x86_64-pc-linux-gnu")
+        self.assertIn("is not a build manifest for windows_x86_64", self.run_check(platform="windows_x86_64")[1])
+        # An ELF or Mach-O file, a 32-bit or ARM image, a DLL and a truncated file are refused.
+        pe_len = len(pe())
+        bad = (ELF, b"MZ", pe(machine=0x14C), pe(machine=0xAA64), pe(magic=0x10B), pe(characteristics=0),
+               pe(characteristics=module.IMAGE_FILE_EXECUTABLE_IMAGE | module.IMAGE_FILE_DLL),
+               pe()[:100], pe()[:154], pe()[:pe_len - 1], pe(sections=0), pe(optional_size=100),
+               pe(sections=2)[:-1], struct.pack("<IIII", module.MH_MAGIC_64, 0, 0, module.MH_EXECUTE))
+        for i, data in enumerate(bad):
+            with self.subTest(i=i):
+                self.files["usnm_tesseract"] = data
+                (self.build / "usnm_tesseract").write_bytes(self.files["usnm_tesseract"])
+                self.write_manifest(platform="windows_x86_64")
+                self.assertIn("usnm_tesseract is not an x86-64 PE32+ executable",
+                              self.run_check(platform="windows_x86_64")[1])
+        # A Windows build is not a Linux build.
+        self.write_manifest(platform="x86_64-pc-linux-gnu")
+        (self.build / "usnm_tesseract").write_bytes(ELF + b"engine")
+        self.files["usnm_tesseract"] = ELF + b"engine"
+        self.write_manifest(platform="x86_64-pc-linux-gnu")
+        self.assertIn("usnm_ocr is not an x86-64 ELF executable", self.run_check()[1])
+
     def test_refuses_a_platform_with_no_native_build(self):
-        with self.assertRaisesRegex(ValueError, "no native OCR build for windows_x86_64"):
-            module.check(self.build / "usnm_ocr", {}, self.lock, self.containerfile, "windows_x86_64")
+        with self.assertRaisesRegex(ValueError, "no native OCR build for aarch64-unknown-linux-gnu"):
+            module.check(self.build / "usnm_ocr", {}, self.lock, self.containerfile, "aarch64-unknown-linux-gnu")
 
     def test_the_worker_comes_only_from_binary(self):
         (self.build / "invalid").write_bytes(b"not the worker")
