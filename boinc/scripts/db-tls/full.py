@@ -87,7 +87,9 @@ def init_project():
     rendered.write_text(rendered.read_text().replace("https://localhost/", "http://localhost/"))
     shutil.copyfile(TEMPLATES / "project.xml", PROJECT / "project.xml")
     shutil.copyfile(TEMPLATES / "plan_class_spec.xml", PROJECT / "plan_class_spec.xml")
-    run("bin/xadd", cwd=PROJECT)
+    # As a new project's entrypoint registers them: xadd, then the declared weight and retirement
+    # of each app with no version, so no more than MAX_APPS are live (#1780).
+    run("php", str(TEMPLATES / "register-apps.php"), cwd=PROJECT)
     run("chown", "-R", "boincadm:boincadm", str(PROJECT))
     for i in range(256):
         (PROJECT / f"html/cache/{i:02x}").mkdir(exist_ok=True)

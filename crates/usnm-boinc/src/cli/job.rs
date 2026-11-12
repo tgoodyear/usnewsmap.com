@@ -250,10 +250,30 @@ pub struct SubmitArgs {
     /// to it, so an older worker never gets one. Required for a line job, unused otherwise.
     #[arg(long)]
     app_version_num: Option<u32>,
-    /// A line job only: send it to this one host (`--target_host`), one calibrated on the line
-    /// worker. Needs `<enable_assignment>1</enable_assignment>`.
+    /// A line job, or a `usnm_ocr_native` unit (required there): send it to this one host
+    /// (`--target_host`), one calibrated on that worker. Needs
+    /// `<enable_assignment>1</enable_assignment>`.
     #[arg(long)]
     target_host: Option<u64>,
+    /// The BOINC app: `usnm_ocr` (the worker image) or `usnm_ocr_native` (the native build,
+    /// #1780), whose unit is always for `--target-host` and needs `--trust`.
+    #[arg(long, value_enum, default_value_t = SubmitApp::UsnmOcr)]
+    app: SubmitApp,
+    /// The host trust list (`gold/trust.json`): a native unit is created only when it admits
+    /// the target host for the job's exact scope and native digest.
+    #[arg(long)]
+    trust: Option<PathBuf>,
+    /// The live `usnm_ocr_native` version numbers, from the database (registered, not
+    /// deprecated): a native unit is pinned to the newest of them that packages its build.
+    #[arg(long, value_delimiter = ',')]
+    native_versions: Vec<u32>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "snake_case")]
+pub enum SubmitApp {
+    UsnmOcr,
+    UsnmOcrNative,
 }
 
 pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
@@ -268,7 +288,31 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
         cosmos,
         app_version_num,
         target_host,
+        app,
+        trust,
+        native_versions,
     } = args;
+    if app == SubmitApp::UsnmOcrNative {
+        anyhow::ensure!(
+            app_version_num.is_none()
+                && curated_url.is_none()
+                && state_file.is_none()
+                && cosmos.is_none(),
+            "a usnm_ocr_native unit takes no --app-version-num or retry stores"
+        );
+    }
+    anyhow::ensure!(
+        app == SubmitApp::UsnmOcrNative || native_versions.is_empty(),
+        "--native-versions is for usnm_ocr_native units"
+    );
+    let trust = match (app, trust) {
+        (SubmitApp::UsnmOcrNative, Some(path)) => Some(crate::trust::Trust::load(&path)?),
+        (SubmitApp::UsnmOcrNative, None) => {
+            anyhow::bail!("a usnm_ocr_native unit needs --trust, the host trust list")
+        }
+        (SubmitApp::UsnmOcr, Some(_)) => anyhow::bail!("--trust is for usnm_ocr_native units"),
+        (SubmitApp::UsnmOcr, None) => None,
+    };
     let download = match (download_base_url, download_root) {
         (Some(base), Some(root)) => Some(crate::submit::Download::new(&base, &root)?),
         (Some(base), None) => Some(crate::submit::Download::remote(&base)?),
@@ -293,6 +337,19 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
             state,
             curated: curated.as_ref(),
         });
+    if let Some(trust) = &trust {
+        crate::submit::submit_native(
+            &root,
+            &project,
+            &job,
+            download.as_ref(),
+            target_host,
+            trust,
+            &native_versions,
+        )
+        .await?;
+        return Ok(());
+    }
     let pin = match crate::load(&root, &job)?.job.lines {
         Some(_) => app_version_num,
         None => None,

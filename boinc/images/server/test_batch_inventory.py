@@ -173,6 +173,20 @@ class InventoryTests(unittest.TestCase):
         self.assertIn("app_version.deprecated = 0", inventory.QUERY)
         self.assertIn(f"LIMIT {inventory.MAX_VERSIONS + 1};", inventory.query())
 
+    def test_reports_each_active_hosts_cpus(self):
+        # #1780: a native OCR plan gives each of its hosts one unit per CPU.
+        payload = self.run_main("2\nhost\t3\t2\nhost\t13\t24\nhost\t14\t-1\n")
+        self.assertEqual(payload["host_cpus"], {"3": 2, "13": 24, "14": 0})
+        self.assertEqual(self.run_main("0\n")["host_cpus"], {})
+        for bad in ("host\t0\t4", "host\tx\t4", "host\t3\t2\nhost\t3\t4", "host\t3"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "host inventory"):
+                self.run_main(f"2\n{bad}\n")
+        many = "".join(f"host\t{n}\t1\n" for n in range(1, inventory.MAX_HOSTS + 2))
+        with self.assertRaisesRegex(ValueError, "host inventory"):
+            self.run_main("2\n" + many)
+        self.assertIn(f"LIMIT {inventory.MAX_HOSTS + 1};", inventory.query())
+        self.assertNotIn("host_cpus", self.payload())
+
     def test_query_and_bridge_integration_are_read_only(self):
         bridge = Path(__file__).with_name("bridge-job.sh").read_text()
         self.assertIn('if [ "$step" = batch-inventory ]; then', bridge)
@@ -274,7 +288,8 @@ class InventorySQLTests(unittest.TestCase):
              "--database=mysql", "--batch", "--raw", "--skip-column-names"],
             input="""
 CREATE TEMPORARY TABLE workunit (assimilate_state INTEGER NOT NULL, name VARCHAR(254), appid INTEGER NOT NULL);
-CREATE TEMPORARY TABLE host (rpc_time DOUBLE NOT NULL);
+CREATE TEMPORARY TABLE host (id INTEGER NOT NULL PRIMARY KEY, rpc_time DOUBLE NOT NULL,
+ p_ncpus INTEGER NOT NULL DEFAULT 0);
 CREATE TEMPORARY TABLE app (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(254) NOT NULL,
  min_version INTEGER NOT NULL DEFAULT 0);
 CREATE TEMPORARY TABLE platform (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(254) NOT NULL);
@@ -286,12 +301,12 @@ INSERT INTO app_version VALUES (1,1,106,'docker',0),(1,1,107,'docker',1),(2,1,20
 INSERT INTO workunit VALUES (0,'other-app',2),(1,'usnm_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',1),
  (2,'done',2),(2,'usnm_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',1),(9,'unknown',2),
  (0,'usnm_ocrb_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',1),(0,'usnm_ocrb_short',1),(0,'orphan',7);
-INSERT INTO host VALUES (0),(UNIX_TIMESTAMP()-90000),(UNIX_TIMESTAMP()),(UNIX_TIMESTAMP()-1);
+INSERT INTO host VALUES (1,0,4),(2,UNIX_TIMESTAMP()-90000,8),(13,UNIX_TIMESTAMP(),24),(3,UNIX_TIMESTAMP()-1,2);
 """ + inventory.query() + ";",
             text=True, capture_output=True, check=True,
         )
         self.assertEqual(result.stdout.strip(),
-                         "2\nminver\t0\nversion\tx86_64-pc-linux-gnu\tdocker\t106\napp\t\t1\napp\tusnm_ocr\t3\napp\tusnm_qwen\t2\nusnm_" + "a" * 64 + "\t1\nusnm_"
+                         "2\nhost\t3\t2\nhost\t13\t24\nminver\t0\nversion\tx86_64-pc-linux-gnu\tdocker\t106\napp\t\t1\napp\tusnm_ocr\t3\napp\tusnm_qwen\t2\nusnm_" + "a" * 64 + "\t1\nusnm_"
                          + "b" * 64 + "\t2\nusnm_ocrb_" + "c" * 64 + "\t0")
 
 

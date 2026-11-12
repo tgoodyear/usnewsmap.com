@@ -88,7 +88,8 @@ class DaemonConfig(unittest.TestCase):
         # A zero weight gives an app one cache slot and no query budget, so the feeder never
         # caches its work. Only an app whose units are all assigned to a host may have it:
         # the scheduler sends assigned work from the database (BOINC 22bbebe, sched_assign.cpp).
-        self.assertEqual(sorted(name for name, weight in weights.items() if weight == 0), ["usnm_gold_native"])
+        self.assertEqual(sorted(name for name, weight in weights.items() if weight == 0),
+                         ["usnm_gold_native", "usnm_ocr_native"])
         # 30 October: 1788-1798 unsent replicas exceeded the former 666-slot Qwen share.
         qwen_ready_results = 1800
         self.assertGreaterEqual(budgets["usnm_qwen"], 4 * qwen_ready_results)
@@ -108,6 +109,12 @@ class DaemonConfig(unittest.TestCase):
             if weight > 0 and name != "usnm_qwen":
                 with self.subTest(app=name):
                     self.assertGreaterEqual(slots[name], 160)
+
+    def test_live_apps_fit_the_feeders_app_table(self):
+        # MAX_APPS in the pinned sched_shmem.h: an eleventh live app stops the feeder at start
+        # (#1780). register-apps.php deprecates the declared-retired apps xadd inserts live.
+        apps = ET.parse(Path(__file__).with_name("project.xml")).findall("app")
+        self.assertLessEqual(sum(app.findtext("deprecated") == "0" for app in apps), 10)
 
     def test_replicas_need_different_hosts_not_different_accounts(self):
         # The project's hosts share one account; a per-account rule starves them on quorum-2 work.
@@ -165,6 +172,8 @@ class DaemonConfig(unittest.TestCase):
         live = ("usnm_gold", "usnm_gold_native", "usnm_ndlocr", "usnm_quality", "usnm_qwen")
         self.assertEqual(daemons, sorted([("sample_trivial_validator", "usnm_ocr"),
                                           ("batch_collect_assimilator", "usnm_ocr"),
+                                          ("sample_trivial_validator", "usnm_ocr_native"),
+                                          ("batch_collect_assimilator", "usnm_ocr_native"),
                                           *(("script_validator", app) for app in live),
                                           *(("batch_collect_assimilator", app) for app in live)]))
         self.assertEqual(links, ["usnm_gold_check", "usnm_ndlocr_check", "usnm_ndlocr_compare",
