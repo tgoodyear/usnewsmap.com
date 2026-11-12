@@ -13,8 +13,10 @@ Reports, as JSON on standard output:
 - `words`: how the settled words went: the re-read right, LoC right, neither, can't tell, not text, disputed.
 - `score`: syllabary-letter error of each reading against the checked text, pooled over the letters of the resolved lines,
   and the paired difference (re-read minus LoC), each with a 95% interval from a page bootstrap (pages drawn with
-  replacement). Also the same figures with the lines whose only problem is a "neither" added, each such word counted as
-  one letter wrong for both readings, as a bound on what leaving them out hides.
+  replacement). `equal_error_assumption` adds the lines whose only problem is a "neither", each such word counted as one
+  letter wrong for both readings: an assumption, not a bound, since it makes those lines' difference zero. `worst_case`
+  is the bound: how far the difference could move if those lines were counted and each went as badly as it could for
+  one reading and as well as it could for the other.
 - `by_kind`: the same counts for news lines and lines that reprint the New Testament.
 
 Only lines where the readings differ are loaded. Each reading can differ from the checked text only in the disputed word, and
@@ -69,6 +71,9 @@ def line_states(manifest: list, export: list) -> list:
             rec["state"] = "open"
             rec["why"] = [r["outcome"] for r in rows if r["outcome"] in SETTLED_OTHER]
             rec["letters"] = len("".join(m["ours"]))
+            # Neither reading matches the print there, so each is wrong by at least one letter and by at most
+            # the longer reading's length: the room the unknown transcription leaves.
+            rec["room"] = sum(max(len(m["ours"][k]), len(m["loc"][k])) - 1 for k, r in zip(m["words"], rows) if r["outcome"] == "neither")
         else:
             rec["state"] = "resolved"
             checked = list(m["loc"])
@@ -84,7 +89,8 @@ def line_states(manifest: list, export: list) -> list:
 
 def score(recs: list, neither_as_error: bool = False) -> dict:
     """Pooled error of each reading over the lines (resolved ones, and with `neither_as_error` the open ones
-    whose only problem is a "neither": each such word counts one letter wrong for both readings)."""
+    whose only problem is a "neither": each such word counts one letter wrong for both readings. That is an
+    equal-error assumption, not a bound: see `worst_case`)."""
     e = collections.Counter()
     for r in recs:
         if r["state"] == "resolved":
@@ -100,6 +106,22 @@ def score(recs: list, neither_as_error: bool = False) -> dict:
     n = e["letters"]
     ours, loc = (e["chr_phoenix"] / n, e["loc"] / n) if n else (None, None)
     return {"lines": e["lines"], "letters": n, "chr_phoenix": ours, "loc": loc, "difference": None if n == 0 else ours - loc}
+
+
+def worst_case(recs: list) -> dict:
+    """The re-read's error minus LoC's if the lines that settled on "neither" are counted, and each such word
+    went as badly for one reading as it could for it and as well as it could for the other. Neither reading matches the
+    print there, so each is wrong by at least one letter and by at most the longer reading's length; the transcription
+    is unknown, so the difference on such a line can lie anywhere in plus or minus that room. Lines with other open
+    outcomes stay out. No sampling is involved: this is how far the lines left out could move the difference."""
+    base = score(recs)
+    extra = [r for r in recs if r["state"] == "open" and set(r["why"]) == {"neither"}]
+    n = base["letters"] + sum(r["letters"] for r in extra)
+    if not n:
+        return {"lines": 0, "difference": None}
+    diff = (base["chr_phoenix"] - base["loc"]) * base["letters"] if base["letters"] else 0.0
+    room = sum(r["room"] for r in extra)
+    return {"lines": base["lines"] + len(extra), "letters": n, "difference": [(diff - room) / n, (diff + room) / n]}
 
 
 def percentile(values: list, q: float):
@@ -154,7 +176,8 @@ def report(manifest: list, export: list, target: int, draws: int, seed: int) -> 
     other = collections.Counter(w for r in recs if r["state"] == "open" for w in r["why"])
     out["words"] = {"chr_phoenix_right": win["chr_phoenix"], "loc_right": win["loc"], **{k: other[k] for k in SETTLED_OTHER}}
     out["score"] = {"resolved": {**score(recs), "interval_95": bootstrap(recs, draws, seed)},
-                    "with_neither_lines": {**score(recs, True), "interval_95": bootstrap(recs, draws, seed, True)}}
+                    "equal_error_assumption": {**score(recs, True), "interval_95": bootstrap(recs, draws, seed, True)},
+                    "worst_case": worst_case(recs)}
     out["by_kind"] = {}
     for kind in sorted({r["kind"] for r in recs}):
         sub = [r for r in recs if r["kind"] == kind]

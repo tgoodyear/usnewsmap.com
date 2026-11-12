@@ -58,9 +58,15 @@ class Score(unittest.TestCase):
         self.assertLessEqual(lo, s["difference"] + 1e-9)
         self.assertGreaterEqual(hi, s["difference"] - 1e-9)
         # the "neither" line counts one wrong letter for each reading in the bound
-        b = rep["score"]["with_neither_lines"]
+        b = rep["score"]["equal_error_assumption"]
         self.assertEqual(b["lines"], 4)
         self.assertAlmostEqual(b["chr_phoenix"], 2 / 28)
+        # The "neither" word is 3 letters in each reading, so each reading could be 0 to 2 letters further wrong there:
+        # the difference of -1/21 over 21 letters can move by 2 in either direction over 28 letters.
+        w = rep["score"]["worst_case"]
+        self.assertEqual(w["lines"], 4)
+        self.assertAlmostEqual(w["difference"][0], (-1 - 2) / 28)
+        self.assertAlmostEqual(w["difference"][1], (-1 + 2) / 28)
         self.assertEqual(rep["by_kind"]["scripture"]["resolved"], 1)
         self.assertEqual(rep["pages_with_resolved_lines"], 2)
         self.assertIn("3 of 10 held-out lines resolved", rep["summary"])

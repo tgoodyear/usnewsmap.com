@@ -342,10 +342,13 @@ def main() -> None:
         report["candidates"] = collections.Counter(c["letter"] + ":" + c["kind"] for c in cands)
         report["candidates"] = dict(report["candidates"])
         cands = spread(cands, a.per_letter, a.per_page)
+        # Words whose readings come from different sources (OCR against OCR, OCR against the word list) go in
+        # separate rows, since a row's `a_is` and `b_is` label every task made from it.
         per_line = collections.defaultdict(dict)
         for c in cands:
-            per_line[c["line"]["page"], c["line"]["id"]].setdefault("line", c["line"])
-            per_line[c["line"]["page"], c["line"]["id"]][c["k"]] = (c["a"], c["b"], c["a_is"], c["b_is"])
+            key = (c["line"]["page"], c["line"]["id"], c["a_is"], c["b_is"])
+            per_line[key].setdefault("line", c["line"])
+            per_line[key][c["k"]] = (c["a"], c["b"], c["a_is"], c["b_is"])
         for v in per_line.values():
             ln = v.pop("line")
             chosen.append((ln, v))

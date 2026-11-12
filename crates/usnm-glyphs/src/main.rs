@@ -467,6 +467,23 @@ fn add_checked(
             }
         }
     }
+    // A bank that already holds checked words (an earlier add-checked) has them by task. A task there
+    // is skipped when it settled the same way, so a newer export can be added to the earlier result; one
+    // that settled differently would need the old glyphs replaced, which this never does.
+    let old_rows = read_jsonl(&bank.join("index.jsonl"))?;
+    let already: HashMap<String, (String, String)> = old_rows
+        .iter()
+        .filter(|r| r["how"] == "checked")
+        .filter_map(|r| {
+            Some((
+                r["checked_task"].as_str()?.to_owned(),
+                (
+                    r["outcome"].as_str()?.to_owned(),
+                    r["word"].as_str()?.to_owned(),
+                ),
+            ))
+        })
+        .collect();
     let mut stats: BTreeMap<String, u64> = BTreeMap::new();
     let mut count = |k: &str| *stats.entry(k.to_owned()).or_insert(0u64) += 1;
     // (page, word key, task id, outcome, letters of the settled reading)
@@ -503,6 +520,15 @@ fn add_checked(
             count("no_letters");
             continue;
         }
+        if let Some((was_outcome, was_word)) = already.get(id) {
+            anyhow::ensure!(
+                was_outcome == outcome && *was_word == letters,
+                "{id} is in the bank as {was_outcome} {was_word} but settled as {outcome} {letters}; \
+                 start again from a bank without it"
+            );
+            count("already_in_bank");
+            continue;
+        }
         picks.push((
             page.to_owned(),
             key.to_owned(),
@@ -513,7 +539,6 @@ fn add_checked(
     }
     picks.sort();
 
-    let old_rows = read_jsonl(&bank.join("index.jsonl"))?;
     let old_features = fs::read(bank.join("features.f32"))?;
     anyhow::ensure!(
         old_features.len() == old_rows.len() * FEATURE_SIDE * FEATURE_SIDE * 4,
@@ -576,7 +601,10 @@ fn add_checked(
             let (gx1, gy1) = ((b[2] + 2).min(crop.width()), (b[3] + 2).min(crop.height()));
             let glyph: GrayImage =
                 image::imageops::crop_imm(&crop, gx0, gy0, gx1 - gx0, gy1 - gy0).to_image();
-            glyph.save(dir.join(format!("{id}.png")))?;
+            let png = dir.join(format!("{id}.png"));
+            // Pictures are hard-linked from the starting bank: never write through one of them.
+            anyhow::ensure!(!png.exists(), "{} is already in the bank", png.display());
+            glyph.save(&png)?;
             for x in feature(&ink, *b) {
                 features_out.write_all(&x.to_le_bytes())?;
             }
@@ -728,6 +756,33 @@ mod tests {
             &bank,
             &out,
             &dir.join("export.jsonl"),
+            &[dir.join("index-in.jsonl")],
+            &images,
+            None
+        )
+        .is_err());
+        // A newer export added onto the result skips the words it already holds...
+        let again = add_checked(
+            &out,
+            &dir.join("out2"),
+            &dir.join("export.jsonl"),
+            &[dir.join("index-in.jsonl")],
+            &images,
+            Some(&dir.join("manifest.json")),
+        )
+        .unwrap();
+        assert_eq!(again["glyphs_added"], 0, "{again}");
+        assert_eq!(again["stats"]["already_in_bank"], 1);
+        assert_eq!(read_jsonl(&dir.join("out2/index.jsonl")).unwrap().len(), 4);
+        // ...and refuses one that settled differently.
+        write_lines(
+            &dir.join("export-changed.jsonl"),
+            &[task("l1~0", true, json!("a"), "ᎠᎴᏀ")],
+        );
+        assert!(add_checked(
+            &out,
+            &dir.join("out3"),
+            &dir.join("export-changed.jsonl"),
             &[dir.join("index-in.jsonl")],
             &images,
             None
