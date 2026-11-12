@@ -273,11 +273,19 @@ pub struct Judged {
     pub verdict: Result<(), String>,
 }
 
-/// Judges a pair of results. A pair that did not both finish, or that is for
-/// different jobs or engines, keeps `strict`, the strict rule's verdict.
+/// Judges a pair of results. A pair that did not both finish, that is for
+/// different jobs or engines, or that different readers made
+/// ([`usnm_ocr_contract::qwen::reader_mismatch`]), keeps `strict`, the strict
+/// rule's verdict.
 pub fn judge(a: &Loaded, b: &Loaded, params: Params, strict: Result<(), String>) -> Judged {
     let finished = a.result.outcome == Outcome::Ok && b.result.outcome == Outcome::Ok;
-    if !finished || a.result.job_id != b.result.job_id || a.result.engine != b.result.engine {
+    // Readings by different readers (a Xiaomi-OCR-0 reading and another model's) never
+    // vouch for each other: the strict rule has already refused the pair.
+    if !finished
+        || a.result.job_id != b.result.job_id
+        || a.result.engine != b.result.engine
+        || usnm_ocr_contract::qwen::reader_mismatch(&a.result, &b.result).is_some()
+    {
         return Judged {
             basis: Basis::StrictV1,
             crops: Vec::new(),

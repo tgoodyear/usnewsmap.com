@@ -50,13 +50,70 @@ pub const V2_IMAGE_MIN_TOKENS: u32 = 1024;
 /// ([`loop_guard`]). Version 4 is version 2's encoding with the same guard.
 pub const PROMPT_VERSION_LOOP_GUARD: u32 = 3;
 pub const PROMPT_VERSION_IMAGE_MIN_TOKENS_LOOP_GUARD: u32 = 4;
+/// Request version 5: Xiaomi-OCR-0 (#1776) as Study 9 read with it on
+/// llama.cpp: its region prompt [`XIAOMI_PROMPT`] placed before the image,
+/// thinking off, a [`XIAOMI_CTX_SIZE`]-token context and at most
+/// [`XIAOMI_MAX_TOKENS`] output tokens a crop, llama.cpp's default image
+/// encoding and no loop guard. Only a job pinned to a Xiaomi-OCR-0 model
+/// ([`is_xiaomi_model`]) reads with it, and such a job reads with nothing else.
+pub const PROMPT_VERSION_XIAOMI: u32 = 5;
 /// Every request version this contract's apps can read with.
-pub const SUPPORTED_PROMPT_VERSIONS: [u32; 4] = [
+pub const SUPPORTED_PROMPT_VERSIONS: [u32; 5] = [
     PROMPT_VERSION,
     PROMPT_VERSION_IMAGE_MIN_TOKENS,
     PROMPT_VERSION_LOOP_GUARD,
     PROMPT_VERSION_IMAGE_MIN_TOKENS_LOOP_GUARD,
+    PROMPT_VERSION_XIAOMI,
 ];
+/// llama-server's context for request versions 1 to 4.
+pub const CTX_SIZE: u32 = 4096;
+/// Xiaomi-OCR-0's region prompt, as upstream's region stage sends it.
+pub const XIAOMI_PROMPT: &str = "Extract the text in the image.";
+pub const XIAOMI_CTX_SIZE: u32 = 16_384;
+pub const XIAOMI_MAX_TOKENS: u32 = 2048;
+/// The name prefix of every Xiaomi-OCR-0 build in an engine's models.
+pub const XIAOMI_MODEL_PREFIX: &str = "xiaomi-ocr-0";
+
+/// Whether a model name is a Xiaomi-OCR-0 build. Its readings are never
+/// compared with another model's ([`reader_mismatch`]).
+pub fn is_xiaomi_model(name: &str) -> bool {
+    name.starts_with(XIAOMI_MODEL_PREFIX)
+}
+
+/// The prompt text a request version sends.
+pub fn prompt(prompt_version: u32) -> &'static str {
+    if prompt_version == PROMPT_VERSION_XIAOMI {
+        XIAOMI_PROMPT
+    } else {
+        PROMPT
+    }
+}
+
+/// Whether a request version puts its prompt text before the image
+/// (Xiaomi-OCR-0) rather than after it (Qwen).
+pub fn prompt_before_image(prompt_version: u32) -> bool {
+    prompt_version == PROMPT_VERSION_XIAOMI
+}
+
+/// Whether a request version turns the chat template's thinking off.
+pub fn thinking_off(prompt_version: u32) -> bool {
+    prompt_version == PROMPT_VERSION_XIAOMI
+}
+
+/// llama-server's `--ctx-size` for a request version.
+pub fn context_size(prompt_version: u32) -> u32 {
+    if prompt_version == PROMPT_VERSION_XIAOMI {
+        XIAOMI_CTX_SIZE
+    } else {
+        CTX_SIZE
+    }
+}
+
+/// A request version's fixed output-token cap a crop, in place of the job's
+/// allowance by crop area; `None` for versions 1 to 4.
+pub fn max_output_tokens(prompt_version: u32) -> Option<u32> {
+    (prompt_version == PROMPT_VERSION_XIAOMI).then_some(XIAOMI_MAX_TOKENS)
+}
 
 /// `--image-min-tokens` for a job's request version; `None` keeps the
 /// engine default, as version 1 always has.
@@ -198,11 +255,29 @@ pub struct Job {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<BundlePage>,
     pub prompt_version: u32,
+    /// The one model of `engine.models`, by name, the unit must be read
+    /// with; the host refuses to read it with any other. `None` (every job
+    /// staged before #1776) leaves the choice to the host's plan class.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 impl Job {
+    /// The job's checksum. A pinned model is appended to the hashed tuple, so
+    /// every unpinned job keeps the identity it was staged with.
     pub fn identity(&self) -> anyhow::Result<String> {
+        let mut bytes = self.unpinned_identity_bytes()?;
+        if let Some(model) = &self.model {
+            ensure!(bytes.pop() == Some(b']'), "identity tuple is an array");
+            bytes.push(b',');
+            bytes.extend(serde_json::to_vec(model)?);
+            bytes.push(b']');
+        }
+        Ok(sha256(&bytes))
+    }
+
+    fn unpinned_identity_bytes(&self) -> anyhow::Result<Vec<u8>> {
         if self.pages.is_empty() {
-            Ok(sha256(&serde_json::to_vec(&(
+            Ok(serde_json::to_vec(&(
                 self.v,
                 &self.doc_id,
                 &self.group,
@@ -214,9 +289,9 @@ impl Job {
                 self.gpu_timeout_secs,
                 self.cpu_timeout_secs,
                 self.max_tokens_per_1000px2,
-            ))?))
+            ))?)
         } else {
-            Ok(sha256(&serde_json::to_vec(&(
+            Ok(serde_json::to_vec(&(
                 self.v,
                 &self.doc_id,
                 &self.group,
@@ -229,14 +304,23 @@ impl Job {
                 self.cpu_timeout_secs,
                 self.max_tokens_per_1000px2,
                 &self.pages,
-            ))?))
+            ))?)
         }
     }
     pub fn workunit(&self) -> String {
         format!("usnm_qwen_{}", self.id)
     }
-    /// Output tokens a crop may use.
+    /// The pinned model's entry in `engine.models`, when the job pins one.
+    pub fn pinned_model(&self) -> Option<&Model> {
+        let name = self.model.as_deref()?;
+        self.engine.models.iter().find(|m| m.name == name)
+    }
+    /// Output tokens a crop may use: the request version's fixed cap when it
+    /// has one, else the job's allowance by crop area.
     pub fn max_tokens(&self, crop: &Crop) -> u32 {
+        if let Some(cap) = max_output_tokens(self.prompt_version) {
+            return cap;
+        }
         let per = u64::from(self.max_tokens_per_1000px2);
         u32::try_from((crop.area_px2() * per).div_ceil(1000).max(16)).unwrap_or(u32::MAX)
     }
@@ -376,6 +460,22 @@ impl Job {
             SUPPORTED_PROMPT_VERSIONS.contains(&self.prompt_version),
             "unsupported prompt version"
         );
+        if let Some(pin) = &self.model {
+            check_name(pin, "pinned model")?;
+            ensure!(
+                self.pinned_model().is_some(),
+                "pinned model {pin} is not in the engine's models"
+            );
+        }
+        let xiaomi_pin = self.model.as_deref().is_some_and(is_xiaomi_model);
+        ensure!(
+            xiaomi_pin == (self.prompt_version == PROMPT_VERSION_XIAOMI),
+            "request version {PROMPT_VERSION_XIAOMI} is for a job pinned to a Xiaomi-OCR-0 model, and only for one"
+        );
+        ensure!(
+            xiaomi_pin || !self.engine.models.iter().any(|m| is_xiaomi_model(&m.name)),
+            "an engine that lists a Xiaomi-OCR-0 model must pin it"
+        );
         for t in [self.gpu_timeout_secs, self.cpu_timeout_secs] {
             ensure!((60..=MAX_DEADLINE_SECS).contains(&t), "invalid deadline");
         }
@@ -495,6 +595,12 @@ impl ResultManifest {
             r.device == self.device && r.model == self.model,
             "readings device or model differs"
         );
+        if let Some(model) = &self.model {
+            ensure!(
+                is_xiaomi_model(model) == (r.prompt_version == PROMPT_VERSION_XIAOMI),
+                "model {model} did not read with its request version"
+            );
+        }
         ensure!(
             ["cpu", "cuda", "metal", "vulkan", "none"].contains(&self.device.as_str()),
             "unknown device"
@@ -567,6 +673,9 @@ pub fn agree(
     if a.job_id != b.job_id || a.engine != b.engine {
         return (out, Err("different job or engine".into()));
     }
+    if let Some(why) = reader_mismatch(a, b) {
+        return (out, Err(why));
+    }
     let mut verdict = Ok(());
     let a_ok = matches!(a.outcome, Outcome::Ok);
     let b_ok = matches!(b.outcome, Outcome::Ok);
@@ -619,6 +728,17 @@ pub fn agree(
     (out, verdict)
 }
 
+/// Why two results can't vouch for each other because different readers
+/// made them: a Xiaomi-OCR-0 reading is never paired with another model's
+/// (#1776). Pairs of Qwen models keep the rule they always had.
+pub fn reader_mismatch(a: &ResultManifest, b: &ResultManifest) -> Option<String> {
+    let (Some(ma), Some(mb)) = (a.model.as_deref(), b.model.as_deref()) else {
+        return None;
+    };
+    (ma != mb && (is_xiaomi_model(ma) || is_xiaomi_model(mb)))
+        .then(|| format!("read by different models, {ma} and {mb}"))
+}
+
 /// One page of a bundle unit, judged on its own from a pair's per-crop
 /// agreement (#529): the unit's own verdict still needs every page.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -649,6 +769,7 @@ pub fn agree_pages(
         || b.outcome != Outcome::Ok
         || a.unit_error.is_some()
         || b.unit_error.is_some()
+        || reader_mismatch(a, b).is_some()
         || crops.is_empty()
         || !crops.iter().all(|c| c.id.contains(':'))
     {
@@ -740,6 +861,7 @@ pub(crate) mod tests {
             max_tokens_per_1000px2: 4,
             pages: vec![],
             prompt_version: PROMPT_VERSION,
+            model: None,
         };
         j.id = j.identity().unwrap();
         j
@@ -834,7 +956,7 @@ pub(crate) mod tests {
         assert!(tampered.validate().is_ok());
         assert_ne!(tampered.id, j.id);
         let mut unknown = j;
-        unknown.prompt_version = 5;
+        unknown.prompt_version = 6;
         unknown.id = unknown.identity().unwrap();
         assert!(unknown.validate().is_err());
     }
@@ -858,7 +980,203 @@ pub(crate) mod tests {
             assert!(SUPPORTED_PROMPT_VERSIONS.contains(&version));
             assert_eq!(image_min_tokens(version), tokens);
             assert_eq!(loop_guard(version), guard);
+            // Versions 1 to 4 keep Qwen's prompt, its place, the context and the area allowance.
+            assert_eq!(prompt(version), PROMPT);
+            assert!(!prompt_before_image(version));
+            assert!(!thinking_off(version));
+            assert_eq!(context_size(version), 4096);
+            assert_eq!(max_output_tokens(version), None);
         }
+    }
+
+    pub(crate) fn xiaomi() -> Model {
+        Model {
+            file: "xiaomi-ocr-0-q8_0.gguf".into(),
+            min_gpu_mb: 2000,
+            mmproj: "mmproj-xiaomi-ocr-0-f16.gguf".into(),
+            name: "xiaomi-ocr-0-q8".into(),
+        }
+    }
+
+    pub(crate) fn xiaomi_job() -> Job {
+        let mut j = job();
+        j.engine.models = vec![xiaomi()];
+        j.prompt_version = PROMPT_VERSION_XIAOMI;
+        j.model = Some("xiaomi-ocr-0-q8".into());
+        j.id = j.identity().unwrap();
+        j
+    }
+
+    #[test]
+    fn version_5_is_xiaomis_request() {
+        let v = PROMPT_VERSION_XIAOMI;
+        assert_eq!(v, 5);
+        assert!(SUPPORTED_PROMPT_VERSIONS.contains(&v));
+        assert_eq!(prompt(v), "Extract the text in the image.");
+        assert!(prompt_before_image(v));
+        assert!(thinking_off(v));
+        assert_eq!(context_size(v), 16_384);
+        assert_eq!(max_output_tokens(v), Some(2048));
+        assert_eq!(image_min_tokens(v), None);
+        assert!(!loop_guard(v));
+        let j = xiaomi_job();
+        j.validate().unwrap();
+        // A fixed cap, whatever the crop's area.
+        assert_eq!(j.max_tokens(&j.crops[0]), 2048);
+        assert_eq!(j.pinned_model().unwrap().file, "xiaomi-ocr-0-q8_0.gguf");
+        let back: Job = serde_json::from_slice(&serde_json::to_vec(&j).unwrap()).unwrap();
+        assert_eq!(back, j);
+        back.validate().unwrap();
+    }
+
+    #[test]
+    fn an_unpinned_job_keeps_its_old_shape_and_identity() {
+        let j = job();
+        let json = serde_json::to_value(&j).unwrap();
+        assert!(json.get("model").is_none());
+        let parsed: Job = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed.model, None);
+        parsed.validate().unwrap();
+        let old = sha256(
+            &serde_json::to_vec(&(
+                j.v,
+                &j.doc_id,
+                &j.group,
+                &j.language,
+                &j.input,
+                &j.crops,
+                &j.engine,
+                j.prompt_version,
+                j.gpu_timeout_secs,
+                j.cpu_timeout_secs,
+                j.max_tokens_per_1000px2,
+            ))
+            .unwrap(),
+        );
+        assert_eq!(j.id, old);
+        // A pin is part of the identity: the pinned twin of a job is another unit.
+        let mut pinned = j.clone();
+        pinned.model = Some("qwen3-vl-2b-q8".into());
+        pinned.id = pinned.identity().unwrap();
+        pinned.validate().unwrap();
+        assert_ne!(pinned.id, j.id);
+        let with_pin = sha256(
+            &serde_json::to_vec(&(
+                j.v,
+                &j.doc_id,
+                &j.group,
+                &j.language,
+                &j.input,
+                &j.crops,
+                &j.engine,
+                j.prompt_version,
+                j.gpu_timeout_secs,
+                j.cpu_timeout_secs,
+                j.max_tokens_per_1000px2,
+                "qwen3-vl-2b-q8",
+            ))
+            .unwrap(),
+        );
+        assert_eq!(pinned.id, with_pin);
+    }
+
+    #[test]
+    fn pins_and_request_versions_go_together() {
+        let reid = |mut j: Job| {
+            j.id = j.identity().unwrap();
+            j
+        };
+        // 8B and 2B can each be pinned to the same crops (#968).
+        for name in ["qwen3-vl-8b-q4km", "qwen3-vl-2b-q8"] {
+            let mut j = job();
+            j.model = Some(name.into());
+            reid(j).validate().unwrap();
+        }
+        // A pin must name one of the engine's models.
+        let mut j = job();
+        j.model = Some("qwen3-vl-4b".into());
+        assert!(reid(j).validate().is_err());
+        // Version 5 without a Xiaomi pin, or a Xiaomi pin on another version.
+        let mut j = job();
+        j.prompt_version = PROMPT_VERSION_XIAOMI;
+        assert!(reid(j).validate().is_err());
+        let mut j = xiaomi_job();
+        j.prompt_version = PROMPT_VERSION_LOOP_GUARD;
+        assert!(reid(j).validate().is_err());
+        let mut j = xiaomi_job();
+        j.model = None;
+        j.prompt_version = PROMPT_VERSION;
+        assert!(
+            reid(j).validate().is_err(),
+            "a listed Xiaomi model is pinned"
+        );
+        // A Qwen pin on an engine that also lists Xiaomi-OCR-0.
+        let mut j = xiaomi_job();
+        j.engine.models = vec![engine().models[0].clone(), xiaomi()];
+        j.model = Some("qwen3-vl-8b-q4km".into());
+        j.prompt_version = PROMPT_VERSION;
+        assert!(reid(j).validate().is_err());
+        // The pin is covered by the identity.
+        let mut j = xiaomi_job();
+        j.model = Some("xiaomi-ocr-0-other".into());
+        assert!(j.validate().is_err());
+    }
+
+    #[test]
+    fn a_xiaomi_reading_never_pairs_with_another_model() {
+        let texts = [
+            ("c01", "one two three four"),
+            ("c02", "five six seven eight"),
+        ];
+        let (a, ar, _) = result(Outcome::Ok, &texts);
+        let (mut b, mut br, _) = result(Outcome::Ok, &texts);
+        b.model = Some("xiaomi-ocr-0-q8".into());
+        br.model = b.model.clone();
+        let (crops, verdict) = agree(&a, &ar, &b, &br, 0.5);
+        assert!(crops.is_empty());
+        assert_eq!(
+            verdict.unwrap_err(),
+            "read by different models, qwen3-vl-8b-q4km and xiaomi-ocr-0-q8"
+        );
+        assert!(reader_mismatch(&b, &a).is_some());
+        assert!(reader_mismatch(&b, &b).is_none());
+        // Qwen pairs keep their rule, whatever the models.
+        let (mut q, mut qr, _) = result(Outcome::Ok, &texts);
+        q.model = Some("qwen3-vl-2b-q8".into());
+        qr.model = q.model.clone();
+        assert!(reader_mismatch(&a, &q).is_none());
+        agree(&a, &ar, &q, &qr, 0.5).1.unwrap();
+        // Bundle pages are not judged across readers either.
+        let page_texts = [("p1:c01", "one two"), ("p1:c02", "three four")];
+        let (pa, par, _) = result(Outcome::Ok, &page_texts);
+        let (mut pb, _, _) = result(Outcome::Ok, &page_texts);
+        pb.model = Some("xiaomi-ocr-0-q8".into());
+        let (same, _) = agree(&pa, &par, &pa, &par, 0.5);
+        assert!(!agree_pages(&pa, &pa, &same, 0.5).is_empty());
+        assert!(agree_pages(&pa, &pb, &same, 0.5).is_empty());
+    }
+
+    #[test]
+    fn a_result_names_the_request_its_model_reads_with() {
+        let texts = [("c01", "one"), ("c02", "two")];
+        let (mut a, mut ar, _) = result(Outcome::Ok, &texts);
+        a.model = Some("xiaomi-ocr-0-q8".into());
+        ar.model = a.model.clone();
+        let bytes = serde_json::to_vec(&ar).unwrap();
+        a.readings_bytes = bytes.len() as u64;
+        a.readings_sha256 = sha256(&bytes);
+        assert!(a.check(&bytes, b"").is_err(), "Xiaomi read with version 1");
+        ar.prompt_version = PROMPT_VERSION_XIAOMI;
+        let bytes = serde_json::to_vec(&ar).unwrap();
+        a.readings_bytes = bytes.len() as u64;
+        a.readings_sha256 = sha256(&bytes);
+        a.check(&bytes, b"").unwrap();
+        ar.model = Some("qwen3-vl-8b-q4km".into());
+        a.model = ar.model.clone();
+        let bytes = serde_json::to_vec(&ar).unwrap();
+        a.readings_bytes = bytes.len() as u64;
+        a.readings_sha256 = sha256(&bytes);
+        assert!(a.check(&bytes, b"").is_err(), "Qwen read with version 5");
     }
 
     #[test]

@@ -544,6 +544,66 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_xiaomi_result_never_validates_a_qwen_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let texts = [
+            ("c01", "one two three four"),
+            ("c02", "five six seven eight"),
+        ];
+        let a = write(tmp.path(), "a", &texts);
+        let b = write(tmp.path(), "b", &texts);
+        // b as Xiaomi-OCR-0 read it: the same text, another reader.
+        let mut readings: Readings =
+            serde_json::from_slice(&std::fs::read(&b[0]).unwrap()).unwrap();
+        readings.model = Some("xiaomi-ocr-0-q8".into());
+        readings.prompt_version = usnm_ocr_contract::qwen::PROMPT_VERSION_XIAOMI;
+        let rb = serde_json::to_vec(&readings).unwrap();
+        let mut r: ResultManifest = serde_json::from_slice(&std::fs::read(&b[1]).unwrap()).unwrap();
+        r.model = readings.model.clone();
+        r.readings_bytes = rb.len() as u64;
+        r.readings_sha256 = sha256(&rb);
+        std::fs::write(&b[0], rb).unwrap();
+        std::fs::write(&b[1], serde_json::to_vec(&r).unwrap()).unwrap();
+        check(&b, None).unwrap();
+        compare(&a, &a, 0.5, None, None).unwrap();
+        let log = tmp.path().join("pairs.jsonl");
+        let err = compare(&a, &b, 0.5, Some(&log), None).unwrap_err();
+        assert!(
+            format!("{err}").contains("read by different models"),
+            "{err}"
+        );
+        let states = tmp.path().join("states");
+        let err = compare_with(
+            &a,
+            &b,
+            Compare {
+                min_dice: 0.5,
+                rule: Rule::CropConsensusV2,
+                bundle_verdict: BundleVerdict::Unit,
+                log: Some(&log),
+                pages: None,
+                crop_states: Some(&states),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err}").contains("read by different models"),
+            "{err}"
+        );
+        let last: serde_json::Value = serde_json::from_str(
+            std::fs::read_to_string(&log)
+                .unwrap()
+                .lines()
+                .last()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(last["agree"], false);
+        assert_eq!(last["basis"], "strict-v1");
+        assert_eq!(last["b"]["model"], "xiaomi-ocr-0-q8");
+    }
+
+    #[test]
     fn retains_both_replicas_exact_bytes_metrics_and_replays() {
         let tmp = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
         let keep = tmp.path().join("seen");

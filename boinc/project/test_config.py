@@ -244,6 +244,43 @@ class DaemonConfig(unittest.TestCase):
         base = (root.parent / "images/base/Containerfile").read_text()
         self.assertIn("patch-server-gpu-ram-cap.py --source /usr/local/boinc/sched/plan_class_spec.cpp", base)
 
+    def test_xiaomi_classes_are_closed_batch_108_and_mirror_their_qwen_classes(self):
+        # #1776: Xiaomi-OCR-0 (0.8B) units are batch 108, served by these five classes only.
+        root = Path(__file__).parent
+        plans = {p.findtext("name"): p for p in ET.parse(root / "plan_class_spec.xml").findall("plan_class")}
+        mirrors = {"mt_x08": "mt", "apple_gpu_x08": "apple_gpu_8b", "nvidia_vulkan_x08": "nvidia_vulkan_8b",
+                   "intel_vulkan_x08": "intel_vulkan_8b", "amd_vulkan_x08": "amd_vulkan_8b"}
+        own = ("name", "min_batch", "max_batch", "min_wu_id", "max_wu_id", "min_gpu_ram_mb", "gpu_ram_used_mb")
+        gates = lambda p: sorted((c.tag, (c.text or "").strip()) for c in p if c.tag not in own)
+        for name, qwen in mirrors.items():
+            with self.subTest(plan=name):
+                plan = plans[name]
+                # Closed until an operator opens one audited workunit.
+                self.assertEqual((plan.findtext("min_wu_id"), plan.findtext("max_wu_id")), ("2", "1"))
+                self.assertEqual((plan.findtext("min_batch"), plan.findtext("max_batch")), ("108", "108"))
+                self.assertIsNone(plan.find("docker"))
+                self.assertEqual(gates(plan), gates(plans[qwen]))
+                if name == "mt_x08":
+                    self.assertIsNone(plan.find("gpu_type"))
+                    self.assertIsNone(plan.find("min_gpu_ram_mb"))
+                else:
+                    # About 2 GB of GPU memory, which opens 4 GB cards.
+                    self.assertEqual(plan.findtext("min_gpu_ram_mb"), "2000")
+                    self.assertEqual(plan.findtext("gpu_ram_used_mb"), "2000")
+        self.assertEqual(plans["amd_vulkan_x08"].findtext("min_gpu_peak_flops"), "1.5e12")
+        # No other class serves batch 108, and usnm-boinc puts Xiaomi-OCR-0 units in it.
+        for name, plan in plans.items():
+            if name not in mirrors and plan.find("min_batch") is not None:
+                self.assertFalse(int(plan.findtext("min_batch")) <= 108 <= int(plan.findtext("max_batch")), name)
+        submit = (root.parents[1] / "crates/usnm-boinc/src/qwen/submit.rs").read_text()
+        self.assertIn("pub const XIAOMI_BATCH: i32 = 108;", submit)
+        # Refresh resets them to the image's closed bounds: no cohort helper opens them yet.
+        refresh = (root.parent / "images/server/refresh-plan-policy.py").read_text()
+        cohort = (root.parent / "scripts/native-qwen-cohort.php").read_text()
+        for name in mirrors:
+            self.assertNotIn(name, refresh)
+            self.assertNotIn(name, cohort)
+
     def test_high_throughput_scheduler_dispatch_limits(self):
         root = ET.parse(Path(__file__).with_name("config.xml.template"))
         self.assertEqual(root.findtext("./config/min_sendwork_interval"), "2")

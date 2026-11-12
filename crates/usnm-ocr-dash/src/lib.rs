@@ -1512,7 +1512,8 @@ mod tests {
             assert!(!page.contains(gone), "the public page shows {gone}");
         }
         // The BOINC week: as counts, its jobs in words.
-        assert_eq!(page.matches("<svg class=\"wk\"").count(), 3);
+        assert_eq!(page.matches("<svg class=\"wk wide\"").count(), 3);
+        assert_eq!(page.matches("<svg class=\"wk narrow\"").count(), 3);
         assert!(page.contains("AI snippet reading"));
         assert!(page.contains("jobs checking quality with an AI vision model"));
         // The LAN keeps the operational panels under the same overview.

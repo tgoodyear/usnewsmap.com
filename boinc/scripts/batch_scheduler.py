@@ -11,6 +11,7 @@ import stat
 import functools
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -2336,6 +2337,25 @@ def sibling_archived_held(own_dir, dirs):
     return merged
 
 
+def sibling_claim_messages(own_dir, dirs):
+    """The message sha256s of other plans' claims (--check-state-dir): page -> every sha any of
+    them recorded when `claim pull` took the page's message, as the queue held it. A claim
+    that carries none is left out."""
+    own = Path(own_dir).resolve()
+    merged = {}
+    for directory in dirs:
+        directory = Path(directory).resolve()
+        require(directory != own, "--check-state-dir names this plan's own state directory")
+        claims = json.loads((directory / "state.json").read_text()).get("claims", {})
+        require(isinstance(claims, dict) and len(claims) <= MAX_JOBS,
+                f"{directory}/state.json has no valid claims")
+        for page, claim in claims.items():
+            message = claim.get("message") if isinstance(claim, dict) else None
+            if isinstance(message, str) and ID.fullmatch(message):
+                merged.setdefault(page, set()).add(message)
+    return merged
+
+
 def queue_message_sha256(message):
     """The sha256 of a journal's queue message as the queue holds it: base64 of its compact JSON,
     fields in the journal's order, as usnm-boinc's OcrMessage::encode writes it and `claim pull`
@@ -2345,12 +2365,31 @@ def queue_message_sha256(message):
     return hashlib.sha256(text).hexdigest()
 
 
-def settled_messages(records):
+def claimed_messages(claims, sibling_claims=None):
+    """Page -> the message sha256s `claim pull` recorded for it, in this plan's claims and in the
+    other plans' (--check-state-dir): what settled_messages checks a journal's message against."""
+    found = {page: set(shas) for page, shas in (sibling_claims or {}).items()}
+    for page, claim in (claims or {}).items():
+        message = claim.get("message") if isinstance(claim, dict) else None
+        if isinstance(message, str) and ID.fullmatch(message):
+            found.setdefault(page, set()).add(message)
+    return found
+
+
+def settled_messages(records, claimed=None):
     """Doc id -> the queue message sha256s of journals, of any plan, settled for good with a
     result: published, or kept by a held scope (#835). Such a message, back after its lease, is
     the same message that job ran: the claim step deletes it (held-pages list) rather than claim
     it again and pass it over as settled elsewhere. A failed, pending or in-flight job's message
-    is never listed."""
+    is never listed.
+
+    The journal's message is not always the queue's byte for byte: the export parses its score
+    as a float and can land one ulp off the number the seeder wrote (13 % of 556 held srp pages,
+    11 Nov 2026), so the sha256 written out again matches nothing. `claimed` (claimed_messages)
+    holds the shas `claim pull` recorded; when the message's own sha256 isn't among a page's
+    claims, a neighbouring score's is tried, and one that is among them is listed too. A sha256
+    nobody claimed is never listed, so a newer message of the page stays new work."""
+    claimed = claimed or {}
     found = {}
     for record in records:
         if not (record.get("stage") == "published" or kept_by_policy(record)):
@@ -2358,7 +2397,18 @@ def settled_messages(records):
         message = (record.get("job") or {}).get("message")
         page = message.get("page") if isinstance(message, dict) else None
         if isinstance(page, str) and PAGE_KEY.fullmatch(page):
-            found.setdefault(page.replace("/", "_"), set()).add(queue_message_sha256(message))
+            shas = found.setdefault(page.replace("/", "_"), set())
+            own = queue_message_sha256(message)
+            shas.add(own)
+            wanted = claimed.get(page, set())
+            score = message.get("score")
+            # A message the page's claims already hold byte for byte needs no neighbour: a claim
+            # of an adjacent score is then another message, and stays new work.
+            if wanted and own not in wanted and type(score) is float and math.isfinite(score):
+                for toward in (math.inf, -math.inf):
+                    sha = queue_message_sha256({**message, "score": math.nextafter(score, toward)})
+                    if sha in wanted:
+                        shas.add(sha)
     return found
 
 
@@ -2427,7 +2477,8 @@ def assign_native_hosts(job_ids, slots, outstanding):
 
 def tick(config, state, transport, persist, now=None, *, drain=False, dead_letter_failed=False,
          low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None,
-         refill_cap=None, other_app_budget=None, sibling_archived=None, resume_native=False):
+         refill_cap=None, other_app_budget=None, sibling_archived=None, sibling_claims=None,
+         resume_native=False):
     if config.get("app") == SURYA_APP_NAME:
         require(refill_cap is None, "--refill-cap is for OCR plans")
         require(other_app_budget is None, "--other-app-budget is for OCR plans")
@@ -2760,12 +2811,13 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     submitted = 0
     if feed:
         # Every tick, so the list stays current when this one claims nothing (#1754).
-        feed.settled_messages = settled_messages(records)
+        feed.settled_messages = settled_messages(records, claimed_messages(state.get("claims"), sibling_claims))
         feed.publish_settled()
     if target and not held and not drain and not gold_ran and not native_paused:
         if free > 0:
             if feed:
-                feed.settled_messages = settled_messages(records)
+                feed.settled_messages = settled_messages(
+                    records, claimed_messages(state.get("claims"), sibling_claims))
                 feed.fill(min(refill, free), selected, owned, now)
                 # The fresh claims are allocated now: one another plan's journal is for is passed
                 # over and reported, even when nothing else is exported (#1685).
@@ -3246,6 +3298,7 @@ def main(argv=None):
                 # with the journals this tick lists.
                 if args.check_state_dir:
                     tick_kwargs["sibling_archived"] = sibling_archived_held(args.state_dir, args.check_state_dir)
+                    tick_kwargs["sibling_claims"] = sibling_claim_messages(args.state_dir, args.check_state_dir)
                 event = tick(config, state, transport, lambda: save(path, state), **tick_kwargs)
             # Again after the lease is released, so the line counts the release too.
             event["timings"] = timings.summary()

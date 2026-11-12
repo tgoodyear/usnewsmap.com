@@ -4,7 +4,7 @@ use std::path::Path;
 use usnm_ocr_contract::{
     boinc::sha256,
     quality::Input,
-    qwen::{Crop, Engine, Job, Model, PROMPT_VERSION, VERSION},
+    qwen::{Crop, Engine, Job, Model, PROMPT_VERSION, PROMPT_VERSION_XIAOMI, VERSION},
 };
 use usnm_ocr_quality::slot::PAGE_FILE;
 
@@ -28,17 +28,38 @@ pub(crate) fn test_weights_lock_bytes() -> Vec<u8> {
          Qwen3VL-8B-Instruct-Q4_K_M.gguf https://example.invalid/8b.gguf {gguf_sum}\n\
          mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf https://example.invalid/8b.mmproj {mmproj_sum}\n\
          Qwen3-VL-2B-Instruct-Q8_0.gguf https://example.invalid/2b.gguf {gguf_sum}\n\
-         mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf https://example.invalid/2b.mmproj {mmproj_sum}\n"
+         mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf https://example.invalid/2b.mmproj {mmproj_sum}\n\
+         xiaomi-ocr-0-q8_0.gguf https://example.invalid/x08.gguf {gguf_sum}\n\
+         mmproj-xiaomi-ocr-0-f16.gguf https://example.invalid/x08.mmproj {mmproj_sum}\n"
     )
     .into_bytes()
 }
 
+pub(crate) fn xiaomi_model() -> Model {
+    Model {
+        file: "xiaomi-ocr-0-q8_0.gguf".into(),
+        min_gpu_mb: 2000,
+        mmproj: "mmproj-xiaomi-ocr-0-f16.gguf".into(),
+        name: "xiaomi-ocr-0-q8".into(),
+    }
+}
+
+/// A unit pinned to Xiaomi-OCR-0 at request version 5, its engine listing that model alone.
+pub(crate) fn write_xiaomi_unit(dir: &Path) -> Job {
+    write_unit(
+        dir,
+        vec![xiaomi_model()],
+        PROMPT_VERSION_XIAOMI,
+        Some("xiaomi-ocr-0-q8"),
+    )
+}
+
 pub(crate) fn write_qwen_unit(dir: &Path) -> Job {
-    std::fs::create_dir_all(dir).unwrap();
-    let page = synthetic_jpeg(200, 200);
-    let weights_lock = test_weights_lock_bytes();
-    std::fs::write(dir.join("weights.lock"), &weights_lock).unwrap();
-    let models = vec![
+    write_unit(dir, qwen_models(), PROMPT_VERSION, None)
+}
+
+pub(crate) fn qwen_models() -> Vec<Model> {
+    vec![
         Model {
             file: "Qwen3VL-8B-Instruct-Q4_K_M.gguf".into(),
             min_gpu_mb: 7000,
@@ -51,7 +72,19 @@ pub(crate) fn write_qwen_unit(dir: &Path) -> Job {
             mmproj: "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf".into(),
             name: "qwen3-vl-2b-q8".into(),
         },
-    ];
+    ]
+}
+
+pub(crate) fn write_unit(
+    dir: &Path,
+    models: Vec<Model>,
+    prompt_version: u32,
+    pin: Option<&str>,
+) -> Job {
+    std::fs::create_dir_all(dir).unwrap();
+    let page = synthetic_jpeg(200, 200);
+    let weights_lock = test_weights_lock_bytes();
+    std::fs::write(dir.join("weights.lock"), &weights_lock).unwrap();
     let mut job = Job {
         v: VERSION,
         id: String::new(),
@@ -83,7 +116,8 @@ pub(crate) fn write_qwen_unit(dir: &Path) -> Job {
         language: "srp".into(),
         max_tokens_per_1000px2: 4,
         pages: vec![],
-        prompt_version: PROMPT_VERSION,
+        prompt_version,
+        model: pin.map(str::to_owned),
     };
     job.id = job.identity().unwrap();
     std::fs::write(dir.join(PAGE_FILE), &page).unwrap();
