@@ -200,7 +200,7 @@ fn shapes(ink: &Ink, words: &[Word]) -> Vec<Option<(Shape, f64)>> {
                 .collect();
             others.sort_unstable();
             let rel = match others.len() {
-                0 => 1.0,
+                0 => f64::from(s.height),
                 n if n % 2 == 1 => f64::from(others[n / 2]),
                 n => f64::from(others[n / 2 - 1] + others[n / 2]) / 2.0,
             };
@@ -299,7 +299,11 @@ fn looks_english(text: &str) -> bool {
         .split(|c: char| !c.is_ascii_alphabetic())
         .filter(|t| t.len() >= 3)
         .collect();
-    ok && !tokens.is_empty() && tokens.into_iter().all(plausible_word)
+    if tokens.is_empty() {
+        // A short word in brackets, "(in)", has no word long enough to test.
+        return ok && bracketed(text) && lowercase(text) >= 2;
+    }
+    ok && tokens.into_iter().all(plausible_word)
 }
 
 fn lowercase(s: &str) -> usize {
@@ -613,6 +617,25 @@ mod tests {
             verdicts(&line_with(&tr), &tr, &[eng("A-SKA-YA", 80.0)]),
             [false]
         );
+    }
+
+    #[test]
+    fn a_sole_word_is_as_tall_as_its_line_and_a_bracketed_short_word_can_be_latin() {
+        // The only word of a line: ratio 1, never "taller than its neighbours".
+        let ink = Ink::new(&crop(&[(10, 60, 10, 50)]));
+        let one = [word("ᏣᎳ", 20.0, [5, 0, 65, 60])];
+        let s = shapes(&ink, &one);
+        assert_eq!(s[0].unwrap().1, 1.0);
+        let sure = [Some(English {
+            text: "(in)".into(),
+            conf: 90.0,
+        })];
+        assert_eq!(verdicts(&ink, &one, &sure), [true]);
+        let bare = [Some(English {
+            text: "in".into(),
+            conf: 90.0,
+        })];
+        assert_eq!(verdicts(&ink, &one, &bare), [false]);
     }
 
     #[test]
