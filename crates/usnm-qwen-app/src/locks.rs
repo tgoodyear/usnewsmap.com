@@ -1,11 +1,9 @@
 //! `llama.lock` and `weights.lock`: the engine and weights this host accepts, the check of a
 //! unit against them, and the model files found and verified against `weights.lock`.
+use crate::verified::{self, WeightsCheck};
 use anyhow::{bail, ensure, Context};
-use sha2::Digest as _;
 use std::{
     collections::BTreeMap,
-    fmt::Write as _,
-    io::Read as _,
     path::{Path, PathBuf},
 };
 use usnm_ocr_contract::{
@@ -183,25 +181,6 @@ pub fn parse_weights_lock(bytes: &[u8]) -> anyhow::Result<BTreeMap<String, Strin
     Ok(map)
 }
 
-fn sha256_file(path: &Path) -> anyhow::Result<String> {
-    let mut f = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
-    let mut hasher = sha2::Sha256::new();
-    let mut buf = [0u8; 65536];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    let digest = hasher.finalize();
-    let mut out = String::with_capacity(64);
-    for b in digest {
-        let _ = write!(out, "{b:02x}");
-    }
-    Ok(out)
-}
-
 pub(crate) fn check_engine(work: &Path, job: &Job) -> anyhow::Result<()> {
     match std::env::var(ENV_LLAMA_IMAGE) {
         Ok(llama) if !llama.is_empty() => {
@@ -300,6 +279,7 @@ fn resolve_pinned<'a>(
     models: &'a [Model],
     plan_class: Option<&str>,
     pin: &str,
+    log: &mut Vec<WeightsCheck>,
 ) -> anyhow::Result<(&'a Model, PathBuf, PathBuf)> {
     let m = models.iter().find(|m| m.name == pin).with_context(|| {
         format!("{PIN_REFUSED}: the unit is pinned to {pin}, which its engine does not list")
@@ -315,20 +295,42 @@ fn resolve_pinned<'a>(
             m.file, m.mmproj
         )
     })?;
-    verify_weights(work, m, &mp, &mmp).with_context(|| {
+    verify_weights(work, m, &mp, &mmp, log).with_context(|| {
         format!("{PIN_REFUSED}: the unit is pinned to {pin}, whose files don't match weights.lock")
     })?;
     Ok((m, mp, mmp))
 }
 
-fn verify_weights(work: &Path, m: &Model, model: &Path, mmproj: &Path) -> anyhow::Result<()> {
+/// Checks the model and projector against `weights.lock`. Each file is hashed in full unless
+/// its verified-file record proves it unchanged since a full hash matched the same pin
+/// ([`verified::check`], #1722); `USNM_QWEN_FULL_HASH=1` hashes every time. A full hash
+/// that doesn't match fails exactly as it did before the record existed. `log` gets one
+/// entry per file checked.
+fn verify_weights(
+    work: &Path,
+    m: &Model,
+    model: &Path,
+    mmproj: &Path,
+    log: &mut Vec<WeightsCheck>,
+) -> anyhow::Result<()> {
     let weights_bytes = active_weights_lock_bytes(work)?;
     let expected = parse_weights_lock(&weights_bytes)?;
+    let force_full = verified::full_hash_forced();
     for (logical, actual_path) in [(&m.file, model), (&m.mmproj, mmproj)] {
         let want = expected
             .get(logical.as_str())
             .with_context(|| format!("{} is missing from weights.lock", logical))?;
-        let got = sha256_file(actual_path)?;
+        let (got, entry) = verified::check(
+            logical,
+            actual_path,
+            want,
+            force_full,
+            verified::Policy::LIVE,
+        )?;
+        log.push(entry);
+        let Some(got) = got else {
+            continue;
+        };
         ensure!(
             &got == want,
             "model file {} ({}) sha256 mismatch: expected {want}, got {got}",
@@ -345,6 +347,7 @@ fn verify_weights(work: &Path, m: &Model, model: &Path, mmproj: &Path) -> anyhow
 /// Otherwise the best available model from `models` whose files exist in the
 /// slot directory or model directory is chosen by plan class; a Xiaomi-OCR-0
 /// model is never chosen that way, and the `_x08` classes read pinned units only.
+#[cfg(test)]
 pub fn resolve_model<'a>(
     work: &Path,
     models: &'a [Model],
@@ -353,8 +356,29 @@ pub fn resolve_model<'a>(
     plan_class: Option<&str>,
     pin: Option<&str>,
 ) -> anyhow::Result<(&'a Model, PathBuf, PathBuf)> {
+    resolve_model_logged(
+        work,
+        models,
+        gpu_free_mb,
+        use_gpu,
+        plan_class,
+        pin,
+        &mut Vec::new(),
+    )
+}
+
+/// [`resolve_model`], recording how each model file was checked in `log`.
+pub fn resolve_model_logged<'a>(
+    work: &Path,
+    models: &'a [Model],
+    gpu_free_mb: Option<u64>,
+    use_gpu: bool,
+    plan_class: Option<&str>,
+    pin: Option<&str>,
+    log: &mut Vec<WeightsCheck>,
+) -> anyhow::Result<(&'a Model, PathBuf, PathBuf)> {
     if let Some(pin) = pin {
-        return resolve_pinned(work, models, plan_class, pin);
+        return resolve_pinned(work, models, plan_class, pin, log);
     }
     if let Some(p) = plan_class.filter(|p| xiaomi_plan_class(p)) {
         bail!("{PIN_REFUSED}: plan class {p} reads only units pinned to a Xiaomi-OCR-0 model");
@@ -395,6 +419,6 @@ pub fn resolve_model<'a>(
         },
     };
 
-    verify_weights(work, chosen.0, &chosen.1, &chosen.2)?;
+    verify_weights(work, chosen.0, &chosen.1, &chosen.2, log)?;
     Ok((chosen.0, chosen.1.clone(), chosen.2.clone()))
 }

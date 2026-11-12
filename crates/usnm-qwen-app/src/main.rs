@@ -23,7 +23,10 @@ mod retry;
 mod server;
 #[cfg(test)]
 mod test_support;
+mod verified;
 
+#[cfg(test)]
+use crate::locks::resolve_model;
 use crate::{
     boinc::{
         boinc_info, postpone_probe_timeout, runtime_info, start_boinc_control, PROBE_POSTPONE_SECS,
@@ -31,7 +34,7 @@ use crate::{
     },
     checkpoint::{QwenCheckpoint, CHECKPOINT_FILE},
     gpu::{detect_gpu, gpu_used_mib, vulkan_refusal, GpuState},
-    locks::{check_engine, resolve_model},
+    locks::{check_engine, resolve_model_logged},
     report::{diag_block, failure_report, redacted_tail, report_failure},
     retry::{run_crop, write_temporary_exit, CropEnd, MAX_TEMPORARY_EXITS},
     server::{chat_completion_for, find_llama_server, Launch, Llama, LOAD_DEADLINE},
@@ -449,14 +452,22 @@ fn run_crops(
         ));
     }
 
-    let (model, model_path, mmproj_path) = match resolve_model(
+    let mut checks = Vec::new();
+    let resolved = resolve_model_logged(
         work,
         &l.job.engine.models,
         gpu.free_mb,
         gpu.use_gpu,
         host.plan_class.as_deref(),
         l.job.model.as_deref(),
-    ) {
+        &mut checks,
+    );
+    if !checks.is_empty() {
+        // Logical names from weights.lock only, never paths (#1722).
+        let lines: Vec<String> = checks.iter().map(ToString::to_string).collect();
+        diag.section("weights check", &lines.join("\n"), 512);
+    }
+    let (model, model_path, mmproj_path) = match resolved {
         Ok(m) => m,
         Err(e) => {
             diag.section("model resolution failed", &format!("{e:#}"), 1024);
@@ -1110,6 +1121,32 @@ mod tests {
         assert_eq!(result.job_id, job.id);
         assert_eq!(result.model.as_deref(), Some("qwen3-vl-2b-q8"));
 
+        // Each model file's check is logged by its weights.lock name, never by path. The
+        // files were just written, so both are hashed in full and get no record yet.
+        let diag_text = String::from_utf8(diag_bytes.clone()).unwrap();
+        assert!(
+            diag_text.contains("== weights check\nQwen3-VL-2B-Instruct-Q8_0.gguf: full hash, "),
+            "{diag_text}"
+        );
+        assert!(
+            diag_text.contains("\nmmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf: full hash, "),
+            "{diag_text}"
+        );
+        let section = diag_text
+            .split("== weights check\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n== ").next())
+            .unwrap();
+        assert!(
+            !section.contains(&*tmp.path().to_string_lossy()),
+            "{section}"
+        );
+        assert!(
+            !section.contains('/') && !section.contains('\\'),
+            "{section}"
+        );
+        assert!(!crate::verified::record_path(&model_phys).unwrap().exists());
+
         let readings = result.check(&readings_bytes, &diag_bytes).unwrap();
         assert_eq!(readings.readings.len(), 2);
         assert_eq!(readings.readings[0].id, "c01");
@@ -1296,6 +1333,52 @@ mod tests {
         std::fs::write(slot.join("xiaomi-ocr-0-q8_0.gguf"), b"tampered").unwrap();
         let err = resolve_model(&slot, &all, None, false, Some("mt_x08"), pin).unwrap_err();
         assert!(format!("{err:#}").contains("sha256 mismatch"));
+    }
+
+    #[test]
+    fn a_stale_verified_record_never_lets_a_changed_pinned_file_through() {
+        use crate::locks::PIN_REFUSED;
+        use crate::test_support::{write_xiaomi_unit, xiaomi_model, FAKE_GGUF};
+        use crate::verified::{check, Policy};
+        let tmp = tempfile::tempdir().unwrap();
+        let slot = tmp.path().join("slot");
+        let job = write_xiaomi_unit(&slot);
+        let pin = job.model.as_deref();
+        write_model_files(&slot, &[xiaomi_model()]);
+        let model = slot.join(&xiaomi_model().file);
+        // A record from a good full hash, with the test policy (any filesystem, no racy
+        // margin) so it is written at once.
+        let relaxed = Policy {
+            require_trusted_fs: false,
+            racy_margin: Duration::ZERO,
+        };
+        let want = sha256(FAKE_GGUF);
+        let (got, _) = check(&xiaomi_model().file, &model, &want, false, relaxed).unwrap();
+        assert_eq!(got.as_deref(), Some(want.as_str()));
+        // The file changes under it: same refusal, same message as without a record.
+        std::fs::write(&model, b"not the pinned weights").unwrap();
+        let mut log = Vec::new();
+        let err = crate::locks::resolve_model_logged(
+            &slot,
+            &[xiaomi_model()],
+            Some(16000),
+            true,
+            Some("mt_x08"),
+            pin,
+            &mut log,
+        )
+        .unwrap_err();
+        let err = format!("{err:#}");
+        assert!(err.starts_with(PIN_REFUSED), "{err}");
+        assert!(err.contains("sha256 mismatch"), "{err}");
+        assert_eq!(log.len(), 1);
+        assert!(
+            log[0]
+                .to_string()
+                .starts_with("xiaomi-ocr-0-q8_0.gguf: full hash"),
+            "{}",
+            log[0]
+        );
     }
 
     #[test]
