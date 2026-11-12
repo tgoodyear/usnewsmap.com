@@ -118,6 +118,33 @@ class OrderTest(Built):
         self.assertEqual([p["seq"] for p in lines(self.d / "out/w/plan.jsonl")], [9, 10])
 
 
+class LanguageAndStopTest(Built):
+    def test_languages_keep_only_the_listed_pages_in_both_lists(self):
+        s = self.build(fixture(), "--languages", "ger")
+        self.assertTrue(all(p["page_lang"] == "ger" for p in lines(self.d / "out/w-moderate/plan.jsonl")))
+        self.assertEqual(s["worst"]["pages"], 0)
+        self.assertEqual(s["languages"], ["ger"])
+        self.assertGreater(s["population"]["worst"]["excluded"]["language not listed"], 0)
+
+    def test_stopped_cells_leave_only_their_band(self):
+        stop = self.d / "stop.json"
+        stop.write_text(json.dumps({"cells": [{"band": "moderate", "lang": "ger", "decade": 1890}]}))
+        s = self.build(fixture(), "--stop-cells", str(stop))
+        sample = lines(self.d / "out/w-moderate/plan.jsonl")
+        self.assertFalse([p for p in sample if (p["page_lang"], p["decade"]) == ("ger", 1890)])
+        self.assertTrue([p for p in sample if (p["page_lang"], p["decade"]) == ("ger", 1900)])
+        self.assertEqual(s["worst"]["pages"], 30)
+        self.assertEqual(s["stop_cells"]["cells"], 1)
+
+    def test_a_bad_language_list_or_stop_file_is_refused(self):
+        with self.assertRaises(SystemExit):
+            self.build(fixture(), "--languages", "eng,German")
+        bad = self.d / "stop.json"
+        bad.write_text("{}")
+        with self.assertRaises(SystemExit):
+            self.build(fixture(), "--stop-cells", str(bad), name="b")
+
+
 class SampleTest(Built):
     def test_the_sample_is_apart_from_the_worst_and_capped_per_cell(self):
         s = self.build(fixture())

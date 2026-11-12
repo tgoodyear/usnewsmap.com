@@ -766,6 +766,20 @@ Excluded: pages in `quality.ocr_outputs` or outstanding/imported in `--ocr-state
 
 `follow` takes every fetched page under its own campaign, so pages from these manifests land there unless `follow`'s `--staged` names them. With the fetcher's `--no-loc-prefixes queue-quality-` (`USNM_PREFETCH_NO_LOC_PREFIXES`), `queue-quality-*` manifests take JP2s only from LoC's bucket or a mirror, so pages of batches the bucket doesn't serve wait; without it they are fetched from LoC within the global budget.
 
+Per language and stopped cells: `--languages eng` (or `pol,srp,...`) keeps only those page languages in both lists, so each language is its own campaign, worst first, and English's 1.67M pages don't hold up the rest. `--stop-cells <stop.json>` leaves out the band, language and decade cells `quality_gain.py` stopped. A rebuild per language replays the first build's export with `--input`.
+
+#### Measuring the gain (#1415)
+
+`quality_gain.py` measures what re-reading gained in each cell of reader, band, language and decade: LoC's damage rate minus the re-read text's (the newest `quality.ocr_outputs` row of the reader), page by page, the measure the 0.02 threshold was set on. Where a `usnm_quality` unit gave both texts an estimated CER, the cell also reports the mean CER drop. A cell is `stop` when its gain is below `--min-gain` (0.02): the 95% interval's upper end is under it from 30 pages on, or the cell has `--cell-pages` (374) pages and its mean is under it. It is `go` the other way round, and `measuring` until either. It reads the replica, through the `quality_reader` DSN:
+
+```sh
+/opt/usnm-quality-feed/venv/bin/python /opt/usnm-quality-feed/quality_gain.py \
+  --out-dir /var/tmp/usnm-gain-$(date -u +%Y%m%d) --dsn-file /etc/usnm/quality-reader/dsn \
+  [--readers ours-tesseract] [--plan <campaign>/plan.jsonl]
+```
+
+It writes `pages.csv` (the export), `cells.csv`, `stop.json` (the stopped cells, for `quality_campaign.py --stop-cells`) and `summary.json`. A new reader is measured by name once it has a `quality.readers` row and outputs in `quality.ocr_outputs`, for example Xiaomi-OCR-0 when `usnm_qwen` 1.20 ships it. An unknown name stops the run. The stop applies to re-reading only. Whether a re-read page's text replaces LoC's in search is still rule v1's decision, page by page, at the release.
+
 #### The follower
 
 `quality_feed.py follow` (`usnm-quality-follow.service`) gives a unit to every fetched page no campaign has staged, in fetch order, in full chunks of `--chunk-pages`. A part chunk waits until no chunk has been written for `--max-wait-secs` (6 hours), so bundles aren't tiny (median 16 pages before 5 November 2026). Pages with no curated LoC text yet wait; unpreparable pages are replaced from a reserve of a tenth of `--chunk-pages`, and a short chunk ("chunk came up short") is written only once overdue. Pages never worth retrying go to `skipped.txt`.

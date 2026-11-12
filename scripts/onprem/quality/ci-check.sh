@@ -138,4 +138,17 @@ if not got == sql == want:
     sys.exit(f"bands: the builder's on the export {got}, the report's SQL {sql},"
              f" the builder's on the rates loaded {want}")
 PY
-echo "usnm_quality checked: schema, roles, loader upserts, LoC software, page_summary, rank queries, campaign export"
+# The gain measure's export runs as the reader too: its columns and grants (#1415).
+qg="$here/../../../boinc/scripts/onprem/quality-feed/quality_gain.py"
+gain_csv=$({
+  echo "SET ROLE quality_reader;"
+  python3 - "$qg" <<'PY'
+import importlib.util, os, sys
+sys.path[:0] = [os.path.dirname(sys.argv[1]), os.path.join(os.path.dirname(sys.argv[1]), "..", "ocr-feed")]
+spec = importlib.util.spec_from_file_location("quality_gain", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(m.export_sql(["ours-tesseract"]))
+PY
+} | psql_admin -d usnm_quality)
+[ "$(printf '%s\n' "$gain_csv" | head -1)" = "doc_id,reader,lang,decade,occurrences,loc_damage,ours_damage,loc_est_cer,ours_est_cer" ] \
+  || die "the gain export's columns"
+echo "usnm_quality checked: schema, roles, loader upserts, LoC software, page_summary, rank queries, campaign and gain exports"

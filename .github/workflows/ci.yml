@@ -961,6 +961,7 @@ jobs:
           python3 -m unittest -v scripts/ocr-node/test_quality_jpeg_list.py
           python3 -m unittest -v scripts/ocr-node/test_repair_reading_order.py
           python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_quality_campaign.py
+          python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_quality_gain.py
           python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_quality_feed.py
           python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_quality_receive.py
           python3 -m unittest -v boinc/scripts/onprem/quality-feed/test_quality_results.py
