@@ -199,6 +199,11 @@ fi
 
 for word in ${ADDED[@]+"${ADDED[@]}"}; do
   ! own_flag "$word" || die "--add-flag $word: controller-tick.sh sets it itself"
+  # Draining is the kind's: a plan that isn't @kind drain never drains for one run.
+  case $KIND:$word in
+    drain:*) ;;
+    *:--dr | *:--dra | *:--drai | *:--drain) die "--add-flag $word: plan $PLAN is @kind $KIND" ;;
+  esac
   FLAGS+=("$word")
 done
 

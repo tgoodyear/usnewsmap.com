@@ -315,6 +315,13 @@ class FlagsFiles(Fixture):
                 self.assertIn("make it @kind drain", self.failure(self.tick("queue-feed-10", "--print-command")))
                 self.flags("queue-feed-10", DRAIN_FLAGS.replace("--drain ", drain + " "))
                 self.assertEqual(self.tick("queue-feed-10", "--print-command").returncode, 0)
+        self.flags("native-feed-4", NATIVE_FLAGS)
+        for drain in ("--dr", "--dra", "--drai", "--drain"):
+            with self.subTest(added=drain):
+                done = self.tick("native-feed-4", "--print-command", "--add-flag", drain)
+                self.assertIn("is @kind native", self.failure(done))
+        self.flags("queue-feed-10", DRAIN_FLAGS)
+        self.assertEqual(self.tick("queue-feed-10", "--print-command", "--add-flag", "--drain").returncode, 0)
         self.flags("main", MAIN_FLAGS.replace("@kind main\n", ""))
         self.assertIn("has no @kind", self.failure(self.tick("main", "--print-command")))
         self.flags("main", MAIN_FLAGS.replace("@kind main", "@kind live"))
