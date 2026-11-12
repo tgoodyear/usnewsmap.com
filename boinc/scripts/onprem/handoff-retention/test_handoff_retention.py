@@ -270,6 +270,29 @@ class PruneBundles(unittest.TestCase):
                          {"kept: pages differs from its manifest's scans",
                           "kept: pages is not the size its manifest gives"})
 
+    def test_a_manifest_that_does_not_cover_every_byte_once_keeps_the_bundle(self):
+        # Two 3-byte entries both at offset 0 add up to the size of "abcXYZ", but XYZ is never
+        # hashed or confirmed.
+        _, d = self.r.bundle(1, scans=[b"abc"])
+        (d / "pages").write_bytes(b"abcXYZ")
+        os.utime(d / "pages", (OLD, OLD))
+        entry = json.loads((d / "ocr_bundle.json").read_text())["pages"][0]
+        (d / "ocr_bundle.json").write_text(json.dumps({"pages": [entry, dict(entry)]}))
+        # A gap, a zero length and a late start are refused too.
+        _, d2 = self.r.bundle(2, scans=[b"abc", b"def"])
+        m2 = json.loads((d2 / "ocr_bundle.json").read_text())
+        m2["pages"][1]["offset"] = 4
+        (d2 / "ocr_bundle.json").write_text(json.dumps(m2))
+        _, d3 = self.r.bundle(3, scans=[b"ghi"])
+        m3 = json.loads((d3 / "ocr_bundle.json").read_text())
+        m3["pages"].append({"job": {"scan": {"sha256": hashlib.sha256(b"").hexdigest(), "bytes": 0}}, "offset": 3})
+        (d3 / "ocr_bundle.json").write_text(json.dumps(m3))
+        summary = self.r.run("--delete")
+        self.assertEqual(summary["bundles"], 0)
+        self.assertEqual(summary["kept"], {"ocr_bundle.json does not lay its scans out end to end": 3})
+        for d in (d, d2, d3):
+            self.assertTrue((d / "pages").exists())
+
     def test_a_missing_stale_or_torn_confirmation_list_stops_the_run(self):
         _, d = self.r.bundle(1)
         with self.assertRaises(SystemExit):

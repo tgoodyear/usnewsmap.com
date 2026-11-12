@@ -133,7 +133,15 @@ def bundle_scans(directory, pages_path, size):
     if not scans or not all(isinstance(s, str) and BUNDLE_ID.fullmatch(s) and isinstance(n, int)
                             and isinstance(o, int) for s, n, o in scans):
         return None, "ocr_bundle.json does not name its scans"
-    if sum(n for _, n, _ in scans) != size:
+    # The manifest must account for every byte of `pages` exactly once: lengths above zero,
+    # each scan starting where the last ended (the bundle contract's layout), so no byte of
+    # `pages` goes unhashed and unconfirmed.
+    expected = 0
+    for _, n, offset in scans:
+        if n <= 0 or offset != expected:
+            return None, "ocr_bundle.json does not lay its scans out end to end"
+        expected += n
+    if expected != size:
         return None, "pages is not the size its manifest gives"
     with open(pages_path, "rb") as f:
         for sha, n, offset in scans:
