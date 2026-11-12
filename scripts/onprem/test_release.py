@@ -1,4 +1,4 @@
-"""Tests for scripts/onprem/release.sh's publish, restore and ready steps (#1061):
+"""Tests for scripts/onprem/release.sh's publish, restore, ready and prune steps (#1061, #1703):
 python3 -m unittest -v scripts/onprem/test_release.py. Needs bash, curl and jq. Nothing
 here reaches Azure: usnm-ingest is a stub that records its arguments, and the app the
 ready step polls is a server on the loopback interface."""
@@ -114,13 +114,15 @@ class PublishAndRestore(ReleaseScript):
             "--step ready --app-url URL --index-version V",
             "restore  copies the version the lake already serves",
             "ready    waits until the app",
+            "--step prune --app-url URL --index-version V [--delete]",
+            "prune    removes the index versions older than the rollback",
             "identity: usnm must be in the himds group.",
         ):
             self.assertIn(wanted, p.stderr)
         self.assertNotIn("set -euo pipefail", p.stderr)
         p = self.release("--step", "nothing")
         self.assertEqual(p.returncode, 1)
-        self.assertIn("publish, restore or ready", p.stderr)
+        self.assertIn("publish, restore, ready or prune", p.stderr)
 
 
 class App(http.server.BaseHTTPRequestHandler):
@@ -234,6 +236,134 @@ class Ready(ReleaseScript):
         p = self.release("--step", "ready", "--app-url", "https://app.example",
                          "--index-version", VERSION, USNM_READY_TRIES="0")  # fmt: skip
         self.assertIn("USNM_READY_TRIES", p.stderr)
+
+
+# A stand-in for `usnm-ingest prune`: logs one JSON line, as the real one does, then prints the
+# report in $STUB_REPORT; every call's arguments are appended to "$STUB_ARGS", one call per line,
+# and $QW_AZURE_STORAGE_ACCOUNT is recorded.
+STUB_PRUNE = """#!/bin/sh
+printf '%s\\n' "$*" >> "$STUB_ARGS"
+printf '%s\\n' "$QW_AZURE_STORAGE_ACCOUNT" >> "$STUB_ARGS.account"
+echo '{"level":"INFO","message":"prune keeps"}'
+cat "$STUB_REPORT"
+"""
+ROLLBACK = "pages-v20261023-1"
+
+
+def report(serving=VERSION, rollback=ROLLBACK, newer=(), dry_run=True):
+    kept = {"serving": serving, "rollback": rollback, "newer": list(newer), "indexes": []}
+    return json.dumps(
+        {"dry_run": dry_run, "kept": kept, "candidates": [{"index_id": "pages-base-old"}], "deleted": []},
+        indent=2,
+    )
+
+
+class Prune(Ready):
+    def setUp(self):
+        super().setUp()
+        with open(self.ingest, "w") as f:
+            f.write(STUB_PRUNE)
+        self.quickwit = os.path.join(self.dir, "quickwit")
+        open(self.quickwit, "w").close()
+        os.chmod(self.quickwit, 0o755)
+        self.report_file = os.path.join(self.dir, "report.json")
+        self.write_report(report())
+
+    def write_report(self, text):
+        with open(self.report_file, "w") as f:
+            f.write(text)
+
+    def prune(self, *args, serves=VERSION, enabled=True, **env):
+        server = self.serve(version=serves)
+        url = "http://127.0.0.1:%d" % server.server_address[1]
+        env.setdefault("USNM_QUICKWIT_BIN", self.quickwit)
+        env.setdefault("STUB_REPORT", self.report_file)
+        if enabled:
+            env.setdefault("USNM_RELEASE_PRUNE", "true")
+        return self.release("--step", "prune", "--app-url", url, "--index-version", VERSION, *args, **env)
+
+    def calls(self):
+        if not os.path.exists(self.args_file):
+            return []
+        with open(self.args_file) as f:
+            return f.read().split("\n")[:-1]
+
+    def test_it_is_off_unless_the_setting_is_true(self):
+        for value in (None, "false", "1"):
+            env = {} if value is None else {"USNM_RELEASE_PRUNE": value}
+            p = self.prune(enabled=False, **env)
+            self.assertEqual(p.returncode, 1)
+            self.assertIn("--step prune is off", p.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_a_dry_run_lists_and_deletes_nothing(self):
+        p = self.prune()
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("prune keeps %s (serving) and %s (rollback)" % (VERSION, ROLLBACK), p.stdout)
+        self.assertIn("dry run only", p.stdout)
+        calls = self.calls()
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("--delete", calls[0])
+        self.assertIn("--state-file %s/prune-state.json" % self.run_dir, calls[0])
+        self.assertIn("--reference https://lakeexample.blob.core.windows.net/reference", calls[0])
+        self.assertIn("prune --quickwit-bin %s --quickwit-metastore azure://qw-index" % self.quickwit, calls[0])
+        with open(self.args_file + ".account") as f:
+            self.assertEqual(f.read(), "accountexample\n")
+        self.assertTrue(os.path.exists(os.path.join(self.run_dir, "prune-dry-run.log")))
+
+    def test_delete_runs_the_dry_run_first_and_then_deletes(self):
+        p = self.prune("--delete")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        calls = self.calls()
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("--delete", calls[0])
+        self.assertTrue(calls[1].endswith(" --delete"), calls[1])
+
+    def test_it_refuses_unless_the_app_serves_the_version(self):
+        p = self.prune("--delete", serves=OTHER, USNM_READY_TRIES="1")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("isn't ready on " + VERSION, p.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_it_refuses_when_both_versions_to_keep_are_not_known(self):
+        for rollback in (None, ""):
+            self.write_report(report(rollback=rollback))
+            p = self.prune("--delete")
+            self.assertEqual(p.returncode, 1, p.stdout)
+            self.assertIn("can't identify both versions to keep", p.stderr)
+        self.write_report(report(rollback=VERSION))
+        self.assertIn("rollback is the serving version", self.prune("--delete").stderr)
+        self.assertEqual(len(self.calls()), 3, "only the dry runs ran")
+        self.assertTrue(all("--delete" not in c for c in self.calls()))
+
+    def test_it_refuses_when_the_lake_serves_another_version_or_a_newer_one_exists(self):
+        self.write_report(report(serving=OTHER, rollback="pages-v20261022-1"))
+        p = self.prune("--delete")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("the lake serves %s, not %s" % (OTHER, VERSION), p.stderr)
+        self.write_report(report(newer=["pages-v20261025-1"]))
+        p = self.prune("--delete")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("1 published version(s) are newer", p.stderr)
+        self.assertTrue(all("--delete" not in c for c in self.calls()))
+
+    def test_it_refuses_a_report_that_is_not_a_dry_run_or_is_missing(self):
+        self.write_report(report(dry_run=False))
+        p = self.prune("--delete")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("dry_run=false", p.stderr)
+        self.write_report("")
+        p = self.prune("--delete")
+        self.assertEqual(p.returncode, 1)
+        self.assertTrue(all("--delete" not in c for c in self.calls()))
+
+    def test_it_needs_quickwit_and_the_version(self):
+        p = self.prune(USNM_QUICKWIT_BIN=os.path.join(self.dir, "missing"))
+        self.assertEqual((p.returncode, "no quickwit at" in p.stderr), (1, True), p.stderr)
+        p = self.release("--step", "prune", "--index-version", VERSION, USNM_RELEASE_PRUNE="true")
+        self.assertIn("needs --app-url", p.stderr)
+        p = self.release("--step", "prune", "--app-url", "https://app.example", USNM_RELEASE_PRUNE="true")
+        self.assertIn("needs --index-version", p.stderr)
 
 
 if __name__ == "__main__":

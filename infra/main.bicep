@@ -143,6 +143,9 @@ param onPremRelease bool = false
 @description('Object id of the on-prem release container\'s Arc machine identity (usnm-release-arcs-<env>, with onPremRelease). Settings only, never in the repository.')
 param onPremReleaseHost string = ''
 
+@description('Let the on-prem release host delete blobs in the index account\'s qw-index (#1703; docs/operations/rebuild-and-index-storage.md, "Prune from the on-prem release"), only under pages-* and congress-*, so `scripts/onprem/release.sh --step prune` can remove old index versions. Needs onPremRelease. Off by default: the account has no soft delete or versioning, so what it deletes is gone. Turning it off removes the grant.')
+param onPremReleasePrune bool = false
+
 @description('Serve the API and site from the on-prem serving container (#955, Phase 2): onPremServingHost gets what id-usnm-app has, less the lake\'s qw-index: read on reference, the cache, the search log writer role on searches and ocr-requests, Cosmos Data Reader on batches, index_runs and ops, Monitoring Metrics Publisher and AcrPull (modules/onprem-serving.bicep). The data lake and the Cosmos account open to ocrNodeIps only (the firewall denies everything else; the private endpoints stay), and the public-network policy exempts both. Off until Phase 2.')
 param onPremServing bool = false
 
@@ -633,6 +636,17 @@ module releaseWriterRole 'modules/release-writer-role.bicep' = if (indexStorage 
   }
 }
 
+// The on-prem release's prune role, kept while the host is set for the same
+// reason; it grants nothing until onPremReleasePrune assigns it
+// (modules/release-pruner-role.bicep).
+module releasePrunerRole 'modules/release-pruner-role.bicep' = if (indexStorage && !empty(trim(onPremReleaseHost))) {
+  scope: rg
+  name: 'release-pruner-role'
+  params: {
+    roleLabel: n.releasePrunerRole
+  }
+}
+
 // The on-prem release's grants (#283, #917): its own identity only.
 module onPremReleaseGrant 'modules/onprem-release.bicep' = if (onPremRelease && indexStorage && !empty(trim(onPremReleaseHost))) {
   scope: rg
@@ -644,6 +658,7 @@ module onPremReleaseGrant 'modules/onprem-release.bicep' = if (onPremRelease && 
     cosmosName: cosmos.outputs.name
     principalId: trim(onPremReleaseHost)
     writerRoleName: releaseWriterRole!.outputs.name
+    pruneRoleName: onPremReleasePrune ? releasePrunerRole!.outputs.name : ''
   }
 }
 
