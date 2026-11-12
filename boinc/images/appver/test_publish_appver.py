@@ -533,7 +533,7 @@ class BoincAppVersion {{ static function enum($query) {{
                         self.assertFalse((self.project / f'apps/usnm_qwen/1.0/{subdir}').exists())
 
     @unittest.skipUnless(shutil.which('php'), 'PHP unavailable')
-    def test_native_ocr_apps_publish_only_on_linux_x86_64(self):
+    def test_native_ocr_apps_publish_only_on_their_built_platforms(self):
         (self.project / 'html/inc/boinc_db.inc').write_text('''<?php
 class BoincApp { static function lookup($query) { return (object)["id"=>1]; } }
 class BoincPlatform { static function lookup($query) { return (object)["id"=>2]; } }
@@ -544,7 +544,8 @@ class BoincAppVersion { static function enum($query) {
 ''')
         (self.root / 'php').unlink()
         for app in ('usnm_ocr_native', 'usnm_gold_native'):
-            for platform in ('x86_64-pc-linux-gnu', 'aarch64-unknown-linux-gnu'):
+            for platform in ('x86_64-pc-linux-gnu', 'arm64-apple-darwin', 'x86_64-apple-darwin',
+                             'aarch64-unknown-linux-gnu', 'windows_x86_64'):
                 with self.subTest(app=app, platform=platform):
                     src = self.source / f'apps/{app}/1.0/{platform}'
                     src.mkdir(parents=True)
@@ -554,12 +555,12 @@ class BoincAppVersion { static function enum($query) {
                            'APPVER_PLAN_CLASS': '', 'DB_HOST': 'fixture', 'DB_NAME': 'fixture',
                            'MASTER_HOST': 'fixture', 'PATH': str(self.root) + os.pathsep + os.environ['PATH']}
                     result = subprocess.run(['bash', str(self.script)], capture_output=True, text=True, env=env)
-                    if platform == 'x86_64-pc-linux-gnu':
+                    if platform in ('x86_64-pc-linux-gnu', 'arm64-apple-darwin', 'x86_64-apple-darwin'):
                         self.assertEqual(result.returncode, 0, result.stderr)
                         self.assertIn(f'Verified {app} 1.0 {platform} ', result.stdout)
                     else:
                         self.assertNotEqual(result.returncode, 0)
-                        self.assertIn(f'native {app} is built only for x86_64-pc-linux-gnu', result.stderr)
+                        self.assertIn(f'native {app} is built only for x86_64-pc-linux-gnu, arm64-apple-darwin', result.stderr)
                         self.assertFalse((self.project / f'apps/{app}/1.0/{platform}').exists())
 
 

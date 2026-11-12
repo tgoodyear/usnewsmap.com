@@ -436,6 +436,20 @@ class InstallTest(unittest.TestCase):
         self.assertIsNone(files["tessdata_eng.traineddata"].find("copy_file"))
         self.assertEqual(sorted(p.name for p in (self.project / "templates").iterdir()), ["usnm_gold_out"])
 
+    def test_native_ocr_stages_on_macos_and_not_on_windows(self):
+        worker, build, digest = self.native_ocr_build()
+        for platform in ("arm64-apple-darwin", "x86_64-apple-darwin"):
+            with self.subTest(platform=platform):
+                target = module.install(self.project, None, None, "1.0", app="usnm_ocr_native", kind="native",
+                                        platform=platform, binary=worker, bundle_dir=build)
+                self.assertEqual(target.name, platform)
+                self.assertTrue((target / f"usnm_ocr_native_1.0_{platform}").is_file())
+                self.assertTrue((target / f"usnm_native_build_{digest}.json").is_file())
+        for platform in ("windows_x86_64", "aarch64-unknown-linux-gnu"):
+            with self.subTest(platform=platform), self.assertRaisesRegex(ValueError, "not supported on"):
+                module.install(self.project, None, None, "1.1", app="usnm_gold_native", kind="native",
+                               platform=platform, binary=worker, bundle_dir=build)
+
     def test_native_ocr_refuses_files_the_manifest_does_not_list(self):
         worker, build, _ = self.native_ocr_build()
         (build / "usnm_tesseract").write_bytes(b"other")

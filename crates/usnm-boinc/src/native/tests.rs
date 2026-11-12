@@ -24,7 +24,7 @@ fn manifest() -> Manifest {
     Manifest {
         engine_version: "5.5.0".into(),
         files,
-        platform: "x86_64-pc-linux-gnu".into(),
+        platform: PLATFORM.into(),
         v: MANIFEST_VERSION,
     }
 }
@@ -209,6 +209,25 @@ fn send(dir: &Path, message: &str) {
     .unwrap();
 }
 
+/// Whether the process runs, a zombie counting as gone.
+#[cfg(target_os = "linux")]
+fn alive(pid: &str) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| !s.contains(") Z "))
+}
+
+/// Whether the process runs, a zombie counting as gone: `ps` prints nothing for a process
+/// that has gone and `Z` for a zombie.
+#[cfg(target_os = "macos")]
+fn alive(pid: &str) -> bool {
+    Command::new("ps")
+        .args(["-o", "stat=", "-p", pid])
+        .output()
+        .is_ok_and(|o| {
+            let stat = String::from_utf8_lossy(&o.stdout);
+            !stat.trim().is_empty() && !stat.trim_start().starts_with('Z')
+        })
+}
+
 #[test]
 fn a_quit_stops_the_whole_group_without_finishing() {
     let (dir, control) = client_slot();
@@ -224,9 +243,8 @@ fn a_quit_stops_the_whole_group_without_finishing() {
     client.join().unwrap();
     assert_eq!(ended, Ended::Stopped("quit"));
     let grandchild = std::fs::read_to_string(pid).unwrap();
-    let state = format!("/proc/{}/stat", grandchild.trim());
     let deadline = Instant::now() + Duration::from_secs(5);
-    while std::fs::read_to_string(&state).is_ok_and(|s| !s.contains(") Z ")) {
+    while alive(grandchild.trim()) {
         assert!(Instant::now() < deadline, "the engine outlived the task");
         std::thread::sleep(Duration::from_millis(20));
     }

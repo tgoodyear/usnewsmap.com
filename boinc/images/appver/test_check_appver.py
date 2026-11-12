@@ -278,22 +278,22 @@ class CheckAppver(unittest.TestCase):
                 with self.assertRaisesRegex(ca.Refused, "missing required bundle files: libggml-vulkan.so"):
                     ca.check(directory, sigs, self.key, str(self.crypt), kind="native")
 
-    def stage_native_ocr(self, app, **changes):
+    def stage_native_ocr(self, app, platform="x86_64-pc-linux-gnu", manifest_platform=None, **changes):
         """A native OCR build staged by install.py: (version dir, sigs dir)."""
-        build = self.root / "ocr-build"
+        build = self.root / f"ocr-build-{platform}"
         build.mkdir(exist_ok=True)
         files = {"usnm_ocr": b"worker", "usnm_tesseract": b"engine", "tessdata_eng.traineddata": b"model"}
         for name, data in files.items():
             (build / name).write_bytes(data)
-        manifest = {"engine_version": "5.5.0", "platform": "x86_64-pc-linux-gnu", "v": 1, "files": {
+        manifest = {"engine_version": "5.5.0", "platform": manifest_platform or platform, "v": 1, "files": {
             name: {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()} for name, data in files.items()}}
         (build / "usnm_native_build.json").write_text(ca.json.dumps({**manifest, **changes}))
-        project = self.root / f"{app}-project"
+        project = self.root / f"{app}-{platform}-project"
         project.mkdir()
         (project / "config.xml").write_text("<boinc/>")
-        directory = install.install(project, version="1.0", app=app, kind="native",
+        directory = install.install(project, version="1.0", app=app, kind="native", platform=platform,
                                     binary=build / "usnm_ocr", bundle_dir=build)
-        sigs = self.root / f"{app}-sigs"
+        sigs = self.root / f"{app}-{platform}-sigs"
         sigs.mkdir()
         return directory, sigs
 
@@ -312,6 +312,28 @@ class CheckAppver(unittest.TestCase):
                 self.assertEqual(ca.main(argv), 0)
                 spec = ca.ET.parse(directory / "version.xml").getroot()
                 self.assertEqual(ca._infer_app_and_platform(Path("staged"), spec), (app, "x86_64-pc-linux-gnu"))
+
+    def test_native_ocr_version_passes_on_macos_for_its_own_platform(self):
+        for platform in ("arm64-apple-darwin", "x86_64-apple-darwin"):
+            directory, sigs = self.stage_native_ocr("usnm_ocr_native", platform=platform)
+            self.sign_all(directory, sigs)
+            with self.subTest(platform=platform):
+                self.assertEqual(directory.name, platform)
+                ca.check(directory, sigs, self.key, str(self.crypt), kind="native",
+                         app="usnm_ocr_native", platform=platform)
+                spec = ca.ET.parse(directory / "version.xml").getroot()
+                self.assertEqual(ca._infer_app_and_platform(Path("staged"), spec), ("usnm_ocr_native", platform))
+
+    def test_native_ocr_refuses_a_manifest_for_another_platform(self):
+        # A Linux build staged as a macOS version, and a platform with no native build.
+        directory, sigs = self.stage_native_ocr("usnm_gold_native", platform="arm64-apple-darwin",
+                                                manifest_platform="x86_64-pc-linux-gnu")
+        self.sign_all(directory, sigs)
+        with self.assertRaisesRegex(ca.Refused, "is not a build manifest for arm64-apple-darwin"):
+            ca.check(directory, sigs, self.key, str(self.crypt), kind="native",
+                     app="usnm_gold_native", platform="arm64-apple-darwin")
+        with self.assertRaisesRegex(ValueError, "not supported on windows_x86_64"):
+            self.stage_native_ocr("usnm_ocr_native", platform="windows_x86_64")
 
     def test_native_ocr_refuses_a_manifest_that_names_a_field_twice(self):
         # The worker's decoder refuses a field named twice, so this does too, even when the

@@ -238,8 +238,11 @@ else
   fi
   case "$APP" in
     usnm_ocr_native | usnm_gold_native)
-      [ "$PLATFORM" = x86_64-pc-linux-gnu ] || die "native $APP is built only for x86_64-pc-linux-gnu"
-      check_args=()
+      case "$PLATFORM" in
+        x86_64-pc-linux-gnu | arm64-apple-darwin | x86_64-apple-darwin) ;;
+        *) die "native $APP is built only for x86_64-pc-linux-gnu, arm64-apple-darwin and x86_64-apple-darwin" ;;
+      esac
+      check_args=(--platform "$PLATFORM")
       for spec in "${EXTRA_FILES[@]+"${EXTRA_FILES[@]}"}"; do check_args+=(--extra-file "$spec"); done
       python3 boinc/scripts/check-native-ocr-build.py --binary "$BINARY" "${check_args[@]+"${check_args[@]}"}" ||
         die "the native OCR build isn't the container worker's engine and models, or its files aren't the manifest's"
