@@ -20,6 +20,27 @@ pub(crate) use ecosystem::summary_stage;
 use fmt::time;
 pub use fmt::{bytes, esc, int, span};
 
+/// The public page's description and link-preview card. The URLs are the
+/// public name, never the LAN's; the image is served at `/og.png`
+/// ([`crate::OG_IMAGE`]). No figures: they would go stale.
+const SOCIAL_TAGS: &str = concat!(
+    r#"<meta name="description" content="Status of the US News Map historic newspaper collection: scans fetched, pages searchable with our OCR, volunteer computing, accuracy and throughput.">"#,
+    r#"<meta property="og:type" content="website">"#,
+    r#"<meta property="og:site_name" content="US News Map">"#,
+    r#"<meta property="og:title" content="US News Map: OCR status">"#,
+    r#"<meta property="og:description" content="Status of the US News Map historic newspaper collection: scans fetched, pages searchable with our OCR, volunteer computing, accuracy and throughput.">"#,
+    r#"<meta property="og:url" content="https://ocr.usnewsmap.com/">"#,
+    r#"<meta property="og:image" content="https://ocr.usnewsmap.com/og.png">"#,
+    r#"<meta property="og:image:width" content="1200">"#,
+    r#"<meta property="og:image:height" content="630">"#,
+    r#"<meta property="og:image:alt" content="US News Map: OCR status. Decorative bar chart.">"#,
+    r#"<meta name="twitter:card" content="summary_large_image">"#,
+    r#"<meta name="twitter:title" content="US News Map: OCR status">"#,
+    r#"<meta name="twitter:description" content="Status of the US News Map historic newspaper collection: scans fetched, pages searchable with our OCR, volunteer computing, accuracy and throughput.">"#,
+    r#"<meta name="twitter:image" content="https://ocr.usnewsmap.com/og.png">"#,
+    r#"<meta name="twitter:image:alt" content="US News Map: OCR status. Decorative bar chart.">"#,
+);
+
 pub fn render(v: &View) -> String {
     let now = v.generated_at;
     let mut o = String::with_capacity(64 * 1024);
@@ -28,10 +49,11 @@ pub fn render(v: &View) -> String {
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
          <noscript><meta http-equiv=\"refresh\" content=\"{}\"></noscript>\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <title>USNewsMap processing</title><style>{STYLE}</style></head><body data-refresh=\"{}\">\
+         <title>USNewsMap processing</title>{}<style>{STYLE}</style></head><body data-refresh=\"{}\">\
          <h1>USNewsMap processing</h1><div class=\"sub\">{} Updated {}; refreshes every {} seconds.{}</div>\
          <div class=\"grid dashboard\">",
         v.refresh_secs,
+        if v.public { SOCIAL_TAGS } else { "" },
         v.refresh_secs,
         if v.public {
             "How the usnewsmap.com newspaper collection stands, and the work to improve its text."

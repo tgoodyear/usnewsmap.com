@@ -234,6 +234,25 @@ async fn public_page(State(app): State<Arc<App>>) -> Response {
     page_as(app, true).await
 }
 
+/// The link-preview card's image, built from `assets/og.svg` by
+/// `scripts/ocr-dash/render-og.mjs`.
+const OG_IMAGE: &[u8] = include_bytes!("../assets/og.png");
+
+/// `GET /og.png` on the public listener: a day in Cloudflare and browsers.
+async fn og_image() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, OG_CACHE),
+        ],
+        OG_IMAGE,
+    )
+        .into_response()
+}
+
+/// The image never changes between builds: a day, not a minute.
+const OG_CACHE: &str = "public, max-age=86400";
+
 /// The JSON parts the public listener serves.
 pub const PUBLIC_PARTS: &[&str] = &["view", "pipeline", "fetch"];
 
@@ -465,6 +484,10 @@ pub fn router(app: Arc<App>) -> Router {
 /// Every public response says how long it may be kept: a minute for a
 /// success, not at all for an error (a 404, a 405, a 500).
 async fn public_cache(mut r: Response) -> Response {
+    if r.headers().contains_key(header::CACHE_CONTROL) && r.status().is_success() {
+        // A route that set its own (the card's image).
+        return r;
+    }
     let v = if r.status().is_success() {
         PUBLIC_CACHE
     } else {
@@ -476,7 +499,7 @@ async fn public_cache(mut r: Response) -> Response {
 }
 
 /// The public listener (`--public-listen`), for a tunnel to put on the
-/// internet: GET and HEAD of the page, `/healthz` and
+/// internet: GET and HEAD of the page, `/healthz`, `/og.png` and
 /// `/api/{view,pipeline,fetch}.json`, all redacted ([`public::redact`]).
 /// No push routes, no `--allow` check (only the tunnel reaches it), no
 /// TLS. Anything else is a 404, or a 405 for another method on a route.
@@ -484,6 +507,7 @@ pub fn public_router(app: Arc<App>) -> Router {
     Router::new()
         .route("/", get(public_page))
         .route("/healthz", get(|| async { "ok\n" }))
+        .route("/og.png", get(og_image))
         .route("/api/{part}", get(public_api))
         .layer(DefaultBodyLimit::max(1024))
         .layer(middleware::map_response(public_cache))
@@ -1562,7 +1586,19 @@ mod tests {
                 );
             }
         }
+        for m in ["GET", "HEAD"] {
+            let r = send(m, "/og.png").await;
+            assert_eq!(r.status(), StatusCode::OK, "{m} /og.png");
+            assert_eq!(r.headers()[header::CONTENT_TYPE], "image/png");
+            assert_eq!(r.headers()[header::CACHE_CONTROL], "public, max-age=86400");
+        }
+        // The card's image: a 1200x630 PNG under 300 KB.
+        assert_eq!(&OG_IMAGE[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!(&OG_IMAGE[16..24], &[0, 0, 4, 176, 0, 0, 2, 118]);
+        assert!(OG_IMAGE.len() < 300_000);
         for (m, uri, want) in [
+            ("POST", "/og.png", StatusCode::METHOD_NOT_ALLOWED),
+            ("GET", "/og.svg", StatusCode::NOT_FOUND),
             ("PUT", "/api/host/pve", StatusCode::NOT_FOUND),
             ("PUT", "/api/sset/sset", StatusCode::NOT_FOUND),
             ("GET", "/api/host/pve", StatusCode::NOT_FOUND),
@@ -1586,5 +1622,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.headers()[header::CACHE_CONTROL], "no-store");
+    }
+
+    #[tokio::test]
+    async fn the_public_page_has_a_link_preview_card_and_the_lan_page_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = app(dir.path());
+        let (_, public) = call_on(public_router(a.clone()), "203.0.113.9", "GET", "/", "")
+            .await
+            .0;
+        for tag in [
+            r#"<meta name="description" content=""#,
+            r#"<meta property="og:type" content="website">"#,
+            r#"<meta property="og:url" content="https://ocr.usnewsmap.com/">"#,
+            r#"<meta property="og:image" content="https://ocr.usnewsmap.com/og.png">"#,
+            r#"<meta property="og:image:width" content="1200">"#,
+            r#"<meta property="og:image:height" content="630">"#,
+            r#"<meta property="og:image:alt" content=""#,
+            r#"<meta name="twitter:card" content="summary_large_image">"#,
+            r#"<meta name="twitter:image" content="https://ocr.usnewsmap.com/og.png">"#,
+            r#"<meta name="twitter:image:alt" content=""#,
+            r#"<meta property="og:title" content="US News Map: OCR status">"#,
+            r#"<meta name="twitter:title" content="US News Map: OCR status">"#,
+            r#"<meta property="og:site_name" content="US News Map">"#,
+            r#"<meta property="og:description" content=""#,
+            r#"<meta name="twitter:description" content=""#,
+        ] {
+            assert!(public.contains(tag), "{tag}");
+        }
+        assert!(leaks(&public).is_empty(), "{:?}", leaks(&public));
+        let (_, lan) = call(a, "198.51.100.50", "GET", "/", "").await;
+        assert!(!lan.contains("og:") && !lan.contains("twitter:"));
     }
 }
