@@ -1208,7 +1208,12 @@ class Transport:
 
     @timed("export")
     def export(self, pages, job_ids=()):
+        """Export `pages`, pushing again first any whose scan is not where this export reads it.
+        Returns {page: why its JP2 is cut short at LoC} for the pages that push found cut short
+        (checked as the first push is, with --skip-truncated-scans, #1457): they are not exported,
+        and the caller settles them like a first push's."""
         queue = self.config.get("source") == "queue"
+        truncated_pages = {}
         if queue:
             # A page whose scan went to another destination (the export moved on-prem, or back,
             # after it was pushed) is pushed again where this export reads it.
@@ -1221,9 +1226,13 @@ class Transport:
                             if page.get("scan_base") and (page.get("pushed_to", "container") != dest
                                                           or page.get("supersedes"))})
             if stale:
-                # Not checked again: a page is checked once, when it is first pushed.
-                found, missing, _ = self.push_pages(stale, skip_truncated=False)
+                # Checked as a first push is (#1457): a scan that was cut short, or became so
+                # after its first push, is not sent again.
+                found, missing, truncated = self.push_pages(stale)
                 require(not missing, "a claimed page's scan is gone from the scan server; release it")
+                truncated_pages = {page["page"]: truncated[page["scan_base"]] for page in pages
+                                   if page.get("scan_base") in truncated}
+                pages = [page for page in pages if page["page"] not in truncated_pages]
                 # The push finds each scan's format again: export asks for the file it sent.
                 root = self.config["scans_root"].rstrip("/")
                 pages = [dict(page, scan=f"{root}/{found[page['scan_base']]}")
@@ -1233,6 +1242,8 @@ class Transport:
             for page in pages:
                 argv += ["--scan", page["scan"]]
             self.run(argv, "cached scan push", execution_route="azure/scans")
+        if not pages:
+            return truncated_pages
         # The exporter takes one base batch at a time; queued pages come from many.
         batches = {}
         for page in pages:
@@ -1265,6 +1276,7 @@ class Transport:
             if retried:
                 variables["HANDOFF_DEADLINE_RETRIES"] = ",".join(retried)
             self.step("handoff", "export", **variables)
+        return truncated_pages
 
     @timed("claim")
     def claim(self, count):
@@ -1970,6 +1982,20 @@ class QueueFeed:
             for page in pages:
                 del self.claims[page]
             self.persist()
+
+    def settle_export_truncated(self, truncated, selected, now):
+        """Pages whose scan export found cut short when it pushed them again (#1457), `truncated`
+        being {page: reason}: dead-lettered and listed as a first push's are, and dropped from
+        `selected` so they aren't waited for."""
+        for page, reason in truncated.items():
+            claim = self.claims.get(page)
+            require(claim is not None, f"export found {page} cut short, and it has no claim")
+            claim["source_truncated"] = reason
+            claim["scan"] = None
+            selected.pop(page, None)
+        self.persist()
+        self.retry_truncated(now)
+        self.restore()
 
     def retry_truncated(self, now):
         """Dead-letter the claimed pages whose JP2 LoC holds cut short (#1457): released, the
@@ -2859,7 +2885,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                             if record["job"]["message"]["page"] in pages]
                 require(len(journals) <= STEP_IDS,
                         "too many existing journals for selected pages; reconcile history")
-                transport.export(group, journals)
+                truncated = transport.export(group, journals)
+                if truncated and feed:
+                    feed.settle_export_truncated(truncated, selected, now)
+                    export = [page for page in export if page["page"] not in truncated]
             records = read_records()
             owned = own(records)
             stuck = sorted(page["page"] for page in export if retried(page))
