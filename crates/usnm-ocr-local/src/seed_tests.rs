@@ -1555,8 +1555,38 @@ async fn held_pages_hidden_messages_do_not_hold_back_a_refill() {
     let r = fx.seed_settled(&opts, handoff.as_ref()).await.unwrap();
     assert_eq!(r.queue_depth, 3);
     assert_eq!(r.settled_held, 3);
+    assert_eq!(r.settled_hidden, 3);
     assert_eq!(r.queue_ready, 0);
     assert!(r.refill);
+}
+
+#[tokio::test]
+async fn held_pages_whose_messages_are_gone_do_not_discount_live_work() {
+    let fx = fixture().await;
+    let now = Utc::now();
+    let docs = [doc(GER, 3, 1), doc(GER, 3, 2), doc(GER, 3, 3)];
+    // Held pages queued 10 days ago: a claim has deleted their messages since. The three
+    // messages on the queue are other work.
+    let rows: Vec<Queued> = docs
+        .iter()
+        .map(|d| mine(d, 1, now - chrono::Duration::days(10)))
+        .collect();
+    ledger::write_queued(fx.curated.as_ref(), &rows, now, "r1")
+        .await
+        .unwrap();
+    for _ in &docs {
+        fx.queue.send(BULK, "ready").await.unwrap();
+    }
+    let handoff = handoff_with(&fx, "queue-feed-13", &docs).await;
+    let opts = Options {
+        refill_below: 2,
+        ..plan(10)
+    };
+    let r = fx.seed_settled(&opts, handoff.as_ref()).await.unwrap();
+    assert_eq!(r.settled_held, 3);
+    assert_eq!(r.settled_hidden, 0);
+    assert_eq!(r.queue_ready, 3);
+    assert!(!r.refill);
 }
 
 #[tokio::test]
