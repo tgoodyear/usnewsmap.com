@@ -1,9 +1,11 @@
 //! `pictures`: Newspaper Navigator's picture boxes into the curated store, and
-//! `pictures-join`: how they meet the curated pages (#1102, 04 §4.11).
+//! `pictures-join`: how they meet the curated pages, and `pictures-score`:
+//! predicted picture regions against Beyond Words annotations (#1102, 04 §4.11).
 use std::path::PathBuf;
 
 use clap::Args;
 use usnm_ingest::pictures::join::{self, Placements};
+use usnm_ingest::pictures::score::{self, Gold};
 use usnm_ingest::pictures::source::{Source, HUB};
 use usnm_ingest::pictures::{self, Options};
 use usnm_ingest::release::Published;
@@ -156,6 +158,96 @@ pub(crate) async fn pictures_join_command(
     Ok(None)
 }
 
+/// Score predicted picture regions against Beyond Words annotations (#1102,
+/// 04 §4.11), as JSON in the new file `--out`: per page and in total, the
+/// predictions, the annotations, the one-to-one matches at `--iou-threshold`,
+/// precision and recall. `--annotations` is a Beyond Words COCO file; only its
+/// five picture classes count. The predictions are the `Illustration` blocks
+/// of `{image id}.xml` files in `--alto-dir` and/or Newspaper Navigator boxes
+/// in the JSON Lines file `--navigator` (`page`, `box` as fractions of the
+/// page, `score`). Reads local files only; nothing is fetched or changed.
+#[derive(Args)]
+pub(crate) struct PicturesScoreArgs {
+    /// The Beyond Words COCO annotations (`val_20_percent.json` or
+    /// `train_80_percent.json`).
+    #[arg(long)]
+    annotations: PathBuf,
+    /// A directory of ALTO files named `{image id}.xml`.
+    #[arg(long, required_unless_present = "navigator")]
+    alto_dir: Option<PathBuf>,
+    /// A JSON Lines file of Newspaper Navigator boxes: `page` (the image id),
+    /// `box` (`[x0, y0, x1, y1]`, fractions of the page) and `score`.
+    #[arg(long)]
+    navigator: Option<PathBuf>,
+    /// The IoU a prediction needs to match an annotation, above 0 and at most 1.
+    #[arg(long, default_value_t = score::DEFAULT_IOU, value_parser = unit_interval)]
+    iou_threshold: f64,
+    /// Leave out Newspaper Navigator boxes scored below this, 0 to 1 (the
+    /// default scores them all).
+    #[arg(long, default_value_t = 0.0, requires = "navigator", value_parser = unit_interval_or_zero)]
+    min_score: f64,
+    /// The file to write the report to; it must not exist yet.
+    #[arg(long)]
+    out: PathBuf,
+}
+
+/// A number above 0 and at most 1.
+fn unit_interval(s: &str) -> Result<f64, String> {
+    s.parse::<f64>()
+        .ok()
+        .filter(|v| *v > 0.0 && *v <= 1.0)
+        .ok_or_else(|| "a number above 0 and at most 1".to_owned())
+}
+
+/// A number from 0 to 1.
+fn unit_interval_or_zero(s: &str) -> Result<f64, String> {
+    s.parse::<f64>()
+        .ok()
+        .filter(|v| (0.0..=1.0).contains(v))
+        .ok_or_else(|| "a number from 0 to 1".to_owned())
+}
+
+pub(crate) async fn pictures_score_command(
+    args: &PicturesScoreArgs,
+) -> anyhow::Result<Option<Published>> {
+    let PicturesScoreArgs {
+        annotations,
+        alto_dir,
+        navigator,
+        iou_threshold,
+        min_score,
+        out,
+    } = args;
+    let mut file = score::create_report(out)?;
+    let written = (|| {
+        let gold = Gold::read(annotations)?;
+        let alto = alto_dir
+            .as_deref()
+            .map(|dir| score::read_alto(dir, &gold))
+            .transpose()?;
+        let navigator = navigator
+            .as_deref()
+            .map(|path| score::read_navigator(path, &gold, *min_score))
+            .transpose()?;
+        let report = score::report(
+            &gold,
+            alto.as_ref(),
+            navigator.as_ref(),
+            *iou_threshold,
+            *min_score,
+        );
+        score::write_report(&mut file, out, &report)
+    })();
+    drop(file);
+    if written.is_err() {
+        // Only this run made the file; leave no empty or partial report.
+        let _ = std::fs::remove_file(out);
+    }
+    written?;
+    tracing::info!(out = %out.display(), "pictures-score report written");
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,6 +389,97 @@ mod tests {
                 PathBuf::from("index-full.jsonl"),
                 PathBuf::from("index-pct50.jsonl")
             ]
+        );
+    }
+
+    fn parse_score(extra: &[&str]) -> Result<Cli, clap::Error> {
+        let mut args = vec![
+            "usnm-ingest",
+            "--curated",
+            "c",
+            "--reference",
+            "r",
+            "pictures-score",
+        ];
+        args.extend_from_slice(extra);
+        Cli::try_parse_from(args)
+    }
+
+    #[test]
+    fn pictures_score_takes_named_arguments_and_a_source() {
+        let Command::PicturesScore(PicturesScoreArgs {
+            iou_threshold,
+            min_score,
+            alto_dir,
+            navigator,
+            ..
+        }) = parse_score(&[
+            "--annotations",
+            "a.json",
+            "--alto-dir",
+            "alto",
+            "--out",
+            "s.json",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("not pictures-score");
+        };
+        assert_eq!(iou_threshold, 0.5);
+        assert_eq!(min_score, 0.0);
+        assert_eq!(alto_dir, Some(PathBuf::from("alto")));
+        assert_eq!(navigator, None);
+
+        assert!(parse_score(&["--annotations", "a", "--navigator", "n", "--out", "o"]).is_ok());
+        assert!(
+            parse_score(&["--annotations", "a", "--out", "o"]).is_err(),
+            "a source is needed"
+        );
+        assert!(parse_score(&["--navigator", "n", "--out", "o"]).is_err());
+        assert!(parse_score(&["--annotations", "a", "--navigator", "n"]).is_err());
+        assert!(
+            parse_score(&[
+                "--annotations",
+                "a",
+                "--alto-dir",
+                "d",
+                "--min-score",
+                "0.5",
+                "--out",
+                "o"
+            ])
+            .is_err(),
+            "a score floor is for the Navigator file"
+        );
+        for bad in ["0", "1.5", "x"] {
+            assert!(
+                parse_score(&[
+                    "--annotations",
+                    "a",
+                    "--navigator",
+                    "n",
+                    "--out",
+                    "o",
+                    "--iou-threshold",
+                    bad
+                ])
+                .is_err(),
+                "{bad}"
+            );
+        }
+        assert!(
+            parse_score(&[
+                "--annotations",
+                "a",
+                "--navigator",
+                "n",
+                "--out",
+                "o",
+                "a.jsonl"
+            ])
+            .is_err(),
+            "named arguments only"
         );
     }
 }
