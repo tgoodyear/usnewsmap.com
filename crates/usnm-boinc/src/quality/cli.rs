@@ -169,6 +169,10 @@ pub enum QualityCommands {
         qwen_root: PathBuf,
         #[arg(long)]
         qwen_spool: PathBuf,
+        /// Where batch-108 results (Xiaomi-OCR-0 units, `qwen submit --target native-xiaomi`) are.
+        /// A Xiaomi job reads only from here, every other job only from `--qwen-spool`.
+        #[arg(long)]
+        qwen_xiaomi_spool: Option<PathBuf>,
         /// The directory `qwen compare --crop-states` writes: a reading joins only on the crops
         /// an agreeing pair vouched for. Without it every canonical crop joins (`strict-v1`).
         #[arg(long)]
@@ -459,6 +463,7 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             spool,
             qwen_root,
             qwen_spool,
+            qwen_xiaomi_spool,
             qwen_crop_states,
             qwen_pages,
             cache,
@@ -476,6 +481,7 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
                 spool,
                 qwen_root,
                 qwen_spool,
+                qwen_xiaomi_spool,
                 qwen_crop_states,
                 qwen_pages,
                 cache,

@@ -105,6 +105,9 @@ def run(args):
         "--qwen-spool", "/project/usnmocr/results/8" if args.qwen_campaign else root + "/no-qwen",
         "--out-dir", root + "/out",
     ]
+    if args.qwen_campaign:
+        # Xiaomi-OCR-0 units are batch 108 (#1776); their jobs read only this spool.
+        command.extend(["--qwen-xiaomi-spool", "/project/usnmocr/results/108"])
     crop_states = getattr(args, "qwen_crop_states", None)
     if args.qwen_campaign and crop_states:
         # Only the crops an agreeing crop-consensus-v2 pair vouched for join (#1434).

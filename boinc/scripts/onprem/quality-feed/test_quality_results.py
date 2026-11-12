@@ -199,6 +199,7 @@ class ResultsTest(unittest.TestCase):
             self.assertIn("--root /project/quality/qwen-nonenglish-v1", command)
             self.assertIn("--qwen-root /project/qwen/qwen-nonenglish-v1", command)
             self.assertIn("--qwen-spool /project/usnmocr/results/8", command)
+            self.assertIn("--qwen-xiaomi-spool /project/usnmocr/results/108", command)
             self.assertIn("quality collect", command)
             self.assertNotIn("submit", command)
             self.assertEqual(report["qwen_campaign"], args.campaign)
@@ -206,6 +207,11 @@ class ResultsTest(unittest.TestCase):
             self.assertIn("--campaign qwen-nonenglish-v1", load)
             self.assertIn("/results/qwen-nonenglish-v1/snapshots/", load)
             self.assertNotIn("--qwen-crop-states", command)
+
+    def test_no_xiaomi_spool_without_a_qwen_campaign(self):
+        with mock.patch.object(results.subprocess, "run") as run:
+            results.run(self.args())
+            self.assertNotIn("--qwen-xiaomi-spool", run.call_args_list[0].args[0][-1])
 
     def test_crop_states_reach_collectors_that_join_readings_only(self):
         args = self.args()

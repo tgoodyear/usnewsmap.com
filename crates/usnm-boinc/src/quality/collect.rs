@@ -80,6 +80,11 @@ pub struct Options {
     /// The `usnm_qwen` staging root and spool.
     pub qwen_root: PathBuf,
     pub qwen_spool: PathBuf,
+    /// Where batch-108 (`XIAOMI_BATCH`) results are: Xiaomi-OCR-0 units' canonical
+    /// results. A Xiaomi-pinned job reads only from here and every other job only from
+    /// `qwen_spool` (batch 8), so a page's reading never comes from the other reader (#1776).
+    /// Without it a Xiaomi job has no result yet.
+    pub qwen_xiaomi_spool: Option<PathBuf>,
     /// Where `qwen compare --crop-states` keeps each judged pair's crop
     /// states. Without it every canonical crop joins, as the strict rule has it.
     pub qwen_crop_states: Option<PathBuf>,
@@ -969,6 +974,24 @@ pub(crate) fn gave_up(spool: &Path, workunit: &str) -> bool {
         || spool.join(format!("{workunit}_no_output_files")).exists()
 }
 
+/// The spool `job`'s canonical result lands in: a Xiaomi-OCR-0 job's is the
+/// batch-108 one (None when none is configured), any other job's the batch-8 one.
+pub(crate) fn qwen_spool_for<'a>(
+    job: &qwen::Job,
+    spool: &'a Path,
+    xiaomi_spool: Option<&'a Path>,
+) -> Option<&'a Path> {
+    if job
+        .model
+        .as_deref()
+        .is_some_and(usnm_ocr_contract::qwen::is_xiaomi_model)
+    {
+        xiaomi_spool
+    } else {
+        Some(spool)
+    }
+}
+
 /// A page's `usnm_qwen` crops and canonical readings, when both exist.
 struct QwenPage {
     crops: Vec<Crop>,
@@ -1000,6 +1023,7 @@ impl QwenPage {
 fn qwen_pages(
     root: &Path,
     spool: &Path,
+    xiaomi_spool: Option<&Path>,
     crop_states: Option<&Path>,
     page_records: Option<&Path>,
 ) -> anyhow::Result<BTreeMap<String, QwenPage>> {
@@ -1021,8 +1045,10 @@ fn qwen_pages(
         )?)
         .with_context(|| format!("{}", unit.display()))?;
         let wu = job.workunit();
-        let files = spool_files(spool, &wu, &crate::qwen::outputs());
-        let (readings, vouch) = if files.iter().all(|f| f.exists()) {
+        let files = qwen_spool_for(&job, spool, xiaomi_spool)
+            .map(|dir| spool_files(dir, &wu, &crate::qwen::outputs()))
+            .unwrap_or_default();
+        let (readings, vouch) = if !files.is_empty() && files.iter().all(|f| f.exists()) {
             let got = crate::qwen::validate::load(&files)
                 .with_context(|| format!("canonical result {wu}"))?;
             anyhow::ensure!(
@@ -1292,6 +1318,7 @@ pub fn collect(opts: &Options) -> anyhow::Result<Collected> {
     let qwen = qwen_pages(
         &opts.qwen_root,
         &opts.qwen_spool,
+        opts.qwen_xiaomi_spool.as_deref(),
         opts.qwen_crop_states.as_deref(),
         opts.qwen_pages.as_deref(),
     )?;
@@ -1962,6 +1989,7 @@ pub(super) mod tests {
             spool,
             qwen_root: tmp.path().join("no-qwen"),
             qwen_spool: tmp.path().join("no-qwen"),
+            qwen_xiaomi_spool: None,
             qwen_crop_states: None,
             qwen_pages: None,
             surya_root: Some(sroot),
@@ -2182,6 +2210,7 @@ pub(super) mod tests {
             spool: root.join("spool"),
             qwen_root: root.join("qwen"),
             qwen_spool: root.join("qwen-spool"),
+            qwen_xiaomi_spool: None,
             qwen_crop_states: None,
             qwen_pages: None,
             surya_root: None,
@@ -2487,6 +2516,18 @@ pub(super) mod tests {
         quality: &Job,
         texts: &[&str],
     ) -> (qwen::Job, String) {
+        qwen_canonical_in(opts, &opts.qwen_spool, None, unit, quality, texts)
+    }
+
+    /// [`qwen_canonical`] for a job pinned to `model`, its result in `spool`.
+    fn qwen_canonical_in(
+        opts: &Options,
+        spool: &Path,
+        model: Option<&str>,
+        unit: &Path,
+        quality: &Job,
+        texts: &[&str],
+    ) -> (qwen::Job, String) {
         use usnm_ocr_contract::boinc::sha256;
         let qunit = units(&opts.qwen_root).join("page");
         let mut job = crate::qwen::stage::local_unit(
@@ -2501,6 +2542,13 @@ pub(super) mod tests {
         )
         .unwrap();
         job.doc_id = quality.doc_id.clone();
+        job.model = model.map(Into::into);
+        let prompt_version = if model.is_some() {
+            usnm_ocr_contract::qwen::PROMPT_VERSION_XIAOMI
+        } else {
+            qwen::PROMPT_VERSION
+        };
+        job.prompt_version = prompt_version;
         job.id = job.identity().unwrap();
         std::fs::write(
             qunit.join(crate::qwen::JOB_FILE),
@@ -2513,9 +2561,9 @@ pub(super) mod tests {
             job_id: job.id.clone(),
             device: "cuda".into(),
             diag: Default::default(),
-            model: Some("qwen3-vl-8b-q4km".into()),
+            model: Some(model.unwrap_or("qwen3-vl-8b-q4km").into()),
             outcome: qwen::Outcome::Ok,
-            prompt_version: qwen::PROMPT_VERSION,
+            prompt_version,
             readings: job
                 .crops
                 .iter()
@@ -2543,7 +2591,7 @@ pub(super) mod tests {
             gpu_mem_peak_mib: None,
             host: Default::default(),
             load_ms: 1,
-            model: Some("qwen3-vl-8b-q4km".into()),
+            model: Some(model.unwrap_or("qwen3-vl-8b-q4km").into()),
             outcome: qwen::Outcome::Ok,
             peak_rss_kib: None,
             read: job.crops.len() as u32,
@@ -2551,7 +2599,7 @@ pub(super) mod tests {
             readings_sha256: digest.clone(),
             unit_error: None,
         };
-        std::fs::create_dir_all(&opts.qwen_spool).unwrap();
+        std::fs::create_dir_all(spool).unwrap();
         for (name, bytes) in [
             (crate::qwen::READINGS_FILE, bytes),
             (
@@ -2561,8 +2609,7 @@ pub(super) mod tests {
             (crate::qwen::DIAG_FILE, b"diag".to_vec()),
         ] {
             std::fs::write(
-                opts.qwen_spool
-                    .join(format!("{}__file_{name}", job.workunit())),
+                spool.join(format!("{}__file_{name}", job.workunit())),
                 bytes,
             )
             .unwrap();
@@ -2602,6 +2649,50 @@ pub(super) mod tests {
 
     fn vlm_rows(c: &Collected) -> Vec<&CropRow> {
         c.crops.iter().filter(|r| r.reader == VLM).collect()
+    }
+
+    /// A Xiaomi-OCR-0 job reads only the batch-108 spool and any other job only the batch-8
+    /// one, so a page's reading is never the other reader's (#1776).
+    #[tokio::test]
+    async fn xiaomi_results_join_from_their_own_spool_only() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (mut opts, unit, quality) = cached_fixture(dir.path()).await;
+        opts.cache = None;
+        let xiaomi_spool = dir.path().join("xiaomi-spool");
+        let (job, _) = qwen_canonical_in(
+            &opts,
+            &xiaomi_spool,
+            Some(crate::qwen::XIAOMI_MODEL),
+            &unit,
+            &quality,
+            &["the xiaomi reading"],
+        );
+        // No batch-108 spool configured, or the result is in the batch-8 one only: no reading.
+        assert_eq!(collect(&opts).unwrap().summary.with_readings, 0);
+        let stray = Options {
+            qwen_spool: xiaomi_spool.clone(),
+            ..opts.clone()
+        };
+        assert_eq!(collect(&stray).unwrap().summary.with_readings, 0);
+        // Configured, it joins.
+        opts.qwen_xiaomi_spool = Some(xiaomi_spool.clone());
+        let got = collect(&opts).unwrap();
+        assert_eq!(got.summary.with_readings, 1);
+        assert!(got
+            .crops
+            .iter()
+            .filter(|r| r.vlm_text.is_some())
+            .all(|r| r.vlm_text.as_deref() == Some("the xiaomi reading")
+                && r.vlm_model.as_deref() == Some(crate::qwen::XIAOMI_MODEL)));
+        // A Qwen job's result in the batch-108 spool is not read.
+        let dir2 = tempfile::tempdir_in(".").unwrap();
+        let (mut qopts, qunit, qquality) = cached_fixture(dir2.path()).await;
+        qopts.cache = None;
+        let qx = dir2.path().join("xiaomi-spool");
+        qwen_canonical_in(&qopts, &qx, None, &qunit, &qquality, &["a qwen reading"]);
+        qopts.qwen_xiaomi_spool = Some(qx);
+        assert_eq!(collect(&qopts).unwrap().summary.with_readings, 0);
+        assert_eq!(job.model.as_deref(), Some(crate::qwen::XIAOMI_MODEL));
     }
 
     #[tokio::test]
@@ -3164,6 +3255,7 @@ pub(super) mod tests {
             spool,
             qwen_root: tmp.path().join("no-qwen"),
             qwen_spool: tmp.path().join("no-qwen"),
+            qwen_xiaomi_spool: None,
             qwen_crop_states: None,
             qwen_pages: None,
             surya_root: Some(sroot),
