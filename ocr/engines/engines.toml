@@ -490,6 +490,15 @@ models = ["tessdata/chr_phoenix.traineddata"]
 languages = ["chr"]
 lines_only = true
 
+# A line job that reads each word in its script (#1666): `chr_phoenix` on the line, `eng` on the
+# words the script classifier finds Latin. It comes after `chr_phoenix`, so the line route for
+# `chr` is still `chr_phoenix`; only a job that asks for this profile by name gets it.
+[[engine.profile]]
+id = "chr_phoenix+eng"
+models = ["tessdata/chr_phoenix.traineddata", "tessdata/eng.traineddata"]
+languages = ["chr"]
+lines_only = true
+
 [[engine]]
 id = "kraken-7.1"
 family = "kraken"
