@@ -6,6 +6,7 @@
       [--worst-above 0.25] [--moderate-above 0.1] [--min-occurrences 50]
       [--index FILE] [--campaign-exclusions [--exclude-list FILE ...]]
       [--tier-width 0.05] [--cell-pages 400] [--manifest-pages 2000]
+      [--languages eng,ger,...] [--stop-cells FILE]
 
 It only reads the database and writes under --out-dir: nothing is staged, queued or shipped.
 
@@ -73,6 +74,14 @@ so a feeder's done.txt and skipped.txt work as they are). --ocr-state and the li
 of the input and keep growing, so a rebuild needs copies from the first run; summary.json
 records their digests.
 
+Per language and stopped cells. --languages keeps only pages whose page_lang is listed, in
+both lists, so each language (or group) can be its own campaign, worst first, and English's
+1.67M pages don't stand in front of every other language's. --stop-cells reads the stop.json
+quality_gain.py writes and leaves out every page of a band, language and decade cell it
+stopped: the gain there was measured below the threshold (#1415: 0.02). Its bands must be
+this build's (--worst-above, --moderate-above, --min-occurrences), or it is refused. Both are counted in summary.json
+under excluded, as "language not listed" and "stopped cell".
+
 Files, under --out-dir/<campaign>/:
 
   plan.jsonl    every page in order: quality_feed.py select's fields (bytes, scan and sha256
@@ -98,6 +107,7 @@ import hashlib
 import heapq
 import json
 import os
+import re
 import shlex
 import struct
 import subprocess
@@ -518,8 +528,14 @@ def build(a):
     lists = {path: quality_feed.read_lines(path) for path in a.exclude_list}
     scans = read_index(a.index)
     ocr_held = ocr_pages(a.ocr_state)
+    languages = set(a.languages.split(",")) if a.languages else None
+    stopped = read_stop_cells(a.stop_cells, filters)
 
     def excluded_by(r):
+        if languages is not None and r["page_lang"] not in languages:
+            return "language not listed"
+        if (r["band"], r["page_lang"], r["decade"]) in stopped:
+            return "stopped cell"
         if r["has_ocr_output"]:
             return "quality.ocr_outputs"
         if r["doc_id"] in ocr_held:
@@ -597,6 +613,8 @@ def build(a):
         "exclude_lists": {path: {"docs": len(lists[path]), "sha256": input_digest(path)} for path in sorted(lists)},
         "filters": {**cut_of(filters), "worst_above": literal(filters.worst_above)},
         "input": {"cut": cut, "rows": rows_read, "sha256": digest},
+        "languages": sorted(languages) if languages is not None else None,
+        "stop_cells": ({"cells": len(stopped), "sha256": input_digest(a.stop_cells)} if a.stop_cells else None),
         "ocr_state": {"docs": len(ocr_held), "sha256": hashlib.sha256("\n".join(sorted(ocr_held)).encode()).hexdigest()},
         "moderate": {
             **tally(moderate), **wrote["moderate"],
@@ -618,6 +636,26 @@ def build(a):
     write_atomic(os.path.join(a.out_dir, "summary.json"), (json.dumps(summary, indent=1, sort_keys=True) + "\n").encode())
     print(json.dumps(summary, indent=1, sort_keys=True), flush=True)
     return summary
+
+
+def read_stop_cells(path, filters):
+    """(band, language, decade) cells quality_gain.py stopped, from its stop.json. Its bands
+    must be this build's, or a band name would mean other pages here."""
+    if not path:
+        return set()
+    try:
+        with open(path) as f:
+            got = json.load(f)
+        cells = {(c["band"], c["lang"], int(c["decade"])) for c in got["cells"]}
+        theirs = got["filters"]
+    except FileNotFoundError:
+        sys.exit(f"--stop-cells {path}: no such file")
+    except (ValueError, KeyError, TypeError):
+        sys.exit(f"--stop-cells {path}: not a quality_gain.py stop.json")
+    ours = {**cut_of(filters), "worst_above": literal(filters.worst_above)}
+    if theirs != ours:
+        sys.exit(f"--stop-cells {path}: measured with bands {theirs}, this build's are {ours}")
+    return cells
 
 
 def parser():
@@ -646,6 +684,8 @@ def parser():
                     help="the moderate sample's size: pages per language and decade (default %(default)s, "
                          "a 0.02 mean gain at 80%% power and 5%% in one cell; see the header)")
     ap.add_argument("--manifest-pages", type=int, default=2000)
+    ap.add_argument("--languages", help="only these page languages, comma-separated (e.g. eng, or pol,srp,cze)")
+    ap.add_argument("--stop-cells", help="quality_gain.py's stop.json: leave out the cells it stopped")
     return ap
 
 
@@ -669,6 +709,8 @@ def main(argv=None):
         ap.error("0 <= --moderate-above < --worst-above <= 1, and --min-occurrences 0 or more")
     if not a.seed:
         ap.error("--seed must not be empty")
+    if a.languages is not None and not re.fullmatch(r"[a-z]{3}(,[a-z]{3})*", a.languages):
+        ap.error("--languages: three-letter codes, comma-separated")
     if a.exclude_list and not a.campaign_exclusions:
         ap.error("--exclude-list needs --campaign-exclusions")
     build(a)

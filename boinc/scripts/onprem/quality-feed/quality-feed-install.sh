@@ -76,7 +76,7 @@ stage=/root/usnm-quality-feed-install
 
 # The files, to a root-only directory on the host, then into the container.
 "${SSH[@]}" "rm -rf $stage && install -d -m 700 $stage"
-scp -q "$HERE/quality_feed.py" "$HERE/scan_quarantine.py" "$HERE/quality_campaign.py" "$HERE/requirements.txt" "$HERE/usnm-quality-feed.service" \
+scp -q "$HERE/quality_feed.py" "$HERE/scan_quarantine.py" "$HERE/quality_campaign.py" "$HERE/quality_gain.py" "$HERE/requirements.txt" "$HERE/usnm-quality-feed.service" \
   "$HERE/quality-ship.sh" "$HERE/quality_receive.py" "$HERE/usnm-quality-ship.service" \
   "$HERE/quality_results.py" "$HERE/quality_results_partial.py" "$HERE/quality-results-pull.sh" \
   "$HERE/usnm-quality-results.service" "$HERE/usnm-quality-results.timer" \
@@ -101,6 +101,7 @@ pct push "$ct" "$stage/requirements.txt" /opt/usnm-quality-feed/requirements.txt
 pct push "$ct" "$stage/scan_quarantine.py" /opt/usnm-quality-feed/scan_quarantine.py --perms 644
 pct push "$ct" "$stage/quality_feed.py" /opt/usnm-quality-feed/quality_feed.py --perms 755
 pct push "$ct" "$stage/quality_campaign.py" /opt/usnm-quality-feed/quality_campaign.py --perms 755
+pct push "$ct" "$stage/quality_gain.py" /opt/usnm-quality-feed/quality_gain.py --perms 755
 pct push "$ct" "$stage/load.py" /opt/usnm-quality-feed/load.py --perms 755
 pct push "$ct" "$stage/ocr_manifest.py" /opt/usnm-quality-feed/ocr_manifest.py --perms 755
 pct push "$ct" "$stage/usnm-ocr-manifest.service" /etc/systemd/system/usnm-ocr-manifest.service

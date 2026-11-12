@@ -353,6 +353,19 @@ scripts/azure/provision.sh --env prod
 - **Revocation.** A create-only `curated/ocr-local/revoked/<stamp>.json` with `reason`, `reference` and at least one of `node`, `engine`, `run`, `from`, `to` (every field given must match) drops matching rows from the next release of their batches; published text stays until a full rebuild. An unreadable file stops the release.
 - **Off.** Clearing the setting stops new replacements; deltas still carry `ocr_local_pages.bin` forward, and the next full rebuild without it restores LoC's text.
 
+### Re-read pages into search (#1415)
+
+Re-read text takes the path above. Nothing new goes into the index. BOINC's `usnm_ocr` and line jobs publish to `ocr-out`, the hourly `ocr-sync` checks and imports them into `curated/ocr-local/`, and a release with `USNM_OCR_LOCAL` (on in prod) puts our text in place of LoC's page by page: rule v1 for whole pages, `line-merge-v1` for line jobs. Each replaced page's engine and batch are in `ocr_local_pages.bin`, the counts by reason, language and engine in `ocr_local.json`, and LoC's text stays in the curated store. Published batches change only at a [full rebuild](rebuild-and-index-storage.md#full-rebuild-on-prem). The serving version on 12 November 2026, `pages-v20261026-1`, replaced 21,290 of 25,846 pages considered (`ocr_local.json`): 20,652 German `frak2021` pages, 636 English and 2 French. Re-reads imported since then, BOINC's and Cherokee's line jobs among them, wait for the next full rebuild.
+
+Before that rebuild:
+
+1. Run `quality_gain.py` ([quality app](../boinc/apps/quality.md#measuring-the-gain-1415)) on the replica and attach `cells.csv` to #1415. A stopped cell gets no new re-reads. Its pages already read still face rule v1, which keeps LoC's text unless ours is at least 0.05 better.
+2. Hold German out of publishing until it's calibrated (#835). Every German page read so far is engine `tesseract/5.5.0 frak2021`, so a revocation with `"engine": "tesseract/5.5.0 frak2021"`, reason and reference `#835` keeps LoC's text on those pages. It is create-only and leaves the rows in place for later. The 20,652 German pages already in `pages-v20261026-1` keep our text until that rebuild.
+3. Run `ocr-sync --report` for the count rule v1 would replace, by language and engine.
+4. Time the rebuild outside other index publish windows. A main merge that touches `crates/`, `web/` or Dockerfiles redeploys the prod API, so hold those during the publish.
+
+The first pages to land: Cherokee's 190 admitted _Phoenix_ pages (`line-merge-v1`, #1621) and the BOINC `usnm_ocr` re-reads in `ocr-local`. The 17 accepted Japanese pages of #296's 42 targets go through the `ocr-ja` overlay at the same release. The 18th, `sn83025522_1944-11-08_ed-1_seq-8`, still had no accepted result on 12 November.
+
 ## The OCR dashboard on the LAN (#296)
 
 `usnm-ocrdash` summarizes acquisition, local OCR, volunteer compute, evaluation and publication on an access-controlled internal endpoint ([12 §12.2.5](../design/12-onprem-ocr-pipeline.md#1225-the-lan-dashboard)). Pipelines sit under the summaries; Operational details (workers, batches, pages, queues, hosts, provenance) start collapsed. Phones get step cards instead of SVG maps and tables. Data: `/api/view.json`, and per panel `/api/hosts.json`, `/api/fetch.json`, `/api/nodes.json`, `/api/next.json`, `/api/ocred.json`, `/api/throughput.json`. DNS, TLS, containers, access rules, source URLs, mounts and host-stat collectors belong to infrastructure tooling.
