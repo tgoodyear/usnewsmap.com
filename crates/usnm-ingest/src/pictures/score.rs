@@ -336,7 +336,7 @@ fn inspect_illustration(
 /// The ALTO file with the box taken off every `Illustration` that is not
 /// written with a usable one, so the strict reader does not stop the run on
 /// it (it would also give the element the page's own box), and, for each
-/// `Illustration` in the document's own ALTO namespace, in document order,, whether its box was
+/// `Illustration` in the document's own ALTO namespace, in document order, whether its box was
 /// usable. Elements in another namespace (foreign XML under `Tags`) are not
 /// counted, as the reader does not count them.
 fn checked_illustrations(xml: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<bool>)> {
