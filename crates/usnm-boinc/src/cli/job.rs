@@ -748,6 +748,9 @@ pub async fn line_crops(args: LineCropsArgs) -> anyhow::Result<()> {
         );
     }
     out.flush()?;
+    if let Some(mut log) = log {
+        log.flush()?;
+    }
     Ok(())
 }
 

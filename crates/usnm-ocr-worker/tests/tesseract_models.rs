@@ -235,7 +235,7 @@ fn chr_phoenix_routes_line_jobs_only() {
             .iter()
             .map(|r| r.profile.as_str())
             .collect::<Vec<_>>(),
-        ["chr_phoenix"]
+        ["chr_phoenix", "chr_phoenix+eng"]
     );
     assert_eq!(route_lines("chr", &BTreeSet::new()), None);
     // A line route falls back to page profiles: a line job for English would read with eng.
