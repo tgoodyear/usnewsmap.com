@@ -257,17 +257,19 @@ def limits_now(event):
 def collect_controller(window, entries):
     """The controller units' journal. Pages collected are counted from each collect's own
     `boinc_batch_collected` line, logged as soon as collect ends, so a tick that fails or never
-    finishes still counts them. A finished tick adds its cumulative `published` beyond the
-    last one known for the plan, from an earlier tick or from a collect's own line (which carries
-    it), so pages a failed tick collected are not counted again when the next one finishes. With
-    nothing known before (a controller that doesn't log collects yet, or a plan whose lines are
-    older than the lookback) it adds `newly_published`. A line read twice, or two units running the
-    same plan, count once. Only the live plan's ticks (not a draining or native plan's, whose
+    finishes still counts them. A finished tick adds its `newly_published`, which counts every page published since
+    the plan's previous summary, less the pages from collect lines since then that it still
+    holds: a collect's line carries the cumulative `published` it saw, and one at or below the
+    summary's own baseline (published - newly_published) is already in a summary or in the state
+    a lost summary left, so pages a failed tick collected are not counted again. A page settled
+    by hand or archived goes by the scheduler's own baseline, and with no collect lines (an
+    older controller) it is `newly_published` as before. A line read twice, or two units
+    running the same plan, count once. Only the live plan's ticks (not a draining or native plan's, whose
     pending work and limits are another queue's) set the queue reading and the limits."""
     for name in ("ticks_ok", "ticks_failed", "tick_seconds", "tick_busy_seconds", "ocr_claim_pages",
                  "ocr_collect_pages"):
         window.declare(name)
-    selected, limits, collected, known, ticks = {}, {}, set(), {}, set()
+    selected, limits, collected, owed, ticks = {}, {}, set(), {}, set()
     for logged, _, message in entries:
         event = json_event(message)
         if event is None or type(event.get("at")) is not int:
@@ -277,8 +279,7 @@ def collect_controller(window, entries):
         if kind == "boinc_batch_collected":
             if (plan, at) not in collected:
                 collected.add((plan, at))
-                if type(event.get("published")) is int:
-                    known[plan] = event["published"]
+                owed.setdefault(plan, []).append((number(event.get("pages")), event.get("published")))
                 window.add("ocr_collect_pages", logged, number(event.get("pages")))
         elif kind == "boinc_batch_phase":
             phase = event.get("phase")
@@ -306,13 +307,12 @@ def collect_controller(window, entries):
                 # it was running.
                 window.spread("tick_busy_seconds", at - seconds, at)
             if good:
-                total = event.get("published")
-                if plan in known and type(total) is int:
-                    window.add("ocr_collect_pages", at, max(0, total - known[plan]))
-                else:
-                    window.add("ocr_collect_pages", at, number(event.get("newly_published")))
-                if type(total) is int:
-                    known[plan] = total
+                total, newly = event.get("published"), number(event.get("newly_published"))
+                # What the summary's baseline doesn't hold yet: collects past it.
+                baseline = total - newly if type(total) is int else None
+                counted = sum(pages for pages, seen in owed.pop(plan, [])
+                              if baseline is None or type(seen) is not int or seen > baseline)
+                window.add("ocr_collect_pages", at, max(0, newly - counted))
                 # A new plan starts its count again.
                 if plan in selected:
                     window.add("ocr_claim_pages", at, max(0, number(event.get("selected")) - selected[plan]))

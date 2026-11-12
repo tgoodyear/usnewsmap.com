@@ -318,6 +318,23 @@ class ControllerTests(unittest.TestCase):
         collector.collect_controller(w, entries)
         self.assertEqual(w.series["ocr_collect_pages"][2], 3)
 
+    def test_a_page_published_by_hand_before_collect_still_counts(self):
+        w = window()
+        at = THIS_HOUR + 100
+        entries = [(at, "u", tick(at - 600, plan="live", published=30, total=30)),
+                   # Two held pages published by hand, then a collect of five: 37 in all.
+                   (at + 20, "u", collected(at, "live", 5, 37)),
+                   (at + 60, "u", tick(at, plan="live", published=7, total=37))]
+        collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_collect_pages"][2], 7 + 30)
+
+    def test_a_scheduler_that_logs_no_collects_counts_by_its_own_baseline_after_archiving(self):
+        w = window()
+        at = THIS_HOUR + 100
+        # 100 published, 90 archived, five more: the cumulative count falls but newly_published holds.
+        collector.collect_controller(w, [(at, "u", tick(at, plan="live", published=5, total=15))])
+        self.assertEqual(w.series["ocr_collect_pages"][2], 5)
+
     def test_a_plan_that_disappears_keeps_its_pages_and_does_not_break_the_others(self):
         w = window()
         gone, at = "usnm-boinc-priority-controller@retired.service", THIS_HOUR - HOUR + 10
