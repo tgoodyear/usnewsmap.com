@@ -13,7 +13,10 @@ use usnm_core::page_id::{PageId, Source};
 use usnm_ocr_contract::{
     boinc::sha256,
     quality::{Input, MAX_SCAN},
-    qwen::{Crop, Engine, Job, Outcome, MAX_JOB_JSON, VERSION},
+    qwen::{
+        Crop, Engine, Job, Outcome, MAX_BUNDLE_CROPS, MAX_BUNDLE_PAGES, MAX_JOB_JSON, MAX_READINGS,
+        VERSION,
+    },
 };
 use usnm_ocr_quality::align::{align, Op};
 use usnm_ocr_survey::score;
@@ -72,6 +75,11 @@ pub struct Options {
     /// Pin every staged job to this model of `engine`, by name; `None` leaves the choice to the
     /// host's plan class, as before #1776.
     pub model: Option<String>,
+    /// Crops a unit carries: 1 stages one unit per crop, as before; more packs up to that many
+    /// consecutive crops into one bundle unit (`Job.pages`, at most [`MAX_BUNDLE_PAGES`]), each
+    /// crop a bundle page with its own doc id and its JPEG bytes unchanged in the bundle's
+    /// `page.jpg`.
+    pub bundle_size: usize,
 }
 
 /// How a campaign spells each crop's `doc_id`. Both pass every released worker's check.
@@ -98,13 +106,107 @@ struct Manifest {
     v: u32,
     source_sha256: String,
     source_manifest_sha256: String,
+    /// One per crop, in `crops.jsonl` order. Without `bundles` each entry's job is a unit.
     entries: Vec<Entry>,
+    /// With `--bundle-size` over 1, the units: each a bundle of consecutive entries' jobs.
+    /// The entries' own jobs are then never sent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    bundles: Vec<Bundle>,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct Bundle {
+    job: Job,
+    /// The crop ids of its pages, in page order.
+    crops: Vec<String>,
+}
+
+/// A unit as submit sends it, with its `page.jpg` and `NOTICE.txt`.
+struct Unit<'a> {
+    job: &'a Job,
+    image: Vec<u8>,
+    notice: Vec<u8>,
+}
+
+/// The notice of a bundle: each distinct crop notice once, in page order.
+fn bundle_notice(notices: &[&[u8]]) -> anyhow::Result<Vec<u8>> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for n in notices {
+        if seen.insert(*n) {
+            if !out.is_empty() {
+                out.push(b'\n');
+            }
+            out.extend_from_slice(n);
+        }
+    }
+    ensure!(out.len() <= MAX_NOTICE, "source notices exceed size limit");
+    Ok(out)
+}
+
+/// A bundle with its `page.jpg` and `NOTICE.txt` bytes.
+struct Packed {
+    bundle: Bundle,
+    image: Vec<u8>,
+    notice: Vec<u8>,
+}
+
+/// Packs `entries` (with their crop bytes and notices) into bundles of up to `size` consecutive
+/// crops, splitting early where a bundle's `qwen.json` or longest `readings.json` would pass
+/// the workers' limits.
+fn pack(
+    entries: &[Entry],
+    images: &[Vec<u8>],
+    notices: &[Vec<u8>],
+    size: usize,
+) -> anyhow::Result<Vec<Packed>> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    while start < entries.len() {
+        let mut end = start + 1;
+        while end < entries.len() && end - start < size {
+            let jobs: Vec<Job> = entries[start..=end].iter().map(|e| e.job.clone()).collect();
+            let crops: usize = jobs.iter().map(|j| j.crops.len()).sum();
+            let bytes: usize = images[start..=end].iter().map(Vec::len).sum();
+            if crops > MAX_BUNDLE_CROPS
+                || bytes > usnm_ocr_contract::quality::MAX_BUNDLE_SCAN
+                || super::stage::bundle_json_len(&jobs)? > MAX_JOB_JSON
+                || super::stage::longest_readings_len(&jobs)? > MAX_READINGS
+            {
+                break;
+            }
+            end += 1;
+        }
+        let jobs: Vec<Job> = entries[start..end].iter().map(|e| e.job.clone()).collect();
+        let image = images[start..end].concat();
+        let parts: Vec<&[u8]> = notices[start..end].iter().map(Vec::as_slice).collect();
+        let notice = bundle_notice(&parts)?;
+        let blob = Input::of(&image, &format!("benchmark:{}", sha256(&notice)));
+        let job = super::stage::bundle_job(&jobs, blob)?;
+        job.validate()?;
+        let crops = entries[start..end]
+            .iter()
+            .map(|e| e.job.crops[0].id.clone())
+            .collect();
+        out.push(Packed {
+            bundle: Bundle { job, crops },
+            image,
+            notice,
+        });
+        start = end;
+    }
+    Ok(out)
 }
 
 /// One model per campaign prevents a hardware-dependent fallback from confounding a comparison.
 pub fn stage(opts: &Options) -> anyhow::Result<usize> {
     super::check_no_hold(&opts.root)?;
     ensure!(opts.max_crops > 0, "--max-crops must be positive");
+    ensure!(
+        (1..=MAX_BUNDLE_PAGES).contains(&opts.bundle_size),
+        "--bundle-size must be 1 to {MAX_BUNDLE_PAGES}"
+    );
     ensure!(
         opts.engine.models.len() == 1,
         "benchmark requires exactly one model"
@@ -225,11 +327,23 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
         images.push(bytes);
         notices.push(notice);
     }
+    let packed = if opts.bundle_size > 1 {
+        pack(&entries, &images, &notices, opts.bundle_size)?
+    } else {
+        Vec::new()
+    };
+    let mut bundles = Vec::with_capacity(packed.len());
+    let mut bundle_files = Vec::with_capacity(packed.len());
+    for p in packed {
+        bundles.push(p.bundle);
+        bundle_files.push((p.image, p.notice));
+    }
     let manifest = Manifest {
         v: 1,
         source_sha256: sha256(&source),
         source_manifest_sha256: sha256(&source_manifest),
         entries,
+        bundles,
     };
     std::fs::create_dir_all(&opts.root)?;
     let path = opts.root.join(MANIFEST);
@@ -243,17 +357,49 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
         );
         atomic(&path, &serde_json::to_vec_pretty(&manifest)?)?;
     }
-    for ((entry, bytes), notice) in manifest.entries.iter().zip(images).zip(notices) {
-        let dir = units(&opts.root).join(&entry.job.id);
+    let staged: Vec<Unit<'_>> = if manifest.bundles.is_empty() {
+        manifest
+            .entries
+            .iter()
+            .zip(images)
+            .zip(notices)
+            .map(|((e, image), notice)| Unit {
+                job: &e.job,
+                image,
+                notice,
+            })
+            .collect()
+    } else {
+        manifest
+            .bundles
+            .iter()
+            .zip(bundle_files)
+            .map(|(b, (image, notice))| Unit {
+                job: &b.job,
+                image,
+                notice,
+            })
+            .collect()
+    };
+    let count = staged.len();
+    for Unit {
+        job,
+        image: bytes,
+        notice,
+    } in staged
+    {
+        let dir = units(&opts.root).join(&job.id);
         std::fs::create_dir_all(&dir)?;
         if dir.join(JOB_FILE).exists() {
             let old: Job = serde_json::from_slice(&read(&dir.join(JOB_FILE), MAX_JOB_JSON)?)?;
-            ensure!(old == entry.job, "staged job changed");
+            ensure!(old == *job, "staged job changed");
+            let max_scan = if job.pages.is_empty() {
+                MAX_SCAN
+            } else {
+                usnm_ocr_contract::quality::MAX_BUNDLE_SCAN
+            };
             ensure!(
-                entry
-                    .job
-                    .input
-                    .matches(&read(&dir.join(PAGE_FILE), MAX_SCAN)?),
+                job.input.matches(&read(&dir.join(PAGE_FILE), max_scan)?),
                 "staged image changed"
             );
             ensure!(
@@ -263,10 +409,10 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
         } else {
             atomic(&dir.join(PAGE_FILE), &bytes)?;
             atomic(&dir.join(NOTICE_FILE), &notice)?;
-            atomic(&dir.join(JOB_FILE), &serde_json::to_vec_pretty(&entry.job)?)?;
+            atomic(&dir.join(JOB_FILE), &serde_json::to_vec_pretty(job)?)?;
         }
     }
-    Ok(manifest.entries.len())
+    Ok(count)
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -290,12 +436,43 @@ pub fn collect(root: &Path, spool: &Path, out: &Path) -> anyhow::Result<Summary>
         expected: manifest.entries.len(),
         ..Default::default()
     };
+    // Each crop's unit and the id its reading carries there: the crop id in a one-crop unit,
+    // `<doc_id>:<crop id>` in a bundle.
+    let mut unit_of: HashMap<String, (&Job, String)> = HashMap::new();
+    if !manifest.bundles.is_empty() {
+        for b in &manifest.bundles {
+            b.job.validate()?;
+            ensure!(
+                b.job.pages.len() == b.crops.len(),
+                "{}: bundle pages and crops differ",
+                b.job.id
+            );
+            for (page, cid) in b.job.pages.iter().zip(&b.crops) {
+                ensure!(
+                    page.crops.len() == 1 && page.crops[0].id == *cid,
+                    "{}: bundle page {} is not crop {cid}",
+                    b.job.id,
+                    page.doc_id
+                );
+                let reading = format!("{}:{cid}", page.doc_id);
+                ensure!(
+                    unit_of.insert(cid.clone(), (&b.job, reading)).is_none(),
+                    "{cid} is in two bundles"
+                );
+            }
+        }
+        ensure!(
+            unit_of.len() == manifest.entries.len(),
+            "bundles do not hold every crop once"
+        );
+    }
+    let mut loaded_units: HashMap<String, super::validate::Loaded> = HashMap::new();
     let mut hypotheses = HashMap::new();
     let mut references = Vec::new();
     let mut statuses = Vec::new();
     let mut model = None;
-    for entry in manifest.entries {
-        let job = entry.job;
+    for entry in &manifest.entries {
+        let job = &entry.job;
         job.validate()?;
         ensure!(
             job.engine.models.len() == 1,
@@ -321,17 +498,42 @@ pub fn collect(root: &Path, spool: &Path, out: &Path) -> anyhow::Result<Summary>
             job.doc_id
         );
         ensure!(!hypotheses.contains_key(cid), "duplicate reference");
+        let (unit, reading_id) = match unit_of.get(cid) {
+            Some((unit, reading)) => {
+                let page = unit
+                    .pages
+                    .iter()
+                    .find(|p| p.crops[0].id == cid)
+                    .context("crop missing from its bundle")?;
+                ensure!(
+                    page.doc_id == job.doc_id
+                        && page.crops == job.crops
+                        && page.input.sha256 == job.input.sha256
+                        && page.input.bytes == job.input.bytes
+                        && unit.engine == job.engine
+                        && unit.model == job.model
+                        && unit.prompt_version == job.prompt_version,
+                    "{cid}: its bundle page differs from its staged job"
+                );
+                (*unit, reading.clone())
+            }
+            None => (job, cid.to_string()),
+        };
+        let bundled = !unit.pages.is_empty();
         let files: Vec<PathBuf> = outputs()
             .iter()
-            .map(|n| spool.join(format!("{}__file_{n}", job.workunit())))
+            .map(|n| spool.join(format!("{}__file_{n}", unit.workunit())))
             .collect();
         let count = files.iter().filter(|f| f.exists()).count();
         let mut text = String::new();
         let mut detail = serde_json::json!({"crop_id": cid, "job_id": job.id});
+        if bundled {
+            detail["unit_job_id"] = unit.id.clone().into();
+        }
         if count == 0 {
             let failed = ["error", "no_output_files"]
                 .iter()
-                .any(|suffix| spool.join(format!("{}_{suffix}", job.workunit())).exists());
+                .any(|suffix| spool.join(format!("{}_{suffix}", unit.workunit())).exists());
             if failed {
                 summary.failed += 1;
             } else {
@@ -342,52 +544,69 @@ pub fn collect(root: &Path, spool: &Path, out: &Path) -> anyhow::Result<Summary>
             ensure!(
                 count == files.len(),
                 "{}: partial spool; retry after assimilation finishes",
-                job.workunit()
+                unit.workunit()
             );
-            let loaded = super::validate::load(&files)?;
-            let result = loaded.result;
-            ensure!(
-                result.job_id == job.id && result.engine == job.engine,
-                "result belongs to another job or engine"
-            );
-            ensure!(
-                loaded.readings.prompt_version == job.prompt_version,
-                "reading was made at another request version"
-            );
-            ensure!(result.crops == 1, "unexpected crop count");
-            ensure!(
-                result.model.as_ref().is_none_or(|m| m == expected_model),
-                "unexpected model"
-            );
-            ensure!(
-                loaded.readings.readings.iter().all(|r| r.id == cid)
-                    && loaded.readings.readings.len() <= 1,
-                "unexpected readings"
-            );
+            if !loaded_units.contains_key(&unit.id) {
+                let loaded = super::validate::load(&files)?;
+                let result = &loaded.result;
+                ensure!(
+                    result.job_id == unit.id && result.engine == unit.engine,
+                    "result belongs to another job or engine"
+                );
+                ensure!(
+                    loaded.readings.prompt_version == unit.prompt_version,
+                    "reading was made at another request version"
+                );
+                ensure!(
+                    usize::try_from(result.crops).ok() == Some(unit.crops.len()),
+                    "unexpected crop count"
+                );
+                ensure!(
+                    result.model.as_ref().is_none_or(|m| m == expected_model),
+                    "unexpected model"
+                );
+                let mut ids: Vec<&str> = loaded
+                    .readings
+                    .readings
+                    .iter()
+                    .map(|r| r.id.as_str())
+                    .collect();
+                ids.sort_unstable();
+                ids.dedup();
+                ensure!(
+                    ids.len() == loaded.readings.readings.len()
+                        && ids.iter().all(|id| unit.crops.iter().any(|c| c.id == *id)),
+                    "unexpected readings"
+                );
+                if result.outcome == Outcome::Ok {
+                    ensure!(
+                        result.model.as_ref() == Some(expected_model),
+                        "successful result has no expected model"
+                    );
+                }
+                loaded_units.insert(unit.id.clone(), loaded);
+            }
+            let loaded = &loaded_units[&unit.id];
+            let result = &loaded.result;
+            let reading = loaded.readings.readings.iter().find(|r| r.id == reading_id);
             if result.outcome == Outcome::Ok {
-                ensure!(
-                    result.model.as_ref() == Some(expected_model),
-                    "successful result has no expected model"
-                );
-                ensure!(
-                    loaded.readings.readings.len() == 1,
-                    "successful result has no reading"
-                );
+                ensure!(reading.is_some(), "successful result has no reading");
                 summary.returned += 1;
             } else {
                 summary.incomplete += 1;
             }
-            if let Some(reading) = loaded.readings.readings.first() {
+            if let Some(reading) = reading {
                 text.clone_from(&reading.text);
             }
             detail["status"] = serde_json::to_value(result.outcome)?;
-            detail["device"] = result.device.into();
-            detail["model"] = serde_json::to_value(result.model)?;
+            detail["device"] = result.device.clone().into();
+            detail["model"] = serde_json::to_value(&result.model)?;
             detail["load_ms"] = result.load_ms.into();
             detail["engine_ms"] = result.engine_ms.into();
+            detail["reading_ms"] = serde_json::to_value(reading.map(|r| r.ms))?;
             detail["peak_rss_kib"] = serde_json::to_value(result.peak_rss_kib)?;
             detail["gpu_mem_peak_mib"] = serde_json::to_value(result.gpu_mem_peak_mib)?;
-            detail["unit_error"] = serde_json::to_value(result.unit_error)?;
+            detail["unit_error"] = serde_json::to_value(&result.unit_error)?;
         }
         let truth = entry.reference["transcription"]
             .as_str()
@@ -406,7 +625,7 @@ pub fn collect(root: &Path, spool: &Path, out: &Path) -> anyhow::Result<Summary>
         detail["counts"] = serde_json::to_value(score::cer_wer(truth, &text))?;
         hypotheses.insert(cid.to_string(), text);
         statuses.push(detail);
-        references.push(entry.reference);
+        references.push(entry.reference.clone());
     }
     ensure!(
         score::invalid_crops(&references, true).is_empty(),
@@ -473,7 +692,229 @@ mod tests {
             doc_ids: DocIds::Legacy,
             prompt_version: usnm_ocr_contract::qwen::PROMPT_VERSION,
             model: None,
+            bundle_size: 1,
         }
+    }
+
+    /// `fixture` with `n` crops, each its own small JPEG, as sample doc ids.
+    fn fixture_n(dir: &Path, n: usize) -> Options {
+        let mut opts = fixture(dir);
+        let (mut rows, mut provenance) = (String::new(), String::new());
+        for i in 0..n {
+            let img = image::RgbImage::from_fn(40 + i as u32, 24, |x, y| {
+                image::Rgb([(x * 5) as u8, (y * 9) as u8, (i * 31) as u8])
+            });
+            let mut bytes = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 90)
+                .encode_image(&img)
+                .unwrap();
+            let name = format!("crop-{i:03}.jpg");
+            std::fs::write(dir.join(&name), &bytes).unwrap();
+            let cid = format!("public-{i:03}");
+            rows += &serde_json::json!({
+                "crop_id": cid, "image": name, "group": "public",
+                "lang": "eng", "for_scoring": true, "transcription": format!("TEXT {i}"),
+                "transcriber": "public dataset", "reviewer": "published review"
+            })
+            .to_string();
+            rows.push('\n');
+            provenance += &serde_json::json!({
+                "crop_id": cid, "source_license": "CC-BY-4.0",
+                "source_url": "https://example.org/public",
+                "source_attribution": "Synthetic dataset authors",
+                "source_dataset": "synthetic-public",
+                "crop_sha256": sha256(&bytes),
+            })
+            .to_string();
+            provenance.push('\n');
+        }
+        std::fs::write(dir.join("crops.jsonl"), rows).unwrap();
+        std::fs::write(dir.join("manifest.jsonl"), provenance).unwrap();
+        opts.max_crops = n;
+        opts.doc_ids = DocIds::Sample;
+        opts
+    }
+
+    /// Writes a unit's three outputs to `spool` with `readings` as the host read them.
+    fn spool_result(spool: &Path, job: &Job, outcome: Outcome, texts: &[(String, String)]) {
+        use usnm_ocr_contract::qwen::{Reading, Readings, ResultManifest};
+        let readings = Readings {
+            v: VERSION,
+            job_id: job.id.clone(),
+            device: "vulkan".into(),
+            diag: BTreeMap::new(),
+            model: Some(job.engine.models[0].name.clone()),
+            outcome,
+            prompt_version: job.prompt_version,
+            readings: texts
+                .iter()
+                .map(|(id, text)| Reading {
+                    id: id.clone(),
+                    ms: 3,
+                    text: text.clone(),
+                    tokens: 4,
+                })
+                .collect(),
+        };
+        let rb = serde_json::to_vec(&readings).unwrap();
+        let result = ResultManifest {
+            v: VERSION,
+            job_id: job.id.clone(),
+            completed_at: "2026-11-12T00:00:00Z".into(),
+            crops: job.crops.len() as u32,
+            device: "vulkan".into(),
+            diag_bytes: 4,
+            diag_sha256: sha256(b"diag"),
+            engine: job.engine.clone(),
+            engine_ms: 3,
+            gpu_mem_peak_mib: None,
+            host: Default::default(),
+            load_ms: 1,
+            model: readings.model.clone(),
+            outcome,
+            peak_rss_kib: None,
+            read: texts.len() as u32,
+            readings_bytes: rb.len() as u64,
+            readings_sha256: sha256(&rb),
+            unit_error: None,
+        };
+        for (name, bytes) in
+            outputs()
+                .iter()
+                .zip([rb, serde_json::to_vec(&result).unwrap(), b"diag".to_vec()])
+        {
+            std::fs::write(
+                spool.join(format!("{}__file_{name}", job.workunit())),
+                bytes,
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn bundles_carry_each_crops_bytes_unchanged_and_collect_maps_readings_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut opts = fixture_n(tmp.path(), 5);
+        opts.bundle_size = 2;
+        assert_eq!(stage(&opts).unwrap(), 3);
+        // Staging again is a no-op; another packing needs a new root.
+        assert_eq!(stage(&opts).unwrap(), 3);
+        let manifest = staged(&opts);
+        assert_eq!(manifest.entries.len(), 5);
+        let sizes: Vec<usize> = manifest.bundles.iter().map(|b| b.crops.len()).collect();
+        assert_eq!(sizes, [2, 2, 1]);
+        // Only the bundles are units.
+        assert_eq!(std::fs::read_dir(units(&opts.root)).unwrap().count(), 3);
+        for b in &manifest.bundles {
+            let dir = units(&opts.root).join(&b.job.id);
+            let blob = std::fs::read(dir.join(PAGE_FILE)).unwrap();
+            assert!(b.job.input.matches(&blob));
+            let notice = std::fs::read(dir.join(NOTICE_FILE)).unwrap();
+            assert_eq!(b.job.input.source, format!("benchmark:{}", sha256(&notice)));
+            assert_eq!(
+                String::from_utf8_lossy(&notice)
+                    .matches("Synthetic dataset authors")
+                    .count(),
+                1
+            );
+            for (page, cid) in b.job.pages.iter().zip(&b.crops) {
+                // The page's slice is the crop file, byte for byte, so it decodes to the same
+                // pixels as the crop a local run reads.
+                let i: usize = cid.trim_start_matches("public-").parse().unwrap();
+                let original = std::fs::read(tmp.path().join(format!("crop-{i:03}.jpg"))).unwrap();
+                let (o, n) = (page.input.offset as usize, page.input.bytes as usize);
+                assert_eq!(&blob[o..o + n], original.as_slice());
+                assert_eq!(
+                    image::load_from_memory(&blob[o..o + n])
+                        .unwrap()
+                        .to_rgb8()
+                        .into_raw(),
+                    image::load_from_memory(&original)
+                        .unwrap()
+                        .to_rgb8()
+                        .into_raw()
+                );
+                assert_eq!(page.doc_id, format!("sample-synthetic-public_{cid}"));
+            }
+            assert!(
+                !String::from_utf8(std::fs::read(dir.join(JOB_FILE)).unwrap())
+                    .unwrap()
+                    .contains("TEXT")
+            );
+        }
+        let mut other = opts.clone();
+        other.bundle_size = 3;
+        assert!(stage(&other).unwrap_err().to_string().contains("immutable"));
+        other.bundle_size = MAX_BUNDLE_PAGES + 1;
+        other.root = tmp.path().join("too-big");
+        assert!(stage(&other).is_err());
+
+        // First bundle read in full, the second timed out after one crop, the third failed.
+        let spool = tmp.path().join("spool");
+        std::fs::create_dir(&spool).unwrap();
+        let ids = |b: &Bundle| -> Vec<String> {
+            b.job
+                .pages
+                .iter()
+                .map(|p| format!("{}:{}", p.doc_id, p.crops[0].id))
+                .collect()
+        };
+        let first = ids(&manifest.bundles[0]);
+        spool_result(
+            &spool,
+            &manifest.bundles[0].job,
+            Outcome::Ok,
+            &[
+                (first[0].clone(), "TEXT 0".into()),
+                (first[1].clone(), "TEXT 1".into()),
+            ],
+        );
+        let second = ids(&manifest.bundles[1]);
+        spool_result(
+            &spool,
+            &manifest.bundles[1].job,
+            Outcome::Timeout,
+            &[(second[1].clone(), "TEXT 3".into())],
+        );
+        std::fs::write(
+            spool.join(format!("{}_error", manifest.bundles[2].job.workunit())),
+            "",
+        )
+        .unwrap();
+        let out = tmp.path().join("out");
+        let s = collect(&opts.root, &spool, &out).unwrap();
+        assert_eq!(
+            (s.expected, s.returned, s.incomplete, s.failed, s.pending),
+            (5, 2, 2, 1, 0)
+        );
+        let hyps = score::read_jsonl(&out.join("hypotheses.jsonl")).unwrap();
+        let text = |cid: &str| {
+            hyps.iter().find(|h| h["crop_id"] == cid).unwrap()["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(text("public-000"), "TEXT 0");
+        assert_eq!(text("public-001"), "TEXT 1");
+        assert_eq!(text("public-002"), "");
+        assert_eq!(text("public-003"), "TEXT 3");
+        assert_eq!(text("public-004"), "");
+        let details = score::read_jsonl(&out.join("by-crop.jsonl")).unwrap();
+        assert_eq!(details[2]["status"], "timeout");
+        assert_eq!(details[3]["status"], "timeout");
+        assert_eq!(details[0]["unit_job_id"], manifest.bundles[0].job.id);
+
+        // A reading of a crop the bundle doesn't hold is refused.
+        spool_result(
+            &spool,
+            &manifest.bundles[1].job,
+            Outcome::Timeout,
+            &[(first[0].clone(), "TEXT 0".into())],
+        );
+        assert!(collect(&opts.root, &spool, &out)
+            .unwrap_err()
+            .to_string()
+            .contains("unexpected readings"));
     }
 
     fn staged(opts: &Options) -> Manifest {
