@@ -13,7 +13,7 @@ use usnm_core::page_id::{PageId, Source};
 use usnm_ocr_contract::{
     boinc::sha256,
     quality::{Input, MAX_SCAN},
-    qwen::{Crop, Engine, Job, Outcome, MAX_JOB_JSON, PROMPT_VERSION, VERSION},
+    qwen::{Crop, Engine, Job, Outcome, MAX_JOB_JSON, VERSION},
 };
 use usnm_ocr_quality::align::{align, Op};
 use usnm_ocr_survey::score;
@@ -67,6 +67,11 @@ pub struct Options {
     pub max_crops: usize,
     pub timeout_secs: u32,
     pub doc_ids: DocIds,
+    /// The request version every staged job carries (1 stages as before #1776).
+    pub prompt_version: u32,
+    /// Pin every staged job to this model of `engine`, by name; `None` leaves the choice to the
+    /// host's plan class, as before #1776.
+    pub model: Option<String>,
 }
 
 /// How a campaign spells each crop's `doc_id`. Both pass every released worker's check.
@@ -104,6 +109,12 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
         opts.engine.models.len() == 1,
         "benchmark requires exactly one model"
     );
+    if let Some(pin) = &opts.model {
+        ensure!(
+            *pin == opts.engine.models[0].name,
+            "--model {pin} is not the engine's one model"
+        );
+    }
     let source = std::fs::read(&opts.crops)?;
     let rows = score::read_jsonl(&opts.crops)?;
     ensure!(!rows.is_empty(), "no benchmark crops");
@@ -201,8 +212,8 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
             language: row["lang"].as_str().context("missing lang")?.into(),
             max_tokens_per_1000px2: 4,
             pages: vec![],
-            prompt_version: PROMPT_VERSION,
-            model: None,
+            prompt_version: opts.prompt_version,
+            model: opts.model.clone(),
         };
         job.id = job.identity()?;
         job.validate()?;
@@ -339,6 +350,10 @@ pub fn collect(root: &Path, spool: &Path, out: &Path) -> anyhow::Result<Summary>
                 result.job_id == job.id && result.engine == job.engine,
                 "result belongs to another job or engine"
             );
+            ensure!(
+                loaded.readings.prompt_version == job.prompt_version,
+                "reading was made at another request version"
+            );
             ensure!(result.crops == 1, "unexpected crop count");
             ensure!(
                 result.model.as_ref().is_none_or(|m| m == expected_model),
@@ -456,12 +471,38 @@ mod tests {
             max_crops: 20,
             timeout_secs: 600,
             doc_ids: DocIds::Legacy,
+            prompt_version: usnm_ocr_contract::qwen::PROMPT_VERSION,
+            model: None,
         }
     }
 
     fn staged(opts: &Options) -> Manifest {
         stage(opts).unwrap();
         serde_json::from_slice(&std::fs::read(opts.root.join(MANIFEST)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn request_version_and_model_pin_are_staged_and_frozen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut opts = fixture(tmp.path());
+        let name = opts.engine.models[0].name.clone();
+        let plain = staged(&opts).entries.remove(0).job;
+        assert_eq!((plain.prompt_version, plain.model.clone()), (1, None));
+        opts.root = tmp.path().join("guarded");
+        opts.prompt_version = usnm_ocr_contract::qwen::PROMPT_VERSION_LOOP_GUARD;
+        opts.model = Some(name.clone());
+        let job = staged(&opts).entries.remove(0).job;
+        assert_eq!(job.prompt_version, 3);
+        assert_eq!(job.model.as_deref(), Some(name.as_str()));
+        assert_ne!(job.id, plain.id);
+        opts.prompt_version = 1;
+        assert!(stage(&opts).unwrap_err().to_string().contains("immutable"));
+        opts.root = tmp.path().join("foreign-pin");
+        opts.model = Some("qwen3-vl-8b-q4km-other".into());
+        assert!(stage(&opts)
+            .unwrap_err()
+            .to_string()
+            .contains("not the engine's one model"));
     }
 
     #[test]
@@ -675,7 +716,7 @@ mod tests {
             diag: BTreeMap::new(),
             model: Some(job.engine.models[0].name.clone()),
             outcome: Outcome::Ok,
-            prompt_version: PROMPT_VERSION,
+            prompt_version: usnm_ocr_contract::qwen::PROMPT_VERSION,
             readings: vec![Reading {
                 id: "public-001".into(),
                 ms: 3,
@@ -733,5 +774,78 @@ mod tests {
         )
         .unwrap();
         assert!(collect(&opts.root, &spool, &out).is_err());
+    }
+
+    #[test]
+    fn a_reading_at_another_request_version_is_refused() {
+        use usnm_ocr_contract::qwen::{Reading, Readings, ResultManifest};
+        let tmp = tempfile::tempdir().unwrap();
+        let mut opts = fixture(tmp.path());
+        opts.prompt_version = usnm_ocr_contract::qwen::PROMPT_VERSION_LOOP_GUARD;
+        opts.model = Some(opts.engine.models[0].name.clone());
+        stage(&opts).unwrap();
+        let manifest: Manifest =
+            serde_json::from_slice(&std::fs::read(opts.root.join(MANIFEST)).unwrap()).unwrap();
+        let job = &manifest.entries[0].job;
+        let spool = tmp.path().join("spool");
+        std::fs::create_dir(&spool).unwrap();
+        let out = tmp.path().join("out");
+        for (version, accepted) in [(1, false), (job.prompt_version, true)] {
+            let readings = Readings {
+                v: VERSION,
+                job_id: job.id.clone(),
+                device: "cpu".into(),
+                diag: BTreeMap::new(),
+                model: Some(job.engine.models[0].name.clone()),
+                outcome: Outcome::Ok,
+                prompt_version: version,
+                readings: vec![Reading {
+                    id: "public-001".into(),
+                    ms: 3,
+                    text: "HELLO NEWSPAPER".into(),
+                    tokens: 4,
+                }],
+            };
+            let rb = serde_json::to_vec(&readings).unwrap();
+            let result = ResultManifest {
+                v: VERSION,
+                job_id: job.id.clone(),
+                completed_at: "2026-10-15T00:00:00Z".into(),
+                crops: 1,
+                device: "cpu".into(),
+                diag_bytes: 4,
+                diag_sha256: sha256(b"diag"),
+                engine: job.engine.clone(),
+                engine_ms: 3,
+                gpu_mem_peak_mib: None,
+                host: Default::default(),
+                load_ms: 1,
+                model: readings.model.clone(),
+                outcome: Outcome::Ok,
+                peak_rss_kib: None,
+                read: 1,
+                readings_bytes: rb.len() as u64,
+                readings_sha256: sha256(&rb),
+                unit_error: None,
+            };
+            for (name, bytes) in
+                outputs()
+                    .iter()
+                    .zip([rb, serde_json::to_vec(&result).unwrap(), b"diag".to_vec()])
+            {
+                std::fs::write(
+                    spool.join(format!("{}__file_{name}", job.workunit())),
+                    bytes,
+                )
+                .unwrap();
+            }
+            let got = collect(&opts.root, &spool, &out);
+            if accepted {
+                assert_eq!(got.unwrap().returned, 1);
+            } else {
+                let err = got.unwrap_err().to_string();
+                assert!(err.contains("another request version"), "{err}");
+            }
+        }
     }
 }
