@@ -468,6 +468,10 @@ pub struct Bag {
 pub struct CropScore {
     /// Words of the ALTO in the box.
     pub clipped_words: usize,
+    /// The clipped words as text, before normalization: one line per kept line in the ALTO's
+    /// reading order, words joined by a space, a kept line hyphen as `-` on its line's end. This
+    /// is the ALTO's reading of the crop, the text the rates below are computed from.
+    pub alto_text: String,
     /// `alto` or `text`: which side the rates are over.
     pub reference: &'static str,
     /// The clipped words in the ALTO's reading order against the crop's text.
@@ -481,7 +485,8 @@ pub struct CropScore {
 /// dropped), and the rates are over it.
 pub fn crop(page: &Page, rect: &Rect, crop_text: &str, text_is_reference: bool) -> CropScore {
     let clipped = clip(page, rect);
-    let alto = text::normalize(&usnm_alto::text(&clipped), false);
+    let alto_text = usnm_alto::text(&clipped);
+    let alto = text::normalize(&alto_text, false);
     let other = text::normalize(crop_text, text_is_reference);
     let counts = if text_is_reference {
         score::counts(&other, &alto)
@@ -491,6 +496,7 @@ pub fn crop(page: &Page, rect: &Rect, crop_text: &str, text_is_reference: bool) 
     let a = agreement::compare(&alto, &other);
     CropScore {
         clipped_words: words(&clipped).len(),
+        alto_text,
         reference: if text_is_reference { "text" } else { "alto" },
         text_order: counts.into(),
         bag: Bag {
@@ -781,6 +787,7 @@ mod tests {
         assert_eq!(s.text_order.counts.word_edits, 0);
         let s = crop(&p, &Rect::new(90.0, 90.0, 225.0, 180.0), text, false);
         assert_eq!(s.clipped_words, 3);
+        assert_eq!(s.alto_text, "The quick\nbrown");
         assert_eq!(s.reference, "alto");
         // ALTO "The quick brown" against the text: "fox" inserted.
         assert_eq!(s.text_order.counts.ref_words, 3);
@@ -843,6 +850,7 @@ mod tests {
             false,
         );
         assert_eq!(s.clipped_words, 2);
+        assert_eq!(s.alto_text, "inter-\ntoday");
         assert_eq!(s.text_order.cer, Some(0.0));
         assert_eq!(s.bag.dice, 1.0);
     }
