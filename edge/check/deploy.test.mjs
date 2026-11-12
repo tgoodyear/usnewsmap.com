@@ -21,9 +21,10 @@ const OLD_TREE = "0000000000000000000000000000000000000000";
 const STUBS = {
   az: `#!/bin/sh
 echo "az $*" >> "$STUB_DIR/calls.log"
+[ -z "\${STUB_AZ_FAIL:-}" ] || exit 1
 case "$*" in
-  *usnm-prod-cloudflare-account-id*) echo "${ACCOUNT}" ;;
-  *usnm-prod-workers-ci-token*) echo "${TOKEN}" ;;
+  *usnm-prod-cloudflare-account-id*) echo "\${STUB_ACCOUNT-${ACCOUNT}}" ;;
+  *usnm-prod-workers-ci-token*) echo "\${STUB_WORKERS_TOKEN-${TOKEN}}" ;;
   *usnm-prod-check-admin-token*) echo "\${STUB_ADMIN-${ADMIN}}" ;;
   *) exit 1 ;;
 esac
@@ -34,7 +35,7 @@ url=""
 for argument in "$@"; do case "$argument" in http*) url=$argument ;; esac; done
 echo "curl $url" >> "$STUB_DIR/calls.log"
 case "$url" in
-  */api/languages) printf '%s' "\${STUB_LANGUAGES_CODE:-200}" ;;
+  */api/languages) printf '%s' "\${STUB_LANGUAGES_CODE:-200}"; exit "\${STUB_LANGUAGES_EXIT:-0}" ;;
   */build.txt\\?*) if [ -n "\${STUB_NEVER_SHOWS:-}" ]; then echo "${OLD_TREE}"; else cat "$STUB_DIR/tree"; fi ;;
   */build.txt) [ -z "\${STUB_LIVE_FAIL:-}" ] || exit 22; printf '%s\\n' "\${STUB_LIVE:-}" ;;
   *) exit 6 ;;
@@ -214,7 +215,7 @@ test("a build.txt that never shows the new tree fails and removes build.txt", ()
 });
 
 test("a non-200 from /api/languages fails and removes build.txt", () => {
-  for (const code of ["500", "404", "000"]) {
+  for (const code of ["500", "404"]) {
     const result = deploy([], { live: OLD_TREE, env: { STUB_LANGUAGES_CODE: code } });
     assert.equal(result.status, 1, code);
     assert.match(result.stderr, new RegExp(`/api/languages answered ${code} after the deploy`), code);
@@ -223,7 +224,31 @@ test("a non-200 from /api/languages fails and removes build.txt", () => {
   }
 });
 
-test("a deploy whose secrets can't be read stops before Wrangler, and an empty admin token stops the sync", () => {
+test("a curl that fails to connect to /api/languages fails, skips the sync and removes build.txt", () => {
+  const result = deploy([], { live: OLD_TREE, env: { STUB_LANGUAGES_CODE: "000", STUB_LANGUAGES_EXIT: "28" } });
+  assert.notEqual(result.status, 0);
+  assert.equal(result.deployed, true);
+  assert.equal(result.synced, false);
+  assert.equal(result.buildTxtRemains, false);
+});
+
+test("secrets that can't be read, or are empty, stop the deploy before Wrangler", () => {
+  for (const [what, env] of [
+    ["an Azure failure", { STUB_AZ_FAIL: "1" }],
+    ["an empty account id", { STUB_ACCOUNT: "" }],
+    ["an empty Workers token", { STUB_WORKERS_TOKEN: "" }],
+  ]) {
+    const result = deploy([], { live: OLD_TREE, env });
+    assert.equal(result.status, 1, what);
+    assert.equal(result.deployed, false, what);
+    assert.equal(result.synced, false, what);
+    assert.doesNotMatch(result.calls, /^curl .*(build\.txt\?|api\/languages)/m, what);
+    assert.equal(result.buildTxtRemains, false, what);
+    if (!env.STUB_AZ_FAIL) assert.match(result.stderr, /Cloudflare account or Workers token is empty/, what);
+  }
+});
+
+test("an empty admin token stops the sync, after a deploy and on a skip", () => {
   const empty = deploy([], { live: OLD_TREE, env: { STUB_ADMIN: "" } });
   assert.equal(empty.status, 1);
   assert.match(empty.stderr, /check admin token is empty/);
