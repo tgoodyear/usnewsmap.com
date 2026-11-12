@@ -1105,6 +1105,19 @@ class DbTests(unittest.TestCase):
         self.assertIn("still in the database", errors[-1]["error"])
         self.assertEqual([row[0] for row in self.rows()[0]], [1, 2, 4, 6])
 
+    def test_recheck_refuses_a_changed_export(self):
+        self.assertEqual(self.apply()[0], 0)
+        FakeMysql.db.execute("UPDATE workunit SET file_delete_state = 2 WHERE id = 2")
+        (self.batch / "db/chunk-0001-attempt-1/workunit.tsv").write_text("damaged\n")
+        before = self.rows()
+        code, _, errors = self.recheck()
+        self.assertEqual(code, 1)
+        self.assertIn("missing or changed", errors[-1]["error"])
+        self.assertEqual(before, self.rows())
+        (self.batch / "db/chunk-0001-attempt-1/workunit.tsv").unlink()
+        self.assertEqual(self.recheck()[0], 1)
+        self.assertEqual(before, self.rows())
+
     def test_recheck_with_no_deferred_rows(self):
         FakeMysql.db.execute("UPDATE workunit SET file_delete_state = 2 WHERE id = 2")
         FakeMysql.db.execute("UPDATE result SET file_delete_state = 2 WHERE id = 15")

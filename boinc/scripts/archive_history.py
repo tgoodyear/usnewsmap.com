@@ -1780,6 +1780,11 @@ def db_chunk(session, batch, index, ids, prior=None):
     With `prior` (the chunk's recorded part, whose still-deferred rows are `ids`), this is a
     re-check: it handles only those rows, and the part it writes adds to the recorded one."""
     directory = batch / "db"
+    if prior is not None:
+        # The recorded exports must still be as they were before anything is added to them.
+        for path, digest in prior["files"].items():
+            require((directory / path).is_file() and sha256_file(directory / path) == digest,
+                    f"the archived db/{path} is missing or changed")
     earlier = sorted(directory.glob(f"chunk-{index:04d}-attempt-*/workunit.tsv"))
     session.query("START TRANSACTION")
     work_header, work = session.query(
@@ -1830,7 +1835,8 @@ def db_chunk(session, batch, index, ids, prior=None):
                 "deleted": sorted(prior["deleted"] + part["deleted"]),
                 "deferred": part["deferred"],
                 "deleted_earlier": sorted(prior["deleted_earlier"] + part["deleted_earlier"]),
-                "vanished": sorted(prior["vanished"] + part["vanished"]), "files": files}
+                "vanished": sorted(prior["vanished"] + part["vanished"]),
+                "files": {**files, **prior["files"]}}
         if part == prior:
             return prior
     write_json(directory / f"chunk-{index:04d}.json", part)
