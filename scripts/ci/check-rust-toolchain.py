@@ -79,9 +79,11 @@ def check_workflow(rel: str, text: str, pin: str | None, findings: list[str]) ->
         if new_job:
             reads_file = False
         body = "\n".join(step)
-        if re.search(r"^\s*(-\s+)?id:\s*rust-toolchain\s*$", body, re.M) and "rust-toolchain.toml" in re.sub(
-                r"^.*\bid:.*$", "", body, flags=re.M):
-            reads_file = True
+        if re.search(r"^\s*(-\s+)?id:\s*rust-toolchain\s*$", body, re.M):
+            # What the step runs, not its name: it must write `channel` to the step outputs from the file.
+            command = re.sub(r"^\s*(-\s+)?(name|id):.*$", "", body, flags=re.M)
+            if re.search(r"channel=.*rust-toolchain\.toml.*GITHUB_OUTPUT", command, re.S):
+                reads_file = True
         uses = re.search(r"^\s*(?:-\s+)?uses:\s*dtolnay/rust-toolchain@", body, re.M)
         if not uses:
             continue

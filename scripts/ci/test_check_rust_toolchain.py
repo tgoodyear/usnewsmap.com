@@ -100,6 +100,13 @@ class Toolchain(unittest.TestCase):
         self.assertIn("no earlier step of this job", found[0])
         self.assertEqual(self.findings(workflow=WORKFLOW + second.replace("      - uses: dtolnay", READ + "      - uses: dtolnay")), [])
 
+    def test_a_reader_named_after_the_file_but_not_reading_it_is_refused(self):
+        fake = WORKFLOW.replace(READ, "      - name: Read rust-toolchain.toml\n        id: rust-toolchain\n"
+                                "        run: echo 'channel=stable' >> \"$GITHUB_OUTPUT\"\n")
+        found = self.findings(workflow=fake)
+        self.assertEqual(len(found), 1)
+        self.assertIn("no earlier step", found[0])
+
     def test_a_missing_toolchain_input_is_refused(self):
         found = self.findings(workflow=WORKFLOW.replace(
             "          toolchain: ${{ steps.rust-toolchain.outputs.channel }}\n", ""))
