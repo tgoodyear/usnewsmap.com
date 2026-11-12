@@ -393,8 +393,10 @@ not the quality database.
 Hand-off collection is not that decision, so it has its own row. Release decisions
 reach the catalog only through `ingest-release`, and no scheduled export feeds it
 yet. Engine runs and per-file verified locations have no current source either:
-BOINC results are counted by app and status below, but not cataloged as run
-records, and no job verifies scans file by file on a schedule.
+BOINC results are counted by app and status below, and
+[BOINC page runs](#boinc-page-runs) can be imported from the bridge's journal by
+hand, but nothing does that on a schedule, and no job verifies scans file by
+file on a schedule.
 
 ### BOINC results
 
@@ -438,6 +440,79 @@ unordered directories with no validation state, so counting them would mean
 listing them every hour. The collector's query is bounded and incremental
 instead: it aggregates the `result` table over its recount window only, and the
 dashboard keeps the older hours.
+
+### BOINC page runs
+
+`data_catalog.py ingest-boinc-journal` records one `boinc_run` evidence row per
+page job of the BOINC bridge's journal, which is the only per-page record of a
+BOINC job that the repository defines (`Record` in `crates/usnm-boinc`, with `Job`
+and `ResultManifest` in `crates/usnm-ocr-contract`):
+
+```bash
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite ingest-boinc-journal \
+  --journal /path/to/bridge-state --evidence-out boinc-20261112.jsonl \
+  --batch-id boinc-20261112 --source bridge-journal --observed-at 2026-11-12T15:00:00Z
+python3 scripts/corpus/data_catalog.py --db catalog.sqlite query boinc_run --status published
+```
+
+It reads two files per job and nothing else: `jobs/<job id>/record.json` and, if
+present, `jobs/<job id>/accepted/result.json`. It does not read the scan, the text
+or the layout, and a job directory that has no `record.json` yet is skipped and
+counted in the result. Anything the bridge would reject (an unknown field, a job
+directory that is not the job's id, a result for another job or scan, a symlink,
+an oversized file) fails the whole batch.
+
+Each row has the page's `loc:<doc_id>` page id and these fields:
+
+- `job_id`, `workunit` (the job's own, or its bundle's `usnm_ocrb_<bundle>`),
+  `attempt`, `retry_of`, `bundle`, `line_job`, `plan`.
+- `status` is the bridge's stage: `prepared`, `reserved`, `submitting`,
+  `submitted`, `published` or `failed`.
+- `batch`, `reason`, `language`, `queued_at`, `batch_version`.
+- `engine`: kind, worker image digest, version, profile, model digest, page
+  segmentation mode, resolution and deadline.
+- `scan_sha256` and `scan_bytes`.
+- `held` (a result kept but not published because its trust scope is held),
+  `failure` (the BOINC error mask and whether no output files came back) and
+  `has_error` (whether the record carries an error message).
+- `result`: the returned manifest's text and layout checksums, elapsed time and
+  completion time.
+
+The error message, the scan URL and the native ledger row are not kept: they are
+free text or already derivable. The evidence time is when the journal was read
+(`--observed-at`, default now), because the journal records no time for a stage
+change. A later read of the same job replaces the row, and an earlier read that
+arrives late does not.
+
+The row says what the bridge recorded about a job. It is not an engine run
+(`query run`, the snapshot's run counts and `trace` do not count it), and
+`published` means the bridge's collection checks passed, not that the page was
+imported, selected for a release or is in search. Those stay with `ingest-import`,
+`ingest-release` and `ingest-search`.
+
+What is checked offline, against fixtures built from the contract crate's real job
+fixture and the bridge's field lists (a test compares them to the Rust structs):
+the record's shape, that a first-attempt page job's id is the hash the bridge
+computes from its fields, and that a result manifest matches its job as
+`ResultManifest::matches` requires, short of re-hashing the output files.
+
+What it cannot prove without live data:
+
+- No real journal has been read. The BOINC host's state directory has not been
+  imported, so the number of jobs, their stage mix and whether real records
+  contain anything the fixtures don't have are unknown.
+- The id of a retry job, a line job or a bundled job is not recomputed, only its
+  shape. Only the first-attempt page job's hash has a fixture from the Rust side.
+- The result's checksums are not compared with the text and layout files, so a
+  job whose output files were lost still looks complete.
+- It does not tie a journal job to the BOINC database's workunit and result rows,
+  so it cannot say whether BOINC validated the replicas, or how many ran. Those
+  counts stay in [BOINC results](#boinc-results), which count replicas, not pages.
+- Nothing runs it on a schedule, and the journal sits on the BOINC host, which the
+  hourly refresh unit cannot reach. Until an export of the journal reaches the
+  catalog host, the rows exist only where someone ran the command.
+- A job that was never journaled (a page that sits in the queue, or one a retired
+  path handled) has no row.
 
 ### Overall evidence age
 

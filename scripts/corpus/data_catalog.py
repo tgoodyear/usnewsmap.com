@@ -101,6 +101,25 @@ BOINC_STATUSES = ("valid", "inconclusive", "invalid", "waiting", "error")
 BOINC_APP = re.compile(r"[a-z][a-z0-9_]{0,63}")
 MAX_BOINC_RESULTS = 64
 MAX_BOINC_WINDOW_HOURS = 8784  # A leap year.
+# The bridge's per-job journal (Record, Job and ResultManifest in crates/usnm-boinc/src/lib.rs and
+# crates/usnm-ocr-contract/src/boinc.rs). Stage is the bridge's, not a release or validation state.
+BOINC_STAGES = ("prepared", "reserved", "submitting", "submitted", "published", "failed")
+BOINC_RECORD_FIELDS = {"job", "plan", "stage", "stamp", "error", "terminal", "retry", "ledger",
+                       "bundle", "unbundled", "held"}
+BOINC_JOB_FIELDS = {"v", "id", "attempt", "retry_of", "message", "batch_version", "scan", "engine",
+                    "lines"}
+BOINC_MESSAGE_FIELDS = {"v", "page", "batch", "language", "reason", "score", "queued_at"}
+BOINC_SCAN_FIELDS = {"url", "iiif_base", "sha256", "bytes", "md5"}
+BOINC_ENGINE_FIELDS = {"kind", "image", "version", "profile", "models", "psm", "dpi", "timeout_secs"}
+BOINC_RESULT_FIELDS = {"v", "job_id", "scan_sha256", "engine", "text_sha256", "alto_sha256",
+                       "elapsed_ms", "completed_at"}
+BOINC_RUN_FIELDS = ("job_id", "workunit", "status", "plan", "attempt", "retry_of", "bundle",
+                    "line_job", "batch", "reason", "language", "queued_at", "batch_version",
+                    "engine", "scan_sha256", "scan_bytes", "held", "failure", "has_error", "result")
+BOINC_PAGE = re.compile(r"([A-Za-z0-9-]+)/(\d{4}-\d\d-\d\d)/(ed-[1-9]\d*)/(seq-[1-9]\d*)\Z")
+BOINC_JOB_ID = re.compile(r"[0-9a-f]{64}\Z")
+BOINC_RECORD_BYTES = 1024 * 1024  # The bridge reads record.json up to twice its 512 KiB request limit.
+BOINC_RESULT_BYTES = 64 * 1024
 
 # RunRecord v1 in crates/usnm-ocr-contract/src/runs.rs, not an engine-run replacement.
 RUN_STR = set("""run_id doc_id node worker_version ocr_engine engine_id family
@@ -473,6 +492,11 @@ def validate_event(event):
         require(type(p["reported_hours"]) is int and 1 <= p["reported_hours"] <= p["window_hours"],
                 "BOINC result reported hours must be within the window")
         identity, invariant, data = [p["app"], p["status"]], "", dict(p)
+    elif kind == "boinc_run":
+        data = check_boinc_run(p, event["page_id"])
+        identity, invariant = [event["page_id"], p["job_id"]], digest([
+            p["engine"], p["scan_sha256"], p["scan_bytes"], p["batch"], p["reason"], p["language"],
+            p["attempt"], p["retry_of"], p["batch_version"], p["line_job"], p["queued_at"]])
     elif kind == "artifact":
         require(isinstance(p, dict), "artifact payload must be an object")
         obj({k: v for k, v in p.items() if k not in ("fetched_at", "bytes", "condition", "observed_sha256")},
@@ -891,6 +915,172 @@ def write_atomic_evidence(evidence_out, db, events):
     return out
 
 
+def boinc_text(value, limit=256):
+    require(isinstance(value, str) and 0 < len(value) <= limit and
+            not any(ord(ch) < 32 for ch in value), "invalid BOINC journal string")
+    return value
+
+
+def boinc_uint(value, low, high):
+    require(type(value) is int and low <= value <= high, "invalid BOINC journal number")
+    return value
+
+
+def check_boinc_run(p, page_id):
+    """The allowlisted projection of one bridge journal record, as boinc_run evidence carries it."""
+    obj(p, BOINC_RUN_FIELDS)
+    require(page_id.startswith("loc:") and BOINC_PAGE.fullmatch(page_id[4:].replace("_", "/", 3)),
+            "boinc_run page_id must be loc:<doc_id>")
+    require(isinstance(p["job_id"], str) and BOINC_JOB_ID.fullmatch(p["job_id"]), "invalid BOINC job id")
+    require(p["workunit"] == ("usnm_" + p["job_id"] if p["bundle"] is None else "usnm_ocrb_" + str(p["bundle"])),
+            "BOINC workunit does not follow from the job or bundle")
+    require(p["status"] in BOINC_STAGES, "invalid BOINC bridge stage")
+    for key in ("plan", "batch", "reason", "language"):
+        token(p[key])
+    require(p["reason"] in ("user", "bulk"), "invalid BOINC reason")
+    boinc_uint(p["attempt"], 0, 2147483646)
+    require(p["retry_of"] is None or (isinstance(p["retry_of"], str) and BOINC_JOB_ID.fullmatch(p["retry_of"])
+                                      and p["retry_of"] != p["job_id"] and p["attempt"] > 0),
+            "invalid BOINC retry_of")
+    require(p["retry_of"] is not None or p["attempt"] == 0, "a retry job needs retry_of")
+    if p["bundle"] is not None:
+        token(p["bundle"])
+    require(type(p["line_job"]) is bool and type(p["held"]) is bool and type(p["has_error"]) is bool,
+            "invalid BOINC journal flag")
+    timestamp(p["queued_at"])
+    boinc_uint(p["batch_version"], 1, 32767)
+    obj(p["engine"], ("kind", "image", "version", "profile", "models", "psm", "dpi", "timeout_secs"))
+    require(p["engine"]["kind"] in ("tesseract", "ndlocr-lite"), "invalid BOINC engine kind")
+    sha(p["engine"]["image"], prefixed=True)
+    require(p["engine"]["image"].startswith("sha256:"), "BOINC worker image must be a full digest")
+    require(re.fullmatch(r"sha256:[0-9a-f]{12}", str(p["engine"]["models"])), "invalid BOINC profile digest")
+    for key in ("version", "profile"):
+        token(p["engine"][key])
+    boinc_uint(p["engine"]["psm"], 0, 255)
+    boinc_uint(p["engine"]["dpi"], 1, 65535)
+    boinc_uint(p["engine"]["timeout_secs"], 1, 3600)
+    sha(p["scan_sha256"])
+    boinc_uint(p["scan_bytes"], 1, 10**12)
+    if p["failure"] is not None:
+        obj(p["failure"], ("error_mask", "no_output_files"))
+        if p["failure"]["error_mask"] is not None:
+            boinc_uint(p["failure"]["error_mask"], 0, 4294967295)
+        require(type(p["failure"]["no_output_files"]) is bool, "invalid BOINC journal flag")
+    if p["result"] is not None:
+        obj(p["result"], ("text_sha256", "alto_sha256", "elapsed_ms", "completed_at"))
+        sha(p["result"]["text_sha256"])
+        sha(p["result"]["alto_sha256"])
+        boinc_uint(p["result"]["elapsed_ms"], 0, 10**12)
+        timestamp(p["result"]["completed_at"])
+    return dict(p)
+
+
+def boinc_job_identity(job):
+    """The job id the bridge computes for a first-attempt page job (Job::identity): SHA-256 of the
+    compact JSON of (v, page, batch, language, reason, score, batch_version, scan, engine)."""
+    message, engine = job["message"], dict(job["engine"])
+    if engine.get("kind") == "tesseract":
+        del engine["kind"]  # Skipped when serializing the default kind.
+    legacy = [job["v"], message["page"], message["batch"], message["language"], message["reason"],
+              message.get("score"), job["batch_version"], job["scan"], engine]
+    return hashlib.sha256(json.dumps(legacy, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+
+
+def read_boinc_file(path, limit):
+    """A regular file under the journal, not through a symlink, up to `limit` bytes."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(fd, "rb") as stream:
+        require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "BOINC journal file must be regular")
+        raw = stream.read(limit + 1)
+    require(len(raw) <= limit, "BOINC journal file over size limit")
+    return load_json(raw)
+
+
+def adapt_boinc_record(record, job_dir_id, result=None):
+    """(page_id, projection) from one bridge journal record.json and, if the job has one, its
+    accepted result.json. Raises CatalogError for anything the bridge itself would reject."""
+    require(isinstance(record, dict) and {"job", "plan", "stage", "stamp", "error"} <= set(record) <=
+            BOINC_RECORD_FIELDS, "unexpected BOINC record fields")
+    job = record["job"]
+    require(isinstance(job, dict) and {"v", "id", "message", "batch_version", "scan", "engine"} <= set(job)
+            <= BOINC_JOB_FIELDS, "unexpected BOINC job fields")
+    message, scan, engine = job["message"], job["scan"], job["engine"]
+    require(isinstance(message, dict) and {"v", "page", "batch", "language", "reason", "queued_at"} <=
+            set(message) <= BOINC_MESSAGE_FIELDS and message["v"] == 1, "unexpected BOINC message fields")
+    require(isinstance(scan, dict) and set(scan) == BOINC_SCAN_FIELDS, "unexpected BOINC scan fields")
+    require(isinstance(engine, dict) and {"image", "version", "profile", "models", "psm", "dpi",
+                                          "timeout_secs"} <= set(engine) <= BOINC_ENGINE_FIELDS,
+            "unexpected BOINC engine fields")
+    require(job["id"] == job_dir_id, "journal identity mismatch")
+    require(isinstance(message["page"], str) and BOINC_PAGE.fullmatch(message["page"]), "invalid BOINC page")
+    attempt = job.get("attempt", 0)
+    if attempt == 0 and job.get("retry_of") is None and "lines" not in job:
+        require(job["id"] == boinc_job_identity(job), "job identity mismatch")
+    require(record["stage"] in BOINC_STAGES, "invalid BOINC bridge stage")
+    page_id = "loc:" + message["page"].replace("/", "_")
+    terminal = record.get("terminal")
+    kind = engine.get("kind", "tesseract")
+    projection = {
+        "job_id": job["id"], "workunit": "usnm_" + job["id"], "status": record["stage"],
+        "plan": record["plan"], "attempt": attempt, "retry_of": job.get("retry_of"),
+        "bundle": record.get("bundle"), "line_job": "lines" in job, "batch": message["batch"],
+        "reason": message["reason"], "language": message["language"],
+        "queued_at": message["queued_at"], "batch_version": job["batch_version"],
+        "engine": {"kind": kind, "image": engine["image"], "version": engine["version"],
+                   "profile": engine["profile"], "models": engine["models"], "psm": engine["psm"],
+                   "dpi": engine["dpi"], "timeout_secs": engine["timeout_secs"]},
+        "scan_sha256": scan["sha256"], "scan_bytes": scan["bytes"],
+        "held": record.get("held") is not None,
+        "failure": None if terminal is None else {
+            "error_mask": terminal["error_mask"], "no_output_files": terminal["no_output_files"]},
+        "has_error": record["error"] is not None, "result": None}
+    if projection["bundle"] is not None:
+        projection["workunit"] = "usnm_ocrb_" + str(projection["bundle"])
+    if result is not None:
+        require(isinstance(result, dict) and set(result) == BOINC_RESULT_FIELDS, "unexpected BOINC result fields")
+        # Same rules as ResultManifest::matches, short of re-hashing the output files.
+        require(result["v"] == job["v"] and result["job_id"] == job["id"] and
+                result["scan_sha256"] == scan["sha256"] and result["engine"] == engine,
+                "returned BOINC result does not match its job")
+        projection["result"] = {key: result[key] for key in
+                                ("text_sha256", "alto_sha256", "elapsed_ms", "completed_at")}
+    check_boinc_run(projection, page_id)
+    return page_id, projection
+
+
+def ingest_boinc_journal(db, journal, evidence_out, batch_id, source, observed_at=None):
+    """The bridge's `jobs/<id>/record.json` journal (and each job's `accepted/result.json`, when
+    present) -> boinc_run evidence, one per page job. Reads no other file: not the scan, text or
+    layout. A job directory with no record.json yet (a half-prepared job) is skipped and counted."""
+    token(batch_id)
+    token(source)
+    observed = timestamp(observed_at if observed_at is not None else now())
+    root = Path(journal)
+    jobs = root / "jobs"
+    require(jobs.is_dir() and not jobs.is_symlink(), "journal needs a jobs directory")
+    events, skipped = [], 0
+    for entry in sorted(os.listdir(jobs)):
+        require(BOINC_JOB_ID.fullmatch(entry) is not None, "invalid journal directory name")
+        job_dir = jobs / entry
+        require(job_dir.is_dir() and not job_dir.is_symlink(), "journal job must be a directory")
+        if not (job_dir / "record.json").exists():
+            skipped += 1
+            continue
+        result_path = job_dir / "accepted" / "result.json"
+        record = read_boinc_file(job_dir / "record.json", BOINC_RECORD_BYTES)
+        result = read_boinc_file(result_path, BOINC_RESULT_BYTES) if result_path.exists() else None
+        page_id, projection = adapt_boinc_record(record, entry, result)
+        event = {"schema_version": 1, "batch_id": batch_id,
+                 "event_id": "boinc-" + digest([projection, observed]), "kind": "boinc_run",
+                 "source": source, "observed_at": observed, "page_id": page_id, "payload": projection}
+        validate_event(event)
+        require(len(canonical(event).encode()) <= MAX_LINE, "projected BOINC event exceeds 64 KiB")
+        events.append(canonical(event) + "\n")
+    require(events, "journal holds no job records")
+    result = ingest(db, write_atomic_evidence(evidence_out, db, events))
+    return dict(result, skipped=skipped)
+
+
 def ingest_worker(db, input_path, evidence_out, batch_id, source):
     """One real atomic worker metadata JSON file -> immutable catalog evidence batch."""
     token(batch_id)
@@ -1217,7 +1407,7 @@ def rows(conn, kind, filters, limit=50, after=""):
 
 
 def query(db, kind, filters, limit=50, after=""):
-    require(kind in ("run", "execution", "artifact", "page_state", "stage", "boinc_results"),
+    require(kind in ("run", "execution", "artifact", "page_state", "stage", "boinc_results", "boinc_run"),
             "unsupported query kind")
     return bounded_query(db, lambda conn: rows(conn, kind, filters, limit, after))
 
@@ -2016,6 +2206,12 @@ status: valid|inconclusive|invalid|waiting|error. count is BOINC result replicas
 server received in the reported hours of the window, not pages or workunits. One row per
 source, app and status, at most 64. They are not in the snapshot; list them with
 query boinc_results.
+kind=boinc_run has the page's loc:<doc_id> page_id and payload exactly the allowlisted
+projection ingest-boinc-journal builds from one job of the BOINC bridge's journal (job_id,
+workunit, status = the bridge's stage, plan, attempt, retry_of, bundle, line_job, batch, reason,
+language, queued_at, batch_version, engine, scan_sha256, scan_bytes, held, failure, has_error,
+result). One row per source, page and job; the time is when the journal was read. It is not in
+the snapshot or in an engine run's counts; list with query boinc_run [--status S] [--page-id P].
 These statuses remain independent, per source and optional run_id; ok/selected NEVER
 implies accepted/imported/indexed. Event time, then lexicographic event_id breaks ties.
 Artifact hash/reference and run config/input are immutable within their identities.
@@ -2025,11 +2221,13 @@ Adapters provided: actual worker metadata capture JSON, RunRecord JSON projectio
 bounded local cached-scan index/stat, committed ocr-sync ImportRecord JSON
 (ingest-import), authoritative release selection/rejection/revocation decisions
 (ingest-release), public /v1/hits search provenance receipts (ingest-search),
-page provenance reconciliation (trace / query trace / GET /trace), the dashboard's
+page provenance reconciliation (trace / query trace / GET /trace), the BOINC bridge's per-job
+journal (ingest-boinc-journal --journal DIR: record.json and accepted/result.json only), the dashboard's
 hourly throughput history (refresh-live: aggregate stages and BOINC result counts by
 app and status) and explicit artifact/page-state/stage evidence.
 NOT provided: Parquet/Blob inventory or queue/outcomes Parquet, ocr-local/pages import
-ledger, BOINC allocation journal, per-result BOINC run records, or live Quickwit index
+ledger, BOINC database rows (workunit and result validation per page), a scheduled journal
+export, or live Quickwit index
 pointer mutation. Export those authoritative sources independently; do not label a
 local catalog ingest as page import.
 Missing adapters/sources produce unknown coverage (no fabricated BOINC-ready counts).
@@ -2092,6 +2290,13 @@ def main(argv=None):
     p.add_argument("--evidence-out", required=True)
     p.add_argument("--batch-id", required=True)
     p.add_argument("--source", required=True)
+    p = subs.add_parser("ingest-boinc-journal",
+                        help="import the BOINC bridge's per-job journal as boinc_run evidence")
+    p.add_argument("--journal", required=True)
+    p.add_argument("--evidence-out", required=True)
+    p.add_argument("--batch-id", required=True)
+    p.add_argument("--source", required=True)
+    p.add_argument("--observed-at")
     p = subs.add_parser("ingest-import", help="import committed ocr-sync ImportRecord JSON as imported stage")
     p.add_argument("--input", required=True)
     p.add_argument("--evidence-out", required=True)
@@ -2124,7 +2329,7 @@ def main(argv=None):
     subs.add_parser("init", help="create an empty local catalog; snapshot coverage remains unknown")
     p = subs.add_parser("query", help="bounded page detail or filtered metadata (keyset pagination)")
     p.add_argument("kind", choices=("page", "trace", "run", "execution", "artifact", "page_state", "stage",
-                                    "boinc_results", "missing"))
+                                    "boinc_results", "boinc_run", "missing"))
     for name in ("page-id", "source", "engine", "status", "run-id"):
         p.add_argument("--" + name)
     p.add_argument("--limit", type=int, default=50)
@@ -2151,6 +2356,9 @@ def main(argv=None):
                                          args.evidence_out, args.batch_id, args.source, args.cache_set)
         elif args.command == "ingest-worker":
             result = ingest_worker(args.db, args.input, args.evidence_out, args.batch_id, args.source)
+        elif args.command == "ingest-boinc-journal":
+            result = ingest_boinc_journal(args.db, args.journal, args.evidence_out, args.batch_id,
+                                          args.source, args.observed_at)
         elif args.command == "ingest-import":
             result = ingest_import(args.db, args.input, args.evidence_out, args.batch_id, args.source)
         elif args.command == "ingest-release":
