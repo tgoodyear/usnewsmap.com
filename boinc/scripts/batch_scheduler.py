@@ -2759,6 +2759,29 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                     and ".." not in spool, "invalid assimilator spool")
             to_collect.append((job_id, spool))
     collect_error = None
+
+    def report_collected(found):
+        """Log the pages this tick's collect published, as soon as collect ends, so the
+        throughput collector counts them whether or not the tick finishes (#1784): the tick
+        summary's newly_published is only logged by a tick that gets to its end."""
+        wanted = {job_id for job_id, _ in to_collect}
+        pages = sum(1 for record in found
+                    if record["job"]["id"] in wanted and record.get("stage") == "published")
+        if pages:
+            # `published` is the tick summary's cumulative count as of now, so a reader can tell
+            # what a later summary adds beyond the pages collect already reported.
+            conflicting = {} if feed else None
+            mine = owned_records(config, found, state.get("deadline_retries"), conflicting)
+            total = sum(record["stage"] == "published" for record in mine.values()) + sum(
+                bool(conflict["own"]) and conflict["own"]["stage"] == "published"
+                for conflict in (conflicting or {}).values())
+            try:
+                print(json.dumps({"event": "boinc_batch_collected", "schema_version": 1,
+                                  "at": int(now), "plan": config["plan"], "pages": pages,
+                                  "published": total, "previous": state.get("published", 0)}, sort_keys=True), file=sys.stderr, flush=True)
+            except (OSError, ValueError):
+                pass
+
     try:
         if hasattr(transport, "collect_batch"):
             transport.collect_batch(to_collect)
@@ -2766,6 +2789,12 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             for job_id, spool in to_collect:
                 transport.collect(job_id, spool)
     except RuntimeError as error:
+        # Pages collected before the failure count too.
+        if to_collect:
+            try:
+                report_collected(read_records())
+            except (RuntimeError, OSError, ValueError, KeyError):
+                pass
         # A native plan goes on below, if the failure left a result unpublished.
         if not native:
             raise
@@ -2774,6 +2803,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     if count:
         records = read_records()
         owned = own(records)
+        if collect_error is None:
+            report_collected(records)
     if native:
         # A native result a collect attempt didn't publish (the trust list doesn't admit its host
         # for the native build, or its collect failed), or one kept under a held scope, stays as

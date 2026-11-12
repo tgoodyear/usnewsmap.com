@@ -24,10 +24,16 @@ def window(hours=3):
     return collector.Window(NOW, hours)
 
 
-def tick(at, plan="p", selected=10, published=2, seconds=30.0, **extra):
+def tick(at, plan="p", selected=10, published=2, seconds=30.0, total=None, **extra):
     return json.dumps({"event": "boinc_batch_tick", "at": at, "plan": plan, "selected": selected,
-                       "newly_published": published, "high_watermark": 300, "max_global_pending": 2000,
+                       "newly_published": published, **({} if total is None else {"published": total}), "high_watermark": 300, "max_global_pending": 2000,
                        "timings": {"tick_seconds": seconds}, **extra})
+
+
+def collected(at, plan, pages, total=None, previous=None):
+    return json.dumps({"event": "boinc_batch_collected", "at": at, "plan": plan, "pages": pages,
+                       **({} if total is None else {"published": total}),
+                       **({} if previous is None else {"previous": previous})})
 
 
 def sync_line(message, **fields):
@@ -197,6 +203,177 @@ class ControllerTests(unittest.TestCase):
         collector.collect_controller(w, [(at, "", tick(at, plan="a", selected=500)),
                                          (at, "", tick(at + 300, plan="b", selected=20))])
         self.assertEqual(w.series["ocr_claim_pages"][2], 0)
+
+    def test_the_units_are_both_layouts_and_every_instance(self):
+        units = collector.CONTROLLER_UNITS
+        self.assertIn("usnm-boinc-priority-controller.service", units)
+        self.assertIn("usnm-boinc-priority-controller@*.service", units)
+        self.assertIn("usnm-boinc-native-feed@*.service", units)
+        self.assertIn("usnm-boinc-drain.service", units)
+        with patch.object(collector, "run", return_value="") as run:
+            list(collector.journal(units, 7))
+        command = run.call_args.args[0]
+        self.assertEqual([command[i + 1] for i, word in enumerate(command) if word == "--unit"], list(units))
+
+    def test_a_collect_counts_without_a_finished_tick(self):
+        w = window()
+        at = THIS_HOUR + 100
+        entries = [(at + 20, "old", collected(at, "live", 30)),
+                   # A tick that fails after collect, and one never logged at all.
+                   (at + 40, "old", json.dumps({"event": "boinc_batch_failure", "at": at, "error": "x"})),
+                   (at + 400, "old", collected(at + 300, "live", 12))]
+        collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_collect_pages"], [0, 0, 42])
+        self.assertEqual(w.series["ticks_failed"], [0, 0, 1])
+
+    def test_a_finished_tick_adds_only_what_its_collect_did_not_count(self):
+        w = window()
+        at = THIS_HOUR + 100
+        entries = [(at + 20, "u", collected(at, "live", 30, 30)),
+                   (at + 60, "u", tick(at, plan="live", published=30, total=30)),
+                   # Four pages settled by reconciliation, not by collect.
+                   (at + 360, "u", collected(at + 300, "live", 5, 35)),
+                   (at + 400, "u", tick(at + 300, plan="live", published=9, total=39)),
+                   # A tick with nothing logged before it for its plan: its own count.
+                   (at + 700, "u", tick(at + 600, plan="other", published=7))]
+        collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_collect_pages"][2], 30 + 5 + 4 + 7)
+
+    def test_old_layout_only(self):
+        w = window()
+        at = THIS_HOUR + 10
+        unit = "usnm-boinc-priority-controller.service"
+        entries = [(at + 5, unit, collected(at, "live", 8, 8)), (at + 9, unit, collected(at, "old", 3, 3)),
+                   (at + 10, unit, tick(at, plan="live", published=8, total=8)),
+                   (at + 11, unit, tick(at, plan="old", published=3, total=3))]
+        collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_collect_pages"][2], 11)
+        self.assertEqual(w.series["ticks_ok"][2], 2)
+
+    def test_new_layout_only(self):
+        w = window()
+        at = THIS_HOUR + 10
+        entries = [(at + 5, "usnm-boinc-priority-controller@main.service", collected(at, "live", 8, 8)),
+                   (at + 6, "usnm-boinc-priority-controller@old-1.service", collected(at + 1, "old-1", 3, 3)),
+                   (at + 7, "usnm-boinc-native-feed@native-3.service", collected(at + 2, "native-3", 2, 2))]
+        collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_collect_pages"][2], 13)
+
+    def test_both_layouts_at_once_count_a_page_once(self):
+        w = window()
+        at = THIS_HOUR + 10
+        # The migration hour: the same tick in the shared unit's journal and the plan's own,
+        # and a line the journal gives twice.
+        entries = [(at + 5, "usnm-boinc-priority-controller.service", collected(at, "live", 8, 8)),
+                   (at + 6, "usnm-boinc-priority-controller@main.service", collected(at, "live", 8, 8)),
+                   (at + 7, "usnm-boinc-priority-controller@main.service", collected(at, "live", 8, 8)),
+                   (at + 8, "usnm-boinc-priority-controller@main.service", tick(at, plan="live", published=8, total=8)),
+                   (at + 9, "usnm-boinc-priority-controller.service", tick(at, plan="live", published=8, total=8)),
+                   (at + 400, "usnm-boinc-priority-controller@main.service", collected(at + 300, "live", 2, 10))]
+        collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_collect_pages"][2], 10)
+        self.assertEqual(w.series["ticks_ok"][2], 1)
+
+    def test_a_drain_unit_counts_and_adds_no_queue_reading(self):
+        w = window()
+        at = THIS_HOUR + 10
+        entries = [(at, "usnm-boinc-drain.service", collected(at, "old-1", 6, 6)),
+                   (at + 5, "usnm-boinc-drain.service", tick(at, plan="old-1", published=6, total=6, draining=True,
+                                                               cohort_pending=999)),
+                   (at + 10, "usnm-boinc-priority-controller@main.service",
+                    tick(at + 8, plan="live", published=0, cohort_pending=40))]
+        limits = collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_collect_pages"][2], 6)
+        self.assertEqual(w.series["ocr_pending_pages"][2], 40)
+        self.assertIn("300 runnable", limits["usnm_ocr"])
+
+    def test_a_native_plans_ticks_set_neither_the_queue_reading_nor_the_limits(self):
+        w = window()
+        at = THIS_HOUR + 10
+        native = json.loads(tick(at + 300, plan="native-1", cohort_pending=4, high_watermark=4, published=3))
+        native["native"] = {"hosts": []}
+        limits = collector.collect_controller(w, [(at, "", tick(at, plan="live", cohort_pending=225)),
+                                                  (at + 300, "", json.dumps(native))])
+        self.assertEqual(w.series["ocr_pending_pages"][2], 225)
+        self.assertIn("300 runnable", limits["usnm_ocr"])
+        self.assertEqual(w.series["ocr_collect_pages"][2], 5)
+
+    def test_pages_a_failed_tick_collected_are_not_counted_again_when_the_next_finishes(self):
+        w = window()
+        at = THIS_HOUR + 100
+        entries = [(at + 20, "u", collected(at, "live", 2, 2)),
+                   (at + 40, "u", json.dumps({"event": "boinc_batch_failure", "at": at, "error": "x"})),
+                   # The next tick collects nothing; its summary still carries the earlier two.
+                   (at + 400, "u", tick(at + 300, plan="live", published=2, total=2)),
+                   (at + 700, "u", tick(at + 600, plan="live", published=1, total=3))]
+        collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_collect_pages"][2], 3)
+
+    def test_a_tick_whose_summary_was_lost_does_not_hide_the_next_ones_pages(self):
+        w = window()
+        at = THIS_HOUR + 100
+        # The first tick collected two pages and published them, then failed to release its
+        # lease: no summary. The second settled one more page outside collect.
+        entries = [(at + 20, "u", collected(at, "live", 2, 2)),
+                   (at + 700, "u", tick(at + 600, plan="live", published=1, total=3))]
+        collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_collect_pages"][2], 3)
+
+    def test_a_page_published_by_hand_before_collect_still_counts(self):
+        w = window()
+        at = THIS_HOUR + 100
+        entries = [(at, "u", tick(at - 600, plan="live", published=30, total=30)),
+                   # Two held pages published by hand, then a collect of five: 37 in all.
+                   (at + 20, "u", collected(at, "live", 5, 37)),
+                   (at + 60, "u", tick(at, plan="live", published=7, total=37))]
+        collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_collect_pages"][2], 7 + 30)
+
+    def test_a_lost_summary_then_archiving_does_not_suppress_new_pages(self):
+        w = window()
+        at = THIS_HOUR + 100
+        # A collect of two pages (100 published, from a state of 98) whose tick lost its summary
+        # after persisting; 90 pages are archived; five more are published by hand.
+        entries = [(at, "u", collected(at - 600, "live", 2, 100, 98)),
+                   (at + 60, "u", tick(at, plan="live", published=5, total=15))]
+        collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_collect_pages"][2], 2 + 5)
+
+    def test_a_failed_tick_that_persisted_nothing_is_still_credited_with_previous(self):
+        w = window()
+        at = THIS_HOUR + 100
+        entries = [(at, "u", collected(at - 600, "live", 2, 32, 30)),
+                   (at + 60, "u", tick(at, plan="live", published=2, total=32))]
+        collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_collect_pages"][2], 2)
+
+    def test_a_scheduler_that_logs_no_collects_counts_by_its_own_baseline_after_archiving(self):
+        w = window()
+        at = THIS_HOUR + 100
+        # 100 published, 90 archived, five more: the cumulative count falls but newly_published holds.
+        collector.collect_controller(w, [(at, "u", tick(at, plan="live", published=5, total=15))])
+        self.assertEqual(w.series["ocr_collect_pages"][2], 5)
+
+    def test_a_plan_that_disappears_keeps_its_pages_and_does_not_break_the_others(self):
+        w = window()
+        gone, at = "usnm-boinc-priority-controller@retired.service", THIS_HOUR - HOUR + 10
+        entries = [(at, gone, collected(at, "retired", 9, 9)),
+                   (at + 5, gone, tick(at, plan="retired", published=9, total=9)),
+                   (at + 3600, "usnm-boinc-priority-controller@main.service", collected(at + 3600, "live", 4, 4))]
+        collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_collect_pages"], [0, 9, 4])
+        self.assertEqual(w.series["ocr_claim_pages"], [0, 0, 0])
+
+    def test_the_public_series_name_no_plan_host_or_path(self):
+        w = window()
+        at = THIS_HOUR + 10
+        collector.collect_controller(w, [(at, "", collected(at, "secret-plan", 1)),
+                                         (at, "", tick(at, plan="secret-plan", cohort_pending=1)),
+                                         (at, "", json.dumps({"event": "boinc_batch_failure", "at": at,
+                                                               "error": "ssh secret-host failed /tank/x"}))])
+        document = json.dumps(w.document("controller", {}))
+        for word in ("secret", "tank", "ssh"):
+            self.assertNotIn(word, document)
 
     def test_page_text_like_lines_and_bad_phase_names_are_dropped(self):
         w = window()

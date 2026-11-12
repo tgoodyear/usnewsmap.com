@@ -6,8 +6,9 @@
 
 Reads what each host already records and writes one small JSON document of hourly counts:
 
-  controller  the priority controller's journal: ticks, phases, pages claimed and collected, what
-              kind of error ended a failed tick, and its cohort_pending at each hour's last tick
+  controller  the priority controller's journal, from every unit that runs a plan's tick: ticks,
+              phases, pages claimed and collected, what kind of error ended a failed tick, and
+              its cohort_pending at each hour's last tick
   ship        the shipper's and result loaders' journals: pages shipped, staged, submitted, loaded
   boinc       the BOINC database (two bounded, read-only aggregate queries, on the server's
               own connection settings) and podman's step containers (bridge lock hold time)
@@ -48,7 +49,13 @@ MAX_HOURS = 336
 CONTROLLER_LOOKBACK_HOURS = 48
 SHIP_LOOKBACK_HOURS = 336
 COMMAND_TIMEOUT = 60
-CONTROLLER_UNIT = "usnm-boinc-priority-controller.service"
+# Every unit that runs a controller tick, in both layouts (#1784): the old shared service, the
+# draining plans' unit and the per-plan template's instances (#1690), and the native plans'
+# feed instances. journalctl matches the patterns against the journal's own unit names, so a plan
+# is found without being named here, and one whose unit is gone keeps counting while its journal
+# lasts.
+CONTROLLER_UNITS = ("usnm-boinc-priority-controller.service", "usnm-boinc-priority-controller@*.service",
+                    "usnm-boinc-native-feed@*.service", "usnm-boinc-drain.service")
 SHIP_UNITS = {"usnm-quality-ship.service": "quality", "usnm-qwen-ship.service": "qwen"}
 QUALITY_LOAD_UNIT = "usnm-quality-results.service"
 QWEN_LOAD_UNIT = "usnm-qwen-results.service"
@@ -248,16 +255,34 @@ def limits_now(event):
 
 
 def collect_controller(window, entries):
+    """The controller units' journal. Pages collected are counted from each collect's own
+    `boinc_batch_collected` line, logged as soon as collect ends, so a tick that fails or never
+    finishes still counts them. A finished tick adds its `newly_published`, which counts every page published since
+    the plan's previous summary, less the pages from collect lines since then that it still
+    holds: a collect's line carries the cumulative `published` it saw, and one at or below the
+    summary's own baseline (published - newly_published) is already in a summary or in the state
+    a lost summary left, so pages a failed tick collected are not counted again. A page settled
+    by hand or archived goes by the scheduler's own baseline, and with no collect lines (an
+    older controller) it is `newly_published` as before. A line read twice, or two units
+    running the same plan, count once. Only the live plan's ticks (not a draining or native plan's, whose
+    pending work and limits are another queue's) set the queue reading and the limits."""
     for name in ("ticks_ok", "ticks_failed", "tick_seconds", "tick_busy_seconds", "ocr_claim_pages",
                  "ocr_collect_pages"):
         window.declare(name)
-    plan, selected, limits = None, None, {}
+    selected, limits, collected, owed, ticks = {}, {}, set(), {}, set()
     for logged, _, message in entries:
         event = json_event(message)
         if event is None or type(event.get("at")) is not int:
             continue
         at, kind = event["at"], event.get("event")
-        if kind == "boinc_batch_phase":
+        plan = event.get("plan")
+        if kind == "boinc_batch_collected":
+            if (plan, at) not in collected:
+                collected.add((plan, at))
+                owed.setdefault(plan, []).append((number(event.get("pages")), event.get("published"),
+                                                  event.get("previous")))
+                window.add("ocr_collect_pages", logged, number(event.get("pages")))
+        elif kind == "boinc_batch_phase":
             phase = event.get("phase")
             if isinstance(phase, str) and PHASE_NAME.fullmatch(phase):
                 window.add(f"phase_runs.{phase}", at)
@@ -265,8 +290,13 @@ def collect_controller(window, entries):
                 window.add(f"phase_failed.{phase}", at, event.get("ok") is not True)
         elif kind in ("boinc_batch_tick", "boinc_batch_failure"):
             # A tick's own time is when it began; it counts when it ended.
+            began = at
             at = logged
             good = kind == "boinc_batch_tick"
+            if good:
+                if (plan, began) in ticks:
+                    continue
+                ticks.add((plan, began))
             window.add("ticks_ok" if good else "ticks_failed", at)
             if not good:
                 window.add(reason_series(event.get("error")), at)
@@ -278,11 +308,25 @@ def collect_controller(window, entries):
                 # it was running.
                 window.spread("tick_busy_seconds", at - seconds, at)
             if good:
-                window.add("ocr_collect_pages", at, number(event.get("newly_published")))
+                total, newly = event.get("published"), number(event.get("newly_published"))
+                # What the summary's baseline doesn't hold yet: collects past it.
+                baseline = total - newly if type(total) is int else None
+                # A collect line is still owed if the state its tick started from (`previous`) is
+                # the summary's baseline: no tick since then moved it. Archiving lowers the count
+                # but not that comparison; without `previous` (an older line) its total is compared.
+                counted = sum(pages for pages, seen, previous in owed.pop(plan, [])
+                              if baseline is None
+                              or (baseline == previous if type(previous) is int
+                                  else type(seen) is not int or seen > baseline))
+                window.add("ocr_collect_pages", at, max(0, newly - counted))
                 # A new plan starts its count again.
-                if event.get("plan") == plan and selected is not None:
-                    window.add("ocr_claim_pages", at, max(0, number(event.get("selected")) - selected))
-                plan, selected = event.get("plan"), number(event.get("selected"))
+                if plan in selected:
+                    window.add("ocr_claim_pages", at, max(0, number(event.get("selected")) - selected[plan]))
+                selected[plan] = number(event.get("selected"))
+                # A draining plan has no queue of its own to report, and a native plan's is
+                # another one's: the container plan's count takes in every plan's journals.
+                if event.get("draining") is True or "native" in event:
+                    continue
                 # At BOINC, held for collection, or selected with no job yet.
                 if type(event.get("cohort_pending")) is int:
                     window.gauge("ocr_pending_pages", at, number(event["cohort_pending"]))
@@ -486,8 +530,8 @@ def collect(args):
     window = Window(args.now if args.now is not None else int(datetime.now(timezone.utc).timestamp()), args.hours)
     if args.source == "controller":
         since = window.first - CONTROLLER_LOOKBACK_HOURS * HOUR
-        limits = collect_controller(window, journal([CONTROLLER_UNIT], since))
-        window.forget_before(lambda name: True, oldest_journal_entry([CONTROLLER_UNIT]))
+        limits = collect_controller(window, journal(CONTROLLER_UNITS, since))
+        window.forget_before(lambda name: True, oldest_journal_entry(CONTROLLER_UNITS))
     elif args.source == "ship":
         since = window.first - SHIP_LOOKBACK_HOURS * HOUR
         collect_ship(window, journal([*SHIP_UNITS, *LOADERS], since))
