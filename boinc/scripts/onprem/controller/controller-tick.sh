@@ -90,6 +90,16 @@ STATE_DIR=$STATE_PARENT/usnm-priority-controller$suffix
 [ -f "$CONFIG" ] || die "plan $PLAN has no configuration $CONFIG"
 [ -f "$FLAGS_FILE" ] || die "plan $PLAN has no flags file $FLAGS_FILE (it may be empty)"
 
+# True for --config, --state-dir or --apply, with or without =VALUE, and for any abbreviation
+# of them: batch_scheduler.py's argparse takes a unique prefix (--appl) as the full option.
+own_flag() {
+  local name=${1%%=*} own
+  [[ $name == --?* ]] || return 1
+  for own in --config --state-dir --apply; do
+    [ "${own#"$name"}" != "$own" ] && return 0
+  done
+  return 1
+}
 FLAGS=()
 while IFS= read -r line || [ -n "$line" ]; do
   # Surrounding blanks don't count; a blank or # line is skipped.
@@ -97,16 +107,12 @@ while IFS= read -r line || [ -n "$line" ]; do
   line=${line%"${line##*[![:space:]]}"}
   case $line in
     "" | "#"*) continue ;;
-    --config | --config=* | --state-dir | --state-dir=* | --apply)
-      die "$FLAGS_FILE sets $line, which controller-tick.sh sets itself" ;;
   esac
+  ! own_flag "$line" || die "$FLAGS_FILE sets $line, which controller-tick.sh sets itself"
   FLAGS+=("$line")
 done < "$FLAGS_FILE"
 for line in ${ADDED[@]+"${ADDED[@]}"}; do
-  case $line in
-    --config | --config=* | --state-dir | --state-dir=* | --apply)
-      die "--add-flag $line: controller-tick.sh sets it itself" ;;
-  esac
+  ! own_flag "$line" || die "--add-flag $line: controller-tick.sh sets it itself"
   FLAGS+=("$line")
 done
 

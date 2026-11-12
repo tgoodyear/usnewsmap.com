@@ -199,12 +199,21 @@ class Tick(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual([run["argv"][4:] for run in self.runs()],
                          [["--apply", "--batch-collect", "--resume-native"], ["--apply", "--batch-collect"]])
-        done = self.tick("native-feed-3", "--add-flag", "--apply")
-        self.assertEqual(done.returncode, 1)
-        self.assertIn("sets it itself", self.failure(done))
+        for flag in ("--apply", "--appl", "--state-d=/tmp"):
+            with self.subTest(flag=flag):
+                done = self.tick("native-feed-3", "--dry-run", "--add-flag", flag)
+                self.assertEqual(done.returncode, 1)
+                self.assertIn("sets it itself", self.failure(done))
+        self.assertEqual(len(self.runs()), 2)
+        # Flags that only start like them are the plan's own.
+        self.flags("native-feed-3", "--check-state-dir\n/var/lib/x\n--claim-language\nsrp\n")
+        done = self.tick("native-feed-3", "--print-command")
+        self.assertEqual(done.returncode, 0, done.stderr)
 
     def test_the_wrappers_own_flags_are_refused_in_the_flags_file(self):
-        for line in ("--apply", "--config", "--config=/etc/other.json", "--state-dir", "--state-dir=/tmp"):
+        # argparse also takes a unique prefix of an option as the option itself.
+        for line in ("--apply", "--config", "--config=/etc/other.json", "--state-dir", "--state-dir=/tmp",
+                     "--appl", "--ap", "--conf", "--conf=/etc/other.json", "--state-d", "--st=/tmp"):
             with self.subTest(line=line):
                 self.flags("main", f"--drain\n{line}\n")
                 done = self.tick("main")
