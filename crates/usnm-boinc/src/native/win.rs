@@ -12,7 +12,7 @@
 #![allow(unsafe_code)]
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     ffi::c_void,
     os::windows::{
         io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle},
@@ -81,8 +81,12 @@ impl Limits {
     }
 }
 
-/// A job object, closed (and its processes killed) when this is dropped.
-pub(super) struct Job(OwnedHandle);
+/// A job object, closed (and its processes killed) when this is dropped. It remembers which
+/// processes it suspended, so that a resume reaches exactly those.
+pub(super) struct Job {
+    handle: OwnedHandle,
+    suspended: Mutex<BTreeSet<u32>>,
+}
 
 impl Job {
     pub(super) fn new(limits: &Limits) -> std::io::Result<Self> {
@@ -92,7 +96,10 @@ impl Job {
             return Err(std::io::Error::last_os_error());
         }
         // SAFETY: `raw` is a handle this call just made and nothing else owns.
-        let job = Self(unsafe { OwnedHandle::from_raw_handle(raw) });
+        let job = Self {
+            handle: unsafe { OwnedHandle::from_raw_handle(raw) },
+            suspended: Mutex::new(BTreeSet::new()),
+        };
         // SAFETY: an all-zero value is a valid, empty set of limits.
         let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -121,7 +128,7 @@ impl Job {
     }
 
     fn raw(&self) -> HANDLE {
-        self.0.as_raw_handle()
+        self.handle.as_raw_handle()
     }
 
     fn assign(&self, process: &Child) -> std::io::Result<()> {
@@ -167,9 +174,31 @@ impl Job {
     fn signal(&self, action: ChildAction) {
         match action {
             ChildAction::Terminate => self.terminate(),
-            ChildAction::Suspend | ChildAction::Resume => {
-                for pid in self.processes() {
-                    suspend_or_resume(pid, action == ChildAction::Suspend);
+            ChildAction::Suspend => {
+                let mut suspended = self.suspended.lock().unwrap_or_else(|e| e.into_inner());
+                // A process can start another between the list and its own suspension, and
+                // the new one then runs through the whole suspension. So the job is listed
+                // again, and the processes not yet suspended are suspended, until a list holds
+                // nothing new: by then every process that could start one is stopped.
+                loop {
+                    let fresh: Vec<u32> = self
+                        .processes()
+                        .into_iter()
+                        .filter(|pid| !suspended.contains(pid))
+                        .collect();
+                    if fresh.is_empty() {
+                        break;
+                    }
+                    for pid in fresh {
+                        suspend_or_resume(pid, true);
+                        suspended.insert(pid);
+                    }
+                }
+            }
+            ChildAction::Resume => {
+                let mut suspended = self.suspended.lock().unwrap_or_else(|e| e.into_inner());
+                for pid in std::mem::take(&mut *suspended) {
+                    suspend_or_resume(pid, false);
                 }
             }
         }
