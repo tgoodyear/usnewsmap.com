@@ -202,6 +202,7 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
             max_tokens_per_1000px2: 4,
             pages: vec![],
             prompt_version: PROMPT_VERSION,
+            model: None,
         };
         job.id = job.identity()?;
         job.validate()?;

@@ -66,6 +66,13 @@ pub(crate) const NVIDIA_6GB_LAYERS: u32 = 24;
 /// measurement: the first canary must record the 2B peak.
 pub(crate) const NVIDIA_2B_PLAN: &str = "nvidia_vulkan_2b";
 pub(crate) const NVIDIA_2B_FREE_MIB: u64 = 4096;
+/// The native CPU class for Xiaomi-OCR-0 units (#1776), CPU-only like `mt`.
+pub(crate) const XIAOMI_CPU_PLAN: &str = "mt_x08";
+
+/// The AMD classes: the device is assigned by PCI identity, not by ordinal.
+fn amd_plan(plan: &str) -> bool {
+    plan == "amd_vulkan_8b" || plan == "amd_vulkan_x08"
+}
 
 /// Parses `  Vulkan0: Intel(R) Iris(R) Xe Graphics (TGL GT2) (7917 MiB, 7125 MiB free)` lines
 /// and returns the device BOINC assigned. BOINC numbers a vendor's GPUs among themselves
@@ -271,6 +278,9 @@ pub(crate) fn vulkan_refusal(gpu: &GpuState, job: &Job) -> Option<String> {
             );
         }
         NVIDIA_2B_FREE_MIB
+    } else if let Some(pinned) = job.pinned_model() {
+        // A pinned unit reads with that model alone, so it needs only that model's memory.
+        u64::from(pinned.min_gpu_mb)
     } else {
         job.engine
             .models
@@ -312,7 +322,7 @@ pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuSt
     let plan = host.plan_class.as_deref().unwrap_or("");
     let gpu_type = host.gpu_type.as_deref().unwrap_or("");
 
-    if plan == "mt" || plan == "docker_mt" || plan == "cpu" {
+    if plan == "mt" || plan == "docker_mt" || plan == "cpu" || plan == XIAOMI_CPU_PLAN {
         let _ = writeln!(body, "CPU-only plan class ({plan})");
         diag.section("gpu", &body, 1024);
         return GpuState {
@@ -349,12 +359,12 @@ pub(crate) fn detect_gpu(work: &Path, host: &mut Host, diag: &mut Diag) -> GpuSt
                     "intel"
                 } else if plan.contains("nvidia") {
                     "nvidia"
-                } else if plan == "amd_vulkan_8b" {
+                } else if amd_plan(plan) {
                     "amd"
                 } else {
                     "unsupported-vulkan-vendor"
                 };
-                let selected = if plan == "amd_vulkan_8b" {
+                let selected = if amd_plan(plan) {
                     match assigned_amd_device(work, host, text) {
                         Ok(d) => Some(d),
                         Err(error) => {
@@ -738,6 +748,48 @@ mod tests {
         assert!(vulkan_refusal(&gpu, &job)
             .unwrap()
             .contains("no hardware Vulkan device"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn xiaomi_classes_take_a_4_gb_card_and_mt_x08_stays_on_the_cpu() {
+        use crate::test_support::{qwen_models, write_xiaomi_unit, xiaomi_model};
+        let tmp = tempfile::tempdir().unwrap();
+        let slot = tmp.path();
+        let job = write_xiaomi_unit(slot);
+        fake_llama_server(
+            slot,
+            "  Vulkan0: NVIDIA GeForce GTX 1650 (4096 MiB, 3600 MiB free)",
+        );
+        let mut host = Host {
+            plan_class: Some("nvidia_vulkan_x08".into()),
+            gpu_type: Some("NVIDIA".into()),
+            gpu_device_num: Some(0),
+            ..Host::default()
+        };
+        let mut diag = Diag::new();
+        let mut gpu = detect_gpu(slot, &mut host, &mut diag);
+        assert!(gpu.use_gpu && !gpu.partial_offload && !gpu.nvidia_2b);
+        assert_eq!((gpu.vulkan_device, gpu.free_mb), (Some(0), Some(3600)));
+        assert!(vulkan_refusal(&gpu, &job).is_none());
+        // The pinned model's memory decides, not the largest model the engine lists.
+        let mut listed = job.clone();
+        listed.engine.models = qwen_models();
+        listed.engine.models.push(xiaomi_model());
+        assert!(vulkan_refusal(&gpu, &listed).is_none());
+        listed.model = None;
+        assert!(vulkan_refusal(&gpu, &listed).unwrap().contains("7000 MiB"));
+        gpu.free_mb = Some(1999);
+        assert!(vulkan_refusal(&gpu, &job).unwrap().contains("2000 MiB"));
+
+        let mut cpu = Host {
+            plan_class: Some("mt_x08".into()),
+            gpu_type: Some("NVIDIA".into()),
+            ..Host::default()
+        };
+        let gpu = detect_gpu(slot, &mut cpu, &mut diag);
+        assert!(!gpu.use_gpu);
+        assert_eq!(gpu.device_label, "cpu");
     }
 
     #[cfg(unix)]

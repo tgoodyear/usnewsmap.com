@@ -243,6 +243,7 @@ pub(crate) fn failure_report(result: &ResultManifest, diag: &[u8]) -> String {
         "cuda_error": evidence.contains("cuda error"),
         "out_of_memory": evidence.contains("out of memory"),
         "runtime_exited": evidence.contains("exited"),
+        "model_pin_refused": evidence.contains(crate::locks::PIN_REFUSED),
         "diag_sha256": result.diag_sha256,
     });
     // Failed BOINC tasks need not upload declared outputs. Only this fixed-schema
