@@ -9,6 +9,8 @@ resource assignments 'Microsoft.Authorization/policyAssignments@2024-04-01' = [
     name: take(last(split(id, '/')), 64)
     properties: {
       policyDefinitionId: id
+      // The service's default, written out so a what-if doesn't show it as removed.
+      definitionVersion: '1.*.*'
       enforcementMode: 'Default'
       parameters: definitionParameters[?last(split(id, '/'))] ?? {}
     }

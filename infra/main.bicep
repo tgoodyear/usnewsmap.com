@@ -86,6 +86,12 @@ param apiImageTag string = imageTag
 @description('Primary scheduled/manual ingest job image tag; defaults to imageTag. Does not change backfill, OCR sync, or other ingest-image jobs.')
 param scheduledIngestImageTag string = imageTag
 
+@description('Object id of the API identity (USNM_APP_PRINCIPAL_ID), known before the deployment. Role assignment names contain it, and a value read from the identity at deploy time short-circuits the stack what-if (it then lists those assignments as potential deletions). Empty reads it from the identity. provision.sh refuses a value that is not the identity\'s principalId.')
+param appPrincipalIdKnown string = ''
+
+@description('Object id of the CI identity (USNM_CI_PRINCIPAL_ID); as appPrincipalIdKnown.')
+param ciPrincipalIdKnown string = ''
+
 @description('GitHub repository that deploys this environment, as owner/name. Its GitHub Environment of the same name may use the CI identity.')
 param githubRepo string = 'tgoodyear/usnewsmap.com'
 
@@ -497,9 +503,9 @@ module registry 'modules/registry.bicep' = {
     tags: tags
     name: n.registry
     ciIdentityId: identities.outputs.ciId
-    ciPrincipalId: identities.outputs.ciPrincipalId
+    ciPrincipalId: ciPrincipalId
     pullPrincipalIds: concat(
-      [identities.outputs.appPrincipalId],
+      [appPrincipalId],
       ingestIdentityOn ? [identities.outputs.ingestPrincipalId] : []
     )
   }
@@ -557,6 +563,10 @@ module identities 'modules/identities.bicep' = {
     githubEnvironment: env
   }
 }
+
+// The principal ids that role assignment names are built from (guid() of scope, principal, role).
+var appPrincipalId = !empty(appPrincipalIdKnown) ? appPrincipalIdKnown : identities.outputs.appPrincipalId
+var ciPrincipalId = !empty(ciPrincipalIdKnown) ? ciPrincipalIdKnown : identities.outputs.ciPrincipalId
 
 // id-usnm-ingest is the identity of the Azure ingest-image jobs (ingestjobs.bicep) and of
 // the Document Intelligence calls (ocr). With neither, it and every grant it holds go
@@ -996,7 +1006,7 @@ module rbac 'modules/rbac.bicep' = {
     cosmosName: cosmos.outputs.name
     appInsightsName: monitoring.outputs.appInsightsName
     searchLogRoleLabel: n.searchLogRole
-    appPrincipalId: identities.outputs.appPrincipalId
+    appPrincipalId: appPrincipalId
     ingestPrincipalId: identities.outputs.ingestPrincipalId
     ingest: ingestIdentityOn
     searchLogReaders: filter(map(split(searchLogReaders, ','), r => trim(r)), r => !empty(r))
@@ -1216,7 +1226,7 @@ module deployer 'modules/deployer.bicep' = {
   scope: rg
   name: 'deployer'
   params: {
-    principalId: identities.outputs.ciPrincipalId
+    principalId: ciPrincipalId
     appIdentityName: identities.outputs.appName
     roleLabel: n.deployRole
   }

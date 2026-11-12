@@ -64,6 +64,8 @@ resource assignment 'Microsoft.Authorization/policyAssignments@2024-04-01' = {
       'Microsoft.Authorization/policyDefinitions',
       guardrailPolicyNames.auditPublicAccess
     )
+    // The service's default, written out so a what-if doesn't show it as removed.
+    definitionVersion: '1.*.*'
     enforcementMode: 'Default'
     parameters: {
       effect: { value: 'deny' }

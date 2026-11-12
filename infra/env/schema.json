@@ -60,6 +60,12 @@
       "maximum": 1,
       "description": "Minimum Azure API replicas: production defaults to 1; 0 enables HTTP-triggered cold standby for both API and searcher (ADR-0029)."
     },
+    "USNM_APP_PRINCIPAL_ID": {
+      "x-usnm-visibility": "public",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The object id of id-usnm-app-<env> (the API identity). A value known before the deployment, so the what-if can compute the role assignment names that contain it (a runtime value there short-circuits the stack preview). Empty: read from the identity at deploy time. provision.sh refuses a value that is not the principalId of the identity of that name."
+    },
     "USNM_ARCHIVE_ACCOUNT": {
       "x-usnm-visibility": "private",
       "description": "Private: in the settings store, under the environment's label. The archival account's resource id, which names its subscription.",
@@ -129,6 +135,12 @@
       "x-usnm-visibility": "public",
       "type": "boolean",
       "description": "The VNet-integrated Container Apps environment and its VNet (ADR-0008). Default true. False (#308): the API and searcher run in the spare's VNet-less environment, usnm-core-spare-cae-<env>, under its names, and the old environment, its apps, the VNet and its load balancer are removed. Needs USNM_DATA_ALL_NETWORKS and no USNM_ARCHIVE_ACCOUNT."
+    },
+    "USNM_CI_PRINCIPAL_ID": {
+      "x-usnm-visibility": "public",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The object id of usnm-ci-id-<env> (the CI identity). A value known before the deployment, so the what-if can compute the role assignment names that contain it (a runtime value there short-circuits the stack preview). Empty: read from the identity at deploy time. provision.sh refuses a value that is not the principalId of the identity of that name."
     },
     "USNM_COMPUTE_CONCURRENCY": {
       "x-usnm-visibility": "public",

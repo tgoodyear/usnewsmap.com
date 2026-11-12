@@ -759,6 +759,59 @@ ocr_nodes_off_check() {
   echo "offboard those nodes first (scripts/ocr-node/offboard.sh), or turn USNM_OCR_NODES back on" >&2
   return 1
 }
+# USNM_APP_PRINCIPAL_ID and USNM_CI_PRINCIPAL_ID are used as the grantee of the
+# identities' role assignments, not only in their names (infra/main.bicep), so a
+# value that names some other existing service principal would grant it the
+# access. Each nonempty one must be the principalId of the identity the stack
+# manages under that role's name: the API identity (id-usnm-app-<env> when the
+# names are pinned, usnm-api-id-<env> otherwise) or the CI identity
+# (usnm-ci-id-<env>), found by its resource id in the stack, so one of the
+# same name in another resource group doesn't count. Reads only. Returns 0 when
+# both are empty or match.
+principal_ids_check() {
+  local pair key want names ids id principal found err errf
+  ids=
+  for pair in "USNM_APP_PRINCIPAL_ID:id-usnm-app-$ENV_NAME usnm-api-id-$ENV_NAME" "USNM_CI_PRINCIPAL_ID:usnm-ci-id-$ENV_NAME"; do
+    key=${pair%%:*}
+    names=${pair#*:}
+    want=$(aget "$key") || return 1
+    [ -n "$want" ] || continue
+    if [ -z "$ids" ]; then
+      errf=$(mktemp)
+      if ! ids=$(az stack sub show -n "$STACK" --query "resources[].id" -o tsv 2> "$errf"); then
+        err=$(cat "$errf")
+        rm -f "$errf"
+        echo "error: can't read the resources of $STACK to check $key: $err" >&2
+        return 1
+      fi
+      rm -f "$errf"
+      [ -n "$ids" ] || ids=none
+    fi
+    found=
+    while IFS= read -r id; do
+      case "$id" in
+        */providers/Microsoft.ManagedIdentity/userAssignedIdentities/*/*) continue ;;
+        */providers/Microsoft.ManagedIdentity/userAssignedIdentities/*) ;;
+        *) continue ;;
+      esac
+      case " $names " in *" ${id##*/} "*) ;; *) continue ;; esac
+      errf=$(mktemp)
+      if ! principal=$(az identity show --ids "$id" --query principalId -o tsv 2> "$errf"); then
+        err=$(cat "$errf")
+        rm -f "$errf"
+        echo "error: can't read ${id##*/} to check $key: $err" >&2
+        return 1
+      fi
+      rm -f "$errf"
+      [ "$principal" != "$want" ] || found=$id
+    done <<< "$ids"
+    if [ -z "$found" ]; then
+      echo "error: $key=$want is not the principalId of the identity $STACK manages as ${names// / or }" >&2
+      echo "set it to that identity's principalId (az identity show), or empty it to read the id at deploy time" >&2
+      return 1
+    fi
+  done
+}
 # The API app's name and resource group from the stack's outputs (API_APP and
 # AZURE_RESOURCE_GROUP, whose case the stack may change), one per line. Nothing
 # when Azure says there's no app to read: the stack isn't there (the first
@@ -1058,6 +1111,7 @@ provision() {
   settings_check || die "not provisioning $ENV_NAME"
   experiment_marker || die "not provisioning $ENV_NAME"
   ocr_nodes_off_check || die "not provisioning $ENV_NAME"
+  principal_ids_check || die "not provisioning $ENV_NAME"
   for attempt in 1 2 3; do
     deploy_env_guardrails && deploy_policy_exemptions && deploy_stack && save_outputs && return 0
     [ "$?" -ne 42 ] || die "rename guard stopped provisioning $ENV_NAME (not retried)"
@@ -1089,6 +1143,7 @@ provision_what_if() {
   settings_check || die "no what-if for $ENV_NAME"
   experiment_marker --dry-run || die "no what-if for $ENV_NAME"
   ocr_nodes_off_check || die "no what-if for $ENV_NAME"
+  principal_ids_check || die "no what-if for $ENV_NAME"
   if ! out=$(az stack sub show -n "$GUARDRAILS_STACK" --query name -o tsv 2>&1); then
     grep -qiE 'NotFound|could not be found' <<< "$out" || die "can't check $GUARDRAILS_STACK: $out"
     echo "no guard-rail stack $GUARDRAILS_STACK yet: the provision deploys it first; its changes:"

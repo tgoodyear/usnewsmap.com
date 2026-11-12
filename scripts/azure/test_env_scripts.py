@@ -73,6 +73,9 @@ if [ -n "${STUB_CAPTURE_API_TAG:-}" ]; then
   esac
 fi
 case "$1 $2" in
+  "identity show") if [ -n "${STUB_IDENTITY_ERROR:-}" ]; then echo "$STUB_IDENTITY_ERROR" >&2; exit 1; fi
+    ident=$(sed 's/.*--ids \([^ ]*\).*/\1/' <<< "$*")
+    printf '%b\n' "${STUB_PRINCIPALS:-}" | awk -F= -v id="$ident" '$1==id{print $2}' ;;
   "account show") case "$*" in *"--query id"*) echo sub-1 ;; *"--query tenantId"*) echo tenant-1 ;; esac ;;
   "account set") s=$(sed 's/.*--subscription \([^ ]*\).*/\1/' <<< "$*")
     if [ -n "${STUB_ACCOUNTS:-}" ] && ! printf '%b\n' "$STUB_ACCOUNTS" | grep -qx "$s"; then
@@ -290,6 +293,61 @@ class Stubbed(unittest.TestCase):
     def calls(self):
         with open(self.log) as f:
             return f.read().splitlines()
+
+
+class PrincipalIdsCheck(Stubbed):
+    """principal_ids_check: the known principal ids must be those of the identities the stack manages."""
+
+    RG = "/subscriptions/s/resourceGroups/rg-usnm-prod/providers/Microsoft.ManagedIdentity/userAssignedIdentities/"
+    OTHER = "/subscriptions/s/resourceGroups/rg-elsewhere/providers/Microsoft.ManagedIdentity/userAssignedIdentities/"
+
+    def check(self, app="", ci="", resources=(), principals=(), env_name="prod", **extra):
+        fake = f'aget() {{ case "$1" in USNM_APP_PRINCIPAL_ID) echo "{app}" ;; USNM_CI_PRINCIPAL_ID) echo "{ci}" ;; esac; }}\n'
+        return self.lib(fake + "principal_ids_check", env_name=env_name, STUB_STACK="1",
+                        STUB_RESOURCE_IDS="\n".join(resources),
+                        STUB_PRINCIPALS="\\n".join(f"{i}={p}" for i, p in principals), **extra)
+
+    def test_empty_ids_check_nothing(self):
+        r = self.check()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(self.log))
+
+    def test_the_pinned_api_identity_passes(self):
+        i = self.RG + "id-usnm-app-prod"
+        r = self.check(app="p-1", resources=[i], principals=[(i, "p-1")])
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_the_unpinned_api_name_and_the_ci_identity_pass(self):
+        a, c = self.RG + "usnm-api-id-dev", self.RG + "usnm-ci-id-dev"
+        r = self.check(app="p-1", ci="p-2", resources=[a, c], principals=[(a, "p-1"), (c, "p-2")], env_name="dev")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_another_principal_stops(self):
+        i = self.RG + "id-usnm-app-prod"
+        r = self.check(app="p-9", resources=[i], principals=[(i, "p-1")])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not the principalId of the identity usnm-prod manages", r.stderr)
+
+    def test_a_same_named_identity_outside_the_stack_does_not_count(self):
+        i = self.OTHER + "id-usnm-app-prod"
+        r = self.check(app="p-1", resources=[self.RG + "usnm-ci-id-prod"], principals=[(i, "p-1")])
+        self.assertEqual(r.returncode, 1)
+
+    def test_the_other_role_s_identity_does_not_count(self):
+        c = self.RG + "usnm-ci-id-prod"
+        r = self.check(app="p-2", resources=[c], principals=[(c, "p-2")])
+        self.assertEqual(r.returncode, 1)
+
+    def test_a_federated_credential_is_not_an_identity(self):
+        c = self.RG + "usnm-ci-id-prod/federatedIdentityCredentials/github-main"
+        r = self.check(ci="p-2", resources=[c], principals=[(c, "p-2")])
+        self.assertEqual(r.returncode, 1)
+
+    def test_a_failed_read_stops(self):
+        i = self.RG + "id-usnm-app-prod"
+        r = self.check(app="p-1", resources=[i], STUB_IDENTITY_ERROR="boom")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("boom", r.stderr)
 
 
 class SearcherRollbackSettings(Stubbed):
@@ -1221,7 +1279,7 @@ class StackRenameGuard(Stubbed):
     def test_guard_failure_is_not_retried(self):
         r = self.lib("vaults_recover() { :; }; settings_store_ensure() { :; }; "
                      "load_store_after_create() { :; }; settings_check() { :; }; "
-                     "experiment_marker() { :; }; ocr_nodes_off_check() { :; }; api_pin_check() { :; }; "
+                     "experiment_marker() { :; }; ocr_nodes_off_check() { :; }; principal_ids_check() { :; }; api_pin_check() { :; }; "
                      "deploy_env_guardrails() { :; }; deploy_policy_exemptions() { :; }; "
                      "deploy_stack() { return 42; }; provision")
         self.assertEqual(r.returncode, 1, r.stderr)
@@ -1268,7 +1326,7 @@ class TeardownRenameGuard(Stubbed):
         with open(os.path.join(scripts, "lib", "env.sh"), "a") as f:
             for name in ("need_stack_az", "vaults_recover", "settings_store_ensure",
                          "load_store_after_create", "settings_check", "experiment_marker",
-                         "ocr_nodes_off_check", "deploy_env_guardrails",
+                         "ocr_nodes_off_check", "principal_ids_check", "deploy_env_guardrails",
                          "deploy_policy_exemptions", "save_outputs"):
                 f.write(f"\n{name}() {{ :; }}\n")
         for path, body in (
@@ -2570,7 +2628,7 @@ class ApiPinGuard(Stubbed):
     def test_provision_refuses_before_anything_changes(self):
         steps = "".join(f'{name}() {{ echo "ran {name}"; }}\n' for name in (
             "vaults_recover", "settings_store_ensure", "load_store_after_create", "settings_check",
-            "experiment_marker", "ocr_nodes_off_check", "deploy_env_guardrails", "deploy_policy_exemptions",
+            "experiment_marker", "ocr_nodes_off_check", "principal_ids_check", "deploy_env_guardrails", "deploy_policy_exemptions",
             "deploy_stack", "save_outputs"))
         r = self.lib(steps + "provision", STUB_API_IMAGE=self.LIVE)
         self.assertEqual(r.returncode, 1)
@@ -2583,7 +2641,7 @@ class ApiPinGuard(Stubbed):
     # The stack steps provision runs after the pin check, with the rest
     # stubbed: the deployment itself is the real one.
     STACK_ONLY = ("vaults_recover() { :; }; settings_store_ensure() { :; }; load_store_after_create() { :; }\n"
-                  "settings_check() { :; }; experiment_marker() { :; }; ocr_nodes_off_check() { :; }\n"
+                  "settings_check() { :; }; experiment_marker() { :; }; ocr_nodes_off_check() { :; }; principal_ids_check() { :; }\n"
                   "deploy_env_guardrails() { :; }; deploy_policy_exemptions() { :; }; save_outputs() { :; }\n")
 
     def seen_tags(self, *prefixes):
