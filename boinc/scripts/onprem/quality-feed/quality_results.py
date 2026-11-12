@@ -192,8 +192,21 @@ def run(args):
         collect_args.extend(["--qwen-pages", pages])
     if args.incremental:
         collect_args.extend(["--cache", root + "/collected-parts"])
-    if warm:
-        warm_parts(args, collect_args)
+    if not warm:
+        return publish(args, root, collect_args, warm, locked_timeout)
+    warm_parts(args, collect_args)
+    # Warming took no host lock, so the partial loader keeps running while it does. Publishing
+    # needs it, and finding it taken defers the root instead of waiting behind the other loader.
+    with args.lock.open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(json.dumps({"phase": "host_lock_busy", "exit": 75}), file=sys.stderr, flush=True)
+            raise subprocess.CalledProcessError(75, ["host-lock"]) from None
+        return publish(args, root, collect_args, warm, locked_timeout)
+
+
+def publish(args, root, collect_args, warm, locked_timeout):
     command = [
         "pct", "exec", str(args.server_ct), "--",
         "flock",
@@ -309,7 +322,11 @@ def main(argv=None):
     parser.add_argument("--server-host", default="pve.tjg.fyi")
     parser.add_argument("--server-ct", type=int, default=230)
     parser.add_argument("--ctid", type=int, default=215)
-    parser.add_argument("--lock", type=Path, default=Path("/run/usnm-quality-results.lock"))
+    parser.add_argument("--lock", type=Path, default=Path("/run/usnm-quality-results.lock"),
+                        help="the host lock shared with the partial loader, around collect, pull and load")
+    parser.add_argument("--warm-lock", type=Path, default=Path("/run/usnm-quality-results-warm.lock"),
+                        help="with --warm-without-lock: held for the whole run instead, since warming "
+                             "needs no host lock and must not keep the partial loader from running")
     args = parser.parse_args(argv)
     if bool(args.campaign) == bool(args.native_campaign):
         parser.error("give --campaign or --native-campaign")
@@ -330,7 +347,7 @@ def main(argv=None):
         parser.error("--qwen-crop-states must be an absolute path")
     if args.qwen_pages and not re.fullmatch(r"/[A-Za-z0-9._/-]+", args.qwen_pages):
         parser.error("--qwen-pages must be an absolute path")
-    with args.lock.open("a") as lock:
+    with (args.warm_lock if args.warm_without_lock else args.lock).open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if args.native_campaign:
             run_native(args)

@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import shlex
+import tempfile
 import sys
 import time
 import threading
@@ -200,6 +201,9 @@ class ResultsTest(unittest.TestCase):
         args.locked_compute_secs = 45
         args.locked_timeout_secs = 150
         args.collector = "/project/ops/qwen-feed/new/usnm-boinc"
+        directory = tempfile.TemporaryDirectory(dir=HERE)
+        self.addCleanup(directory.cleanup)
+        args.lock = Path(directory.name) / "host.lock"
         return args
 
     @staticmethod
@@ -269,6 +273,44 @@ class ResultsTest(unittest.TestCase):
             results.run(args)
         self.assertEqual(len(calls), 5)  # one warm round, publish, pull, load, cleanup
         self.assertIn("warm_budget_spent", log.getvalue())
+
+    def test_warming_runs_while_the_host_lock_is_held_and_publication_defers_instead_of_waiting(self):
+        args = self.warm_args()
+        calls = []
+
+        def fake(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stderr=self.progress(False))
+
+        with args.lock.open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # the partial loader's pass
+            with mock.patch.object(results.subprocess, "run", side_effect=fake), \
+                    mock.patch.object(results.sys, "stderr", new_callable=io.StringIO) as log:
+                with self.assertRaises(subprocess.CalledProcessError) as error:
+                    results.run(args)
+        self.assertEqual(error.exception.returncode, 75)  # run_native reports it as deferred
+        self.assertEqual(len(calls), 1)  # the warm round ran; no step lock, pull or load did
+        self.assertNotIn("flock", calls[0][-1])
+        self.assertIn("host_lock_busy", log.getvalue())
+
+    def test_the_whole_run_of_a_warming_service_holds_its_own_lock_not_the_host_lock(self):
+        path, warm_path = self.root_lock("host.lock"), self.root_lock("warm.lock")
+        argv = ["--campaign", "v1-test", "--engine-image", "sha256:" + "a" * 64, "--incremental",
+                "--step-lock-wait-secs", "60", "--warm-without-lock",
+                "--lock", str(path), "--warm-lock", str(warm_path)]
+        with path.open("a") as host, mock.patch.object(results, "run", return_value={}) as run:
+            fcntl.flock(host, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            results.main(argv)
+            run.assert_called_once()
+            with warm_path.open("a") as other:
+                fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with self.assertRaises(BlockingIOError):
+                    results.main(argv)
+
+    def root_lock(self, name):
+        directory = tempfile.TemporaryDirectory(dir=HERE)
+        self.addCleanup(directory.cleanup)
+        return Path(directory.name) / name
 
     def test_a_publication_with_more_to_compute_than_the_lock_allows_is_deferred_not_failed(self):
         args = self.warm_args()
