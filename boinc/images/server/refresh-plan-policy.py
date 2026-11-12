@@ -33,11 +33,10 @@ ADMISSION_MARKER = re.compile(r"usnm-[a-z0-9]+(?:-[a-z0-9]+)*-admission-[a-z0-9]
 KNOWN_ADMISSION_MARKERS = frozenset(GENERAL_MARKERS.values())
 
 
-def reject_unknown_admission_markers(root: ET.Element) -> None:
-    for node in root.iter():
-        if node.tag is not ET.Comment:
-            continue
-        for marker in ADMISSION_MARKER.findall(node.text or ""):
+def reject_unknown_admission_markers(current: bytes) -> None:
+    # Scan the raw bytes: the parsed tree drops comments before and after the root element.
+    for comment in re.findall(rb"<!--(.*?)-->", current, re.DOTALL):
+        for marker in ADMISSION_MARKER.findall(comment.decode("utf-8", "replace")):
             if marker not in KNOWN_ADMISSION_MARKERS:
                 raise ValueError(
                     f"Unknown admission marker {marker} in the current plan policy: this image "
@@ -59,9 +58,14 @@ def admission_state(node: ET.Element) -> str:
 def admission_changes(current: bytes, merged: bytes) -> list[str]:
     _, before = parse_policy(current)
     _, after = parse_policy(merged)
-    return [f"{name}: admission {admission_state(before[name])} -> {admission_state(after[name])}"
-            for name in sorted(before.keys() & after.keys())
-            if admission_state(before[name]) != admission_state(after[name])]
+    absent = "class absent"
+    changes = []
+    for name in sorted(before.keys() | after.keys()):
+        old = admission_state(before[name]) if name in before else absent
+        new = admission_state(after[name]) if name in after else absent
+        if old != new:
+            changes.append(f"{name}: admission {old} -> {new}")
+    return changes
 
 
 def parse_policy(payload: bytes) -> tuple[ET.Element, dict[str, ET.Element]]:
@@ -80,7 +84,7 @@ def parse_policy(payload: bytes) -> tuple[ET.Element, dict[str, ET.Element]]:
 def merge_policy(source: bytes, current: bytes) -> bytes:
     root, reviewed = parse_policy(source)
     old_root, existing = parse_policy(current)
-    reject_unknown_admission_markers(old_root)
+    reject_unknown_admission_markers(current)
     for name in COHORT_CLASSES:
         if name not in existing:
             continue

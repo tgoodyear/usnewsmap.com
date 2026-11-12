@@ -100,6 +100,17 @@ class PlanPolicyRefresh(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "usnm-other-admission-v1"):
             POLICY.refresh(self.source, self.target)
 
+    def test_unknown_admission_marker_before_or_after_the_root_is_also_refused(self):
+        original = self.source.read_bytes()
+        declaration, _, body = original.partition(b"?>\n")
+        for name, payload in (("prolog", declaration + b"?>\n<!-- usnm-prolog-admission-v1 -->\n" + body),
+                              ("epilog", original.rstrip() + b"\n<!-- usnm-epilog-admission-v1 -->\n")):
+            with self.subTest(position=name):
+                self.target.write_bytes(payload)
+                with self.assertRaisesRegex(ValueError, f"usnm-{name}-admission-v1"):
+                    POLICY.refresh(self.source, self.target)
+                self.assertEqual(self.target.read_bytes(), payload)
+
     def test_known_markers_and_the_amd_first_marker_are_not_unknown(self):
         for marker in sorted(POLICY.KNOWN_ADMISSION_MARKERS):
             self.assertTrue(POLICY.ADMISSION_MARKER.fullmatch(marker), marker)
@@ -119,6 +130,16 @@ class PlanPolicyRefresh(unittest.TestCase):
         self.assertIn("intel_vulkan_8b", lines[0])
         self.assertIn(POLICY.INTEL_GENERAL_MARKER, lines[0])
         self.assertIn("closed", lines[0])
+
+    def test_refresh_logs_a_class_the_image_policy_no_longer_has(self):
+        removed = "apple_gpu_8b"
+        root = ET.fromstring(self.source.read_bytes())
+        root.remove(root.find(f"plan_class[name='{removed}']"))
+        source = self.root / "older_plan_class_spec.xml"
+        source.write_bytes(ET.tostring(root))
+        lines = []
+        self.assertTrue(POLICY.refresh(source, self.target, log=lines.append))
+        self.assertEqual(lines, [f"{removed}: admission no workunit bounds -> class absent"])
 
     def test_new_project_refresh_is_idempotent(self):
         self.target.unlink()
