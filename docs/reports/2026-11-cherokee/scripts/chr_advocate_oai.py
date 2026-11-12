@@ -7,6 +7,11 @@ Pace and safety: waits at least 3 seconds between requests (the site's robots.tx
 crawl delay of 3), makes no retries, and stops on any HTTP error (including 429 and redirects), any OAI-PMH
 error, or the request cap.
 
+Who may run it: the Gateway's robots.txt bars ClaudeBot by name. An AI agent must not run this
+script against the live endpoint, whatever user agent it sends; a person may, within the site's
+published terms and crawl delay. The counts in advocate-holdings.jsonl come from one harvest on
+12 November 2026 and are kept as collected. The offline tests need no network.
+
 Usage:
   chr_advocate_oai.py --set-name "Cherokee Advocate" --out advocate-holdings.json
   chr_advocate_oai.py --list-sets          # print the endpoint's sets and exit
