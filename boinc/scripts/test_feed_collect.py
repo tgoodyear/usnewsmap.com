@@ -2443,6 +2443,10 @@ class CohortTests(unittest.TestCase):
             C.collect(dict(config, qwen_admission="yes"))
 
 
+TIMER_5MIN = "{ OnBootUSec=5min ; next_elapse=x } { OnUnitInactiveUSec=5min ; next_elapse=x }"
+TIMER_30MIN = "{ OnBootUSec=30min ; next_elapse=x } { OnUnitInactiveUSec=30min ; next_elapse=x }"
+
+
 class PlanTickTests(unittest.TestCase):
     """Every other plan's tick health (#1690), in both unit layouts."""
     MAIN = "usnm-boinc-priority-controller.service"
@@ -2480,6 +2484,8 @@ class PlanTickTests(unittest.TestCase):
             if argv[:2] == ["systemctl", "list-units"]:
                 return listing.encode()
             unit = argv[argv.index("-u") + 1] if "-u" in argv else argv[2]
+            if unit.endswith(".timer"):
+                return ("TimersMonotonic=" + units[unit.replace(".timer", ".service")].get("timer", "")).encode()
             if unit in broken:
                 raise TimeoutError("source timeout")
             record = units[unit]
@@ -2495,9 +2501,9 @@ class PlanTickTests(unittest.TestCase):
             return "\n".join(f"{key}={value}" for key, value in properties.items()).encode()
         return run
 
-    def observe(self, units, main=MAIN, **kwargs):
+    def observe(self, units, main=MAIN, at=NOW, **kwargs):
         with patch.object(C, "run", side_effect=self.host(units, **kwargs)), \
-                patch.object(C.time, "time", return_value=NOW):
+                patch.object(C.time, "time", return_value=at):
             return C.plan_ticks(main)
 
     def healthy(self, **kwargs):
@@ -2586,7 +2592,7 @@ class PlanTickTests(unittest.TestCase):
                 self.assertEqual((check["state"], check["plan_state"]), ("healthy", state))
 
     def test_a_plan_without_a_recent_tick_is_idle_not_unknown_or_firing(self):
-        old = {"events": [(NOW - 3000, self.tick())]}
+        old = {"events": [(NOW - 3000, self.tick())], "timer": TIMER_5MIN}
         plans = self.observe({self.QUEUE: old})
         self.assertEqual((plans[0]["state"], plans[0]["tick"]), ("active", None))
         checks, _ = self.evaluate(plans)
@@ -2635,6 +2641,50 @@ class PlanTickTests(unittest.TestCase):
         self.assertEqual(sorted((p["kind"], p["state"]) for p in plans), [("drain", "drained"), ("native", "active")])
         # The same host read with the old main name finds @main as one more plan.
         self.assertEqual(len(self.observe(units, main=self.MAIN, listed=listed)), 3)
+
+    def test_a_plan_on_a_slow_timer_keeps_alerting_between_its_ticks(self):
+        # A drain on a 30-minute timer, failing: the last failure is 28 minutes old, then 48.
+        drain = self.failing(runs=2, timer=TIMER_30MIN)
+        drain["entries"] = self.failed_runs(NOW - 3500, NOW - 1700)
+        drain["events"] = [(NOW - 5000, self.tick(draining=True, pending=4))]
+        state = {}
+        for elapsed in (0, 1200):
+            plans = self.observe({self.DRAIN: drain}, at=NOW + elapsed)
+            self.assertEqual(plans[0]["window_s"], 3900)
+            checks, state = self.evaluate(plans, state, elapsed=elapsed)
+            (check,) = [c for code, c in checks.items() if code.startswith("plan_tick:")]
+            self.assertEqual((elapsed, check["state"], check["failed_in_a_row"]), (elapsed, "firing", 2))
+        # The same failures on a 5-minute timer have left the 15-minute window by then.
+        quick = {**drain, "timer": TIMER_5MIN}
+        self.assertEqual(self.observe({self.QUEUE: quick}, at=NOW + 1200)[0]["window_s"], 900)
+        self.assertIsNone(self.observe({self.QUEUE: quick}, at=NOW + 1200)[0]["tick"])
+        # Once the failures are older than the window the plan is no longer judged.
+        self.assertIsNone(self.observe({self.DRAIN: drain}, at=NOW + 3000)[0]["tick"])
+
+    def test_the_window_follows_the_timer_with_a_documented_fallback(self):
+        for timer, window in ((TIMER_5MIN, 900), (TIMER_30MIN, 3900),
+                              ("{ OnUnitActiveUSec=1h 30min ; next_elapse=x }", 6900),
+                              ("{ OnUnitInactiveUSec=1d ; next_elapse=x }", 6900),
+                              ("{ OnBootUSec=5min ; next_elapse=x }", C.PLAN_FALLBACK_WINDOW_S), ("", C.PLAN_FALLBACK_WINDOW_S)):
+            with self.subTest(timer=timer):
+                self.assertEqual(self.observe({self.DRAIN: {"timer": timer}})[0]["window_s"], window)
+        with patch.object(C, "run", side_effect=OSError):
+            self.assertEqual(C.plan_window(self.DRAIN), C.PLAN_FALLBACK_WINDOW_S)
+
+    def test_a_tick_waiting_on_the_tick_lock_is_not_a_hang_and_a_slow_one_needs_thirty_minutes(self):
+        running = {"events": [(NOW - 5000, self.tick())], "status": {
+            "SubState": "running", "ExecMainStartTimestampMonotonic": 1000000000, "ExecMainExitTimestampMonotonic": 0}}
+        for waited, state in ((1750, "healthy"), (F.PLAN_HANG_S, "healthy"), (F.PLAN_HANG_S + 1, "firing")):
+            with self.subTest(waited=waited), patch.object(C.time, "clock_gettime", return_value=1000 + waited):
+                checks, _ = self.evaluate(self.observe({self.QUEUE: running}))
+                (check,) = [c for code, c in checks.items() if code.startswith("plan_tick:")]
+                self.assertEqual(check["state"], state)
+        self.assertGreater(F.PLAN_HANG_S, 1800)
+        # Finished ticks of 16 and 21 minutes are not slow for a plan, one of 31 minutes is.
+        for seconds, failed in ((983, 0), (1233, 0), (1860, 1)):
+            event = {**self.tick(), "timings": {"tick_seconds": seconds}}
+            plans = self.observe({self.QUEUE: {"events": [(NOW - 30, event)]}})
+            self.assertEqual(plans[0]["tick"]["failed_in_a_row"], failed)
 
     def test_a_plan_in_both_layouts_is_two_entries_and_the_document_still_validates(self):
         units = {self.NATIVE: self.healthy(native=True), self.NATIVE_AFTER: self.healthy(native=True)}
@@ -2715,9 +2765,10 @@ class PlanTickTests(unittest.TestCase):
         self.assertFalse([c for c in document["checks"] if c["code"].startswith("plan_")])
 
     def test_malformed_plan_documents_are_rejected(self):
-        good = {"id": "0123abcd", "kind": "queue", "state": "active", "paused_at": None, "tick": None, "error": None}
+        good = {"id": "0123abcd", "kind": "queue", "state": "active", "paused_at": None, "tick": None, "error": None,
+                "window_s": 900}
         C.validate_plans([good], NOW)
-        for bad in ({"id": "queue-feed-10"}, {"kind": "other"}, {"state": "paused"}, {"state": "unknown"},
+        for bad in ({"id": "queue-feed-10"}, {"window_s": 60}, {"window_s": 9000}, {"kind": "other"}, {"state": "paused"}, {"state": "unknown"},
                     {"state": "paused", "paused_at": NOW + 5}, {"extra": 1},
                     {"tick": {"ok": True, "seconds": 1, "finished_at": NOW}}):
             with self.subTest(bad=bad), self.assertRaises(ValueError):

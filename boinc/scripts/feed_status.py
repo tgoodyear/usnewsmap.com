@@ -26,6 +26,10 @@ TICK_HANG_S = 2 * TICK_LIMIT_S
 TICK_FAILURES_PER_HOUR = 4
 # Runs in a row that failed with the same error: a sticky failure, which the next tick won't clear.
 STICKY_FAILURES = 3
+# A plan's tick may wait up to 1800 s for the host's tick lock (controller-tick.sh --lock-wait-secs)
+# while its unit already reads as running, and the journal doesn't tell the wait from the run, so a
+# plan's running tick is a hang only past the wait plus the live plan's limit.
+PLAN_HANG_S = 1800 + TICK_HANG_S
 PLAN_CHECK_PREFIX = "plan_"        # plan_discovery and plan_tick:<id>, kept out of `checks`
 # feed_collect.PLAN_STATES: the states plan_discovery counts, each a fixed word.
 PLAN_STATES_SEEN = ("active", "paused", "draining", "drained", "idle", "unknown")
@@ -451,7 +455,7 @@ def plan_checks(check, facts, now):
     its timers and its alert go with it.
 
     States never fire: a paused native plan (`plan_state` paused, with `paused_age_s`), a draining
-    plan, a drained one and one with no tick in 15 minutes are healthy, and the failed ticks of any
+    plan, a drained one and one with no tick within its window (feed_collect.plan_window) are healthy, and the failed ticks of any
     of them fire like the live plan's. A plan that can't be read is unknown. `plan_discovery`
     carries how many plans there are and how many are in each state."""
     if "plans_error" in facts:
@@ -475,7 +479,7 @@ def plan_checks(check, facts, now):
         else:
             hourly = tick["failed_last_hour"] >= TICK_FAILURES_PER_HOUR
             fires = (tick["failed_in_a_row"] >= TICK_FAILURES_TO_FIRE or hourly
-                     or (tick["ok"] is None and tick["seconds"] > TICK_HANG_S))
+                     or (tick["ok"] is None and tick["seconds"] > PLAN_HANG_S))
             check(code, fires, seconds=tick["seconds"], failed_in_a_row=tick["failed_in_a_row"],
                   failed_last_hour=tick["failed_last_hour"],
                   reason=tick["last_hour_reason"] if hourly else tick["reason"],

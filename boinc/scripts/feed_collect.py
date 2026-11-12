@@ -153,6 +153,20 @@ PLAN_UNIT = re.compile(r"(?P<base>usnm-boinc-(?:priority-controller@|native-feed
 MAX_PLANS = 32
 # The plans' share of one source run: the unit's limit is 75 s and the live plan's read comes first.
 PLAN_BUDGET_S = 25
+# A plan's tick counts while it is younger than twice the timer's cadence plus five minutes, at least
+# 15 minutes (the live plan's window) and at most 6900 s (the journal read covers two hours). The
+# cadence is the timer's OnUnitInactiveSec or OnUnitActiveSec; with neither readable (an OnCalendar
+# timer, no timer) the window is PLAN_FALLBACK_WINDOW_S, 65 minutes: long enough for a 30-minute
+# timer, at the cost of an all-clear that comes up to an hour late on a faster one.
+PLAN_MIN_WINDOW_S = 900
+PLAN_MAX_WINDOW_S = 6900
+PLAN_FALLBACK_WINDOW_S = 3900
+# A plan's finished tick counts as a failed run past this, not the live plan's 15 minutes: plans
+# queue behind each other for the tick lock for up to 30 minutes, and ticks of 16 to 21 minutes
+# happen without anything being wrong.
+PLAN_SLOW_S = 1800
+TIMESPAN_UNITS = {"us": 1e-6, "ms": 1e-3, "s": 1, "sec": 1, "min": 60, "h": 3600, "hr": 3600, "d": 86400,
+                  "w": 604800}
 # What a plan is, from its unit or its last tick; and the state its last tick shows. Only these
 # fixed words leave the host: a plan's name never does, and neither does a paused plan's reason.
 PLAN_KINDS = ("queue", "native", "drain")
@@ -380,7 +394,7 @@ def validate_dbbackup(document, now):
             raise ValueError("invalid drill record")
 
 
-def validate_tick(tick, now):
+def validate_tick(tick, now, fresh_s=900):
     """One tick record: the live plan's, or a plan's in plans (#1690)."""
     if not isinstance(tick, dict):
         raise ValueError("invalid tick")
@@ -388,7 +402,7 @@ def validate_tick(tick, now):
         raise ValueError("invalid tick outcome")
     if type(tick["seconds"]) not in (int, float) or not math.isfinite(tick["seconds"]) or tick["seconds"] < 0:
         raise ValueError("invalid tick duration")
-    if not 0 <= now - natural(tick["finished_at"]) <= 900:
+    if not 0 <= now - natural(tick["finished_at"]) <= fresh_s:
         raise ValueError("stale controller evidence")
     if any(natural(tick.get(key, 0)) > now for key in (
             "last_failure_at", "controller_failure_at", "maintenance_failure_at")):
@@ -416,7 +430,8 @@ def validate_plans(plans, now):
         raise ValueError("invalid plans")
     seen = set()
     for plan in plans:
-        if (not isinstance(plan, dict) or set(plan) != {"id", "kind", "state", "paused_at", "tick", "error"}
+        if (not isinstance(plan, dict) or set(plan) != {"id", "kind", "state", "paused_at", "tick", "error", "window_s"}
+                or type(plan["window_s"]) is not int or not PLAN_MIN_WINDOW_S <= plan["window_s"] <= PLAN_MAX_WINDOW_S
                 or not isinstance(plan["id"], str) or not re.fullmatch(r"[0-9a-f]{8}|[0-9a-f]{16}", plan["id"])
                 or plan["id"] in seen or plan["kind"] not in PLAN_KINDS or plan["state"] not in PLAN_STATES):
             raise ValueError("invalid plan")
@@ -429,7 +444,7 @@ def validate_plans(plans, now):
         if plan["error"] not in (None, PLANS_ERROR) or (plan["error"] is not None) != (plan["state"] == "unknown"):
             raise ValueError("invalid plan error")
         if plan["tick"] is not None:
-            validate_tick(plan["tick"], now)
+            validate_tick(plan["tick"], now, plan["window_s"])
             if "failed_in_a_row" not in plan["tick"] or "failed_last_hour" not in plan["tick"] \
                     or "same_error_in_a_row" not in plan["tick"]:
                 raise ValueError("invalid plan tick")
@@ -1169,12 +1184,15 @@ def client(data_dir, port, session=None):
     return document
 
 
-def controller(unit, maintenance=()):
+def controller(unit, maintenance=(), fresh_s=900, slow_s=TICK_LIMIT_S):
     """The controller's last tick and last failure, from its unit's journal and systemd.
 
     `unit` is one plan's unit (usnm-boinc-priority-controller@main.service for the live plan,
     #1690): every plan ticks in a unit of its own, so a draining or native plan's failed ticks
     never count towards the live plan's failed_in_a_row.
+
+    `fresh_s` is how old a tick may be and still count (a plan on a slow timer, #1690), `slow_s` the
+    duration past which a finished tick counts as a failed run.
 
     `maintenance` are units that pause the controller to do its upkeep, such as the daily
     held-page archive (#835): their failures count as the controller's, and while one runs, or
@@ -1286,10 +1304,10 @@ def controller(unit, maintenance=()):
             continue
         if not math.isfinite(seconds) or seconds < 0:
             continue
-        if seconds > TICK_LIMIT_S:
+        if seconds > slow_s:
             controller_failure = max(controller_failure, finished)
         if ok:  # a failure's line was recorded above
-            record(finished, seconds > TICK_LIMIT_S, invocation)
+            record(finished, seconds > slow_s, invocation)
         # Every tick's duration, failed ones too: a failure that runs long is part of the trend.
         if time.time() - finished <= TICK_TREND_WINDOW_S:
             recent.append(seconds)
@@ -1346,9 +1364,9 @@ def controller(unit, maintenance=()):
     # failures leave the journal window and its count fall, so stale history is unknown, not healthy.
     last_run = max((t for t, _ in runs.values()), default=None)
     failed = status.get("Result") != "success"
-    if failed and last_run is not None and time.time() - last_run <= 900:
+    if failed and last_run is not None and time.time() - last_run <= fresh_s:
         return {"ok": False, "seconds": max(0, end - start), "finished_at": int(time.time())} | failures
-    if failed or latest is None or time.time() - latest["finished_at"] > 900:
+    if failed or latest is None or time.time() - latest["finished_at"] > fresh_s:
         paused = paused_by(maintenance)
         if paused:
             # Paused on purpose: nothing ran, so nothing ran long or failed.
@@ -1393,6 +1411,28 @@ def discover_plans(main_unit):
     return sorted(found)
 
 
+def timer_cadence(unit):
+    """Seconds between a plan's ticks, from its timer's systemd properties (TimersMonotonic, as
+    `systemctl show` prints OnUnitInactiveUSec=30min), or None when it can't be read."""
+    try:
+        timer = unit.removesuffix(".service") + ".timer"
+        shown = run(["systemctl", "show", timer, "-p", "TimersMonotonic"]).decode()
+        spans = [sum(float(n) * TIMESPAN_UNITS[u] for n, u in re.findall(r"(\d+(?:\.\d+)?)([a-z]+)", text))
+                 for text in re.findall(r"OnUnit(?:Inactive|Active)USec=([^;}]+)", shown)]
+    except Exception:
+        return None
+    spans = [span for span in spans if span > 0]
+    return min(spans) if spans else None
+
+
+def plan_window(unit):
+    """How old a plan's tick may be and still count (see PLAN_FALLBACK_WINDOW_S)."""
+    cadence = timer_cadence(unit)
+    if cadence is None:
+        return PLAN_FALLBACK_WINDOW_S
+    return int(min(PLAN_MAX_WINDOW_S, max(PLAN_MIN_WINDOW_S, 2 * cadence + 300)))
+
+
 def plan_journal(unit, now):
     """What a plan's newest tick line says about the plan: (kind or None, state, paused_at).
 
@@ -1434,12 +1474,12 @@ PLAN_TICK_FIELDS = ("ok", "seconds", "finished_at", "failed_in_a_row", "failed_l
 
 def plan_ticks(main_unit):
     """Each other plan's tick health (#1690), in a stable order, as {id, kind, state, paused_at,
-    tick, error}. A plan's tick is controller()'s read of its own unit, so its failed runs, the
+    tick, error, window_s}. A plan's tick is controller()'s read of its own unit, so its failed runs, the
     same error in a row and the hourly count are its own and never another plan's. `id` is the
     first 8 hex digits of the sha256 of the unit's name (16 if two collide), so a plan in both
     layouts is two entries and no plan name leaves the host.
-    A plan with no tick in the last 15 minutes has tick None (state `idle`, or what its last
-    tick showed): a plan on a slower timer than the controller's five minutes isn't judged. A plan
+    A plan with no tick within its window (plan_window) has tick None and is not judged; its state
+    is what its newest tick line in the last two hours showed, or `idle` when there is none. A plan
     that can't be read, or isn't reached within PLAN_BUDGET_S, is `unknown` with `error`; it never
     stops the others being read."""
     global READ_DEADLINE
@@ -1454,13 +1494,15 @@ def plan_ticks(main_unit):
             seen.add(plan_id)
             entry = {"id": plan_id,
                      "kind": "native" if "native-feed@" in unit else "drain" if "boinc-drain" in unit else "queue",
-                     "state": "unknown", "paused_at": None, "tick": None, "error": PLANS_ERROR}
+                     "state": "unknown", "paused_at": None, "tick": None, "error": PLANS_ERROR,
+                     "window_s": PLAN_FALLBACK_WINDOW_S}
             try:
                 if time.monotonic() >= READ_DEADLINE:
                     raise TimeoutError("source timeout")
                 kind, state, paused_at = plan_journal(unit, now)
+                entry["window_s"] = window = plan_window(unit)
                 try:
-                    tick = controller(unit)
+                    tick = controller(unit, fresh_s=window, slow_s=PLAN_SLOW_S)
                 except NoRecentTick:
                     tick = None
                 entry.update(kind=kind or entry["kind"], state=state, paused_at=paused_at, error=None,
