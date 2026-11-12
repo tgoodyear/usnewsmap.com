@@ -26,7 +26,7 @@ use usnm_alto::{Block, BlockKind, Granularity, Line, Page, Rect, Word};
 use usnm_core::cherokee_type::{self, is_syllabary, LineSource};
 use usnm_core::ids::PageKey;
 use usnm_ocr_contract::boinc::{self, Job, LineBox, ResultManifest};
-use usnm_ocr_worker::engine::{LineReading, Tesseract};
+use usnm_ocr_worker::engine::{LineReading, Tesseract, WordReading};
 
 pub mod script;
 pub mod stage;
@@ -488,6 +488,22 @@ pub async fn read_words(
         }
         if latin.iter().any(|l| *l) {
             readings[line].text = script::assemble(&words, &eng, &latin);
+            // The word records follow the text: a routed word is the English reading's words,
+            // at the syllabary word's box. The syllabary reading stays in the log.
+            let mut routed = Vec::with_capacity(readings[line].words.len());
+            for ((w, e), l) in readings[line].words.iter().zip(&eng).zip(&latin) {
+                match (l, e) {
+                    (true, Some(e)) if !e.text.trim().is_empty() => {
+                        routed.extend(e.text.split_whitespace().map(|t| WordReading {
+                            text: t.to_owned(),
+                            conf: Some(e.conf / 100.0),
+                            rect: w.rect,
+                        }));
+                    }
+                    _ => routed.push(w.clone()),
+                }
+            }
+            readings[line].words = routed;
         }
     }
     Ok((readings, log))
@@ -1292,6 +1308,11 @@ mod tests {
         // Only the unsure word is read again, from its box with ten pixels around it.
         assert_eq!(engine.eng.lock().unwrap().as_slice(), ["84x44"]);
         assert_eq!(readings[0].text, "ᎤᏪᏟᏌᏁᏯ Judge ᎤᏪᏟᏌᏁᏯ");
+        // The word records say the same as the text, and the log keeps what the model read.
+        let said: Vec<&str> = readings[0].words.iter().map(|w| w.text.as_str()).collect();
+        assert_eq!(said, ["ᎤᏪᏟᏌᏁᏯ", "Judge", "ᎤᏪᏟᏌᏁᏯ"]);
+        assert_eq!(readings[0].words[1].rect, [88, 18, 152, 42]);
+        assert_eq!(log[0].syllabary, "ᏣᎳ");
         assert_eq!(log.len(), 1);
         assert!(log[0].latin && log[0].word == 1);
         // The same line when the English reading isn't sure: the syllabary model's stands.
