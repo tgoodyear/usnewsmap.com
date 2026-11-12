@@ -211,7 +211,7 @@ async function api(request, env, url) {
     const b = await body(request, 20000);
     if (typeof b.task !== "string" || b.task.length > 300 || typeof b.text !== "string") throw new HttpError(400, "task and text required");
     await requireReader(env, b.task, c);
-    return json(await recordReading(env, b.task, c, b.text, b.unreadable === true));
+    return json(await recordReading(env, b.task, c, b.text, b.unreadable === true, typeof b.pair === "string" ? b.pair : undefined));
   }
   if (p === "/api/answers" && request.method === "POST") {
     const c = await contributorOf(request, env, { limited: true });
@@ -489,12 +489,19 @@ async function nextReading(env, l, c, url) {
     const { counted } = await countedReadings(env, row.id, l, cfg);
     const texts = counted.slice(0, 2).map((x) => (x.unreadable ? "" : x.text));
     task.candidates = flip(row.id) ? [texts[1], texts[0]] : texts;
+    task.pair = await pairId(texts);
   }
   return { task, answered };
 }
 
-async function recordReading(env, taskId, c, rawText, unreadable, at = Date.now()) {
-  const t = await env.DB.prepare("SELECT id, lang, settled, body FROM tasks WHERE id = ?").bind(taskId).first();
+// Identifies the two readings an adjudicator was shown; sent back with the adjudication.
+export async function pairId(texts) {
+  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(texts.join("\u0001"))));
+  return Array.from(d.slice(0, 6), (v) => v.toString(16).padStart(2, "0")).join("");
+}
+
+async function recordReading(env, taskId, c, rawText, unreadable, pair, at = Date.now()) {
+  const t = await env.DB.prepare("SELECT id, lang, settled, outcome, body FROM tasks WHERE id = ?").bind(taskId).first();
   if (!t) throw new HttpError(404, "no such task");
   const text = normalizeReading(rawText);
   if (unreadable ? text !== "" : text === "") throw new HttpError(400, unreadable ? "send no text with nothing legible" : "type what is printed, or say nothing is legible");
@@ -511,6 +518,15 @@ async function recordReading(env, taskId, c, rawText, unreadable, at = Date.now(
     return { ok: true };
   }
   if (t.settled) throw new HttpError(409, "this one is already settled");
+  // A task waiting for adjudication takes only a reading from someone who was shown the two current readings;
+  // a task still open takes only blind readings. A reading served earlier can arrive at the wrong stage.
+  const cfgNow = await langConfig(env, t.lang);
+  const mine = await env.DB.prepare("SELECT 1 AS k FROM readings WHERE task_id = ? AND contributor = ?").bind(taskId, c).first();
+  if (t.outcome === "adjudicate" && !mine) {
+    const { counted } = await countedReadings(env, taskId, t.lang, cfgNow);
+    const want = await pairId(counted.slice(0, 2).map((x) => (x.unreadable ? "" : x.text)));
+    if (pair !== want) throw new HttpError(409, "this one now needs someone who sees both readings; skip it");
+  } else if (pair && t.outcome !== "adjudicate") throw new HttpError(409, "this one changed while you typed; skip it");
   await env.DB.prepare(
     "INSERT INTO readings (task_id, contributor, text, unreadable, at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (task_id, contributor) DO UPDATE SET text = excluded.text, unreadable = excluded.unreadable, at = excluded.at",
   ).bind(taskId, c, text, unreadable ? 1 : 0, at).run();
@@ -525,10 +541,16 @@ async function countedReadings(env, taskId, l, cfg) {
   const counted = [];
   for (const r of rs) if (qualified(await scoresOf(env, l, r.contributor), cal, cfg.calibration?.max_cer ?? CAL_MAX_CER)) counted.push(r);
   counted.sort((p, q) => p.at - q.at || (p.contributor < q.contributor ? -1 : 1));
-  return { counted, signature: rs.length + ":" + rs.reduce((m, r) => Math.max(m, r.at), 0) };
+  return { counted };
 }
 
-const SIGNATURE_SQL = "(SELECT COUNT(*) || ':' || COALESCE(MAX(at), 0) FROM readings WHERE task_id = ?1)";
+// What a recount depends on: the task's readings (number and newest time) and its language's calibration scores.
+const SIGNATURE_SQL = `((SELECT COUNT(*) || ':' || COALESCE(MAX(at), 0) FROM readings WHERE task_id = ?1) || '|' ||
+  (SELECT COUNT(*) || ':' || COALESCE(MAX(at), 0) FROM reader_scores WHERE lang = (SELECT lang FROM tasks WHERE id = ?1)))`;
+
+async function signatureOf(env, taskId) {
+  return (await env.DB.prepare(`SELECT ${SIGNATURE_SQL} AS sig`).bind(taskId).first()).sig;
+}
 
 // Recounts a task from its stored readings: only people who qualify count. The write is conditional on the
 // readings being the ones counted (their number and newest time), so a request that read an older snapshot
@@ -536,7 +558,8 @@ const SIGNATURE_SQL = "(SELECT COUNT(*) || ':' || COALESCE(MAX(at), 0) FROM read
 export async function resettle(env, taskId, l, at = Date.now()) {
   const cfg = await langConfig(env, l);
   for (let attempt = 0; attempt < 4; attempt++) {
-    const { counted, signature } = await countedReadings(env, taskId, l, cfg);
+    const signature = await signatureOf(env, taskId); // read first: anything that changes after this makes the write below a no-op
+    const { counted } = await countedReadings(env, taskId, l, cfg);
     const s = settleReadings(counted, cfg.settle === "single" ? "single" : "pair", cfg.agree_cer || 0);
     const stmts = [
       env.DB.prepare(`UPDATE tasks SET n = ?2, settled = ?3, outcome = ?4 WHERE id = ?1 AND ${SIGNATURE_SQL} = ?5`).bind(taskId, s.n, s.settled, s.outcome, signature),

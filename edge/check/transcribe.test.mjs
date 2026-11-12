@@ -113,7 +113,9 @@ test("two readers who agree settle a task; a third adjudicates two who differ", 
   assert.deepEqual([...n.task.candidates].sort(), ["one", "two"]);
   const again = await (await as(e, "a", "/api/next?lang=yi-truth&skip=yi-truth/s/l3")).json();
   assert.equal(again.task, null);
-  await post(e, "c", "/api/readings", { task: id2, text: "one" });
+  assert.equal((await post(e, "d", "/api/readings", { task: id2, text: "one" })).status, 409); // blind third reading is refused
+  assert.equal((await post(e, "c", "/api/readings", { task: id2, text: "one", pair: "wrong" })).status, 409);
+  assert.equal((await post(e, "c", "/api/readings", { task: id2, text: "one", pair: n.task.pair })).status, 200);
   const t = e.DB.raw.prepare("SELECT outcome FROM tasks WHERE id = ?").get(id2);
   assert.equal(t.outcome, "adjudicated");
 

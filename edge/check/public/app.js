@@ -317,6 +317,8 @@ function txRender() {
   mk("tx-mark", `Insert ${mark} for a letter I can't read`, () => ins(mark));
   for (const k of cfg.keys || []) { const b = mk("key-" + k.codePointAt(0), k, () => ins(k)); b.classList.add("keycap"); b.lang = lang; b.title = "Insert " + k; }
   mk("tx-none", "Nothing legible", () => txSave(true));
+  const zoom = mk("tx-zoom", "Zoom the image", () => { const z = lv.classList.toggle("zoomed"); zoom.setAttribute("aria-pressed", String(z)); li.style.cursor = z ? "zoom-out" : "zoom-in"; });
+  zoom.setAttribute("aria-pressed", "false");
   mk("tx-skip", "Skip", () => { txSkipped.push(txTask.id); txNext(); });
   card.appendChild(row);
   if (t.source) { const src = document.createElement("a"); src.href = t.source; src.target = "_blank"; src.rel = "noopener"; src.className = "label"; src.textContent = "See the whole page"; card.appendChild(src); }
@@ -343,12 +345,12 @@ async function txSave(none) {
   if (!none && !text.trim()) { txStatus("Type what is printed, or press Nothing legible.", true); return; }
   txBusy = true; txRender();
   try {
-    await authed("/api/readings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: txTask.id, text, unreadable: none }) });
+    await authed("/api/readings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: txTask.id, text, unreadable: none, pair: txTask.pair }) });
     txBusy = false; await txNext();
   } catch (e) {
     txBusy = false; txRender();
     if (!none) $("tx-text").value = text;
-    txStatus(e.status === 429 ? "Too fast. Wait a few seconds, then save again." : e.status === 409 ? "Someone else just finished this one. Press Skip." : "That wasn't saved: " + e.message, true);
+    txStatus(e.status === 429 ? "Too fast. Wait a few seconds, then save again." : e.status === 409 ? "This one changed while you were typing. Press Skip." : "That wasn't saved: " + e.message, true);
   }
 }
 

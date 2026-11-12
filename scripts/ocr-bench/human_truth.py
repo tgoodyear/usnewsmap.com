@@ -57,7 +57,8 @@ def normalize(text):
 
 def derive(readings):
     """The settlement of one export row, from its readings alone: (outcome, text, unreadable, readers)."""
-    counted = sorted((r for r in readings if r.get("qualified", True)), key=lambda r: (r["at"], r["reader"]))
+    # the export lists readings in the worker's order (time, then session id); a stable sort on time keeps ties as exported
+    counted = sorted((r for r in readings if r.get("qualified", True)), key=lambda r: r["at"])
     if len(counted) < 2:
         return None, None, False, []
     a, b = counted[0], counted[1]
