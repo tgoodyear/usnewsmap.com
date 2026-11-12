@@ -10,7 +10,7 @@
 # sources, the compiler and the libraries the executable loads. Differences from the Linux build
 # (Containerfile) are in docs/boinc/apps/native-ocr.md: upstream sources without Debian's
 # patches, no GIF, no OpenMP, libjpeg-turbo without SIMD, and libtiff with only zlib and JPEG.
-set -euo pipefail
+set -Eeuo pipefail
 
 out='' work=''
 while [ $# -gt 0 ]; do
@@ -44,7 +44,10 @@ common=(
   -DCMAKE_INSTALL_LIBDIR=lib
   -DCMAKE_PREFIX_PATH="$prefix"
   -DCMAKE_IGNORE_PREFIX_PATH="/opt/homebrew;/usr/local"
-  -DCMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH=OFF
+  # Apple's compilers and make, whatever else is on PATH.
+  -DCMAKE_C_COMPILER=/usr/bin/clang
+  -DCMAKE_CXX_COMPILER=/usr/bin/clang++
+  -DCMAKE_MAKE_PROGRAM=/usr/bin/make
   -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF
   -DCMAKE_FIND_FRAMEWORK=LAST
   -DCMAKE_OSX_ARCHITECTURES="$arch"
@@ -66,12 +69,17 @@ fetch() { # name url tag commit
 
 build() { # name, then its own CMake options
   local name=$1; shift
+  current="$work/build/$name.log"
   cmake -S "$src/$name" -B "$work/build/$name" "${common[@]}" "$@" >"$work/build/$name.log"
   cmake --build "$work/build/$name" --parallel "$jobs" >>"$work/build/$name.log"
   cmake --install "$work/build/$name" >>"$work/build/$name.log"
   # A static build: no shared copy of a library may stay where the next one could link it.
   rm -f "$prefix"/lib/*.dylib
 }
+
+# A failed step shows the end of its log; the logs are quiet otherwise.
+current=""
+trap '[ -n "$current" ] && [ -f "$current" ] && tail -n 60 "$current" >&2' ERR
 
 grep -v '^#' "$here/macos-sources.lock" | while read -r name url tag commit; do
   [ -n "$name" ] && fetch "$name" "$url" "$tag" "$commit"
@@ -91,6 +99,7 @@ build leptonica -DSW_BUILD=OFF -DBUILD_PROG=OFF -DENABLE_GIF=OFF -DCMAKE_DISABLE
 # Apple's linker resolves static archives in any order, so naming every library here covers
 # whatever Leptonica's exported target leaves out.
 libs="-L$prefix/lib -lleptonica -ltiff -lopenjp2 -lwebpmux -lwebp -lsharpyuv -lpng16 -ljpeg -lz"
+current="$work/build/tesseract.log"
 cmake -S "$src/tesseract" -B "$work/build/tesseract" "${common[@]}" \
   -DSW_BUILD=OFF -DOPENMP_BUILD=OFF -DBUILD_TRAINING_TOOLS=OFF -DBUILD_TESTS=OFF \
   -DDISABLE_ARCHIVE=ON -DDISABLE_CURL=ON -DENABLE_LTO=OFF -DENABLE_NATIVE=OFF -DINSTALL_CONFIGS=OFF \
