@@ -2298,6 +2298,33 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertTrue(any("--crops " + share + "/qwen/pilot-1/test/crops.jsonl" in c for c in self.calls()))
         self.assertTrue(any("--out " + share + "/qwen/pilot-1/out" in c for c in self.calls()))
 
+        # #983: QWEN_DOC_IDS defaults to legacy and then adds nothing to the command line.
+        for step in ("qwen-benchmark-stage",):
+            for doc_ids, flag in (("", None), ("legacy", None), ("sample", "--doc-ids sample")):
+                before = len(self.calls())
+                r = subprocess.run(
+                    [bridge_copy], cwd=ROOT,
+                    env={**base, "BRIDGE_STEP": step, **({"QWEN_DOC_IDS": doc_ids} if doc_ids else {})},
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(r.returncode, 0, r.stderr)
+                (call,) = self.calls()[before:]
+                self.assertIn("qwen benchmark-stage", call)
+                if flag is None:
+                    self.assertNotIn("--doc-ids", call)
+                    self.assertTrue(call.endswith("--max-crops 20"), call)
+                else:
+                    self.assertTrue(call.endswith("--max-crops 20 " + flag), call)
+            before = len(self.calls())
+            r = subprocess.run(
+                [bridge_copy], cwd=ROOT,
+                env={**base, "BRIDGE_STEP": step, "QWEN_DOC_IDS": "benchmark"},
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("QWEN_DOC_IDS must be legacy or sample", r.stderr)
+            self.assertEqual(len(self.calls()), before)
+
         python_stub = os.path.join(self.tmp, "bin", "python3")
         with open(python_stub, "w") as dst:
             dst.write('#!/usr/bin/env bash\nprintf "prepare %s\\n" "$*" >> "$STUB_LOG"\nexit "${PREP_FAIL:-0}"\n')
@@ -2318,6 +2345,23 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
                 self.assertNotIn("submit", " ".join(calls))
             else:
                 self.assertEqual(len(calls), 1)
+        before = len(self.calls())
+        r = subprocess.run(
+            [bridge_copy], cwd=ROOT,
+            env={**base, "BRIDGE_STEP": "qwen-benchmark-prepare", "QWEN_DOC_IDS": "sample"},
+            capture_output=True, text=True,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.calls()[before:][1].endswith("--doc-ids sample"))
+        before = len(self.calls())
+        r = subprocess.run(
+            [bridge_copy], cwd=ROOT,
+            env={**base, "BRIDGE_STEP": "qwen-benchmark-prepare", "QWEN_DOC_IDS": "bad"},
+            capture_output=True, text=True,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(len(self.calls()), before, "validation fails before any work")
+
         r = subprocess.run(
             [bridge_copy], cwd=ROOT,
             env={**base, "BRIDGE_STEP": "qwen-benchmark-prepare", "QWEN_SELECTION": "../other"},
