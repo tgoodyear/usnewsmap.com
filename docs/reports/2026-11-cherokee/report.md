@@ -1,6 +1,6 @@
 # Cherokee: what is searchable, how good the OCR is, and a plan
 
-6 November 2026, updated 9 November with the _Phoenix_ model (step 3). Follows [#1581](https://github.com/tgoodyear/usnewsmap.com/issues/1581) (the word lists and the engine tests) and [#1590](https://github.com/tgoodyear/usnewsmap.com/issues/1590) (the Georgia Historic Newspapers images).
+6 November 2026, updated 9 November with the _Phoenix_ model (step 3) and 12 November with the first production re-read (step 4). Follows [#1581](https://github.com/tgoodyear/usnewsmap.com/issues/1581) (the word lists and the engine tests) and [#1590](https://github.com/tgoodyear/usnewsmap.com/issues/1590) (the Georgia Historic Newspapers images).
 
 ## Summary
 
@@ -8,7 +8,7 @@
 - **Accuracy.** The first measured figure comes from 70 lines checked against the page images: LoC's Cherokee OCR misreads at least 8–9% of syllabary letters, and stock Tesseract 16–17% (step 2). The proxies we can compute say LoC's Cherokee OCR is weak, and weak in particular letters. ᎾᏍᎩ ("that"), the second most common word in the New Testament, is read correctly 127 times and misread as ᏩᏍᎩ, ᏣᏍᎩ or ᏳᏍᎩ 1,007 times. ᎠᎴ ("and", the most common) is read correctly 2,547 times in 2,555. The paper's name, ᏣᎳᎩ ᏧᎴᎯᏌᏅᎯ, reads exactly on 47 of 82 front pages. It appears in a standing notice in the first column, not in the masthead. LoC's word confidences are no help: 99.8% of Cherokee words have a confidence of at least 0.5, and the median is 1.0.
 - **Models.** Tesseract's Cherokee model reads clean typeset text well: 1.67% character error on the New Testament PDFs. On Phoenix scans it makes the same letter confusions LoC's OCR makes. Our Qwen3-VL-2B route produced no syllabary at all, and in a 2026 benchmark none of 14 vision-language models read Cherokee. Fine-tuned on the paper's own glyphs, Tesseract beats LoC: `chr_phoenix` reads the test set's silver lines at 10.2% character error against LoC's 18.0%, and the hand-checked lines at 6.6% against 8.4%, though 70 lines are too few to settle that (step 3). It isn't deployed yet.
 - **The type.** The _Phoenix_ was set in one font, cast in Boston in 1827. Nine of its letters were recut in 1834, mostly because they looked too much like other letters. Three of them (Ꮩ, Ꮅ and Ꮦ) are among the pairs our engines confuse (section 4). The recut came after the paper's last issue, so every _Phoenix_ page has the 1828 shapes.
-- **Plan.** Build ground truth without new transcription work where we can, train a Phoenix-specific model, OCR the 699 missing pages, and make search tolerant of the known confusions in the meantime. Steps 1 to 3 are done: search now finds ᎾᏍᎩ on 108 pages (35 before), and the model passed its test. Next is the BOINC re-OCR (step 4), with per-word script detection (#1666) for English words inside Cherokee lines.
+- **Plan.** Build ground truth without new transcription work where we can, train a Phoenix-specific model, OCR the 699 missing pages, and make search tolerant of the known confusions in the meantime. Steps 1 to 3 are done: search now finds ᎾᏍᎩ on 108 pages (35 before), and the model passed its test. The BOINC re-OCR (step 4) has run for the 191 pages that have Cherokee lines: 190 were read and accepted on 11 and 12 November, one waits for a scan. The 699 missing pages and per-word script detection (#1666) for English words inside Cherokee lines are next.
 
 ## 1. Volume: what we have against what exists
 
@@ -209,6 +209,30 @@ The model is Apache-2.0, like the start model. It is documented in `ocr/models/c
 ### Step 4. OCR the 699 missing pages and re-read the 324 ([#1622](https://github.com/tgoodyear/usnewsmap.com/issues/1622))
 
 The GHN-only pages have no layout. Find text lines with a layout model, classify each line's script (syllabary against Latin) on the crop, and read Cherokee lines with the step-3 model and English lines with the engine we use for English. On LoC's pages, keep LoC's English and replace Cherokee lines only where the new reading is better by the step-3 measures (the `cherokee_hybrid.py` path). The production run goes through BOINC, like all OCR; at about 1,000 pages it is one small campaign. **Measure:** Cherokee words searchable (from about 85,000 to an estimated 250,000 or more, if the GHN pages carry the same share), and the proxies on the new text.
+
+**Re-read of the pages with Cherokee lines, 11 and 12 November ([#1621](https://github.com/tgoodyear/usnewsmap.com/issues/1621)).** This is the first part of step 4 to run in production: the 191 of the 324 pages that have Cherokee lines. The other 133 have none and were skipped. The `chr_phoenix` model (step 3) read the Cherokee lines on LoC's pages, and LoC's text stayed for everything else (`export --line-read chr`, [the runbook](../../boinc/apps/ocr-bundles.md)). A page is accepted when every line the job did not read is LoC's text byte for byte, and at least half of the lines it did read took the model's reading (`line-merge-v1`). An accepted page keeps LoC's text beside ours (`text_loc`). The 699 pages without OCR are not part of this run.
+
+| Export | Pages | Lines read | Model's reading | LoC's kept (fallback) | Accepted | Lines changed that weren't read |
+| ------ | ----: | ---------: | --------------: | --------------------: | -------: | ------------------------------: |
+| Test batch | 5 | 648 | 586 | 62 | 5 | 0 |
+| 2 | 61 | 5,229 | 4,972 | 257 | 61 | 0 |
+| 3 | 62 | 5,415 | 5,170 | 245 | 62 | 0 |
+| 4 | 62 | 5,374 | 5,059 | 315 | 62 | 0 |
+| **Total** | **190** | **16,666** | **15,787** | **879** | **190** | **0** |
+
+- **Fallbacks.** A line goes back to LoC's reading when the model read nothing (9 lines), fewer than half as many syllabary letters as LoC (280), or fewer New Testament words than LoC (590), as in `reading_fails` in `usnm-core`.
+- **Totals.** 94.7% of the 16,666 lines took the model's reading. All 190 pages were accepted. The run's stop rule halts on any line changed that the job hadn't read, which would be a bug, and none changed. `line-report` also gives a damage figure per page for ours and for LoC's text. Averaged over pages it was lower for ours in exports 2, 3 and 4: 0.0261 against 0.0341, 0.0437 against 0.0528, and 0.0631 against 0.0722. Over all 190 pages it was lower for ours on 50, higher on 3 and equal on 137. It is a damage score; step 3 reports character error.
+- **Page not read.** `sn83020874/1829-03-04/ed-1/seq-2` has Cherokee lines but no scan on our storage. It waits until one can be fetched.
+- **Test-set pages.** 29 of the 190 pages are test-set pages (13 in export 2, 10 in export 3, 6 in export 4). The production run read them as approved, so their numbers are production output. The model's training lines were cut from the other 161. None of this measures how well the model reads unseen pages; step 3's test does that.
+- **Search.** `collect` publishes each accepted page to the OCR output (`ocr-out`); the 190 parts have not been listed to confirm it. The pages reach search at the next full rebuild. Whether they wait for the planned one or get one of their own is open.
+
+**Machine admission.** Each machine ran gold units on the model's worker image (`840487b2…`) and was admitted when its English gold reports passed, under a line-job trust scope of its own (#1753): `chr/chr_phoenix`, with the same `max_cer` (0.0873) as English. Only that entry of `gold/trust.json` changed, checked against a backup each time, and English trust stayed byte for byte as it was.
+
+- One of our machines passed with 20 of 20 gold units, each at 0.0716 character error. It ran the test batch and exports 2 and 3 alone.
+- A second machine's first set of 20 units had one unit that skipped a crop (29 of 30), after its client had been paused and resumed. It was not admitted from that set. A fresh set of 20 passed with 30 crops each and the same 0.0716, and the machine took 20 of the 62 jobs of export 4. The first set was kept as evidence.
+- A third machine had finished none of its 20 units by the end of the run, because its two CPUs were held by OCR tasks that average 2.5 hours. It is not in the scope. One more `gold-trust` adds it when its units finish.
+
+**Scheduler batch check.** The first gold units could not be sent. The scheduler's batch patch expected batch 1 of every Docker plan class it didn't list, so it refused every unit in batch 1621 for the new `docker_lines` class, silently: the units never got a result row, and the scheduler's log said `App version for assigned WU not found` ([#1772](https://github.com/tgoodyear/usnewsmap.com/pull/1772)). With the batch bounds in `plan_class_spec.xml` now authoritative for any class that names them, the units went out and the run above followed. The runbook now lists the scheduler check, how long gold waits behind a machine's running OCR, and partial trust ([#1793](https://github.com/tgoodyear/usnewsmap.com/pull/1793)).
 
 **Script detection.** Tesseract's own fallback can't split the scripts. With `chr+eng` it re-reads low-confidence words in English and wrote 863 Latin words on test lines that have essentially none, because 16 of the type's letters are Latin small capitals. Per-word script detection is [#1666](https://github.com/tgoodyear/usnewsmap.com/issues/1666). Its classifier looks at the word crop and at the lines around it, since an English name usually follows its syllabary form in parentheses.
 
