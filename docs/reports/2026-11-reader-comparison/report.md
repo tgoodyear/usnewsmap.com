@@ -53,9 +53,9 @@ American Stories returns text on 59 crops, so its 345-crop CER is mostly missing
 
 ## German Tesseract against LoC
 
-The German Tesseract text (`frak2021`, PSM 3, 300 DPI) is live in search. The question was whether it beats LoC's text, by damage band. This report can't answer it. LoC has no text for `de-rz81` or `de-nzz`, so neither has an ours-against-LoC pair, and neither is in the corpus, so neither has a damage band. No German Chronicling America page has a human transcription yet. The absolute German numbers are in the table above: 4.66% on Reichsanzeiger and 15.57% on NZZ at PSM 3.
+The German Tesseract text (`frak2021`, PSM 3, 300 DPI) is live in search, and the question was whether it beats LoC's text by damage band. This report can't answer it, and the band check is parked: the typed-transcription tool for the 154 band crops was dropped, so those crops have no human truth and no truth source is planned for now. LoC has no text for `de-rz81` or `de-nzz`, so neither has an ours-against-LoC pair, and neither is in the corpus, so neither has a damage band. The absolute German numbers are in the table above: 4.66% on Reichsanzeiger and 15.57% on NZZ at PSM 3.
 
-For the human-truth draw, the live German `frak2021` pages are 19,896 of the 21,290 in the release's replacement list, and 19,508 of those have a standard page id. By LoC damage (`loc_damage`) those split into 3,568 below 0.10, 1,110 from 0.10 to 0.20, 23 from 0.20 to 0.25, 10,139 from 0.25 to 0.32 and 4,668 from 0.32 up. The draw uses masters already on the scan server, so it needs nothing from LoC. The page draw and crop boxes are in the hand-off to the human-truth workstream.
+The crops, boxes and per-crop readings (live ALTO, LoC ALTO and Tesseract on the crop) stay on disk, and `scripts/score_de968.py` stays in this change, so the check can run if a truth source appears. All German frak2021 text is revoked at the next full rebuild, and the check was only ever about which bands could earn their way back later.
 
 ## What is not in this report
 
