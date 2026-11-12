@@ -535,6 +535,8 @@ The maintainer approves each live run:
 
 5. Run `db` in `usnm-boinc-server` with a 0600 mysql defaults file for a user that can delete from `workunit` and `result` (remove it afterwards); the bridge receipt must name the batch's manifest. In 500-workunit transactions it locks (`SELECT ... FOR UPDATE`), exports to `db/chunk-<NNNN>-attempt-<N>/` and deletes only workunits assimilated (2) with inputs deleted (2) whose results are over (5) with outputs deleted (2); the rest are `deferred` to `db_purge` and still count toward the workunit cap. A stop before `COMMIT` rolls the chunk back and the resume exports it again; after `COMMIT` the export counts as deleted.
 
+   Deferred rows can be retried later, once `db_purge` and `file_deleter` have finished with them. Rerun with `--apply --confirm-controller-paused --recheck-deferred`: it needs the batch's complete `receipts/db.json` and its `db-plan.json`, looks only at the rows the receipt records as deferred, checks each again under its lock, and exports and deletes those now finished into a new `db/chunk-<NNNN>-attempt-<N>/`. Rows the receipt already records as deleted are never planned again, and the step's final check that every archived row is gone still runs. The receipt is rewritten with the new totals and a `rechecks` entry only when something changed, so a second run with nothing new leaves every file as it was. Run it as often as needed until `deferred` is 0 in the receipt. The plain dry run shows how many rows are ready now.
+
    ```sh
    podman exec usnm-boinc-server python3 /project/archive/archive_history.py db \
      --batch-dir /project/archive/batches/<NNNN> \

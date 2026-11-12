@@ -1771,11 +1771,14 @@ def exported_ids(path):
     return {int(line.split("\t")[0]) for line in lines[1:]}
 
 
-def db_chunk(session, batch, index, ids):
+def db_chunk(session, batch, index, ids, prior=None):
     """Archives one chunk of the batch's workunits in one transaction. Its rows are locked,
     checked again and exported to the archive, and only then deleted. A crash before COMMIT
     rolls the deletes back, and the next attempt exports the rows again beside the first
-    export; one after COMMIT leaves an export the next attempt finds the deleted rows in."""
+    export; one after COMMIT leaves an export the next attempt finds the deleted rows in.
+
+    With `prior` (the chunk's recorded part, whose still-deferred rows are `ids`), this is a
+    re-check: it handles only those rows, and the part it writes adds to the recorded one."""
     directory = batch / "db"
     earlier = sorted(directory.glob(f"chunk-{index:04d}-attempt-*/workunit.tsv"))
     session.query("START TRANSACTION")
@@ -1822,6 +1825,14 @@ def db_chunk(session, batch, index, ids):
             "deleted_earlier": sorted(gone & before),
             # Gone without an export here, as db_purge would leave them.
             "vanished": sorted(gone - before), "files": files}
+    if prior is not None:
+        part = {"chunk": index, "ids": prior["ids"],
+                "deleted": sorted(prior["deleted"] + part["deleted"]),
+                "deferred": part["deferred"],
+                "deleted_earlier": sorted(prior["deleted_earlier"] + part["deleted_earlier"]),
+                "vanished": sorted(prior["vanished"] + part["vanished"]), "files": files}
+        if part == prior:
+            return prior
     write_json(directory / f"chunk-{index:04d}.json", part)
     return part
 
@@ -1851,6 +1862,13 @@ def db(args):
               "results": sum(row["results"] for row in ready), "existing_workunits": before})
         return 0
     require_apply(args)
+    old = None
+    if args.recheck_deferred:
+        old = read_json(receipt_path) if receipt_path.is_file() else None
+        require(old is not None and old.get("complete") is True
+                and old.get("manifest_sha256") == manifest_sha256 and plan_path.is_file()
+                and old.get("plan_sha256") == sha256_file(plan_path),
+                "--recheck-deferred needs this batch's complete db receipt and its plan")
     if plan_path.is_file():
         plan = read_json(plan_path)
         require(plan.get("manifest_sha256") == manifest_sha256, "db-plan.json belongs to another batch")
@@ -1866,7 +1884,16 @@ def db(args):
     try:
         for index, ids in enumerate(chunks(plan["ids"]), 1):
             done = batch / "db" / f"chunk-{index:04d}.json"
-            parts.append(read_json(done) if done.is_file() else db_chunk(session, batch, index, ids))
+            if not done.is_file():
+                require(old is None, f"db/{done.name} is missing; a complete receipt needs every chunk")
+                parts.append(db_chunk(session, batch, index, ids))
+            else:
+                part = read_json(done)
+                # Rows a chunk already deleted are never planned again; only its recorded
+                # deferred rows are looked at, and each is checked again under its lock.
+                if old is not None and part["deferred"]:
+                    part = db_chunk(session, batch, index, part["deferred"], prior=part)
+                parts.append(part)
     finally:
         session.close()
     deleted = {row for part in parts for row in part["deleted"] + part["deleted_earlier"]}
@@ -1875,6 +1902,12 @@ def db(args):
     exports = {path: digest for part in parts for path, digest in part["files"].items()}
     for path, digest in exports.items():
         require(sha256_file(batch / "db" / path) == digest, f"the archived db/{path} changed")
+    if old is not None and all(old[key] == value for key, value in (
+            ("deleted_workunits", len(deleted)), ("vanished", sum(len(part["vanished"]) for part in parts)),
+            ("deferred", sum(len(part["deferred"]) for part in parts)), ("exports", exports))):
+        # Nothing changed: the receipt stays as it is, so a second re-check is a no-op.
+        emit({"event": "boinc_archive_db", "apply": True, "recheck_deferred": True, "changed": False, **old})
+        return 0
     receipt = {
         "schema_version": SCHEMA_VERSION, "step": "db", "batch": batch.name, "complete": True,
         "finished_at": int(time.time()), "manifest_sha256": manifest_sha256,
@@ -1884,6 +1917,12 @@ def db(args):
         "vanished": sum(len(part["vanished"]) for part in parts),
         "absent": len(names) - len(plan["ids"]), "exports": exports,
     }
+    if old is not None:
+        # The first apply's time stays; each changing re-check adds a line.
+        receipt["finished_at"] = old["finished_at"]
+        receipt["rechecks"] = old.get("rechecks", []) + [{
+            "at": int(time.time()), "deleted_workunits": len(deleted) - old["deleted_workunits"],
+            "deferred": receipt["deferred"]}]
     write_json(receipt_path, receipt)
     emit({"event": "boinc_archive_db", "apply": True, **receipt})
     return 0
@@ -1932,6 +1971,9 @@ def main(argv=None):
     three.add_argument("--database", required=True, help="the BOINC database's name")
     three.add_argument("--mysql-ca", default="/usr/local/share/usnm/mysql-ca.pem", help="the server's CA")
     three.add_argument("--mysql", default="mysql", help="the mysql client")
+    three.add_argument("--recheck-deferred", action="store_true",
+                       help="with --apply on a batch whose receipt is complete: check the rows it "
+                            "recorded as deferred again, and archive and delete those now finished")
     common(three)
     four = steps.add_parser("restore-held", help="an archived batch's held pages, back for publishing (controller host)")
     four.add_argument("--config", type=Path, required=True, help="the controller's config")
