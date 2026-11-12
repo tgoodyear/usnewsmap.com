@@ -346,11 +346,17 @@ impl Cache {
             let job: qwen::Job = serde_json::from_slice(&bytes)?;
             let mut paths = vec![path.clone()];
             let mut salt = Vec::new();
-            paths.extend(super::collect::spool_files(
+            if let Some(spool) = super::collect::qwen_spool_for(
+                &job,
                 &opts.qwen_spool,
-                &job.workunit(),
-                &crate::qwen::outputs(),
-            ));
+                opts.qwen_xiaomi_spool.as_deref(),
+            ) {
+                paths.extend(super::collect::spool_files(
+                    spool,
+                    &job.workunit(),
+                    &crate::qwen::outputs(),
+                ));
+            }
             if let Some(dir) = &opts.qwen_crop_states {
                 // A pair judged later can vouch for more of the same canonical result.
                 let records = crate::qwen::consensus::record_paths(dir, &job.id)?;
