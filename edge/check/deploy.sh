@@ -71,7 +71,8 @@ trap 'rm -f "$ROOT/edge/check/public/build.txt"' EXIT
 unset TOKEN
 
 # A new version has taken over two minutes to reach every request (10 Nov 2026), so wait up to ten.
-deadline=$((SECONDS + 600))
+# CHECK_DEPLOY_WAIT_SECONDS shortens that for deploy.test.mjs.
+deadline=$((SECONDS + ${CHECK_DEPLOY_WAIT_SECONDS:-600}))
 until [ "$(curl --silent --max-time 10 "$SITE/build.txt?$RANDOM" || true)" = "$tree" ]; do
   [ "$SECONDS" -lt "$deadline" ] || die "check.usnewsmap.com doesn't serve build $tree ten minutes after the deploy"
   sleep 10
