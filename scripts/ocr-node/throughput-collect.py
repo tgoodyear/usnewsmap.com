@@ -257,14 +257,16 @@ def limits_now(event):
 def collect_controller(window, entries):
     """The controller units' journal. Pages collected are counted from each collect's own
     `boinc_batch_collected` line, logged as soon as collect ends, so a tick that fails or never
-    finishes still counts them. A tick from a controller that doesn't log it yet counts its
-    `newly_published` instead, and a tick that does counts only what collect didn't publish.
-    Each plan's tick is told apart by the plan and the time it began, so a line read twice, or
-    two units running the same plan, count once."""
+    finishes still counts them. A finished tick's `newly_published` runs from the plan's last
+    finished tick, so it counts only what exceeds the collects counted since then: a tick from a
+    controller that doesn't log them yet counts all of it, and pages a failed tick collected are
+    not counted again when the next one finishes. A line read twice, or two units running the
+    same plan, count once. Only the live plan's ticks (not a draining or native plan's, whose
+    pending work and limits are another queue's) set the queue reading and the limits."""
     for name in ("ticks_ok", "ticks_failed", "tick_seconds", "tick_busy_seconds", "ocr_claim_pages",
                  "ocr_collect_pages"):
         window.declare(name)
-    selected, limits, collected, ticks, pending = {}, {}, {}, set(), {}
+    selected, limits, collected, unsettled, ticks = {}, {}, set(), {}, set()
     for logged, _, message in entries:
         event = json_event(message)
         if event is None or type(event.get("at")) is not int:
@@ -272,10 +274,10 @@ def collect_controller(window, entries):
         at, kind = event["at"], event.get("event")
         plan = event.get("plan")
         if kind == "boinc_batch_collected":
-            key = (plan, at)
-            if key not in collected:
-                collected[key] = number(event.get("pages"))
-                window.add("ocr_collect_pages", logged, collected[key])
+            if (plan, at) not in collected:
+                collected.add((plan, at))
+                unsettled[plan] = unsettled.get(plan, 0) + number(event.get("pages"))
+                window.add("ocr_collect_pages", logged, number(event.get("pages")))
         elif kind == "boinc_batch_phase":
             phase = event.get("phase")
             if isinstance(phase, str) and PHASE_NAME.fullmatch(phase):
@@ -303,18 +305,18 @@ def collect_controller(window, entries):
                 window.spread("tick_busy_seconds", at - seconds, at)
             if good:
                 window.add("ocr_collect_pages", at, max(0, number(event.get("newly_published"))
-                                                        - collected.get((plan, began), 0)))
+                                                        - unsettled.pop(plan, 0)))
                 # A new plan starts its count again.
                 if plan in selected:
                     window.add("ocr_claim_pages", at, max(0, number(event.get("selected")) - selected[plan]))
                 selected[plan] = number(event.get("selected"))
-                # A draining plan has no queue of its own to report.
-                if event.get("draining") is True:
+                # A draining plan has no queue of its own to report, and a native plan's is
+                # another one's: the container plan's count takes in every plan's journals.
+                if event.get("draining") is True or "native" in event:
                     continue
-                # At BOINC, held for collection, or selected with no job yet: the hour's last
-                # reading of each plan, added up.
+                # At BOINC, held for collection, or selected with no job yet.
                 if type(event.get("cohort_pending")) is int:
-                    pending.setdefault(int(at) // HOUR * HOUR, {})[plan] = number(event["cohort_pending"])
+                    window.gauge("ocr_pending_pages", at, number(event["cohort_pending"]))
                 cap = f"{int(number(event.get('max_global_pending')))} across all apps"
                 budget, hard = event.get("other_app_budget"), event.get("global_hard_cap")
                 if type(budget) is int and type(hard) is int:
@@ -323,8 +325,6 @@ def collect_controller(window, entries):
                                       "(controller high watermark)",
                           "ocr_claim": f"{int(number(event.get('high_watermark')))} pending pages; {cap}",
                           **limits_now(event)}
-    for hour, plans in pending.items():
-        window.gauge("ocr_pending_pages", hour, sum(plans.values()))
     limits["controller"] = "one tick at a time, on a 5 minute timer"
     return limits
 

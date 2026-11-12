@@ -285,13 +285,27 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(w.series["ocr_pending_pages"][2], 40)
         self.assertIn("300 runnable", limits["usnm_ocr"])
 
-    def test_two_plans_pending_readings_are_added(self):
+    def test_a_native_plans_ticks_set_neither_the_queue_reading_nor_the_limits(self):
         w = window()
         at = THIS_HOUR + 10
-        collector.collect_controller(w, [(at, "", tick(at, plan="a", cohort_pending=10)),
-                                         (at + 1, "", tick(at + 1, plan="b", cohort_pending=5)),
-                                         (at + 300, "", tick(at + 300, plan="a", cohort_pending=7))])
-        self.assertEqual(w.series["ocr_pending_pages"][2], 12)
+        native = json.loads(tick(at + 300, plan="native-1", cohort_pending=4, high_watermark=4, published=3))
+        native["native"] = {"hosts": []}
+        limits = collector.collect_controller(w, [(at, "", tick(at, plan="live", cohort_pending=225)),
+                                                  (at + 300, "", json.dumps(native))])
+        self.assertEqual(w.series["ocr_pending_pages"][2], 225)
+        self.assertIn("300 runnable", limits["usnm_ocr"])
+        self.assertEqual(w.series["ocr_collect_pages"][2], 5)
+
+    def test_pages_a_failed_tick_collected_are_not_counted_again_when_the_next_finishes(self):
+        w = window()
+        at = THIS_HOUR + 100
+        entries = [(at + 20, "u", collected(at, "live", 2)),
+                   (at + 40, "u", json.dumps({"event": "boinc_batch_failure", "at": at, "error": "x"})),
+                   # The next tick collects nothing; its summary still carries the earlier two.
+                   (at + 400, "u", tick(at + 300, plan="live", published=2)),
+                   (at + 700, "u", tick(at + 600, plan="live", published=1))]
+        collector.collect_controller(w, entries)
+        self.assertEqual(w.series["ocr_collect_pages"][2], 3)
 
     def test_a_plan_that_disappears_keeps_its_pages_and_does_not_break_the_others(self):
         w = window()
