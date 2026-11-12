@@ -8,13 +8,15 @@ and DIR/readers/{ours-live-alto,loc-alto}.jsonl. Crops without a transcription a
 (never scored against anything else). Refuses to run if no crop has a transcription. Runs
 `gpu-study score` with the band as `source`, ours as the baseline, then applies the rule:
 
-  keep ours in a band when the paired CER difference ours - LoC has 95% limits below zero;
-  revoke when the limits are above zero; "undecided" when they include zero (counts as revoke for
-  the page list unless --keep-undecided), with a band under 5 pages always undecided (protocol rule 1).
+  re-add ("keep") ours in a band when the paired CER difference ours - LoC has 95% limits below zero;
+  "revoke" (stay out) when the limits are above zero; "undecided" when they include zero or the band
+  has under 5 pages (protocol rule 1). Undecided bands stay out.
 
-With --live (the decoded pages-v20261026-1 list) it also writes pages-<band>.txt for the bands to revoke:
-every live German page whose loc_damage falls in the band (page ids only). The write-up must say that the
-three lowest bands are one title (sn84027101) and that new titles default to held.
+All German frak2021 text is being revoked at the ~19 Nov rebuild. This script says which bands earn their
+way back at a later rebuild: with --live (the decoded pages-v20261026-1 list) it writes readd-<band>.txt for
+each band where ours beats LoC (verdict keep): every live German page whose loc_damage falls in the band
+(page ids only). The write-up must say that the three lowest bands are one title (sn84027101) and that
+new titles stay out by default.
 """
 import argparse, csv, json, subprocess, sys
 from pathlib import Path
@@ -24,7 +26,6 @@ ap.add_argument("--dir", type=Path, required=True)
 ap.add_argument("--gpu-study", required=True)
 ap.add_argument("--out", type=Path, required=True)
 ap.add_argument("--live", type=Path)
-ap.add_argument("--keep-undecided", action="store_true")
 a = ap.parse_args()
 a.out.mkdir(parents=True, exist_ok=True)
 man = {r["crop_id"]: r for r in map(json.loads, (a.dir / "crops/manifest.jsonl").read_text().splitlines())}
@@ -67,7 +68,7 @@ if a.live:
         if r["lang"] == "ger":
             pages[names[sum(float(r["loc_damage"]) >= e for e in edges)]].append(r["doc_id"])
     for n in names:
-        revoke = rule.get(n) == "revoke" or (rule.get(n) == "undecided" and not a.keep_undecided)
-        if revoke:
-            (a.out / f"pages-{n.replace('<', 'lt').replace('>=', 'ge')}.txt").write_text("".join(p + "\n" for p in sorted(pages[n])))
-        print(f"band {n}: {len(pages[n])} live pages; {'revoke' if revoke else 'keep'}")
+        readd = rule.get(n) == "keep"
+        if readd:
+            (a.out / f"readd-{n.replace('<', 'lt').replace('>=', 'ge')}.txt").write_text("".join(p + "\n" for p in sorted(pages[n])))
+        print(f"band {n}: {len(pages[n])} live pages; {'re-add' if readd else 'stay out'}")
