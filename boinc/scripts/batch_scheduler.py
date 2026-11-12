@@ -2343,10 +2343,13 @@ def settled_messages(records, claimed=None):
         page = message.get("page") if isinstance(message, dict) else None
         if isinstance(page, str) and PAGE_KEY.fullmatch(page):
             shas = found.setdefault(page.replace("/", "_"), set())
-            shas.add(queue_message_sha256(message))
-            wanted = claimed.get(page, set()) - shas
+            own = queue_message_sha256(message)
+            shas.add(own)
+            wanted = claimed.get(page, set())
             score = message.get("score")
-            if wanted and type(score) is float and math.isfinite(score):
+            # A message the page's claims already hold byte for byte needs no neighbour: a claim
+            # of an adjacent score is then another message, and stays new work.
+            if wanted and own not in wanted and type(score) is float and math.isfinite(score):
                 for toward in (math.inf, -math.inf):
                     sha = queue_message_sha256({**message, "score": math.nextafter(score, toward)})
                     if sha in wanted:

@@ -2456,6 +2456,10 @@ class QueueModeTests(unittest.TestCase):
         later = {**sent, "queued_at": "2026-11-20T01:06:34.682771Z"}
         self.assertEqual(batch.settled_messages([record], {sent["page"]: {batch.queue_message_sha256(later)}})[doc],
                          {batch.queue_message_sha256(journaled)})
+        # The journal's own sha256 among the claims: an adjacent score's claim is another message.
+        adjacent = {**sent, "score": math.nextafter(journaled["score"], -math.inf)}
+        both = {sent["page"]: {batch.queue_message_sha256(journaled), batch.queue_message_sha256(adjacent)}}
+        self.assertEqual(batch.settled_messages([record], both)[doc], {batch.queue_message_sha256(journaled)})
         # An exact match needs no neighbour; a claim without a float score matches as before.
         exact = {"plan": "queue-feed-11", "stage": "published", "job": {"id": "b" * 64, "message": sent}}
         self.assertEqual(batch.settled_messages([exact], claimed)[doc], {batch.queue_message_sha256(sent)})
