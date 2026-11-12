@@ -15,8 +15,9 @@ zip's llama-server.exe and DLLs, unchanged, plus the Windows native CI artifact'
 and its signed app-local Microsoft runtime DLLs, each checked against the artifact's SHA256SUMS:
 
     usnm_qwen_windows_x86_64.exe    the binary, as built
-    extra/<logical>                 llama-server.exe, every ggml*.dll, llama.dll, mtmd.dll,
-                                    libomp140.x86_64.dll, the Microsoft runtime DLLs and the locks
+    extra/<logical>                 llama-server.exe, llama-server-impl.dll, llama-common.dll,
+                                    every ggml*.dll, llama.dll, mtmd.dll, libomp.dll, the
+                                    Microsoft runtime DLLs and the locks
 
 The same inputs give the same bytes. `verify` rehashes a directory; with --same-runtime-as it also
 checks that the llama.cpp runtime (every extra file but the two locks) is byte for byte that of an
@@ -40,7 +41,8 @@ DISK_POLICY = ROOT / "boinc/apps/qwen/disk-policy.json"
 ASSET = "ubuntu-vulkan-x64"
 PLATFORM = "x86_64-pc-linux-gnu"
 # The llama.cpp source commit of each pinned tag (docs/boinc/apps/intel-gpu.md); a new pin is reviewed here.
-LLAMA_SOURCE = {"b8799": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"}
+LLAMA_SOURCE = {"b8799": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd",
+                "b12084": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"}
 PLAN_CLASSES = ("nvidia_vulkan_2b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_8b", "intel_vulkan_8b")
 BINARY = f"usnm_qwen_{PLATFORM}"
 # windows_x86_64 (#1672). NVIDIA (full and 6 GB partial-offload 8B) and Intel take the pinned
@@ -50,17 +52,21 @@ WIN_ASSET = "win-vulkan-x64"
 WIN_PLATFORM = "windows_x86_64"
 WIN_PLAN_CLASSES = ("nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "intel_vulkan_8b")
 WIN_BINARY = f"usnm_qwen_{WIN_PLATFORM}.exe"
-WIN_RUNTIME = re.compile(r"llama-server\.exe|ggml[A-Za-z0-9_-]*\.dll|llama\.dll|mtmd\.dll|libomp140\.x86_64\.dll")
+# From b12084, llama-server.exe is a launcher for llama-server-impl.dll and llama-common.dll, and the
+# OpenMP runtime is libomp.dll (b8799's libomp140.x86_64.dll).
+WIN_RUNTIME = re.compile(r"llama-server\.exe|llama-server-impl\.dll|llama-common\.dll|ggml[A-Za-z0-9_-]*\.dll"
+                         r"|llama\.dll|mtmd\.dll|libomp\.dll")
 # The Microsoft runtime the Windows native CI job bundles and Authenticode-checks (VC_REDIST_SOURCE.json).
 WIN_CRT = re.compile(r"(concrt140|msvcp140(_[a-z0-9_]+)?|vccorlib140|vcruntime140(_[a-z0-9_]+)?)\.dll")
 # What install.py requires of a Windows Vulkan bundle.
-WIN_REQUIRED = {"llama-server.exe", "llama.lock", "weights.lock", "ggml-vulkan.dll", "ggml-base.dll", "ggml.dll",
-                "llama.dll", "mtmd.dll", "ggml-cpu-x64.dll", "libomp140.x86_64.dll", "msvcp140.dll",
+WIN_REQUIRED = {"llama-server.exe", "llama-server-impl.dll", "llama-common.dll", "llama.lock", "weights.lock",
+                "ggml-vulkan.dll", "ggml-base.dll", "ggml.dll",
+                "llama.dll", "mtmd.dll", "ggml-cpu-x64.dll", "libomp.dll", "msvcp140.dll",
                 "vcruntime140.dll", "vcruntime140_1.dll"}
 LIBRARY = re.compile(r"lib[A-Za-z0-9_-]+\.so(\.[0-9]+)*")
 # What install.py requires of a Linux Vulkan bundle, and what llama-server links.
 REQUIRED = {"llama-server", "llama.LICENSE", "llama.lock", "weights.lock", "libggml.so", "libggml-base.so",
-            "libggml-vulkan.so", "libllama.so", "libmtmd.so"}
+            "libggml-vulkan.so", "libllama.so", "libmtmd.so", "libllama-server-impl.so", "libllama-common.so.0"}
 
 
 def sha256(path):

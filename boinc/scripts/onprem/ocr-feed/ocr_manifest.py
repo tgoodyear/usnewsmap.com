@@ -596,8 +596,7 @@ def cmd_build_quality(a):
     behind OCR's. Taking whole issues lets the fetcher ask for each issue's METS, and each
     batch's manifest, once for all their pages, about one request a page. --batches limits
     the pass to those batches (LoC's bucket's public ones, say). Every row's lang is `eng`,
-    so the fetcher files the scan in its buffer set, which the quality feeder deletes once
-    the page's unit has shipped, bar the most damaged it keeps for re-OCR (--keep-bytes);
+    so the fetcher files the scan in its buffer set (no scan is deleted since 8 November 2026);
     the page's own language stays in usnm_quality. Pages
     already in the scan server's index are left out even if their scan is gone: the
     fetcher's `.done` markers keep it from fetching a consumed buffer page again, so

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Patch only b8799's missing Windows Vulkan identity; never infer GPU ordinals."""
+"""Patch only b12084's missing Windows Vulkan identity; never infer GPU ordinals."""
 import argparse
 import hashlib
 from pathlib import Path
 
-SOURCE_COMMIT = "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd"
-SOURCE_SHA256 = "2461eddbbc2c71922fbebe6e4bd42091597c3df4bad8acf2b56287447019887e"
+SOURCE_COMMIT = "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+SOURCE_SHA256 = "ab0ad31fea14e43f3e7762601f2164ee57629191a082ef86f5ac0e95430fc47d"
 ANCHOR = '''    if (!ext_support) {
         return "";
     }
@@ -38,7 +38,7 @@ REPLACEMENT = '''    if (!ext_support) {
 def patch(source: Path) -> None:
     original = source.read_bytes()
     if hashlib.sha256(original).hexdigest() != SOURCE_SHA256:
-        raise ValueError("expected unchanged pinned b8799 ggml-vulkan.cpp")
+        raise ValueError("expected unchanged pinned b12084 ggml-vulkan.cpp")
     text = original.decode()
     start = text.index("static std::string ggml_backend_vk_get_device_pci_id(")
     prefix, function = text[:start], text[start:]

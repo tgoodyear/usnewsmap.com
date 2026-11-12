@@ -1,9 +1,8 @@
 # The quality piggyback and the full image pass's feeder (#962), in the batch container
 # CT215: quality_feed.py follow gives every page the scan fetcher writes (OCR's and the
-# quality pass's) that no campaign has staged a usnm_quality unit, in fetch order, and
-# deletes the quality pass's buffer scans once their chunk has shipped, except the most
-# damaged, up to KEEP_BYTES, which stay for re-OCR. Settings in
-# /etc/usnm/quality-follow.env (CAMPAIGN, SCAN_SERVER, KEEP_BYTES).
+# quality pass's) that no campaign has staged a usnm_quality unit, in fetch order. It
+# deletes no scan (rule of 8 November 2026): it only GETs from the scan server. Settings in
+# /etc/usnm/quality-follow.env (CAMPAIGN, SCAN_SERVER).
 [Unit]
 Description=usnewsmap quality piggyback and image pass feeder (#962)
 Wants=network-online.target
@@ -12,9 +11,7 @@ RequiresMountsFor=/srv/curated /var/lib/usnm-quality-feed/outbox
 
 [Service]
 Type=simple
-# No retention unless quality-follow.env, below, sets KEEP_BYTES.
-Environment=KEEP_BYTES=0
-# The feeder's limits from quality-feed.env, then this mode's campaign, server and budget.
+# The feeder's limits from quality-feed.env, then this mode's campaign and server.
 EnvironmentFile=/etc/usnm/quality-feed.env
 EnvironmentFile=/etc/usnm/quality-follow.env
 Environment=LC_ALL=C.UTF-8
@@ -22,10 +19,8 @@ ExecStart=/bin/sh -c 'exec /opt/usnm-quality-feed/venv/bin/python /opt/usnm-qual
   --campaign "$CAMPAIGN" --curated /srv/curated --scan-server "$SCAN_SERVER" \
   --outbox /var/lib/usnm-quality-feed/outbox --state /var/lib/usnm-quality-feed \
   --staged /var/lib/usnm-quality-feed/work/staged-docs.txt --staged-dsn "$(cat /etc/usnm/quality-db/dsn)" \
-  --quality-docs /var/lib/usnm-ocr-manifest/quality-docs.txt --ocr-docs /var/lib/usnm-ocr-manifest/ocr-docs.txt \
-  --ocr-active /var/lib/usnm-ocr-manifest/ocr-active.txt \
   --chunk-pages "$CHUNK_PAGES" --max-pending "$MAX_PENDING" --workers "$WORKERS" --every-secs 600 \
-  --keep-bytes "$KEEP_BYTES" --quarantine-decode'
+  --quarantine-decode'
 Restart=on-failure
 RestartSec=300
 Nice=10
