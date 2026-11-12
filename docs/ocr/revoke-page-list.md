@@ -56,10 +56,11 @@ Select the cells to revoke. This example is the provisional list on #835
 final rule from #968:
 
 ```sh
-awk -F'\t' 'NR > 1 && $2 == "tesseract/5.5.0 frak2021" && (
-    ($7 == "worst" && ($5 == 1890 || $5 == 1900)) ||
-    (($7 == "moderate" || $7 == "low") && $5 >= 1870 && $5 <= 1910)
-  ) { print $1 }' "$T" | sort -u > /var/tmp/revoke-doc-ids.txt
+awk -F'\t' 'NR > 1 && $2 == "tesseract/5.5.0 frak2021" &&
+  (($7 == "worst" && ($5 == 1890 || $5 == 1900)) ||
+   (($7 == "moderate" || $7 == "low") && $5 >= 1870 && $5 <= 1910)) {
+    print $1
+  }' "$T" | sort -u > /var/tmp/revoke-doc-ids.txt
 wc -l /var/tmp/revoke-doc-ids.txt   # must not be 0
 ```
 
