@@ -15,7 +15,7 @@ Environment=QUALITY_COLLECTOR=/project/ops/quality-results/usnm-boinc
 # Seconds for the full scheduling inventory outside the step lock; override in quality-results.env.
 Environment=INVENTORY_BUDGET_SECS=3600
 EnvironmentFile=-/etc/usnm/quality-results.env
-ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/quality_results_partial.py --campaign ${CAMPAIGN} --engine-image ${ENGINE_IMAGE} --ctid ${CTID} --collector ${QUALITY_COLLECTOR} --completion-frontier --inventory-budget-secs ${INVENTORY_BUDGET_SECS}
+ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/quality_results_partial.py --campaign ${CAMPAIGN} --engine-image ${ENGINE_IMAGE} --ctid ${CTID} --collector ${QUALITY_COLLECTOR} --completion-frontier --no-inline-inventory --inventory-budget-secs ${INVENTORY_BUDGET_SECS}
 # The hourly inventory refresh can use its whole budget (at most 2 hours) before the pass itself.
 TimeoutStartSec=2h15min
 Nice=10

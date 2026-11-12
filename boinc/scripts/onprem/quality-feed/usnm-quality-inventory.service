@@ -1,0 +1,22 @@
+# On pve-laptop: refresh the partial loader's full scheduling inventory. It reads units and spool
+# files only, takes no step lock, and runs apart from usnm-quality-results.service so its 13
+# minutes or more never stop that service from loading. The loader runs with --no-inline-inventory
+# once this timer is on.
+[Unit]
+Description=usnewsmap partial quality results scheduling inventory refresh (no step lock)
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/usnm/quality-ship.env
+
+[Service]
+Type=oneshot
+SuccessExitStatus=75
+EnvironmentFile=/etc/usnm/quality-ship.env
+Environment=CTID=215
+Environment=QUALITY_COLLECTOR=/project/ops/quality-results/usnm-boinc
+Environment=INVENTORY_BUDGET_SECS=3600
+EnvironmentFile=-/etc/usnm/quality-results.env
+ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/quality_results_partial.py --refresh-inventory-only --campaign ${CAMPAIGN} --collector ${QUALITY_COLLECTOR} --inventory-budget-secs ${INVENTORY_BUDGET_SECS}
+# The budget (at most 2 hours) plus the driver's own grace, so it can record a timed-out attempt.
+TimeoutStartSec=2h15min
+Nice=10

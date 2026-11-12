@@ -6,6 +6,8 @@ uses the existing Rust stage/submit commands and shared pinned models, never a n
 quorum, retry identity or manually generated BOINC result.
 """
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import json
 import logging
@@ -929,6 +931,60 @@ def retire_parent(a):
     print(json.dumps({"retired_parent": a.retire_parent}))
 
 
+@contextlib.contextmanager
+def stage_roots_lock(share, wait_secs=None):
+    """One lock for every root's duplicate-page check and staging, taken by `--phase prepare` and by
+    a subset transaction (the step lock no longer orders them). With `wait_secs`, a lock still held
+    after that long exits 75 (deferred) instead of waiting: a transaction holds the step lock, and a
+    preparation can stage for minutes."""
+    (share / "qwen").mkdir(parents=True, exist_ok=True)
+    with (share / "qwen" / ".stage-roots.lock").open("a") as lock:
+        if wait_secs is None:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        else:
+            deadline = time.monotonic() + wait_secs
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        print(json.dumps({"status": "deferred", "reason": "staging_in_progress"}), flush=True)
+                        raise SystemExit(75) from None
+                    time.sleep(1)
+        yield
+
+
+def stage_root(a, root, quality, new_pages):
+    """The pages this run stages into `root`, after the checks that no page is English, unclassified
+    or already in another root. The checks and the staging hold one lock for every root: the bridge
+    step lock used to keep two campaigns' shippers from staging one page into two roots, and
+    `--phase prepare` no longer holds it."""
+    with stage_roots_lock(a.share):
+        _stage_root(a, root, quality, new_pages)
+
+
+def _stage_root(a, root, quality, new_pages):
+    elsewhere = set()
+    for path, job in jobs(a.share / "qwen"):
+        if root not in path.parents:
+            elsewhere.update(documents(job))
+    for path in [*quality.glob("pages/*/quality.json"), *quality.glob("units/*/quality.json")]:
+        job = json.loads(path.read_text())
+        if job["language"] in ("eng", "", "und") or job["doc_id"] in elsewhere:
+            raise RuntimeError(f"Refusing English, unclassified or duplicate page: {path}")
+        assert_request_cohort(job, a.prompt_version)
+    engine = json.loads(a.engine_plan.read_text())["engine"]
+    stage = [a.stage_binary, "qwen", "stage", "--quality-root", str(quality), "--root", str(root),
+             "--engine-image", engine["image"], "--engine-llama", engine["llama"],
+             "--engine-weights", engine["weights"], "--max-pages", str(new_pages),
+             "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", str(a.bundle_size),
+             "--prompt-version", str(a.prompt_version)]
+    if a.page_records is not None:
+        stage += ["--page-records", str(a.page_records)]
+    subprocess.run(stage, check=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--share", type=Path, default=Path("/project"))
@@ -950,6 +1006,10 @@ def main():
     ap.add_argument("--submit-binary",
                     help="submit every request version with this binary (the image's usnm-boinc once it is "
                          "from #1437 on); without it, versions 3 and 4 submit with --stage-binary")
+    ap.add_argument("--phase", choices=("all", "prepare", "publish"), default="all",
+                    help="all (the default): admit, stage and submit in one run, as the bridge step lock "
+                         "holder. prepare: admit, stage and stage the shared models, which needs no step "
+                         "lock. publish: admit again and submit what is staged, the part that takes it")
     ap.add_argument("--max-pages", type=int, default=100)
     ap.add_argument("--bundle-size", type=int, default=1,
                     help="Pages per native unit, 1 to 32 (#1435). Above 1 the root keeps bundling for good, "
@@ -999,6 +1059,8 @@ def main():
         ap.error("need --campaign, --engine-plan, --models and positive bounded limits")
     if not 1 <= a.bundle_size <= 32:
         ap.error("--bundle-size takes 1 to 32 pages a unit")
+    if a.phase != "all" and (a.preflight or a.transaction):
+        ap.error("--phase is for a native submission, not --preflight or --transaction")
     if a.held_only and (a.bundle_size == 1 or a.sample or a.transaction or a.preflight):
         ap.error("--held-only needs --bundle-size above 1, and no --sample, --transaction or --preflight")
     if a.page_records is not None and (a.bundle_size == 1 or not a.page_records.is_absolute()):
@@ -1015,14 +1077,17 @@ def main():
         if a.max_ready > 1000 or a.max_unresolved > 2000 or a.min_free_gb < 50:
             ap.error("subset transactions retain the 1000/2000 watermarks and 50 GiB floor")
         try:
-            run_transaction(a)
+            with stage_roots_lock(a.share, wait_secs=30):
+                run_transaction(a)
         except subprocess.CalledProcessError as error:
             raise SystemExit(error.returncode) from error
         return
     assert_bundle_layout(root, a.bundle_size)
     # New pages this run stages; admission and submission also count the held pages that the
     # packing may publish with them.
-    new_pages = 0 if a.held_only else a.max_pages
+    # A publish run has nothing to stage: with bundles the staged units are counted as unsent, and
+    # without them each of the --max-pages pages is a unit.
+    new_pages = 0 if a.held_only or (a.phase == "publish" and a.bundle_size > 1) else a.max_pages
     held = held_pages(root) if a.bundle_size > 1 else 0
     unsent = unsubmitted_units(root) if a.bundle_size > 1 else 0
     if a.held_only and not held and not unsent:
@@ -1032,28 +1097,23 @@ def main():
     admission(a, state, root)
     if a.preflight:
         return
-    elsewhere = set()
-    for path, job in jobs(a.share / "qwen"):
-        if root not in path.parents:
-            elsewhere.update(documents(job))
-    for path in [*quality.glob("pages/*/quality.json"), *quality.glob("units/*/quality.json")]:
-        job = json.loads(path.read_text())
-        if job["language"] in ("eng", "", "und") or job["doc_id"] in elsewhere:
-            raise RuntimeError(f"Refusing English, unclassified or duplicate page: {path}")
-        assert_request_cohort(job, a.prompt_version)
-    engine = json.loads(a.engine_plan.read_text())["engine"]
-    stage = [a.stage_binary, "qwen", "stage", "--quality-root", str(quality), "--root", str(root),
-             "--engine-image", engine["image"], "--engine-llama", engine["llama"],
-             "--engine-weights", engine["weights"], "--max-pages", str(new_pages),
-             "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", str(a.bundle_size),
-             "--prompt-version", str(a.prompt_version)]
-    if a.page_records is not None:
-        stage += ["--page-records", str(a.page_records)]
-    subprocess.run(stage, check=True)
+    if a.phase != "publish":
+        stage_root(a, root, quality, new_pages)
+    if a.phase == "prepare":
+        # The shared model files are hashed here, outside the step lock; publication only checks
+        # that they are staged.
+        subprocess.run([a.stage_binary, "qwen", "submit", "--root", str(root), "--project", str(a.project),
+                        "--target", "native-8b", "--model-dir", str(a.models), "--models-only"], check=True)
+        print(json.dumps({"campaign": a.campaign, "phase": "prepared", "staged_unsent_units": unsubmitted_units(root),
+                          "held_pages": held_pages(root) if a.bundle_size > 1 else 0}, sort_keys=True))
+        return
     submit_binary = a.submit_binary or (a.stage_binary if a.prompt_version in GUARDED_VERSIONS else "usnm-boinc")
-    subprocess.run([submit_binary, "qwen", "submit", "--root", str(root), "--project", str(a.project),
-                    "--target", "native-8b", "--model-dir", str(a.models), "--max-units", str(a.max_pages)],
-                   check=True)
+    submit = [submit_binary, "qwen", "submit", "--root", str(root), "--project", str(a.project),
+              "--target", "native-8b", "--model-dir", str(a.models), "--max-units", str(a.max_pages)]
+    if a.phase == "publish" and submit_binary == a.stage_binary:
+        # Only the stage binary knows the flag; the image's usnm-boinc hashes the models again.
+        submit.append("--models-prechecked")
+    subprocess.run(submit, check=True)
     assert_submitted(root)
     print(json.dumps(audit(root, a.project), sort_keys=True))
     if a.sample:

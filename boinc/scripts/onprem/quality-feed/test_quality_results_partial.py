@@ -1,4 +1,5 @@
 """Partial publication: current inputs, explicit coverage, fail-closed loads and replay."""
+import fcntl
 import hashlib
 import importlib.util
 import io
@@ -313,6 +314,42 @@ class PartialTest(unittest.TestCase):
         self.assertTrue({"z-new-2", "z-new-3"} <= set(picks[:6]))
         self.assertTrue({"a-001", "a-002", "a-003"} <= set(picks))
 
+    def test_a_loading_run_leaves_the_inventory_refresh_to_its_own_service(self):
+        self.args.completion_frontier = True
+        self.args.inventory_refresh_secs = 3600
+        self.receipt["frontier"] = {
+            "schema": 1, "lane": "priority", "status": "canonical-present", "fingerprint": "f" * 64,
+        }
+        for inline in (True, False):
+            with self.subTest(no_inline_inventory=not inline):
+                self.args.no_inline_inventory = not inline
+                refresh = mock.patch.object(partial, "host_refresh_inventory")
+                refresh_mock = refresh.start()
+                self.addCleanup(refresh.stop)
+                with mock.patch.object(partial.uuid, "uuid4",
+                                       return_value=types.SimpleNamespace(hex=self.snapshot)):
+                    with mock.patch.object(partial.subprocess, "run", side_effect=self.responses()):
+                        partial.host_pass(self.args)
+                self.assertEqual(refresh_mock.called, inline)
+                refresh.stop()
+
+    def test_the_inventory_service_takes_its_own_lock_not_the_loaders(self):
+        lock = self.root / "inventory.lock"
+        loader_lock = self.root / "loader.lock"
+        argv = ["--refresh-inventory-only", "--campaign", self.campaign, "--state-dir", str(self.root / "state"),
+                "--inventory-lock", lock.as_posix(), "--lock", loader_lock.as_posix()]
+        with mock.patch.object(partial, "host_refresh_inventory", return_value={"phase": "inventory_refreshed"}) as refresh:
+            with open(loader_lock, "a") as held:  # a loading run holds the host lock for minutes
+                fcntl.flock(held, fcntl.LOCK_EX)
+                partial.main(argv)
+            refresh.assert_called_once()
+            with open(lock, "a") as held:
+                fcntl.flock(held, fcntl.LOCK_EX)
+                with self.assertRaises(SystemExit) as busy:
+                    partial.main(argv)
+            self.assertEqual(busy.exception.code, 75)
+            refresh.assert_called_once()
+
     def test_frontier_ack_is_only_persisted_after_verified_nonempty_load(self):
         self.args.completion_frontier = True
         self.args.inventory_refresh_secs = 3600
@@ -412,6 +449,34 @@ class PartialTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "changed during collection"):
                 partial.scoped_collect(self.args, self.root)
         self.assertEqual(frontier_path.read_bytes(), previous)
+
+    def test_a_refresh_written_during_a_pass_is_kept_by_the_pass_update(self):
+        self.args.completion_frontier = True
+        inventory = {"ready": {"status": "canonical-present", "fingerprint": "a" * 64}}
+        for name in ("ready", "zz-new"):
+            unit = self.root / "quality/test/units" / name
+            unit.mkdir(parents=True)
+            (unit / "submitted").touch()
+            (unit / "quality.json").write_text(json.dumps({"id": self.job, "doc_id": "doc-a"}))
+        Path(self.args.collector).write_bytes(b"test collector")
+        path = self.cache_inventory(inventory)
+
+        def recheck(*_args, **_kwargs):
+            # A full refresh, with no step lock, finishes while the pass rechecks its unit.
+            path.write_text(json.dumps({"schema": 1, "generated_at": 1, "units": {
+                **inventory, "zz-new": {"status": "pending", "fingerprint": None}}}))
+            return inventory
+
+        def collect(command, **_kwargs):
+            out = Path(command[command.index("--out-dir") + 1])
+            for name in partial.FILES:
+                (out / name).write_bytes(b"verified test output")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with mock.patch.object(partial, "completion_inventory", side_effect=recheck), \
+                mock.patch.object(partial.subprocess, "run", side_effect=collect):
+            partial.scoped_collect(self.args, self.root)
+        self.assertEqual(set(json.loads(path.read_bytes())["units"]), {"ready", "zz-new"})
 
     def test_collector_failure_advances_only_scheduler_and_cannot_starve_other_units(self):
         self.args.completion_frontier = True

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Certificate-upsert one verified QUALITY unit without replacing a complete campaign snapshot."""
 import argparse
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -45,6 +46,17 @@ def replay_collection_diagnostics(stderr):
 def digest(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+@contextlib.contextmanager
+def inventory_lock(base):
+    """Held only while the inventory file is read and rewritten, never while an inventory is computed:
+    a refresh (no step lock) and a pass's update of its one selected unit (under it) both rewrite the
+    file, and neither may overwrite the other's."""
+    base.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (base / "inventory.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
 
 
 def atomic_json(path, value):
@@ -173,7 +185,8 @@ def refresh_inventory(args, project=Path("/project")):
     inventory = completion_inventory(args, project, base, deadline=started + args.inventory_budget_secs,
                                      limit=args.inventory_budget_secs)
     validate_inventory(inventory)
-    atomic_json(base / INVENTORY_FILE, {"schema": 1, "generated_at": time.time(), "units": inventory})
+    with inventory_lock(base):
+        atomic_json(base / INVENTORY_FILE, {"schema": 1, "generated_at": time.time(), "units": inventory})
     counts = {}
     for item in inventory.values():
         counts[item["status"]] = counts.get(item["status"], 0) + 1
@@ -249,7 +262,12 @@ def scoped_collect(args, project=Path("/project")):
             raise ValueError("selected unit missing from its completion inventory")
         validate_inventory({selected: current[selected]})
         inventory[selected] = current[selected]
-        atomic_json(base / INVENTORY_FILE, {**cached, "units": inventory})
+        with inventory_lock(base):
+            # A refresh may have written a newer file since this pass read it: update only the
+            # selected entry in that one.
+            latest, _ = cached_inventory(base, names)
+            latest["units"][selected] = current[selected]
+            atomic_json(base / INVENTORY_FILE, latest)
         frontier_receipt = {"schema": 1, "lane": lane, **inventory[selected],
                             "inventory_seconds": time.monotonic() - pass_started}
     else:
@@ -445,7 +463,8 @@ def host_pass(args):
         remote += ["--qwen-campaign", args.qwen_campaign]
     frontier = getattr(args, "completion_frontier", False)
     if frontier:
-        host_refresh_inventory(args)
+        if not getattr(args, "no_inline_inventory", False):
+            host_refresh_inventory(args)
         remote += ["--completion-frontier"]
         if state.get("frontier_ack"):
             remote += ["--frontier-ack", json.dumps(state["frontier_ack"], separators=(",", ":"))]
@@ -547,6 +566,14 @@ def main(argv=None):
     mode.add_argument("--remote", action="store_true")
     mode.add_argument("--load", action="store_true")
     mode.add_argument("--remote-inventory", action="store_true", help=argparse.SUPPRESS)
+    mode.add_argument("--refresh-inventory-only", action="store_true",
+                      help="host side: refresh the full scheduling inventory when it is due, under its own lock "
+                           "(usnm-quality-inventory.service), and load nothing")
+    parser.add_argument("--no-inline-inventory", action="store_true",
+                        help="a loading run never refreshes the inventory itself: its own service does, so the "
+                             "refresh's 13 minutes or more neither stop loading nor hold the host lock")
+    parser.add_argument("--inventory-lock", type=Path, default=None,
+                        help="host lock of --refresh-inventory-only (default /run/usnm-quality-inventory-CAMPAIGN.lock)")
     parser.add_argument("--campaign", required=True)
     parser.add_argument("--engine-image")
     parser.add_argument("--qwen-campaign")
@@ -582,7 +609,7 @@ def main(argv=None):
             or ".." in Path(args.collector).parts
             or (args.snapshot and not SNAPSHOT.fullmatch(args.snapshot))
             or ((args.remote or args.load) and not args.snapshot)
-            or (not (args.remote or args.remote_inventory)
+            or (not (args.remote or args.remote_inventory or args.refresh_inventory_only)
                 and not re.fullmatch(r"sha256:[a-f0-9]{64}", args.engine_image or ""))
             or not 60 <= args.inventory_budget_secs <= 7200
             or args.inventory_refresh_secs < 60
@@ -593,6 +620,15 @@ def main(argv=None):
     os.umask(0o077)
     if args.remote_inventory:
         report = refresh_inventory(args)
+    elif args.refresh_inventory_only:
+        lock_path = args.inventory_lock or Path(f"/run/usnm-quality-inventory-{args.campaign}.lock")
+        with lock_path.open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print(json.dumps({"phase": "inventory_lock_busy", "exit": 75}), file=sys.stderr, flush=True)
+                raise SystemExit(75) from None
+            report = host_refresh_inventory(args) or {"campaign": args.campaign, "phase": "inventory_not_due"}
     elif args.remote:
         report = scoped_collect(args)
     elif args.load:
