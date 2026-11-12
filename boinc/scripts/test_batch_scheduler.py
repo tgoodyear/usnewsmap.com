@@ -2320,6 +2320,22 @@ class QueueModeTests(unittest.TestCase):
         self.assertEqual(self.state["source_truncated"][page]["reason"], reason)
         self.assertEqual(len(self.fake.jobs), 1)
 
+    def test_a_cut_short_page_with_a_journal_keeps_its_allocation(self):
+        # A page this plan has a journal for stays allocated, or the journal fails the ownership
+        # check: it is not exported, and not dead-lettered.
+        page = "sn12345678/1900-01-01/ed-1/seq-1"
+        self.tick()
+        row = next(r for r in self.fake.rows if r["job"]["message"]["page"] == page)
+        row["stage"] = "prepared"
+        self.fake.export = lambda pages, job_ids=(): {page: "cut short"}
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.tick()
+        self.assertIn("boinc_batch_export_truncated_kept", err.getvalue())
+        self.assertFalse([a for a in self.fake.actions if a[0] == "dead-letter-truncated"])
+        self.assertIn(page, self.state["claims"])
+        self.assertNotIn("source_truncated", self.state)
+        self.tick()
+
     def test_a_failed_truncated_dead_letter_is_retried_and_never_pushed_again(self):
         base = "keep/test_batch/sn12345678/1900-01-01/1/1"
         self.fake.truncated = {base: "the codestream ends inside its main header"}

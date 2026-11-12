@@ -1983,10 +1983,22 @@ class QueueFeed:
                 del self.claims[page]
             self.persist()
 
-    def settle_export_truncated(self, truncated, selected, now):
+    def settle_export_truncated(self, truncated, selected, now, journaled=()):
         """Pages whose scan export found cut short when it pushed them again (#1457), `truncated`
         being {page: reason}: dead-lettered and listed as a first push's are, and dropped from
-        `selected` so they aren't waited for."""
+        `selected` so they aren't waited for. A page this plan already has a journal for (a
+        deadline retry's failed job, or a prepared one) is not settled: its allocation has to stay
+        for the journal's ownership check. It is left claimed, not exported, and logged."""
+        kept = sorted(page for page in truncated if page in journaled)
+        if kept:
+            try:
+                print(json.dumps({"event": "boinc_batch_export_truncated_kept", "schema_version": 1,
+                                  "pages": kept, "message": "cut short at LoC, but the plan holds a journal "
+                                  "for them: not exported, left claimed until the lease runs out"},
+                                 sort_keys=True), file=sys.stderr, flush=True)
+            except (OSError, ValueError):
+                pass
+        truncated = {page: reason for page, reason in truncated.items() if page not in journaled}
         for page, reason in truncated.items():
             claim = self.claims.get(page)
             require(claim is not None, f"export found {page} cut short, and it has no claim")
@@ -2887,7 +2899,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                         "too many existing journals for selected pages; reconcile history")
                 truncated = transport.export(group, journals)
                 if truncated and feed:
-                    feed.settle_export_truncated(truncated, selected, now)
+                    feed.settle_export_truncated(truncated, selected, now, owned)
                     export = [page for page in export if page["page"] not in truncated]
             records = read_records()
             owned = own(records)
