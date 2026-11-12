@@ -24,6 +24,7 @@ on:
       - "boinc/scripts/test_iris_cache.py"
       - "boinc/scripts/iris-bundle-campaign.py"
       - "boinc/scripts/iris-check.py"
+      - "scripts/ci/apt-base.sh"
       - "!**/*.md"
 
 permissions:
@@ -57,7 +58,13 @@ jobs:
           df -h /
       - name: Build
         run: |
-          docker build -f boinc/apps/iris/Containerfile \
+          # The pinned apt bases (boinc/apps/iris/base.lock, #1683), their snapshot labels checked.
+          # None while the lock is empty: the build then installs from the Debian snapshot.
+          lines=$(scripts/ci/apt-base.sh --app iris --check-label docker)
+          bases=()
+          while IFS= read -r line; do [ -z "$line" ] || bases+=(--build-arg "$line"); done <<< "$lines"
+          echo "apt bases: ${lines:-none pinned, installing from the Debian snapshot}"
+          docker build "${bases[@]}" -f boinc/apps/iris/Containerfile \
             --build-arg "BUILD_REVISION=$GITHUB_SHA" \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \

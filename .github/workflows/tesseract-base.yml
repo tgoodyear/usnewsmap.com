@@ -7,6 +7,11 @@ name: tesseract-base
 # the lines to put in ocr/engines/tesseract/base.lock. The bases need rebuilding only when the
 # Containerfile's SNAPSHOT or the packages its apt stages install change. Nothing runs on a
 # pull request or a merge: the image builds check the pinned bases (scripts/ci/tesseract-base.sh).
+#
+# The same run builds the apt bases of the native Tesseract build (boinc/apps/native, apt-native)
+# and the usnm_iris image (boinc/apps/iris, apt-iris-tools and apt-iris) on amd64, which is all
+# either supports (#1683). They go to the same package under their own tags and are pinned in
+# boinc/apps/native/base.lock and boinc/apps/iris/base.lock (scripts/ci/apt-base.sh).
 run-name: ${{ format('tesseract-base ({0})', inputs.correlation) }}
 on:
   workflow_dispatch:
@@ -133,14 +138,119 @@ jobs:
       - name: Log out of GHCR
         if: always()
         run: docker logout ghcr.io
+  publish-apps:
+    name: app apt base (${{ matrix.name }}, build and push)
+    # Only main, as for the Tesseract bases.
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {app: native, name: native, target: apt-native, context: boinc/apps/native}
+          - {app: iris, name: iris-tools, target: apt-iris-tools, context: .}
+          - {app: iris, name: iris, target: apt-iris, context: .}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the base from the Debian snapshot
+        env:
+          APP: ${{ matrix.app }}
+          NAME: ${{ matrix.name }}
+          TARGET: ${{ matrix.target }}
+          CONTEXT: ${{ matrix.context }}
+        run: |
+          # The Containerfile's own Debian base and snapshot: nothing is passed in.
+          snapshot=$(sed -n 's/^ARG SNAPSHOT=//p' "boinc/apps/$APP/Containerfile")
+          [[ $snapshot =~ ^[0-9]{8}T[0-9]{6}Z$ ]]
+          recipe=$(scripts/ci/apt-base.sh --app "$APP" --print-recipe)
+          tag="$IMAGE:$GITHUB_SHA-$NAME-amd64"
+          docker build --platform linux/amd64 --target "$TARGET" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.usnewsmap.apt-recipe=$recipe" \
+            --label "org.opencontainers.image.description=usnewsmap $NAME apt base (Debian snapshot $snapshot)" \
+            -f "boinc/apps/$APP/Containerfile" -t "$tag" "$CONTEXT"
+          got=$(docker image inspect --format '{{index .Config.Labels "org.usnewsmap.debian-snapshot"}}' "$tag")
+          [ "$got" = "$snapshot" ] || { echo "::error::$NAME base is labelled '$got', not $snapshot"; exit 1; }
+          got=$(docker image inspect --format '{{index .Config.Labels "org.usnewsmap.apt-recipe"}}' "$tag")
+          [ "$got" = "$recipe" ] || { echo "::error::$NAME base's recipe label is '$got', not $recipe"; exit 1; }
+          docker run --rm --network=none --entrypoint dpkg-query "$tag" -W -f '${Package}\t${Version}\n' \
+            > "$RUNNER_TEMP/dpkg-app-$NAME.txt"
+          list="$RUNNER_TEMP/dpkg-app-$NAME.txt"
+          case "$NAME" in
+            native)
+              grep -qx $'libtesseract-dev\t5.5.0-1+b1' "$list"
+              docker run --rm --network=none --entrypoint sh "$tag" -c 'test -f /src/tesseract-5.5.0/src/tesseract.cpp'
+              ;;
+            iris-tools)
+              grep -q $'^curl\t' "$list"
+              ;;
+            iris)
+              grep -q $'^intel-opencl-icd\t' "$list"
+              grep -q $'^python3-venv\t' "$list"
+              ;;
+          esac
+      - name: Push, attest and record the digest
+        id: push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          NAME: ${{ matrix.name }}
+        run: |
+          # Logged in until the cleanup step: the attestation pushes to the registry with these credentials.
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+          tag="$IMAGE:$GITHUB_SHA-$NAME-amd64"
+          docker push "$tag"
+          digest=$(docker buildx imagetools inspect "$tag" --format '{{json .Manifest}}' | jq -er .digest)
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no registry digest for $tag"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          key=$(tr 'a-z-' 'A-Z_' <<< "$NAME")_BASE
+          mkdir -p "$RUNNER_TEMP/lock"
+          echo "$key=$IMAGE@$digest" > "$RUNNER_TEMP/lock/app-$NAME.txt"
+      - name: Attest the base
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - name: Summary
+        env:
+          NAME: ${{ matrix.name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          {
+            echo "### App apt base, $NAME"
+            echo
+            echo "\`$IMAGE@$DIGEST\` ($(wc -l < "$RUNNER_TEMP/dpkg-app-$NAME.txt") packages)"
+            echo
+            echo "Provenance: \`gh attestation verify oci://$IMAGE@$DIGEST -R $GITHUB_REPOSITORY\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app-base-${{ matrix.name }}
+          path: |
+            ${{ runner.temp }}/dpkg-app-*.txt
+            ${{ runner.temp }}/lock/*.txt
+          if-no-files-found: error
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io
   lock:
     name: apt bases (lock lines)
-    needs: publish
+    needs: [publish, publish-apps]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: tesseract-base-*
+          pattern: '*base-*'
           merge-multiple: true
           path: bases
       - name: The lines for ocr/engines/tesseract/base.lock
@@ -154,5 +264,23 @@ jobs:
             echo
             echo '```'
             echo "$lines"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: The lines for the native and iris base.lock files
+        run: |
+          [ "$(wc -l < bases/lock/app-native.txt)" -eq 1 ] || { echo "::error::no native base"; exit 1; }
+          iris=$(cat bases/lock/app-iris-tools.txt bases/lock/app-iris.txt | sort)
+          [ "$(wc -l <<< "$iris")" -eq 2 ] || { echo "::error::expected two iris bases, got: $iris"; exit 1; }
+          {
+            echo "### boinc/apps/native/base.lock"
+            echo
+            echo '```'
+            cat bases/lock/app-native.txt
+            echo '```'
+            echo
+            echo "### boinc/apps/iris/base.lock"
+            echo
+            echo '```'
+            echo "$iris"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

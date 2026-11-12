@@ -218,6 +218,11 @@ Each step needs the one before it. Steps 2 to 6 are the rollout above, repeated 
 
 ## Reproducing
 
+Once `boinc/apps/native/base.lock` pins the apt base, the build needs no Debian mirror: pass the
+`NATIVE_BASE` argument that `scripts/ci/apt-base.sh --app native --check-label docker` prints
+([Rebuild the apt bases](worker-image.md#rebuild-the-apt-bases)). Without it the build installs
+from the snapshot.
+
 ```sh
 docker build -f boinc/apps/native/Containerfile -t usnm-tesseract-native boinc/apps/native
 cargo build --release --target x86_64-unknown-linux-musl -p usnm-ocr-app --bin usnm_ocr --example native_fixture
