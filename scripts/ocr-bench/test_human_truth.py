@@ -46,6 +46,7 @@ class Rules(unittest.TestCase):
         self.assertEqual(h.decide(row([r("a", "", 1, True), r("b", "", 2, True)]), {}, rng)[1], "agreed-unreadable")
         many = [r("a", "a��", 1), r("b", "a��", 2)]
         self.assertEqual(h.decide(row(many), {}, rng)[1], "too-many-unreadable-marks")
+        self.assertEqual(h.decide(row([r("a", "12345", 1), r("b", "12345", 2)]), {}, rng)[1], "no-letters")
         self.assertEqual(h.decide(row(ok, outcome="adjudicated"), {}, rng)[1], "export-disagrees-with-readings")
 
 
@@ -70,9 +71,13 @@ class Promote(unittest.TestCase):
         base = os.path.join(self.d, "v1.2.0", "human-truth")
         frag = json.load(open(os.path.join(base, "spec-fragment.json")))
         sid = next(iter(frag["annotations"]))
-        self.assertEqual(open(os.path.join(base, "usnm-human-yi-truth", "references", sid + ".txt"), encoding="utf-8").read(), "אב")
+        self.assertEqual(open(os.path.join(base, "inputs", "usnm-human-yi-truth", "references", sid + ".txt"), encoding="utf-8").read(), "אב")
         self.assertEqual(frag["imports"][0]["subset"], "usnm-human-yi-truth/all-1")
-        self.assertTrue(open(os.path.join(base, "INPUTS.sha256")).read().strip())
+        self.assertTrue(open(os.path.join(base, "inputs.sha256")).read().strip())
+        sums = open(os.path.join(base, "inputs.sha256")).read()
+        self.assertIn("usnm-human-yi-truth/samples.json", sums)
+        self.assertNotIn("truth.jsonl", sums)
+        self.assertEqual(frag["imports"][0]["path"], "usnm-human-yi-truth")
         self.assertIn("not-settled", open(os.path.join(base, "held.jsonl")).read())
 
     def test_refuses_frozen_existing_and_listed(self):
@@ -82,6 +87,9 @@ class Promote(unittest.TestCase):
         self.run_promote()
         with self.assertRaises(SystemExit):
             self.run_promote()
+        os.makedirs(os.path.join(self.d, "v1.4.0"))  # an existing release folder without human-truth/
+        with self.assertRaises(SystemExit):
+            self.run_promote("v1.4.0")
         lst = os.path.join(self.d, "releases.json")
         json.dump({"releases": [{"release": "v1.3.0"}]}, open(lst, "w"))
         with self.assertRaises(SystemExit):

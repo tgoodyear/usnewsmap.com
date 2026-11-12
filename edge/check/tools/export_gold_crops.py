@@ -32,7 +32,7 @@ def merge(template, export):
         e = by.get(r["crop_id"])
         r = dict(r)
         if e:
-            r["transcription"] = e["text"]
+            r["transcription"] = e["text"].replace("\ufffd", "[?]")  # gold.py marks an unreadable letter [?]
             single = e.get("method") == "single"
             r["transcriber"] = "maintainer" if single else e.get("method")
             r["reviewer"] = None if single else "check.usnewsmap.com adjudication"

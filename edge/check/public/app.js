@@ -1,8 +1,6 @@
 // The letter-check page. "/" lists languages; "/<lang>" shows one word at a time.
 const $ = (id) => document.getElementById(id);
 const SESSION = "usnm-check-session";
-// A maintainer's link carries its session in the fragment (never sent to the server): keep it, then drop it from the address bar.
-{ const m = location.hash.match(/^#session=([A-Za-z0-9_.-]{20,400})$/); if (m) { try { localStorage.setItem(SESSION, m[1]); } catch { /* memory only */ } history.replaceState(null, "", location.pathname); } }
 let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false, loaded = false, failed = false;
 
 let memory = {};
@@ -10,6 +8,12 @@ function store(k, v) {
   if (v === null) delete memory[k]; else if (v !== undefined) memory[k] = v;
   try { if (v === undefined) return localStorage.getItem(k) || memory[k] || null; if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch { /* private mode: memory only */ }
   return v === undefined ? memory[k] || null : null;
+}
+
+// A maintainer's link carries its session in the fragment (never sent to the server): keep it, then drop it from the address bar.
+{
+  const m = location.hash.match(/^#session=([A-Za-z0-9_.-]{20,400})$/);
+  if (m) { store(SESSION, m[1]); window.history.replaceState(null, "", location.pathname); }
 }
 
 function status(msg, err = false) { const s = $("status"); s.textContent = msg; s.classList.toggle("err", err); }

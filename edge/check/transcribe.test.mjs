@@ -57,7 +57,7 @@ function fakeDb() {
     };
     return o;
   };
-  return { prepare: stmt, batch: async (ss) => ss.map((s) => (db.prepare(s.sql).run(...s.args), { results: [] })), raw: db };
+  return { prepare: stmt, batch: async (ss) => ss.map((s) => ({ results: [], meta: { changes: Number(db.prepare(s.sql).run(...s.args).changes) } })), raw: db };
 }
 
 const env = (DB) => ({ ADMIN_TOKEN: "adm", SESSION_KEY: "sk", DB, ASSETS: { fetch: () => new Response("page") } });
@@ -171,4 +171,28 @@ test("tasks with a lower priority number are served first", async () => {
     seen.push(n.task.id);
   }
   assert.deepEqual(seen, ["de-968/s/first", "de-968/s/mid", "de-968/s/late"]);
+});
+
+test("a transcription task refuses a choice, and a comparison task refuses a reading", async () => {
+  const e = await setup(false);
+  assert.equal((await post(e, "a", "/api/answers", { task: "yi-truth/s/l1", choice: "a" })).status, 400);
+  await admin(e, "/admin/languages/chr", JSON.stringify({ name: "Cherokee" }), "PUT");
+  await admin(e, "/admin/tasks", JSON.stringify({ id: "chr/s/w1", lang: "chr", set: "s", a: "x", b: "y" }));
+  assert.equal((await post(e, "a", "/api/readings", { task: "chr/s/w1", text: "x" })).status, 400);
+  assert.equal((await post(e, "a", "/api/answers", { task: "chr/s/w1", choice: "a" })).status, 200);
+});
+
+test("adjudication candidates are the first two counted readings, and a later bad score recounts settled tasks", async () => {
+  const e = await setup(true);
+  const cal = async (who, text) => { for (let i = 1; i <= 3; i++) await post(e, who, "/api/readings", { task: "yi-truth/s/cal" + i, text }); };
+  await cal("good1", "abcdefghij"); await cal("good2", "abcdefghij"); await cal("good3", "abcdefghij");
+  const id = "yi-truth/s/l1";
+  await post(e, "good1", "/api/readings", { task: id, text: "one" });
+  await post(e, "good2", "/api/readings", { task: id, text: "two" });
+  const n = await (await as(e, "good3", "/api/next?lang=yi-truth&skip=yi-truth/s/l2,yi-truth/s/l3")).json();
+  assert.deepEqual([...n.task.candidates].sort(), ["one", "two"]);
+  // good1 later turns out to copy badly: their reading stops counting and the task is open again
+  for (let i = 4; i <= 9; i++) await admin(e, "/admin/tasks", JSON.stringify({ id: "yi-truth/s/cal" + i, lang: "yi-truth", set: "s", kind: "transcribe", line: "c.png", truth: "abcdefghij" }));
+  for (let i = 4; i <= 9; i++) await post(e, "good1", "/api/readings", { task: "yi-truth/s/cal" + i, text: "zzzzzzzzzz" });
+  assert.equal(e.DB.raw.prepare("SELECT outcome FROM tasks WHERE id = ?").get(id).outcome, null);
 });

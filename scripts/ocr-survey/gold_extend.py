@@ -238,6 +238,8 @@ def cmd_cut(a: argparse.Namespace) -> int:
             continue
         try:
             item = json.loads(fetch(ITEM.format(lccn=c["lccn"], date=c["date"], ed=c["edition"]), api))
+        except locfetch.Blocked:
+            raise
         except (RuntimeError, urllib.error.HTTPError) as e:
             skip(c, f"issue JSON: {e}")
             continue
@@ -255,6 +257,8 @@ def cmd_cut(a: argparse.Namespace) -> int:
             pid = f"{c['lccn']}_{c['date']}_ed{c['edition']}_seq{seq}"
             try:
                 xml = fetch(altos[seq], tile)
+            except locfetch.Blocked:
+                raise
             except (RuntimeError, urllib.error.HTTPError):
                 continue
             loc = alto_words(xml, sizes[seq][0])
@@ -273,6 +277,8 @@ def cmd_cut(a: argparse.Namespace) -> int:
         url = images[seq] + "/full/full/0/default.jpg"
         try:
             data = fetch(url, tile)
+        except locfetch.Blocked:
+            raise
         except (RuntimeError, urllib.error.HTTPError) as e:
             skip(c, f"page image: {e}"[:200])
             continue

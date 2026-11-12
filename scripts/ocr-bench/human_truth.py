@@ -4,12 +4,12 @@
 `promote` reads the CC0 export of one or more transcription languages (GET /api/export?lang=yi-truth, saved as
 JSON lines) and writes, under ocr/bench/<release>/human-truth/:
 
-  <source>/samples.json, images/<id>.jpg, references/<id>.txt, LICENSES/NOTICE.txt   (the `imports` layout the
+  inputs/<source>/samples.json, images/<id>.jpg, references/<id>.txt, LICENSES/NOTICE.txt   (the `imports` layout the
                                        Rust bench build reads; see docs/ocr/bench.md)
   truth.jsonl      one row per promoted unit: id, task, text sha256, method, readers (one-way ids), counts
   held.jsonl       units not promoted, each with the reason
   spec-fragment.json   `sources`, `imports` and `annotations` to merge into the release's spec.json
-  INPUTS.sha256    the checksum of every file above
+  inputs.sha256    the checksum of every file under inputs/, paths relative to it, as the Rust build reads them
 
 Rules, applied again here from the raw readings (the export's own `outcome` is only cross-checked):
 
@@ -116,7 +116,7 @@ def decide(row, hints, ranges):
         return False, "export-disagrees-with-readings", outcome, text, readers
     if unreadable:
         return False, "agreed-unreadable", outcome, text, readers
-    if not re.search(r"\w", text):
+    if not any(ch.isalpha() for ch in text):
         return False, "no-letters", outcome, text, readers
     chars = len(text.replace("\n", ""))
     if chars and text.count("�") / chars > MAX_FFFD:
@@ -135,9 +135,10 @@ def promote(exports, release, out_root, source_conf, ranges, hints, images_dir, 
         with open(releases_json, encoding="utf-8") as f:
             if release in {r["release"] for r in json.load(f)["releases"]}:
                 raise SystemExit(f"{release} is already in releases.json; releases are never replaced")
+    if os.path.exists(os.path.join(out_root, release)):
+        raise SystemExit(f"{os.path.join(out_root, release)} exists; promote into a new release id")
     out = os.path.join(out_root, release, "human-truth")
-    if os.path.exists(out):
-        raise SystemExit(f"{out} exists; promote into a new release id")
+    inputs = os.path.join(out, "inputs")  # the build's inputs root: import paths and inputs.sha256 are relative to it
     sources, imports, annotations, truth, held = {}, [], {}, [], []
     for lang, rows in exports.items():
         sc = source_conf[lang]
@@ -150,7 +151,7 @@ def promote(exports, release, out_root, source_conf, ranges, hints, images_dir, 
                 continue
             sid = "ht-%s-%s" % (lang, sha256(row["id"].encode())[:12])
             img = to_jpeg(fetch(clips_base, row["line"], images_dir))
-            d = os.path.join(out, src)
+            d = os.path.join(inputs, src)
             for sub in ("images", "references", "LICENSES"):
                 os.makedirs(os.path.join(d, sub), exist_ok=True)
             with open(os.path.join(d, "images", sid + ".jpg"), "wb") as f:
@@ -174,7 +175,7 @@ def promote(exports, release, out_root, source_conf, ranges, hints, images_dir, 
             truth.append({"id": sid, "task": row["id"], "lang": lang, "method": outcome, "readers": readers, "text_sha256": sha256(text.encode("utf-8")), "image_sha256": sha256(img)})
         if not samples:
             continue
-        d = os.path.join(out, src)
+        d = os.path.join(inputs, src)
         with open(os.path.join(d, "samples.json"), "w", encoding="utf-8") as f:
             json.dump(samples, f, ensure_ascii=False, indent=1, sort_keys=True)
         with open(os.path.join(d, "LICENSES", "NOTICE.txt"), "w", encoding="utf-8") as f:
@@ -182,7 +183,7 @@ def promote(exports, release, out_root, source_conf, ranges, hints, images_dir, 
         sources[src] = {"annotation_status": "human-verified", "attribution": sc["attribution"], "image_license": sc["image_license"],
                         "languages": sc["languages"], "reference_license": "CC0-1.0, https://creativecommons.org/publicdomain/zero/1.0/",
                         "scripts": sc["scripts"], "unit": sc.get("unit", "line")}
-        imports.append({"path": f"human-truth/{src}", "source": src, "subset": f"{src}/all-{len(samples)}"})
+        imports.append({"path": src, "source": src, "subset": f"{src}/all-{len(samples)}"})
     os.makedirs(out, exist_ok=True)
     with open(os.path.join(out, "truth.jsonl"), "w", encoding="utf-8") as f:
         for t in truth:
@@ -192,15 +193,15 @@ def promote(exports, release, out_root, source_conf, ranges, hints, images_dir, 
             f.write(json.dumps(h, ensure_ascii=False, sort_keys=True) + "\n")
     with open(os.path.join(out, "spec-fragment.json"), "w", encoding="utf-8") as f:
         json.dump({"annotations": annotations, "imports": imports, "sources": sources}, f, ensure_ascii=False, indent=1, sort_keys=True)
+    # inputs.sha256 lists only the build's inputs, paths relative to inputs/ (as ocr/bench/v1.1.0/inputs.sha256);
+    # the audit files beside it (truth.jsonl, held.jsonl, spec-fragment.json) are not build inputs.
     sums = []
-    for root, _, files in os.walk(out):
+    for root, _, files in os.walk(inputs):
         for n in files:
-            if n == "INPUTS.sha256":
-                continue
             p = os.path.join(root, n)
             with open(p, "rb") as f:
-                sums.append((os.path.relpath(p, out), sha256(f.read())))
-    with open(os.path.join(out, "INPUTS.sha256"), "w", encoding="utf-8") as f:
+                sums.append((os.path.relpath(p, inputs), sha256(f.read())))
+    with open(os.path.join(out, "inputs.sha256"), "w", encoding="utf-8") as f:
         for rel, h in sorted(sums):
             f.write(f"{h}  {rel}\n")
     return {"promoted": len(truth), "held": len(held), "out": out}

@@ -217,8 +217,9 @@ async function api(request, env, url) {
     const c = await contributorOf(request, env, { limited: true });
     const b = await body(request);
     if (typeof b.task !== "string" || b.task.length > 300 || !CHOICES.has(b.choice)) throw new HttpError(400, "task and choice required");
-    const t = await env.DB.prepare("SELECT id FROM tasks WHERE id = ?").bind(b.task).first();
+    const t = await env.DB.prepare("SELECT id, body FROM tasks WHERE id = ?").bind(b.task).first();
     if (!t) throw new HttpError(404, "no such task");
+    if (JSON.parse(t.body).kind === "transcribe") throw new HttpError(400, "this task takes a reading, not a choice");
     await record(env, b.task, c, b.choice);
     return json({ ok: true });
   }
@@ -449,8 +450,9 @@ async function hasCalibration(env, l) {
 
 // Sets with `readers_prefix` (the maintainer's own sets) take readings only from sessions the admin minted.
 async function requireReader(env, taskId, c) {
-  const t = await env.DB.prepare("SELECT lang FROM tasks WHERE id = ?").bind(taskId).first();
+  const t = await env.DB.prepare("SELECT lang, body FROM tasks WHERE id = ?").bind(taskId).first();
   if (!t) return;
+  if (JSON.parse(t.body).kind !== "transcribe") throw new HttpError(400, "this task takes a choice, not a reading");
   const cfg = await langConfig(env, t.lang);
   if (cfg.readers_prefix && !c.startsWith(cfg.readers_prefix)) throw new HttpError(403, "this set is read by its maintainer only");
 }
@@ -484,8 +486,8 @@ async function nextReading(env, l, c, url) {
   delete body.calibration;
   const task = { id: row.id, ...body, stage };
   if (stage === "adjudicate") {
-    const rs = await env.DB.prepare("SELECT text, unreadable, at, contributor FROM readings WHERE task_id = ? ORDER BY at, contributor LIMIT 2").bind(row.id).all();
-    const texts = rs.results.map((x) => (x.unreadable ? "" : x.text));
+    const { counted } = await countedReadings(env, row.id, l, cfg);
+    const texts = counted.slice(0, 2).map((x) => (x.unreadable ? "" : x.text));
     task.candidates = flip(row.id) ? [texts[1], texts[0]] : texts;
   }
   return { task, answered };
@@ -503,6 +505,9 @@ async function recordReading(env, taskId, c, rawText, unreadable, at = Date.now(
     await env.DB.prepare(
       "INSERT INTO reader_scores (contributor, lang, task_id, cer, at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (contributor, task_id) DO UPDATE SET cer = excluded.cer, at = excluded.at",
     ).bind(c, t.lang, taskId, score, at).run();
+    // A new score can change whether this person's earlier readings count: recount their tasks, settled or not.
+    const mine = (await env.DB.prepare("SELECT r.task_id FROM readings r JOIN tasks t ON t.id = r.task_id WHERE r.contributor = ? AND t.lang = ?").bind(c, t.lang).all()).results;
+    for (const m of mine) await resettle(env, m.task_id, t.lang, at);
     return { ok: true };
   }
   if (t.settled) throw new HttpError(409, "this one is already settled");
@@ -513,22 +518,38 @@ async function recordReading(env, taskId, c, rawText, unreadable, at = Date.now(
   return { ok: true };
 }
 
-// Recounts a task from its stored readings: only people who qualify count.
-export async function resettle(env, taskId, l, at = Date.now()) {
-  const cfg = await langConfig(env, l);
+// The readings that count for a task: only people who qualify, in the order settlement uses.
+async function countedReadings(env, taskId, l, cfg) {
   const cal = cfg.settle === "single" ? false : await hasCalibration(env, l);
   const rs = (await env.DB.prepare("SELECT contributor, text, unreadable, at FROM readings WHERE task_id = ?").bind(taskId).all()).results;
   const counted = [];
   for (const r of rs) if (qualified(await scoresOf(env, l, r.contributor), cal, cfg.calibration?.max_cer ?? CAL_MAX_CER)) counted.push(r);
-  const s = settleReadings(counted, cfg.settle === "single" ? "single" : "pair");
-  const stmts = [env.DB.prepare("UPDATE tasks SET n = ?1, settled = ?2, outcome = ?3 WHERE id = ?4").bind(s.n, s.settled, s.outcome, taskId)];
-  if (s.settled) {
-    stmts.push(
-      env.DB.prepare("INSERT INTO truths (task_id, text, unreadable, method, at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (task_id) DO UPDATE SET text = excluded.text, unreadable = excluded.unreadable, method = excluded.method, at = excluded.at")
-        .bind(taskId, s.text, s.unreadable, s.method, at),
-    );
-  } else stmts.push(env.DB.prepare("DELETE FROM truths WHERE task_id = ?").bind(taskId));
-  await env.DB.batch(stmts);
+  counted.sort((p, q) => p.at - q.at || (p.contributor < q.contributor ? -1 : 1));
+  return { counted, signature: rs.length + ":" + rs.reduce((m, r) => Math.max(m, r.at), 0) };
+}
+
+const SIGNATURE_SQL = "(SELECT COUNT(*) || ':' || COALESCE(MAX(at), 0) FROM readings WHERE task_id = ?1)";
+
+// Recounts a task from its stored readings: only people who qualify count. The write is conditional on the
+// readings being the ones counted (their number and newest time), so a request that read an older snapshot
+// changes nothing and counts again; after a few tries the next reading's recount settles it.
+export async function resettle(env, taskId, l, at = Date.now()) {
+  const cfg = await langConfig(env, l);
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const { counted, signature } = await countedReadings(env, taskId, l, cfg);
+    const s = settleReadings(counted, cfg.settle === "single" ? "single" : "pair");
+    const stmts = [
+      env.DB.prepare(`UPDATE tasks SET n = ?2, settled = ?3, outcome = ?4 WHERE id = ?1 AND ${SIGNATURE_SQL} = ?5`).bind(taskId, s.n, s.settled, s.outcome, signature),
+    ];
+    if (s.settled) {
+      stmts.push(
+        env.DB.prepare(`INSERT INTO truths (task_id, text, unreadable, method, at) SELECT ?1, ?2, ?3, ?4, ?5 WHERE ${SIGNATURE_SQL} = ?6 ON CONFLICT (task_id) DO UPDATE SET text = excluded.text, unreadable = excluded.unreadable, method = excluded.method, at = excluded.at`)
+          .bind(taskId, s.text, s.unreadable, s.method, at, signature),
+      );
+    } else stmts.push(env.DB.prepare(`DELETE FROM truths WHERE task_id = ?1 AND ${SIGNATURE_SQL} = ?2`).bind(taskId, signature));
+    const res = await env.DB.batch(stmts);
+    if (!res[0]?.meta || res[0].meta.changes > 0) return;
+  }
 }
 
 // CC0 JSON lines: each task with its stage, every reading (readers by a one-way id, never a session id),
