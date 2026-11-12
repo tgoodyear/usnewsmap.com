@@ -15,7 +15,7 @@ use tokio::time::Instant;
 use super::engine::{instant_of, ByteCap, Probes};
 use super::*;
 use crate::bulk::{self, Mirror, Options};
-use crate::loc::global::{GlobalPacer, NORMAL_GAP, SLOW_FOR, SLOW_GAP};
+use crate::loc::global::{GlobalPacer, NotStarted, NORMAL_GAP, SLOW_FOR, SLOW_GAP};
 use crate::standin::{Scripted, StandIn};
 
 fn sha(b: &[u8]) -> String {
@@ -584,6 +584,36 @@ async fn a_push_back_to_another_process_stops_the_next_archive() {
     let e = go(r.opts()).await.unwrap_err().to_string();
     assert!(e.contains("the scan fetcher"), "{e}");
     assert_eq!(r.s.hits("/loc/b.tar.bz2"), 0);
+}
+
+/// While the global pacer is slowed a run doesn't start: it asks LoC nothing and ends
+/// as `NotStarted` (which `main` logs as one line and exits 0 on). Once the slow-down's
+/// time is up, the next run lifts it and goes as usual.
+#[tokio::test]
+async fn a_slowed_pacer_means_not_starting_until_it_lifts() {
+    let mut r = Rig::new().await;
+    r.archive("a", b"body");
+    r.write_list();
+    GlobalPacer::new(r.pacer()).slow_down("HTTP 503 (challenge page)");
+    let e = go(r.opts()).await.unwrap_err();
+    let ns = &e.downcast_ref::<NotStarted>().expect("a NotStarted").0;
+    let until = ns.until().expect("an end time");
+    assert_eq!(
+        e.to_string(),
+        format!(
+            "{} pacer slowed until {until} (HTTP 503 (challenge page)); not starting",
+            ns.label
+        )
+    );
+    assert_eq!(r.s.hits_under("/"), 0);
+    assert!(!r.out().join("bulk-status.json").exists());
+    // The slow-down ends on its own; nothing here shortens it.
+    let mut st = r.pacer_state();
+    st.slowed.as_mut().unwrap().until_ms = Some(1);
+    std::fs::write(r.pacer(), serde_json::to_vec(&st).unwrap()).unwrap();
+    go(r.opts()).await.unwrap();
+    assert!(r.has("a"));
+    assert!(r.pacer_state().slowed.is_none());
 }
 
 /// A push-back to another process while a request waits for its turn: it never goes.

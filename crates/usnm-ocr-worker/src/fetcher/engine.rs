@@ -18,7 +18,7 @@ use super::budget::{Budget, Budgets};
 use super::job::Job;
 use super::plain;
 use super::policy::{Policies, Policy, ServingProbe};
-use crate::loc::global::epoch_ms_in;
+use crate::loc::global::{epoch_ms_in, PacerSlowed};
 use crate::loc::{Pacer, USER_AGENT};
 
 /// Redirects followed for one request.
@@ -268,24 +268,11 @@ impl Gate {
     /// operator resets it.
     pub(super) async fn not_slowed(&self) -> anyhow::Result<()> {
         if let Some(slowed) = self.budget.state().await?.slowed {
-            let until = slowed
-                .until_ms
-                .and_then(|ms| chrono::DateTime::from_timestamp_millis(i64::try_from(ms).ok()?))
-                .map_or_else(
-                    || "`loc-pacer --reset`".to_owned(),
-                    |t| {
-                        format!(
-                            "{} or `loc-pacer --reset`",
-                            t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-                        )
-                    },
-                );
-            bail!(
-                "the global {} pacer has been slowed since {} ({}); this waits for {until}",
-                self.policy.label,
-                slowed.at,
-                slowed.why
-            );
+            return Err(PacerSlowed {
+                label: self.policy.label.clone(),
+                slowed,
+            }
+            .into());
         }
         Ok(())
     }
