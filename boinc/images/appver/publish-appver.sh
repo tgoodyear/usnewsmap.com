@@ -45,7 +45,11 @@ case "$APPVER_KIND" in
       *) fail "native plan class $APPVER_PLAN_CLASS is not supported on $APPVER_PLATFORM" ;;
     esac
     case "$APPVER_APP" in
-      usnm_ocr_native|usnm_gold_native) [ "$APPVER_PLATFORM" = x86_64-pc-linux-gnu ] || fail "native $APPVER_APP is built only for x86_64-pc-linux-gnu" ;;
+      usnm_ocr_native|usnm_gold_native)
+        case "$APPVER_PLATFORM" in
+          x86_64-pc-linux-gnu|arm64-apple-darwin|x86_64-apple-darwin) ;;
+          *) fail "native $APPVER_APP is built only for x86_64-pc-linux-gnu, arm64-apple-darwin and x86_64-apple-darwin" ;;
+        esac ;;
     esac
     if [ -n "$APPVER_PLAN_CLASS" ]; then
       subdir="${APPVER_PLATFORM}__${APPVER_PLAN_CLASS}"
