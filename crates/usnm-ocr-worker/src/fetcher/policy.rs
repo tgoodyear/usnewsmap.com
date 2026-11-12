@@ -53,6 +53,10 @@ pub struct Policy {
     /// All transfers to this host together, in bytes a second.
     #[serde(default)]
     pub max_bytes_per_sec: Option<u64>,
+    /// Bytes that may come from these hosts in one UTC day. Once spent, nothing more
+    /// is fetched until the next UTC day; transfers under way finish. None: no limit.
+    #[serde(default)]
+    pub daily_byte_budget: Option<u64>,
     /// A transfer under this rate for three minutes is abandoned.
     #[serde(default)]
     pub min_bytes_per_sec: Option<u64>,
@@ -152,6 +156,9 @@ impl Policy {
         }
         if self.slow_for_secs.is_some() && self.slow_requests_per_minute.is_none() {
             bail!("policy {n}: slow_for_secs without a slow rate");
+        }
+        if self.daily_byte_budget == Some(0) {
+            bail!("policy {n}: a daily byte budget of zero would allow nothing");
         }
         if self.concurrency == 0 || self.attempts == 0 {
             bail!("policy {n}: concurrency and attempts start at 1");

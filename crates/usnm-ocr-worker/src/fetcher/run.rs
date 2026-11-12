@@ -93,8 +93,31 @@ impl Shared {
     }
 
     /// Note why the run ends, unless it already has a reason.
+    /// A spent daily byte budget is no error, so a later error (a full disk, say)
+    /// replaces it rather than being lost behind it.
     fn end(&self, state: &str, err: Option<anyhow::Error>) {
-        self.track().end.get_or_insert((state.to_owned(), err));
+        let mut t = self.track();
+        match &t.end {
+            None => t.end = Some((state.to_owned(), err)),
+            Some((s, None)) if s == "byte_budget" && err.is_some() => {
+                t.end = Some((state.to_owned(), err));
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// If `gate`'s daily byte budget is spent, say so once and ask the host nothing
+    /// more this run. Not an error: the next run after the UTC day turns goes on.
+    fn close_if_over_budget(&self, gate: &Gate) {
+        if gate.is_closed() {
+            return;
+        }
+        if let Some(why) = gate.byte_budget_spent() {
+            tracing::warn!(policy = %gate.policy.name, "{why}");
+            self.failed(why);
+            self.end("byte_budget", None);
+            gate.close();
+        }
     }
 
     /// End the run now, in-flight transfers too.
@@ -230,6 +253,12 @@ impl Shared {
                 self.close(&gate, "slowed", e);
                 continue;
             }
+            // A spent daily byte budget ends this host's part of the run, as a push-back
+            // does, but is no error: the next run after the UTC day turns goes on.
+            self.close_if_over_budget(&gate);
+            if gate.is_closed() {
+                continue;
+            }
             // A partial that won't be resumed goes before the space is counted.
             let have = if gate.policy.resume {
                 tokio::fs::metadata(&part).await.map_or(0, |m| m.len())
@@ -296,7 +325,9 @@ impl Shared {
                     self.store.release(job).await?;
                     return Ok(false);
                 }
-                Err(Fail::Closed) => {}
+                // Closed by the budget between the check above and the request, when
+                // several workers passed that check together.
+                Err(Fail::Closed) => self.close_if_over_budget(&gate),
                 Err(Fail::Slowed(e)) => self.close(&gate, "slowed", e),
                 Err(Fail::Blocked(m)) => {
                     self.failed(m.clone());
