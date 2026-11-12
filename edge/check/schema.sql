@@ -25,3 +25,38 @@ CREATE TABLE IF NOT EXISTS answers (
   PRIMARY KEY (task_id, contributor)
 );
 CREATE INDEX IF NOT EXISTS answers_by_contributor ON answers (contributor);
+
+-- Transcription tasks (kind "transcribe" in a language's configuration): people type what the print
+-- shows, with no machine reading in front of them. Two matching readings settle a task; two that
+-- differ go to a third person to adjudicate. Calibration tasks carry a known text.
+CREATE TABLE IF NOT EXISTS readings (
+  task_id TEXT NOT NULL,
+  contributor TEXT NOT NULL,
+  text TEXT NOT NULL,             -- as typed, bidi marks removed, line ends LF; "" only with unreadable
+  unreadable INTEGER NOT NULL DEFAULT 0,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (task_id, contributor)
+);
+CREATE INDEX IF NOT EXISTS readings_by_contributor ON readings (contributor);
+
+CREATE TABLE IF NOT EXISTS truths (
+  task_id TEXT PRIMARY KEY,
+  text TEXT NOT NULL,
+  unreadable INTEGER NOT NULL DEFAULT 0,
+  method TEXT NOT NULL,           -- agreed or adjudicated
+  at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS calibration (
+  task_id TEXT PRIMARY KEY,
+  truth TEXT NOT NULL             -- known text from a human source; never sent to the page
+);
+
+CREATE TABLE IF NOT EXISTS reader_scores (
+  contributor TEXT NOT NULL,
+  lang TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  cer REAL NOT NULL,              -- edit distance to the known text over its length
+  at INTEGER NOT NULL,
+  PRIMARY KEY (contributor, task_id)
+);

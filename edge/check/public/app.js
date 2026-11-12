@@ -1,6 +1,8 @@
 // The letter-check page. "/" lists languages; "/<lang>" shows one word at a time.
 const $ = (id) => document.getElementById(id);
 const SESSION = "usnm-check-session";
+// A maintainer's link carries its session in the fragment (never sent to the server): keep it, then drop it from the address bar.
+{ const m = location.hash.match(/^#session=([A-Za-z0-9_.-]{20,400})$/); if (m) { try { localStorage.setItem(SESSION, m[1]); } catch { /* memory only */ } history.replaceState(null, "", location.pathname); } }
 let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false, loaded = false, failed = false;
 
 let memory = {};
@@ -246,6 +248,7 @@ async function work(code) {
   try { cfg = await getJSON("/api/languages/" + code); }
   catch { $("card").textContent = "We don't have this language. "; const a = document.createElement("a"); a.href = "/"; a.textContent = "See the list"; $("card").appendChild(a); return; }
   document.title = `${cfg.name}: USNewsMap letter check`;
+  if (cfg.kind === "transcribe") { $("work").hidden = true; return transcribeWork(); }
   $("intro").textContent = cfg.intro || "";
   $("neither").addEventListener("click", () => choose("neither"));
   $("unsure").addEventListener("click", () => choose("unsure"));
@@ -262,6 +265,94 @@ async function work(code) {
     else if (e.key === "ArrowLeft" || e.key === "Backspace") back();
   });
   await next();
+}
+
+// ---------- transcription ----------
+
+// A task is a printed line or crop. The person types what is printed; nothing from any machine is shown.
+// A third person adjudicating sees the two human readings of the same task.
+let txTask = null, txBusy = false, txSkipped = [], txAnswered = 0;
+
+function txStatus(msg, err = false) { const s = $("tx-status"); s.textContent = msg; s.classList.toggle("err", err); }
+
+function txRender() {
+  const card = $("tx-card"); card.textContent = "";
+  $("progress").textContent = txAnswered ? `${txAnswered} done` : "";
+  if (!txTask) {
+    const d = document.createElement("div"); d.className = "done";
+    d.textContent = txBusy ? "Loading the next one…" : "Nothing is left for you right now. Thank you. Check back later for more.";
+    card.appendChild(d); return;
+  }
+  const t = txTask;
+  if (t.label) { const top = document.createElement("div"); top.className = "label"; top.textContent = t.label; card.appendChild(top); }
+  const lv = document.createElement("div"); lv.className = "lineview";
+  const li = new Image(); li.src = "/clips/" + t.line; li.alt = "the printed text to type"; li.title = "Click to zoom"; li.style.cursor = "zoom-in";
+  li.addEventListener("click", () => { const z = lv.classList.toggle("zoomed"); li.style.cursor = z ? "zoom-out" : "zoom-in"; });
+  lv.appendChild(li); card.appendChild(lv);
+  const ta = document.createElement("textarea"); ta.id = "tx-text"; ta.lang = lang; ta.rows = t.unit === "crop" ? 10 : 2;
+  ta.setAttribute("aria-label", "What is printed");
+  ta.spellcheck = false; ta.autocapitalize = "off"; ta.autocomplete = "off";
+  if (cfg.dir) ta.dir = cfg.dir;
+  if (t.stage === "adjudicate") {
+    const note = document.createElement("p"); note.className = "how";
+    note.textContent = "Two people typed this and didn't match. Compare each reading with the print, pick the one that is right, or fix it. Change nothing that matches the print.";
+    card.appendChild(note);
+    t.candidates.forEach((c, k) => {
+      const b = document.createElement("button"); b.type = "button"; b.className = "opt"; b.id = "cand" + (k + 1);
+      const key = document.createElement("span"); key.className = "key"; key.textContent = `Reading ${k + 1}: use this`;
+      const s = document.createElement("pre"); s.className = "script"; s.lang = lang; if (cfg.dir) s.dir = cfg.dir; s.textContent = c || "(nothing legible)";
+      b.append(key, s); b.addEventListener("click", () => { ta.value = c; ta.focus(); }); card.appendChild(b);
+    });
+  }
+  card.appendChild(ta);
+  const row = document.createElement("div"); row.className = "row";
+  const mk = (id, text, fn) => { const b = document.createElement("button"); b.type = "button"; b.className = "small"; b.id = id; b.textContent = text; b.addEventListener("click", fn); row.appendChild(b); return b; };
+  mk("tx-save", "Save and next (Ctrl+Enter)", () => txSave(false));
+  const mark = cfg.unknown_mark || "\uFFFD";
+  const ins = (s) => { ta.setRangeText(s, ta.selectionStart, ta.selectionEnd, "end"); ta.focus(); };
+  mk("tx-mark", `Insert ${mark} for a letter I can't read`, () => ins(mark));
+  for (const k of cfg.keys || []) { const b = mk("key-" + k.codePointAt(0), k, () => ins(k)); b.classList.add("keycap"); b.lang = lang; b.title = "Insert " + k; }
+  mk("tx-none", "Nothing legible", () => txSave(true));
+  mk("tx-skip", "Skip", () => { txSkipped.push(txTask.id); txNext(); });
+  card.appendChild(row);
+  if (t.source) { const src = document.createElement("a"); src.href = t.source; src.target = "_blank"; src.rel = "noopener"; src.className = "label"; src.textContent = "See the whole page"; card.appendChild(src); }
+  ta.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); txSave(false); } });
+  for (const b of card.querySelectorAll("button")) b.disabled = txBusy;
+  ta.disabled = txBusy;
+  if (!txBusy) ta.focus({ preventScroll: true });
+}
+
+async function txNext() {
+  txBusy = true; txRender();
+  try {
+    const q = new URLSearchParams({ lang });
+    if (txSkipped.length) q.set("skip", txSkipped.slice(-50).join(","));
+    const r = await authed("/api/next?" + q);
+    txTask = r.task; txAnswered = r.answered; txStatus("");
+  } catch (e) { txStatus(e.status === 429 ? "Slow down a little, then try again." : "The next one didn't load. " + e.message, true); }
+  finally { txBusy = false; txRender(); }
+}
+
+async function txSave(none) {
+  if (!txTask || txBusy) return;
+  const text = none ? "" : $("tx-text").value;
+  if (!none && !text.trim()) { txStatus("Type what is printed, or press Nothing legible.", true); return; }
+  txBusy = true; txRender();
+  try {
+    await authed("/api/readings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: txTask.id, text, unreadable: none }) });
+    txBusy = false; await txNext();
+  } catch (e) {
+    txBusy = false; txRender();
+    if (!none) $("tx-text").value = text;
+    txStatus(e.status === 429 ? "Too fast. Wait a few seconds, then save again." : e.status === 409 ? "Someone else just finished this one. Press Skip." : "That wasn't saved: " + e.message, true);
+  }
+}
+
+async function transcribeWork() {
+  $("tx").hidden = false;
+  $("tx-intro").textContent = cfg.intro || "";
+  $("tx-rules").textContent = cfg.rules || "";
+  await txNext();
 }
 
 const code = location.pathname.replace(/^\/+|\/+$/g, "");

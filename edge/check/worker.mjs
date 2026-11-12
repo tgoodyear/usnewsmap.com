@@ -7,6 +7,7 @@ const SESSION_DAYS = 30;
 const SETTLE_MIN = 3; // answers before a word can settle
 const DISPUTE_AT = 7; // answers after which a word that never agreed is closed as disputed
 const enc = new TextEncoder();
+import { MAX_LINES, MAX_TEXT, CAL_MAX_CER, cer, flip, normalizeReading, qualified, readerId, settleReadings, wantCalibration } from "./transcribe.mjs";
 
 export default {
   async fetch(request, env, ctx) {
@@ -166,7 +167,7 @@ async function api(request, env, url) {
   }
   if (p === "/api/languages" && request.method === "GET") {
     const rows = await env.DB.prepare(
-      "SELECT l.code, l.config, COUNT(t.id) AS tasks, SUM(t.settled) AS settled FROM languages l LEFT JOIN tasks t ON t.lang = l.code GROUP BY l.code ORDER BY l.code",
+      "SELECT l.code, l.config, COUNT(t.id) AS tasks, SUM(t.settled) AS settled FROM languages l LEFT JOIN tasks t ON t.lang = l.code GROUP BY l.code HAVING COALESCE(json_extract(l.config, '$.unlisted'), 0) != 1 ORDER BY l.code",
     ).all();
     return json(rows.results.map((r) => ({ code: r.code, name: JSON.parse(r.config).name, tasks: r.tasks, settled: r.settled || 0 })), 200, {
       "cache-control": "public, max-age=60",
@@ -187,6 +188,11 @@ async function api(request, env, url) {
   if (p === "/api/next" && request.method === "GET") {
     const c = await contributorOf(request, env);
     const l = lang(url);
+    if (await isTranscribe(env, l)) {
+      const cfg = await langConfig(env, l);
+      if (cfg.readers_prefix && !c.startsWith(cfg.readers_prefix)) throw new HttpError(403, "this set is read by its maintainer only");
+      return json(await nextReading(env, l, c, url));
+    }
     const skip = (url.searchParams.get("skip") || "").split(",").filter(Boolean).slice(0, 50);
     const holes = skip.map(() => "?").join(",");
     const row = await env.DB.prepare(
@@ -199,6 +205,13 @@ async function api(request, env, url) {
       .first();
     const mine = await env.DB.prepare("SELECT COUNT(*) AS k FROM answers WHERE contributor = ?").bind(c).first();
     return json({ task: row ? { id: row.id, ...JSON.parse(row.body) } : null, answered: mine.k });
+  }
+  if (p === "/api/readings" && request.method === "POST") {
+    const c = await contributorOf(request, env, { limited: true });
+    const b = await body(request, 20000);
+    if (typeof b.task !== "string" || b.task.length > 300 || typeof b.text !== "string") throw new HttpError(400, "task and text required");
+    await requireReader(env, b.task, c);
+    return json(await recordReading(env, b.task, c, b.text, b.unreadable === true));
   }
   if (p === "/api/answers" && request.method === "POST") {
     const c = await contributorOf(request, env, { limited: true });
@@ -225,6 +238,7 @@ async function api(request, env, url) {
   }
   if (p === "/api/export" && request.method === "GET") {
     const l = lang(url);
+    if (await isTranscribe(env, l)) return exportReadings(env, l);
     const rows = await env.DB.prepare(
       `SELECT t.id, t.set_name, t.body, t.outcome, t.settled,
          SUM(a.choice = 'a') AS a, SUM(a.choice = 'b') AS b, SUM(a.choice = 'neither') AS neither, SUM(a.choice = 'unsure') AS unsure,
@@ -363,7 +377,13 @@ async function admin(request, env, url) {
       if (!line.trim()) continue;
       const t = JSON.parse(line);
       if (typeof t.id !== "string" || typeof t.lang !== "string" || typeof t.set !== "string") throw new HttpError(400, "id, lang and set required");
-      const { id, lang: l, set, ...shown } = t;
+      const { id, lang: l, set, truth, ...shown } = t;
+      if (truth !== undefined) {
+        // A calibration task: its known text goes in its own table and never reaches the page.
+        if (typeof truth !== "string" || !truth) throw new HttpError(400, "truth must be text");
+        shown.calibration = true;
+        stmts.push(env.DB.prepare("INSERT INTO calibration (task_id, truth) VALUES (?, ?) ON CONFLICT (task_id) DO UPDATE SET truth = excluded.truth").bind(id, normalizeReading(truth)));
+      }
       stmts.push(
         env.DB.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES (?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET body = excluded.body")
           .bind(id, l, set, JSON.stringify(shown)),
@@ -372,11 +392,17 @@ async function admin(request, env, url) {
     for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
     return json({ ok: true, tasks: stmts.length });
   }
+  if (p === "/admin/session" && request.method === "POST") {
+    // A signed session for a named maintainer, for sets with `readers_prefix`. The page reads it from the URL fragment.
+    const b = await body(request);
+    if (typeof b.contributor !== "string" || !/^maintainer:[a-z0-9-]{1,40}$/.test(b.contributor)) throw new HttpError(400, "contributor must be maintainer:<name>");
+    return json({ session: await signSession(env.SESSION_KEY, b.contributor) });
+  }
   if (p === "/admin/dump" && request.method === "GET") {
     // Everything in D1 as JSON lines, one {"table", "row"} per line, for the nightly backup
     // (backup/README.md). The three reads run as one batch, which D1 runs as one transaction,
     // so tasks' counts and the answers come from the same moment and no row is read twice.
-    const tables = [["languages", "code"], ["tasks", "id"], ["answers", "task_id, contributor"]];
+    const tables = [["languages", "code"], ["tasks", "id"], ["answers", "task_id, contributor"], ["readings", "task_id, contributor"], ["truths", "task_id"], ["calibration", "task_id"], ["reader_scores", "contributor, task_id"]];
     const results = await env.DB.batch(tables.map(([table, order]) => env.DB.prepare(`SELECT * FROM ${table} ORDER BY ${order}`)));
     const out = [];
     tables.forEach(([table], k) => { for (const row of results[k].results) out.push(JSON.stringify({ table, row })); });
@@ -396,4 +422,155 @@ async function admin(request, env, url) {
     return json({ ok: true, answers: k });
   }
   throw new HttpError(404, "not found");
+}
+
+
+// ---------- transcription tasks (transcribe.mjs) ----------
+
+async function isTranscribe(env, l) {
+  const row = await env.DB.prepare("SELECT json_extract(config, '$.kind') AS kind FROM languages WHERE code = ?").bind(l).first();
+  return !!row && row.kind === "transcribe";
+}
+
+async function langConfig(env, l) {
+  const row = await env.DB.prepare("SELECT config FROM languages WHERE code = ?").bind(l).first();
+  return row ? JSON.parse(row.config) : {};
+}
+
+async function scoresOf(env, l, c) {
+  const r = await env.DB.prepare("SELECT cer FROM reader_scores WHERE contributor = ? AND lang = ?").bind(c, l).all();
+  return r.results.map((x) => x.cer);
+}
+
+async function hasCalibration(env, l) {
+  const r = await env.DB.prepare("SELECT 1 AS k FROM tasks WHERE lang = ? AND json_extract(body, '$.calibration') = 1 LIMIT 1").bind(l).first();
+  return !!r;
+}
+
+// Sets with `readers_prefix` (the maintainer's own sets) take readings only from sessions the admin minted.
+async function requireReader(env, taskId, c) {
+  const t = await env.DB.prepare("SELECT lang FROM tasks WHERE id = ?").bind(taskId).first();
+  if (!t) return;
+  const cfg = await langConfig(env, t.lang);
+  if (cfg.readers_prefix && !c.startsWith(cfg.readers_prefix)) throw new HttpError(403, "this set is read by its maintainer only");
+}
+
+async function nextReading(env, l, c, url) {
+  const skip = (url.searchParams.get("skip") || "").split(",").filter(Boolean).slice(0, 50);
+  const holes = skip.map(() => "?").join(",");
+  const notSkipped = skip.length ? `AND t.id NOT IN (${holes})` : "";
+  const cfg = await langConfig(env, l);
+  const single = cfg.settle === "single";
+  const cal = single ? false : await hasCalibration(env, l);
+  const scores = await scoresOf(env, l, c);
+  const mine = (await env.DB.prepare("SELECT COUNT(*) AS k FROM readings r JOIN tasks t ON t.id = r.task_id WHERE r.contributor = ? AND t.lang = ? AND json_extract(t.body, '$.calibration') IS NULL").bind(c, l).first()).k;
+  const open = `t.lang = ? AND NOT EXISTS (SELECT 1 FROM readings r WHERE r.task_id = t.id AND r.contributor = ?) AND NOT EXISTS (SELECT 1 FROM reader_scores s WHERE s.task_id = t.id AND s.contributor = ?) ${notSkipped}`;
+  const pick = async (cond, order) =>
+    env.DB.prepare(`SELECT t.id, t.body FROM tasks t WHERE ${open} AND ${cond} ORDER BY ${order} LIMIT 1`).bind(l, c, c, ...skip).first();
+  let row = null;
+  let stage = "read";
+  if (wantCalibration(scores.length, mine, cal)) row = await pick("json_extract(t.body, '$.calibration') = 1", "random()");
+  if (!row) {
+    const ok = qualified(scores, cal, cfg.calibration?.max_cer ?? CAL_MAX_CER);
+    if (ok) {
+      row = await pick("t.settled = 0 AND t.outcome = 'adjudicate' AND json_extract(t.body, '$.calibration') IS NULL", "random()");
+      if (row) stage = "adjudicate";
+    }
+    if (!row) row = await pick("t.settled = 0 AND t.outcome IS NULL AND json_extract(t.body, '$.calibration') IS NULL", "t.n DESC, random()");
+  }
+  const answered = scores.length + mine;
+  if (!row) return { task: null, answered };
+  const body = JSON.parse(row.body);
+  delete body.calibration;
+  const task = { id: row.id, ...body, stage };
+  if (stage === "adjudicate") {
+    const rs = await env.DB.prepare("SELECT text, unreadable, at, contributor FROM readings WHERE task_id = ? ORDER BY at, contributor LIMIT 2").bind(row.id).all();
+    const texts = rs.results.map((x) => (x.unreadable ? "" : x.text));
+    task.candidates = flip(row.id) ? [texts[1], texts[0]] : texts;
+  }
+  return { task, answered };
+}
+
+async function recordReading(env, taskId, c, rawText, unreadable, at = Date.now()) {
+  const t = await env.DB.prepare("SELECT id, lang, settled, body FROM tasks WHERE id = ?").bind(taskId).first();
+  if (!t) throw new HttpError(404, "no such task");
+  const text = normalizeReading(rawText);
+  if (unreadable ? text !== "" : text === "") throw new HttpError(400, unreadable ? "send no text with nothing legible" : "type what is printed, or say nothing is legible");
+  if (Array.from(text).length > MAX_TEXT || text.split("\n").length > MAX_LINES) throw new HttpError(400, "text too long");
+  const calRow = await env.DB.prepare("SELECT truth FROM calibration WHERE task_id = ?").bind(taskId).first();
+  if (calRow) {
+    const score = unreadable ? 1 : cer(text, calRow.truth);
+    await env.DB.prepare(
+      "INSERT INTO reader_scores (contributor, lang, task_id, cer, at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (contributor, task_id) DO UPDATE SET cer = excluded.cer, at = excluded.at",
+    ).bind(c, t.lang, taskId, score, at).run();
+    return { ok: true };
+  }
+  if (t.settled) throw new HttpError(409, "this one is already settled");
+  await env.DB.prepare(
+    "INSERT INTO readings (task_id, contributor, text, unreadable, at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (task_id, contributor) DO UPDATE SET text = excluded.text, unreadable = excluded.unreadable, at = excluded.at",
+  ).bind(taskId, c, text, unreadable ? 1 : 0, at).run();
+  await resettle(env, taskId, t.lang, at);
+  return { ok: true };
+}
+
+// Recounts a task from its stored readings: only people who qualify count.
+export async function resettle(env, taskId, l, at = Date.now()) {
+  const cfg = await langConfig(env, l);
+  const cal = cfg.settle === "single" ? false : await hasCalibration(env, l);
+  const rs = (await env.DB.prepare("SELECT contributor, text, unreadable, at FROM readings WHERE task_id = ?").bind(taskId).all()).results;
+  const counted = [];
+  for (const r of rs) if (qualified(await scoresOf(env, l, r.contributor), cal, cfg.calibration?.max_cer ?? CAL_MAX_CER)) counted.push(r);
+  const s = settleReadings(counted, cfg.settle === "single" ? "single" : "pair");
+  const stmts = [env.DB.prepare("UPDATE tasks SET n = ?1, settled = ?2, outcome = ?3 WHERE id = ?4").bind(s.n, s.settled, s.outcome, taskId)];
+  if (s.settled) {
+    stmts.push(
+      env.DB.prepare("INSERT INTO truths (task_id, text, unreadable, method, at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (task_id) DO UPDATE SET text = excluded.text, unreadable = excluded.unreadable, method = excluded.method, at = excluded.at")
+        .bind(taskId, s.text, s.unreadable, s.method, at),
+    );
+  } else stmts.push(env.DB.prepare("DELETE FROM truths WHERE task_id = ?").bind(taskId));
+  await env.DB.batch(stmts);
+}
+
+// CC0 JSON lines: each task with its stage, every reading (readers by a one-way id, never a session id),
+// and, once settled, the text and how it settled. promote (scripts/ocr-bench/human_truth.py) re-derives the
+// settlement from the readings; the fields here are a convenience.
+async function exportReadings(env, l) {
+  const cfg = await langConfig(env, l);
+  const cal = await hasCalibration(env, l);
+  const tasks = (await env.DB.prepare(
+    "SELECT t.id, t.set_name, t.body, t.outcome, t.settled, u.text AS truth, u.unreadable AS truth_unreadable, u.method FROM tasks t LEFT JOIN truths u ON u.task_id = t.id WHERE t.lang = ? ORDER BY t.id",
+  ).bind(l).all()).results;
+  const rs = (await env.DB.prepare("SELECT r.task_id, r.contributor, r.text, r.unreadable, r.at FROM readings r JOIN tasks t ON t.id = r.task_id WHERE t.lang = ? ORDER BY r.task_id, r.at, r.contributor").bind(l).all()).results;
+  const sc = (await env.DB.prepare("SELECT contributor, cer FROM reader_scores WHERE lang = ?").bind(l).all()).results;
+  const byPerson = new Map();
+  for (const x of sc) byPerson.set(x.contributor, [...(byPerson.get(x.contributor) || []), x.cer]);
+  const ids = new Map(), ok = new Map();
+  for (const r of rs) {
+    if (ids.has(r.contributor)) continue;
+    ids.set(r.contributor, await readerId(r.contributor));
+    const s = byPerson.get(r.contributor) || [];
+    ok.set(r.contributor, { qualified: qualified(s, cal, cfg.calibration?.max_cer ?? CAL_MAX_CER), calibration_tasks: s.length, calibration_cer: s.length ? s.reduce((a, v) => a + v, 0) / s.length : null });
+  }
+  const by = new Map();
+  for (const r of rs) by.set(r.task_id, [...(by.get(r.task_id) || []), r]);
+  const lines = [];
+  for (const t of tasks) {
+    const b = JSON.parse(t.body);
+    if (b.calibration) continue;
+    const mine = by.get(t.id) || [];
+    lines.push(JSON.stringify({
+      id: t.id, set: t.set_name, kind: "transcribe", page: b.page, source: b.source, label: b.label, line: b.line, unit: b.unit, box: b.box, crop_id: b.crop_id,
+      readings: mine.map((r) => ({ reader: ids.get(r.contributor), text: r.unreadable ? null : r.text, unreadable: !!r.unreadable, at: r.at, ...ok.get(r.contributor) })),
+      settled: !!t.settled, outcome: t.outcome,
+      text: t.settled ? (t.truth_unreadable ? null : t.truth) : undefined, method: t.method || undefined,
+    }));
+  }
+  return new Response(lines.join("\n") + "\n", {
+    headers: {
+      "content-type": "application/x-ndjson; charset=utf-8",
+      "content-disposition": `attachment; filename="check-${l}.jsonl"`,
+      "cache-control": "public, max-age=60",
+      "x-license": "CC0-1.0",
+    },
+  });
 }

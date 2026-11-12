@@ -8,7 +8,7 @@ import { readFileSync, readdirSync } from "node:fs";
 
 const dir = new URL("./languages/", import.meta.url);
 const files = readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
-const KNOWN = new Set(["dir", "drop_examples", "equivalents", "intro", "min_examples", "name", "notes", "title"]);
+const KNOWN = new Set(["calibration", "dir", "drop_examples", "equivalents", "intro", "keys", "kind", "min_examples", "name", "notes", "readers_prefix", "rules", "settle", "title", "unknown_mark", "unlisted"]);
 const strings = (obj) => obj && typeof obj === "object" && !Array.isArray(obj) && Object.values(obj).every((v) => typeof v === "string" && v);
 
 test("there are language configurations", () => assert.ok(files.length > 0));
@@ -24,6 +24,8 @@ for (const file of files) {
     assert.ok(!("examples" in cfg), "examples are built by from_tap_data.py, not written here");
     for (const key of ["name", "title", "intro"]) assert.ok(typeof cfg[key] === "string" && cfg[key].trim(), `${key} is required`);
     if ("dir" in cfg) assert.equal(cfg.dir, "rtl");
+    if ("kind" in cfg) { assert.equal(cfg.kind, "transcribe"); assert.ok(typeof cfg.rules === "string" && cfg.rules.trim(), "a transcription language needs rules"); }
+    if ("calibration" in cfg) assert.ok(typeof cfg.calibration.max_cer === "number" && cfg.calibration.max_cer > 0 && cfg.calibration.max_cer < 1);
     for (const key of ["notes", "equivalents"]) if (key in cfg) assert.ok(strings(cfg[key]), `${key} maps letters to text`);
     if ("drop_examples" in cfg) assert.equal(typeof cfg.drop_examples, "string");
     if ("min_examples" in cfg) assert.ok(Number.isInteger(cfg.min_examples) && cfg.min_examples > 0);

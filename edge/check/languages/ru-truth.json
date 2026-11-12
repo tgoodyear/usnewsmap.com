@@ -1,0 +1,7 @@
+{
+  "intro": "These crops come from Russian-language newspapers printed in the United States between the 1910s and the 1930s, held by the Library of Congress. Type in Cyrillic, and keep any letters of the pre-1918 spelling (such as ѣ, і and a final ъ) as printed.",
+  "kind": "transcribe",
+  "name": "Russian: type the crops",
+  "rules": "Type every printed line, one line of your text for each, in reading order. Keep the printed spelling, capital letters, punctuation and hyphens, even where they look wrong, and don't join a word split across lines. If the crop cuts a line at its edge, type only the letters wholly inside it. Where you can't read a letter or a stretch of letters, press the button that inserts � instead of guessing. If nothing at all is legible, press Nothing legible. Two people type each one on their own; if they differ, a third person compares both with the print and settles it. A few items have a known text, to check your typing.",
+  "title": "Russian: type the crops"
+}

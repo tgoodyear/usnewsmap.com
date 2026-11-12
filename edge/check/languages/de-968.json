@@ -1,0 +1,25 @@
+{
+  "intro": "These crops come from German-language daily newspapers printed in Iowa, held by the Library of Congress. They are the human reference for the German comparison (#968): type each one from the print alone. Nothing from any machine is shown or filled in. Zoom in by clicking the image.",
+  "keys": [
+    "ſ",
+    "ä",
+    "ö",
+    "ü",
+    "ß",
+    "Ä",
+    "Ö",
+    "Ü",
+    "—",
+    "„",
+    "“",
+    "‟"
+  ],
+  "kind": "transcribe",
+  "name": "German: type the crops",
+  "readers_prefix": "maintainer:",
+  "rules": "Type what is printed, one line of your text for each printed line, in reading order. Keep the printed spelling, capital letters, punctuation and hyphens, and keep ſ (long s) where it is printed; the buttons insert ſ, umlauts and ß. Don't join a word split across lines at a hyphen. If the crop cuts a line at its edge, type only the letters wholly inside it. Type [?] for one letter you can't read, or [?x] for a letter you read as x with doubt. Never skip printed text. Your reading settles the crop.",
+  "settle": "single",
+  "title": "German: type the crops",
+  "unknown_mark": "[?]",
+  "unlisted": true
+}

@@ -87,3 +87,10 @@ h2 { font-size: 1rem; margin: 8px 0 0; }
 .done { text-align: center; padding: 24px 8px; }
 .done strong { font-size: 1.3rem; display: block; margin-bottom: 6px; }
 footer { color: var(--muted); font-size: .85rem; border-top: 1px solid var(--line); margin-top: 12px; }
+
+#tx-card textarea { width: 100%; box-sizing: border-box; font-size: 1.4rem; padding: 8px; margin: 10px 0; border: 1px solid var(--muted); border-radius: 6px; background: transparent; color: inherit; }
+#tx-card pre.script { white-space: pre-wrap; margin: 4px 0 0; font: inherit; font-size: 1.3rem; text-align: start; }
+#tx-card .opt { display: block; width: 100%; margin: 6px 0; text-align: start; }
+.lineview.zoomed { overflow-x: auto; }
+.lineview.zoomed img { width: auto; max-width: none; min-width: 160%; }
+.keycap { min-width: 2.2rem; font-size: 1.1rem; }

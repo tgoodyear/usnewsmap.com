@@ -87,7 +87,7 @@ test("the SQL settling rule matches settle()", async () => {
 });
 
 test("the dump has every table's rows", async () => {
-  const data = { languages: [{ code: "chr", config: "{}" }], tasks: [{ id: "t1" }, { id: "t2" }], answers: [{ task_id: "t1", contributor: "c", choice: "a", at: 1 }] };
+  const data = { languages: [{ code: "chr", config: "{}" }], tasks: [{ id: "t1" }, { id: "t2" }], answers: [{ task_id: "t1", contributor: "c", choice: "a", at: 1 }], readings: [], truths: [], calibration: [], reader_scores: [] };
   let batches = 0;
   const DB = {
     prepare: (sql) => ({ sql }),

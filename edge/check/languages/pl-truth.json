@@ -1,0 +1,7 @@
+{
+  "intro": "These crops come from Polish-language newspapers printed in the United States between the 1880s and the 1940s, held by the Library of Congress. Keep the marks on letters (ą ć ę ł ń ó ś ź ż) as printed, and any old spellings.",
+  "kind": "transcribe",
+  "name": "Polish: type the crops",
+  "rules": "Type every printed line, one line of your text for each, in reading order. Keep the printed spelling, capital letters, punctuation and hyphens, even where they look wrong, and don't join a word split across lines. If the crop cuts a line at its edge, type only the letters wholly inside it. Where you can't read a letter or a stretch of letters, press the button that inserts � instead of guessing. If nothing at all is legible, press Nothing legible. Two people type each one on their own; if they differ, a third person compares both with the print and settles it. A few items have a known text, to check your typing.",
+  "title": "Polish: type the crops"
+}
