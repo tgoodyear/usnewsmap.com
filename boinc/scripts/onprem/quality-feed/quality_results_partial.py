@@ -44,7 +44,7 @@ def stamp(lines, receipt):
             try:
                 return datetime.datetime.strptime(line.split()[1], "%Y-%m-%dT%H:%M:%SZ").replace(
                     tzinfo=datetime.timezone.utc)
-            except ValueError:
+            except (IndexError, ValueError):
                 return None
     return None
 

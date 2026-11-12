@@ -356,6 +356,13 @@ class ResultsTest(unittest.TestCase):
         self.assertIn('"phase": "collection_deferred"', log.getvalue())
         self.assertNotIn('"phase": "collection_failed"', log.getvalue())
 
+    def test_a_receipt_cut_off_by_a_timeout_is_still_an_acquisition(self):
+        with mock.patch.object(results.sys, "stderr", new_callable=io.StringIO) as log:
+            self.assertTrue(results.replay_collection_diagnostics(results.LOCK_ACQUIRED + " \n"))
+            self.assertTrue(results.replay_collection_diagnostics(
+                results.LOCK_ACQUIRED + " 2026-11-12T08:00:00Z\n" + results.LOCK_RELEASED + " \n"))
+        self.assertNotIn("step_lock_held", log.getvalue())
+
     def test_the_lock_is_let_go_by_a_shell_that_says_so(self):
         args = self.args()
         args.step_lock_wait_secs = 60

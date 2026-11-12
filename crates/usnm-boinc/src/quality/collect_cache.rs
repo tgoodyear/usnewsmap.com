@@ -73,6 +73,26 @@ fn contents(input: &mut File) -> anyhow::Result<Vec<u8>> {
     Ok(digest.finalize().to_vec())
 }
 
+/// The digest a retained receipt holds for this input, or why it can't be trusted.
+#[cfg(unix)]
+fn digest_receipt(bytes: &[u8], key: &str, identity: &FileIdentity) -> anyhow::Result<Vec<u8>> {
+    let envelope: Envelope = serde_json::from_slice(bytes)?;
+    ensure!(
+        envelope.fingerprint == key,
+        "input digest identity mismatch"
+    );
+    ensure!(
+        envelope.rows_sha256 == hex(&Sha256::digest(envelope.rows.as_bytes())),
+        "input digest checksum mismatch; receipt retained"
+    );
+    let saved: InputDigest = serde_json::from_str(&envelope.rows)?;
+    ensure!(
+        &saved.identity == identity && saved.sha256.len() == 32,
+        "invalid input digest receipt"
+    );
+    Ok(saved.sha256)
+}
+
 #[cfg(unix)]
 fn input_digest(dir: &Path, path: &Path, input: &mut File) -> anyhow::Result<Vec<u8>> {
     let identity = FileIdentity::read(input)?;
@@ -87,23 +107,7 @@ fn input_digest(dir: &Path, path: &Path, input: &mut File) -> anyhow::Result<Vec
     let key = hex(&key.finalize());
     let receipt = dir.join(format!("{key}.json"));
     let digest = match std::fs::read(&receipt) {
-        Ok(bytes) => {
-            let envelope: Envelope = serde_json::from_slice(&bytes)?;
-            ensure!(
-                envelope.fingerprint == key,
-                "input digest identity mismatch"
-            );
-            ensure!(
-                envelope.rows_sha256 == hex(&Sha256::digest(envelope.rows.as_bytes())),
-                "input digest checksum mismatch; receipt retained"
-            );
-            let saved: InputDigest = serde_json::from_str(&envelope.rows)?;
-            ensure!(
-                saved.identity == identity && saved.sha256.len() == 32,
-                "invalid input digest receipt"
-            );
-            saved.sha256
-        }
+        Ok(bytes) => digest_receipt(&bytes, &key, &identity)?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let digest = contents(input)?;
             ensure!(
@@ -115,7 +119,7 @@ fn input_digest(dir: &Path, path: &Path, input: &mut File) -> anyhow::Result<Vec
                 sha256: digest.clone(),
             })?;
             let envelope = Envelope {
-                fingerprint: key,
+                fingerprint: key.clone(),
                 rows_sha256: hex(&Sha256::digest(rows.as_bytes())),
                 rows,
             };
@@ -123,8 +127,19 @@ fn input_digest(dir: &Path, path: &Path, input: &mut File) -> anyhow::Result<Vec
             let mut staged = tempfile::NamedTempFile::new_in(dir)?;
             staged.write_all(&serde_json::to_vec(&envelope)?)?;
             staged.as_file().sync_all()?;
-            staged.persist_noclobber(&receipt)?;
-            File::open(dir)?.sync_all()?;
+            match staged.persist_noclobber(&receipt) {
+                Ok(_) => File::open(dir)?.sync_all()?,
+                // Another collector of this cache (a warming run beside a publication, or a
+                // manual prewarm) stored the same receipt first. Take theirs if it is valid
+                // and says what we computed; a corrupt or different one fails closed.
+                Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    ensure!(
+                        digest_receipt(&std::fs::read(&receipt)?, &key, &identity)? == digest,
+                        "input digest receipt conflict; receipt retained"
+                    );
+                }
+                Err(e) => return Err(e.into()),
+            }
             digest
         }
         Err(e) => return Err(e).context("reading retained input digest"),
@@ -707,8 +722,15 @@ impl Cache {
         let mut staged = tempfile::NamedTempFile::new_in(&self.dir)?;
         staged.write_all(&serde_json::to_vec(&envelope)?)?;
         staged.as_file().sync_all()?;
-        staged.persist_noclobber(&path)?;
-        File::open(&self.dir)?.sync_all()?;
+        match staged.persist_noclobber(&path) {
+            Ok(_) => File::open(&self.dir)?.sync_all()?,
+            // Another collector of this cache stored this part first: the key names its inputs,
+            // so it holds the same rows. Take it if it is valid; a corrupt one fails closed.
+            Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                self.load(key)?;
+            }
+            Err(e) => return Err(e.into()),
+        }
         Ok(())
     }
 }
@@ -779,6 +801,32 @@ mod tests {
             hint
         );
         assert_ne!(changed.key(&unit, &job, &canonical).unwrap(), rows);
+    }
+
+    #[tokio::test]
+    async fn a_part_another_collector_stored_first_is_accepted_only_if_valid() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, unit, job) = cached_fixture(dir.path()).await;
+        let cache = Cache::new(opts.cache.as_ref().unwrap(), &opts).unwrap();
+        let canonical = super::super::collect::spool_files(
+            &opts.spool,
+            &job.workunit(),
+            &super::super::outputs(),
+        );
+        let key = cache.key(&unit, &job, &canonical).unwrap();
+        let part = Part {
+            summary: Summary::default(),
+            pages: vec![],
+            crops: vec![],
+        };
+        cache.store(&key, &part).unwrap();
+        // The same key stored again, as by a warming run and a publication racing: not an error.
+        cache.store(&key, &part).unwrap();
+        // A corrupt entry under the key still fails closed, and is kept.
+        let path = opts.cache.as_ref().unwrap().join(format!("{key}.json"));
+        std::fs::write(&path, b"{garbage").unwrap();
+        assert!(cache.store(&key, &part).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{garbage");
     }
 
     #[cfg(unix)]

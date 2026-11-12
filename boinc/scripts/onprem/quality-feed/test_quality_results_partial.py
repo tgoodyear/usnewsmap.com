@@ -202,6 +202,9 @@ class PartialTest(unittest.TestCase):
                 (partial.LOCK_ACQUIRED + " 2026-11-12T08:00:00Z\n").encode()))
         self.assertNotIn("step_lock_held", log.getvalue())
         self.assertFalse(partial.replay_collection_diagnostics(b"remote diagnostic\n"))
+        with mock.patch.object(partial.sys, "stderr", new_callable=io.StringIO):
+            # A receipt cut off right after its space, as a transport timeout can leave it.
+            self.assertTrue(partial.replay_collection_diagnostics((partial.LOCK_ACQUIRED + " \n").encode()))
 
     def test_host_lock_deferral_never_starts_remote_work(self):
         lock_path = self.root / "host.lock"
