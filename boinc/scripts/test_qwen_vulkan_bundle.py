@@ -64,7 +64,9 @@ class Bundle(unittest.TestCase):
             "package": "libgomp1", "version": "12.3.0-test", "url": "http://example.invalid/libgomp1.deb",
             "sha256": hashlib.sha256(self.deb.read_bytes()).hexdigest(), "member": GOMP_MEMBER,
             "member_sha256": hashlib.sha256(self.gomp).hexdigest(),
-            "license": "GPL-3.0-or-later WITH GCC-exception-3.1", "source": "gcc-12 12.3.0-test source"}))
+            "license": "GPL-3.0-or-later WITH GCC-exception-3.1", "source": "gcc-12 12.3.0-test source",
+            "copyright": "Copyright (C) 2005-2022 Free Software Foundation, Inc.",
+            "notice_files": json.loads(bundle.LIBGOMP_LOCK.read_text())["notice_files"]}))
 
     def tearDown(self):
         self.folder.cleanup()
@@ -98,8 +100,22 @@ class Bundle(unittest.TestCase):
         notice = (extra / "libgomp.LICENSE").read_text()
         self.assertIn("GCC-exception-3.1", notice)
         self.assertIn("gcc-12 12.3.0-test source", notice)
-        self.assertEqual(release["worker"]["extra_files"]["libgomp.so.1"]["source_commit"], "libgomp1 12.3.0-test")
+        # Redistributing the library carries its copyright notice and the full licence texts.
+        self.assertIn("Copyright (C) 2005-2022 Free Software Foundation, Inc.", notice)
+        self.assertIn("GNU GENERAL PUBLIC LICENSE\n                       Version 3, 29 June 2007", notice)
+        self.assertIn("GCC RUNTIME LIBRARY EXCEPTION\n\nVersion 3.1, 31 March 2009", notice)
+        # On-prem manifests take a 40-hex commit for every extra file: the one that pins libgomp.
+        for name in ("libgomp.so.1", "libgomp.LICENSE"):
+            self.assertEqual(release["worker"]["extra_files"][name]["source_commit"], COMMIT)
         bundle.verify(self.dir / "out")
+
+    def test_a_licence_text_that_differs_from_the_lock_is_refused(self):
+        archive, lock = self.archive()
+        tampered = json.loads(self.gomp_lock.read_text())
+        tampered["notice_files"]["COPYING3"]["sha256"] = "0" * 64
+        self.gomp_lock.write_text(json.dumps(tampered))
+        with self.assertRaisesRegex(ValueError, "COPYING3 differs from libgomp.lock"):
+            self.build(archive, lock)
 
     def test_a_package_or_library_that_differs_from_the_lock_is_refused(self):
         archive, lock = self.archive()

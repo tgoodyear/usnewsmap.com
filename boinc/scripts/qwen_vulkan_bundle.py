@@ -122,8 +122,16 @@ def libgomp_from_deb(deb, lock_path=LIBGOMP_LOCK):
         library = packed.extractfile(member).read()
     if hashlib.sha256(library).hexdigest() != lock["member_sha256"]:
         raise ValueError(f"{lock['member']} in {deb} differs from libgomp.lock")
-    notice = (f"libgomp.so.1 is {lock['package']} {lock['version']}, the GNU OpenMP runtime, under "
-              f"{lock['license']}.\nCorresponding source: {lock['source']}\nPackage: {lock['url']}\n")
+    notice = (f"libgomp.so.1 is {lock['package']} {lock['version']}, the GNU OpenMP runtime (libgomp), "
+              f"unmodified.\n{lock['copyright']}\nLicence: {lock['license']}.\n"
+              f"Corresponding source: {lock['source']}\nPackage: {lock['url']}\n")
+    # The package itself carries no copyright file (its doc directory links to gcc-12-base), so
+    # the GPLv3 and the GCC Runtime Library Exception come from GCC's own release, pinned here.
+    for name, entry in sorted(lock["notice_files"].items()):
+        text = ROOT / entry["path"]
+        if sha256(text) != entry["sha256"]:
+            raise ValueError(f"{entry['path']} differs from libgomp.lock")
+        notice += f"\n===== {name} ({entry['source']}) =====\n\n" + text.read_text()
     return library, notice, lock
 
 
@@ -190,7 +198,7 @@ def build(archive, binary, source_commit, out, plan_class, libgomp_deb, lock_pat
         raise ValueError("llama.lock pins a runtime this script has not reviewed")
     if Path(archive).name != asset["file"] or sha256(archive) != asset["sha256"]:
         raise ValueError(f"{archive} is not the llama.lock-pinned {asset['file']}")
-    library, notice, gomp = libgomp_from_deb(libgomp_deb, libgomp_lock)
+    library, notice, _ = libgomp_from_deb(libgomp_deb, libgomp_lock)
     out = Path(out)
     out.mkdir()
     extra = out / "extra"
@@ -218,8 +226,8 @@ def build(archive, binary, source_commit, out, plan_class, libgomp_deb, lock_pat
             "sha256": sha256(out / BINARY),
             "source_commit": source_commit,
             "extra_files": {name: {"sha256": sha256(extra / name),
-                                   "source_commit": source_commit if name.endswith(".lock")
-                                   else f"{gomp['package']} {gomp['version']}" if name.startswith("libgomp.")
+                                   # libgomp is pinned by libgomp.lock in this repository.
+                                   "source_commit": source_commit if name.endswith(".lock") or name.startswith("libgomp.")
                                    else llama}
                             for name in names},
         },

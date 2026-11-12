@@ -995,6 +995,7 @@ class BuildInputs(unittest.TestCase):
     def test_the_native_apps_run_for_the_files_they_embed_or_their_tests_read(self):
         for path in ["boinc/apps/qwen/llama.lock", "boinc/apps/qwen/weights.lock", "ocr/contract/v1/schema.json",
                      "boinc/apps/qwen/amd-device-map.cpp", "boinc/apps/qwen/disk-policy.json",
+                     "boinc/apps/qwen/libgomp.lock", "boinc/apps/qwen/licenses/gcc-12.3.0/COPYING3",
                      "boinc/scripts/test_amd_device_map.py",
                      "boinc/scripts/patch_amd_vulkan_identity.py", "boinc/scripts/build_amd_vulkan_runtime.ps1",
                      "boinc/scripts/qwen_vulkan_bundle.py", "boinc/scripts/test_qwen_vulkan_bundle.py",
