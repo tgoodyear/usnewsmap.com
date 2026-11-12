@@ -450,6 +450,34 @@ class PartialTest(unittest.TestCase):
                 partial.scoped_collect(self.args, self.root)
         self.assertEqual(frontier_path.read_bytes(), previous)
 
+    def test_a_refresh_written_during_a_pass_is_kept_by_the_pass_update(self):
+        self.args.completion_frontier = True
+        inventory = {"ready": {"status": "canonical-present", "fingerprint": "a" * 64}}
+        for name in ("ready", "zz-new"):
+            unit = self.root / "quality/test/units" / name
+            unit.mkdir(parents=True)
+            (unit / "submitted").touch()
+            (unit / "quality.json").write_text(json.dumps({"id": self.job, "doc_id": "doc-a"}))
+        Path(self.args.collector).write_bytes(b"test collector")
+        path = self.cache_inventory(inventory)
+
+        def recheck(*_args, **_kwargs):
+            # A full refresh, with no step lock, finishes while the pass rechecks its unit.
+            path.write_text(json.dumps({"schema": 1, "generated_at": 1, "units": {
+                **inventory, "zz-new": {"status": "pending", "fingerprint": None}}}))
+            return inventory
+
+        def collect(command, **_kwargs):
+            out = Path(command[command.index("--out-dir") + 1])
+            for name in partial.FILES:
+                (out / name).write_bytes(b"verified test output")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with mock.patch.object(partial, "completion_inventory", side_effect=recheck), \
+                mock.patch.object(partial.subprocess, "run", side_effect=collect):
+            partial.scoped_collect(self.args, self.root)
+        self.assertEqual(set(json.loads(path.read_bytes())["units"]), {"ready", "zz-new"})
+
     def test_collector_failure_advances_only_scheduler_and_cannot_starve_other_units(self):
         self.args.completion_frontier = True
         inventory = {

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Certificate-upsert one verified QUALITY unit without replacing a complete campaign snapshot."""
 import argparse
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -45,6 +46,17 @@ def replay_collection_diagnostics(stderr):
 def digest(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+@contextlib.contextmanager
+def inventory_lock(base):
+    """Held only while the inventory file is read and rewritten, never while an inventory is computed:
+    a refresh (no step lock) and a pass's update of its one selected unit (under it) both rewrite the
+    file, and neither may overwrite the other's."""
+    base.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (base / "inventory.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
 
 
 def atomic_json(path, value):
@@ -173,7 +185,8 @@ def refresh_inventory(args, project=Path("/project")):
     inventory = completion_inventory(args, project, base, deadline=started + args.inventory_budget_secs,
                                      limit=args.inventory_budget_secs)
     validate_inventory(inventory)
-    atomic_json(base / INVENTORY_FILE, {"schema": 1, "generated_at": time.time(), "units": inventory})
+    with inventory_lock(base):
+        atomic_json(base / INVENTORY_FILE, {"schema": 1, "generated_at": time.time(), "units": inventory})
     counts = {}
     for item in inventory.values():
         counts[item["status"]] = counts.get(item["status"], 0) + 1
@@ -249,7 +262,12 @@ def scoped_collect(args, project=Path("/project")):
             raise ValueError("selected unit missing from its completion inventory")
         validate_inventory({selected: current[selected]})
         inventory[selected] = current[selected]
-        atomic_json(base / INVENTORY_FILE, {**cached, "units": inventory})
+        with inventory_lock(base):
+            # A refresh may have written a newer file since this pass read it: update only the
+            # selected entry in that one.
+            latest, _ = cached_inventory(base, names)
+            latest["units"][selected] = current[selected]
+            atomic_json(base / INVENTORY_FILE, latest)
         frontier_receipt = {"schema": 1, "lane": lane, **inventory[selected],
                             "inventory_seconds": time.monotonic() - pass_started}
     else:

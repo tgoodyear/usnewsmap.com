@@ -363,10 +363,11 @@ async fn stage_shared_model_streaming(
         project.join(rel_or_abs)
     };
     if models == Models::Prechecked {
-        let source_len = std::fs::metadata(src).ok().map(|m| m.len());
+        let source_len = std::fs::metadata(src)
+            .with_context(|| format!("reading the model source {}", src.display()))?
+            .len();
         ensure!(
-            dst.is_file()
-                && source_len.is_none_or(|len| std::fs::metadata(&dst).is_ok_and(|m| m.len() == len)),
+            dst.is_file() && std::fs::metadata(&dst).is_ok_and(|m| m.len() == source_len),
             "{} is not staged with its source's size; stage the models first (`qwen submit --models-only`)",
             dst.display()
         );
