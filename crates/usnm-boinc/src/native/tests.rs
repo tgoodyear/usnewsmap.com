@@ -589,13 +589,21 @@ fn a_process_past_the_cpu_limit_is_ended_by_the_job() {
         .args(["-NoProfile", "-Command", "while ($true) { }"])
         .stdin(Stdio::null());
     let mut child = win::spawn_in_job(&mut command, &win::Limits::engine(2)).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let started = Instant::now();
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
         }
-        assert!(Instant::now() < deadline, "the job didn't end the process");
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the job didn't end the process"
+        );
         std::thread::sleep(Duration::from_millis(100));
     };
-    assert!(!status.success());
+    // The loop was running when the limit ended it, not stopped at once.
+    assert!(
+        started.elapsed() >= Duration::from_secs(1),
+        "ended after {:?} with {status}",
+        started.elapsed()
+    );
 }

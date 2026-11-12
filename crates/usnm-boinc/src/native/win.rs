@@ -12,6 +12,7 @@
 #![allow(unsafe_code)]
 
 use std::{
+    collections::BTreeMap,
     ffi::c_void,
     os::windows::{
         io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle},
@@ -216,17 +217,18 @@ pub(super) fn is_alive(pid: u32) -> bool {
     }
 }
 
-/// The unit's job: the supervisor asks it to stop or suspend what it started, by the id the
-/// control channel knows it by. One unit runs at a time, so one job is kept, and starting
-/// another replaces it, which kills whatever the previous unit left behind.
-static ACTIVE: Mutex<Option<(u32, Arc<Job>)>> = Mutex::new(None);
+/// The jobs of the units started, by the id the control channel knows each unit by: the
+/// supervisor asks one to stop or suspend what it started. A task runs one unit at a time, and
+/// an entry is dropped when its unit is ended; one whose unit finished by itself stays, with
+/// no process in it, until the worker exits. The tests start several at once.
+static ACTIVE: Mutex<BTreeMap<u32, Arc<Job>>> = Mutex::new(BTreeMap::new());
 
 fn active(pid: u32) -> Option<Arc<Job>> {
-    let guard = ACTIVE.lock().unwrap_or_else(|e| e.into_inner());
-    guard
-        .as_ref()
-        .filter(|(id, _)| *id == pid)
-        .map(|(_, job)| Arc::clone(job))
+    ACTIVE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&pid)
+        .cloned()
 }
 
 /// Starts `command` suspended, in a new job with `limits`, with no console window, and lets it
@@ -242,7 +244,10 @@ pub(super) fn spawn_in_job(command: &mut Command, limits: &Limits) -> std::io::R
         let _ = child.wait();
         return Err(error);
     }
-    *ACTIVE.lock().unwrap_or_else(|e| e.into_inner()) = Some((child.id(), job));
+    ACTIVE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(child.id(), job);
     Ok(child)
 }
 
@@ -285,7 +290,11 @@ fn resume(child: &Child) -> std::io::Result<()> {
 
 /// Ends the unit and everything it started.
 pub(super) fn terminate_group(child: &mut Child) {
-    match active(child.id()) {
+    let job = ACTIVE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&child.id());
+    match job {
         Some(job) => job.terminate(),
         None => {
             let _ = child.kill();
