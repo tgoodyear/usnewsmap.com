@@ -289,6 +289,22 @@ Nothing here changes the live OCR plan, its pin (106) or the `docker` versions.
   that main, or an overlay named in `/etc/usnm-boinc/handoff-image`
   ([onprem.md](../server/onprem.md), "To ship a hand-off fix without a new server image"). The
   bridge's `gold-trust` step needs the same `usnm-boinc` in the server image.
+- A scheduler built from main 7dadcf14 or later (#1772). Before it, the scheduler's batch patch
+  (`patch-server-apple-gpu.py`) expected batch 1 of every docker plan class it didn't list and
+  refused every batch-1621 unit for `docker_lines`, silently. A targeted unit then never gets a
+  `result` row, and `scheduler.log` says `App version for assigned WU not found` and
+  `failed to send targeted job: not found` on each RPC of the target host. Check before the
+  first submit that the server image includes #1772 (the image's source commit is in its
+  `org.usnewsmap.source` label). To see the scheduler's reason, turn on
+  `<debug_version_select>1</debug_version_select>` in the live `config.xml` for a few RPCs:
+  `[version] [AV#<id>] app_plan(docker_lines) returned false` is this fault. The setting changes
+  `config.xml`'s sha256, which the Qwen cohort controller pins (`CONFIG_SHA256`, with the renewal
+  pin; the procedure is in [intel-gpu.md](intel-gpu.md)). A tick that finds another hash releases
+  its window. So back up `config.xml`, `qwen-cohort-auto.env` and `qwen-window-renew.sha256`, then
+  edit `config.xml` and set both pins in one hold of `/run/usnm-boinc-step.lock` (the controller's
+  tick and the renewer take the same lock), or stop `usnm-qwen-cohort-auto.timer` for the window.
+  Revert the same way: restore `config.xml`, then both pins, and check each file against its
+  backup.
 
 **The approved values** (the maintainer, 11 November). The evidence for each is in #1730:
 
@@ -339,6 +355,14 @@ usnm-boinc-step --env prod --target bridge --step gold-submit --wait-mins 30 \
 
 `GOLD_UNITS` defaults to 20 and `GOLD_ENGINE_VERSION` to 5.5.0.
 
+**A targeted unit queues behind the host's running work.** It takes a CPU slot like any other
+docker task, so a host whose slots hold long OCR tasks starts its gold late: on 11 November host 9
+(6 CPUs) finished its 20 units in about 80 minutes, host 2 took them in about 4 minutes each once
+started, and host 10 (2 CPUs, OCR tasks that average 2.5 hours) had finished none after 3 hours.
+A host whose client is paused or off reports nothing. Don't wait for the slowest host: collect and
+trust the roots that are complete (the next section), run the test batch on a trusted host, and
+re-run `gold-trust` over all complete roots when the others finish.
+
 **Collect** each root once its units are assimilated. The results are in `results/1621`:
 
 ```sh
@@ -355,6 +379,13 @@ configuration its `line_basis` names. `gold-trust` with `GOLD_LINE_SCOPE` builds
 reports and writes only that entry of `gold/trust.json`. The top-level fields and every other
 scope, `eng`/`eng` included, stay byte for byte as they were. `GOLD_CAMPAIGNS` adds the other
 hosts' roots to the same build, so one run covers all three.
+The entry is replaced, not merged (`Trust::promote_line_scope`): a later run lists the hosts of
+the roots it is given, so give it every complete root, the earlier ones included, or it drops
+their hosts. Where a root isn't complete (its units still out, or its host off), leave it out:
+`GOLD_CAMPAIGN` names the first complete root, `GOLD_CAMPAIGNS` only the other complete ones,
+and the check below expects only those roots' hosts. On 11 November the first run had host 9's
+root only (`GOLD_CAMPAIGN=lines8404-amd64-h9-…`, no `GOLD_CAMPAIGNS`), because that was the only
+complete one, and the `chr` entry listed host 9.
 
 Back up the list first:
 
@@ -387,7 +418,8 @@ diff <(jq -S 'del(.policies[] | select(.scope.language == "chr"))' trust.json) \
 jq '.policies[] | select(.scope.language == "chr")' trust.json
 ```
 
-The `chr` entry must list hosts 2, 9 and 10 under `840487b2…`, PSM 13. If anything else
+The `chr` entry must list the hosts of the roots you gave (2, 9 and 10 once all three are
+complete) under `840487b2…`, PSM 13. If anything else
 differs, stop and report. Don't `mv` the backup over the list: it is a whole-file snapshot, and
 `gold-promote` or a hold may have changed the list since. Keep both copies. `spool-out` copies the share's
 `gold/trust.json` to the hand-off container, so the next `spool-out` makes the change live
@@ -491,8 +523,9 @@ for each export.
 
 **Submit** each host's share of the jobs, pinned to `usnm_ocr` 108 and targeted
 (`submit_ocr_job` in `bridge-job.sh`). `JOB_IDS` takes up to 100 jobs, and every job in the
-call goes to the one `LINE_TARGET_HOST`. Split each export's jobs about evenly over hosts 2,
-9 and 10:
+call goes to the one `LINE_TARGET_HOST`. Split each export's jobs about evenly over the hosts
+the `chr` entry lists at that time (2, 9 and 10 once all three are trusted; a host that isn't in
+the entry has its line results quarantined, so send nothing to it):
 
 ```sh
 usnm-boinc-step --env prod --target bridge --step submit-remote --wait-mins 30 \
