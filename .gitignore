@@ -25,6 +25,8 @@ docs/reports/**/*.json
 docs/reports/**/*.jsonl
 # The line jobs' page list (#1621), a small inventory the runbook reads.
 !docs/reports/2026-11-cherokee/phoenix-pages.jsonl
+# The page list for the GHN-only pages (#1622), likewise.
+!docs/reports/2026-11-cherokee/ghn-pages.jsonl
 docs/reports/**/*.parquet
 docs/reports/**/*.txt
 docs/reports/**/*.gz

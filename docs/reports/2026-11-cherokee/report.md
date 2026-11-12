@@ -1,6 +1,6 @@
 # Cherokee: what is searchable, how good the OCR is, and a plan
 
-6 November 2026, updated 9 November with the _Phoenix_ model (step 3) and 12 November with the first production re-read (step 4). Follows [#1581](https://github.com/tgoodyear/usnewsmap.com/issues/1581) (the word lists and the engine tests) and [#1590](https://github.com/tgoodyear/usnewsmap.com/issues/1590) (the Georgia Historic Newspapers images).
+6 November 2026, updated 9 November with the _Phoenix_ model (step 3) and 12 November with the first production re-read (step 4) and the plan for the 699 pages. Follows [#1581](https://github.com/tgoodyear/usnewsmap.com/issues/1581) (the word lists and the engine tests) and [#1590](https://github.com/tgoodyear/usnewsmap.com/issues/1590) (the Georgia Historic Newspapers images).
 
 ## Summary
 
@@ -8,7 +8,7 @@
 - **Accuracy.** The first measured figure comes from 70 lines checked against the page images: LoC's Cherokee OCR misreads at least 8–9% of syllabary letters, and stock Tesseract 16–17% (step 2). The proxies we can compute say LoC's Cherokee OCR is weak, and weak in particular letters. ᎾᏍᎩ ("that"), the second most common word in the New Testament, is read correctly 127 times and misread as ᏩᏍᎩ, ᏣᏍᎩ or ᏳᏍᎩ 1,007 times. ᎠᎴ ("and", the most common) is read correctly 2,547 times in 2,555. The paper's name, ᏣᎳᎩ ᏧᎴᎯᏌᏅᎯ, reads exactly on 47 of 82 front pages. It appears in a standing notice in the first column, not in the masthead. LoC's word confidences are no help: 99.8% of Cherokee words have a confidence of at least 0.5, and the median is 1.0.
 - **Models.** Tesseract's Cherokee model reads clean typeset text well: 1.67% character error on the New Testament PDFs. On Phoenix scans it makes the same letter confusions LoC's OCR makes. Our Qwen3-VL-2B route produced no syllabary at all, and in a 2026 benchmark none of 14 vision-language models read Cherokee. Fine-tuned on the paper's own glyphs, Tesseract beats LoC: `chr_phoenix` reads the test set's silver lines at 10.2% character error against LoC's 18.0%, and the hand-checked lines at 6.6% against 8.4%, though 70 lines are too few to settle that (step 3). It isn't deployed yet.
 - **The type.** The _Phoenix_ was set in one font, cast in Boston in 1827. Nine of its letters were recut in 1834, mostly because they looked too much like other letters. Three of them (Ꮩ, Ꮅ and Ꮦ) are among the pairs our engines confuse (section 4). The recut came after the paper's last issue, so every _Phoenix_ page has the 1828 shapes.
-- **Plan.** Build ground truth without new transcription work where we can, train a Phoenix-specific model, OCR the 699 missing pages, and make search tolerant of the known confusions in the meantime. Steps 1 to 3 are done: search now finds ᎾᏍᎩ on 108 pages (35 before), and the model passed its test. The BOINC re-OCR (step 4) has run for the 191 pages that have Cherokee lines: 190 were read and accepted on 11 and 12 November, one waits for a scan. The 699 missing pages and per-word script detection (#1666) for English words inside Cherokee lines are next.
+- **Plan.** Build ground truth without new transcription work where we can, train a Phoenix-specific model, OCR the 699 missing pages, and make search tolerant of the known confusions in the meantime. Steps 1 to 3 are done: search now finds ᎾᏍᎩ on 108 pages (35 before), and the model passed its test. The BOINC re-OCR (step 4) has run for the 191 pages that have Cherokee lines: 190 were read and accepted on 11 and 12 November, one waits for a scan. Next are the 699 missing pages and per-word script detection (#1666) for English words inside Cherokee lines. Step 4 holds the inventory of the 699, a line finder for pages without ALTO and the campaign design; none of it has run yet.
 
 ## 1. Volume: what we have against what exists
 
@@ -236,6 +236,71 @@ The GHN-only pages have no layout. Find text lines with a layout model, classify
 
 **Script detection.** Tesseract's own fallback can't split the scripts. With `chr+eng` it re-reads low-confidence words in English and wrote 863 Latin words on test lines that have essentially none, because 16 of the type's letters are Latin small capitals. Per-word script detection is [#1666](https://github.com/tgoodyear/usnewsmap.com/issues/1666). Its classifier looks at the word crop and at the lines around it, since an English name usually follows its syllabary form in parentheses.
 
+**The 699 pages: inventory, line finding and campaign design (12 November, nothing run in production).** This prepares the rest of step 4. The 699 pages have no ALTO, so a line job needs boxes from another source, and the line classifier and the English route are new.
+
+_Inventory._ [`ghn-pages.jsonl`](ghn-pages.jsonl) lists the 699 pages, one JSON line each, in the shape of `phoenix-pages.jsonl`: the page, `doc_id` (`ghn:<lccn>_<date>_ed-<n>_seq-<n>`, the form ADR-0026 gives a Georgia Historic Newspapers (GHN) page), batch and version, the image's path under the fetcher's output directory, its size and sha256, and its IIIF URL on GHN as provenance. `lines` is `null` until a finder has run, and `test_set` is false. Each image was hashed again and its dimensions read from the JPEG header (`chr_ghn_pages.py`); every value agrees with the fetcher's inventory and the verification receipts of #1590. Nothing was fetched.
+
+| | |
+| --- | --- |
+| Pages / issues | 699 / 177 |
+| `gua_cph` v3 (`sn83020866`, 1828-02-21 to 1829-01-28) | 104 pages |
+| `gua_cia` v3 (`sn83020874`, 1829-02-11 to 1834-05-17) | 595 pages |
+| By year, 1828 to 1834 | 88, 76, 125, 120, 152, 82, 56 |
+| Pages per issue | 4 on 169 issues, 2 on 6, 5 on 1, 6 on 1 |
+| Images | 4,695,100,592 bytes, 699 distinct sha256, one grey JPEG component each |
+| Width, height (min / median / max, pixels) | 3,757 / 4,309 / 7,112; 6,344 / 6,768 / 10,184 |
+| Overlap with LoC's 324 | none: no page, no issue |
+
+The listing for two pages came from an issue's HTML page (no IIIF manifest), the rest from manifests.
+
+_Finding lines without ALTO._ Truth is LoC's ALTO lines, scaled to the scan as `export --line-read` scales them (`chr_layout_eval.py truth`). The 190 pages with a local scan and a Cherokee line hold 107,837 lines, 16,680 of them Cherokee by `select_lines`' rule. The sample is 30 of them, picked by the sha256 of `layout-sample-1622:<page>` (skipping the first six, which were set aside for tuning that was not needed): 17,043 lines, 2,910 of them Cherokee, 10 pages from `sn83020866` and 20 from `sn83020874`. Every finder ran on our hosts, in a container with no network, as an unprivileged user, niced. pve-big carried a load of 50 to 70 on 8 cores throughout, so the times below are not speeds.
+
+LoC's boxes run taller than the print and overlap their neighbours' by a few pixels, so a finder that hugs the ink scores an IoU of 0.5 to 0.7 against them on a perfect line, so the score looks at what a crop would hold. A box matches a truth line when its centre is in the middle half of the line's height and inside its width, it covers 80% of the line's width, and it is at most 1.6 times as wide and as tall (`chr_layout_eval.py score` defines it; strict IoU is in the JSON). Recall is matched truth lines over truth lines, precision matched boxes over boxes. A box on real print that LoC's OCR missed counts against precision, so precision is a lower bound.
+
+| Finder, on the 30 pages | Line recall | Line precision | Cherokee line recall | Boxes holding two lines |
+| --- | ---: | ---: | ---: | ---: |
+| Tesseract PSM 3 on the scan, as the live page jobs lay out | 81.3% | 69.5% | 79.4% | 444 |
+| Same, boxes under 14 pixels high and rule-like wide boxes dropped | 81.3% | 70.9% | 79.4% | 444 |
+| PSM 3 on the Sauvola-binarised scan | 89.8% | 81.6% | 84.0% | 593 |
+| **Same, with the same clean-up** | **89.7%** | **83.8%** | **84.0%** | 530 |
+| Same at half size | 77.0% | 68.6% | 79.2% | 1,165 |
+| Sauvola boxes plus raw-scan boxes in the gaps | 89.8% | 81.2% | 84.1% | 659 |
+| Kraken `blla` (7.1.1), its default, 2 pages | 1.2% | 3.5% | 0.7% | 320 |
+
+On the 6 pages the raw layout handled worst, recall and precision were 51.5% and 35.6% raw, 77.9% and 69.2% with the paper brightness flattened, and 90.4% and 77.8% binarised. By page, the chosen finder's median recall is 94.9% and median precision 86.7%; the weakest page is at 51.3% recall, and 5 of the 30 pages are under 80%.
+
+- **Why Tesseract's layout.** It is what the live page jobs already run (PSM 3), it needs nothing new on the worker, and it keeps reading order (block, paragraph, line numbers), which the assembled page needs. On these scans it fails where the ink is faint: it boxes fragments or one smear across a column, and binarising first (Sauvola, window 51, k 0.3, after dividing out the paper's brightness) removes most of that. Tesseract only finds the boxes; crops are cut from the original greyscale scan, as the job does today.
+- **Kraken.** Its wheel carries the `blla` model. At its default (it scales a page to 1,800 pixels high, so a 43-pixel line becomes 12) it found 371 boxes for 1,171 truth lines on 2 pages, most of them spanning columns. A tiled run at full scale did not finish a page in 20 minutes at that load and was stopped, so Kraken's segmenter has not been measured at the right scale. It would also add a PyTorch stack to the host that stages the jobs.
+- **What was dropped.** A first run-length finder of our own (smear the ink sideways, take each blob as a line) fragmented justified lines, whose word gaps are as wide as the gutters; it was not pursued. The union with the raw layout adds nothing. `chr_phoenix+eng` does not change the boxes (layout comes before recognition), only what is read.
+- **Cherokee lines are the weak part.** 16% of Cherokee lines get no matching box, against 10% of all lines. On a GHN page checked by eye, whole runs of syllabary lines at the top of a column carried no boxes while the same column lower down did. At about 84% Cherokee line recall, the campaign reads about 84% of the Cherokee lines unless the finder improves.
+- **Reading from the finder's boxes costs nothing measurable.** For 600 Cherokee lines that exactly one finder box matches, `chr_phoenix` at PSM 13 (padding and settings of a line job, `chr_layout_read.py`) reads the finder's box and LoC's box alike: the two readings differ in 4% of syllabary letters, and each is about 16% from LoC's own text (15.9% for the finder's box, 16.2% for LoC's). A crop with 10 more pixels of vertical padding is worse (8.8% apart, 18.5% from LoC), so the job's padding stays as it is.
+- **A check that needs no truth.** The share of boxes over 1.8 times the median height (merged lines) correlates at -0.77 with a page's recall on the 30 pages; the share of ink inside the boxes, which was the obvious candidate, correlates at -0.05. A page with a high share goes to a second layout attempt or to a look by hand.
+
+_Page script._ Each line of a page with English and Cherokee must go to the right model. A gradient-boosted classifier on 19 shape features of the crop (`chr_line_script.py`: the ink's own bounding box, component heights and widths, ink in the top, middle and bottom quarter, word gaps) was trained on the 90,769 LoC lines of the 160 pages outside the sample, and scored on the finder's own boxes on the 30 pages (15,297 boxes that match a truth line, 2,447 of them Cherokee). Alone it finds 97.1% of Cherokee lines at 96.2% precision. A second stage that adds the first stage's score for the two lines above and below in the same column gives 99.0% and 98.9%: 51 errors in 15,297 lines, 25 Cherokee lines called English and 26 English lines called Cherokee. The features that depend on a scan's size and grey levels (line height, width, contrast) are left out. With them the score on LoC is the same (99.6%), but on a GHN page with many syllabary lines it called 9 of 315 lines Cherokee, where the version without them called 76. An English line called Cherokee is read by `chr_phoenix` and gives syllabary noise; a Cherokee line called English gives Latin noise. The per-word router of #1666 works on lines already known to be Cherokee, so the two cover different mistakes.
+
+_GHN scans._ On 12 GHN pages spread over the 699 (every 58th), the finder gave a median of 514 boxes per page after the clean-up, and the classifier called 234 of 5,966 lines Cherokee (3.9%; 0 to 124 a page). That would be about 13,000 Cherokee lines on the 699 pages (a standard error of 8,000), about 65,000 words at LoC's 5 words a line (83,449 words on 16,682 lines), against the 250,000 or more the step's measure assumed: LoC's pages have 9% Cherokee lines, and these twelve have 4%. On 60 pages of each source, the median grey level is 215 on GHN and 169 on LoC, and the paper-to-ink spread is 168 against 57 (`chr_scan_stats.py`), so GHN scans are generally brighter and higher in contrast than LoC's, except some early pages: the first issue's page 1 is dark. Five of the 12 GHN pages have a merged-lines share over 0.08, and the first issue's page 1 visibly fails (the boxes are smears as wide as the columns). The figures above come from LoC scans and will be lower on part of the GHN set. Two other Sauvola settings (window 25 and 101, k 0.2) on that page gave 69 and 121 boxes instead of 324 and a merged-lines share that stayed high. A dark early-issue page therefore needs another preprocessing step or another finder, which is the main open risk.
+
+_Campaign design._ A line job reads the boxes it is given, wherever they came from. The design keeps that and adds a staging step.
+
+1. **Layout on our host.** A staging step on the host that holds the images runs the finder (52 seconds for one page at a load of 53 on the host, more with the binarising), cleans the boxes, checks the page's merged-lines share, and writes one `boxes.jsonl` per page: line id `b<block>p<par>l<line>` from Tesseract's own numbering (so reading order survives), box in scan pixels, and the line's script from the classifier. A page whose share is over the threshold is held for a second layout attempt, then for a look by hand. Running layout on our host keeps the boxes under our control and checkable.
+2. **Two jobs a page.** One `chr` line job (`chr_phoenix`, the lines the classifier calls Cherokee) and one `eng` line job (the English engine, the rest), PSM 13, 300 DPI, up to 2,000 lines each. Both go through the line route; the worker already falls back from a line language with no dedicated model to the page profile (`route_lines`), so `eng` needs no model change.
+3. **Export without ALTO.** `export --line-read` gets a second source for the boxes: `--line-boxes <dir of boxes.jsonl>` in place of `--loc-alto`, the scan from the GHN manifest, and no `loc.xml` sidecar (`line-read/record.json` records the boxes' sha256 and the scan size instead of LoC's ALTO).
+4. **Import without LoC.** The page's text is the readings in layout order, `chr` and `eng` jobs interleaved by line id. A new admission rule, `line-assemble-v1`, replaces `line-merge-v1` for a page with no LoC text: every box has a reading from the job of its script, and at least half of the Cherokee lines took a non-empty reading (the share `line-merge-v1` uses, `MIN_MODEL_SHARE`; to be confirmed on the pilot). There is no `text_loc`.
+
+Three things in the code stop this from running on the worker that is live, and all three go into one new worker image:
+
+- **The job's URL check.** `Job::validate` requires the scan's URLs to start with `https://tile.loc.gov/`, and the worker runs `Job::validate` on every job (`worker.rs`). A GHN page can't pass it. The check has to accept GHN's IIIF host for a GHN page, and the job has to say it is one.
+- **The line languages.** `LINE_LANGUAGES` is `["chr"]`, in the contract, in `export`, in `line-stage` and in the trust scope's check. `eng` has to be added.
+- **The page's identity on the wire.** A job's message holds a LoC page key, and ADR-0026 says a GHN page never gives one. The Qwen wire has a precedent (`sample-<dataset>_<id>`, reversible, a form that can't be mistaken for LoC's). The proposal follows it: the wire spelling is the `PageKey`-shaped string, `export` refuses any page whose key is in LoC's own ALTO set, and `import` and `collect` write the `ghn:` id. The search side then never sees a bare id for these pages.
+
+So the plan is a new `docker_lines` version (1.9, 109) on a new worker image, the way the runbook rotates one. That means gold on the new image for each host (20 units, about 80 minutes on the 6-CPU host and minutes on the others once their slots free up), and one `gold-trust` that writes both line scopes, `chr/chr_phoenix` and a new `eng/eng` line scope with the English `max_cer` the page scope already has. The hosts today are 2 and 9, and host 10 when its units finish. Nothing in the design needs a new trust rule.
+
+_Size._ About 350,000 lines (699 pages at about 500), of which about 13,000 Cherokee. Exports 2 to 4 of #1621 read 16,018 lines in 77, 65 and 90 minutes, between 1 and 1.4 lines a second (from the run notes on #1621) on hosts that were also running their own OCR tasks. At that rate the Cherokee jobs take a few hours, and the 337,000 English lines take 67 to 94 hours of host time, 22 to 47 hours on two or three hosts. The English lines take longest and are not what search lacks, so the Cherokee lines run first and the English lines after, on more hosts if gold on the new image admits them. About 1,400 jobs in all.
+
+_Before anything runs._ Two things come first: the script detection of #1666 (a router for English words inside Cherokee lines), which is a sibling piece, and the maintainer's go-ahead. After that, in order: the code above in PRs; a worker image; gold and trust; a pilot of 5 pages with the stop rule of #1621 (any line changed that the job didn't read, any collect failure) plus a look at the pilot's boxes by eye; then the chr jobs, then the English jobs. The ingest of the finished pages into search (a `ghn:` page has no LoC row to compare with, and `ocr-sync` and the release take bare ids today) is a separate piece of the plan, not designed here.
+
+The commands are under Reproducing. The tables behind these numbers, with the sample's page list, are in [`layout-1622/README.md`](layout-1622/README.md).
+
 ### Step 5. The _Cherokee Advocate_ ([#1623](https://github.com/tgoodyear/usnewsmap.com/issues/1623))
 
 895 issues, 1844–1906, the largest Cherokee newspaper online and absent from Chronicling America. Its host's robots.txt bars ClaudeBot by name and asks other crawlers for one request every 3 seconds. Start from its OAI-PMH metadata to count pages and issues; whether to fetch images at all is a decision for the maintainer (below). The _Advocate_ was printed decades after the _Phoenix_, so step 3's model may need a second round of fine-tuning on it.
@@ -294,5 +359,21 @@ usnm-boinc line-pages --loc-alto <the two archives' ocr.xml, unpacked> \
 ```
 
 191 pages have lines to read, and 190 of those have a local scan. The one without is `sn83020874/1829-03-04/ed-1/seq-2`. Its 29 test-set pages are marked.
+
+**The 699 GHN-only pages and the line finder (#1622).** These are the commands for the step-4 preparation. Run them from the repository root with Tesseract 5.5.0 and Python with numpy, scipy, Pillow and scikit-learn (the image of `ocr/script-detect/Containerfile` has them). The finder's results are in [`layout-1622/README.md`](layout-1622/README.md).
+
+```sh
+python3 $S/chr_ghn_pages.py --inventory <the fetcher's inventory.jsonl> --images <its output directory> --loc-pages docs/reports/2026-11-cherokee/phoenix-pages.jsonl --out docs/reports/2026-11-cherokee/ghn-pages.jsonl
+python3 $S/chr_layout_eval.py truth --pages docs/reports/2026-11-cherokee/phoenix-pages.jsonl --alto-dir <the two archives' ocr.xml, unpacked> --scans <scan copies> > truth.jsonl
+python3 $S/chr_layout_find.py tess --psm 3 --prep sauvola --scans <scan copies> --truth truth.jsonl --select <a file of the 30 pages listed in layout-1622/README.md> --out found.jsonl
+python3 $S/chr_layout_post.py clean --found found.jsonl --truth truth.jsonl > found-clean.jsonl
+python3 $S/chr_layout_eval.py score --truth truth.jsonl --found found-clean.jsonl --label tess3-psm3-sauvola-clean
+python3 $S/chr_layout_read.py --truth truth.jsonl --found found-clean.jsonl --scans <scan copies> --tessdata <dir with chr_phoenix.traineddata> --max-lines 600
+python3 $S/chr_line_script.py features --truth truth.jsonl --scans <scan copies> --select <pages outside the sample> --out feats-train.jsonl
+python3 $S/chr_line_script.py features --truth truth.jsonl --scans <scan copies> --found found.jsonl --out feats-test.jsonl
+python3 $S/chr_line_script.py fit --train feats-train.jsonl --test feats-test.jsonl --context --drop h --drop w --drop contrast
+python3 $S/chr_layout_qa.py --found found-clean.jsonl --scans <scan copies>
+python3 $S/chr_scan_stats.py --set loc=<scan copies> --set ghn=docs/reports/2026-11-cherokee/ghn-pages.jsonl --ghn-images <the fetcher's output directory>
+```
 
 The search counts are from `https://api.usnewsmap.com/v1/aggregate?q=…` on the dates given.
