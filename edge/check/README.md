@@ -6,20 +6,20 @@ Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language, Yiddish (Ne
 
 ## Pieces
 
-| Piece                         | What it is                                                                          |
-| ----------------------------- | ----------------------------------------------------------------------------------- |
-| `worker.mjs`                  | The Worker: `/api/*` for the page, `/clips/*` from R2, `/admin/*` for loading data. |
-| `public/`                     | The page (static assets). `/` lists languages; `/<code>` (e.g. `/chr`) shows words. |
-| D1 `usnm-check`               | `languages`, `tasks`, `answers` (`schema.sql`).                                     |
-| R2 `usnm-check-clips`         | Line and word images, and the example letters, at `<lang>/<set>/...`.               |
-| Turnstile widget `usnm-check` | The browser check before a session is issued.                                       |
-| `tools/build_tasks.py`        | Turns line images with two readings per line into tasks, clips and a configuration. |
-| `tools/yiddish_lines.py`      | Makes `build_tasks.py`'s input for Yiddish: LoC's ALTO against our `yidj2` model.   |
-| `tools/serbian_lines.py`      | Makes `build_tasks.py`'s input for Serbian: LoC's ALTO against our held BOINC ALTO. |
-| `tools/from_tap_data.py`      | Turns a glyph-check data file (Cherokee) into tasks, clips and a configuration.     |
+| Piece                         | What it is                                                                            |
+| ----------------------------- | ------------------------------------------------------------------------------------- |
+| `worker.mjs`                  | The Worker: `/api/*` for the page, `/clips/*` from R2, `/admin/*` for loading data.   |
+| `public/`                     | The page (static assets). `/` lists languages; `/<code>` (e.g. `/chr`) shows words.   |
+| D1 `usnm-check`               | `languages`, `tasks`, `answers` (`schema.sql`).                                       |
+| R2 `usnm-check-clips`         | Line and word images, and the example letters, at `<lang>/<set>/...`.                 |
+| Turnstile widget `usnm-check` | The browser check before a session is issued.                                         |
+| `tools/build_tasks.py`        | Turns line images with two readings per line into tasks, clips and a configuration.   |
+| `tools/yiddish_lines.py`      | Makes `build_tasks.py`'s input for Yiddish: LoC's ALTO against our `yidj2` model.     |
+| `tools/serbian_lines.py`      | Makes `build_tasks.py`'s input for Serbian: LoC's ALTO against our held BOINC ALTO.   |
+| `tools/from_tap_data.py`      | Turns a glyph-check data file (Cherokee) into tasks, clips and a configuration.       |
 | `tools/phoenix_lines.py`      | Picks Cherokee lines from LoC's ALTO and our production re-read for `build_tasks.py`. |
-| `languages/<code>.json`       | A language's name, intro, writing direction and letter notes, plus build options.   |
-| `load.sh`, `set-secrets.sh`   | Loading data and setting secrets, run by hand.                                      |
+| `languages/<code>.json`       | A language's name, intro, writing direction and letter notes, plus build options.     |
+| `load.sh`, `set-secrets.sh`   | Loading data and setting secrets, run by hand.                                        |
 
 ## Who answers, and how answers count
 
@@ -97,11 +97,11 @@ The first set (8 November 2026) is 140 pages, 20 per decade, up to 4 lines each:
 
 The 190 _Phoenix_ pages that `chr_phoenix` re-read in production have two readings of every Cherokee line: LoC's and ours. Two more Cherokee languages hold tasks made from them. Each has its own queue and page, and the first Cherokee set (`chr`, its tasks and answers) is untouched.
 
-| Language, page       | Set           | Tasks | What                                                                                                                                                |
-| -------------------- | ------------- | ----: | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Language, page             | Set           | Tasks | What                                                                                                                                                                               |
+| -------------------------- | ------------- | ----: | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `chr-lines` (`/chr-lines`) | `disputes-v1` |   680 | The one word where the two readings differ, on lines that differ in that word only. The 29 pages of test set v2 only: 312 news lines and 368 lines that reprint the New Testament. |
-| `chr-rare` (`/chr-rare`)   | `rare-v1`     |   247 | Words with a letter the glyph bank has few or no samples of, on pages outside the test set. Tasks per letter: Ꮊ 15, Ꮌ 32, Ꮚ 40, Ꮛ 40, Ꮬ 40, Ꮯ 39, Ꮾ 41. Ꮍ has no candidate word. |
-| `chr-rare`           | `nah-v1`      |   120 | A word's first letter: the New Testament spelling with Ꮎ against the same word with Ꮐ, on pages outside the test set.                             |
+| `chr-rare` (`/chr-rare`)   | `rare-v1`     |   247 | Words with a letter the glyph bank has few or no samples of, on pages outside the test set. Tasks per letter: Ꮊ 15, Ꮌ 32, Ꮚ 40, Ꮛ 40, Ꮬ 40, Ꮯ 39, Ꮾ 41. Ꮍ has no candidate word.   |
+| `chr-rare`                 | `nah-v1`      |   120 | A word's first letter: the New Testament spelling with Ꮎ against the same word with Ꮐ, on pages outside the test set.                                                              |
 
 **Disputes.** `phoenix_lines.py disputes` pairs each line of LoC's ALTO with the re-read's line at the same position (the re-read numbers its lines afresh, but keeps LoC's line boxes) and keeps lines where both readings have the same number of syllabary words, at least three, and exactly one word differs. A pair is left out when both words are one or two letters with none in common, when they are less than half alike, or when they differ only in a word-initial G-shaped letter (that is the Ꮐ question below). A line with one disputed word is fully resolved when that word settles on one of the two readings, which takes three answers at best. A line with two disputed words needs six. About a third of the first hand check's disputed words ended in "neither", which leaves the line open, so only one-word lines are loaded. News lines are the ones the test set did not align to the New Testament. Lines with more than one differing word are not loaded.
 
