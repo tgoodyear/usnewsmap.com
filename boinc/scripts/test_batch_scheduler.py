@@ -3537,7 +3537,7 @@ class TimingsTests(unittest.TestCase):
     def test_only_a_lone_lock_refusal_is_a_step_lock_timeout(self):
         error, _ = self.failing_step(self.LOCK_LINE)
         self.assertIsInstance(error, batch.StepLockTimeout)
-        error, _ = self.failing_step("Warning: Permanently added host\n" + self.LOCK_LINE)
+        error, _ = self.failing_step("Warning: Permanently added host\n" + self.LOCK_LINE + "Connection to host closed.\n")
         self.assertIsInstance(error, batch.StepLockTimeout)
         error, _ = self.failing_step("error: another bridge step is running on this host - wait for it to end first\n")
         self.assertIsInstance(error, batch.StepLockTimeout)
@@ -3546,6 +3546,8 @@ class TimingsTests(unittest.TestCase):
             ("running submit-remote as x for up to 9 seconds\n" + self.LOCK_LINE, 1),
             (self.LOCK_LINE + self.LOCK_LINE, 1),
             (self.LOCK_LINE, 255),
+            ("flock: 9: No locks available\n" + self.LOCK_LINE, 1),
+            (self.LOCK_LINE + "some other error\n", 1),
             ("error: step deadline expired while waiting for the bridge lock\n", 1),
             ("trust refuses host 13\n", 1),
             ("", 1),

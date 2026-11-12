@@ -659,14 +659,20 @@ LOCK_TIMEOUT_LINE = re.compile(
     r"error: another bridge step (still holds the lock after \d+s|is running on this host\b.*)")
 
 
+SSH_NOTICE_LINE = re.compile(r"Warning: Permanently added .*|Connection to .* closed\.?")
+
+
 def step_lock_timeout(returncode, stderr):
     """True when a failed step's stderr says only that onprem-step.sh gave up on the lock, before
-    it started a container: the one line, and no 'running <step> as <name>' line that follows it."""
+    it started a container: that one line, alone or with ssh's own notices."""
     if returncode != 1 or not isinstance(stderr, str):
         return False
     lines = [line.strip() for line in stderr.splitlines() if line.strip()]
-    return (sum(bool(LOCK_TIMEOUT_LINE.fullmatch(line)) for line in lines) == 1
-            and not any(line.startswith("running ") for line in lines))
+    # Besides that line, only ssh's own notices: any other line (flock's "No locks available",
+    # a step's output) means something else went wrong.
+    others = [line for line in lines if not LOCK_TIMEOUT_LINE.fullmatch(line)]
+    return (len(others) == len(lines) - 1
+            and all(SSH_NOTICE_LINE.fullmatch(line) for line in others))
 
 
 class ClaimFailed(RuntimeError):
