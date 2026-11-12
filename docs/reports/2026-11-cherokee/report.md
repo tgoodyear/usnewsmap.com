@@ -256,7 +256,7 @@ Every record carries an extent ("four pages", "six pages") and a date, so the pa
 - 1850 to 1869: none. The Gateway's metadata lists no issue for these 20 years.
 - 1870 to 1906: the other 889 issues. 1876 to 1883 has 354 of them, and 1900 to 1906 has 286.
 
-The metadata puts the first issue in 1845, not 1844 as the plan above says, and 3,578 stated pages is the size of the page-image set if a later step fetches images. The per-year counts are in [`advocate-holdings.json`](advocate-holdings.json). Re-run with `python3 docs/reports/2026-11-cherokee/scripts/chr_advocate_oai.py --set-name "Cherokee Advocate" --out advocate-holdings.json`; its offline tests are `python3 -m unittest docs/reports/2026-11-cherokee/scripts/test_chr_advocate_oai.py`.
+The metadata puts the first issue in 1845, not 1844 as the plan above says, and 3,578 stated pages is the size of the page-image set if a later step fetches images. The totals (first line) and per-year counts (one line each) are in [`advocate-holdings.jsonl`](advocate-holdings.jsonl), converted from the script's JSON output. Re-run with `python3 docs/reports/2026-11-cherokee/scripts/chr_advocate_oai.py --set-name "Cherokee Advocate" --out advocate-holdings.json`; its offline tests are `python3 -m unittest docs/reports/2026-11-cherokee/scripts/test_chr_advocate_oai.py`.
 
 ### Decisions
 
