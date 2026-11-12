@@ -2047,9 +2047,10 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         with open(os.path.join(bindir, "usnm-boinc"), "w") as f:
             f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_LOG"\n')
         os.chmod(os.path.join(bindir, "usnm-boinc"), 0o755)
-        # The database's live usnm_ocr_native versions.
+        # The database's loaded usnm_ocr_native versions; the query keeps only what the feeder
+        # loads (sched_shmem.cpp): not deprecated, at or above min_version, else the highest.
         with open(os.path.join(bindir, "mysql"), "w") as f:
-            f.write('#!/bin/sh\nprintf "%s\\n" "$STUB_VERSIONS"\n')
+            f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_LOG.sql"\nprintf "%s\\n" "$STUB_VERSIONS"\n')
         os.chmod(os.path.join(bindir, "mysql"), 0o755)
         share = os.path.join(self.tmp, "native-share")
         os.makedirs(os.path.join(share, "gold"))
@@ -2076,10 +2077,15 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertEqual(self.calls(), [f"submit --root /h --project /p --job {'1' * 64} --app usnm_ocr_native "
                                         f"--target-host 13 --trust {share}/gold/trust.json --native-versions 100,101"])
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "native.cnf")))
+        with open(self.log + ".sql") as f:
+            query = f.read()
+        for clause in ("v.deprecated = 0", "a.min_version > 0 AND v.version_num >= a.min_version",
+                       "SELECT MAX(w.version_num)", "w.plan_class = v.plan_class"):
+            self.assertIn(clause, query)
         # No live native version registered: nothing is submitted.
         r = run(NATIVE_TARGET_HOST="13", STUB_VERSIONS="")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("no live usnm_ocr_native version", r.stderr)
+        self.assertIn("no loaded usnm_ocr_native version", r.stderr)
         self.assertEqual(self.calls(), [])
         for extra in ({"NATIVE_TARGET_HOST": "0"}, {"NATIVE_TARGET_HOST": "x"},
                       {"NATIVE_TARGET_HOST": "13", "LINE_APP_VERSION": "108"}):

@@ -689,16 +689,18 @@ submit_ocr_job() {
       fail "a native unit takes no LINE_APP_VERSION or LINE_TARGET_HOST"
     [[ $NATIVE_TARGET_HOST =~ ^[1-9][0-9]{0,9}$ ]] || fail "NATIVE_TARGET_HOST must be positive"
     [ -f "$SHARE_DIR/gold/trust.json" ] || fail "a native unit needs the trust list $SHARE_DIR/gold/trust.json"
-    # The live native versions (registered, not deprecated): usnm-boinc pins the unit to the
-    # newest that packages its build, so a version directory a failed publication left, or a
-    # held version, is never chosen.
+    # The native versions the feeder loads, as stock sched_shmem.cpp picks them (and
+    # served_versions in batch_scheduler.py): not deprecated, and every one at or above the app's
+    # min_version when it is set, otherwise only the highest of its platform and plan class.
+    # usnm-boinc pins the unit to the newest of them that packages its build, so a directory a
+    # failed publication left, a held version or an outranked one is never chosen.
     write_mycnf
     versions=$(mysql --defaults-extra-file="$mycnf" --ssl --ssl-verify-server-cert \
       --ssl-ca=/usr/local/share/usnm/mysql-ca.pem --batch --skip-column-names "$DB_NAME" \
-      -e "SELECT COALESCE(GROUP_CONCAT(v.version_num ORDER BY v.version_num), '') FROM app_version v JOIN app a ON a.id = v.appid WHERE a.name = 'usnm_ocr_native' AND v.deprecated = 0") ||
+      -e "SELECT COALESCE(GROUP_CONCAT(v.version_num ORDER BY v.version_num), '') FROM app_version v JOIN app a ON a.id = v.appid WHERE a.name = 'usnm_ocr_native' AND v.deprecated = 0 AND ((a.min_version > 0 AND v.version_num >= a.min_version) OR (a.min_version = 0 AND v.version_num = (SELECT MAX(w.version_num) FROM app_version w WHERE w.appid = v.appid AND w.platformid = v.platformid AND w.plan_class = v.plan_class AND w.deprecated = 0)))") ||
       fail "could not read the usnm_ocr_native versions"
     rm -f "$mycnf"
-    [[ $versions =~ ^[1-9][0-9]{0,8}(,[1-9][0-9]{0,8})*$ ]] || fail "no live usnm_ocr_native version is registered"
+    [[ $versions =~ ^[1-9][0-9]{0,8}(,[1-9][0-9]{0,8})*$ ]] || fail "no loaded usnm_ocr_native version is registered"
     # In place of the arguments above: a native unit is never a retry, so takes no retry stores.
     native_args=(--app usnm_ocr_native --target-host "$NATIVE_TARGET_HOST" --trust "$SHARE_DIR/gold/trust.json"
       --native-versions "$versions")

@@ -2841,9 +2841,11 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             open_jobs = {record["job"]["id"] for record in owned.values() if not settled(record)}
             for job_id in [job_id for job_id in targets if job_id not in open_jobs]:
                 del targets[job_id]
+            # A job still reserved here (this tick's, or one a refused batch left past it) has no
+            # unit yet, so takes no host's room; it is assigned again when it is submitted.
             outstanding = {}
             for job_id, host in targets.items():
-                if job_id not in to_submit:
+                if job_id not in candidates:
                     outstanding[host] = outstanding.get(host, 0) + 1
             units = assign_native_hosts(to_submit, native_slots, outstanding)
             for job_id, host in units:

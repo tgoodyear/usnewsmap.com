@@ -1854,6 +1854,22 @@ class NativePlanTests(unittest.TestCase):
         self.tick()
         self.assertEqual(self.native_submissions(), [])
 
+    def test_reservations_a_refused_batch_left_take_no_hosts_room(self):
+        # Host 5 refused: its batch's jobs stay reserved, assigned on record. With host 5 taken
+        # off the list and the plan resumed, they all go to host 13, which has nothing out.
+        self.config["native_hosts"] = [5, 13]
+        self.fake.cpus = {5: 4, 13: 4}
+        self.fake.refuse = {5}
+        self.tick()
+        self.assertEqual(self.fake.jobs, {})
+        self.assertEqual(len(self.state["native_targets"]), 8)
+        self.config["native_hosts"] = [13]
+        self.config["batch_size"] = 2
+        self.fake.refuse = set()
+        self.fake.actions.clear()
+        self.tick(resume_native=True)
+        self.assertEqual([host for _, host in self.native_submissions()], [13, 13])
+
     def test_a_collect_failure_that_publishes_everything_still_stops_the_tick(self):
         self.tick()
         self.results_in()
