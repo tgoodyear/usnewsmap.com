@@ -79,6 +79,7 @@ enum Command {
     OcrLocalCopy(ocr_local_copy::OcrLocalCopyArgs),
     Pictures(pictures::PicturesArgs),
     PicturesJoin(pictures::PicturesJoinArgs),
+    PicturesScore(pictures::PicturesScoreArgs),
     ReleaseFinish(release::ReleaseFinishArgs),
     Run(run::RunArgs),
 }
@@ -176,6 +177,7 @@ impl Command {
             Command::OcrLocalCopy { .. } => "ocr-local-copy",
             Command::Pictures { .. } => "pictures",
             Command::PicturesJoin { .. } => "pictures-join",
+            Command::PicturesScore { .. } => "pictures-score",
             Command::Run { .. } => "run",
         }
     }
@@ -222,7 +224,8 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::SearchlogCopy { .. }
         | Command::OcrLocalCopy { .. }
         | Command::Pictures { .. }
-        | Command::PicturesJoin { .. } => None,
+        | Command::PicturesJoin { .. }
+        | Command::PicturesScore { .. } => None,
     }
 }
 
@@ -331,6 +334,7 @@ async fn command(
         Command::OcrLocalCopy(args) => ocr_local_copy::ocr_local_copy_command(args).await,
         Command::Pictures(args) => pictures::pictures_command(cli, args).await,
         Command::PicturesJoin(args) => pictures::pictures_join_command(cli, state, args).await,
+        Command::PicturesScore(args) => pictures::pictures_score_command(args).await,
         Command::Duplicates => batches::duplicates_command(cli, state).await,
         Command::Prune(args) => prune::prune_command(cli, state, args).await,
         Command::Curate(args) => curate::curate_command(cli, state, start, args).await,

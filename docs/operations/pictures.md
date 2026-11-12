@@ -87,6 +87,30 @@ Licence and credit: the dataset is CC0, and the paper places the dataset, the mo
 
 **Limits.** `counts.json` is by day, not by edition, so the day classes don't tell a day's editions apart. `same_batch_day` doesn't show that the box's page is curated, or which page it is, only that its batch version has pages of the title that day. Only scans whose pages were fetched can be placed exactly. Placing the rest needs each issue's file list (frame → `seq`), which comes from LoC's issue METS or item JSON and is not in the curated store. Fetching it is a request budget for the maintainer to decide. The report stores no join: the index field and `picture=` filter are later steps of #1102 that need the maintainer's sign-off and a full rebuild.
 
+## Region scorer
+
+`usnm-ingest pictures-score` (`pictures::score`, #1102) scores predicted picture regions against the verified picture boxes of Beyond Words, page by page and in total. It reads local files only, fetches nothing, asks LoC nothing and changes no store. The report is a new file, `--out`, which must not exist; it is removed if the run fails. No real evaluation has been run with it yet: its tests use small synthetic files, and neither Beyond Words nor Newspaper Navigator data has been fed to it.
+
+It is separate from the [Python baseline](#verified-beyond-words-baseline), which scores the retained Newspaper Navigator parts by scan identity at a fixed 0.5 score threshold, class-aware and geometry-only. The scorer here takes boxes already keyed by page and also scores ALTO `illustration` blocks, which the Python tool does not. It compares geometry only, because ALTO has no picture classes.
+
+```sh
+usnm-ingest --curated <directory> --reference <empty directory> --state-file <state> \
+  pictures-score \
+  --annotations val_20_percent.json \
+  --alto-dir <directory of {image id}.xml> \
+  --navigator <boxes>.jsonl \
+  --iou-threshold 0.5 --min-score 0 \
+  --out <new file>.json
+```
+
+1. **Annotations.** `--annotations` is a Beyond Words COCO file (`train_80_percent.json` or `val_20_percent.json` of [`biglam/loc_beyond_words`](https://huggingface.co/datasets/biglam/loc_beyond_words), the files the baseline above pins). It reads `images` (`id`, `width`, `height`), `annotations` (`image_id`, `category_id`, `bbox`, `iscrowd`) and `categories` (`id`, `name`). A `bbox` is `[x, y, width, height]` in pixels of its image. Only `Photograph`, `Illustration`, `Map`, `Comics/Cartoon` and `Editorial Cartoon` count; `Headline`, `Advertisement` and crowd annotations are left out and counted. An unknown category, an annotation on an image that is not listed, a repeated image id, an image without a positive size, or a box with no area stops the run. The scorer does not apply the baseline's split or date checks: giving it the validation file alone, and leaving out pages added after 1 December 2019, is the caller's choice.
+2. **ALTO.** `--alto-dir` holds `{image id}.xml` for the pages to score, read with `usnm_alto` as the stored ALTO is (pixels, or a unit that needs no dpi). Each `Illustration` block is a predicted box, scaled by the page's own width and height. A page with no file counts as having no input. A file that is not ALTO stops the run, naming the file.
+3. **Newspaper Navigator.** `--navigator` is JSON Lines with `page` (an image id), `box` (`[x0, y0, x1, y1]` as fractions of the page, the dataset's own convention) and optionally `score`; other fields are ignored. A line with no score counts as 1. `--min-score` drops boxes below a score; the default scores them all. Lines for pages that are not in the annotations are counted and left out. The scorer reads no scan identity, so turning a Navigator row's scan into the Beyond Words image id of the same scan is the caller's step.
+4. **Matching.** Boxes are fractions of their page, clipped to it; a box with no area left, or a value that is not a number, is counted as unusable and not scored. Predictions are taken highest score first (ALTO has no score, so in file order), each matching the unmatched annotation it overlaps most if the IoU is at least `--iou-threshold` (default 0.5, above 0 and at most 1), one to one. The report states both settings.
+5. **What it writes.** `iou_threshold`, `navigator_min_score`, `matching`, `annotations` (images, images with pictures, picture annotations, and those left out) and `sources`, with `alto` and `newspaper-navigator` for the inputs given. Each source has `input` (pages with and without input, predictions read, below the score floor, unusable, and off the annotated pages), `total` over every annotated page, `on_pages_with_input` over the pages the source has input for, and `pages` by image id. A tally holds `annotated`, `predicted`, `matched`, `unmatched_predictions`, `unmatched_annotations`, `precision` (matched over predicted) and `recall` (matched over annotated), each ratio empty when its denominator is 0. Each page also says whether it `has_input`.
+
+**Limits.** This is annotation agreement at one IoU, not average precision. An unmatched prediction is not shown to be false: Beyond Words covers the pictures its volunteers marked. A page with no input has unknown coverage, not proven absence of pictures; `total` counts its annotations as missed, and `on_pages_with_input` shows recall without them. Neither source's class is compared.
+
 ## Verified Beyond Words baseline
 
 `scripts/pictures/beyond_words.py` evaluates the retained Newspaper Navigator predictions, not an OCR engine, against the verified classes of the canonical Beyond Words validation split. It does not fetch anything, train or tune a model, join frames to page sequence numbers, or change a store.
