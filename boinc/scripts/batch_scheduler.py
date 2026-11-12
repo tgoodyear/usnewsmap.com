@@ -1991,6 +1991,11 @@ class QueueFeed:
         deadline retry's failed job, or a prepared one) is not settled: its allocation has to stay
         for the journal's ownership check. It is left claimed, not exported, and logged."""
         kept = sorted(page for page in truncated if page in journaled)
+        # A failed journal (a deadline retry's) is settled work and counts for nothing. A prepared
+        # one would count as backlog for good: stop for an operator instead of holding it.
+        live = [page for page in kept if journaled[page]["stage"] != "failed"]
+        require(not live, f"export found {', '.join(live)} cut short, but the plan holds a live journal "
+                "for it; reconcile the journal before the next tick (#1457)")
         for page in kept:
             # Kept in the state, so later ticks pass it over and it doesn't take export slots.
             self.claims[page]["export_truncated"] = truncated[page]

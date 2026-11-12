@@ -2321,20 +2321,32 @@ class QueueModeTests(unittest.TestCase):
         self.assertEqual(len(self.fake.jobs), 1)
 
     def test_a_cut_short_page_with_a_journal_keeps_its_allocation(self):
-        # A page this plan has a journal for stays allocated, or the journal fails the ownership
-        # check: it is not exported, and not dead-lettered.
+        # The journal fails the ownership check if its page's allocation goes. A failed journal
+        # (a deadline retry's) is settled work: the page stays claimed, is not exported, is not
+        # dead-lettered, and later ticks pass it over. A live journal stops the tick for an
+        # operator: it would count as backlog for good.
         page = "sn12345678/1900-01-01/ed-1/seq-1"
         self.tick()
         row = next(r for r in self.fake.rows if r["job"]["message"]["page"] == page)
         row["stage"] = "prepared"
         self.fake.export = lambda pages, job_ids=(): {page: "cut short"}
-        with contextlib.redirect_stderr(io.StringIO()) as err:
+        with self.assertRaisesRegex(ValueError, "live journal"):
             self.tick()
-        self.assertIn("boinc_batch_export_truncated_kept", err.getvalue())
         self.assertFalse([a for a in self.fake.actions if a[0] == "dead-letter-truncated"])
         self.assertIn(page, self.state["claims"])
         self.assertNotIn("source_truncated", self.state)
-        # Later ticks pass it over: it is not offered to export again.
+        row["stage"] = "failed"
+        self.state.setdefault("dead_lettered", {})[row["job"]["id"]] = int(NOW)
+        self.state["claims"][page]["supersedes"] = row["job"]["id"]
+        calls = []
+        self.fake.export = lambda pages, job_ids=(): calls.append([p["page"] for p in pages]) or {page: "cut short"}
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.tick()
+        self.assertIn("boinc_batch_export_truncated_kept", err.getvalue())
+        self.assertIn(page, self.state["claims"])
+        self.assertNotIn("source_truncated", self.state)
+        self.assertFalse([a for a in self.fake.actions if a[0] == "dead-letter-truncated"])
+        # Later ticks don't offer it to export.
         self.fake.export = lambda pages, job_ids=(): self.assertNotIn(page, [p["page"] for p in pages])
         self.tick()
 
