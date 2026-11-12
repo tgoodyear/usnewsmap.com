@@ -8,6 +8,7 @@ on:
       - .github/workflows/boinc-ocr-native.yml
       - boinc/apps/native/**
       - boinc/scripts/smoke-native-ocr.sh
+      - scripts/ci/apt-base.sh
       - boinc/scripts/check-native-ocr-build.py
       - boinc/scripts/install.py
       - boinc/images/appver/check_appver.py
@@ -80,7 +81,13 @@ jobs:
           -p usnm-ocr-app --bin usnm_ocr --example native_fixture
       - name: Build the static Tesseract
         run: |
-          docker build -f boinc/apps/native/Containerfile -t usnm-tesseract-native boinc/apps/native
+          # The pinned apt base (boinc/apps/native/base.lock, #1683), its snapshot label checked.
+          # None while the lock is empty: the build then installs from the Debian snapshot.
+          lines=$(scripts/ci/apt-base.sh --app native --check-label docker)
+          bases=()
+          while IFS= read -r line; do [ -z "$line" ] || bases+=(--build-arg "$line"); done <<< "$lines"
+          echo "apt base: ${lines:-none pinned, installing from the Debian snapshot}"
+          docker build "${bases[@]}" -f boinc/apps/native/Containerfile -t usnm-tesseract-native boinc/apps/native
           mkdir build
           docker run --rm --network=none usnm-tesseract-native cat /out/usnm_tesseract > build/usnm_tesseract
           docker run --rm --network=none usnm-tesseract-native cat /out/usnm_tesseract.packages > usnm_tesseract.packages
