@@ -145,6 +145,9 @@ def completion_inventory(args, project, base, selected=None, deadline=None, limi
             pass
         with os.scandir(project / "usnmocr/results/8"):
             pass
+        # Likewise batch 108, where Xiaomi-OCR-0 results arrive (#1776).
+        with os.scandir(project / "usnmocr/results/108"):
+            pass
     command = [
         args.collector, "quality", "collect", "--campaign", args.campaign,
         "--root", str(project / "quality" / args.campaign),
@@ -154,6 +157,9 @@ def completion_inventory(args, project, base, selected=None, deadline=None, limi
         "--out-dir", str(base / "unused-inventory-out"),
         "--cache", str(base / "frontier-parts"), "--inventory-only",
     ]
+    if args.qwen_campaign:
+        # Xiaomi-OCR-0 units are batch 108 (#1776); their jobs read only this spool.
+        command += ["--qwen-xiaomi-spool", str(project / "usnmocr/results/108")]
     if selected:
         command += ["--inventory-unit", selected]
     budget = min(limit, deadline - time.monotonic()) if deadline is not None else limit
@@ -298,6 +304,8 @@ def scoped_collect(args, project=Path("/project")):
         "--qwen-spool", str(project / "usnmocr/results/8") if args.qwen_campaign else qwen_root,
         "--out-dir", str(out), "--cache", str(scope / "parts"), "--max-dirty-units", "1",
     ]
+    if args.qwen_campaign:
+        command += ["--qwen-xiaomi-spool", str(project / "usnmocr/results/108")]
     started = time.time()
     try:
         budget = min(CALL_SECONDS, deadline - time.monotonic()) if deadline is not None else CALL_SECONDS
