@@ -23,6 +23,8 @@ TICK = HERE / "controller-tick.sh"
 INSTALL = HERE / "install.sh"
 SERVICE = HERE / "usnm-boinc-priority-controller@.service"
 TIMER = HERE / "usnm-boinc-priority-controller@.timer"
+LEASE_BREAK_UNIT = HERE / "usnm-boinc-controller-lease-break.service"
+LEASE_BREAK = HERE / "break-stale-lease.sh"
 LOCK = "/run/usnm-boinc-controller-tick.lock"
 sys.path.insert(0, str(ONPREM.parent))
 import feed_collect  # noqa: E402
@@ -74,6 +76,68 @@ def parse_unit(path):
     return sections
 
 
+def fake_az(folder, script):
+    """A fake az on PATH that runs `script` (sh) and logs each call."""
+    bin_dir = Path(folder) / "bin"
+    bin_dir.mkdir()
+    az = bin_dir / "az"
+    az.write_text("#!/bin/sh\necho \"$*\" >> \"$FAKE_AZ_LOG\"\n" + script)
+    az.chmod(0o755)
+    return bin_dir
+
+
+class LeaseBreak(unittest.TestCase):
+    def run_break(self, az_script, *extra):
+        with tempfile.TemporaryDirectory() as folder:
+            bin_dir = fake_az(folder, az_script)
+            log = Path(folder) / "az.log"
+            done = subprocess.run(
+                ["bash", str(LEASE_BREAK), "--attempts", "3", "--delay", "0", *extra],
+                capture_output=True, text=True,
+                env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_AZ_LOG": str(log)})
+            calls = log.read_text().splitlines() if log.exists() else []
+            return done, calls
+
+    def test_breaks_the_controller_lock_with_login_auth_and_no_break_period(self):
+        done, calls = self.run_break("exit 0")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(calls, ["storage blob lease break --auth-mode login --account-name stusnmoffapzy "
+                                 "--container-name boinc-handoff --blob-name scheduler/controller.lock "
+                                 "--lease-break-period 0"])
+
+    def test_an_unleased_blob_is_a_no_op(self):
+        done, calls = self.run_break('echo "LeaseNotPresentWithLeaseOperation" >&2; exit 1')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("nothing to break", done.stdout)
+
+    def test_other_failures_are_retried_then_fail(self):
+        done, calls = self.run_break('echo "Please run az login" >&2; exit 1')
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(len(calls), 3)
+
+    def test_a_failure_that_clears_is_retried_to_success(self):
+        done, calls = self.run_break(
+            'n=$(wc -l < "$FAKE_AZ_LOG"); [ "$n" -ge 2 ] && exit 0; echo "not signed in" >&2; exit 1')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(len(calls), 2)
+
+    @unittest.skipUnless(shutil.which("pgrep"), "needs pgrep")
+    def test_a_running_scheduler_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as folder:
+            fake = Path(folder) / "batch_scheduler.py"
+            fake.write_text("import time; time.sleep(30)")
+            proc = subprocess.Popen([sys.executable, str(fake)])
+            try:
+                time.sleep(0.3)
+                done, calls = self.run_break("exit 0")
+            finally:
+                proc.kill()
+                proc.wait()
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(calls, [])
+
+
 class UnitFiles(unittest.TestCase):
     def test_the_service_runs_one_tick_of_its_instances_plan(self):
         unit = parse_unit(SERVICE)
@@ -94,6 +158,18 @@ class UnitFiles(unittest.TestCase):
         self.assertNotIn("Restart", service)
         # As the shared and drain services ran.
         self.assertEqual(service["Nice"], ["10"])
+
+    def test_the_boot_lease_break_runs_before_any_tick(self):
+        unit = parse_unit(LEASE_BREAK_UNIT)
+        self.assertEqual(unit["Service"]["Type"], ["oneshot"])
+        self.assertEqual(unit["Service"]["User"], ["root"])
+        self.assertEqual(unit["Install"], {"WantedBy": ["multi-user.target"]})
+        (start,) = unit["Service"]["ExecStart"]
+        argv = start.split()
+        self.assertEqual(REPO / argv[1].removeprefix("/opt/usnm/"), LEASE_BREAK)
+        # The tick service waits for it when both are queued (#1698).
+        tick_after = parse_unit(SERVICE)["Unit"]["After"][0].split()
+        self.assertIn(LEASE_BREAK_UNIT.name, tick_after)
 
     def test_the_timer_retries_five_minutes_after_any_end(self):
         unit = parse_unit(TIMER)
@@ -538,6 +614,7 @@ class Install(unittest.TestCase):
             done = self.install()
             self.assertEqual(done.returncode, 0, done.stderr)
         expected = {SERVICE: SERVICE.name, TIMER: TIMER.name,
+                    LEASE_BREAK_UNIT: LEASE_BREAK_UNIT.name,
                     ONPREM / "usnm-boinc-held-archive.service": "usnm-boinc-held-archive.service",
                     ONPREM / "usnm-boinc-held-archive.timer": "usnm-boinc-held-archive.timer"}
         self.assertEqual(sorted(p.name for p in self.units.iterdir()), sorted(expected.values()))

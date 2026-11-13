@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Installs the controller host's systemd units (#1690): the per-plan controller template
 # (usnm-boinc-priority-controller@.service and .timer), each plan's timer cadence, and the
-# held-page archive's units. Run it
+# held-page archive's units, and the boot-time stale-lease break (usnm-boinc-controller-lease-break.service,
+# #1698; enable it once with `systemctl enable`). Run it
 # as root on the controller host (CT 211) from the pinned checkout the units run
 # (/opt/usnm), after the checkout has moved to a commit with these files. Safe to run again.
 #
@@ -60,7 +61,7 @@ for flags in "$ROOT"/etc/usnm/boinc-priority-controller.flags "$ROOT"/etc/usnm/b
   plans+=("$plan")
 done
 install -d -m 0755 "$units"
-for file in "$HERE/usnm-boinc-priority-controller@.service" "$HERE/usnm-boinc-priority-controller@.timer" \
+for file in "$HERE/usnm-boinc-controller-lease-break.service" "$HERE/usnm-boinc-priority-controller@.service" "$HERE/usnm-boinc-priority-controller@.timer" \
   "$ONPREM/usnm-boinc-held-archive.service" "$ONPREM/usnm-boinc-held-archive.timer"; do
   install -m 0644 "$file" "$units/$(basename "$file")"
   echo "installed $units/$(basename "$file")"
