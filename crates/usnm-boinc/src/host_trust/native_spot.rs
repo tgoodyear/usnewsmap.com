@@ -463,7 +463,9 @@ async fn check_one(
     if p.spool.join(format!("{workunit}_error")).exists()
         || p.spool.join(format!("{workunit}_no_output_files")).exists()
     {
-        return finish(p, &path,
+        return finish(
+            p,
+            &path,
             &mut journal,
             outcome(r, Status::Failed, "the replay unit failed in BOINC"),
             execute,
@@ -479,7 +481,9 @@ async fn check_one(
     let job = match load(&p.jobs_root, &r.job) {
         Ok(record) => record.job,
         Err(error) => {
-            return finish(p, &path,
+            return finish(
+                p,
+                &path,
                 &mut journal,
                 outcome(
                     r,
@@ -492,7 +496,9 @@ async fn check_one(
     };
     let target = target_job(&job, &r.target_image)?;
     if let Some(reason) = refuse(trust, builds, &job, &target, r) {
-        return finish(p, &path,
+        return finish(
+            p,
+            &path,
             &mut journal,
             outcome(r, Status::Unverified, reason),
             execute,
@@ -508,7 +514,9 @@ async fn check_one(
             Ok(found) => {
                 let detail =
                     format!("{unit}'s canonical result is host {found:?}'s, not host {host}'s");
-                return finish(p, &path,
+                return finish(
+                    p,
+                    &path,
                     &mut journal,
                     outcome(r, Status::Unverified, detail),
                     execute,
@@ -532,7 +540,9 @@ async fn check_one(
     let original = match fetch(spool, &job.workunit()) {
         Ok(files) => files,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return finish(p, &path,
+            return finish(
+                p,
+                &path,
                 &mut journal,
                 outcome(r, Status::Unverified, format!("original: {error}")),
                 execute,
@@ -543,7 +553,9 @@ async fn check_one(
     let original = match judge(&job, original) {
         Ok(original) => original,
         Err(error) => {
-            return finish(p, &path,
+            return finish(
+                p,
+                &path,
                 &mut journal,
                 outcome(r, Status::Unverified, format!("original: {error:#}")),
                 execute,
@@ -571,7 +583,9 @@ async fn check_one(
         }
     };
     if agree(builds, &original, &replay, true)? {
-        return finish(p, &path,
+        return finish(
+            p,
+            &path,
             &mut journal,
             outcome(r, Status::Match, "text and ALTO bytes identical"),
             execute,
@@ -1229,15 +1243,27 @@ mod tests {
         let f = fixture();
         let r = replay(&f, 240, LINUX, true);
         submitted(&f, &r);
-        returned(&f.job, r.original_spool.as_deref().unwrap(), &f.job.workunit(), "HELLO\n");
+        returned(
+            &f.job,
+            r.original_spool.as_deref().unwrap(),
+            &f.job.workunit(),
+            "HELLO\n",
+        );
         returned(&f.job, &f.paths.spool, &r.workunit(), "HELLO\n");
         block(check_one(&f.paths, &trust(&f), &f.builds, &r, true)).unwrap();
         assert_eq!(std::fs::read_dir(&f.paths.spool).unwrap().count(), 0);
-        let kept = journal_path(&f.paths.root, &r).parent().unwrap().join("replay");
-        assert!(kept.join(format!("{}__file_text.txt", r.workunit())).is_file());
+        let kept = journal_path(&f.paths.root, &r)
+            .parent()
+            .unwrap()
+            .join("replay");
+        assert!(kept
+            .join(format!("{}__file_text.txt", r.workunit()))
+            .is_file());
         // The original's files are the plan's, and stay.
         let original = r.original_spool.as_deref().unwrap();
-        assert!(original.join(format!("{}__file_text.txt", f.job.workunit())).is_file());
+        assert!(original
+            .join(format!("{}__file_text.txt", f.job.workunit()))
+            .is_file());
     }
 
     #[test]
@@ -1245,7 +1271,10 @@ mod tests {
         let f = fixture();
         let r = replay(&f, 240, LINUX, true);
         returned(&f.job, &f.paths.spool, &r.workunit(), "HELLO\n");
-        let text = f.paths.spool.join(format!("{}__file_text.txt", r.workunit()));
+        let text = f
+            .paths
+            .spool
+            .join(format!("{}__file_text.txt", r.workunit()));
         std::fs::write(&text, vec![b'a'; boinc::MAX_TEXT + 10]).unwrap();
         let files = super::super::spot::fetch(&f.paths.spool, &r.workunit()).unwrap();
         assert!(super::super::spot::judge(&f.job, files).is_err());
