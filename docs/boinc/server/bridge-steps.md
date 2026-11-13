@@ -296,3 +296,55 @@ OnUnitInactiveSec=2min
 [Install]
 WantedBy=timers.target
 ```
+
+## Validate gold results for the cloud server (dev only)
+
+`usnm-boinc cloud validatord` is the validation webhook the cloud BOINC server calls for an app whose `validator_url`
+points at it. This change serves the gold apps (`usnm_gold`, `usnm_gold_native`) only. It is for the dev cloud server
+only: nothing in the running bridge or the stock validators calls it, nothing is installed, and no tunnel is configured.
+
+It is not in any default build: no worker image, native app or bridge image build passes the feature, so their `usnm-boinc`
+binary does not have the subcommand. Build it where you run it, with
+`cargo build --release --locked -p usnm-boinc --features cloud-validatord`. The unit tests of the service run in every
+`cargo test` of the crate.
+
+```
+usnm-boinc cloud validatord --secret-file <webhook token> --state-dir <dir> --gold-dir <project gold/> \
+  --base-url https://<dev server> --token-file <admin token> [--listen 127.0.0.1:8787]
+```
+
+- `POST /v1/validate/<app>` takes the server's JSON call and answers a verdict per result. The caller is authenticated by
+  the `Authorization: Bearer` token the server sends (its `WEBHOOK_TOKEN` secret), compared in constant time; the token
+  is read from `--secret-file` and never logged. The cloud server sends no body signature and no timestamp, so a stale
+  call cannot be told from a fresh one; `call_id` is the replay control. `GET /healthz` answers `ok`.
+- The service listens on loopback by default and speaks plain http. The cloud server only calls `https` URLs, so put TLS
+  in front (a tunnel or a proxy); a non-loopback `--listen` needs `--allow-non-loopback`.
+- Each result's one output file is fetched from `GET /admin/v1/outputs/<name>` with the admin token (`--token-file` or
+  `CBOINC_TOKEN`), checked against the request's size and MD5 by the same code `cloud pull` uses (https required off
+  loopback, no redirects), and handed to `gold::validate::check`, the function behind `usnm-boinc gold check`, with
+  `--gold-dir` as its `--expected-dir`. Valid answers `fingerprint`, a failing check answers `invalid`, as the stock
+  `script_validator --init_script usnm_gold_check` does. A result without exactly one file is `invalid` (the init script
+  exits 2). A fetch that fails, or a body that does not match its MD5, answers `retry`: the stock validator reads local
+  files and never has that case.
+- The gold apps have no compare script, so every valid result has the same fingerprint. No `credit` is sent; the server
+  computes it.
+- `call_id` makes a call idempotent. The first request seen under a call id is saved (a digest, fsynced, in
+  `--state-dir/calls/`) before any work, so the id belongs to that request even if it never gets a final verdict: the same
+  request may run again, a different one answers 409. The verdict is stored once every result has a final one (a reply
+  containing `retry` is not stored, so the next call tries again), and a repeated request gets the stored reply with no
+  new work, also after a restart. Concurrent duplicates run once. A cache entry that cannot be read (anything but "not
+  there") is a 500 and is left untouched. Entries are not pruned.
+- Limits: the request body is at most `--max-body-bytes` (1 MiB; 413 above), 64 results of at most 16 files, and a call
+  is cut off after `--timeout-secs` (15, covering the wait behind a duplicate as well as the work; the server's `<webhook_timeout_secs>` is 20 by default) with a 503 the server
+  counts as a failed call.
+
+A unit file, as text only:
+
+```
+# usnm-cloud-validatord.service
+[Service]
+ExecStart=/usr/local/bin/usnm-boinc cloud validatord --secret-file /etc/usnm/webhook-token --token-file /etc/usnm/admin-token --state-dir /var/lib/usnm-validatord --gold-dir /srv/gold --base-url https://<dev server>
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+```

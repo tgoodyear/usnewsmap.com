@@ -147,7 +147,7 @@ struct Canonical {
 }
 
 #[derive(Deserialize)]
-struct OutFile {
+pub(super) struct OutFile {
     name: String,
     open_name: Option<String>,
     #[serde(default)]
@@ -166,6 +166,19 @@ fn yes() -> bool {
 }
 
 impl OutFile {
+    /// A file as a listing or a validation request names it, for `download`.
+    #[cfg(any(test, feature = "cloud-validatord"))]
+    pub(super) fn listed(name: &str, nbytes: u64, md5: &str) -> OutFile {
+        OutFile {
+            name: name.to_owned(),
+            open_name: None,
+            index: None,
+            present: true,
+            nbytes,
+            md5: md5.to_owned(),
+        }
+    }
+
     /// The name after `__file_`: the template's `open_name`, or for a file without one the
     /// template position (the server's documented suggestion).
     fn logical_name(&self) -> anyhow::Result<String> {
@@ -425,7 +438,7 @@ fn verified(dest: &Path, f: &OutFile) -> anyhow::Result<bool> {
 
 /// Downloads into `part`, checks size and MD5, and fsyncs it. On any failure the part file is
 /// removed and nothing is placed.
-async fn download(cfg: &Config, f: &OutFile, part: &Path) -> anyhow::Result<()> {
+pub(super) async fn download(cfg: &Config, f: &OutFile, part: &Path) -> anyhow::Result<()> {
     let result = download_inner(cfg, f, part).await;
     if result.is_err() {
         let _ = fs::remove_file(part);
