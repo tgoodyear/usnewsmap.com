@@ -86,13 +86,14 @@ def fake_az(folder, script):
     return bin_dir
 
 
+@unittest.skipUnless(shutil.which("flock"), "needs flock (Linux)")
 class LeaseBreak(unittest.TestCase):
     def run_break(self, az_script, *extra):
         with tempfile.TemporaryDirectory() as folder:
             bin_dir = fake_az(folder, az_script)
             log = Path(folder) / "az.log"
             done = subprocess.run(
-                ["bash", str(LEASE_BREAK), "--attempts", "3", "--delay", "0", *extra],
+                ["bash", str(LEASE_BREAK), "--lock", str(Path(folder) / "tick.lock"), "--attempts", "3", "--delay", "0", *extra],
                 capture_output=True, text=True,
                 env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_AZ_LOG": str(log)})
             calls = log.read_text().splitlines() if log.exists() else []
@@ -121,6 +122,23 @@ class LeaseBreak(unittest.TestCase):
             'n=$(wc -l < "$FAKE_AZ_LOG"); [ "$n" -ge 2 ] && exit 0; echo "not signed in" >&2; exit 1')
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(len(calls), 2)
+
+    def test_a_held_tick_lock_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as folder:
+            holder = subprocess.Popen(["flock", str(Path(folder) / "tick.lock"), "sleep", "30"])
+            try:
+                time.sleep(0.5)
+                bin_dir = fake_az(folder, "exit 0")
+                log = Path(folder) / "az.log"
+                done = subprocess.run(
+                    ["bash", str(LEASE_BREAK), "--lock", str(Path(folder) / "tick.lock"), "--delay", "0"],
+                    capture_output=True, text=True,
+                    env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_AZ_LOG": str(log)})
+            finally:
+                holder.kill()
+                holder.wait()
+        self.assertEqual(done.returncode, 1)
+        self.assertFalse(log.exists())
 
     @unittest.skipUnless(shutil.which("pgrep"), "needs pgrep")
     def test_a_running_scheduler_is_left_alone(self):
@@ -167,6 +185,8 @@ class UnitFiles(unittest.TestCase):
         (start,) = unit["Service"]["ExecStart"]
         argv = start.split()
         self.assertEqual(REPO / argv[1].removeprefix("/opt/usnm/"), LEASE_BREAK)
+        # Before=timers.target would be an ordering cycle with the default dependencies.
+        self.assertNotIn("Before", unit["Unit"])
         # The tick service waits for it when both are queued (#1698).
         tick_after = parse_unit(SERVICE)["Unit"]["After"][0].split()
         self.assertIn(LEASE_BREAK_UNIT.name, tick_after)

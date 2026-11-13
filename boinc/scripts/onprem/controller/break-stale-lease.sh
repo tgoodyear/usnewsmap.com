@@ -8,7 +8,7 @@
 # running tick renews (#1698); this closes the gap until then.
 #
 #   break-stale-lease.sh [--account NAME] [--container NAME] [--blob NAME]
-#                        [--attempts N] [--delay SECONDS]
+#                        [--lock FILE] [--attempts N] [--delay SECONDS]
 #
 # Exits 0 when the blob is not leased or the lease was broken, 1 when a batch_scheduler process
 # is running (nothing is touched) or the break still fails after every attempt. Azure sign-in
@@ -17,6 +17,7 @@ set -uo pipefail
 ACCOUNT=stusnmoffapzy
 CONTAINER=boinc-handoff
 BLOB=scheduler/controller.lock
+LOCK=/run/usnm-boinc-controller-tick.lock
 ATTEMPTS=16
 DELAY=15
 die() { echo "error: $*" >&2; exit 2; }
@@ -27,6 +28,7 @@ while [ $# -gt 0 ]; do
     --account) ACCOUNT=$2 ;;
     --container) CONTAINER=$2 ;;
     --blob) BLOB=$2 ;;
+    --lock) LOCK=$2 ;;
     --attempts) ATTEMPTS=$2 ;;
     --delay) DELAY=$2 ;;
     *) die "unknown argument: $1" ;;
@@ -34,6 +36,14 @@ while [ $# -gt 0 ]; do
   shift 2
 done
 
+# The ticks and the scheduled held-archive (which takes this same blob lease without a
+# batch_scheduler process) hold this mutex while they run. Taking it, without waiting, and keeping
+# it through every retry means nothing live holds the lease while it is broken.
+exec 9>"$LOCK" || die "cannot open $LOCK"
+if ! flock -n 9; then
+  log "$LOCK is held by a running tick or archive; its lease is not stale, nothing done"
+  exit 1
+fi
 if pgrep -f batch_scheduler >/dev/null; then
   log "a batch_scheduler process is running; its lease is not stale, nothing done"
   exit 1
