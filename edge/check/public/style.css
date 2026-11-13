@@ -43,7 +43,8 @@ h2 { font-size: 1rem; margin: 8px 0 0; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 12px; min-height: 200px; }
 .lineview { position: relative; width: 100%; }
 .lineview img { width: 100%; display: block; border-radius: 4px; filter: grayscale(1); }
-.lineview .hl { position: absolute; border: 2px solid var(--accent); border-radius: 3px; pointer-events: none; }
+/* The frame is drawn outside the word's box, with a gap, so its line never covers the printed letters it marks. */
+.lineview .hl { position: absolute; outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; pointer-events: none; }
 .word { display: flex; justify-content: center; background: #fff; border-radius: 6px; padding: 6px; }
 .word img { max-height: 120px; width: auto; max-width: 100%; }
 .label { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
