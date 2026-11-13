@@ -1,0 +1,8 @@
+# Shared by both cross-build instances (usnm-crossbuild-check, usnm-crossbuild-linux): if their runs overlap,
+# together they stay inside two cores and 4 GB.
+[Unit]
+Description=usnewsmap native OCR cross-build checks, shared CPU and memory budget
+
+[Slice]
+CPUQuota=200%
+MemoryMax=4G

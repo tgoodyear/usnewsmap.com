@@ -1,0 +1,12 @@
+# Once a day, 07:00 on a host set to US Eastern, half an hour after the Windows instance so the two never
+# compete for the 200% CPU quota. Persistent: a run missed while the host was off happens at boot.
+[Unit]
+Description=usnewsmap native OCR replication check of Linux native, daily
+
+[Timer]
+OnCalendar=*-*-* 07:00:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

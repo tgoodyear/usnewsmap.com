@@ -6,6 +6,10 @@ host), reads each scan again with the Linux build's `usnm_tesseract` and the wor
 compares the two texts. Per page: CER of the Windows text against the Linux text (edits over the
 Linux text's length), the character-count ratio Windows/Linux and the word-multiset F1. A page is
 flagged when the CER is over 10%, the F1 under 0.9 or the ratio outside 0.9-1.1, or when its scan is not the bytes the job named.
+Those are the defaults, for Windows results. An instance for another build (the same-build replication
+check of Linux native) selects its results with --image (a digest prefix, env `XB_IMAGE`) and --host
+(env `XB_HOSTS`), sets its own limits (--cer-limit, --f1-limit, --ratio-min, --ratio-max, env `XB_*`),
+and gets its own --out-dir, so its streaks and checked-job list never mix with another instance's.
 
 Inputs are read only: the handoff directory (`spool/<job>/` with `host_id`,
 `usnm_<job>__file_result.json` and `usnm_<job>__file_text.txt`, and `dispatch/jobs/<job>/request.json`)
@@ -26,6 +30,7 @@ from pathlib import Path
 import random
 import re
 import collections
+import sys
 import statistics
 import subprocess
 import tempfile
@@ -67,17 +72,30 @@ def windows_images(trust_file):
     return sorted(d for d, b in builds.items() if b["platform"] == "windows_x86_64")
 
 
+def selected_images(trust_file, prefix=None):
+    """Digests to sample: the recorded Windows builds, or with `prefix` the recorded builds (any platform)
+    whose digest starts with it (`sha256:` optional). A prefix that names no recorded build is an error."""
+    if not prefix:
+        return windows_images(trust_file)
+    prefix = prefix.removeprefix("sha256:")
+    builds = json.loads(Path(trust_file).read_text())["builds"]
+    found = sorted(d for d in builds if d.removeprefix("sha256:").startswith(prefix))
+    if not found:
+        raise SystemExit(f"{prefix} matches no build in {trust_file}")
+    return found
+
+
 class InvalidInput(Exception):
     """A returned result that can't be compared: reported apart from build differences."""
 
 
-def returned_pages(handoff, images, now, window=WINDOW_SECONDS, seen=()):
+def returned_pages(handoff, images, now, window=WINDOW_SECONDS, seen=(), hosts=None):
     """Windows pages returned in the window, oldest first, each as a dict.
 
     The window is the result manifest's `completed_at`, not a file time (a refreshed copy of the hand-off
     rewrites files), and a job already checked on an earlier day is skipped. A result that doesn't match
     its dispatch request (job id, scan sha256, engine) or its own text checksum, or whose text isn't UTF-8,
-    comes back with an `invalid` reason instead of a text.
+    comes back with an `invalid` reason instead of a text. With `hosts`, only those hosts' results.
     """
     out = []
     spool, jobs = Path(handoff) / "spool", Path(handoff) / "dispatch/jobs"
@@ -93,6 +111,12 @@ def returned_pages(handoff, images, now, window=WINDOW_SECONDS, seen=()):
             continue  # not a native result, or not complete yet
         if not now - window <= completed <= now:
             continue
+        if hosts:
+            try:
+                if (job / "host_id").read_text().strip() not in hosts:
+                    continue
+            except OSError:
+                continue  # written one file at a time: look again next run
         page = {"job": job.name, "completed": completed, "engine": result["engine"]}
         try:
             request = json.loads((jobs / job.name / "request.json").read_text())
@@ -168,12 +192,12 @@ def word_f1(a, b):
     return 2 * p * r / (p + r)
 
 
-def judge(windows, linux, cer_limit=CER_LIMIT, f1_limit=F1_LIMIT):
+def judge(windows, linux, cer_limit=CER_LIMIT, f1_limit=F1_LIMIT, ratio_range=RATIO_RANGE):
     """CER of `windows` against `linux`, the length ratio, word F1, and whether a limit is passed."""
     cer = distance(windows, linux) / max(len(linux), 1)
     ratio = len(windows) / max(len(linux), 1)
     f1 = word_f1(windows, linux)
-    flagged = cer > cer_limit or f1 < f1_limit or not RATIO_RANGE[0] <= ratio <= RATIO_RANGE[1]
+    flagged = cer > cer_limit or f1 < f1_limit or not ratio_range[0] <= ratio <= ratio_range[1]
     return {"cer": round(cer, 5), "ratio": round(ratio, 4), "word_f1": round(f1, 4),
             "windows_chars": len(windows), "linux_chars": len(linux), "flagged": flagged}
 
@@ -200,7 +224,8 @@ def check_page(page, a):
             linux = read_linux(a.tesseract, a.tessdata, scan, page["language"], work)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as e:
         return dict(row, error=str(e)[:300], flagged=True)
-    return dict(row, **judge(page["windows_text"], linux, a.cer_limit, a.f1_limit))
+    return dict(row, **judge(page["windows_text"], linux, a.cer_limit, a.f1_limit,
+                                (getattr(a, "ratio_min", RATIO_RANGE[0]), getattr(a, "ratio_max", RATIO_RANGE[1]))))
 
 
 def lock_hashes(lock_file):
@@ -241,7 +266,7 @@ def consecutive_days(state, date, flagged):
 
 def summary_line(report):
     s = report["summary"]
-    line = (f"crossbuild {report['date']}: {s['pages']} pages from {s['hosts']} hosts, "
+    line = (f"crossbuild{report.get('label', '')} {report['date']}: {s['pages']} pages from {s['hosts']} hosts, "
             f"{s['flagged']} flagged, {s['invalid']} invalid, max CER {s['max_cer']}, ratio {s['min_ratio']}-{s['max_ratio']}, "
             f"min word F1 {s['min_word_f1']}")
     if report["consecutive_flag_days"] >= ESCALATE_DAYS:
@@ -252,14 +277,15 @@ def summary_line(report):
 def run(a, now=None):
     now = now or dt.datetime.now(dt.timezone.utc).timestamp()
     date = dt.datetime.fromtimestamp(now, dt.timezone.utc).date().isoformat()
-    images = windows_images(a.trust_file)
+    images = selected_images(a.trust_file, getattr(a, "image", None))
+    hosts = set(getattr(a, "hosts", None) or ())
     for needed in ("spool", "dispatch/jobs"):
         if not (a.handoff / needed).is_dir():
             raise SystemExit(f"{a.handoff / needed} is not readable: nothing recorded")
     a.out_dir.mkdir(parents=True, exist_ok=True)
     state_file = a.out_dir / "state.json"
     state = json.loads(state_file.read_text()) if state_file.exists() else {}
-    pages = returned_pages(a.handoff, images, now, seen=set(state.get("checked_jobs", [])))
+    pages = returned_pages(a.handoff, images, now, seen=set(state.get("checked_jobs", [])), hosts=hosts)
     picked = sample(pages, date, a.count)
     verify_engine(a, {p["language"] for p in picked if "invalid" not in p})
     with ThreadPoolExecutor(a.threads) as pool:
@@ -274,6 +300,11 @@ def run(a, now=None):
         "date": date,
         "linux_tesseract_sha256": hashlib.sha256(Path(a.tesseract).read_bytes()).hexdigest(),
         "windows_images": images,
+        "label": f" [{a.label}]" if getattr(a, "label", None) else "",
+        "limits": {"cer": a.cer_limit, "word_f1": a.f1_limit,
+                   "ratio": [getattr(a, "ratio_min", RATIO_RANGE[0]), getattr(a, "ratio_max", RATIO_RANGE[1])]},
+        "plan": getattr(a, "plan", None),
+        "hosts": sorted(hosts),
         "returned_in_window": len(pages),
         "summary": {
             "pages": len(rows), "invalid": sum("invalid" in r for r in rows), "hosts": len({r["host"] for r in rows}), "flagged": len(flagged),
@@ -317,14 +348,33 @@ def main(argv=None):
     p.add_argument("--models-lock", type=Path, default=REPO / "ocr/engines/tesseract/models.lock")
     p.add_argument("--trust-file", type=Path, default=REPO / "boinc/project/native-build-trust.json")
     p.add_argument("--work-dir", type=Path, default=None, help="scratch directory (default: the system's)")
-    p.add_argument("--cer-limit", type=float, default=CER_LIMIT,
-                   help="flag a page above this CER (default 0.10)")
-    p.add_argument("--f1-limit", type=float, default=F1_LIMIT, help="flag a page below this word F1 (default 0.90)")
+    env = os.environ.get
+    p.add_argument("--cer-limit", type=float, default=float(env("XB_CER_LIMIT") or CER_LIMIT),
+                   help="flag a page above this CER (default 0.10, env XB_CER_LIMIT)")
+    p.add_argument("--f1-limit", type=float, default=float(env("XB_F1_LIMIT") or F1_LIMIT),
+                   help="flag a page below this word F1 (default 0.90, env XB_F1_LIMIT)")
+    p.add_argument("--ratio-min", type=float, default=float(env("XB_RATIO_MIN") or RATIO_RANGE[0]),
+                   help="flag a character ratio below this (default 0.9, env XB_RATIO_MIN)")
+    p.add_argument("--ratio-max", type=float, default=float(env("XB_RATIO_MAX") or RATIO_RANGE[1]),
+                   help="flag a character ratio above this (default 1.1, env XB_RATIO_MAX)")
+    p.add_argument("--image", default=env("XB_IMAGE") or None,
+                   help="sample results whose engine.image starts with this digest prefix "
+                        "(default: the Windows builds in the trust file; env XB_IMAGE)")
+    p.add_argument("--host", dest="hosts", action="append", default=None,
+                   help="only results from this host id; repeatable (env XB_HOSTS, comma separated, used only "
+                        "when no --host is given)")
+    p.add_argument("--plan", default=env("XB_PLAN") or None,
+                   help="the plan the handoff holds, recorded in the report (env XB_PLAN)")
+    p.add_argument("--label", default=env("XB_LABEL") or None,
+                   help="instance name shown in the summary line (env XB_LABEL)")
     p.add_argument("--count", type=int, default=10)
     p.add_argument("--threads", type=int, default=2, choices=(1, 2), help="pages read at once, one thread each")
     p.add_argument("--issue", type=int, help="tracking issue to append to on a flagged day")
     p.add_argument("--repo", default="tgoodyear/usnewsmap.com")
-    return run(p.parse_args(argv))
+    args = p.parse_args(argv)
+    if args.hosts is None:
+        args.hosts = [h for h in (env("XB_HOSTS") or "").split(",") if h]
+    return run(args)
 
 
 if __name__ == "__main__":
