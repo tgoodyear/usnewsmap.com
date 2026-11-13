@@ -592,7 +592,11 @@ async fn check_one(
             p,
             &path,
             &mut journal,
-            outcome(r, Status::Match, "text bytes and ALTO (without confidences) identical"),
+            outcome(
+                r,
+                Status::Match,
+                "text bytes and ALTO (without confidences) identical",
+            ),
             execute,
         );
     }
