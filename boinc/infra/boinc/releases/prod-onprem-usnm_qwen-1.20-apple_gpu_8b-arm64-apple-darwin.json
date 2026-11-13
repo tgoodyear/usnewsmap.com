@@ -4,9 +4,9 @@
   "host": "pve.tjg.fyi",
   "images": {
     "base": "sha256:dc49f2267d8bfec9d7fdf503260b34897b4aad7edc1a4e5a5641d8a6e5da8f17",
-    "bin": "sha256:856f6f369bbc93514a944d4d2101efe1a850948a1c91ca6ada95daa10dcfdadb",
-    "bridge": "sha256:aa710e132cb058c5cb99edb5d7ac60f3e2499604dca9193ce961896a7065c925",
-    "server": "sha256:1c8345c719077a45ec4f72d5ae54ef3eab31f15dcd3477a0c98bb8d19b5f6500",
+    "bin": "sha256:eeb27dca9f0367b437e11f73ddcbed45d429652b5b749347b8e60993c8a6d813",
+    "bridge": "sha256:046bc184ca048a45748876ac51c8c5cd21f1e80c011841f24e1cca501f52b8d6",
+    "server": "sha256:2c57f9c4a03969d72329e4bc959010525210e52892e0a224adf49cab25d5b556",
     "worker": null
   },
   "release": {
@@ -17,7 +17,7 @@
     "version": "1.20"
   },
   "schema": 1,
-  "source_commit": "615f162e43387da3b8bad6decd555762ce371971",
+  "source_commit": "7095e5eb9d58486e6dc576ec8dddb18e9ccc0f03",
   "worker": {
     "extra_files": {
       "libggml-base.0.dylib": {
