@@ -88,7 +88,7 @@ def compare(old, new, tessdata, image_paths, say=print):
         for image in imgs:
             a = run(old, data, os.path.abspath(image), work)
             b = run(new, data, os.path.abspath(image), work)
-            same = a == b and a[0] == 0 and "txt" in a[1] and "xml" in a[1]
+            same = a[:2] == b[:2] and a[0] == 0 and "txt" in a[1] and "xml" in a[1]
             sizes = {k: len(v) for k, v in b[1].items()}
             say(f"{'identical' if same else 'DIFFERENT'} {image} exit {a[0]}/{b[0]} bytes {sizes}")
             if not same:

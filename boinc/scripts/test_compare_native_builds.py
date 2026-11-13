@@ -50,6 +50,10 @@ class Compare(unittest.TestCase):
         self.assertEqual(self.run_compare(self.engine("old", "same"), self.engine("new", "same", "# patched build\n")), 0)
         self.assertEqual(sum(line.startswith(("old engine sha256:", "new engine sha256:")) for line in self.log), 2)
 
+    def test_different_diagnostics_alone_do_not_fail(self):
+        warn = "sys.stderr.write('a warning only the new build prints')\n"
+        self.assertEqual(self.run_compare(self.engine("old", "same"), self.engine("new", "same", warn)), 0)
+
     def test_a_text_difference_fails(self):
         self.assertEqual(self.run_compare(self.engine("old", "same"), self.engine("new", "text")), 1)
 
