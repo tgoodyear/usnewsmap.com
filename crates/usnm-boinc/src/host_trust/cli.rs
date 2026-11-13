@@ -70,6 +70,13 @@ pub enum HostTrustCommands {
         /// The replays' assimilator results directory (batch 0).
         #[arg(long)]
         spool: PathBuf,
+        /// The BOINC database, read for each workunit's canonical host.
+        #[arg(long)]
+        mysql_defaults: PathBuf,
+        #[arg(long)]
+        mysql_ca: PathBuf,
+        #[arg(long)]
+        database: String,
         /// The live usnm_ocr_native version numbers, comma-separated.
         #[arg(long, default_value = "")]
         native_versions: String,
@@ -151,6 +158,9 @@ pub async fn run(command: HostTrustCommands) -> anyhow::Result<()> {
             jobs_root,
             trust,
             spool,
+            mysql_defaults,
+            mysql_ca,
+            database,
             native_versions,
             submit,
             check,
@@ -173,6 +183,11 @@ pub async fn run(command: HostTrustCommands) -> anyhow::Result<()> {
                 jobs_root,
                 trust,
                 spool,
+                canonical: x::Canonical::Db {
+                    mysql_defaults,
+                    mysql_ca,
+                    database,
+                },
             };
             let report = x::native_spot(
                 &paths,

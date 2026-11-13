@@ -848,12 +848,12 @@ case "$step" in
       --ssl-ca=/usr/local/share/usnm/mysql-ca.pem --batch --skip-column-names "$DB_NAME" \
       -e "SELECT COALESCE(GROUP_CONCAT(v.version_num ORDER BY v.version_num), '') FROM app_version v JOIN app a ON a.id = v.appid WHERE a.name = 'usnm_ocr_native' AND v.deprecated = 0 AND ((a.min_version > 0 AND v.version_num >= a.min_version) OR (a.min_version = 0 AND v.version_num = (SELECT MAX(w.version_num) FROM app_version w WHERE w.appid = v.appid AND w.platformid = v.platformid AND w.plan_class = v.plan_class AND w.deprecated = 0)))") ||
       fail "could not read the usnm_ocr_native versions"
-    rm -f "$mycnf"
     mkdir -p "$HANDOFF_DIR/scheduler"
     stamp="$(mktemp)"
     rc=0
     usnm-boinc host-trust native-spot --root "$SHARE_DIR/host-trust" --project "$PROJ" \
       --jobs-root "$HANDOFF_DIR" --trust "$SHARE_DIR/gold/trust.json" --spool "$PROJ/results/0" \
+      --mysql-defaults "$mycnf" --mysql-ca /usr/local/share/usnm/mysql-ca.pem --database "$DB_NAME" \
       --native-versions "$versions" --submit "${NATIVE_SPOT_SUBMIT:-}" --check "${NATIVE_SPOT_CHECK:-}" \
       --out "$HANDOFF_DIR/scheduler/native-spot.json" --nonce "$BATCH_NONCE" --execute || rc=$?
     share_readable "$stamp" "$PROJ/download"

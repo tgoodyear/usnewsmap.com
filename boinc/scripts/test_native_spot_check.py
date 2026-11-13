@@ -254,6 +254,36 @@ class NativeSpotTests(unittest.TestCase):
             validate(container)
 
 
+    def test_the_documented_empty_setting_turns_checks_on(self):
+        config = tbs.native_config((13, 240))
+        config.update(pages_per_host=40, max_pending=80, native_spot_check={})
+        validate(config)
+        event = batch.tick(config, self.state, self.fake, lambda: None, NOW)
+        self.assertEqual(event["native"]["slots"], {"13": batch.NATIVE_SPOT_CANARY, "240": batch.NATIVE_SPOT_CANARY})
+        self.assertIn("spot_check", event["native"])
+
+    def test_a_mismatch_stops_work_to_both_hosts_in_the_same_tick(self):
+        self.cycle()
+        for job in self.state["native_spot"]["pending"]:
+            self.fake.verdicts[job] = "mismatch"
+        self.fake.actions.clear()
+        event = self.tick()
+        self.assertEqual(event["native"]["slots"], {"13": 0, "240": 0})
+        self.assertEqual(self.native_submissions(), [])
+
+    def test_every_replay_is_polled_in_turn(self):
+        spot = self.state.setdefault("native_spot", {})
+        spot["pending"] = {f"{n:064x}": {"source": 13, "target": 240, "image": "sha256:" + "a" * 64, "page": "p",
+                                         "spool": "/project/usnmocr/results/7", "at": NOW, "stage": "submitted"}
+                           for n in range(150)}
+        batch.native_spot_step(self.config, self.state, self.fake, NOW)
+        batch.native_spot_step(self.config, self.state, self.fake, NOW + 60)
+        polled = set()
+        for _, check in self.fake.spot_calls:
+            polled |= {item.split("=")[0] for item in check.split(",")}
+        self.assertEqual(len(polled), 150)
+
+
 class SamplingTests(unittest.TestCase):
     def setUp(self):
         self.config = spot_config(max_outstanding_per_peer=100)

@@ -9,7 +9,7 @@
 //! ([`crate::trust::Trust::hold_host`]): the comparison can't say which of the two is wrong.
 //! Each replay is journaled under `<root>/native-spots/<job>/<target host>/`, and a compared
 //! one is never compared again, so a mismatch stays on record and is never retried away.
-use super::spot::{agree, job_inputs, result, stage};
+use super::spot::{agree, fetch, job_inputs, judge, stage};
 use crate::trust::{BuildTrust, Hold, Trust};
 use crate::{atomic, load, read, Lock};
 use anyhow::{bail, ensure, Context};
@@ -146,6 +146,50 @@ pub struct Paths {
     pub trust: PathBuf,
     /// The replays' assimilator results directory (batch 0).
     pub spool: PathBuf,
+    /// Where each workunit's canonical result's host is read from.
+    pub canonical: Canonical,
+}
+
+/// The host BOINC recorded for a workunit's canonical result. The two hosts of a check are
+/// taken from the controller's list, so each is checked against BOINC before a result is
+/// attributed to it.
+pub enum Canonical {
+    Db {
+        mysql_defaults: PathBuf,
+        mysql_ca: PathBuf,
+        database: String,
+    },
+    #[cfg(test)]
+    Fixed(std::sync::Mutex<std::collections::BTreeMap<String, u64>>),
+}
+
+impl Canonical {
+    async fn host(&self, workunit: &str) -> anyhow::Result<Option<u64>> {
+        ensure!(
+            workunit.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+            "invalid workunit"
+        );
+        match self {
+            Self::Db {
+                mysql_defaults,
+                mysql_ca,
+                database,
+            } => {
+                let rows = super::query_db(
+                    mysql_defaults,
+                    mysql_ca,
+                    database,
+                    &format!("SELECT r.hostid FROM workunit w JOIN result r ON r.id=w.canonical_resultid WHERE w.name='{workunit}'"),
+                )
+                .await?;
+                let hosts = super::hosts(&rows)?;
+                ensure!(hosts.len() <= 1 && rows.lines().count() <= 1, "ambiguous canonical result for {workunit}");
+                Ok(hosts.first().copied())
+            }
+            #[cfg(test)]
+            Self::Fixed(hosts) => Ok(hosts.lock().unwrap().get(workunit).copied()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -156,6 +200,9 @@ struct Journal {
     stage: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     verdict: Option<Outcome>,
+    /// The original's build, recorded with a mismatch so its holds can be completed again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_image: Option<String>,
 }
 
 fn journal_path(root: &Path, r: &Replay) -> PathBuf {
@@ -277,9 +324,25 @@ async fn submit_one(
         );
         return Ok(outcome(r, Status::Submitted, "already submitted"));
     }
-    let record = load(&p.jobs_root, &r.job)?;
-    let job = record.job;
-    ensure!(job.lines.is_none(), "a line job is not native work");
+    // The original's journal goes when its history is archived: that replay can't be made.
+    let job = match load(&p.jobs_root, &r.job) {
+        Ok(record) => record.job,
+        Err(error) => return Ok(outcome(r, Status::Refused, format!("original journal: {error:#}"))),
+    };
+    if job.lines.is_some() {
+        return Ok(outcome(r, Status::Refused, "a line job is not native work"));
+    }
+    match p.canonical.host(&job.workunit()).await {
+        Ok(Some(host)) if host == r.source_host => {}
+        Ok(host) => {
+            return Ok(outcome(
+                r,
+                Status::Refused,
+                format!("the original's canonical result is host {host:?}'s, not host {}'s", r.source_host),
+            ))
+        }
+        Err(error) => return Ok(outcome(r, Status::Refused, format!("canonical host: {error:#}"))),
+    }
     let target = target_job(&job, &r.target_image)?;
     if let Some(reason) = refuse(trust, builds, &job, &target, r) {
         return Ok(outcome(r, Status::Refused, reason));
@@ -312,6 +375,7 @@ async fn submit_one(
         workunit: workunit.clone(),
         stage: "submitting".into(),
         verdict: None,
+        source_image: None,
     };
     stage(&p.project, &workunit, scan, request).await?;
     atomic(&path, &serde_json::to_vec_pretty(&journal)?)?;
@@ -334,8 +398,9 @@ async fn submit_one(
 }
 
 /// Compares `r`'s replay with its original, once both are there, and holds both hosts on a
-/// mismatch. A recorded verdict is returned as it was.
-fn check_one(
+/// mismatch. A recorded verdict is returned as it was, and a recorded mismatch's holds are
+/// completed again, so a run stopped between the verdict and the holds loses neither.
+async fn check_one(
     p: &Paths,
     trust: &Trust,
     builds: &BuildTrust,
@@ -356,120 +421,125 @@ fn check_one(
             && journal.replay.target_image == r.target_image,
         "native spot journal changed"
     );
-    if let Some(verdict) = &journal.verdict {
-        return Ok(verdict.clone());
+    if let Some(verdict) = journal.verdict.clone() {
+        if verdict.status == Status::Mismatch && execute {
+            let source = journal.source_image.clone().context("a recorded mismatch names the original's build")?;
+            hold_both(p, r, &source)?;
+        }
+        return Ok(verdict);
     }
     ensure!(
         journal.stage == "submitted",
         "native spot {} is not submitted",
         journal.workunit
     );
-    let workunit = &journal.workunit;
+    let workunit = journal.workunit.clone();
     if p.spool.join(format!("{workunit}_error")).exists()
         || p.spool.join(format!("{workunit}_no_output_files")).exists()
     {
-        return finish(
-            &path,
-            &mut journal,
-            outcome(r, Status::Failed, "the replay unit failed in BOINC"),
-            execute,
-        );
+        return finish(&path, &mut journal, outcome(r, Status::Failed, "the replay unit failed in BOINC"), execute);
     }
-    if !p
-        .spool
-        .join(format!("{workunit}__file_result.json"))
-        .exists()
-    {
+    if !p.spool.join(format!("{workunit}__file_result.json")).exists() {
         return Ok(outcome(r, Status::Pending, "not back yet"));
     }
-    let job = load(&p.jobs_root, &r.job)?.job;
-    let target = target_job(&job, &r.target_image)?;
-    if let Some(reason) = refuse(trust, builds, &job, &target, r) {
-        return finish(
-            &path,
-            &mut journal,
-            outcome(r, Status::Unverified, reason),
-            execute,
-        );
-    }
-    let spool = r
-        .original_spool
-        .as_deref()
-        .context("a check needs the original's spool")?;
-    let original = match result(&job, spool, &job.workunit()) {
-        Ok(original) => original,
+    let job = match load(&p.jobs_root, &r.job) {
+        Ok(record) => record.job,
         Err(error) => {
-            return finish(
-                &path,
-                &mut journal,
-                outcome(r, Status::Unverified, format!("original: {error:#}")),
-                execute,
-            )
+            return finish(&path, &mut journal, outcome(r, Status::Unverified, format!("original journal: {error:#}")), execute)
         }
     };
-    let replay = match result(&target, &p.spool, workunit) {
-        Ok(replay) => replay,
-        // The replay came back but isn't a valid result for its job: as much a fault as
-        // different bytes, since the peer was trusted.
+    let target = target_job(&job, &r.target_image)?;
+    if let Some(reason) = refuse(trust, builds, &job, &target, r) {
+        return finish(&path, &mut journal, outcome(r, Status::Unverified, reason), execute);
+    }
+    // Each result is attributed to the host BOINC recorded for it, not the one the list names.
+    for (unit, host) in [(job.workunit(), r.source_host), (workunit.clone(), r.target_host)] {
+        match p.canonical.host(&unit).await {
+            Ok(Some(found)) if found == host => {}
+            Ok(found) => {
+                let detail = format!("{unit}'s canonical result is host {found:?}'s, not host {host}'s");
+                return finish(&path, &mut journal, outcome(r, Status::Unverified, detail), execute);
+            }
+            Err(error) => return Ok(outcome(r, Status::Pending, format!("canonical host: {error:#}"))),
+        }
+    }
+    let spool = r.original_spool.as_deref().context("a check needs the original's spool")?;
+    // A file that can't be read is the filesystem's fault, not a host's: the original gone is
+    // no verdict, anything else is tried again on the next call.
+    let original = match fetch(spool, &job.workunit()) {
+        Ok(files) => files,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return finish(&path, &mut journal, outcome(r, Status::Unverified, format!("original: {error}")), execute)
+        }
+        Err(error) => return Ok(outcome(r, Status::Pending, format!("original: {error}"))),
+    };
+    let original = match judge(&job, original) {
+        Ok(original) => original,
         Err(error) => {
-            return mismatch(
-                p,
-                &path,
-                &mut journal,
-                r,
-                &job,
-                &target,
-                format!("the replay is not a valid result: {error:#}"),
-                execute,
-            )
+            return finish(&path, &mut journal, outcome(r, Status::Unverified, format!("original: {error:#}")), execute)
+        }
+    };
+    let replay = match fetch(&p.spool, &workunit) {
+        Ok(files) => files,
+        Err(error) => return Ok(outcome(r, Status::Pending, format!("replay: {error}"))),
+    };
+    let replay = match judge(&target, replay) {
+        Ok(replay) => replay,
+        // The replay came back, readable, but isn't a valid result for its job: as much a fault
+        // as different bytes, since the peer was trusted.
+        Err(error) => {
+            return mismatch(p, &path, &mut journal, r, &job, format!("the replay is not a valid result: {error:#}"), execute)
         }
     };
     if agree(builds, &original, &replay, true)? {
-        return finish(
-            &path,
-            &mut journal,
-            outcome(r, Status::Match, "text and ALTO bytes identical"),
-            execute,
-        );
+        return finish(&path, &mut journal, outcome(r, Status::Match, "text and ALTO bytes identical"), execute);
     }
     let detail = format!(
         "text {} against {}, ALTO {} against {}",
         original.text_sha256, replay.text_sha256, original.alto_sha256, replay.alto_sha256
     );
-    mismatch(p, &path, &mut journal, r, &job, &target, detail, execute)
+    mismatch(p, &path, &mut journal, r, &job, detail, execute)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Records the mismatch, then holds both hosts: the verdict is journaled first, so a run that
+/// stops before the holds completes them the next time it reads the verdict.
 fn mismatch(
     p: &Paths,
     path: &Path,
     journal: &mut Journal,
     r: &Replay,
     job: &boinc::Job,
-    target: &boinc::Job,
     detail: String,
     execute: bool,
 ) -> anyhow::Result<Outcome> {
+    journal.source_image = Some(job.engine.image.clone());
+    let verdict = finish(path, journal, outcome(r, Status::Mismatch, detail), execute)?;
     if execute {
-        let at = chrono::Utc::now().to_rfc3339();
-        for (image, host, peer) in [
-            (&job.engine.image, r.source_host, r.target_host),
-            (&target.engine.image, r.target_host, r.source_host),
-        ] {
-            Trust::hold_host(
-                &p.trust,
-                image,
-                host,
-                Hold {
-                    at: at.clone(),
-                    job: r.job.clone(),
-                    peer,
-                    reason: "native spot check: results differ within one build".into(),
-                },
-            )?;
-        }
+        hold_both(p, r, &job.engine.image)?;
     }
-    finish(path, journal, outcome(r, Status::Mismatch, detail), execute)
+    Ok(verdict)
+}
+
+/// Holds the source host for its build and the peer for its own; a hold already there stays.
+fn hold_both(p: &Paths, r: &Replay, source_image: &str) -> anyhow::Result<()> {
+    let at = chrono::Utc::now().to_rfc3339();
+    for (image, host, peer) in [
+        (source_image, r.source_host, r.target_host),
+        (r.target_image.as_str(), r.target_host, r.source_host),
+    ] {
+        Trust::hold_host(
+            &p.trust,
+            image,
+            host,
+            Hold {
+                at: at.clone(),
+                job: r.job.clone(),
+                peer,
+                reason: "native spot check: results differ within one build".into(),
+            },
+        )?;
+    }
+    Ok(())
 }
 
 fn finish(
@@ -515,7 +585,7 @@ pub async fn native_spot(
         let trust = Trust::load(&p.trust)?;
         report
             .checked
-            .push(check_one(p, &trust, builds, r, execute)?);
+            .push(check_one(p, &trust, builds, r, execute).await?);
     }
     let trust = Trust::load(&p.trust)?;
     for r in submit {
@@ -629,7 +699,11 @@ mod tests {
             jobs_root: jobs,
             trust: root.join("trust.json"),
             spool: root.join("results/0"),
+            canonical: Canonical::Fixed(Default::default()),
         };
+        if let Canonical::Fixed(hosts) = &paths.canonical {
+            hosts.lock().unwrap().insert(job.workunit(), 13);
+        }
         Fixture {
             _tmp: tmp,
             paths,
@@ -658,12 +732,28 @@ mod tests {
             workunit: r.workunit(),
             stage: "submitted".into(),
             verdict: None,
+            source_image: None,
         };
+        canonical(f, &r.workunit(), r.target_host);
         atomic(
             &journal_path(&f.paths.root, r),
             &serde_json::to_vec(&journal).unwrap(),
         )
         .unwrap();
+    }
+
+    fn block<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
+    /// Records host `host` as the canonical host of `workunit` in BOINC.
+    fn canonical(f: &Fixture, workunit: &str, host: u64) {
+        let Canonical::Fixed(hosts) = &f.paths.canonical else { unreachable!() };
+        hosts.lock().unwrap().insert(workunit.to_owned(), host);
     }
 
     fn trust(f: &Fixture) -> Trust {
@@ -776,7 +866,7 @@ mod tests {
         let r = replay(&f, 240, LINUX, true);
         submitted(&f, &r);
         assert_eq!(
-            check_one(&f.paths, &trust(&f), &f.builds, &r, true)
+            block(check_one(&f.paths, &trust(&f), &f.builds, &r, true))
                 .unwrap()
                 .status,
             Status::Pending
@@ -788,13 +878,13 @@ mod tests {
             "HELLO\n",
         );
         returned(&f.job, &f.paths.spool, &r.workunit(), "HELLO\n");
-        let o = check_one(&f.paths, &trust(&f), &f.builds, &r, true).unwrap();
+        let o = block(check_one(&f.paths, &trust(&f), &f.builds, &r, true)).unwrap();
         assert_eq!(o.status, Status::Match, "{o:?}");
         assert!(trust(&f).holds.is_empty());
         // The verdict is kept: comparing again returns it, whatever the files say now.
         returned(&f.job, &f.paths.spool, &r.workunit(), "OTHER\n");
         assert_eq!(
-            check_one(&f.paths, &trust(&f), &f.builds, &r, true)
+            block(check_one(&f.paths, &trust(&f), &f.builds, &r, true))
                 .unwrap()
                 .status,
             Status::Match
@@ -813,7 +903,7 @@ mod tests {
             "HELLO\n",
         );
         returned(&f.job, &f.paths.spool, &r.workunit(), "HELL0\n");
-        let o = check_one(&f.paths, &trust(&f), &f.builds, &r, true).unwrap();
+        let o = block(check_one(&f.paths, &trust(&f), &f.builds, &r, true)).unwrap();
         assert_eq!(o.status, Status::Mismatch, "{o:?}");
         let t = trust(&f);
         assert_eq!(
@@ -829,7 +919,7 @@ mod tests {
         // Restoring identical files doesn't undo it: the verdict stands.
         returned(&f.job, &f.paths.spool, &r.workunit(), "HELLO\n");
         assert_eq!(
-            check_one(&f.paths, &t, &f.builds, &r, true).unwrap().status,
+            block(check_one(&f.paths, &t, &f.builds, &r, true)).unwrap().status,
             Status::Mismatch
         );
         // A later replay for either host is refused while the hold stands.
@@ -856,7 +946,7 @@ mod tests {
             "HELLO\n",
         );
         returned(&f.job, &f.paths.spool, &r.workunit(), "HELL0\n");
-        check_one(&f.paths, &trust(&f), &f.builds, &r, true).unwrap();
+        block(check_one(&f.paths, &trust(&f), &f.builds, &r, true)).unwrap();
         assert!(Trust::release_hold(&f.paths.trust, LINUX, 240, "").is_err());
         assert!(Trust::release_hold(&f.paths.trust, LINUX, 999, "looked").is_err());
         let release = Trust::release_hold(
@@ -885,7 +975,7 @@ mod tests {
         submitted(&f, &r);
         std::fs::write(f.paths.spool.join(format!("{}_error", r.workunit())), "").unwrap();
         assert_eq!(
-            check_one(&f.paths, &trust(&f), &f.builds, &r, true)
+            block(check_one(&f.paths, &trust(&f), &f.builds, &r, true))
                 .unwrap()
                 .status,
             Status::Failed
@@ -895,7 +985,7 @@ mod tests {
         returned(&f.job, &f.paths.spool, &r2.workunit(), "HELLO\n");
         // Host 241 isn't trusted, and the original is gone: unverified either way.
         assert_eq!(
-            check_one(&f.paths, &trust(&f), &f.builds, &r2, true)
+            block(check_one(&f.paths, &trust(&f), &f.builds, &r2, true))
                 .unwrap()
                 .status,
             Status::Unverified
@@ -915,11 +1005,79 @@ mod tests {
             "HELLO\n",
         );
         returned(&f.job, &f.paths.spool, &r.workunit(), "HELL0\n");
-        check_one(&f.paths, &trust(&f), &f.builds, &r, true).unwrap();
+        block(check_one(&f.paths, &trust(&f), &f.builds, &r, true)).unwrap();
         let held = trust(&f);
         let mut fresh = held.clone();
         fresh.holds.clear();
         assert_eq!(fresh.merge(&held).unwrap().holds, held.holds);
         assert_eq!(held.merge(&fresh).unwrap().holds, held.holds);
+    }
+
+    #[test]
+    fn each_result_is_attributed_to_the_host_boinc_recorded() {
+        let f = fixture();
+        // The list says host 13 returned the original, BOINC says host 14: no replay.
+        canonical(&f, &f.job.workunit(), 14);
+        let o = block(submit_one(&f.paths, &trust(&f), &f.builds, &[100], &replay(&f, 240, LINUX, false), false)).unwrap();
+        assert_eq!(o.status, Status::Refused);
+        assert!(o.detail.contains("canonical"), "{o:?}");
+        // Different bytes from a replay BOINC credits to another host: no verdict, nobody held.
+        canonical(&f, &f.job.workunit(), 13);
+        let r = replay(&f, 240, LINUX, true);
+        submitted(&f, &r);
+        canonical(&f, &r.workunit(), 999);
+        returned(&f.job, r.original_spool.as_deref().unwrap(), &f.job.workunit(), "HELLO\n");
+        returned(&f.job, &f.paths.spool, &r.workunit(), "HELL0\n");
+        let o = block(check_one(&f.paths, &trust(&f), &f.builds, &r, true)).unwrap();
+        assert_eq!(o.status, Status::Unverified, "{o:?}");
+        assert!(trust(&f).holds.is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_replay_file_is_tried_again_not_judged() {
+        let f = fixture();
+        let r = replay(&f, 240, LINUX, true);
+        submitted(&f, &r);
+        returned(&f.job, r.original_spool.as_deref().unwrap(), &f.job.workunit(), "HELLO\n");
+        returned(&f.job, &f.paths.spool, &r.workunit(), "HELLO\n");
+        let text = f.paths.spool.join(format!("{}__file_text.txt", r.workunit()));
+        std::fs::remove_file(&text).unwrap();
+        let o = block(check_one(&f.paths, &trust(&f), &f.builds, &r, true)).unwrap();
+        assert_eq!(o.status, Status::Pending, "{o:?}");
+        assert!(trust(&f).holds.is_empty());
+        std::fs::write(&text, "HELLO\n").unwrap();
+        assert_eq!(block(check_one(&f.paths, &trust(&f), &f.builds, &r, true)).unwrap().status, Status::Match);
+    }
+
+    #[test]
+    fn a_mismatch_recorded_before_its_holds_completes_them() {
+        let f = fixture();
+        let r = replay(&f, 240, LINUX, true);
+        submitted(&f, &r);
+        // As a run that stopped after journaling the verdict and before writing the holds.
+        let path = journal_path(&f.paths.root, &r);
+        let mut journal: Journal = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        journal.source_image = Some(LINUX.into());
+        journal.stage = "compared".into();
+        journal.verdict = Some(outcome(&r, Status::Mismatch, "recorded"));
+        atomic(&path, &serde_json::to_vec(&journal).unwrap()).unwrap();
+        assert!(trust(&f).holds.is_empty());
+        let o = block(check_one(&f.paths, &trust(&f), &f.builds, &r, true)).unwrap();
+        assert_eq!(o.status, Status::Mismatch);
+        assert_eq!(trust(&f).holds[LINUX].keys().copied().collect::<Vec<_>>(), vec![13, 240]);
+    }
+
+    #[test]
+    fn an_archived_original_is_no_replay_and_no_verdict() {
+        let f = fixture();
+        let r = replay(&f, 240, LINUX, true);
+        submitted(&f, &r);
+        returned(&f.job, &f.paths.spool, &r.workunit(), "HELLO\n");
+        std::fs::remove_dir_all(crate::dir(&f.paths.jobs_root, &f.job.id).unwrap()).unwrap();
+        let o = block(check_one(&f.paths, &trust(&f), &f.builds, &r, true)).unwrap();
+        assert_eq!(o.status, Status::Unverified, "{o:?}");
+        let o = block(submit_one(&f.paths, &trust(&f), &f.builds, &[100], &replay(&f, 241, LINUX, false), false)).unwrap();
+        assert_eq!(o.status, Status::Refused);
+        assert!(o.detail.starts_with("original journal"), "{o:?}");
     }
 }

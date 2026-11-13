@@ -2841,9 +2841,9 @@ def native_spot_slots(config, state, slots, now):
     """A native plan's room on each host (native_capacity), as its spot checks allow (#1863):
     unchanged without native_spot_check; otherwise none for a held host, and at most
     canary_pages_per_host for one whose checks aren't running."""
-    spec = config.get(NATIVE_SPOT_KEY)
-    if not spec:
+    if NATIVE_SPOT_KEY not in config:
         return slots
+    spec = config[NATIVE_SPOT_KEY]
     canary = spec.get("canary_pages_per_host", NATIVE_SPOT_CANARY)
     held = _spot(state).get("holds", {})
     out = {}
@@ -2915,7 +2915,11 @@ def native_spot_step(config, state, transport, now):
             spot["last_unverified"] = {"job": job_id, "at": int(now), "detail": "replay not back in time"}
             del pending[job_id]
     queued = [(j, e) for j, e in pending.items() if e["stage"] == "queued"][:100]
-    submitted = [(j, e) for j, e in pending.items() if e["stage"] == "submitted"][:100]
+    # The 100 least recently polled, so every replay is looked at in turn, however many are out.
+    submitted = sorted(((j, e) for j, e in pending.items() if e["stage"] == "submitted"),
+                       key=lambda item: (item[1].get("polled", 0), item[0]))[:100]
+    for _, entry in submitted:
+        entry["polled"] = int(now)
     if not queued and not submitted:
         return
     try:
@@ -2999,7 +3003,7 @@ def release_native_spot_hold(state, host, note, now):
 
 
 def native_spot_alerts(config, state):
-    if not config.get(NATIVE_SPOT_KEY):
+    if NATIVE_SPOT_KEY not in config:
         return []
     spot = state.get("native_spot", {})
     alerts = []
@@ -3015,7 +3019,7 @@ def native_spot_alerts(config, state):
 
 
 def native_spot_summary(config, state, slots, now):
-    if not config.get(NATIVE_SPOT_KEY):
+    if NATIVE_SPOT_KEY not in config:
         return None
     spot = state.get("native_spot", {})
     return {"running": {str(host): native_spot_running(config, state, slots, host, now)
@@ -3043,7 +3047,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         if any(value is not None for value in cleared):
             persist()
     if release_spot_hold is not None:
-        require(native and config.get(NATIVE_SPOT_KEY), f"--release-native-spot-hold is for plans with {NATIVE_SPOT_KEY}")
+        require(native and NATIVE_SPOT_KEY in config, f"--release-native-spot-hold is for plans with {NATIVE_SPOT_KEY}")
         release_native_spot_hold(state, *release_spot_hold, time.time() if now is None else now)
         persist()
     # Claims, exports and submits per tick (#1447). Collection still takes up to batch_size, so a
@@ -3063,7 +3067,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         warn_near_cap("archived_held", len(feed.archived_held), MAX_ARCHIVED_HELD, now)
     for key in ("pending_workunits", "active_hosts"):
         require(type(snapshot[key]) is int and snapshot[key] >= 0, "invalid capacity inventory")
-    native_slots = native_spot_slots(config, state, native_capacity(config, snapshot), now) if native else None
+    # A native plan's room before and after its spot checks' limit (#1863).
+    native_room = native_capacity(config, snapshot) if native else None
+    native_slots = native_spot_slots(config, state, native_room, now) if native else None
     pending_jobs = snapshot["pending_jobs"]
     require(isinstance(pending_jobs, list) and len(pending_jobs) <= MAX_JOBS and
             all(isinstance(job_id, str) and ID.fullmatch(job_id) for job_id in pending_jobs) and
@@ -3314,8 +3320,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             state["native_paused"] = {"at": since, "reason": "; ".join(reasons),
                                       "jobs": (unpublished + kept)[:5]}
             persist()
-    if native and config.get(NATIVE_SPOT_KEY):
-        native_spot_tick(config, state, transport, persist, now, owned, to_collect, native_slots)
+    if native and NATIVE_SPOT_KEY in config:
+        native_spot_tick(config, state, transport, persist, now, owned, to_collect, native_room)
+        # A mismatch, a failing step or a match just now changes what each host may get.
+        native_slots = native_spot_slots(config, state, native_room, now)
     native_paused = state.get("native_paused") if native else None
     settle_failed(owned)
     status = _extract_status(snapshot, transport, server_status=server_status, drain=drain)
@@ -3721,7 +3729,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             "outstanding": {str(host): sum(h == host for h in targets.values()) for host in config["native_hosts"]},
             "paused": native_paused,
         }
-        if config.get(NATIVE_SPOT_KEY):
+        if NATIVE_SPOT_KEY in config:
             event["native"]["spot_check"] = native_spot_summary(config, state, native_slots, now)
     return with_timings(event, transport)
 

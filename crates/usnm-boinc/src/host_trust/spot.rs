@@ -239,16 +239,49 @@ pub(super) struct Returned {
 }
 
 pub(super) fn result(job: &boinc::Job, spool: &Path, workunit: &str) -> anyhow::Result<Returned> {
-    let file = |name| spool.join(format!("{workunit}__file_{name}"));
     ensure!(
         !spool.join(format!("{workunit}_error")).exists()
             && !spool.join(format!("{workunit}_no_output_files")).exists(),
         "spot-check member failed"
     );
-    let manifest: ResultManifest =
-        serde_json::from_slice(&read(&file("result.json"), boinc::MAX_JSON)?)?;
-    let text = read(&file("text.txt"), boinc::MAX_TEXT)?;
-    let alto = read(&file("layout.xml"), boinc::MAX_ALTO)?;
+    judge(job, fetch(spool, workunit)?)
+}
+
+/// A result's three returned files, as read.
+pub(super) struct Files {
+    result: Vec<u8>,
+    text: Vec<u8>,
+    alto: Vec<u8>,
+}
+
+/// Reads a result's files. An error here is the filesystem's (missing, unreadable), not the
+/// host's: the bytes themselves are judged by [`judge`].
+pub(super) fn fetch(spool: &Path, workunit: &str) -> std::io::Result<Files> {
+    let file = |name: &str| -> std::io::Result<Vec<u8>> {
+        let path = spool.join(format!("{workunit}__file_{name}"));
+        if std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} is a symlink", path.display()),
+            ));
+        }
+        std::fs::read(path)
+    };
+    Ok(Files {
+        result: file("result.json")?,
+        text: file("text.txt")?,
+        alto: file("layout.xml")?,
+    })
+}
+
+/// Whether `files` are a valid result of `job`, and what it returned.
+pub(super) fn judge(job: &boinc::Job, files: Files) -> anyhow::Result<Returned> {
+    let Files { result, text, alto } = files;
+    ensure!(
+        result.len() <= boinc::MAX_JSON && text.len() <= boinc::MAX_TEXT && alto.len() <= boinc::MAX_ALTO,
+        "result over size limit"
+    );
+    let manifest: ResultManifest = serde_json::from_slice(&result)?;
     manifest.matches(job, &text, &alto)?;
     usnm_ocr_local::checks::check_alto(&alto).map_err(|r| anyhow::anyhow!("{}", r.code()))?;
     Ok(Returned {
