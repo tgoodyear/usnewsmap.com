@@ -1806,6 +1806,8 @@ impl Release {
         // Our OCR from `ocr-local` weighed and given in place of LoC's (Step 9).
         let mut local_tally = ocr_local::replace::Tally::default();
         let mut local_replaced: LocalReplaced = Vec::new();
+        // The completeness gate on those replacements; a mistyped threshold stops the build.
+        let completeness = ocr_local::rule::Completeness::from_env()?;
         // The model set of each engine short key among the rows given in
         // place of LoC's text: one per key since the rule (13 §13.7.2).
         let mut model_sets = usnm_core::ocr_engine::ModelSets::default();
@@ -1921,6 +1923,7 @@ impl Release {
                 catalog,
                 mine: &mine,
                 local,
+                completeness,
                 format,
                 page_language: moves.is_some(),
             };

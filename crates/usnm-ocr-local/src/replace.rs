@@ -425,6 +425,18 @@ pub async fn revocations(curated: &dyn ObjectStore) -> anyhow::Result<Vec<Revoca
     Ok(out)
 }
 
+/// A page the completeness gate kept LoC's text on (`short` or `cover`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Gated {
+    pub doc_id: String,
+    pub reason: &'static str,
+    pub ours_chars: usize,
+    pub loc_chars: usize,
+    /// Rounded to four places.
+    pub len_ratio: f64,
+    pub cover: f64,
+}
+
 /// What the release did with `ocr-local`, for `ocr_local.json`.
 #[derive(Debug, Default, Clone, PartialEq, Serialize)]
 pub struct Tally {
@@ -438,6 +450,9 @@ pub struct Tally {
     /// The pages the rule weighed, by our text's language and by engine.
     pub by_language: BTreeMap<String, Count>,
     pub by_engine: BTreeMap<String, Count>,
+    /// Each page the completeness gate ([`rule::Completeness`]) kept LoC's text on, with what it
+    /// measured: the per-page reason, in release order.
+    pub gated: Vec<Gated>,
     /// The pages weighed by each rule: `v1`, or `line-merge-v1` for line jobs' pages (#1621).
     pub by_rule: BTreeMap<String, Count>,
     /// The parts read, with each title's read once per batch holding it.
@@ -454,6 +469,20 @@ impl Tally {
     /// A page the rule weighed: rule v1, or the row's own rule ([`rule::rule_for`]).
     pub fn weighed(&mut self, c: &Candidate, ours: &Scores, verdict: Result<(), Keep>) {
         self.weighed_by(c, ours, verdict, rule::rule_for(&c.row.ocr_engine));
+    }
+
+    /// Record why the completeness gate kept LoC's text on `c`'s page, beside the `kept` count
+    /// [`Tally::weighed_by`] made for it.
+    pub fn gated(&mut self, c: &Candidate, why: Keep, m: &rule::Measure) {
+        let r4 = |x: f64| (x * 1e4).round() / 1e4;
+        self.gated.push(Gated {
+            doc_id: c.row.doc_id.clone(),
+            reason: why.as_str(),
+            ours_chars: m.ours_chars,
+            loc_chars: m.loc_chars,
+            len_ratio: r4(m.len_ratio),
+            cover: r4(m.cover),
+        });
     }
 
     /// A page `rule` weighed.
@@ -491,6 +520,7 @@ impl Tally {
         }
         self.considered += other.considered;
         self.replaced += other.replaced;
+        self.gated.extend(other.gated);
         for (k, n) in other.kept {
             *self.kept.entry(k).or_default() += n;
         }
@@ -589,6 +619,35 @@ mod tests {
             assert!(tally.merge(other).is_err());
             assert_eq!(tally.inputs(), vec![&part]);
         }
+    }
+
+    #[test]
+    fn a_page_the_gate_kept_is_recorded_with_its_measure_and_survives_a_merge() {
+        let c = Candidate {
+            row: row(Some(0.1), 1),
+            text: String::new(),
+        };
+        let m = rule::Measure {
+            ours_chars: 25_488,
+            loc_chars: 69_836,
+            len_ratio: 25_488.0 / 69_836.0,
+            cover: 0.2046,
+        };
+        let mut a = Tally::default();
+        a.weighed_by(&c, &Scores::default(), Err(Keep::Short), "v1");
+        a.gated(&c, Keep::Short, &m);
+        let mut b = Tally::default();
+        b.weighed_by(&c, &Scores::default(), Err(Keep::Cover), "v1");
+        b.gated(&c, Keep::Cover, &m);
+        a.merge(b).unwrap();
+        assert_eq!(a.kept["short"], 1);
+        assert_eq!(a.kept["cover"], 1);
+        let json = serde_json::to_value(&a).unwrap();
+        assert_eq!(json["gated"][0]["reason"], "short");
+        assert_eq!(json["gated"][1]["reason"], "cover");
+        assert_eq!(json["gated"][0]["len_ratio"], 0.365);
+        assert_eq!(json["gated"][0]["loc_chars"], 69_836);
+        assert_eq!(json["gated"][0]["doc_id"], c.row.doc_id);
     }
 
     fn row(rate: Option<f64>, at: i64) -> StoredRow {
