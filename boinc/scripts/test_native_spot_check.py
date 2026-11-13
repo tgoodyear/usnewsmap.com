@@ -4,8 +4,10 @@ import importlib.util
 import json
 from pathlib import Path
 import random
+import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location("test_batch_scheduler", Path(__file__).with_name("test_batch_scheduler.py"))
 tbs = importlib.util.module_from_spec(SPEC)
@@ -45,8 +47,14 @@ class SpotFake(tbs.NativeFake):
         self.verdicts = {}
         self.refused = set()
         self.spot_error = None
+        # The BOINC host's step lock stays held past the step's wait: onprem-step.sh refuses
+        # before it runs anything (#1919).
+        self.lock_held = False
 
     def native_spot(self, submit, check):
+        self.actions.append(("native-spot", submit, check))
+        if self.lock_held:
+            raise batch.StepLockTimeout("bridge/native-spot failed: the BOINC host's step lock stayed held")
         self.spot_calls.append((submit, check))
         if self.spot_error:
             raise RuntimeError(self.spot_error)
@@ -235,9 +243,9 @@ class NativeSpotTests(unittest.TestCase):
             validate(spot_config(hosts=(13,), peers=peers))
         with self.assertRaisesRegex(ValueError, "not one of the plan's native_hosts"):
             validate(spot_config(hosts=(13, 300), image=LINUX, peers=peers))
-        # The checked plan's replay goes to the peer on its build.
+        # The checked plan's replay goes to the peer on its build, once that host is active.
         self.config = spot_config(hosts=(13,), peers=peers)
-        self.fake.cpus = {13: 24}
+        self.fake.cpus = {13: 24, 300: 8}
         self.cycle()
         (submit, _), = self.fake.spot_calls
         self.assertEqual(submit.split("=")[1], f"13:300:{WORKER_DAC9[7:]}")
@@ -246,7 +254,8 @@ class NativeSpotTests(unittest.TestCase):
 
     def test_settings_are_checked(self):
         for spec in ({"share": 0}, {"share": 0.6}, {"canary_pages_per_host": 5}, {"other": 1},
-                     {"max_outstanding_per_peer": 0}, {"fresh_hours": 0}):
+                     {"max_outstanding_per_peer": 0}, {"fresh_hours": 0}, {"lock_wait_secs": -1},
+                     {"lock_wait_secs": 61}, {"lock_wait_secs": 1.5}):
             with self.subTest(spec=spec), self.assertRaises(ValueError):
                 validate(spot_config(**spec))
         container = tbs.queue_config()
@@ -263,13 +272,20 @@ class NativeSpotTests(unittest.TestCase):
         self.assertEqual(event["native"]["slots"], {"13": batch.NATIVE_SPOT_CANARY, "240": batch.NATIVE_SPOT_CANARY})
         self.assertIn("spot_check", event["native"])
 
-    def test_a_mismatch_stops_work_to_both_hosts_in_the_same_tick(self):
+    def test_a_mismatch_stops_work_to_both_hosts_from_the_next_tick(self):
         self.cycle()
         for job in self.state["native_spot"]["pending"]:
             self.fake.verdicts[job] = "mismatch"
         self.fake.actions.clear()
         event = self.tick()
+        # The step runs after this tick's submit (#1919); the tick line shows the room from now on.
+        kinds = [action[0] for action in self.fake.actions]
+        self.assertIn("native-spot", kinds)
+        self.assertNotIn("submit-native", kinds[kinds.index("native-spot"):])
         self.assertEqual(event["native"]["slots"], {"13": 0, "240": 0})
+        self.fake.actions.clear()
+        self.results_in()
+        self.tick()
         self.assertEqual(self.native_submissions(), [])
 
     def test_every_replay_is_polled_in_turn(self):
@@ -328,13 +344,13 @@ class NativeSpotTests(unittest.TestCase):
         def stop(*args, **kwargs):
             raise Stop()
 
-        original = batch.native_spot_tick
-        batch.native_spot_tick = stop
+        original = batch.native_spot_draw
+        batch.native_spot_draw = stop
         try:
             with self.assertRaises(Stop):
                 self.tick()
         finally:
-            batch.native_spot_tick = original
+            batch.native_spot_draw = original
         self.tick()
         spot = self.state["native_spot"]
         self.assertEqual(len(spot["pending"]), 2)
@@ -357,6 +373,158 @@ class NativeSpotTests(unittest.TestCase):
         self.fake.other = 0
         self.tick()
         self.assertTrue([submit for submit, _ in self.fake.spot_calls if submit])
+
+
+class SpotStepLockTests(unittest.TestCase):
+    """#1919: the native-spot step never gates or delays a plan's submit."""
+
+    def setUp(self):
+        self.config = spot_config()
+        self.state = {}
+        self.fake = SpotFake([tbs.message(n) for n in range(1, 60)], {13: 24, 240: 24})
+        self.fake.assertions = []
+        self.saved = batch.SPOT_RANDOM
+        batch.SPOT_RANDOM = Always(0.0)
+        self.addCleanup(setattr, batch, "SPOT_RANDOM", self.saved)
+
+    def tick(self, now=NOW, **kwargs):
+        # An inventory taken at `now`, so ticks hours apart are each fresh.
+        inventory = type(self.fake).inventory.__get__(self.fake)
+        with patch.object(self.fake, "inventory", lambda: {**inventory(), "created_at": now}):
+            return batch.tick(self.config, self.state, self.fake, lambda: None, now, **kwargs)
+
+    def results_in(self):
+        for job in self.fake.jobs.values():
+            if job["stage"] == "submitted":
+                job["spool"] = "/project/usnmocr/results/7"
+
+    def matched(self):
+        """Both hosts' checks running: a replay of each matched."""
+        self.tick()
+        self.results_in()
+        self.tick()
+        for job in self.state["native_spot"]["pending"]:
+            self.fake.verdicts[job] = "match"
+        self.tick()
+
+    def test_a_held_step_lock_never_delays_submit(self):
+        self.matched()
+        self.results_in()
+        self.fake.lock_held = True
+        self.fake.actions.clear()
+        event = self.tick()
+        kinds = [action[0] for action in self.fake.actions]
+        # Submit went first and sent work; the spot step came after it and was skipped.
+        self.assertIn("submit-native", kinds)
+        self.assertIn("native-spot", kinds)
+        self.assertLess(kinds.index("submit-native"), kinds.index("native-spot"))
+        spot = event["native"]["spot_check"]
+        self.assertEqual(spot["step"], "skipped")
+        # A busy lock is no failure: no alert, no cap, and the hosts keep their full room.
+        self.assertIsNone(spot["failing"])
+        self.assertEqual([a["code"] for a in event["alerts"] if a["code"].startswith("native_spot")], [])
+        self.assertEqual(event["native"]["slots"], {"13": 4, "240": 4})
+        self.assertEqual(spot["lock_busy"], {"since": NOW, "ticks": 1, "last": NOW})
+
+    def test_the_step_asks_for_a_short_lock_wait_whatever_the_long_one(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        for spec, wait in (({}, str(batch.NATIVE_SPOT_LOCK_WAIT_SECS)), ({"lock_wait_secs": 0}, "0"),
+                           ({"lock_wait_secs": 30}, "30")):
+            with self.subTest(spec=spec):
+                config = spot_config(**spec)
+                config["step_command"] = ["ssh", "boinc.example", "--"]
+                transport = batch.Transport(config, directory, step_lock_wait_secs=1200)
+                stderr = "error: another bridge step still holds the lock after 10s\n"
+                failed = subprocess.CompletedProcess([], 1, "", stderr)
+                with patch.object(batch.subprocess, "run", return_value=failed) as run:
+                    with self.assertRaises(batch.StepLockTimeout):
+                        transport.native_spot("x", "")
+                argv, kwargs = run.call_args
+                argv = argv[0]
+                self.assertEqual(argv[argv.index("--lock-wait-secs") + 1], wait)
+                # The long wait isn't added to its budget either.
+                self.assertEqual((argv[argv.index("--wait-mins") + 1], kwargs["timeout"]), ("30", 2100))
+                # submit-remote keeps the long wait.
+                argv, _, _ = transport._step_argv("bridge", "submit-remote", {})
+                self.assertEqual(argv[argv.index("--lock-wait-secs") + 1], "1200")
+
+    def test_a_skipped_step_is_tried_again_on_a_later_tick(self):
+        self.tick()
+        self.results_in()
+        self.fake.lock_held = True
+        self.tick()
+        spot = self.state["native_spot"]
+        queued = dict(spot["pending"])
+        self.assertEqual(len(queued), 2)
+        self.assertEqual({entry["stage"] for entry in queued.values()}, {"queued"})
+        self.assertEqual(self.fake.spot_calls, [])
+        # Skipped again: nothing piles up, nothing is lost or given up.
+        event = self.tick(NOW + 600)
+        self.assertEqual(spot["pending"], queued)
+        self.assertEqual(spot["counts"]["lock_busy"], 2)
+        self.assertEqual(event["native"]["spot_check"]["queued"], 2)
+        self.assertEqual(spot["lock_busy"], {"since": NOW, "ticks": 2, "last": NOW + 600})
+        # The lock is free: the same replays are made, and the streak ends.
+        self.fake.lock_held = False
+        event = self.tick(NOW + 1200)
+        (submit, _), = self.fake.spot_calls
+        self.assertEqual({item.split("=")[0] for item in submit.split(",")}, set(queued))
+        self.assertEqual({entry["stage"] for entry in spot["pending"].values()}, {"submitted"})
+        self.assertNotIn("lock_busy", spot)
+        self.assertEqual(event["native"]["spot_check"]["step"], "ran")
+
+    def test_a_long_run_of_skips_alerts_and_the_checks_lapse_after_fresh_hours(self):
+        self.matched()
+        self.fake.lock_held = True
+        self.state["native_spot"]["pending"]["f" * 64] = {
+            "source": 13, "target": 240, "image": "sha256:" + "a" * 64, "page": "p",
+            "spool": "/project/usnmocr/results/7", "at": NOW, "stage": "queued"}
+        event = self.tick(NOW + 3600)
+        self.assertNotIn("native_spot_lock_busy", [a["code"] for a in event["alerts"]])
+        event = self.tick(NOW + 3600 + batch.NATIVE_SPOT_LOCK_BUSY_ALERT_SECS)
+        self.assertIn("native_spot_lock_busy", [a["code"] for a in event["alerts"]])
+        self.assertEqual(event["native"]["slots"], {"13": 4, "240": 4})
+        # No match for fresh_hours: canary size, as for any host whose checks don't run.
+        event = self.tick(NOW + 49 * 3600)
+        self.assertEqual(event["native"]["slots"], {"13": 1, "240": 1})
+        # The queued replay was given up at its age, not kept forever.
+        event = self.tick(NOW + batch.NATIVE_SPOT_MAX_AGE + 3600)
+        self.assertNotIn("f" * 64, self.state["native_spot"]["pending"])
+
+    def test_a_step_that_raises_anything_does_not_fail_the_tick(self):
+        self.tick()
+        self.results_in()
+
+        def broken(submit, check):
+            raise TypeError("unexpected report")
+
+        self.fake.native_spot = broken
+        event = self.tick()
+        self.assertEqual(event["native"]["spot_check"]["step"], "failed")
+        self.assertIn("native_spot_failing", [a["code"] for a in event["alerts"]])
+
+    def test_replays_go_only_to_a_configured_peer_that_is_active(self):
+        self.config = spot_config(hosts=(13,), peers=[{"host": 300, "image": "sha256:" + "a" * 64}])
+        self.fake.cpus = {13: 24}
+        self.tick()
+        self.results_in()
+        self.tick()
+        # 300 hasn't asked for work lately: a replay assigned to it would sit unsent.
+        self.assertEqual(self.fake.spot_calls, [])
+        self.assertEqual(self.state["native_spot"]["counts"]["no_peer"], 1)
+        self.fake.cpus = {13: 24, 300: 8}
+        self.results_in()
+        self.tick()
+        self.tick()
+        self.assertTrue(any(":300:" in submit for submit, _ in self.fake.spot_calls))
+
+    def test_replay_room_counts_the_units_this_tick_submitted(self):
+        self.tick()
+        self.results_in()
+        # The cap has room for the units submit sends this tick and nothing more.
+        pending = self.fake.inventory()["pending_workunits"]
+        self.tick(max_global_pending=pending + 2)
+        self.assertEqual([submit for submit, _ in self.fake.spot_calls if submit], [])
 
 
 class SamplingTests(unittest.TestCase):
