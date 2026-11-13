@@ -300,33 +300,22 @@ function robotsGroups(body: string, keys = /^(allow|disallow)$/i): Map<string, s
   return groups;
 }
 
-// The user-initiated fetchers of AI assistants, acting for a person (not crawlers).
-const AI_USER_AGENTS = ["Claude-User", "ChatGPT-User", "Perplexity-User", "MistralAI-User", "Google-Agent"];
-
-test("robots.txt keeps crawlers off the API and names the sitemap", async ({ request }) => {
+test("robots.txt opens the whole site, API included, to every agent and names the sitemap", async ({ request }) => {
   const res = await request.get("/robots.txt");
   expect(res.status()).toBe(200);
   expect(res.headers()["content-type"]).toMatch(/^text\/plain/);
   const body = await res.text();
   const groups = robotsGroups(body);
-  expect(groups.get("*")).toEqual(["Allow: /", "Disallow: /v1/", "Disallow: /api/v1/"]);
+  expect([...groups.keys()]).toEqual(["*"]);
+  expect(groups.get("*")).toEqual(["Allow: /"]);
+  expect(body).not.toMatch(/^Disallow:/im);
   expect(body).toMatch(new RegExp(`^Sitemap: ${SITE}/sitemap\\.xml$`, "m"));
 });
 
-test("robots.txt lets AI assistants' user-initiated fetchers use the API", async ({ request }) => {
-  const groups = robotsGroups(await (await request.get("/robots.txt")).text());
-  for (const agent of AI_USER_AGENTS) {
-    // Groups don't inherit from `*`, so each needs its own rules.
-    expect(groups.get(agent.toLowerCase()), agent).toEqual(["Allow: /"]);
-  }
-});
-
-test("robots.txt states Content Signals for search, AI input and AI training in every group", async ({ request }) => {
+test("robots.txt states Content Signals for search, AI input and AI training", async ({ request }) => {
   const groups = robotsGroups(await (await request.get("/robots.txt")).text(), /^content-signal$/i);
-  expect([...groups.keys()].sort()).toEqual(["*", ...AI_USER_AGENTS.map((a) => a.toLowerCase())].sort());
-  for (const [agent, signals] of groups) {
-    expect(signals, agent).toEqual(["Content-Signal: search=yes, ai-input=yes, ai-train=yes"]);
-  }
+  expect([...groups.keys()]).toEqual(["*"]);
+  expect(groups.get("*")).toEqual(["Content-Signal: search=yes, ai-input=yes, ai-train=yes"]);
 });
 
 test("llms.txt is plain text that describes the site and the API", async ({ request }) => {
