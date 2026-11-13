@@ -69,6 +69,9 @@ impl Trust {
         if let Some(reason) = held(&policy) {
             return Some(reason);
         }
+        if let Some(reason) = self.held_host(engine_image, host) {
+            return Some(reason);
+        }
         if policy
             .hosts
             .get(engine_image)
@@ -121,11 +124,13 @@ impl Trust {
         if policy.hold.is_some() {
             return BTreeSet::new();
         }
-        policy
+        let mut hosts = policy
             .hosts
             .get(&job.engine.image)
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        hosts.retain(|host| self.held_host(&job.engine.image, *host).is_none());
+        hosts
     }
 
     pub fn refuse_job(
@@ -158,6 +163,9 @@ impl Trust {
             );
         };
         if let Some(reason) = held(&policy) {
+            return Some(reason);
+        }
+        if let Some(reason) = self.held_host(&job.engine.image, host) {
             return Some(reason);
         }
         if policy

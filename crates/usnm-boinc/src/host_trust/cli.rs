@@ -53,6 +53,53 @@ pub enum HostTrustCommands {
         #[arg(long)]
         spot_spool: PathBuf,
     },
+    /// Native OCR spot checks (#1863): replay sampled native pages on a second host trusted for
+    /// the same build (or one listed as identical) and compare the results byte for byte. A
+    /// mismatch holds both hosts' trust for their builds. Writes the report to --out.
+    NativeSpot {
+        /// This step's journal root.
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        project: PathBuf,
+        /// The bridge's job journals: each original's request and scan.
+        #[arg(long)]
+        jobs_root: PathBuf,
+        #[arg(long)]
+        trust: PathBuf,
+        /// The replays' assimilator results directory (batch 0).
+        #[arg(long)]
+        spool: PathBuf,
+        /// The live usnm_ocr_native version numbers, comma-separated.
+        #[arg(long, default_value = "")]
+        native_versions: String,
+        /// Replays to create: <job>=<source host>:<target host>:<target image hex>, comma-separated.
+        #[arg(long, default_value = "")]
+        submit: String,
+        /// Replays to compare: <job>=<source>:<target>:<target image hex>:<original spool>.
+        #[arg(long, default_value = "")]
+        check: String,
+        /// The report, as JSON with `nonce`.
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        nonce: String,
+        #[arg(long)]
+        execute: bool,
+    },
+    /// Release a host's trust hold for one build (#1863) after an operator has looked. The hold
+    /// and the note go to holds-released.jsonl beside the trust list.
+    ReleaseHold {
+        #[arg(long)]
+        trust: PathBuf,
+        #[arg(long)]
+        image: String,
+        #[arg(long)]
+        host: u64,
+        /// What was looked at, on one line.
+        #[arg(long)]
+        note: String,
+    },
 }
 
 pub async fn run(command: HostTrustCommands) -> anyhow::Result<()> {
@@ -97,6 +144,59 @@ pub async fn run(command: HostTrustCommands) -> anyhow::Result<()> {
                 x::spot_compare(&x::Config::parse(&config)?, &job, &original_spool, &spot_spool).await?,
                 "independent OCR spot check disagrees; inspect comparison.json; no trust or publication changed"
             );
+        }
+        HostTrustCommands::NativeSpot {
+            root,
+            project,
+            jobs_root,
+            trust,
+            spool,
+            native_versions,
+            submit,
+            check,
+            out,
+            nonce,
+            execute,
+        } => {
+            anyhow::ensure!(
+                nonce.len() == 32 && nonce.bytes().all(|b| b.is_ascii_hexdigit()),
+                "--nonce is 32 hex"
+            );
+            let versions = native_versions
+                .split(',')
+                .filter(|v| !v.is_empty())
+                .map(str::parse)
+                .collect::<Result<Vec<u32>, _>>()?;
+            let paths = x::Paths {
+                root,
+                project,
+                jobs_root,
+                trust,
+                spool,
+            };
+            let report = x::native_spot(
+                &paths,
+                crate::trust::BuildTrust::embedded()?,
+                &versions,
+                &x::Replay::parse_list(&submit, false)?,
+                &x::Replay::parse_list(&check, true)?,
+                execute,
+            )
+            .await?;
+            let mut value = serde_json::to_value(&report)?;
+            value["nonce"] = nonce.into();
+            value["schema_version"] = 1.into();
+            crate::atomic(&out, &serde_json::to_vec_pretty(&value)?)?;
+            println!("{}", serde_json::to_string(&report)?);
+        }
+        HostTrustCommands::ReleaseHold {
+            trust,
+            image,
+            host,
+            note,
+        } => {
+            let release = crate::trust::Trust::release_hold(&trust, &image, host, &note)?;
+            println!("{}", serde_json::to_string(&release)?);
         }
     }
     Ok(())

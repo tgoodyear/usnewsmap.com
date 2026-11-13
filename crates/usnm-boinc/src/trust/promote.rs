@@ -1,4 +1,4 @@
-use super::{immutable_image, Scope, ScopedPolicy, Trust, MAX_REPORTS, TRUST_VERSION};
+use super::{immutable_image, Hold, Scope, ScopedPolicy, Trust, MAX_REPORTS, TRUST_VERSION};
 use crate::atomic;
 use anyhow::Context;
 use serde::Serialize;
@@ -25,7 +25,101 @@ pub struct Admission {
     pub added: BTreeSet<u64>,
 }
 
+type Holds = BTreeMap<String, BTreeMap<u64, Hold>>;
+
+/// Every hold of `a` and `b`; where both hold one host for one build, `a`'s record stays.
+fn union_holds(a: &Holds, b: &Holds) -> Holds {
+    let mut out = a.clone();
+    for (image, held) in b {
+        let entry = out.entry(image.clone()).or_default();
+        for (host, hold) in held {
+            entry.entry(*host).or_insert_with(|| hold.clone());
+        }
+    }
+    out
+}
+
+/// What [`Trust::release_hold`] removed, with the operator's note, as the release ledger keeps
+/// it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Release {
+    pub at: String,
+    pub host: u64,
+    pub image: String,
+    pub hold: Hold,
+    pub note: String,
+}
+
 impl Trust {
+    /// Holds `host`'s trust for `image` (#1863) in the list at `out`, under the directory's lock.
+    /// An existing hold is kept as it was, so the first mismatch stays on record. Returns
+    /// whether the hold is new. Nothing else in the list changes.
+    pub fn hold_host(out: &Path, image: &str, host: u64, hold: Hold) -> anyhow::Result<bool> {
+        anyhow::ensure!(immutable_image(image) && host > 0, "invalid hold");
+        hold.validate()?;
+        let (out, _lock) = locked_destination(out)?;
+        let mut trust = Self::load(&out)?;
+        let held = trust.holds.entry(image.to_owned()).or_default();
+        if held.contains_key(&host) {
+            return Ok(false);
+        }
+        held.insert(host, hold);
+        trust.validate()?;
+        let encoded = serde_json::to_vec_pretty(&trust)?;
+        anyhow::ensure!(
+            encoded.len() <= MAX_REPORTS as usize,
+            "trust policy exceeds its reader limit"
+        );
+        atomic(&out, &encoded)?;
+        Ok(true)
+    }
+
+    /// Releases `host`'s hold for `image` in the list at `out`, after an operator has looked
+    /// (#1863): the hold and `note` are appended to `holds-released.jsonl` beside the list before
+    /// the list is rewritten. Fails if there is no such hold.
+    pub fn release_hold(out: &Path, image: &str, host: u64, note: &str) -> anyhow::Result<Release> {
+        anyhow::ensure!(
+            !note.trim().is_empty() && note.len() <= 512 && !note.chars().any(char::is_control),
+            "a release needs a note of 1 to 512 bytes on one line: what was looked at"
+        );
+        let (out, _lock) = locked_destination(out)?;
+        let mut trust = Self::load(&out)?;
+        let held = trust
+            .holds
+            .get_mut(image)
+            .with_context(|| format!("no host is held for {image}"))?;
+        let hold = held
+            .remove(&host)
+            .with_context(|| format!("host {host} is not held for {image}"))?;
+        if held.is_empty() {
+            trust.holds.remove(image);
+        }
+        trust.validate()?;
+        let release = Release {
+            at: chrono::Utc::now().to_rfc3339(),
+            host,
+            image: image.to_owned(),
+            hold,
+            note: note.to_owned(),
+        };
+        let ledger = out.with_file_name("holds-released.jsonl");
+        let mut line = serde_json::to_vec(&release)?;
+        line.push(b'\n');
+        {
+            use std::io::Write as _;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&ledger)
+                .with_context(|| format!("opening {}", ledger.display()))?;
+            file.write_all(&line)?;
+            file.sync_all()?;
+        }
+        let encoded = serde_json::to_vec_pretty(&trust)?;
+        atomic(&out, &encoded)?;
+        Ok(release)
+    }
+
     /// Merges `incoming` calibrated scope(s) into `self` without clobbering unrelated scopes.
     /// Re-promoting an existing `(language, profile)` scope replaces only that scope. A held
     /// scope (#835) is replaced only by a policy whose `max_cer` is at or below the hold's,
@@ -90,6 +184,8 @@ impl Trust {
             scope: Some(primary.scope),
             max_cer: primary.max_cer,
             policies,
+            // A hold (#1863) is lifted only by `release_hold`, never by a merge or a rebuild.
+            holds: union_holds(&self.holds, &incoming.holds),
             v: TRUST_VERSION,
         };
         merged.validate()?;

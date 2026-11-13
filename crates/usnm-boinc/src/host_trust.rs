@@ -14,10 +14,12 @@ use usnm_ocr_contract::boinc;
 
 mod capability;
 pub mod cli;
+mod native_spot;
 mod onboard;
 mod promote;
 mod spot;
 
+pub use native_spot::{native_spot, Outcome, Paths, Replay, Report, Status};
 pub use onboard::onboard;
 pub use promote::{promote, HostFailure, Promotion};
 pub use spot::{spot_compare, spot_submit};
@@ -404,6 +406,7 @@ mod tests {
             scope: Some(scope.clone()),
             max_cer,
             policies: Vec::new(),
+            holds: Default::default(),
             v: crate::trust::TRUST_VERSION,
         };
         let builds = crate::trust::BuildTrust::embedded().unwrap();

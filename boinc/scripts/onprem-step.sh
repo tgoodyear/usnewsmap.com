@@ -88,6 +88,9 @@ SSH_SURYA_SUBMIT_VARS=" SURYA_CAMPAIGN SURYA_MAX "
 # The controller's gold onboarding (#901): issue gold units to untrusted hosts, then admit the
 # ones that pass. Never a threshold, a challenge hash, a target host or a spool.
 SSH_GOLD_ONBOARD_VARS=" GOLD_CAMPAIGN GOLD_LANGUAGE GOLD_PROFILE GOLD_ENGINE_IMAGE GOLD_ENGINE_BASE GOLD_ENGINE_VERSION GOLD_MAX_HOSTS "
+# Native spot checks (#1863): the controller names the pages and peers; usnm-boinc checks them
+# against the trust list and the build list. Never a trust hold's release, which is an operator's.
+SSH_NATIVE_SPOT_VARS=" BATCH_NONCE HANDOFF_URL NATIVE_SPOT_SUBMIT NATIVE_SPOT_CHECK "
 # The hand-off steps take the inputs the controller gives them (batch_scheduler.py's claim,
 # release, collect and export), over ssh or not.
 HANDOFF_CLAIM_VARS=" HANDOFF_MANIFEST CLAIM_NONCE CLAIM_MAX CLAIM_QUEUES CLAIM_LEASE_HOURS CLAIM_LANGUAGES "
@@ -500,6 +503,7 @@ case $STEP in
   surya-stage-crops) SSH_ALLOWED=$SSH_SURYA_CROPS_VARS ;;
   surya-submit) SSH_ALLOWED=$SSH_SURYA_SUBMIT_VARS ;;
   gold-onboard | gold-promote) SSH_ALLOWED=$SSH_GOLD_ONBOARD_VARS ;;
+  native-spot) SSH_ALLOWED=$SSH_NATIVE_SPOT_VARS ;;
   *) SSH_ALLOWED=$SSH_VARS ;;
 esac
 if [ "$TARGET" = handoff ]; then

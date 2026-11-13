@@ -347,6 +347,7 @@ impl Trust {
             scope: Some(scope),
             max_cer,
             policies: Vec::new(),
+            holds: Default::default(),
             v: TRUST_VERSION,
         })
     }

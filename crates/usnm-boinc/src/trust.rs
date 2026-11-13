@@ -49,7 +49,7 @@ mod tests;
 pub use builds::BuildTrust;
 use gate::immutable_image;
 pub use gate::{collect, quarantine_dir, Collected};
-pub use promote::Admission;
+pub use promote::{Admission, Release};
 
 pub const TRUST_VERSION: u32 = 5;
 const MAX_REPORTS: u64 = 64 << 20;
@@ -208,6 +208,36 @@ struct LegacyTrust {
     v: u32,
 }
 
+/// Why a host's trust for one build is held (#1863): a native spot check found its result and a
+/// peer's for the same job different, byte for byte, within one build (or a listed pair). While
+/// held, the host is refused for that build in every scope, whatever `hosts` lists, until an
+/// operator releases the hold after looking ([`Trust::release_hold`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Hold {
+    pub at: String,
+    /// The job whose two results differed.
+    pub job: String,
+    /// The other host of the comparison.
+    pub peer: u64,
+    pub reason: String,
+}
+
+impl Hold {
+    fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            chrono::DateTime::parse_from_rfc3339(&self.at).is_ok()
+                && usnm_ocr_contract::boinc::is_sha256(&self.job)
+                && self.peer > 0
+                && !self.reason.trim().is_empty()
+                && self.reason.len() <= MAX_HOLD
+                && !self.reason.chars().any(char::is_control),
+            "invalid host hold"
+        );
+        Ok(())
+    }
+}
+
 /// `trust.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -220,6 +250,10 @@ pub struct Trust {
     /// Coexisting per-(language, profile) calibrated policies when multiple scopes are active.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub policies: Vec<ScopedPolicy>,
+    /// Build digest to the hosts whose trust for it is held (#1863), in every scope. Absent
+    /// when there is none, so a list without holds reads as before.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub holds: BTreeMap<String, BTreeMap<u64, Hold>>,
     pub v: u32,
 }
 
@@ -287,6 +321,15 @@ impl Trust {
             .as_deref()
             .context("invalid calibrated challenge manifest")?;
         Self::validate_policy_fields(&self.hosts, manifest_sha256, scope, self.max_cer, false)?;
+        for (image, held) in &self.holds {
+            anyhow::ensure!(
+                immutable_image(image) && !held.is_empty() && !held.contains_key(&0),
+                "invalid host hold"
+            );
+            for hold in held.values() {
+                hold.validate()?;
+            }
+        }
         if !self.policies.is_empty() {
             anyhow::ensure!(
                 self.policies.len() <= 64,
@@ -350,6 +393,16 @@ impl Trust {
         };
         policy.validate()?;
         Ok(policy)
+    }
+
+    /// Why `host`'s trust for `image` is held (#1863), if it is.
+    pub fn held_host(&self, image: &str, host: u64) -> Option<String> {
+        self.holds.get(image)?.get(&host).map(|hold| {
+            format!(
+                "host {host}'s trust for {image} is held: {} (job {}, peer host {}, {}); an operator releases it with host-trust release-hold",
+                hold.reason, hold.job, hold.peer, hold.at
+            )
+        })
     }
 
     /// Returns all active calibrated `(language, profile)` policies in this trust artifact.
@@ -453,6 +506,7 @@ impl Trust {
             scope: None,
             max_cer: 0.0,
             policies: Vec::new(),
+            holds: Default::default(),
             v: TRUST_VERSION,
         };
         if !path.exists() {
