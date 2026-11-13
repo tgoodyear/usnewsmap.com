@@ -1,0 +1,32 @@
+# Daily cross-build check of native OCR (#1418, #1418's tracking issue): re-reads 10 Windows pages with the
+# Linux build and compares. Needs /etc/usnm-crossbuild-check.env (see README.md). Exit status 3 means a
+# page was flagged; the unit then shows as failed and its journal line says which.
+[Unit]
+Description=usnewsmap native OCR cross-build check: Windows pages re-read with the Linux build
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/usnm-crossbuild-check.env
+ExecStart=/usr/bin/python3 /opt/usnm-crossbuild-check/native_crossbuild_check.py \
+    --handoff ${HANDOFF_DIR} --scans ${SCANS_DIR} \
+    --tesseract /opt/usnm-crossbuild-check/linux-build/usnm_tesseract \
+    --tessdata /opt/usnm-crossbuild-check/linux-build/tessdata \
+    --trust-file /opt/usnm-crossbuild-check/native-build-trust.json \
+    --out-dir /var/lib/usnm-crossbuild-check --issue ${TRACKING_ISSUE} --threads 2
+SuccessExitStatus=3
+SyslogIdentifier=usnm-crossbuild-check
+StateDirectory=usnm-crossbuild-check
+User=usnm-crossbuild
+Nice=19
+IOSchedulingClass=idle
+CPUQuota=200%
+TasksMax=16
+MemoryMax=4G
+TimeoutStartSec=2h
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/
+ReadWritePaths=/var/lib/usnm-crossbuild-check
