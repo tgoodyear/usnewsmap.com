@@ -56,6 +56,25 @@
         "commit": "f2f4a9d03f9d0c485100b7da9a4fed4e9d2f8a6d",
         "run": 42290314510
       }
+    },
+    "sha256:fd6207755c4cdec5506d44c360ac9c2a2bd5ab9d246c3cb20a2cb83fba1bf37d": {
+      "challenges": [
+        {
+          "char_edits": 5951,
+          "crops": 30,
+          "evidence": "Run on VM 206, Windows 11 on an Intel i7-7700K, on 12 Nov 2026 (gold job a6a83163ca92dde342ab6c7afdfe6abd9e381212a26aa98c131025f61b029108); 2 of 30 crops have Linux's edit counts (issue 1779, comment 6840383201)",
+          "manifest_sha256": "d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f",
+          "max_cer": 0.08734328574534386,
+          "ref_chars": 82794
+        }
+      ],
+      "engine_base": "sha256:275924151b8a52cbaebfcd27b7cef036f8d26800d6d7761dd89ba2d54deb4843",
+      "platform": "windows_x86_64",
+      "source": {
+        "artifact_sha256": "a0463b221399ecb00f36a2f4d0272dd019872033ee3cabb99fbee0dcbba44598",
+        "commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4",
+        "run": 43336026475
+      }
     }
   },
   "equivalent": [
