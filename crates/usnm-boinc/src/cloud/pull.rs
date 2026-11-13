@@ -240,17 +240,15 @@ pub async fn pull_once(cfg: &Config, limit: Option<usize>) -> anyhow::Result<Sta
                     r.not_ready.len(),
                     r.unknown.len()
                 );
-                if !r.not_ready.is_empty() {
+                for id in &r.not_ready {
                     stats.failed.push(format!(
-                        "the server says workunits {:?} are not ready to assimilate",
-                        r.not_ready
+                        "workunit {id}: the server says it is not ready to assimilate"
                     ));
                 }
-                if !r.unknown.is_empty() {
-                    stats.failed.push(format!(
-                        "the server does not know workunit ids {:?}",
-                        r.unknown
-                    ));
+                for id in &r.unknown {
+                    stats
+                        .failed
+                        .push(format!("workunit {id}: the server does not know this id"));
                 }
             }
             match (page.has_more, page.next_after) {
@@ -289,9 +287,9 @@ async fn list(cfg: &Config, app: Option<&str>, after: i64, limit: u32) -> anyhow
 }
 
 /// The ack reply. An older server sends only `acknowledged`.
-#[derive(Deserialize, Default)]
+#[derive(Deserialize)]
 struct Acked {
-    #[serde(default)]
+    // Required: a reply without it is not an ack reply.
     acknowledged: Vec<i64>,
     #[serde(default)]
     already_acked: Vec<i64>,
@@ -936,6 +934,26 @@ mod tests {
         assert!(!spool.path().join(".incoming").exists());
     }
 
+    /// A server with one ready workunit whose ack reply is the given raw JSON.
+    async fn serve_raw_ack(reply: &'static str) -> String {
+        let mut m = Mock::default();
+        m.ready.push(wu_json(1, vec![]));
+        let s: Shared = Arc::new(Mutex::new(m));
+        let app = Router::new()
+            .route("/admin/v1/assimilate", get(assimilate))
+            .route(
+                "/admin/v1/assimilate/ack",
+                post(move || async move {
+                    ([("content-type", "application/json")], reply).into_response()
+                }),
+            )
+            .with_state(s);
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
     fn cfg_apps(base: &str, spool: &Path, apps: &[&str]) -> Config {
         Config::new(
             base,
@@ -1125,6 +1143,33 @@ mod tests {
             .failed
             .iter()
             .any(|f| f.contains("does not know") && f.contains('4')));
+        // One entry per workunit.
+        let mut m = Mock::default();
+        for id in 1..=5 {
+            m.ready.push(wu_json(id, vec![]));
+        }
+        m.not_ready.extend([1, 2, 3]);
+        m.unknown.extend([4, 5]);
+        let (_s, base) = serve(m).await;
+        let spool = tempfile::tempdir().unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap();
+        assert_eq!(st.failed.len(), 5, "{:?}", st.failed);
+        for id in 1..=5 {
+            let prefix = format!("workunit {id}:");
+            assert_eq!(
+                st.failed.iter().filter(|f| f.starts_with(&prefix)).count(),
+                1
+            );
+        }
+        // A reply without `acknowledged` is refused.
+        let base = serve_raw_ack("{}").await;
+        let spool = tempfile::tempdir().unwrap();
+        let err = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("acknowledged"), "{err:#}");
         // already_acked alone is success.
         let mut m = Mock::default();
         m.ready.push(wu_json(1, vec![]));
