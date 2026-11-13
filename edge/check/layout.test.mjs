@@ -32,6 +32,17 @@ test("no negative margins or offsets on script text", () => {
   assert.deepEqual(bad, [], "a negative offset overlaps the neighbouring glyph whenever its gap isn't on the expected side");
 });
 
+test("the frame on the printed line is drawn outside the word's box", () => {
+  const rule = css.match(/\.lineview \.hl\s*\{([^{}]*)\}/);
+  assert.ok(rule, "style.css has a .lineview .hl rule");
+  const decl = Object.fromEntries(rule[1].split(";").map((d) => d.split(":").map((s) => s.trim())).filter((d) => d.length === 2));
+  // a border (box-sizing: border-box) or an inset shadow paints inside the box, on top of the first and last letters
+  assert.ok(!Object.keys(decl).some((p) => p.startsWith("border") && p !== "border-radius"), "no border: it paints inside the word's box");
+  assert.ok(!/inset/.test(decl["box-shadow"] || ""), "no inset shadow");
+  assert.match(decl.outline || "", /^\d+px solid /, "the frame is an outline");
+  assert.ok(parseFloat(decl["outline-offset"]) >= 2, "with a gap between the letters and the line");
+});
+
 // ---------- headless Chrome ----------
 
 function findChrome() {
