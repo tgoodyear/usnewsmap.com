@@ -19,13 +19,13 @@ joined PC can sit idle for a while. That is normal.
   page, and needs 5,120 MiB of video memory free when a task starts. No
   Windows version is currently available for Intel GPUs; they get GPU work on
   Linux ([app versions](../apps/quality.md#app-versions-and-plan-classes)).
-  **No Windows version for NVIDIA GPUs is released yet.** On 9 November 2026 the
-  only live Windows GPU version was `amd_vulkan_8b`. The helper already accepts
-  NVIDIA cards, so a released version needs no helper change, but until one
-  is released a PC with only an NVIDIA GPU gets no GPU work. On a PC
-  without an eligible AMD or NVIDIA GPU, add `-AllowCpuOnly` to the preview and apply
-  commands below (not to `-Status`) to offer CPU time instead. CPU work is
-  optional and not always available.
+  On 12 November 2026 the live Windows GPU versions were `amd_vulkan_8b`,
+  `nvidia_vulkan_8b` (NVIDIA cards with 7 GB or more) and `nvidia_vulkan_6gb_8b`
+  (NVIDIA cards with 5.5 to 7 GB). A PC with an eligible AMD or NVIDIA GPU gets
+  GPU work. On a PC without one, add `-AllowCpuOnly` to the preview and apply
+  commands below (not to `-Status`) to offer CPU time instead. The only live
+  Windows CPU app is the quality-check app `usnm_quality`; there is no Windows
+  CPU version of the OCR app, so CPU work is optional and not always available.
 - 6 GB of RAM and 12 GiB of free disk, or 18 GiB with an eligible AMD or NVIDIA GPU (binary gigabytes: about 13 and 19 GB as most disk tools
   show them).
 
