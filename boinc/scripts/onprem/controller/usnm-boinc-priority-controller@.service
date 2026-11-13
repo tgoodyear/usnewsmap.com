@@ -1,6 +1,6 @@
 [Unit]
 Description=BOINC batch controller tick for plan %i (#1690)
-After=network-online.target
+After=network-online.target usnm-boinc-controller-lease-break.service
 Wants=network-online.target
 
 [Service]

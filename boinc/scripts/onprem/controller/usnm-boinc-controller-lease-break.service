@@ -1,0 +1,24 @@
+[Unit]
+Description=Break a stale BOINC controller hand-off lease left by a tick that died (#1698)
+After=network-online.target
+Wants=network-online.target
+# No tick has run yet at boot. The timers' first ticks come 5 minutes after boot, and each tick
+# service orders itself after this unit (usnm-boinc-priority-controller@.service). No
+# Before=timers.target: with default dependencies that is an ordering cycle through basic.target.
+# The persistent held-archive timer can start a missed run at boot and takes the same blob lease,
+# so recovery goes first.
+Before=usnm-boinc-held-archive.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The controller's identity: its az sign-in lives under root's home.
+User=root
+Environment=HOME=/root
+WorkingDirectory=/opt/usnm
+ExecStart=/usr/bin/bash /opt/usnm/boinc/scripts/onprem/controller/break-stale-lease.sh
+# Retries for up to 4 minutes (16 x 15 s) while Azure sign-in comes up; never blocks boot.
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
