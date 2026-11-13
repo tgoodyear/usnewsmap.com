@@ -14,6 +14,10 @@ CLASSES = ("mt_x08", "apple_gpu_x08", "nvidia_vulkan_x08", "intel_vulkan_x08", "
 DB = """<?php
 $GLOBALS['wus'] = json_decode(file_get_contents(__DIR__.'/../../workunits.json'));
 class BoincApp {static function lookup($w){return (object)['id'=>6];}}
+class BoincDb {
+ static function get(){return new self();}
+ function do_query($sql){file_put_contents(__DIR__.'/../../queries.jsonl',json_encode($sql)."\n",FILE_APPEND);return true;}
+}
 class BoincWorkunit {
  static function enum($where) {
   $out = [];
@@ -125,6 +129,27 @@ class X08AdmissionTest(unittest.TestCase):
                                "--general", "--root", "bench-968-x08-sv-52"], capture_output=True, text=True)
         self.assertIn("--root and --production are for --plan-class x08 only", proc.stderr)
         self.assertEqual(set(self.windows().values()), {("2", "1")})
+
+    def test_the_apply_holds_database_read_locks_and_roots_come_from_the_live_project(self):
+        self.unit("bench-968-x08-en-op", 1, 500)
+        # A private database context (credentials elsewhere) still finds the live project's roots.
+        private = self.share / "private"
+        (private / "html/inc").mkdir(parents=True)
+        (private / "config.xml").write_text("<boinc><config/></boinc>")
+        (private / "html/inc/boinc_db.inc").write_text(DB.replace("/../../workunits.json", "/../../../usnmocr/workunits.json")
+                                                       .replace("/../../queries.jsonl", "/../../../usnmocr/queries.jsonl"))
+        proc = self.run_helper("--db-project", str(private), "--root", "bench-968-x08-en-op", "--apply")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        queries = [json.loads(line) for line in (self.project / "queries.jsonl").read_text().splitlines()]
+        self.assertTrue(queries[1].startswith("LOCK TABLES"), queries)
+        self.assertEqual(queries[-1], "UNLOCK TABLES")
+
+    def test_a_submitted_marker_must_name_its_job(self):
+        self.unit("bench-968-x08-en-op", 1, 500)
+        marker = next((self.share / "qwen/bench-968-x08-en-op/units").glob("*/submitted"))
+        marker.write_text("usnm_qwen_" + "f" * 64)
+        proc = self.run_helper("--root", "bench-968-x08-en-op", "--apply")
+        self.assertIn("does not name usnm_qwen_", proc.stderr)
 
     def test_a_unit_without_its_workunit_refuses_the_range(self):
         self.unit("bench-968-x08-en-op", 1, 500)

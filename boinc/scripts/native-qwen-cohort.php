@@ -377,13 +377,20 @@ function native_qwen_x08_jobs($share, $roots, $production) {
         $dir = "$share/qwen/$root";
         if (is_link($dir) || !is_dir("$dir/units")) throw new RuntimeException("Missing root $dir");
         foreach (glob("$dir/units/*/qwen.json") ?: [] as $path) {
-            if (!is_file(dirname($path)."/submitted")) continue;
+            $marker = dirname($path)."/submitted";
+            if (!is_file($marker)) continue;
             $job = json_decode(file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
             if (!preg_match('/^[a-f0-9]{64}$/D', $job["id"] ?? "") || ($job["model"] ?? null) !== "xiaomi-ocr-0-q8"
                 || ($job["prompt_version"] ?? null) !== 5) {
                 throw new RuntimeException("$path is not a Xiaomi-OCR-0 request-version-5 job");
             }
-            $names["usnm_qwen_".$job["id"]] = $root;
+            // The marker holds the workunit name submit gave create_work; a job that no longer
+            // matches it is no evidence of what the root submitted.
+            $name = "usnm_qwen_".$job["id"];
+            if (file_get_contents($marker) !== $name) {
+                throw new RuntimeException("$marker does not name $name");
+            }
+            $names[$name] = $root;
         }
     }
     if (!$names) throw new RuntimeException("The named roots have no submitted units");
@@ -561,12 +568,18 @@ function native_qwen_x08_main($options, $project, $db_project) {
         return native_qwen_cohort_write($project, "x08", 0, array_key_exists("apply", $options), 0,
             false, false, false, $expected_sha256);
     }
-    $names = native_qwen_x08_jobs(dirname($db_project), $roots, $production);
+    // Roots live beside the live project; --db-project is only the database connection.
+    $share = dirname($project);
+    $names = native_qwen_x08_jobs($share, $roots, $production);
     chdir("$db_project/html/inc");
     require_once("boinc_db.inc");
     $app = BoincApp::lookup("name='usnm_qwen'");
     if (!$app) throw new RuntimeException("Qwen app missing");
-    $revalidate = function() use ($app, $names, &$range) {
+    $revalidate = function() use ($app, $names, &$range, $share, $roots, $production) {
+        // A unit submitted since the preview would be left out of the range: rerun instead.
+        if (native_qwen_x08_jobs($share, $roots, $production) !== $names) {
+            throw new RuntimeException("The named roots' submitted units changed; preview again");
+        }
         $owned = [];
         foreach (array_chunk(array_keys($names), 500) as $chunk) {
             $quoted = implode(",", array_map(fn($n) => "'$n'", $chunk));
@@ -581,8 +594,12 @@ function native_qwen_x08_main($options, $project, $db_project) {
     };
     $range = null;
     $revalidate();
-    $proof = native_qwen_cohort_write($project, "x08", $range[0], array_key_exists("apply", $options), $range[1],
-        false, false, false, $expected_sha256, $revalidate);
+    $apply = array_key_exists("apply", $options);
+    // As for a fresh pair: database read locks hold through the last check and the policy rename,
+    // so no workunit can move into batch 108 inside the range unchecked.
+    $proof = native_qwen_cohort_write($project, "x08", $range[0], $apply, $range[1],
+        false, false, false, $expected_sha256, $revalidate, null, false,
+        $apply ? fn() => native_qwen_fresh_pair_lock(BoincDb::get()) : null);
     return $proof + ["roots" => array_values(array_unique(array_values($names))), "workunits" => count($names),
         "production" => $production];
 }
