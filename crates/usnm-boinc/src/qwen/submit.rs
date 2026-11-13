@@ -145,9 +145,9 @@ impl Target {
     }
 
     /// `workunit.priority` for this target's units, when not BOINC's default 0. The feeder
-    /// serves `priority desc, workunitid`, so Xiaomi-OCR-0 units (-1) fill the shared-memory
-    /// slots only after every production Qwen unit (0) is there, and never take a slot one of
-    /// them could have had (#1867).
+    /// serves `priority desc, workunitid`, so when it fills free shared-memory slots, waiting
+    /// production Qwen units (0) go in before Xiaomi-OCR-0 units (-1). It preempts nothing
+    /// already cached or sent (#1867).
     pub fn priority(self) -> Option<&'static str> {
         match self {
             Self::NativeXiaomi => Some("-1"),
