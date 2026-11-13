@@ -765,7 +765,8 @@ class Transport:
         self.config = config
         # --local-lock: the controller lock is a record on the BOINC host with a heartbeat, not
         # an Azure lease or a local flock. Off by default.
-        require(not local_lock or config.get("step_command"), "--local-lock needs the config's step_command")
+        require(not local_lock or (config.get("step_command") and set(onprem_handoff) == set(ONPREM_HANDOFF)),
+                "--local-lock needs the config's step_command and every hand-off step on-prem (claim, collect, export)")
         self.local_lock = local_lock
         self.lock_fence = None
         self.lock_lost = None
@@ -3499,8 +3500,9 @@ def main(argv=None):
         require(1 <= args.collect_parallel <= MAX_COLLECT_PARALLEL, "invalid --collect-parallel")
         require(args.collect_parallel == 1 or args.batch_collect, "--collect-parallel needs --batch-collect")
         surya = config.get("app") == SURYA_APP_NAME
-        require(not args.local_lock or (config.get("step_command") and not surya),
-                "--local-lock needs a hand-off plan with step_command")
+        require(not args.local_lock or (config.get("step_command") and not surya
+                                        and set(args.onprem_handoff) == set(ONPREM_HANDOFF)),
+                "--local-lock needs a hand-off plan with step_command and --onprem-handoff claim, collect and export")
         require(not args.onprem_handoff or (config.get("step_command") and not surya),
                 "--onprem-handoff needs a hand-off plan with step_command")
         if not args.apply and surya:

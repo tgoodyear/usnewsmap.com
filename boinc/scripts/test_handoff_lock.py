@@ -145,6 +145,36 @@ class StepTests(unittest.TestCase):
         self.assertIn("handoff.env", plain.stderr)
         self.assertNotIn("not this controller's", plain.stderr)
 
+    def test_fence_is_checked_again_after_the_step_lock_wait(self):
+        url = "https://example.blob.core.windows.net/boinc-handoff"
+        (self.root / "handoff.env").write_text("".join(f"{k}={v}\n" for k, v in {
+            "HANDOFF_URL": url, "COSMOS_ENDPOINT": "https://c.documents.azure.com:443/",
+            "CURATED_URL": "https://l.blob.core.windows.net/curated",
+            "REFERENCE_URL": "https://l.blob.core.windows.net/reference",
+            "OUT_URL": "https://e.blob.core.windows.net/ocr-out", "QUEUE_URL": "https://e.queue.core.windows.net",
+            "IDENTITY_ENDPOINT": "http://localhost:1/t", "IMDS_ENDPOINT": "http://localhost:1"}.items()))
+        binaries = self.root / "bin"
+        binaries.mkdir()
+        record = self.state / "scheduler/controller.lock.json"
+        steal = binaries / "steal"
+        (binaries / "podman").write_text("#!/bin/sh\nexit 0\n")
+        (binaries / "flock").write_text(
+            f'#!/bin/sh\n[ -e {steal} ] && python3 -c "import json;p=\'{record}\';r=json.load(open(p));'
+            f'r[\'holder\']=\'b-2\';r[\'generation\']=2;json.dump(r,open(p,\'w\'))"\nexit 0\n')
+        for name in ("podman", "flock"):
+            (binaries / name).chmod(0o755)
+        lock.acquire(self.state, "a-1", "h", 1)
+        env = {"PATH": f"{binaries}:{os.environ['PATH']}", "USNM_BOINC_CONF": str(self.root),
+               "USNM_BOINC_STEP_RUN": str(self.root), "USNM_BOINC_HANDOFF_ROOT": str(self.state)}
+        argv = ["bash", str(SCRIPT), "--env", "prod", "--target", "handoff", "--step", "claim", "--wait-mins", "1",
+                "--var", f"EXPECTED_HANDOFF_URL={url}", "--var", "LOCK_HOLDER=a-1", "--var", "LOCK_GENERATION=1"]
+        done = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        steal.write_text("")
+        done = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("expired while waiting", done.stderr)
+
     def test_deadline_retry_is_not_fenced(self):
         done = self.step("deadline-retry", "LOCK_HOLDER=a", "LOCK_GENERATION=1")
         self.assertIn("is not fenced", done.stderr)
@@ -162,6 +192,10 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(self.transport().local_lock)
         with self.assertRaisesRegex(ValueError, "step_command"):
             batch.Transport({"env": "prod", "account": "a"}, Path("."), local_lock=True)
+
+    def test_incomplete_on_prem_routing_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "every hand-off step"):
+            self.transport(local_lock=True, onprem_handoff=("claim",))
 
     def test_lock_steps_run_on_the_host_and_mutating_steps_are_fenced(self):
         transport = self.transport(local_lock=True, onprem_handoff=("claim", "collect", "export"))
@@ -195,14 +229,14 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(any(v.startswith("LOCK_") for v in run.call_args.args[0]))
 
     def test_held_lock_fails_the_tick(self):
-        transport = self.transport(local_lock=True)
+        transport = self.transport(local_lock=True, onprem_handoff=("claim", "collect", "export"))
         with patch.object(transport, "run", side_effect=RuntimeError("held")):
             with self.assertRaises(RuntimeError):
                 with transport.lock():
                     self.fail("entered a held lock")
 
     def test_lost_lock_stops_the_next_step_and_release_failure_is_not_fatal(self):
-        transport = self.transport(local_lock=True)
+        transport = self.transport(local_lock=True, onprem_handoff=("claim", "collect", "export"))
 
         def run(argv, label, **kwargs):
             if label.endswith("lock-acquire"):

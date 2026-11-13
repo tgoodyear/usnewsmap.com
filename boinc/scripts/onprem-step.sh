@@ -586,6 +586,11 @@ else
 fi
 step_timeout=$((step_timeout - (SECONDS - lock_started)))
 [ "$step_timeout" -gt 0 ] || die "step deadline expired while waiting for the bridge lock"
+# The wait may have outlasted the controller's lock: check the fence again before launching.
+if [ -n "${fence_holder:-}" ]; then
+  python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" fence --holder "$fence_holder" \
+    --generation "$fence_generation" > /dev/null || die "the controller lock expired while waiting for the step lock; $STEP not run"
+fi
 envfile=$(mktemp "$RUN_DIR/usnm-boinc-step.XXXXXX")
 trap 'rm -f "$envfile"' EXIT
 # The settings as parsed above, one per line, so a file without a final newline can't run its
