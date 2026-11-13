@@ -1127,6 +1127,10 @@ impl Release {
         };
         // What this run builds, for the version's build record (#161): the
         // same predicate as `build_ja_index` for the Japanese index.
+        // The completeness gate on our OCR's replacements, from the environment once: the build
+        // record keeps it, and a finish must be given the same (`Resume::check_run`). A
+        // mistyped threshold stops the run.
+        let completeness = ocr_local::rule::Completeness::from_env()?;
         let mut built = build_info::Built {
             full,
             main_index: !overlay_only,
@@ -1136,6 +1140,7 @@ impl Release {
             american_stories: self.american_stories,
             ja_latin: self.ja_latin,
             ocr_local: local.is_some(),
+            completeness: local.is_some().then_some(completeness),
             decades,
             text_layout,
             page_language,
@@ -1210,6 +1215,7 @@ impl Release {
                     &latin_curated,
                     &latin_owned,
                     local.as_ref(),
+                    completeness,
                     MainLayout {
                         decades,
                         text: text_layout,
@@ -1234,6 +1240,7 @@ impl Release {
                     &dedup.hidden,
                     &local_replaced,
                     local.as_ref().map(|l| (l, &local_tally)),
+                    &completeness,
                 )
                 .await?;
             let ja = self
@@ -1714,6 +1721,7 @@ impl Release {
         latin_curated: &HashMap<String, (&ocr_ja::JaPage, String)>,
         latin_owned: &HashMap<String, String>,
         local: Option<&LocalRun>,
+        completeness: ocr_local::rule::Completeness,
         layout: MainLayout,
         analyzer: Analyzer,
         mut moves: Option<&mut Moves>,
@@ -1921,6 +1929,7 @@ impl Release {
                 catalog,
                 mine: &mine,
                 local,
+                completeness,
                 format,
                 page_language: moves.is_some(),
             };
@@ -2809,6 +2818,7 @@ impl Release {
         hidden: &[dedup::Hidden],
         replaced: &LocalReplaced,
         run: Option<(&LocalRun, &ocr_local::replace::Tally)>,
+        completeness: &ocr_local::rule::Completeness,
     ) -> anyhow::Result<LocalFiles> {
         use usnm_state::ocr_local::{Builder, OcrLocalPages, OCR_LOCAL_PAGES_FILE};
         let index: HashMap<&str, u16> = batches
@@ -2869,7 +2879,7 @@ impl Release {
         };
         if let Some((run, tally)) = run {
             let summary = tally.parts_summary();
-            let mut record = ocr_local::rule::record();
+            let mut record = ocr_local::rule::record(completeness);
             record["parts"] = summary.clone();
             record["inputs"] = serde_json::to_value(tally.inputs())?;
             record["pages"] = serde_json::to_value(tally)?;

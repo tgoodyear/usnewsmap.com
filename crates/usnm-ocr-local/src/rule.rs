@@ -8,7 +8,15 @@
 //! 2. our damage rate is at least [`MARGIN`] lower than LoC's (any rate
 //!    does when LoC's has none);
 //! 3. our head count is at least LoC's ([`HEAD_TEST`]), so a short output
-//!    that looks clean can't win on its rate alone.
+//!    that looks clean can't win on its rate alone;
+//! 4. our reading is complete next to LoC's ([`Completeness`]): at least
+//!    [`MIN_LEN_RATIO`] of LoC's characters and [`MIN_COVER`] of LoC's words
+//!    (as a bag) are in ours. The damage rate is a rate over the words that
+//!    remain, and the head count is only a floor on what is left: a layout
+//!    pass that misses columns of a page (seq-7 of the 8 Oct 1876 issue:
+//!    25k characters where LoC has 70k) can pass both while the index loses
+//!    most of the page. Fraktur pages, whose LoC text is mostly noise, pass
+//!    the head test with a lot of the page missing; this test keeps them.
 //!
 //! The release scores both texts again with `usnm_core::damage`; it never
 //! trusts stored scores. `ocr-sync --report` applies the rule to the stored
@@ -21,6 +29,8 @@
 //! whole-page language and damage tests don't apply to it: the page is LoC's apart from its
 //! Cherokee lines, which the damage metric barely sees on a mostly English page.
 
+use std::collections::HashMap;
+
 use serde_json::{json, Value};
 
 use super::pages::Scores;
@@ -31,6 +41,18 @@ pub const VERSION: u32 = 1;
 pub const MARGIN: f64 = 0.05;
 /// Whether our head count must be at least LoC's.
 pub const HEAD_TEST: bool = true;
+/// The shortest our text may be next to LoC's, in characters, as a ratio (ours over LoC's).
+pub const MIN_LEN_RATIO: f64 = 0.85;
+/// The least share of LoC's words (lower case, with multiplicity) our text must have.
+pub const MIN_COVER: f64 = 0.30;
+/// LoC texts with fewer words than this are not weighed for completeness: a bag of a few
+/// words says little, and a page that short has little to lose.
+pub const MIN_LOC_WORDS: usize = 20;
+/// Environment variables that override the three thresholds for a release.
+pub const ENV_MIN_LEN_RATIO: &str = "USNM_OCR_LOCAL_MIN_LEN_RATIO";
+pub const ENV_MIN_COVER: &str = "USNM_OCR_LOCAL_MIN_COVER";
+pub const ENV_MIN_LOC_WORDS: &str = "USNM_OCR_LOCAL_MIN_LOC_WORDS";
+
 /// Rates are sums of counts divided by counts: a rate exactly [`MARGIN`]
 /// lower can come out a rounding error above it.
 const EPSILON: f64 = 1e-9;
@@ -50,6 +72,10 @@ pub enum Keep {
     Margin,
     /// Our text has fewer head words.
     Head,
+    /// Our text has under [`Completeness::min_len_ratio`] of LoC's characters.
+    Short,
+    /// Our text has under [`Completeness::min_cover`] of LoC's words.
+    Cover,
     /// `line-merge-v1`: a line the job didn't read isn't LoC's text, byte for byte.
     LineChanged,
     /// `line-merge-v1`: under half the page's Cherokee lines took the model's reading.
@@ -65,6 +91,8 @@ impl Keep {
             Keep::TitleLanguage => "title_language",
             Keep::Margin => "margin",
             Keep::Head => "head",
+            Keep::Short => "short",
+            Keep::Cover => "cover",
             Keep::LineChanged => "line_changed",
             Keep::ModelShare => "model_share",
         }
@@ -111,6 +139,123 @@ pub fn verdict(ours: &Scores, loc: &Scores, title_languages: Option<&[&str]>) ->
     Ok(())
 }
 
+/// The completeness gate: our text replaces LoC's only if it keeps enough of the page.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+pub struct Completeness {
+    /// Our characters over LoC's, at least.
+    pub min_len_ratio: f64,
+    /// The share of LoC's words that ours also has, at least.
+    pub min_cover: f64,
+    /// LoC texts with fewer words than this pass without being weighed.
+    pub min_loc_words: usize,
+}
+
+impl Default for Completeness {
+    fn default() -> Self {
+        Self {
+            min_len_ratio: MIN_LEN_RATIO,
+            min_cover: MIN_COVER,
+            min_loc_words: MIN_LOC_WORDS,
+        }
+    }
+}
+
+/// What the gate measured on one page.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+pub struct Measure {
+    pub ours_chars: usize,
+    pub loc_chars: usize,
+    /// `ours_chars / loc_chars`.
+    pub len_ratio: f64,
+    /// The share of LoC's words (counted with multiplicity) that ours also has.
+    pub cover: f64,
+}
+
+/// The words of a text for the bag: lower case runs of letters and digits, and their count.
+fn bag(text: &str) -> (HashMap<String, u32>, usize) {
+    let lower = text.to_lowercase();
+    let mut bag: HashMap<String, u32> = HashMap::new();
+    let mut total = 0;
+    for w in lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+    {
+        *bag.entry(w.to_owned()).or_default() += 1;
+        total += 1;
+    }
+    (bag, total)
+}
+
+impl Completeness {
+    /// The thresholds as the environment sets them ([`ENV_MIN_LEN_RATIO`], [`ENV_MIN_COVER`],
+    /// [`ENV_MIN_LOC_WORDS`]), else the defaults. A value that doesn't parse or is out of
+    /// range is an error: a release must not run on a threshold the operator mistyped.
+    pub fn from_env() -> anyhow::Result<Self> {
+        Self::from_vars(|k| std::env::var(k).ok())
+    }
+
+    pub fn from_vars(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
+        let mut c = Self::default();
+        if let Some(v) = get(ENV_MIN_LEN_RATIO) {
+            c.min_len_ratio = v
+                .trim()
+                .parse()
+                .map_err(|_| anyhow::anyhow!("{ENV_MIN_LEN_RATIO} is not a number"))?;
+        }
+        if let Some(v) = get(ENV_MIN_COVER) {
+            c.min_cover = v
+                .trim()
+                .parse()
+                .map_err(|_| anyhow::anyhow!("{ENV_MIN_COVER} is not a number"))?;
+        }
+        if let Some(v) = get(ENV_MIN_LOC_WORDS) {
+            c.min_loc_words = v
+                .trim()
+                .parse()
+                .map_err(|_| anyhow::anyhow!("{ENV_MIN_LOC_WORDS} is not a whole number"))?;
+        }
+        anyhow::ensure!(
+            (0.0..=1.5).contains(&c.min_len_ratio) && (0.0..=1.0).contains(&c.min_cover),
+            "completeness thresholds out of range: ratio {} (0..=1.5), cover {} (0..=1)",
+            c.min_len_ratio,
+            c.min_cover
+        );
+        Ok(c)
+    }
+
+    /// The gate on a page whose other tests passed: what was measured (none when LoC has no
+    /// text to lose, or too few words), and `Err` with why LoC's text stays.
+    pub fn check(&self, ours: &str, loc: Option<&str>) -> (Option<Measure>, Result<(), Keep>) {
+        let Some(loc) = loc.filter(|t| !t.trim().is_empty()) else {
+            return (None, Ok(()));
+        };
+        let (loc_bag, loc_words) = bag(loc);
+        if loc_words == 0 || loc_words < self.min_loc_words {
+            return (None, Ok(()));
+        }
+        let (ours_bag, _) = bag(ours);
+        let shared: u64 = loc_bag
+            .iter()
+            .map(|(w, n)| u64::from((*n).min(ours_bag.get(w).copied().unwrap_or(0))))
+            .sum();
+        let (ours_chars, loc_chars) = (ours.chars().count(), loc.chars().count());
+        let m = Measure {
+            ours_chars,
+            loc_chars,
+            len_ratio: ours_chars as f64 / loc_chars as f64,
+            cover: shared as f64 / loc_words as f64,
+        };
+        let v = if m.len_ratio < self.min_len_ratio - EPSILON {
+            Err(Keep::Short)
+        } else if m.cover < self.min_cover - EPSILON {
+            Err(Keep::Cover)
+        } else {
+            Ok(())
+        };
+        (Some(m), v)
+    }
+}
+
 /// Both texts scored again against the title's languages, and the verdict.
 pub fn judge(
     ours_text: &str,
@@ -136,17 +281,30 @@ pub fn rule_for(ocr_engine: &str) -> &'static str {
 /// [`judge`] for a row read with `ocr_engine`, and the rule that decided. A line job's page
 /// passed [`line_merge::verdict`] against LoC's ALTO when it was imported (its lines are
 /// checked where LoC's ALTO is, `usnm-boinc` import), so it is admitted here; both texts are
-/// still scored for the tally. Every other row goes through rule v1 as before.
+/// still scored for the tally. Every other row goes through rule v1 as before, and a page
+/// that passes it goes through the completeness gate `gate`; the [`Measure`] is given when
+/// the gate weighed the page, whichever way it went.
 pub fn judge_row(
     ocr_engine: &str,
     ours_text: &str,
     loc_text: Option<&str>,
     title_languages: &[&str],
-) -> (Scores, Scores, Result<(), Keep>, &'static str) {
+    gate: &Completeness,
+) -> (
+    Scores,
+    Scores,
+    Result<(), Keep>,
+    &'static str,
+    Option<Measure>,
+) {
     let (ours, loc, v1) = judge(ours_text, loc_text, title_languages);
     match rule_for(ocr_engine) {
-        line_merge::VERSION => (ours, loc, Ok(()), line_merge::VERSION),
-        rule => (ours, loc, v1, rule),
+        line_merge::VERSION => (ours, loc, Ok(()), line_merge::VERSION, None),
+        rule if v1.is_err() => (ours, loc, v1, rule, None),
+        rule => {
+            let (measure, v) = gate.check(ours_text, loc_text);
+            (ours, loc, v, rule, measure)
+        }
     }
 }
 
@@ -221,14 +379,16 @@ pub mod line_merge {
     }
 }
 
-/// The rule and the metric, as a version's `ocr_local.json` records them.
-pub fn record() -> Value {
+/// The rule and the metric, as a version's `ocr_local.json` records them, with the completeness
+/// thresholds the build ran on.
+pub fn record(completeness: &Completeness) -> Value {
     json!({
         "rule": {
             "version": VERSION,
             "margin": MARGIN,
             "head_test": HEAD_TEST,
             "same_language": true,
+            "completeness": completeness,
         },
         "line_merge": {
             "version": line_merge::VERSION,
@@ -370,10 +530,157 @@ mod tests {
 
     #[test]
     fn the_record_names_the_rule_and_the_metric() {
-        let r = record();
+        let r = record(&Completeness::default());
         assert_eq!(r["rule"]["version"], VERSION);
         assert_eq!(r["rule"]["margin"], MARGIN);
         assert_eq!(r["metric"]["version"], usnm_core::damage::VERSION);
+    }
+
+    /// A page of four columns as LoC read them (noise, as on a Fraktur page), and the same page
+    /// as our layout pass saw it: the first column only (seq-7 of the 8 Oct 1876 issue: 25k
+    /// characters where LoC has 70k). Columns differ by a number so the bags aren't one
+    /// repeated line.
+    const NOISE_PAGE: &str = "T1e c0unc1l m3t 0n Tu3sd4y 4nd v0t3d f0r th3 n3w sch00l; th3 m4y0r \
+        s41d th3 r41lr04d w0u1d br1ng m0r3 tr4d3 t0 th3 t0wn 4nd c0tt0n pr1c3s r0s3 1n th3 m4rk3t.";
+
+    fn columns(text: &str, n: usize) -> String {
+        (1..=n)
+            .map(|i| format!("{text} Column {i}."))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn a_page_missing_its_columns_keeps_locs_text_though_it_passes_rule_v1() {
+        let langs = ["eng"];
+        let gate = Completeness::default();
+        let loc = columns(NOISE_PAGE, 4);
+        let ours = columns(OURS_CLEAN, 1);
+        // Rule v1 alone prefers ours: clean, and as many head words as LoC's noisy page.
+        let (_, _, v1) = judge(&ours, Some(&loc), &langs);
+        assert_eq!(
+            v1,
+            Ok(()),
+            "the seq-7 case passes the damage and head tests"
+        );
+        let (_, _, v, rule, m) = judge_row(ENGLISH, &ours, Some(&loc), &langs, &gate);
+        assert_eq!((v, rule), (Err(Keep::Short), "v1"));
+        let m = m.unwrap();
+        assert!(m.len_ratio < 0.5, "{m:?}");
+        assert!(m.cover < 0.3, "{m:?}");
+        // The whole page is replaced as before.
+        let ours_all = columns(OURS_CLEAN, 4);
+        let loc_same = columns(LOC_GARBLED, 1);
+        let (_, _, v, _, m) = judge_row(ENGLISH, &ours_all, Some(&loc_same), &langs, &gate);
+        assert_eq!(v, Ok(()));
+        assert!(m.unwrap().len_ratio >= 0.85);
+    }
+
+    #[test]
+    fn long_enough_text_of_other_words_fails_the_cover_test() {
+        let gate = Completeness::default();
+        let loc = columns(OURS_CLEAN, 4);
+        // As long as LoC's, but a different page's words.
+        let other = columns(
+            "Wheat sold at a dollar the bushel in Chicago while the ships lay idle in the harbor \
+             and the senators argued the tariff bill far into the night at Washington.",
+            9,
+        );
+        let (m, v) = gate.check(&other, Some(&loc));
+        assert!(m.unwrap().len_ratio >= 0.85);
+        assert_eq!(v, Err(Keep::Cover));
+    }
+
+    #[test]
+    fn the_gate_passes_what_it_cannot_weigh() {
+        let gate = Completeness::default();
+        assert_eq!(gate.check("anything", None), (None, Ok(())));
+        assert_eq!(gate.check("anything", Some("  \n ")), (None, Ok(())));
+        // LoC's text has too few words to weigh.
+        let few = "a handful of words only";
+        assert_eq!(gate.check("x", Some(few)), (None, Ok(())));
+    }
+
+    #[test]
+    fn the_thresholds_are_exact_at_the_boundary_and_configurable() {
+        let loc = (0..100)
+            .map(|i| format!("word{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let ours = (0..90)
+            .map(|i| format!("word{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let strict = Completeness {
+            min_len_ratio: 0.95,
+            min_cover: 0.5,
+            min_loc_words: 20,
+        };
+        let loose = Completeness {
+            min_len_ratio: 0.5,
+            min_cover: 0.5,
+            min_loc_words: 20,
+        };
+        assert_eq!(strict.check(&ours, Some(&loc)).1, Err(Keep::Short));
+        let (m, v) = loose.check(&ours, Some(&loc));
+        assert_eq!(v, Ok(()));
+        assert!((m.unwrap().cover - 0.9).abs() < 1e-9);
+        // A ratio exactly at the floor passes.
+        let at = Completeness {
+            min_len_ratio: 1.0,
+            min_cover: 1.0,
+            min_loc_words: 20,
+        };
+        assert_eq!(at.check(&loc, Some(&loc)).1, Ok(()));
+        // Word multiplicity counts: one copy of a repeated word doesn't cover all of them.
+        let rep = "the ".repeat(40);
+        let c = Completeness {
+            min_len_ratio: 0.0,
+            min_cover: 0.9,
+            min_loc_words: 20,
+        };
+        assert_eq!(c.check("the", Some(&rep)).1, Err(Keep::Cover));
+    }
+
+    #[test]
+    fn thresholds_come_from_the_environment_and_a_typo_is_an_error() {
+        let vars = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| (*v).to_owned())
+            }
+        };
+        assert_eq!(
+            Completeness::from_vars(vars(&[])).unwrap(),
+            Completeness::default()
+        );
+        let c = Completeness::from_vars(vars(&[
+            (ENV_MIN_LEN_RATIO, "0.7"),
+            (ENV_MIN_COVER, " 0.4 "),
+            (ENV_MIN_LOC_WORDS, "5"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            (c.min_len_ratio, c.min_cover, c.min_loc_words),
+            (0.7, 0.4, 5)
+        );
+        assert!(Completeness::from_vars(vars(&[(ENV_MIN_COVER, "most")])).is_err());
+        assert!(Completeness::from_vars(vars(&[(ENV_MIN_COVER, "1.5")])).is_err());
+        assert!(Completeness::from_vars(vars(&[(ENV_MIN_LEN_RATIO, "-1")])).is_err());
+    }
+
+    #[test]
+    fn the_record_names_the_completeness_gate() {
+        let r = record(&Completeness::default());
+        assert_eq!(r["rule"]["completeness"]["min_len_ratio"], MIN_LEN_RATIO);
+        assert_eq!(r["rule"]["completeness"]["min_cover"], MIN_COVER);
+        let own = Completeness {
+            min_len_ratio: 0.5,
+            ..Completeness::default()
+        };
+        assert_eq!(record(&own)["rule"]["completeness"]["min_len_ratio"], 0.5);
     }
 
     const PHOENIX: &str = "tesseract/5.5.0 profile=chr_phoenix image=sha256:3f9a0c1d2e4b \
@@ -475,13 +782,20 @@ mod tests {
             (OURS_CLEAN, None),
         ] {
             let (a, b, v1) = judge(ours, loc, &langs);
-            let (c, d, v, rule) = judge_row(ENGLISH, ours, loc, &langs);
+            let (c, d, v, rule, _) =
+                judge_row(ENGLISH, ours, loc, &langs, &Completeness::default());
             assert_eq!((a, b, v1, "v1"), (c, d, v, rule));
         }
         // A line job's page skips v1's tests: LoC's garbled text "wins" v1 here.
         let (_, _, v1) = judge(LOC_GARBLED, Some(LOC_GARBLED), &langs);
         assert!(v1.is_err());
-        let (_, _, v, rule) = judge_row(PHOENIX, LOC_GARBLED, Some(LOC_GARBLED), &langs);
-        assert_eq!((v, rule), (Ok(()), line_merge::VERSION));
+        let (_, _, v, rule, m) = judge_row(
+            PHOENIX,
+            LOC_GARBLED,
+            Some(LOC_GARBLED),
+            &langs,
+            &Completeness::default(),
+        );
+        assert_eq!((v, rule, m), (Ok(()), line_merge::VERSION, None));
     }
 }

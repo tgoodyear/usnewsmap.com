@@ -19,6 +19,7 @@ use crate::curated::{read_part, CuratedRow};
 use crate::dedup::{self, Plan};
 use crate::ocr_ja;
 use crate::ocr_local;
+use crate::ocr_local::rule::Keep;
 use crate::page_language as page_lang;
 use crate::state::{JaLatinPage, RunBatch};
 
@@ -173,6 +174,8 @@ pub(super) struct PartContext<'a> {
     pub(super) catalog: &'a Catalog,
     pub(super) mine: &'a ocr_local::replace::Loaded,
     pub(super) local: Option<&'a LocalRun>,
+    /// The completeness gate of our own OCR's replacements (`ocr_local::rule::Completeness`).
+    pub(super) completeness: ocr_local::rule::Completeness,
     pub(super) format: DocFormat,
     /// Give each page its own languages (05 §5.5.8) as it is built.
     pub(super) page_language: bool,
@@ -299,6 +302,7 @@ fn build_row(ctx: &PartContext<'_>, row: &CuratedRow, out: &mut PartDocs) -> any
         catalog,
         mine,
         local,
+        completeness,
         format,
         ..
     } = ctx;
@@ -329,13 +333,17 @@ fn build_row(ctx: &PartContext<'_>, row: &CuratedRow, out: &mut PartDocs) -> any
             } else {
                 let langs: Vec<&str> = title.languages.iter().map(String::as_str).collect();
                 // Rule v1, or `line-merge-v1` for a line job's page (#1621).
-                let (scores, _, verdict, rule) = ocr_local::rule::judge_row(
+                let (scores, _, verdict, rule, measure) = ocr_local::rule::judge_row(
                     &c.row.ocr_engine,
                     &c.text,
                     row.text.as_deref(),
                     &langs,
+                    completeness,
                 );
                 out.tally.weighed_by(c, &scores, verdict, rule);
+                if let (Err(why @ (Keep::Short | Keep::Cover)), Some(m)) = (verdict, measure) {
+                    out.tally.gated(c, why, &m);
+                }
                 if verdict.is_ok() {
                     local_text = Some(c.text.as_str());
                     out.local_replaced
@@ -659,6 +667,7 @@ mod tests {
             catalog: &catalog,
             mine: &mine,
             local: Some(&local),
+            completeness: Default::default(),
             format: DocFormat {
                 decade: true,
                 analyzer: Analyzer::V2,

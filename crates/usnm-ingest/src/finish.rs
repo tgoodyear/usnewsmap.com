@@ -503,6 +503,22 @@ impl Resume {
                  release's own settings and inputs"
             );
         }
+        // The gate decides which pages take our text, so a finish on other thresholds would
+        // publish pages that disagree with the indexed text: never applied silently.
+        let gate = |v: &Option<Value>| {
+            v.as_ref()
+                .and_then(|b| b["features"].get("ocr_local_completeness"))
+                .cloned()
+        };
+        let (had, now) = (gate(&r.build), gate(&planned.build));
+        ensure!(
+            had == now,
+            "the run's completeness gate was {}; this finish's is {}. Finish with the same \
+             USNM_OCR_LOCAL_* thresholds the run was built with (or none, for the defaults)",
+            had.as_ref()
+                .map_or("not recorded".into(), |v| v.to_string()),
+            now.as_ref().map_or("not set".into(), |v| v.to_string()),
+        );
         let (had, now) = (
             r.build.clone().unwrap_or(Value::Null),
             planned.build.clone().unwrap_or(Value::Null),
@@ -1184,6 +1200,40 @@ mod tests {
             progress_sent: progress,
             log,
         }
+    }
+
+    /// A finish on other completeness thresholds than the build's fails; the same ones pass.
+    #[test]
+    fn a_finish_on_other_completeness_thresholds_fails() {
+        use crate::ocr_local::rule::Completeness;
+        let run_with = |c: Option<Completeness>| -> IndexRun {
+            let mut features = serde_json::json!({});
+            if let Some(c) = c {
+                features["ocr_local_completeness"] = serde_json::json!(c);
+            }
+            serde_json::from_value(serde_json::json!({
+                "id": "v", "index_version": "v", "full": true, "indexes": [], "new_index": "i",
+                "status": "failed", "docs": 0, "pages": 0, "started_at": "2026-10-22T00:00:00Z",
+                "build": {"features": features},
+            }))
+            .unwrap()
+        };
+        let built = Completeness::default();
+        let strict = Completeness {
+            min_cover: 0.9,
+            ..built
+        };
+        let mut r = resume(None, None);
+        r.run = run_with(Some(built));
+        r.check_run(&run_with(Some(built))).unwrap();
+        let err = r
+            .check_run(&run_with(Some(strict)))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("completeness gate"), "{err}");
+        assert!(err.contains("USNM_OCR_LOCAL_"), "{err}");
+        let err = r.check_run(&run_with(None)).unwrap_err().to_string();
+        assert!(err.contains("completeness gate"), "{err}");
     }
 
     #[test]
