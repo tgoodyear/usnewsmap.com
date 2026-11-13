@@ -119,7 +119,7 @@ class ControllerTests(unittest.TestCase):
         config = {"env": "prod", "account": "a", "step_command": ["ssh", "h", "--"]}
         with self.assertRaisesRegex(ValueError, "ssh-reads needs"):
             batch.Transport(config, Path("."), ssh_reads=True)
-        with self.assertRaisesRegex(ValueError, "ssh-reads needs"):
+        with self.assertRaisesRegex(ValueError, "every hand-off step"):
             batch.Transport(config, Path("."), ssh_reads=True, local_lock=True,
                             onprem_handoff=("claim",))
 
