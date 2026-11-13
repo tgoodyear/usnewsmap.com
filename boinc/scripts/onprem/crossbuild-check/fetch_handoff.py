@@ -15,10 +15,11 @@ so there is no plan selector: the plan is whatever the --image and --host pair i
 
 Run as root (ExecStartPre=+); the result is chowned to --owner.
 """
-import argparse, datetime as dt, importlib.util, json, os, shutil, subprocess, sys, tempfile
+import argparse, datetime as dt, importlib.util, json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
 ACCOUNT, CONTAINER = "stusnmoffapzy", "boinc-handoff"
+JOB_ID = re.compile(r"[A-Za-z0-9._-]+")  # job ids go into az glob patterns: no wildcards
 
 
 def az_download(pattern, dest):
@@ -55,7 +56,8 @@ def main():
             try:
                 r = json.loads(f.read_text())
                 done = dt.datetime.fromisoformat(r["completed_at"])
-                if r["engine"]["image"] not in images or now - done > dt.timedelta(days=a.days):
+                if (not JOB_ID.fullmatch(f.parent.name) or r["engine"]["image"] not in images
+                        or not dt.timedelta(0) <= now - done <= dt.timedelta(days=a.days)):
                     continue
                 if a.host and (f.parent / "host_id").read_text().strip() not in a.host:
                     continue
