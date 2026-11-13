@@ -308,7 +308,7 @@ fn decide(
             .iter()
             .filter(|j| **j != i && listed.contains(&pair(i, **j)))
             .count() as i64;
-        if n + 1 >= quorum / 2 + 1 {
+        if n + 1 > quorum / 2 {
             for &j in &usable {
                 states.insert(
                     j,
