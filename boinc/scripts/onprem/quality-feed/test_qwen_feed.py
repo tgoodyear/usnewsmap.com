@@ -368,7 +368,7 @@ class SubsetShipmentTest(unittest.TestCase):
             raise subprocess.TimeoutExpired(args, 7200)
         return output.getvalue().encode()
 
-    def rows(self, project, selected, app):
+    def rows(self, project, selected, app, batch=8):
         return {job["id"]: self.db[app][job["id"]] for _, job in selected if job["id"] in self.db[app]}
 
     def run_command(self, command, **kwargs):
@@ -1059,11 +1059,11 @@ class SubsetShipmentTest(unittest.TestCase):
         self.outcomes = {f"sn1_1900-01-02_ed-1_seq-{i}": "no_crops" for i in range(1, 55)}
         empty_boinc_php(self.server_args().project)
 
-        def rows(project, selected, app):
+        def rows(project, selected, app, batch=8):
             if app == "usnm_qwen":
                 self.assertEqual(selected, [])
                 with mock.patch.object(submit.subprocess, "run", self.real_subprocess_run):
-                    return self.real_publication_rows(project, selected, app)
+                    return self.real_publication_rows(project, selected, app, batch)
             return self.rows(project, selected, app)
 
         with mock.patch.object(submit, "publication_rows", side_effect=rows):
@@ -2835,3 +2835,45 @@ class ArchiveHostUserTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class XiaomiCampaignTest(unittest.TestCase):
+    """A listed Xiaomi-OCR-0 campaign (#1867): its own pages, English only at version 5."""
+
+    def main(self, *extra):
+        with tempfile.TemporaryDirectory() as tmp:
+            pages = Path(tmp) / "pages.txt"
+            pages.write_text(DOC + "\n")
+            argv = ["qwen_feed.py", "--campaign", "x08-eng", "--state", tmp, "--server-host", "s",
+                    "--archive-host", "a", "--scan-server", "http://scan"]
+            argv += [str(pages) if arg == "PAGES" else arg for arg in extra]
+            with mock.patch.object(sys, "argv", argv), mock.patch.object(driver, "tick") as tick, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    driver.main()
+                except SystemExit:
+                    return None
+            return tick.call_args.args[0]
+
+    def test_english_is_listed_and_read_at_version_5_only(self):
+        a = self.main("--pages", "PAGES", "--language", "eng", "--prompt-version", "5")
+        self.assertEqual((a.language, a.prompt_version), ("eng", 5))
+        self.assertIsNone(self.main("--pages", "PAGES", "--language", "eng", "--prompt-version", "3"))
+        self.assertIsNone(self.main("--pages", "PAGES"))
+        self.assertIsNone(self.main("--language", "fre"))
+        a = self.main()
+        self.assertEqual((a.pages, a.language, a.prompt_version), (None, None, 1))
+
+    def test_listed_pages_keep_only_the_campaigns_own(self):
+        rows = [{"doc_id": DOC}, {"doc_id": "sn1_1900-01-02_ed-1_seq-4"}]
+        index = b"".join(json.dumps(r).encode() + b"\n" for r in rows)
+        with tempfile.TemporaryDirectory() as tmp:
+            listed = Path(tmp) / "pages.txt"
+            listed.write_text(DOC + "\n")
+            self.assertEqual(driver.listed_pages(index, listed), json.dumps(rows[0]).encode() + b"\n")
+
+    def test_a_transaction_recipe_takes_version_5_and_nothing_past_it(self):
+        self.assertEqual(submit.route(5), ("native-xiaomi", 108))
+        self.assertEqual([submit.route(v) for v in (1, 2, 3, 4)], [("native-8b", 8)] * 4)
+        source = inspect.getsource(shipment.validate)
+        self.assertIn('recipe["prompt_version"] not in (1, 2, 3, 4, 5)', source)

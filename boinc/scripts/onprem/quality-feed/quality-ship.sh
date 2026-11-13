@@ -23,6 +23,9 @@
 #     must be a root of its own, #1435. Never the Yiddish root. Without it, one page per unit)
 #     [--qwen-page-records /project/usnmocr/qwen/pages] (with --qwen-bundle-size: staging packs
 #     each page a page-v1 verdict settled as disagreed into one new bundle, #1435)
+#     [--prompt-version 5 [--qwen-allow-english]] (native only: Xiaomi-OCR-0, #1776. Every job
+#     is pinned to it and goes to the _x08 classes as batch 108; --qwen-allow-english lets that
+#     root take English pages, the English pilot of #1867)
 #
 # For each READY chunk under <outbox>/<campaign>/, oldest first, at most --max-chunks a run:
 #  1. Stops while usnm_quality has more than --max-unsent results ready to send (the public
@@ -67,6 +70,7 @@ BUNDLE=500 MAX_UNSENT=300 MAX_CHUNKS=1 MIN_FREE=40 WHAT_IF=false
 SHARE=/srv/usnm-boinc/project STEP=/usr/local/sbin/usnm-boinc-step
 QWEN_PLAN="" QWEN_MODELS="" QWEN_MAX_READY=1000 STEP_WINDOW=0
 PROMPT=1 QWEN_ROOT="" YIDDISH_ROOT="" YIDDISH_PROMPT=4 SUBMIT_BINARY="" QWEN_BUNDLE="" PAGE_RECORDS=""
+ENGLISH=()
 STATUS_URL="https://boinc.usnewsmap.com/server_status.php?xml=1"
 while [ $# -gt 0 ]; do
   case $1 in
@@ -94,6 +98,7 @@ while [ $# -gt 0 ]; do
     --qwen-submit-binary) SUBMIT_BINARY=${2:-}; shift 2 ;;
     --qwen-bundle-size) QWEN_BUNDLE=${2:-}; shift 2 ;;
     --qwen-page-records) PAGE_RECORDS=${2:-}; shift 2 ;;
+    --qwen-allow-english) ENGLISH=(--allow-english); shift ;;
     -h | --help) usage ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -111,7 +116,9 @@ if [ -n "$QWEN_PLAN$QWEN_MODELS" ]; then
   [[ $QWEN_PLAN =~ ^/project/[a-zA-Z0-9_./-]+$ && $QWEN_MODELS =~ ^/project/[a-zA-Z0-9_./-]+$ ]] ||
     die "--qwen-engine-plan and --qwen-models: absolute /project paths required together"
 fi
-[[ $PROMPT =~ ^[1-4]$ && $YIDDISH_PROMPT =~ ^[1-4]$ ]] || die "--prompt-version and --yiddish-prompt-version: 1 to 4"
+[[ $PROMPT =~ ^[1-5]$ && $YIDDISH_PROMPT =~ ^[1-4]$ ]] ||
+  die "--prompt-version: 1 to 5; --yiddish-prompt-version: 1 to 4"
+[ ${#ENGLISH[@]} -eq 0 ] || [ "$PROMPT" = 5 ] || die "--qwen-allow-english: with --prompt-version 5 only"
 QWEN_ROOT=${QWEN_ROOT:-$CAMPAIGN}
 for root in "$QWEN_ROOT" "$YIDDISH_ROOT"; do
   [[ -z $root || $root =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || die "--qwen-root, --qwen-yiddish-root: 1-41 of [a-z0-9-]"
@@ -292,7 +299,7 @@ while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
     if in_ct podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
       --preflight --campaign "$target" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
       --max-pages "$pages" --max-ready "$QWEN_MAX_READY" --prompt-version "$version" \
-      ${bundle:+--bundle-size "$bundle"}; then
+      ${bundle:+--bundle-size "$bundle"} ${ENGLISH[@]+"${ENGLISH[@]}"}; then
       :
     else
       rc=$?
@@ -341,7 +348,7 @@ while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
       --campaign "$target" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
       --sample "$sample" --max-pages "$n" --max-ready "$QWEN_MAX_READY" --prompt-version "$version" \
       ${bundle:+--bundle-size "$bundle"} ${bundle:+${PAGE_RECORDS:+--page-records "$PAGE_RECORDS"}} \
-      --phase prepare; then
+      ${ENGLISH[@]+"${ENGLISH[@]}"} --phase prepare; then
       :
     else
       rc=$?
@@ -356,7 +363,7 @@ while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
       --campaign "$target" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
       --sample "$sample" --max-pages "$n" --max-ready "$QWEN_MAX_READY" --prompt-version "$version" \
       ${bundle:+--bundle-size "$bundle"} ${bundle:+${PAGE_RECORDS:+--page-records "$PAGE_RECORDS"}} \
-      ${SUBMIT_BINARY:+--submit-binary "$SUBMIT_BINARY"} --phase publish; then
+      ${SUBMIT_BINARY:+--submit-binary "$SUBMIT_BINARY"} ${ENGLISH[@]+"${ENGLISH[@]}"} --phase publish; then
       :
     else
       rc=$?
@@ -403,7 +410,7 @@ if [ "$WHAT_IF" = false ] && [ -n "$QWEN_PLAN" ] && [ -n "$QWEN_BUNDLE" ] && [ "
   held_args=(--campaign "$QWEN_ROOT" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS"
     --max-pages 1 --max-ready "$QWEN_MAX_READY" --prompt-version "$PROMPT"
     --bundle-size "$QWEN_BUNDLE" ${PAGE_RECORDS:+--page-records "$PAGE_RECORDS"}
-    ${SUBMIT_BINARY:+--submit-binary "$SUBMIT_BINARY"} --held-only)
+    ${SUBMIT_BINARY:+--submit-binary "$SUBMIT_BINARY"} ${ENGLISH[@]+"${ENGLISH[@]}"} --held-only)
   if in_ct podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
     "${held_args[@]}" --phase prepare; then
     :
