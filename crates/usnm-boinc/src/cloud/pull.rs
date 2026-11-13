@@ -862,8 +862,7 @@ mod tests {
             None,
         )
         .await
-        .err()
-        .expect("a redirect is an error");
+        .expect_err("a redirect is an error");
         assert!(err.to_string().contains("302"), "{err:#}");
         assert_eq!(other.lock().unwrap().bad_auth, 0);
         assert!(other.lock().unwrap().fetched.is_empty());
@@ -876,8 +875,7 @@ mod tests {
         let missing = t.path().join("nope/spool");
         let err = pull_once(&cfg(&base, &missing, true, 10), None)
             .await
-            .err()
-            .unwrap();
+            .unwrap_err();
         assert!(err.to_string().contains("does not exist"), "{err:#}");
         assert!(!t.path().join("nope").exists());
         assert!(s.lock().unwrap().acked.is_empty());
