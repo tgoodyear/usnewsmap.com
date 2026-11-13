@@ -161,9 +161,10 @@ verify no writer remains).
 
 - Until phase 4 the Azure objects are untouched and read-only, so rolling back
   is: stop the timer and wait for the tick to end; stop the backup timer;
-  restore `HANDOFF_URL` to the Azure URL and drop `--local-lock`; copy any
-  journals changed since the cutover back (the reverse of the phase 2 copy,
-  with the same hash check), preserving job ids and stage history; start the
+  restore `HANDOFF_URL` to the Azure URL and drop `--local-lock`; copy the
+  changed handoff state back as a complete set, inputs and retained results
+  before journals (the reverse of the phase 2 copy, with the same hash check
+  and the verification in the review follow-ups), preserving job ids and stage history; start the
   timer. Never run one writer on each copy.
 - After a pull has already settled a page (dead-letter, collect), never restore
   its submitted journal; reconcile from the receipt, as the scheduler doc
@@ -186,19 +187,29 @@ verify no writer remains).
   They take only a short flock on the lock record's sidecar, and the heartbeat runs on its own
   thread beside the controller's blocking step calls, so a collect longer than the TTL does not
   starve renewal.
-- **Fencing.** Every controller step that writes the root carries the holder and generation:
-  claim, release, dead-letter, collect, export, `write-held-pages` and `bridge spool-out`. The
-  host checks at entry and again after waiting for the step lock, immediately before launching.
-  Bridge submissions write BOINC's database, not the root, and stay under the controller's single
-  tick; they are not fenced by the record. A mutator that has already passed its check can finish
-  after a takeover. The successor therefore does not claim until the old holder's TTL has passed
-  (acquire fails while the record is unexpired), which bounds the overlap to one step.
-- **Offsite copy consistency.** The R2 copy is a one-way disaster-recovery aid, not a point-in-time
-  snapshot: a collect writes kept results before its settled journal, so a copy taken mid-collect
-  can hold the journal without its result. Using it for recovery needs a verification pass (every
-  settled journal has its retained results) before any writer starts, and a reverse copy of the
-  complete root, not only changed journals. Cutting a consistent snapshot with a completion
-  manifest is a follow-up if the copy is ever used for recovery rather than inspection.
+- **Fencing.** Every controller step that writes the root or dispatches work carries the holder and
+  generation: claim, release, dead-letter, collect, export, `write-held-pages`, `bridge spool-out`,
+  `bridge batch-inventory` (it writes `scheduler/inventory.json`) and `bridge submit-remote`. The
+  host checks at entry and again after waiting for the step lock, immediately before launching, and
+  each step's commit (the rename that publishes an object) happens inside the step lock, so a step
+  that waited out its lease is refused rather than run. The controller also stops dispatching once its
+  own conservative renewal deadline has passed, and caps each renewal attempt by the time left on
+  the lease.
+- **Takeover drains old mutators.** `lock-acquire` of a new generation, after it sees an expired
+  record, takes the step lock once before returning. A mutator that already passed its check holds
+  that lock until it finishes (every step has a hard timeout well under the TTL), so the successor
+  starts only after the old holder's last write has landed or the step was killed. A killed step
+  leaves temp files only, because objects are published by atomic rename.
+- **Offsite copy consistency.** The R2 copy is a one-way disaster-recovery aid. A collect writes
+  kept results before its settled journal, so copying the live root can hold a journal without its
+  result. The backup timer therefore stages a local snapshot first: under the step lock it takes a
+  filesystem snapshot (or hard-link copy) of the root, which is quick, then releases the lock and
+  uploads the snapshot to R2 outside any writer lock. A completion manifest (object list, sizes,
+  hashes, generation) is uploaded last; a copy without a manifest is not a recovery point.
+- **Rollback copies the complete root.** Reverse copy covers inputs for newly exported jobs,
+  retained results before the journals that depend on them, and the journals themselves, with all
+  writers stopped, then verifies (every settled journal has its retained results, every exported
+  job has its inputs) before switching back to Azure.
 
 ## Decisions
 
