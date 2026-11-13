@@ -155,6 +155,13 @@ pub async fn run(command: CloudCommands) -> anyhow::Result<()> {
             loop {
                 let report = spool_out::spool_out_once(&cfg).await?;
                 println!("{report}");
+                if report.ignored > 0 {
+                    eprintln!(
+                        "{} name(s) under results/ are not a job's spool file, for example: {}",
+                        report.ignored,
+                        report.ignored_examples.join(", ")
+                    );
+                }
                 if !report.failed.is_empty() {
                     bail!("{} job(s) not handed off", report.failed.len());
                 }

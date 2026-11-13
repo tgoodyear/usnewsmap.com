@@ -497,8 +497,16 @@ async fn download_inner(cfg: &Config, f: &OutFile, part: &Path) -> anyhow::Resul
     Ok(())
 }
 
-/// Writes `bytes` to `.incoming`, fsyncs, renames to `dir/name`, fsyncs `dir`.
+/// Writes `bytes` to `.incoming`, fsyncs, renames to `dir/name`, fsyncs `dir`. A file already
+/// there with identical content is left alone.
 fn durable_write(incoming: &Path, dir: &Path, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
+    // Already there with these exact bytes: keep the file (inode and mtime) as it is.
+    let dest = dir.join(name);
+    if fs::symlink_metadata(&dest).is_ok_and(|m| m.is_file())
+        && fs::read(&dest).is_ok_and(|b| b == bytes)
+    {
+        return sync_dir(dir);
+    }
     let batch = dir.file_name().unwrap().to_string_lossy();
     let tmp = incoming.join(format!("{batch}.{}.part", hex(&Md5::digest(name))));
     let mut f = File::create(&tmp)?;
@@ -900,6 +908,39 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(read(d.join("wu_1__file_result.json")), b"AAA");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unchanged_host_id_is_not_rewritten_but_a_changed_one_is() {
+        use std::os::unix::fs::MetadataExt;
+        let mut m = Mock::default();
+        wu_ok(&mut m, 1, 5, &[("o1", Some("result.json"), b"{}")]);
+        let (_s, base) = serve(m).await;
+        let spool = tempfile::tempdir().unwrap();
+        pull_once(&cfg(&base, spool.path(), false, 100), None)
+            .await
+            .unwrap();
+        let host = spool.path().join("results/5/wu_1__host_id");
+        let out = spool.path().join("results/5/wu_1__file_result.json");
+        let key = |p: &Path| {
+            let m = fs::metadata(p).unwrap();
+            (m.ino(), m.mtime(), m.mtime_nsec())
+        };
+        let before = (key(&host), key(&out));
+        // Long enough for a rewrite to show in the mtime.
+        std::thread::sleep(Duration::from_millis(20));
+        pull_once(&cfg(&base, spool.path(), false, 100), None)
+            .await
+            .unwrap();
+        assert_eq!((key(&host), key(&out)), before, "nothing was rewritten");
+        assert_eq!(read(host.clone()), b"41\n");
+        // Different content (the host changed): rewritten.
+        fs::write(&host, "99\n").unwrap();
+        pull_once(&cfg(&base, spool.path(), false, 100), None)
+            .await
+            .unwrap();
+        assert_eq!(read(host), b"41\n");
     }
 
     #[tokio::test]
