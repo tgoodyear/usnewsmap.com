@@ -328,12 +328,14 @@ usnm-boinc cloud validatord --secret-file <webhook token> --state-dir <dir> --go
   files and never has that case.
 - The gold apps have no compare script, so every valid result has the same fingerprint. No `credit` is sent; the server
   computes it.
-- `call_id` makes a call idempotent. The verdict for a call is stored under `--state-dir/calls/` once every result has a
-  final verdict (a reply containing `retry` is not stored, so the next call tries again), and a repeated `call_id` with the
-  same request gets the stored reply with no new work, also after a restart. Concurrent duplicates run once. The same
-  `call_id` with a different request answers 409. Verdicts are not pruned.
+- `call_id` makes a call idempotent. The first request seen under a call id is saved (a digest, fsynced, in
+  `--state-dir/calls/`) before any work, so the id belongs to that request even if it never gets a final verdict: the same
+  request may run again, a different one answers 409. The verdict is stored once every result has a final one (a reply
+  containing `retry` is not stored, so the next call tries again), and a repeated request gets the stored reply with no
+  new work, also after a restart. Concurrent duplicates run once. A cache entry that cannot be read (anything but "not
+  there") is a 500 and is left untouched. Entries are not pruned.
 - Limits: the request body is at most `--max-body-bytes` (1 MiB; 413 above), 64 results of at most 16 files, and a call
-  is cut off after `--timeout-secs` (15; the server's `<webhook_timeout_secs>` is 20 by default) with a 503 the server
+  is cut off after `--timeout-secs` (15, covering the wait behind a duplicate as well as the work; the server's `<webhook_timeout_secs>` is 20 by default) with a 503 the server
   counts as a failed call.
 
 A unit file, as text only:

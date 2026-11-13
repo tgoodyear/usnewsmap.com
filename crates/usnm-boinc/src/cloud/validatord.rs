@@ -121,10 +121,13 @@ async fn validate_route(
         let mut m = s.locks.lock().unwrap();
         m.entry(req.call_id.clone()).or_default().clone()
     };
-    let out = {
+    // One budget for waiting behind a duplicate and for the work, so a call is cut off within
+    // `call_timeout` of arriving, not after each part in turn.
+    let out = tokio::time::timeout(s.cfg.call_timeout, async {
         let _guard = lock.lock().await;
-        tokio::time::timeout(s.cfg.call_timeout, once(&s.cfg, &req, &digest)).await
-    };
+        once(&s.cfg, &req, &digest).await
+    })
+    .await;
     {
         let mut m = s.locks.lock().unwrap();
         if Arc::strong_count(&lock) <= 2 {
@@ -210,15 +213,35 @@ impl Request {
     }
 }
 
-/// The reply for a call id: the stored one when this id was answered before (the same request),
-/// else computed. Only a reply with no `retry` is stored, so a failed fetch is tried again.
+/// Reads a cache entry: `None` only when it does not exist. Any other error (a directory in its
+/// place, permissions, I/O) is returned and the entry is left as it is.
+fn read_entry(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(b) => Ok(Some(b)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// The reply for a call id. The request's digest is saved under the id, durably, before any
+/// work, so the id belongs to that request whether or not a verdict was ever stored: the same
+/// request may run again, a different one is a `Conflict`. A verdict is stored only when every
+/// result has a final one (no `retry`), and a repeat of that request gets it with no new work.
 async fn once(cfg: &Config, req: &Request, digest: &str) -> anyhow::Result<Value> {
     let id: String = Sha256::digest(req.call_id.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    let path = cfg.state_dir.join("calls").join(format!("{id}.json"));
-    if let Ok(bytes) = std::fs::read(&path) {
+    let calls = cfg.state_dir.join("calls");
+    let claim = calls.join(format!("{id}.request"));
+    match read_entry(&claim)? {
+        Some(saved) if saved == digest.as_bytes() => {}
+        Some(_) => return Err(Conflict.into()),
+        // `atomic` fsyncs the file and its directory before it returns.
+        None => crate::atomic(&claim, digest.as_bytes())?,
+    }
+    let path = calls.join(format!("{id}.json"));
+    if let Some(bytes) = read_entry(&path)? {
         let stored: Value = serde_json::from_slice(&bytes).context("stored verdict")?;
         if stored["request_sha256"] == digest {
             return Ok(stored["reply"].clone());
@@ -309,6 +332,8 @@ mod tests {
         outputs: Mutex<BTreeMap<String, Vec<u8>>>,
         failing: Mutex<bool>,
         fetches: AtomicUsize,
+        /// Output reads that never finish.
+        stall: Mutex<bool>,
         /// What the body is changed to on the way out (an md5 mismatch).
         corrupt: Mutex<bool>,
     }
@@ -318,6 +343,9 @@ mod tests {
             return StatusCode::UNAUTHORIZED.into_response();
         }
         m.fetches.fetch_add(1, Ordering::SeqCst);
+        if *m.stall.lock().unwrap() {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
         tokio::time::sleep(Duration::from_millis(60)).await;
         if *m.failing.lock().unwrap() {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -702,5 +730,86 @@ mod tests {
             .unwrap()
             .count();
         assert_eq!(leftovers, 0, "work directories are removed");
+    }
+
+    #[tokio::test]
+    async fn a_call_id_belongs_to_its_first_request_even_without_a_verdict() {
+        let fx = Fx::new().await;
+        let good = serde_json::to_vec(&report(&fx.e, &fx.id)).unwrap();
+        let entry = fx.output(&format!("usnm_gold_{}_0_0", fx.id), &good);
+        let other_entry = fx.output(&format!("usnm_gold_{}_1_0", fx.id), &good);
+        let base = fx.serve().await;
+        let a = body(
+            "wu12-rev1-check_set",
+            "usnm_gold",
+            vec![res(1, vec![entry])],
+        );
+        *fx.mock.failing.lock().unwrap() = true;
+        assert_eq!(
+            verdict(&post(&base, "usnm_gold", Some("hook"), &a).await.1, 1),
+            "retry"
+        );
+        // A different request under the same id is refused although no verdict was stored.
+        let b = body(
+            "wu12-rev1-check_set",
+            "usnm_gold",
+            vec![res(2, vec![other_entry])],
+        );
+        assert_eq!(post(&base, "usnm_gold", Some("hook"), &b).await.0, 409);
+        // The same request is evaluated again.
+        let before = fx.mock.fetches.load(Ordering::SeqCst);
+        *fx.mock.failing.lock().unwrap() = false;
+        assert_eq!(
+            verdict(&post(&base, "usnm_gold", Some("hook"), &a).await.1, 1),
+            "valid"
+        );
+        assert!(fx.mock.fetches.load(Ordering::SeqCst) > before);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_cache_entry_is_an_error_and_is_left_alone() {
+        let fx = Fx::new().await;
+        let base = fx.serve().await;
+        let b = body("wu13-rev1-check_set", "usnm_gold", vec![res(1, vec![])]);
+        let id: String = Sha256::digest(b"wu13-rev1-check_set")
+            .iter()
+            .map(|x| format!("{x:02x}"))
+            .collect();
+        // A directory where the entry should be: reading it fails with something but NotFound.
+        let entry = fx.state.path().join("calls").join(format!("{id}.request"));
+        std::fs::create_dir_all(entry.join("keep")).unwrap();
+        assert_eq!(post(&base, "usnm_gold", Some("hook"), &b).await.0, 500);
+        assert!(entry.join("keep").is_dir());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn one_timeout_covers_waiting_for_a_duplicate_and_the_work() {
+        let fx = Fx::new().await;
+        let good = serde_json::to_vec(&report(&fx.e, &fx.id)).unwrap();
+        let entry = fx.output(&format!("usnm_gold_{}_0_0", fx.id), &good);
+        *fx.mock.stall.lock().unwrap() = true;
+        let base = fx.serve().await;
+        let b = body(
+            "wu14-rev1-check_set",
+            "usnm_gold",
+            vec![res(1, vec![entry])],
+        );
+        let start = tokio::time::Instant::now();
+        let calls: Vec<_> = (0..2)
+            .map(|_| {
+                let (base, b) = (base.clone(), b.clone());
+                tokio::spawn(async move { post(&base, "usnm_gold", Some("hook"), &b).await })
+            })
+            .collect();
+        for c in calls {
+            assert_eq!(c.await.unwrap().0, 503);
+        }
+        // Budget 10 s. The second call waiting its turn and then running for its own 10 s would
+        // take about 20 s.
+        assert!(
+            start.elapsed() < Duration::from_secs(15),
+            "{:?}",
+            start.elapsed()
+        );
     }
 }
