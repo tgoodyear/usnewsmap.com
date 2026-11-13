@@ -206,8 +206,12 @@ def cmd_select(a):
             d = dmg.get(r["doc_id"], {})
             if getattr(a, "non_english", False) and (not d.get("lang") or lang_of(d["lang"]) == "eng"):
                 continue
+            # A page with no language, or one this feed doesn't know, would read as English below.
+            if getattr(a, "classified", False) and LANG_ALIASES.get(d.get("lang"), d.get("lang")) not in ALL_LANGS:
+                continue
             language = lang_of(d.get("lang"))
-            if ((getattr(a, "language", None) and language != a.language)
+            wanted = getattr(a, "language", None)
+            if ((wanted and language != LANG_ALIASES.get(wanted, wanted))
                     or language in excluded):
                 continue
             out.append({
@@ -1037,7 +1041,9 @@ def main(argv=None):
     s.add_argument("--out", required=True)
     s.add_argument("--order", choices=["damage", "fetched"], default="damage")
     s.add_argument("--non-english", action="store_true", help="only pages explicitly scored as non-English")
-    s.add_argument("--language", help="only pages in this language")
+    s.add_argument("--language", help="only pages in this language (fre, ger, cze and rum as their ISO 639-3 codes)")
+    s.add_argument("--classified", action="store_true",
+                   help="only pages whose damage record names a known language: none is taken as English")
     s.add_argument("--exclude-language", action="append",
                    help="leave out pages in this language; may repeat")
     s.add_argument("--scan-server", help="check actual scan availability before taking --count pages")

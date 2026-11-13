@@ -282,6 +282,9 @@ while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
       fi
     fi
   fi
+  # English is allowed only where the chunk goes at version 5; a Yiddish reroute never takes it.
+  eng=()
+  [ "$version" != 5 ] || eng=(${ENGLISH[@]+"${ENGLISH[@]}"})
   UNSENT=native-fresh-pair-gated
   if [ -z "$QWEN_PLAN" ]; then
     room_for "$chunk" || break
@@ -299,7 +302,7 @@ while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
     if in_ct podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
       --preflight --campaign "$target" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
       --max-pages "$pages" --max-ready "$QWEN_MAX_READY" --prompt-version "$version" \
-      ${bundle:+--bundle-size "$bundle"} ${ENGLISH[@]+"${ENGLISH[@]}"}; then
+      ${bundle:+--bundle-size "$bundle"} ${eng[@]+"${eng[@]}"}; then
       :
     else
       rc=$?
@@ -348,7 +351,7 @@ while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
       --campaign "$target" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
       --sample "$sample" --max-pages "$n" --max-ready "$QWEN_MAX_READY" --prompt-version "$version" \
       ${bundle:+--bundle-size "$bundle"} ${bundle:+${PAGE_RECORDS:+--page-records "$PAGE_RECORDS"}} \
-      ${ENGLISH[@]+"${ENGLISH[@]}"} --phase prepare; then
+      ${eng[@]+"${eng[@]}"} --phase prepare; then
       :
     else
       rc=$?
@@ -363,7 +366,7 @@ while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
       --campaign "$target" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
       --sample "$sample" --max-pages "$n" --max-ready "$QWEN_MAX_READY" --prompt-version "$version" \
       ${bundle:+--bundle-size "$bundle"} ${bundle:+${PAGE_RECORDS:+--page-records "$PAGE_RECORDS"}} \
-      ${SUBMIT_BINARY:+--submit-binary "$SUBMIT_BINARY"} ${ENGLISH[@]+"${ENGLISH[@]}"} --phase publish; then
+      ${SUBMIT_BINARY:+--submit-binary "$SUBMIT_BINARY"} ${eng[@]+"${eng[@]}"} --phase publish; then
       :
     else
       rc=$?

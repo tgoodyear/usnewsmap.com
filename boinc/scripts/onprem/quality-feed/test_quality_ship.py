@@ -224,6 +224,15 @@ elif "python3" in args and "-" in args:
                     self.assertEqual(call[call.index("--prompt-version") + 1], "5")
                     self.assertEqual(call[call.index("--campaign") + 1], "x08-eng")
                     self.assertEqual("--allow-english" in call, english)
+        # A Yiddish chunk rerouted to its version-4 root never carries the English flag.
+        (self.root / "calls.jsonl").unlink(missing_ok=True)
+        result = self.run_ship(["--prompt-version", "5", "--qwen-root", "x08-eng", "--qwen-yiddish-root",
+                                "guard-v4", "--qwen-allow-english"], langs="yid\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for call in self.native_calls():
+            self.assertEqual(call[call.index("--prompt-version") + 1], "4")
+            self.assertEqual(call[call.index("--campaign") + 1], "guard-v4")
+            self.assertNotIn("--allow-english", call)
 
     def test_a_bundle_size_is_native_only_and_bounded(self):
         for extra, native in ((["--qwen-bundle-size", "8"], False), (["--qwen-bundle-size", "1"], True),

@@ -381,7 +381,8 @@ def _ship_subsets(a):
             raise ValueError("active subset overlaps acknowledged membership")
         left = [member for member in parent["members"] if member["source"]["doc_id"] not in done]
         if left:
-            state = json.loads(remote(a.server_host, server + ["--inventory"]))
+            state = json.loads(remote(a.server_host, server + [
+                "--inventory", *(["--prompt-version", "5"] if version == 5 else [])]))
             pool = json.loads(remote(a.server_host, ["lvs", "--reportformat", "json", "--units", "b",
                                                     "--nosuffix", "-o", "lv_size,data_percent",
                                                     "pve/data"]))["report"][0]["lv"][0]
@@ -438,7 +439,8 @@ def _ship_subsets(a):
             submit = [*server[len(ct):], "--campaign", a.target, "--transaction", value["id"],
                       "--upload", transfer["upload"],
                       "--engine-plan", a.qwen_engine_plan, "--models", a.qwen_models,
-                      "--prompt-version", str(version), *(["--allow-english"] if getattr(a, "allow_english", False) else []),
+                      "--prompt-version", str(version),
+                      *(["--allow-english"] if getattr(a, "allow_english", False) and version == 5 else []),
                       "--max-ready", str(a.qwen_max_ready),
                       "--max-unresolved", str(a.max_unresolved), "--min-free-gb", str(a.min_free_gb)]
             script = (inspect.getsource(shipment.locked_transaction)
@@ -621,7 +623,8 @@ def _tick(a):
         command(python + [helper + "quality_feed.py", "select", "--index", work + "/index.jsonl",
                          "--staged", work + "/staged.txt", "--curated", "/srv/curated", "--count", str(limit),
                          "--out", work + "/selected.jsonl",
-                         *([] if listed_language == "eng" else ["--non-english"]), "--order", "damage",
+                         *(["--classified"] if listed_language == "eng" else ["--non-english"]),
+                         "--order", "damage",
                          "--damage-dsn-file", "/etc/usnm/quality-db/dsn",
                          "--scan-server", a.scan_server,
                          "--quarantine-state", quarantine_state, *filters])
