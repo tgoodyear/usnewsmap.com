@@ -1,0 +1,10 @@
+[Unit]
+Description=usnewsmap Xiaomi-OCR-0 held collection, every 30 minutes
+
+[Timer]
+OnBootSec=12min
+OnUnitInactiveSec=30min
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target

@@ -144,6 +144,17 @@ impl Target {
         }
     }
 
+    /// `workunit.priority` for this target's units, when not BOINC's default 0. The feeder
+    /// serves `priority desc, workunitid`, so Xiaomi-OCR-0 units (-1) fill the shared-memory
+    /// slots only after every production Qwen unit (0) is there, and never take a slot one of
+    /// them could have had (#1867).
+    pub fn priority(self) -> Option<&'static str> {
+        match self {
+            Self::NativeXiaomi => Some("-1"),
+            _ => None,
+        }
+    }
+
     pub fn batch_str(self) -> &'static str {
         match self {
             Self::Container => "12",
@@ -301,6 +312,9 @@ pub fn create_work_args_with_lock(
     .iter()
     .map(|s| s.to_string())
     .collect();
+    if let Some(priority) = target.priority() {
+        args.extend(["--priority".to_string(), priority.to_string()]);
+    }
     args.extend(workunit_physical_names_with_lock(
         job,
         target,
@@ -1008,6 +1022,16 @@ mod tests {
             create_work_args_with_lock(&x, Target::NativeXiaomi, EMBEDDED_WEIGHTS_LOCK).unwrap();
         assert!(args.contains(&"templates/usnm_qwen_x08_in".to_string()));
         assert!(args.windows(2).any(|w| w == ["--batch", "108"]));
+        // Below every production Qwen unit in the feeder's order; the others keep BOINC's default.
+        assert!(args.windows(2).any(|w| w == ["--priority", "-1"]));
+        for t in [
+            Target::Container,
+            Target::Container8b,
+            Target::Native8b,
+            Target::Native2b,
+        ] {
+            assert_eq!(t.priority(), None);
+        }
         assert_eq!(Target::NativeXiaomi.batch(), XIAOMI_BATCH);
         assert_eq!(Target::NativeXiaomi.batch_str(), XIAOMI_BATCH.to_string());
         assert!(args

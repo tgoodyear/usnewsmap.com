@@ -125,6 +125,18 @@ def run(args):
               "--campaign", args.campaign, "--server-host", args.server_host,
               "--server-ct", str(args.server_ct), "--ctid", str(args.ctid),
               "--snapshot-only", "--snapshot-id", snapshot])
+    if getattr(args, "hold", False):
+        # A held root (the Xiaomi-OCR-0 campaigns, #1867) is collected and pulled, never loaded:
+        # its readings stay out of the quality database until their gain is scored. The newest
+        # snapshot is kept as held/latest; an older one is replaced.
+        base = f"/var/lib/usnm-quality-feed/results/{args.campaign}"
+        script = ('set -eu; mkdir -p "$1/held"; rm -rf "$1/held/latest.new"; '
+                  'mv "$1/snapshots/$2" "$1/held/latest.new"; rm -rf "$1/held/latest"; '
+                  'mv "$1/held/latest.new" "$1/held/latest"')
+        subprocess.run(["pct", "exec", str(args.ctid), "--", "sh", "-c", script, "sh", base, snapshot],
+                       check=True, timeout=60)
+        return {"campaign": args.campaign, "held": f"{base}/held/latest/out/pages.parquet",
+                "loaded": False, "qwen_campaign": args.qwen_campaign}
     # Read the existing certificate-auth DSN only inside the preparation container.
     # A failed load is retried in full next tick; load.py's keys make this idempotent.
     load = [
@@ -187,6 +199,10 @@ def main(argv=None):
     parser.add_argument("--qwen-pages", metavar="DIR",
                         help="the server's `qwen compare --pages` directory, passed to collectors joining Qwen "
                              "readings so a bundle with no canonical result joins its agreed pages (#1435)")
+    parser.add_argument("--hold", action="store_true",
+                        help="collect and pull each root's snapshot but never load it: it is kept as "
+                             "held/latest under the preparation host's results directory until its gain "
+                             "is scored (Xiaomi-OCR-0 roots, #1867)")
     parser.add_argument("--incremental", action="store_true",
                         help="reuse native content-addressed rows; incomplete warming never loads")
     parser.add_argument("--max-dirty-units", type=int, default=8)
