@@ -4,3 +4,4 @@
 //! unchanged. See docs/boinc/server/bridge-steps.md, "Pull from the cloud BOINC server".
 pub mod cli;
 pub mod pull;
+pub mod spool_out;
