@@ -16,8 +16,10 @@ import os
 import re
 import shutil
 import subprocess
+import socket
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -745,14 +747,39 @@ assert not set(JOURNAL_LIST_DELIMITER) & set("0123456789abcdef/record.json")
 
 ONPREM_HANDOFF = {"claim": ("claim", "release", "dead-letter"), "collect": ("collect",),
                   "export": ("export",)}
+# The local expiring lock (--local-lock, #1367): the BOINC host holds the record, the controller
+# renews it every LOCK_HEARTBEAT_SECS, and a record unrenewed for LOCK_TTL_SECS is free.
+LOCK_HEARTBEAT_SECS = 30
+LOCK_TTL_SECS = 300
+# The controller stops dispatching this long before the lease could lapse, covering a step
+# already in flight and clock rounding; the host's clock decides, this one is conservative.
+LOCK_DISPATCH_MARGIN_SECS = 150
+# The hand-off steps that change state; with the local lock each carries the holder and
+# generation, and the host refuses it if the record has moved on.
+FENCED_HANDOFF_STEPS = frozenset(("claim", "release", "dead-letter", "collect", "export"))
+# The bridge steps that write the hand-off root (spool-out, the inventory) or dispatch work.
+FENCED_BRIDGE_STEPS = frozenset(("spool-out", "submit-remote", "batch-inventory"))
 
 
 class Transport:
     def __init__(self, config, directory, *, status_url=None, status_file=None,
                  batch_submit=False, batch_spool_out=False, batch_collect=False, batch_export=False,
                  onprem_handoff=(), timings=None, rest_journals=False, collect_parallel=1,
-                 skip_truncated=False, extra_claim_languages=(), step_lock_wait_secs=0):
+                 skip_truncated=False, extra_claim_languages=(), step_lock_wait_secs=0,
+                 local_lock=False):
         self.config = config
+        # --local-lock: the controller lock is a record on the BOINC host with a heartbeat, not
+        # an Azure lease or a local flock. Off by default.
+        require(not local_lock or (config.get("step_command") and set(onprem_handoff) == set(ONPREM_HANDOFF)),
+                "--local-lock needs the config's step_command and every hand-off step on-prem (claim, collect, export)")
+        # It replaces the Azure lease that archive, restore and reconcile still take, so it is
+        # only for a plan whose hand-off root is not in Azure.
+        require(not local_lock or "handoff_root" in config,
+                "--local-lock is for a plan with a local handoff_root, not one backed by Azure")
+        self.local_lock = local_lock
+        self.lock_fence = None
+        self.lock_lost = None
+        self.lock_deadline = None
         # --step-lock-wait-secs: how long LONG_LOCK_STEPS wait for the host's step lock (0: the host's own).
         require(0 <= step_lock_wait_secs <= MAX_STEP_LOCK_WAIT_SECS, "invalid --step-lock-wait-secs")
         self.step_lock_wait_secs = step_lock_wait_secs
@@ -922,8 +949,109 @@ class Transport:
                 "missing or unsafe local handoff object")
         return path
 
+    def _step_argv(self, target, step, variables):
+        # step_command runs the bridge steps somewhere other than the Azure bridge job, such as
+        # the on-prem BOINC host's boinc/scripts/onprem-step.sh over ssh (#942), with the same
+        # arguments. Hand-off steps stay on the Azure launcher unless chosen with
+        # onprem_handoff (--onprem-handoff), which sends them there too as --target handoff.
+        # The lock steps (--local-lock) always run there.
+        command = ["bash", str(REPO / "boinc/scripts/start-boinc-bridge.sh")]
+        lock_step = target == "handoff" and step.startswith("lock-")
+        onprem = target == "bridge" or (target == "handoff" and (step in self.onprem_steps or lock_step))
+        if onprem and self.config.get("step_command"):
+            command = self.config["step_command"]
+        variables = dict(variables)
+        if target == "handoff" and onprem and not lock_step:
+            variables["EXPECTED_HANDOFF_URL"] = self.handoff_url
+        if (((target == "handoff" and step in FENCED_HANDOFF_STEPS)
+             or (target == "bridge" and step in FENCED_BRIDGE_STEPS)) and onprem
+                and self.lock_fence is not None):
+            variables["LOCK_HOLDER"], variables["LOCK_GENERATION"] = self.lock_fence
+        wait_mins, timeout, extra = (2, 120, []) if lock_step else (30, 2100, [])
+        if (onprem and self.config.get("step_command") and self.step_lock_wait_secs
+                and (target, step) in LONG_LOCK_STEPS):
+            # The wait comes out of --wait-mins, so it is added to it: the step keeps its 30
+            # minutes after the lock is won. The command's own timeout follows.
+            wait_mins += -(-self.step_lock_wait_secs // 60)
+            timeout += self.step_lock_wait_secs + 60
+            extra = ["--lock-wait-secs", str(self.step_lock_wait_secs)]
+        argv = command + ["--env", self.config["env"],
+                          "--target", target, "--step", step, "--wait-mins", str(wait_mins)] + extra
+        for key, value in variables.items():
+            argv += ["--var", f"{key}={value}"]
+        route = "onprem" if onprem and self.config.get("step_command") else "azure"
+        return argv, timeout, f"{route}/{target}/{step}"
+
+    @contextlib.contextmanager
+    def _local_lock(self):
+        plan = re.sub(r"[^A-Za-z0-9._-]", "-", str(self.config.get("plan", "controller")))[:60]
+        holder = f"{plan}-{uuid.uuid4().hex[:12]}"
+        acquire_started = time.monotonic()
+        with self.timings.phase("lock"):
+            out = self.step("handoff", "lock-acquire", LOCK_HOLDER=holder,
+                            LOCK_HOST=re.sub(r"[^A-Za-z0-9._-]", "-", socket.gethostname()) or "controller",
+                            LOCK_PID=os.getpid(), LOCK_TTL=LOCK_TTL_SECS)
+        try:
+            generation = int(json.loads(out.strip().splitlines()[-1])["generation"])
+        except (ValueError, KeyError, IndexError, TypeError) as error:
+            raise RuntimeError("lock-acquire returned no generation") from error
+        self.lock_fence = (holder, generation)
+        self.lock_lost = None
+        # No dispatch after this (monotonic) time unless a renewal moved it on. It is measured
+        # from when the acquire or renewal was sent, so a slow reply never lengthens it.
+        self.lock_deadline = acquire_started + LOCK_TTL_SECS - LOCK_DISPATCH_MARGIN_SECS
+        stop = threading.Event()
+
+        def heartbeat():
+            while not stop.wait(LOCK_HEARTBEAT_SECS):
+                started = time.monotonic()
+                argv, timeout, _ = self._step_argv(
+                    "handoff", "lock-renew",
+                    {"LOCK_HOLDER": holder, "LOCK_GENERATION": generation, "LOCK_TTL": LOCK_TTL_SECS})
+                # An attempt may not outlast the lease: cap it by the time left on it.
+                lease_end = self.lock_deadline + LOCK_DISPATCH_MARGIN_SECS
+                timeout = max(1, min(timeout, int(lease_end - started)))
+                try:
+                    done = subprocess.run(argv, check=False, text=True, stdout=subprocess.PIPE,
+                                          stderr=subprocess.PIPE, timeout=timeout, cwd=REPO)
+                    ok, why = done.returncode == 0, done.stderr
+                except (OSError, subprocess.SubprocessError) as error:
+                    ok, why = False, str(error)
+                if ok:
+                    self.lock_deadline = started + LOCK_TTL_SECS - LOCK_DISPATCH_MARGIN_SECS
+                elif "lock moved on" in why or "lock expired" in why:
+                    self.lock_lost = "the controller lock was taken or expired"
+                    return
+                elif time.monotonic() >= self.lock_deadline + LOCK_DISPATCH_MARGIN_SECS:
+                    self.lock_lost = f"no lock renewal for {LOCK_TTL_SECS} s"
+                    return
+
+        thread = threading.Thread(target=heartbeat, name="lock-heartbeat", daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+            self.lock_fence = None
+            self.lock_deadline = None
+            try:
+                with self.timings.phase("unlock"):
+                    self.step("handoff", "lock-release", LOCK_HOLDER=holder, LOCK_GENERATION=generation)
+            except RuntimeError as error:
+                # A killed or failed release expires by itself within the TTL.
+                print(f"warning: lock-release failed ({error}); it expires in {LOCK_TTL_SECS} s",
+                      file=sys.stderr)
+
+    def lock_status(self):
+        return self.step("handoff", "lock-status")
+
     @contextlib.contextmanager
     def lock(self):
+        if self.local_lock:
+            with self._local_lock():
+                yield
+            return
         if self.handoff_root is not None:
             with (self.handoff_root / ".controller.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -967,30 +1095,14 @@ class Transport:
         return lease
 
     def step(self, target, step, **variables):
-        # step_command runs the bridge steps somewhere other than the Azure bridge job, such as
-        # the on-prem BOINC host's boinc/scripts/onprem-step.sh over ssh (#942), with the same
-        # arguments. Hand-off steps stay on the Azure launcher unless chosen with
-        # onprem_handoff (--onprem-handoff), which sends them there too as --target handoff.
-        command = ["bash", str(REPO / "boinc/scripts/start-boinc-bridge.sh")]
-        onprem = target == "bridge" or (target == "handoff" and step in self.onprem_steps)
-        if onprem and self.config.get("step_command"):
-            command = self.config["step_command"]
-        if target == "handoff" and onprem:
-            variables["EXPECTED_HANDOFF_URL"] = self.handoff_url
-        wait_mins, timeout, extra = 30, 2100, []
-        if (onprem and self.config.get("step_command") and self.step_lock_wait_secs
-                and (target, step) in LONG_LOCK_STEPS):
-            # The wait comes out of --wait-mins, so it is added to it: the step keeps its 30
-            # minutes after the lock is won. The command's own timeout follows.
-            wait_mins += -(-self.step_lock_wait_secs // 60)
-            timeout += self.step_lock_wait_secs + 60
-            extra = ["--lock-wait-secs", str(self.step_lock_wait_secs)]
-        argv = command + ["--env", self.config["env"],
-                          "--target", target, "--step", step, "--wait-mins", str(wait_mins)] + extra
-        for key, value in variables.items():
-            argv += ["--var", f"{key}={value}"]
-        route = "onprem" if onprem and self.config.get("step_command") else "azure"
-        self.run(argv, f"{target}/{step}", timeout=timeout, execution_route=f"{route}/{target}/{step}")
+        if self.lock_lost is not None and step not in ("lock-release", "lock-status"):
+            raise RuntimeError(f"controller lock lost: {self.lock_lost}; the tick stops")
+        if (self.lock_deadline is not None and step not in ("lock-release", "lock-status", "lock-renew")
+                and time.monotonic() >= self.lock_deadline):
+            self.lock_lost = f"no lock renewal inside {LOCK_TTL_SECS - LOCK_DISPATCH_MARGIN_SECS} s"
+            raise RuntimeError(f"controller lock lost: {self.lock_lost}; the tick stops")
+        argv, timeout, route = self._step_argv(target, step, variables)
+        return self.run(argv, f"{target}/{step}", timeout=timeout, execution_route=route)
 
     @timed("inventory")
     def inventory(self):
@@ -1384,6 +1496,11 @@ class Transport:
                 return False
         except OSError:
             pass
+        # These writes check neither holder nor generation, so a controller that lost the lock
+        # could change the list a successor relies on. Until they go through a fenced host step
+        # (write-held-pages), the local lock refuses to publish.
+        if self.local_lock:
+            raise RuntimeError("--local-lock cannot publish held pages yet: the write is not fenced")
         mine = f"{HELD_PAGES_PREFIX}{plan}."
         if self.handoff_root is not None:
             directory = self.handoff_root / HELD_PAGES_PREFIX
@@ -3367,6 +3484,9 @@ def main(argv=None):
                              "usnm-boinc-step as --lock-wait-secs, so install a launcher that takes it first")
     parser.add_argument("--rest-journals", action="store_true",
                         help="list and fetch journals over the storage REST API with az's token")
+    parser.add_argument("--local-lock", action="store_true",
+                        help="hold the controller lock as an expiring record on the BOINC host (30 s heartbeat, "
+                             "5 min TTL) through step_command, and fence the mutating hand-off steps with it (#1367)")
     parser.add_argument("--onprem-handoff", action="append", choices=sorted(ONPREM_HANDOFF), default=[],
                         help="run this hand-off step (claim, with its release, or collect) on the on-prem BOINC "
                              "host through step_command instead of the Azure hand-off job; repeat for both (#967)")
@@ -3408,6 +3528,11 @@ def main(argv=None):
         require(1 <= args.collect_parallel <= MAX_COLLECT_PARALLEL, "invalid --collect-parallel")
         require(args.collect_parallel == 1 or args.batch_collect, "--collect-parallel needs --batch-collect")
         surya = config.get("app") == SURYA_APP_NAME
+        require(not args.local_lock or (config.get("step_command") and not surya
+                                        and set(args.onprem_handoff) == set(ONPREM_HANDOFF)),
+                "--local-lock needs a hand-off plan with step_command and --onprem-handoff claim, collect and export")
+        require(not args.local_lock or "handoff_root" in config,
+                "--local-lock is for a plan with a local handoff_root, not one backed by Azure")
         require(not args.onprem_handoff or (config.get("step_command") and not surya),
                 "--onprem-handoff needs a hand-off plan with step_command")
         if not args.apply and surya:
@@ -3432,6 +3557,7 @@ def main(argv=None):
                 "allocated_pages": len(config["pages"]),
                 "max_pending": config["max_pending"], "config_sha256": digest(config),
                 "onprem_handoff": sorted(set(args.onprem_handoff)),
+                "local_lock": args.local_lock,
                 "batch_size": config["batch_size"],
                 "refill_cap": (config["batch_size"] if args.refill_cap is None
                                else min(config["batch_size"], args.refill_cap)),
@@ -3481,7 +3607,7 @@ def main(argv=None):
                 collect_parallel=args.collect_parallel, timings=timings,
                 skip_truncated=args.skip_truncated_scans,
                 extra_claim_languages=tuple(args.claim_language),
-                step_lock_wait_secs=args.step_lock_wait_secs,
+                step_lock_wait_secs=args.step_lock_wait_secs, local_lock=args.local_lock,
             )
             tick_kwargs = {"drain": args.drain, "dead_letter_failed": args.dead_letter_failed}
             if args.resume_native:
