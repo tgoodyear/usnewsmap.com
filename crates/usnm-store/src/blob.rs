@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, IF_MATCH, IF_NONE_MATCH};
 use reqwest::{Method, StatusCode, Url};
 
@@ -68,6 +69,8 @@ pub struct BlobStore {
 struct Tuning {
     /// A whole-object GET ([`ObjectStore::get`]).
     get: Retry,
+    /// A whole-object overwriting PUT ([`ObjectStore::put`]): [`Retry::PUT`].
+    put: Retry,
     /// Each request of a streamed upload: Get Block List, Put Block, Put
     /// Block List.
     write: Retry,
@@ -79,6 +82,7 @@ struct Tuning {
 impl Tuning {
     const STANDARD: Tuning = Tuning {
         get: Retry::STANDARD,
+        put: Retry::PUT,
         write: Retry::STANDARD,
         block_bytes: BLOCK_BYTES,
         block_timeout_floor: BLOCK_TIMEOUT_FLOOR,
@@ -258,6 +262,32 @@ fn transport(op: &'static str, path: &str, e: reqwest::Error) -> StoreError {
 
 impl BlobStore {
     /// [`ObjectStore::get`], tried as `retry` says.
+    async fn put_once(
+        &self,
+        path: &str,
+        body: Bytes,
+        content_type: &str,
+    ) -> Result<(), StoreError> {
+        let resp = self
+            .request(Method::PUT, path)
+            .await?
+            .header("x-ms-blob-type", "BlockBlob")
+            .header(CONTENT_TYPE, content_type)
+            .header(CONTENT_LENGTH, body.len())
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| transport("put", path, e))?;
+        match resp.status() {
+            StatusCode::CREATED => Ok(()),
+            s => Err(StoreError::Http {
+                op: "put",
+                path: path.into(),
+                status: s.as_u16(),
+            }),
+        }
+    }
+
     async fn get_retrying(&self, path: &str, retry: Retry) -> Result<Option<Vec<u8>>, StoreError> {
         retrying("get", path, retry, retryable, |_| self.get_once(path)).await
     }
@@ -398,25 +428,16 @@ impl ObjectStore for BlobStore {
         self.get_retrying(path, self.tuning.get).await
     }
 
+    /// Overwrites, so another try after a lost answer leaves the same object:
+    /// tried again after a connection failure, a timeout, 408, 429 or a 5xx
+    /// ([`Retry::PUT`]). Not `put_new`: a retry of a create that went
+    /// through would read as "already exists".
     async fn put(&self, path: &str, body: Vec<u8>, content_type: &str) -> Result<(), StoreError> {
-        let resp = self
-            .request(Method::PUT, path)
-            .await?
-            .header("x-ms-blob-type", "BlockBlob")
-            .header(CONTENT_TYPE, content_type)
-            .header(CONTENT_LENGTH, body.len())
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| transport("put", path, e))?;
-        match resp.status() {
-            StatusCode::CREATED => Ok(()),
-            s => Err(StoreError::Http {
-                op: "put",
-                path: path.into(),
-                status: s.as_u16(),
-            }),
-        }
+        let body = Bytes::from(body);
+        retrying("put", path, self.tuning.put, retryable, |_| {
+            self.put_once(path, body.clone(), content_type)
+        })
+        .await
     }
 
     async fn put_new(
@@ -632,7 +653,6 @@ impl BlobStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::Bytes;
 
     #[test]
     fn block_ids_name_their_bytes_and_place() {
@@ -812,6 +832,43 @@ mod tests {
         let got = store.get("pages/a.parquet").await.unwrap().unwrap();
         assert_eq!(got, b"hello world");
         assert_eq!(n.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn put_tries_again_after_a_busy_server_or_a_dropped_connection() {
+        use std::sync::atomic::Ordering;
+        // An empty reply is a connection closed with no answer.
+        let (url, n) = scripted(vec!["", BUSY, CREATED]).await;
+        let mut store = BlobStore::new(&url, cred()).unwrap();
+        store.tuning.put = FAST;
+        store
+            .put("spool/a.json", b"{}".to_vec(), "application/json")
+            .await
+            .unwrap();
+        assert_eq!(n.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn put_gives_up_on_a_refusal_at_once_and_a_busy_server_after_its_tries() {
+        use std::sync::atomic::Ordering;
+        let (url, n) = scripted(vec![DENIED]).await;
+        let mut store = BlobStore::new(&url, cred()).unwrap();
+        store.tuning.put = FAST;
+        let err = store
+            .put("spool/a.json", b"{}".to_vec(), "x")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Http { status: 403, .. }), "{err}");
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+        let (url, n) = scripted(vec![BUSY]).await;
+        let mut store = BlobStore::new(&url, cred()).unwrap();
+        store.tuning.put = FAST;
+        let err = store
+            .put("spool/a.json", b"{}".to_vec(), "x")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Http { status: 503, .. }), "{err}");
+        assert_eq!(n.load(Ordering::SeqCst), 4);
     }
 
     #[tokio::test]
@@ -1058,6 +1115,7 @@ mod tests {
         let mut s = BlobStore::new(url, cred()).unwrap();
         s.tuning = Tuning {
             get: FAST,
+            put: FAST,
             write: FAST,
             block_bytes: 1024,
             block_timeout_floor: Duration::from_millis(500),

@@ -1,5 +1,6 @@
 //! Trying a store request again after a failure that may pass: a dropped or
-//! hung connection, a busy service. Blob GETs, the blocks and commit of a
+//! hung connection, a busy service. Blob GETs, overwriting PUTs (the BOINC
+//! handoff spool, #1367), the blocks and commit of a
 //! streamed upload, and the on-prem publish's other requests
 //! (`usnm-ingest publish-staged`) go through [`retrying`].
 
@@ -24,6 +25,16 @@ impl Retry {
     pub const STANDARD: Retry = Retry {
         tries: 12,
         first_wait: Duration::from_millis(500),
+        max_wait: Duration::from_secs(60),
+    };
+
+    /// 5 tries, 8 s doubling to 60 s: 8 + 16 + 32 + 60 = 116 s of waits, for
+    /// the handoff's overwriting PUTs (#1367). A connect timeout is 10 s
+    /// and a request 120 s, so a blip is ridden out and a dead link fails
+    /// the step within a few minutes.
+    pub const PUT: Retry = Retry {
+        tries: 5,
+        first_wait: Duration::from_secs(8),
         max_wait: Duration::from_secs(60),
     };
 
@@ -123,6 +134,13 @@ mod tests {
             "{:?}",
             r.total_wait()
         );
+    }
+
+    #[test]
+    fn put_schedule_is_bounded_to_about_two_minutes() {
+        let r = Retry::PUT;
+        assert_eq!(r.tries, 5);
+        assert_eq!(r.total_wait(), Duration::from_secs(116));
     }
 
     #[test]
