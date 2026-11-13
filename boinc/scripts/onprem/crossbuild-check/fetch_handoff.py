@@ -44,6 +44,7 @@ def main():
     spec.loader.exec_module(check)
     images = check.selected_images(a.trust_file, a.image)
     now = dt.datetime.now(dt.timezone.utc)
+    a.dest.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix="xb-stage-", dir=a.dest.parent))
     try:
         az_download("spool/*/*__file_result.json", stage)  # one call: the manifests are small
