@@ -77,6 +77,9 @@ struct Ledger {
     outcome: String,
 }
 
+/// The limit `put_spool` puts on the trust file (`MAX_TRUST` in handoff.rs, not public).
+const MAX_TRUST: usize = 16 << 20;
+
 /// The file kinds a job's spool can hold, with the host id sidecar.
 const SUFFIXES: [&str; 6] = [
     "__file_result.json",
@@ -190,7 +193,15 @@ async fn hand_off(
     wu: &str,
 ) -> anyhow::Result<Outcome> {
     let host_id = read_host_id(&dir.join(format!("{wu}__host_id")))?;
-    let fingerprint = fingerprint(dir, wu, host_id, cfg.trust.as_deref())?;
+    // The destination is part of the fingerprint, so a job handed to one store is handed to
+    // another, and a ledger from a different --to-url never skips a delivery.
+    let fingerprint = fingerprint(
+        dir,
+        wu,
+        host_id,
+        cfg.trust.as_deref(),
+        cfg.to_url.as_deref().unwrap_or(""),
+    )?;
     let ledger_path = cfg.spool.join(".handed-off").join(format!("{wu}.json"));
     if !cfg.redo {
         if let Ok(bytes) = fs::read(&ledger_path) {
@@ -204,6 +215,9 @@ async fn hand_off(
         // Dry run: say it would be handed off, touch nothing.
         return Ok(Outcome::Done);
     };
+    if host_id.is_none() {
+        remove_stale_host_id(store, id).await?;
+    }
     let spooled = handoff::put_spool(store, None, dir, id, host_id, cfg.trust.as_deref()).await?;
     let outcome = match spooled {
         Spooled::Files(n) => format!("files:{n}"),
@@ -222,6 +236,34 @@ async fn hand_off(
         })?,
     )?;
     Ok(Outcome::Done)
+}
+
+/// `put_spool` writes `host_id` only when it has one, so an object left by an earlier hand-off
+/// (the sidecar said 42, now it says 0 or is gone) would still be read by `collect` as the
+/// host. The writer is bridge code and stays as it is; here the stale object is removed through
+/// the store before the new put. A store that cannot delete (no `list_info` / `delete_if_match`)
+/// fails the job with that message, and no ledger entry is written.
+async fn remove_stale_host_id(store: &dyn usnm_store::ObjectStore, id: &str) -> anyhow::Result<()> {
+    let path = format!("spool/{id}/host_id");
+    if !store.exists(&path).await? {
+        return Ok(());
+    }
+    let removed = async {
+        let listed = store.list_info(&format!("spool/{id}")).await?;
+        match listed.iter().find(|o| o.path == path) {
+            Some(o) => store.delete_if_match(&path, &o.etag).await,
+            None => Ok(true),
+        }
+    }
+    .await;
+    match removed {
+        Ok(true) => Ok(()),
+        Ok(false) => bail!("the stale {path} changed while it was being removed; run again"),
+        Err(e) => bail!(
+            "the hand-off store holds a host_id from an earlier hand-off ({path}), the spool now \
+             has none, and the store cannot delete it ({e}); remove that object, then run again"
+        ),
+    }
 }
 
 /// The sidecar's decimal host id. 0 (what `cloud pull` writes when the server gave none) and a
@@ -243,12 +285,16 @@ fn fingerprint(
     wu: &str,
     host_id: Option<u64>,
     trust: Option<&Path>,
+    destination: &str,
 ) -> anyhow::Result<String> {
     let mut h = Sha256::new();
-    for (name, _) in handoff::spool_names(wu) {
+    h.update(format!("to:{destination}\n").as_bytes());
+    for (name, max) in handoff::spool_names(wu) {
         let p = dir.join(&name);
         if p.exists() {
-            let bytes = fs::read(&p).with_context(|| p.display().to_string())?;
+            // The limit `put_spool` applies, so an oversized output is this job's failure,
+            // also in a dry run, and nothing unbounded is read.
+            let bytes = crate::read(&p, max).with_context(|| p.display().to_string())?;
             h.update((name.len() as u64).to_be_bytes());
             h.update(name.as_bytes());
             h.update((bytes.len() as u64).to_be_bytes());
@@ -257,7 +303,7 @@ fn fingerprint(
     }
     h.update(format!("host:{host_id:?}").as_bytes());
     if let Some(t) = trust {
-        h.update(fs::read(t).with_context(|| t.display().to_string())?);
+        h.update(crate::read(t, MAX_TRUST).with_context(|| t.display().to_string())?);
     }
     Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
@@ -394,6 +440,69 @@ mod tests {
         let r = spool_out_once(&fx.cfg(false)).await.unwrap();
         assert_eq!(r.handed_off.len(), 1);
         assert_eq!(fx.object(&format!("spool/{ID}/host_id")).unwrap(), b"43");
+    }
+
+    #[tokio::test]
+    async fn the_ledger_is_per_destination() {
+        let fx = Fx::new();
+        fx.success(ID, "42");
+        spool_out_once(&fx.cfg(false)).await.unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let mut cfg = fx.cfg(false);
+        cfg.to_url = Some(other.path().to_str().unwrap().to_owned());
+        let r = spool_out_once(&cfg).await.unwrap();
+        assert_eq!((r.handed_off.len(), r.already), (1, 0), "{r}");
+        assert_eq!(
+            fs::read(other.path().join(format!("spool/{ID}/host_id"))).unwrap(),
+            b"42"
+        );
+        // The same destination again is skipped.
+        let r = spool_out_once(&cfg).await.unwrap();
+        assert_eq!((r.handed_off.len(), r.already), (0, 1), "{r}");
+    }
+
+    #[tokio::test]
+    async fn a_host_id_that_goes_away_leaves_no_stale_object() {
+        let fx = Fx::new();
+        fx.success(ID, "42");
+        spool_out_once(&fx.cfg(false)).await.unwrap();
+        fx.put("7", &format!("usnm_{ID}__host_id"), "0");
+        let r = spool_out_once(&fx.cfg(false)).await.unwrap();
+        assert_eq!((r.handed_off.len(), r.failed.len()), (1, 0), "{r}");
+        let store = usnm_store::open(fx.store.path().to_str().unwrap()).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        assert_eq!(
+            handoff::get_spool(store.as_ref(), ID, out.path())
+                .await
+                .unwrap(),
+            handoff::Spool::Files(None)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_output_or_trust_file_is_a_job_failure() {
+        let fx = Fx::new();
+        fx.success(ID, "42");
+        fx.put(
+            "7",
+            &format!("usnm_{ID}__file_result.json"),
+            &"x".repeat(64 * 1024 + 1),
+        );
+        for dry in [false, true] {
+            let r = spool_out_once(&fx.cfg(dry)).await.unwrap();
+            assert_eq!((r.handed_off.len(), r.failed.len()), (0, 1), "{r}");
+        }
+        assert!(fs::read_dir(fx.store.path()).unwrap().next().is_none());
+        fx.success(ID, "42");
+        let trust = fx.spool.path().join("trust.json");
+        fs::write(&trust, vec![b' '; (16 << 20) + 1]).unwrap();
+        for dry in [false, true] {
+            let mut cfg = fx.cfg(dry);
+            cfg.trust = Some(trust.clone());
+            let r = spool_out_once(&cfg).await.unwrap();
+            assert_eq!((r.handed_off.len(), r.failed.len()), (0, 1), "{r}");
+        }
+        assert!(fs::read_dir(fx.store.path()).unwrap().next().is_none());
     }
 
     #[tokio::test]
