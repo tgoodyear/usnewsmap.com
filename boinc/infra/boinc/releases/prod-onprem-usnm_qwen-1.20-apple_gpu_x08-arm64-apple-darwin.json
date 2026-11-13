@@ -1,0 +1,79 @@
+{
+  "ct": "230",
+  "env": "prod",
+  "host": "pve.tjg.fyi",
+  "images": {
+    "base": "sha256:dc49f2267d8bfec9d7fdf503260b34897b4aad7edc1a4e5a5641d8a6e5da8f17",
+    "bin": "sha256:4f4eb60222759cbc6111efba39a8987379f2c2f206c357c3520f820df4f7f85a",
+    "bridge": "sha256:cbd83afd15d6d2136550630c706d67c6f1a2223088ddeb55a5f72ad07417fde1",
+    "server": "sha256:5a123d55115048dd4d5b2ed5ee773fa1b38f157ea5cceb284cb0e39ed909e28e",
+    "worker": null
+  },
+  "release": {
+    "app": "usnm_qwen",
+    "kind": "native",
+    "plan_class": "apple_gpu_x08",
+    "platform": "arm64-apple-darwin",
+    "version": "1.20"
+  },
+  "schema": 1,
+  "source_commit": "08b8b111807957eaa01d4675a7190ba9e679b05c",
+  "worker": {
+    "extra_files": {
+      "libggml-base.0.dylib": {
+        "sha256": "fd327bb1eebaeaf09f86af9ef8ed52465eb1ae26a60b0e0c438aa64e8bcce4bd",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "libggml-blas.0.dylib": {
+        "sha256": "505df04b85bf698d39dc18c4fa6256333d1cba44e7339505cdbd1a647db3c603",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "libggml-cpu.0.dylib": {
+        "sha256": "88648eb01a729e50b5fa70b6576ebcebf4ca222c4f80ee8e961c1922c95e0259",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "libggml-metal.0.dylib": {
+        "sha256": "2e4200eb9e88c1b22bbb920a02b7dd5398823b6d176ff52427b7cfac27ac7092",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "libggml-rpc.0.dylib": {
+        "sha256": "20fd1c13a55273dbb7be281e9b42bd51624d3d6cb83d0074440296778bcafa80",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "libggml.0.dylib": {
+        "sha256": "c3830dd10717fdf15bd9762a8a31598b0b71a5d7ab6623c0c43793676c54ac0d",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "libllama-common.0.dylib": {
+        "sha256": "861bca8c12cfd384281e8b263d59ce4a8a95d5c4e7ece49e6b8b9227ef9a15e2",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "libllama-server-impl.dylib": {
+        "sha256": "4df4f9fc60561985de6fc9fc7abeb7d1f9b738fa1cadbe3f59b50b22a6514cbf",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "libllama.0.dylib": {
+        "sha256": "14a629e103dd9d715363a43c64e3b339b72ac588e83572402c2e4892ebff0a12",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "libmtmd.0.dylib": {
+        "sha256": "9df5aeb1a95c876272313fdd0cbe8833d0acea5cdb46113ab1ba6fad73913e49",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "llama-server": {
+        "sha256": "3d81b7997317e5ffd13ed3ba32436658e0f4067172cea3674b4215b39d4635be",
+        "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
+      },
+      "llama.lock": {
+        "sha256": "019e48000a55442f61cbaae4d20c60edc6c28b080efb010dc174d2e77237262a",
+        "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+      },
+      "weights.lock": {
+        "sha256": "72320dec77fcb16982a21f85fdc1003308ea818604625b909c05b3519b0480e7",
+        "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+      }
+    },
+    "sha256": "73618a6aa3c745ff38997e33100d7a257d5abe82ecc704ae096a448b8b770c89",
+    "source_commit": "ca6faf967fb0925f5de341c3803ab930091e31e4"
+  }
+}

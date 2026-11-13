@@ -1,6 +1,7 @@
 //! Native OCR spot checks (#1863, docs/boinc/apps/native-ocr.md): a native page a trusted host
 //! returned is read again by a second host trusted for the same build, or for a build
-//! `native-build-trust.json` lists as identical, and the two results are compared byte for byte.
+//! `native-build-trust.json` lists as identical, and the two results are compared byte for byte,
+//! except that ALTO confidence attributes (`WC`, `CC`, `PC`) are left out (#1835).
 //!
 //! The controller (`boinc/scripts/batch_scheduler.py`) picks which pages, after their results
 //! came back and were published, so a host can't tell at dispatch which of its units will be
@@ -591,13 +592,20 @@ async fn check_one(
             p,
             &path,
             &mut journal,
-            outcome(r, Status::Match, "text and ALTO bytes identical"),
+            outcome(
+                r,
+                Status::Match,
+                "text bytes and ALTO (without confidences) identical",
+            ),
             execute,
         );
     }
     let detail = format!(
-        "text {} against {}, ALTO {} against {}",
-        original.text_sha256, replay.text_sha256, original.alto_sha256, replay.alto_sha256
+        "text {} against {}, ALTO without confidences {} against {}",
+        original.text_sha256,
+        replay.text_sha256,
+        original.alto_exact_sha256,
+        replay.alto_exact_sha256
     );
     mismatch(p, &path, &mut journal, r, &job, detail, execute)
 }
