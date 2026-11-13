@@ -811,6 +811,8 @@ mod tests {
         let mut m = Mock::default();
         wu_ok(&mut m, 1, 1, &[("o1", Some("result.json"), b"good")]);
         m.outputs.insert("o1".into(), b"evil".to_vec());
+        // No header, so it is the body's MD5 that catches this.
+        m.no_md5_header = true;
         wu_ok(&mut m, 2, 1, &[("o2", Some("result.json"), b"fine")]);
         let (s, base) = serve(m).await;
         let spool = tempfile::tempdir().unwrap();
