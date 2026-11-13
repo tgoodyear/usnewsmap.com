@@ -303,6 +303,11 @@ WantedBy=timers.target
 points at it. This change serves the gold apps (`usnm_gold`, `usnm_gold_native`) only. It is for the dev cloud server
 only: nothing in the running bridge or the stock validators calls it, nothing is installed, and no tunnel is configured.
 
+It is not in any default build: no worker image, native app or bridge image build passes the feature, so their `usnm-boinc`
+binary does not have the subcommand. Build it where you run it, with
+`cargo build --release --locked -p usnm-boinc --features cloud-validatord`. The unit tests of the service run in every
+`cargo test` of the crate.
+
 ```
 usnm-boinc cloud validatord --secret-file <webhook token> --state-dir <dir> --gold-dir <project gold/> \
   --base-url https://<dev server> --token-file <admin token> [--listen 127.0.0.1:8787]

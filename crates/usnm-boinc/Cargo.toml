@@ -6,6 +6,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+# `cloud validatord` (the cloud server's validation webhook) is not in any default build.
+# Build it with `cargo build --release -p usnm-boinc --features cloud-validatord`.
+[features]
+cloud-validatord = ["dep:axum"]
+
 [dependencies]
 async-trait.workspace = true
 usnm-core = { workspace = true, features = ["damage"] }
@@ -20,8 +25,8 @@ usnm-alto.workspace = true
 usnm-ocr-worker = { path = "../usnm-ocr-worker" }
 usnm-ocr-local.workspace = true
 anyhow.workspace = true
-# The dev-only validator webhook service (cloud validatord); it was a dev-dependency (tests).
-axum.workspace = true
+# The dev-only validator webhook service (cloud validatord), built only with that feature.
+axum = { workspace = true, optional = true }
 arrow-array.workspace = true
 arrow-schema.workspace = true
 parquet.workspace = true
@@ -44,6 +49,7 @@ tokio = { workspace = true, features = ["process"] }
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
 usnm-test-support.workspace = true
 rustix = { workspace = true, features = ["event"] }
 tokio = { workspace = true, features = ["test-util"] }

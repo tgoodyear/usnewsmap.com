@@ -167,6 +167,7 @@ fn yes() -> bool {
 
 impl OutFile {
     /// A file as a listing or a validation request names it, for `download`.
+    #[cfg(any(test, feature = "cloud-validatord"))]
     pub(super) fn listed(name: &str, nbytes: u64, md5: &str) -> OutFile {
         OutFile {
             name: name.to_owned(),

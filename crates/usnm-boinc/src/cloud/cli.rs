@@ -1,6 +1,7 @@
 //! The `usnm-boinc cloud` command line. `main.rs` only names the group.
 use super::pull::{self, Config};
 use super::spool_out;
+#[cfg(any(test, feature = "cloud-validatord"))]
 use super::validatord;
 use anyhow::{bail, Context};
 use clap::{Args, Subcommand};
@@ -16,9 +17,11 @@ pub enum CloudCommands {
     SpoolOut(SpoolOutArgs),
     /// The cloud server's validation webhook for the gold apps (POST /v1/validate/<app>). Dev
     /// only; nothing in the running bridge calls it.
+    #[cfg(any(test, feature = "cloud-validatord"))]
     Validatord(ValidatordArgs),
 }
 
+#[cfg(any(test, feature = "cloud-validatord"))]
 #[derive(Args)]
 pub struct ValidatordArgs {
     /// Where to listen. Loopback by default: the service speaks plain http, so put TLS in front.
@@ -104,6 +107,7 @@ pub struct PullArgs {
     interval_secs: u64,
 }
 
+#[cfg(any(test, feature = "cloud-validatord"))]
 fn read_token(file: &Option<PathBuf>, env: &str) -> anyhow::Result<String> {
     let t = match file {
         Some(p) => std::fs::read_to_string(p)
@@ -119,6 +123,7 @@ fn read_token(file: &Option<PathBuf>, env: &str) -> anyhow::Result<String> {
 
 pub async fn run(command: CloudCommands) -> anyhow::Result<()> {
     match command {
+        #[cfg(any(test, feature = "cloud-validatord"))]
         CloudCommands::Validatord(a) => {
             if !a.listen.ip().is_loopback() && !a.allow_non_loopback {
                 bail!("--listen is not a loopback address; add --allow-non-loopback to serve it");
