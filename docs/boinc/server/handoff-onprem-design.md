@@ -113,16 +113,15 @@ and renewed through the step runner.
   and CT 230 clock skew cannot shorten a lease. The renew step returns the
   server-side expiry.
 
-### 3. Azure as an optional, asynchronous backup
+### 3. An optional, asynchronous R2 backup
 
 - A separate timer on CT 230 (not a tick step) copies the handoff root's
-  durable objects (journals, spool, trust, alto) one way to
-  `boinc-handoff` with `azcopy sync` or `usnm-boinc` using Entra ID / the Arc
-  managed identity. No SAS, no shared keys, no anonymous access.
+  durable objects (journals, spool, trust, alto) one way to a Cloudflare R2
+  bucket, using a bucket-scoped R2 API token (the repo's R2 docs pattern).
+  Never the account-wide keys.
 - Failure of the copy raises a feed-health alert and never fails or delays a
   tick, a claim or a collect. Nothing on-prem reads the copy back.
-- If the maintainer prefers a non-Azure offsite copy, Cloudflare R2 works the
-  same way (a one-way object copy). Durable Objects or a Worker API are not
+- Durable Objects or a Worker API are not
   proposed for the handoff: the BOINC Workers session advised against putting a
   cloud API in the controller's hot path, since it recreates this failure, and
   there is no switch date for the cloud server.
@@ -178,13 +177,17 @@ verify no writer remains).
 - Changing spool names, layout or the BOINC MySQL read path.
 - SAS tokens or shared keys for any remaining Azure access.
 
-## Open questions
+## Decisions
 
-1. Read steps over ssh versus moving the controller to CT 230 (above).
-2. Heartbeat 30 s / TTL 5 min is a guess; a pve-big power cycle or ssh stall
-   longer than that fails a tick cleanly, which seems right.
-3. Is a backup copy to Azure still wanted once the 11 Nov one-way push of
-   `reference` and the index exists, or should the offsite copy be R2?
-4. `put_new` is not retried in #1883 because a retried create reads as
-   "already exists". Moot after this change, but worth knowing for any step
-   that stays on Azure meanwhile.
+The maintainer decided the earlier open questions (PR #1884 comment):
+
+1. The controller stays on CT 211 and reads journals and inventory through
+   new ssh read steps on CT 230.
+2. The lock uses a 30 s heartbeat and a 5 min TTL.
+3. The optional offsite async copy goes to Cloudflare R2, not Azure. R2 does
+   not take Entra ID or managed identity, so the copy uses the scoped R2 API
+   token pattern from the repo's R2 docs, never shared account keys.
+
+Still noted: `put_new` is not retried in #1883 because a retried create reads
+as "already exists". That is moot after this change, but applies to any step
+that stays on Azure meanwhile.
