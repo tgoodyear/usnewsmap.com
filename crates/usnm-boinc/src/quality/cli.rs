@@ -188,6 +188,15 @@ pub enum QualityCommands {
         /// Bound recomputation per pass; incomplete cache warming never publishes partial tables.
         #[arg(long, default_value_t = 8)]
         max_dirty_units: usize,
+        /// Start no further dirty unit once the run has taken this many seconds (a unit already
+        /// started finishes); the rest is deferred like `--max-dirty-units`. Bounds how long a
+        /// pass holds the server's step lock.
+        #[arg(long, value_name = "SECONDS", requires = "cache")]
+        max_compute_secs: Option<u64>,
+        /// Compute and store row parts without publishing, so the run needs no step lock; the
+        /// locked publication that follows finds them cached. Prints no tables.
+        #[arg(long, requires = "cache", conflicts_with_all = ["out_dir", "curated_url", "inventory_only"])]
+        warm_only: bool,
         /// Emit bounded canonical dependency fingerprints only; no row computation or publication.
         #[arg(long, requires = "cache")]
         inventory_only: bool,
@@ -203,7 +212,7 @@ pub enum QualityCommands {
         /// A local directory instead of the curated store.
         #[arg(
             long,
-            required_unless_present = "curated_url",
+            required_unless_present_any = ["curated_url", "warm_only"],
             conflicts_with = "curated_url"
         )]
         out_dir: Option<PathBuf>,
@@ -468,6 +477,8 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             qwen_pages,
             cache,
             max_dirty_units,
+            max_compute_secs,
+            warm_only,
             inventory_only,
             inventory_unit,
             surya_root,
@@ -486,6 +497,8 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
                 qwen_pages,
                 cache,
                 max_dirty_units,
+                max_compute: max_compute_secs.map(std::time::Duration::from_secs),
+                warm_only,
                 surya_root,
                 surya_spool,
                 out_dir,

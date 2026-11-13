@@ -26,9 +26,14 @@ Environment=CROP_STATES_ARGS=
 # validator's bundle verdict is page-v1: without it a collector joins a bundle that pair settled by
 # its pages with the canonical reading of every page, the disagreed ones included.
 Environment=QWEN_PAGES_ARGS=
+# Once every collector named above is from #1817 on: WARM_ARGS="--warm-without-lock", so the step
+# lock is held only to publish (a locked run is bounded to about 3 minutes) and the row parts are
+# computed before it without the lock. Older collectors reject `--warm-only`.
+Environment=WARM_ARGS=
 EnvironmentFile=-/etc/usnm/quality-results.env
 EnvironmentFile=-/etc/usnm/quality-results-qwen.env
-ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/quality_results.py $NATIVE_QWEN_ARGS $CROP_STATES_ARGS $QWEN_PAGES_ARGS --engine-image ${ENGINE_IMAGE} --ctid ${CTID} --incremental --collector ${QUALITY_COLLECTOR} --step-lock-wait-secs 60
-# A root can take about 30 minutes at worst, and there are three.
-TimeoutStartSec=100min
+ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/quality_results.py $NATIVE_QWEN_ARGS $CROP_STATES_ARGS $QWEN_PAGES_ARGS $WARM_ARGS --engine-image ${ENGINE_IMAGE} --ctid ${CTID} --incremental --collector ${QUALITY_COLLECTOR} --step-lock-wait-secs 60
+# Without WARM_ARGS a root can take about 30 minutes at worst, and there are three. With it a root
+# can warm for 25 minutes (--warm-budget-secs) after a collector change, before its short locked run.
+TimeoutStartSec=3h
 Nice=10

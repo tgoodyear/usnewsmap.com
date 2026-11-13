@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import shlex
+import tempfile
 import sys
 import time
 import threading
@@ -189,6 +190,199 @@ class ResultsTest(unittest.TestCase):
                         with self.assertRaises(type(error)):
                             results.run(self.args())
                         self.assertEqual(run.call_count, phase + 1)
+
+    def warm_args(self):
+        args = self.args()
+        args.incremental = True
+        args.step_lock_wait_secs = 60
+        args.warm_without_lock = True
+        args.warm_budget_secs = 1500
+        args.warm_round_secs = 600
+        args.locked_compute_secs = 20
+        args.locked_timeout_secs = 150
+        args.collector = "/project/ops/qwen-feed/new/usnm-boinc"
+        directory = tempfile.TemporaryDirectory(dir=HERE)
+        self.addCleanup(directory.cleanup)
+        args.lock = Path(directory.name) / "host.lock"
+        args.host_lock_wait_secs = 0
+        return args
+
+    @staticmethod
+    def progress(deferred, dirty=3):
+        return json.dumps({"phase": "warm", "progress": {"dirty": dirty, "deferred": deferred}}) + "\n"
+
+    def test_warm_without_lock_computes_first_then_takes_the_lock_only_to_publish(self):
+        args = self.warm_args()
+        locked = (results.LOCK_ACQUIRED + " 2026-11-12T08:00:00Z\n"
+                  + '{"phase":"collect","progress":{"dirty":0,"deferred":false}}\n'
+                  + results.LOCK_RELEASED + " 2026-11-12T08:01:10Z\n")
+        replies = [self.progress(True), self.progress(False), locked]
+        calls = []
+
+        def fake(command, **kwargs):
+            calls.append(command)
+            if command[0] == "ssh":
+                return subprocess.CompletedProcess(command, 0, stderr=replies.pop(0))
+            return subprocess.CompletedProcess(command, 0)
+
+        with mock.patch.object(results.subprocess, "run", side_effect=fake), \
+                mock.patch.object(results.sys, "stderr", new_callable=io.StringIO) as log:
+            self.assertEqual(results.run(args)["campaign"], "v1-test")
+        warm1, warm2, publish = (c[-1] for c in calls[:3])
+        for warm in (warm1, warm2):
+            self.assertNotIn("flock", warm)
+            self.assertNotIn("--out-dir", warm)
+            self.assertIn("nice -n 15 timeout --signal=TERM --kill-after=30s 900s", warm)
+            self.assertIn("--warm-only --max-dirty-units 100000 --max-compute-secs 600", warm)
+            self.assertIn("--cache /project/quality/v1-test/collected-parts", warm)
+        self.assertIn("flock -w 60 -E 75 /run/usnm-boinc-step.lock", publish)
+        self.assertIn("timeout --signal=TERM --kill-after=30s 150s", publish)
+        self.assertIn("--max-dirty-units 8 --max-compute-secs 20", publish)
+        self.assertNotIn("--warm-only", publish)
+        self.assertIn("--out-dir /project/quality/v1-test/out", publish)
+        self.assertEqual(len(calls), 6)  # two warm rounds, publish, pull, load, cleanup
+        held = [json.loads(line) for line in log.getvalue().splitlines() if "step_lock_held" in line]
+        self.assertEqual(held, [{"phase": "step_lock_held", "seconds": 70.0}])
+
+    def test_a_failed_or_silent_warm_round_never_takes_the_lock(self):
+        for reply in (subprocess.CompletedProcess(["ssh"], 1, stderr="boom\n"),
+                      subprocess.CompletedProcess(["ssh"], 0, stderr="no progress line\n")):
+            with self.subTest(code=reply.returncode), \
+                    mock.patch.object(results.subprocess, "run", return_value=reply) as run:
+                with self.assertRaises((subprocess.CalledProcessError, RuntimeError)):
+                    results.run(self.warm_args())
+                self.assertEqual(run.call_count, 1)
+                self.assertNotIn("flock", run.call_args.args[0][-1])
+
+    def test_warming_stops_when_its_budget_is_spent_and_publication_still_decides(self):
+        args = self.warm_args()
+        args.warm_budget_secs = 60
+        clock = iter([0, 0, 1000, 1000, 1000])
+        locked = results.LOCK_ACQUIRED + " 2026-11-12T08:00:00Z\n"
+        replies = [self.progress(True), locked]
+        calls = []
+
+        def fake(command, **kwargs):
+            calls.append(command)
+            if command[0] == "ssh":
+                return subprocess.CompletedProcess(command, 0, stderr=replies.pop(0))
+            return subprocess.CompletedProcess(command, 0)
+
+        with mock.patch.object(results.subprocess, "run", side_effect=fake), \
+                mock.patch.object(results.time, "monotonic", side_effect=lambda: next(clock)), \
+                mock.patch.object(results.sys, "stderr", new_callable=io.StringIO) as log:
+            results.run(args)
+        self.assertEqual(len(calls), 5)  # one warm round, publish, pull, load, cleanup
+        self.assertIn("warm_budget_spent", log.getvalue())
+
+    def test_warming_runs_while_the_host_lock_is_held_and_publication_defers_instead_of_waiting(self):
+        args = self.warm_args()
+        calls = []
+
+        def fake(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stderr=self.progress(False))
+
+        with args.lock.open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # the partial loader's pass
+            with mock.patch.object(results.subprocess, "run", side_effect=fake), \
+                    mock.patch.object(results.sys, "stderr", new_callable=io.StringIO) as log:
+                with self.assertRaises(subprocess.CalledProcessError) as error:
+                    results.run(args)
+        self.assertEqual(error.exception.returncode, 75)  # run_native reports it as deferred
+        self.assertEqual(len(calls), 1)  # the warm round ran; no step lock, pull or load did
+        self.assertNotIn("flock", calls[0][-1])
+        self.assertIn("host_lock_busy", log.getvalue())
+
+    def test_publication_waits_for_a_gap_in_the_host_lock(self):
+        args = self.warm_args()
+        args.host_lock_wait_secs = 30
+        calls = []
+
+        def fake(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stderr=self.progress(False)
+                                               if len(calls) == 1 else results.LOCK_ACQUIRED + " 2026-11-12T08:00:00Z\n")
+
+        with args.lock.open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            timer = threading.Timer(0.3, lambda: fcntl.flock(lock, fcntl.LOCK_UN))
+            timer.start()
+            try:
+                with mock.patch.object(results.subprocess, "run", side_effect=fake):
+                    self.assertEqual(results.run(args)["campaign"], "v1-test")
+            finally:
+                timer.join()
+        self.assertEqual(len(calls), 5)  # warm, publish, pull, load, cleanup
+
+    def test_the_whole_run_of_a_warming_service_holds_its_own_lock_not_the_host_lock(self):
+        path, warm_path = self.root_lock("host.lock"), self.root_lock("warm.lock")
+        argv = ["--campaign", "v1-test", "--engine-image", "sha256:" + "a" * 64, "--incremental",
+                "--step-lock-wait-secs", "60", "--warm-without-lock",
+                "--lock", str(path), "--warm-lock", str(warm_path)]
+        with path.open("a") as host, mock.patch.object(results, "run", return_value={}) as run:
+            fcntl.flock(host, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            results.main(argv)
+            run.assert_called_once()
+            with warm_path.open("a") as other:
+                fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with self.assertRaises(BlockingIOError):
+                    results.main(argv)
+
+    def root_lock(self, name):
+        directory = tempfile.TemporaryDirectory(dir=HERE)
+        self.addCleanup(directory.cleanup)
+        return Path(directory.name) / name
+
+    def test_a_publication_with_more_to_compute_than_the_lock_allows_is_deferred_not_failed(self):
+        args = self.warm_args()
+        locked = (results.LOCK_ACQUIRED + " 2026-11-12T08:00:00Z\n"
+                  + '{"phase":"collect","progress":{"dirty":2,"deferred":true}}\n'
+                  + results.LOCK_RELEASED + " 2026-11-12T08:00:50Z\n")
+        replies = [self.progress(False), locked]
+        calls = []
+
+        def fake(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 1 if len(calls) == 2 else 0,
+                                               stderr=replies.pop(0))
+
+        with mock.patch.object(results.subprocess, "run", side_effect=fake), \
+                mock.patch.object(results.sys, "stderr", new_callable=io.StringIO) as log:
+            with self.assertRaises(subprocess.CalledProcessError) as error:
+                results.run(args)
+        self.assertEqual(error.exception.returncode, 75)  # run_native reports it as deferred
+        self.assertEqual(len(calls), 2)  # nothing pulled or loaded
+        self.assertIn('"phase": "collection_deferred"', log.getvalue())
+        self.assertNotIn('"phase": "collection_failed"', log.getvalue())
+
+    def test_a_receipt_cut_off_by_a_timeout_is_still_an_acquisition(self):
+        with mock.patch.object(results.sys, "stderr", new_callable=io.StringIO) as log:
+            self.assertTrue(results.replay_collection_diagnostics(results.LOCK_ACQUIRED + " \n"))
+            self.assertTrue(results.replay_collection_diagnostics(
+                results.LOCK_ACQUIRED + " 2026-11-12T08:00:00Z\n" + results.LOCK_RELEASED + " \n"))
+        self.assertNotIn("step_lock_held", log.getvalue())
+
+    def test_the_lock_is_let_go_by_a_shell_that_says_so(self):
+        args = self.args()
+        args.step_lock_wait_secs = 60
+        replies = [results.LOCK_ACQUIRED + " 2026-11-12T08:00:00Z\n"]
+        with mock.patch.object(results.subprocess, "run",
+                               return_value=subprocess.CompletedProcess(["ssh"], 0, stderr=replies[0])) as run:
+            results.run(args)
+        remote = shlex.split(run.call_args_list[0].args[0][-1])
+        script = remote[remote.index("-c") + 1]
+        self.assertIn(results.LOCK_RELEASED, script)
+        self.assertNotIn("exec", script)  # exec would end the shell before it could say so
+
+    def test_warming_without_the_lock_needs_a_cache_and_a_lock_wait(self):
+        for extra in (["--step-lock-wait-secs", "60"], ["--incremental"]):
+            with self.subTest(extra=extra), mock.patch.object(results, "run") as run:
+                with self.assertRaises(SystemExit) as error:
+                    results.main(["--campaign", "test", "--engine-image", "sha256:" + "a" * 64,
+                                  "--warm-without-lock", *extra])
+                self.assertEqual(error.exception.code, 2)
+                run.assert_not_called()
 
     def test_native_qwen_joins_matching_campaign_and_batch8_without_submission(self):
         args = self.args()
