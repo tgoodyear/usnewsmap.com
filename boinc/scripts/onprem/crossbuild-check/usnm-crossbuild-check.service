@@ -1,4 +1,4 @@
-# Daily cross-build check of native OCR (#1418, #1418's tracking issue): re-reads 10 Windows pages with the
+# Daily cross-build check of native OCR (#1418, #1911): re-reads 10 Windows pages with the
 # Linux build and compares. Needs /etc/usnm-crossbuild-check.env (see README.md). Exit status 3 means a
 # page was flagged; the unit then shows as failed and its journal line says which.
 [Unit]
