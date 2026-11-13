@@ -56,10 +56,10 @@ def main() -> None:
             continue
         src = m["source_image"]
         if a.provenance:
-            alto, image = os.path.join(a.root, prov[src]), os.path.join(a.image_dir, src)
+            alto, image = os.path.abspath(os.path.join(a.root, prov[src])), os.path.abspath(os.path.join(a.image_dir, src))
         else:
             stem = src.rsplit(".", 1)[0]
-            alto, image = os.path.join(a.alto_dir, stem + ".xml"), os.path.join(a.alto_dir, stem + ".jpg")
+            alto, image = (os.path.abspath(os.path.join(a.alto_dir, stem + ext)) for ext in (".xml", ".jpg"))
         key = page_key(m)
         c = crops[cid]
         page = pages.setdefault(key, {"page": key, "source": m.get("page_url"), "date": c["date"],

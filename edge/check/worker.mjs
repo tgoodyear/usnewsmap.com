@@ -211,8 +211,9 @@ async function api(request, env, url) {
     const c = await contributorOf(request, env, { limited: true });
     const b = await body(request);
     if (typeof b.task !== "string" || b.task.length > 300 || !CHOICES.has(b.choice)) throw new HttpError(400, "task and choice required");
-    const t = await env.DB.prepare("SELECT id FROM tasks WHERE id = ?").bind(b.task).first();
+    const t = await env.DB.prepare("SELECT id, settled, json_type(body, '$.private') AS blind FROM tasks WHERE id = ?").bind(b.task).first();
     if (!t) throw new HttpError(404, "no such task");
+    if (t.settled && t.blind) throw new HttpError(409, "this word is already checked");
     await record(env, b.task, c, b.choice);
     return json({ ok: true });
   }
@@ -295,11 +296,17 @@ UPDATE tasks SET
   outcome = (SELECT CASE WHEN n >= ${SETTLE_MIN} AND top * 3 >= n * 2 THEN pick WHEN n >= ${DISPUTE_AT} THEN 'disputed' END FROM t)
 WHERE id = ?1`;
 
+// A settled blind task (its body has `private`) takes no more answers, so a revision can't reopen it after its
+// readings were exported. The condition is in the statement, so it holds against a racing request too.
+export const ANSWER_SQL = `
+INSERT INTO answers (task_id, contributor, choice, at)
+SELECT ?1, ?2, ?3, ?4
+WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND settled = 1 AND json_type(body, '$.private') IS NOT NULL)
+ON CONFLICT (task_id, contributor) DO UPDATE SET choice = excluded.choice, at = excluded.at`;
+
 export async function record(env, task, contributor, choice, at = Date.now()) {
   await env.DB.batch([
-    env.DB.prepare(
-      "INSERT INTO answers (task_id, contributor, choice, at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (task_id, contributor) DO UPDATE SET choice = excluded.choice, at = excluded.at",
-    ).bind(task, contributor, choice, at),
+    env.DB.prepare(ANSWER_SQL).bind(task, contributor, choice, at),
     env.DB.prepare(SETTLE_SQL).bind(task),
   ]);
 }

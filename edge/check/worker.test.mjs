@@ -177,3 +177,20 @@ test("a blind task's private fields stay off /api/next, and off /api/export unti
   assert.equal(lines[2].a_is, "loc");
   assert.equal("strata" in lines[2], false);
 });
+
+test("a settled blind task takes no more answers, and other tasks still take revisions", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { ANSWER_SQL, SETTLE_SQL } = await import("./worker.mjs");
+  const { readFileSync } = await import("node:fs");
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('blind', 'en', 's', ?), ('plain', 'chr', 's', '{}')").run(JSON.stringify({ private: { a_is: "loc" } }));
+  const answer = (task, who, choice) => { db.prepare(ANSWER_SQL).run(task, who, choice, 0); db.prepare(SETTLE_SQL).run(task); };
+  const row = (id) => ({ ...db.prepare("SELECT n, settled, outcome FROM tasks WHERE id = ?").get(id) });
+  for (const id of ["blind", "plain"]) { answer(id, "c1", "a"); answer(id, "c2", "a"); answer(id, "c3", "b"); }
+  assert.deepEqual(row("blind"), { n: 3, settled: 1, outcome: "a" });
+  for (const id of ["blind", "plain"]) answer(id, "c1", "unsure");
+  assert.deepEqual(row("blind"), { n: 3, settled: 1, outcome: "a" }, "the blind task stays settled");
+  assert.equal(db.prepare("SELECT choice FROM answers WHERE task_id = 'blind' AND contributor = 'c1'").get().choice, "a");
+  assert.deepEqual(row("plain"), { n: 3, settled: 0, outcome: null }, "other tasks reopen as before");
+});

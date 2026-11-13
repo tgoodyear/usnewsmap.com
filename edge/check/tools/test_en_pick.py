@@ -37,6 +37,20 @@ class Align(unittest.TestCase):
         pairs, c = en_pick.aligned_words("a b xqz c d".split(), "a b the c d".split(), 0.5, 3)
         self.assertEqual((pairs, c["left_out_dissimilar"]), ([], 1))
 
+    def test_offsetting_split_and_join_are_not_paired(self):
+        a = "we visited New York today at noon".split()
+        b = "we visited NewYork to day at noon".split()
+        pairs, c = en_pick.aligned_words(a, b, 0.5, 3)
+        self.assertEqual(pairs, [])
+        self.assertEqual(c["left_out_dissimilar"] + c["left_out_split_joined_or_dropped"], 3)
+
+    def test_one_word_per_distinct_pair_on_a_page_across_crops(self):
+        page = {"page": "p", "date": "1900-01-01"}
+        rows = [{"id": f"en/t/p_c{i}~1", "page": page, "loc": "tbe", "xiaomi": "the"} for i in range(3)]
+        rows.append({"id": "en/t/p_c9~2", "page": page, "loc": "wltb", "xiaomi": "with"})
+        got = en_pick.sample(rows, type("A", (), {"seed": "1", "per_page": 8, "per_stratum": 0})())
+        self.assertEqual(sorted((r["loc"], r["xiaomi"]) for r in got), [("tbe", "the"), ("wltb", "with")])
+
     def test_truth_side(self):
         self.assertEqual(en_pick.who_is_right("tbe", "the", "the"), "xiaomi")
         self.assertEqual(en_pick.who_is_right("the", "tbe", "the"), "loc")

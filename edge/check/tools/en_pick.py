@@ -18,7 +18,7 @@ words where the two differ. A pair is made only when it is certain:
   * the two readings agree on most of the crop (--min-agree): if not, they cover different stretches of print;
   * the differing stretch is bracketed by words both readings agree on (a word at the very start or end of a
     crop is cut by the crop's edge), and has as many words on each side, at most --max-block, paired by position;
-  * each pair is at least --min-similarity alike (a word one reading split, joined or dropped is not a pair);
+  * each pair is at least --min-similarity alike (a word one reading split, joined or dropped is not a pair; the whole stretch is left out if any word in it fails);
   * neither word is without letters or digits; with --skip-punctuation-only, a pair whose letters and digits agree is
     left out too (on by default; --keep-punctuation-only to keep them).
 
@@ -136,12 +136,16 @@ def aligned_words(a: list, b: list, min_similarity: float, max_block: int) -> tu
         elif i2 - i1 > max_block:
             c["left_out_long_block"] += i2 - i1
         else:
-            for k in range(i2 - i1):
-                i, j = i1 + k, j1 + k
-                if SequenceMatcher(None, a[i], b[j], autojunk=False).ratio() < min_similarity:
-                    c["left_out_dissimilar"] += 1
-                else:
-                    pairs.append((i, j))
+            # The whole block or none of it: one unlike pair (York/to) or a split or join (New York/NewYork) in
+            # a block means the readings cover different stretches of print, even when the word counts agree.
+            fa, fb = a[i1:i2], b[j1:j2]
+            block = [(i1 + k, j1 + k) for k in range(i2 - i1)]
+            if any(SequenceMatcher(None, a[i], b[j], autojunk=False).ratio() < min_similarity for i, j in block):
+                c["left_out_dissimilar"] += i2 - i1
+            elif any(bt.split_or_joined(fa, fb, i - i1, j - j1) for i, j in block):
+                c["left_out_split_joined_or_dropped"] += i2 - i1
+            else:
+                pairs.extend(block)
     return pairs, c
 
 
@@ -200,13 +204,16 @@ def candidates(page: dict, args, root: str, stats: Counter) -> list:
             stats["crops_without_a_reading"] += 1
             continue
         if SequenceMatcher(None, loc, xi, autojunk=False).ratio() < args.min_agree:
+            # its differing words count as left out, so the skip rate includes what this rule drops
             stats["crops_left_out_readings_disagree_too_much"] += 1
+            matched = sum(blk.size for blk in SequenceMatcher(None, loc, xi, autojunk=False).get_matching_blocks())
+            stats["differing_loc_words"] += len(loc) - matched
+            stats["left_out_crop_readings_disagree"] += len(loc) - matched
             continue
         stats["crops_used"] += 1
         pairs, c = aligned_words(loc, xi, args.min_similarity, args.max_block)
         stats.update(c)
         tw = truth_for(loc, bt.clean(crop["truth"]).split()) if crop.get("truth") else None
-        seen = set()
         for i, j in pairs:
             wl, wx = loc[i], xi[j]
             if not bt.has_letter(wl) or not bt.has_letter(wx):
@@ -215,10 +222,6 @@ def candidates(page: dict, args, root: str, stats: Counter) -> list:
             if args.skip_punctuation_only and bt.letters_only(wl, {}) == bt.letters_only(wx, {}):
                 stats["left_out_punctuation_only"] += 1
                 continue
-            if (wl, wx) in seen:
-                stats["left_out_repeated_pair"] += 1
-                continue
-            seen.add((wl, wx))
             stats["candidates"] += 1
             task_id = f"{args.lang}/{args.set}/{key}_{slug(str(crop['id']))}~{i}"
             row = {"id": task_id, "page": page, "crop": crop["id"], "k": i, "loc": wl, "xiaomi": wx, "word": loc_words[i]}
@@ -243,7 +246,14 @@ def sample(rows: list, args) -> list:
         by_page.setdefault(r["page"]["page"], []).append(r)
     kept = []
     for page_rows in by_page.values():
-        kept.extend(sorted(page_rows, key=lambda r: rank(args.seed, r["id"]))[:args.per_page])
+        seen = set()
+        for r in sorted(page_rows, key=lambda r: rank(args.seed, r["id"])):
+            if (r["loc"], r["xiaomi"]) in seen:  # one word for each distinct pair of readings on a page, in any crop
+                continue
+            seen.add((r["loc"], r["xiaomi"]))
+            kept.append(r)
+            if len(seen) == args.per_page:
+                break
     if args.per_stratum:
         strata = {}
         for r in sorted(kept, key=lambda r: rank(args.seed, r["id"])):
@@ -343,7 +353,8 @@ def main() -> None:
         "pages": len(counts), "min": counts[0] if counts else 0, "median": counts[len(counts) // 2] if counts else 0,
         "mean": round(sum(counts) / len(counts), 2) if counts else 0, "max": counts[-1] if counts else 0}
     left_out = sum(v for k, v in stats.items() if k.startswith("left_out_") and k in (
-        "left_out_at_crop_edge", "left_out_split_joined_or_dropped", "left_out_long_block", "left_out_dissimilar"))
+        "left_out_at_crop_edge", "left_out_split_joined_or_dropped", "left_out_long_block", "left_out_dissimilar",
+        "left_out_crop_readings_disagree"))
     report["alignment_skip_rate"] = round(left_out / stats["differing_loc_words"], 4) if stats["differing_loc_words"] else None
     with open(os.path.join(args.out_dir, "report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, indent=1)
