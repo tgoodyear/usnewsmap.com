@@ -176,10 +176,11 @@ esac
 # The controller's local expiring lock (#1367, boinc/scripts/handoff_lock.py), kept in the
 # hand-off root. lock-* steps run on the host with no container. A mutating hand-off step given
 # LOCK_HOLDER and LOCK_GENERATION first checks that the stored record is still that holder's
-# unexpired generation (fencing); the two never reach the container. Without them nothing changes.
+# unexpired generation (fencing), as do the bridge steps that write the root or dispatch work
+# (spool-out, submit-remote, batch-inventory); the two never reach the container. Without them nothing changes.
 HANDOFF_LOCK_ROOT=${USNM_BOINC_HANDOFF_ROOT:-/srv/usnm-boinc/handoff-state}
 LOCK_TOOL=$(dirname "$(readlink -f "$0")")/handoff_lock.py
-if [ "$TARGET" = handoff ]; then
+if [ "$TARGET" = handoff ] || [ "$TARGET" = bridge ]; then
   fence_holder="" fence_generation="" kept=() lock_args=()
   for v in ${VARS[@]+"${VARS[@]}"}; do
     case $v in
@@ -191,8 +192,8 @@ if [ "$TARGET" = handoff ]; then
       *) kept+=("$v") ;;
     esac
   done
-  case $STEP in
-    lock-*)
+  case $TARGET/$STEP in
+    handoff/lock-*)
       [ ${#kept[@]} -eq 0 ] || die "--step $STEP takes only LOCK_HOLDER, LOCK_GENERATION, LOCK_HOST, LOCK_PID and LOCK_TTL"
       [ -f "$LOCK_TOOL" ] || die "no $LOCK_TOOL: install handoff_lock.py beside this script"
       [ -d "$HANDOFF_LOCK_ROOT" ] && [ ! -L "$HANDOFF_LOCK_ROOT" ] || die "no local hand-off root $HANDOFF_LOCK_ROOT"
@@ -200,7 +201,8 @@ if [ "$TARGET" = handoff ]; then
       [ -z "$fence_generation" ] || lock_args+=(--generation "$fence_generation")
       $WHAT_IF && { echo "would run $LOCK_TOOL ${STEP#lock-} on $HANDOFF_LOCK_ROOT"; exit 0; }
       exec python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" "${STEP#lock-}" ${lock_args[@]+"${lock_args[@]}"} ;;
-    claim | release | dead-letter | collect | export)
+    handoff/claim | handoff/release | handoff/dead-letter | handoff/collect | handoff/export | \
+      bridge/spool-out | bridge/submit-remote | bridge/batch-inventory)
       if [ -n "$fence_holder$fence_generation" ]; then
         [ -n "$fence_holder" ] && [ -n "$fence_generation" ] || die "LOCK_HOLDER and LOCK_GENERATION go together"
         if ! $WHAT_IF; then

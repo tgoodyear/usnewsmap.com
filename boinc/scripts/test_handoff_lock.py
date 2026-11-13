@@ -9,6 +9,7 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from datetime import timedelta
 from pathlib import Path
@@ -98,10 +99,10 @@ class StepTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def step(self, step, *variables, what_if=False):
+    def step(self, step, *variables, what_if=False, target="handoff"):
         env = {"PATH": os.environ["PATH"], "USNM_BOINC_CONF": str(self.root),
                "USNM_BOINC_STEP_RUN": str(self.root), "USNM_BOINC_HANDOFF_ROOT": str(self.state)}
-        argv = ["bash", str(SCRIPT), "--env", "prod", "--target", "handoff", "--step", step,
+        argv = ["bash", str(SCRIPT), "--env", "prod", "--target", target, "--step", step,
                 "--wait-mins", "1"]
         for variable in variables:
             argv += ["--var", variable]
@@ -123,6 +124,16 @@ class StepTests(unittest.TestCase):
         self.assertNotEqual(self.step("lock-renew", "LOCK_HOLDER=a-1", "LOCK_GENERATION=9").returncode, 0)
         self.assertEqual(self.step("lock-release", "LOCK_HOLDER=a-1", "LOCK_GENERATION=1").returncode, 0)
         self.assertTrue(json.loads(self.step("lock-status").stdout)["expired"])
+
+    def test_bridge_writers_are_fenced_too(self):
+        lock.acquire(self.state, "a-1", "h", 1)
+        for name in ("spool-out", "submit-remote", "batch-inventory"):
+            refused = self.step(name, "LOCK_HOLDER=zz", "LOCK_GENERATION=1", target="bridge")
+            self.assertIn("not this controller's", refused.stderr, name)
+            ok = self.step(name, "LOCK_HOLDER=a-1", "LOCK_GENERATION=1", target="bridge")
+            self.assertNotIn("not this controller's", ok.stderr, name)
+        other = self.step("register-apps", "LOCK_HOLDER=a-1", "LOCK_GENERATION=1", target="bridge")
+        self.assertIn("is not fenced", other.stderr)
 
     def test_lock_steps_take_no_other_variable(self):
         done = self.step("lock-status", "JOB_ID=" + "a" * 64)
@@ -181,11 +192,15 @@ class StepTests(unittest.TestCase):
 
 
 class ControllerTests(unittest.TestCase):
-    def transport(self, **kwargs):
+    def transport(self, azure=False, **kwargs):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         config = {"env": "prod", "account": "exchange123", "plan": "queue-a",
                   "step_command": ["ssh", "root@boinc.example", "--"]}
+        if kwargs.get("local_lock") and not azure:
+            root = Path(tmp.name).resolve() / "root"
+            root.mkdir(mode=0o700)
+            config["handoff_root"] = str(root)
         return batch.Transport(config, Path(tmp.name), **kwargs)
 
     def test_off_by_default_and_needs_step_command(self):
@@ -196,6 +211,37 @@ class ControllerTests(unittest.TestCase):
     def test_incomplete_on_prem_routing_is_refused(self):
         with self.assertRaisesRegex(ValueError, "every hand-off step"):
             self.transport(local_lock=True, onprem_handoff=("claim",))
+
+    def test_azure_backed_plan_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "not one backed by Azure"):
+            self.transport(azure=True, local_lock=True, onprem_handoff=("claim", "collect", "export"))
+
+    def test_held_pages_are_not_published_under_the_local_lock(self):
+        transport = self.transport(local_lock=True, onprem_handoff=("claim", "collect", "export"))
+        with self.assertRaisesRegex(RuntimeError, "not fenced"):
+            transport.publish_held({"doc": ["a" * 64]})
+
+    def test_bridge_writers_are_fenced_and_dispatch_stops_at_the_deadline(self):
+        transport = self.transport(local_lock=True, onprem_handoff=("claim", "collect", "export"))
+        calls = []
+
+        def run(argv, label, **kwargs):
+            calls.append(argv)
+            return json.dumps({"generation": 7}) if label == "handoff/lock-acquire" else ""
+
+        with patch.object(transport, "run", side_effect=run), \
+                patch.object(batch, "LOCK_HEARTBEAT_SECS", 3600):
+            with transport.lock():
+                for name in ("spool-out", "submit-remote", "batch-inventory"):
+                    transport.step("bridge", name, JOB_ID="1" * 64)
+                    self.assertIn("LOCK_GENERATION=7", calls[-1])
+                transport.step("bridge", "register-apps")
+                self.assertFalse(any(v.startswith("LOCK_") for v in calls[-1]))
+                transport.lock_deadline = time.monotonic() - 1
+                before = len(calls)
+                with self.assertRaisesRegex(RuntimeError, "controller lock lost"):
+                    transport.step("bridge", "submit-remote", JOB_ID="1" * 64)
+                self.assertEqual(len(calls), before)
 
     def test_lock_steps_run_on_the_host_and_mutating_steps_are_fenced(self):
         transport = self.transport(local_lock=True, onprem_handoff=("claim", "collect", "export"))

@@ -751,9 +751,14 @@ ONPREM_HANDOFF = {"claim": ("claim", "release", "dead-letter"), "collect": ("col
 # renews it every LOCK_HEARTBEAT_SECS, and a record unrenewed for LOCK_TTL_SECS is free.
 LOCK_HEARTBEAT_SECS = 30
 LOCK_TTL_SECS = 300
+# The controller stops dispatching this long before the lease could lapse, covering a step
+# already in flight and clock rounding; the host's clock decides, this one is conservative.
+LOCK_DISPATCH_MARGIN_SECS = 150
 # The hand-off steps that change state; with the local lock each carries the holder and
 # generation, and the host refuses it if the record has moved on.
 FENCED_HANDOFF_STEPS = frozenset(("claim", "release", "dead-letter", "collect", "export"))
+# The bridge steps that write the hand-off root (spool-out, the inventory) or dispatch work.
+FENCED_BRIDGE_STEPS = frozenset(("spool-out", "submit-remote", "batch-inventory"))
 
 
 class Transport:
@@ -767,9 +772,14 @@ class Transport:
         # an Azure lease or a local flock. Off by default.
         require(not local_lock or (config.get("step_command") and set(onprem_handoff) == set(ONPREM_HANDOFF)),
                 "--local-lock needs the config's step_command and every hand-off step on-prem (claim, collect, export)")
+        # It replaces the Azure lease that archive, restore and reconcile still take, so it is
+        # only for a plan whose hand-off root is not in Azure.
+        require(not local_lock or "handoff_root" in config,
+                "--local-lock is for a plan with a local handoff_root, not one backed by Azure")
         self.local_lock = local_lock
         self.lock_fence = None
         self.lock_lost = None
+        self.lock_deadline = None
         # --step-lock-wait-secs: how long LONG_LOCK_STEPS wait for the host's step lock (0: the host's own).
         require(0 <= step_lock_wait_secs <= MAX_STEP_LOCK_WAIT_SECS, "invalid --step-lock-wait-secs")
         self.step_lock_wait_secs = step_lock_wait_secs
@@ -953,7 +963,8 @@ class Transport:
         variables = dict(variables)
         if target == "handoff" and onprem and not lock_step:
             variables["EXPECTED_HANDOFF_URL"] = self.handoff_url
-        if (target == "handoff" and step in FENCED_HANDOFF_STEPS and onprem
+        if (((target == "handoff" and step in FENCED_HANDOFF_STEPS)
+             or (target == "bridge" and step in FENCED_BRIDGE_STEPS)) and onprem
                 and self.lock_fence is not None):
             variables["LOCK_HOLDER"], variables["LOCK_GENERATION"] = self.lock_fence
         wait_mins, timeout, extra = (2, 120, []) if lock_step else (30, 2100, [])
@@ -975,6 +986,7 @@ class Transport:
     def _local_lock(self):
         plan = re.sub(r"[^A-Za-z0-9._-]", "-", str(self.config.get("plan", "controller")))[:60]
         holder = f"{plan}-{uuid.uuid4().hex[:12]}"
+        acquire_started = time.monotonic()
         with self.timings.phase("lock"):
             out = self.step("handoff", "lock-acquire", LOCK_HOLDER=holder,
                             LOCK_HOST=re.sub(r"[^A-Za-z0-9._-]", "-", socket.gethostname()) or "controller",
@@ -985,14 +997,20 @@ class Transport:
             raise RuntimeError("lock-acquire returned no generation") from error
         self.lock_fence = (holder, generation)
         self.lock_lost = None
+        # No dispatch after this (monotonic) time unless a renewal moved it on. It is measured
+        # from when the acquire or renewal was sent, so a slow reply never lengthens it.
+        self.lock_deadline = acquire_started + LOCK_TTL_SECS - LOCK_DISPATCH_MARGIN_SECS
         stop = threading.Event()
 
         def heartbeat():
-            last_ok = time.monotonic()
             while not stop.wait(LOCK_HEARTBEAT_SECS):
+                started = time.monotonic()
                 argv, timeout, _ = self._step_argv(
                     "handoff", "lock-renew",
                     {"LOCK_HOLDER": holder, "LOCK_GENERATION": generation, "LOCK_TTL": LOCK_TTL_SECS})
+                # An attempt may not outlast the lease: cap it by the time left on it.
+                lease_end = self.lock_deadline + LOCK_DISPATCH_MARGIN_SECS
+                timeout = max(1, min(timeout, int(lease_end - started)))
                 try:
                     done = subprocess.run(argv, check=False, text=True, stdout=subprocess.PIPE,
                                           stderr=subprocess.PIPE, timeout=timeout, cwd=REPO)
@@ -1000,11 +1018,11 @@ class Transport:
                 except (OSError, subprocess.SubprocessError) as error:
                     ok, why = False, str(error)
                 if ok:
-                    last_ok = time.monotonic()
+                    self.lock_deadline = started + LOCK_TTL_SECS - LOCK_DISPATCH_MARGIN_SECS
                 elif "lock moved on" in why or "lock expired" in why:
                     self.lock_lost = "the controller lock was taken or expired"
                     return
-                elif time.monotonic() - last_ok >= LOCK_TTL_SECS:
+                elif time.monotonic() >= self.lock_deadline + LOCK_DISPATCH_MARGIN_SECS:
                     self.lock_lost = f"no lock renewal for {LOCK_TTL_SECS} s"
                     return
 
@@ -1016,6 +1034,7 @@ class Transport:
             stop.set()
             thread.join(timeout=5)
             self.lock_fence = None
+            self.lock_deadline = None
             try:
                 with self.timings.phase("unlock"):
                     self.step("handoff", "lock-release", LOCK_HOLDER=holder, LOCK_GENERATION=generation)
@@ -1077,6 +1096,10 @@ class Transport:
 
     def step(self, target, step, **variables):
         if self.lock_lost is not None and step not in ("lock-release", "lock-status"):
+            raise RuntimeError(f"controller lock lost: {self.lock_lost}; the tick stops")
+        if (self.lock_deadline is not None and step not in ("lock-release", "lock-status", "lock-renew")
+                and time.monotonic() >= self.lock_deadline):
+            self.lock_lost = f"no lock renewal inside {LOCK_TTL_SECS - LOCK_DISPATCH_MARGIN_SECS} s"
             raise RuntimeError(f"controller lock lost: {self.lock_lost}; the tick stops")
         argv, timeout, route = self._step_argv(target, step, variables)
         return self.run(argv, f"{target}/{step}", timeout=timeout, execution_route=route)
@@ -1473,6 +1496,11 @@ class Transport:
                 return False
         except OSError:
             pass
+        # These writes check neither holder nor generation, so a controller that lost the lock
+        # could change the list a successor relies on. Until they go through a fenced host step
+        # (write-held-pages), the local lock refuses to publish.
+        if self.local_lock:
+            raise RuntimeError("--local-lock cannot publish held pages yet: the write is not fenced")
         mine = f"{HELD_PAGES_PREFIX}{plan}."
         if self.handoff_root is not None:
             directory = self.handoff_root / HELD_PAGES_PREFIX
@@ -3503,6 +3531,8 @@ def main(argv=None):
         require(not args.local_lock or (config.get("step_command") and not surya
                                         and set(args.onprem_handoff) == set(ONPREM_HANDOFF)),
                 "--local-lock needs a hand-off plan with step_command and --onprem-handoff claim, collect and export")
+        require(not args.local_lock or "handoff_root" in config,
+                "--local-lock is for a plan with a local handoff_root, not one backed by Azure")
         require(not args.onprem_handoff or (config.get("step_command") and not surya),
                 "--onprem-handoff needs a hand-off plan with step_command")
         if not args.apply and surya:
