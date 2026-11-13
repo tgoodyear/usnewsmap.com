@@ -13,6 +13,7 @@ dispatch/jobs/<64 hex>/record.json, listed before and after reading and refused 
 import argparse
 import hashlib
 import json
+import os
 import re
 import stat
 import sys
@@ -36,17 +37,40 @@ def safe(root, name):
     return path
 
 
+def read_bounded(path, limit):
+    """The bytes of a regular file, opened once without following a link and read at most
+    limit + 1 bytes, so a file swapped in after a size check cannot get past the limit."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        raise ReadError("missing or unsafe object") from None
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise ReadError("missing or unsafe object")
+        data = handle.read(limit + 1)
+    if len(data) > limit:
+        raise ReadError("object exceeds limit")
+    return data
+
+
+def check_root(root):
+    """The same root the runner demands before it mounts one: canonical, owned by the runner's
+    user and mode 0700, so no other account can plant what the controller then trusts."""
+    info = root.stat()
+    if (not root.is_absolute() or root.resolve() != root or info.st_uid != os.geteuid()
+            or info.st_mode & 0o777 != 0o700):
+        raise ReadError("hand-off root must be canonical, owned by the runner user and mode 0700")
+
+
 def read_object(root, name, optional=False):
     path = safe(root, name)
     if not path.exists() and not path.is_symlink():
         if optional:
             return "null"
         raise ReadError("missing or unsafe object")
-    if path.resolve() != path or not stat.S_ISREG(path.stat().st_mode):
+    if path.resolve() != path:
         raise ReadError("missing or unsafe object")
-    if path.stat().st_size > MAX_OBJECT:
-        raise ReadError("object exceeds limit")
-    text = path.read_text()
+    text = read_bounded(path, MAX_OBJECT).decode()
     json.loads(text)
     return text.strip()
 
@@ -78,10 +102,10 @@ def read_journals(root):
     names = listing(root)
     journals = {}
     for name in names:
-        path = root / name
-        if path.stat().st_size > MAX_JOURNAL:
-            raise ReadError("invalid/oversized journal metadata")
-        data = path.read_bytes()
+        try:
+            data = read_bounded(root / name, MAX_JOURNAL)
+        except ReadError:
+            raise ReadError("invalid/oversized journal metadata") from None
         record = json.loads(data)
         if record["job"]["id"] != name.split("/")[2]:
             raise ReadError("journal filename/identity mismatch")
@@ -89,7 +113,7 @@ def read_journals(root):
     if listing(root) != names:
         raise ReadError("journal inventory changed during read")
     for name, item in journals.items():
-        if hashlib.sha256((root / name).read_bytes()).hexdigest() != item["sha256"]:
+        if hashlib.sha256(read_bounded(root / name, MAX_JOURNAL)).hexdigest() != item["sha256"]:
             raise ReadError("journal changed during read")
     return json.dumps({"journals": journals}, sort_keys=True, separators=(",", ":"))
 
@@ -106,6 +130,7 @@ def main(argv=None):
     try:
         if not args.root.is_dir() or args.root.is_symlink():
             raise ReadError("hand-off root is not a directory")
+        check_root(args.root)
         if args.command == "read-object":
             print(read_object(args.root, args.object, args.optional))
         else:

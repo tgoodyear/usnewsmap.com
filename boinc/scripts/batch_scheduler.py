@@ -776,8 +776,8 @@ class Transport:
                 "--local-lock needs the config's step_command and every hand-off step on-prem (claim, collect, export)")
         # It replaces the Azure lease that archive, restore and reconcile still take, so it is
         # only for a plan whose hand-off root is not in Azure.
-        require(not local_lock or "handoff_root" in config,
-                "--local-lock is for a plan with a local handoff_root, not one backed by Azure")
+        require(not local_lock or "handoff_root" in config or ssh_reads,
+                "--local-lock is for a plan with a local handoff_root or --ssh-reads, not one backed by Azure")
         self.local_lock = local_lock
         # --ssh-reads: the hand-off root is on the BOINC host and this controller reads inventory,
         # journals and objects through read steps over step_command, not from a directory.

@@ -13,8 +13,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import batch_scheduler as batch
-import handoff_read as read
+import importlib.util
+
+
+def load(name):
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(f"{name}.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+batch = load("batch_scheduler")
+read = load("handoff_read")
 
 SCRIPT = Path(__file__).resolve().parent / "onprem-step.sh"
 JOB = "a" * 64
@@ -63,6 +73,25 @@ class HelperTests(unittest.TestCase):
         journal(self.root, "c" * 64, {"job": {"id": "d" * 64}})
         with self.assertRaisesRegex(read.ReadError, "identity mismatch"):
             read.read_journals(self.root)
+
+    def test_root_must_be_runner_owned_and_mode_0700(self):
+        self.root.chmod(0o700)
+        read.check_root(self.root)
+        self.root.chmod(0o770)
+        with self.assertRaisesRegex(read.ReadError, "mode 0700"):
+            read.check_root(self.root)
+        self.assertEqual(read.main(["--root", str(self.root), "read-journals"]), 1)
+        self.root.chmod(0o700)
+
+    def test_reads_are_bounded_by_what_they_read_not_by_a_size_check(self):
+        big = self.root / "big.json"
+        big.write_bytes(b"x" * 20)
+        with self.assertRaisesRegex(read.ReadError, "exceeds limit"):
+            read.read_bounded(big, 19)
+        self.assertEqual(read.read_bounded(big, 20), b"x" * 20)
+        (self.root / "link").symlink_to(big)
+        with self.assertRaises(read.ReadError):
+            read.read_bounded(self.root / "link", 100)
 
     def test_missing_jobs_directory_fails_closed(self):
         with self.assertRaisesRegex(read.ReadError, "missing or unsafe"):
