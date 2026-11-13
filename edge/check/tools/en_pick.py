@@ -25,7 +25,7 @@ words where the two differ. A pair is made only when it is certain:
 Every other differing word is counted and left out, never guessed. Per page it keeps up to --per-page words
 (at most one for each distinct pair of readings), drawn with --seed, then at most --per-stratum for each decade and
 damage band. Which reading is `a` is drawn from a secret side key and the task id, so neither side is always first: --side-key FILE
-(default: a random key written to OUT_DIR/side-key.private, which is never loaded to the site and stays on the build host).
+(default: OUT_DIR/side-key.private, kept if it exists, else a new random key; never loaded to the site, stays on the build host).
 
 Writes OUT_DIR/clips/en/<set>/{lines,words}/..., OUT_DIR/tasks.jsonl, OUT_DIR/language.json and OUT_DIR/report.json
 (the counts: differing words, what was left out and why, and, with truth, how often each reading is right).
@@ -211,6 +211,9 @@ def candidates(page: dict, args, root: str, stats: Counter) -> list:
         stats["xiaomi_words"] += len(xi)
         if not loc or not xi:
             stats["crops_without_a_reading"] += 1
+            # LoC's words in a crop Xiaomi gave nothing for are differing words that were left out
+            stats["differing_loc_words"] += len(loc)
+            stats["left_out_crop_readings_disagree"] += len(loc)
             continue
         if SequenceMatcher(None, loc, xi, autojunk=False).ratio() < args.min_agree:
             # its differing words count as left out, so the skip rate includes what this rule drops
@@ -346,13 +349,18 @@ def main() -> None:
     chosen = sample(rows, args)
     stats["sampled"] = len(chosen)
     os.makedirs(args.out_dir, exist_ok=True)
-    if args.side_key:
-        args.side_key = open(args.side_key, encoding="utf-8").read().strip()
+    key_file = args.side_key or os.path.join(args.out_dir, "side-key.private")
+    if os.path.exists(key_file):
+        # Task ids repeat when the same set is built again, so the key stays: a new one would flip a_is under answers
+        # already given.
+        args.side_key = open(key_file, encoding="utf-8").read().strip()
+    elif args.side_key:
+        raise SystemExit(f"--side-key {args.side_key}: no such file")
     else:
         args.side_key = os.urandom(16).hex()
-        with open(os.path.join(args.out_dir, "side-key.private"), "w", encoding="utf-8") as f:
+        fd = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(args.side_key + "\n")
-        os.chmod(os.path.join(args.out_dir, "side-key.private"), 0o600)
     if not args.no_clips:
         images = {}
         with open(os.path.join(args.out_dir, "tasks.jsonl"), "w", encoding="utf-8") as f:

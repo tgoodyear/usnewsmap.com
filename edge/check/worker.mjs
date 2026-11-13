@@ -305,10 +305,12 @@ WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND settled = 1 AND json_typ
 ON CONFLICT (task_id, contributor) DO UPDATE SET choice = excluded.choice, at = excluded.at`;
 
 export async function record(env, task, contributor, choice, at = Date.now()) {
-  await env.DB.batch([
+  const res = await env.DB.batch([
     env.DB.prepare(ANSWER_SQL).bind(task, contributor, choice, at),
     env.DB.prepare(SETTLE_SQL).bind(task),
   ]);
+  // Zero rows written: the task settled (blind) between the check in /api/answers and this statement.
+  if (res && res[0] && res[0].meta && res[0].meta.changes === 0) throw new HttpError(409, "this word is already checked");
 }
 
 // ---------- clips ----------

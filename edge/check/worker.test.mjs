@@ -194,3 +194,13 @@ test("a settled blind task takes no more answers, and other tasks still take rev
   assert.equal(db.prepare("SELECT choice FROM answers WHERE task_id = 'blind' AND contributor = 'c1'").get().choice, "a");
   assert.deepEqual(row("plain"), { n: 3, settled: 0, outcome: null }, "other tasks reopen as before");
 });
+
+test("answers records nothing and answers 409 when the conditional write saves no row", async () => {
+  const DB = {
+    prepare: (sql) => ({ sql, bind() { return this; }, first: async () => ({ id: "t", settled: 0, blind: "object" }) }),
+    batch: async () => [{ meta: { changes: 0 } }, { meta: { changes: 1 } }],
+  };
+  const token = await signSession(env.SESSION_KEY, "c1");
+  const r = await worker.fetch(new Request("https://check.usnewsmap.com/api/answers", { method: "POST", headers: { authorization: "Bearer " + token }, body: JSON.stringify({ task: "t", choice: "a" }) }), { ...env, DB }, {});
+  assert.equal(r.status, 409);
+});

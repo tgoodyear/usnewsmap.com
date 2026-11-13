@@ -228,7 +228,7 @@ async function choose(choice) {
   } catch (e) {
     if (e.status === 409) {
       // A checked word of a blind set takes no more answers (someone else settled it): go on to another word.
-      busy = false; await next(had); status("That word was already checked. Here is another.");
+      busy = false; task = null; await next(had); if (!failed) status("That word was already checked. Here is another.");
       return;
     }
     busy = false; render(); keepFocus(had);

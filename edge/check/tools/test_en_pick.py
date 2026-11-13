@@ -110,6 +110,13 @@ class Build(unittest.TestCase):
             self.assertEqual((p["truth"], p["strata"]), ("xiaomi", {"decade": 1900, "damage_band": "bad"}))
             self.assertEqual({p["a_is"], p["b_is"]}, {"xiaomi", "loc"})
             self.assertEqual(task["id"][:5], "en/t/")
+            key_file = os.path.join(d, "out", "side-key.private")
+            key = open(key_file).read()
+            subprocess.run([sys.executable, os.path.join(HERE, "en_pick.py"), "--pages", os.path.join(d, "pages.jsonl"), "--set", "t",
+                            "--language-config", cfg, "--out-dir", os.path.join(d, "out")], check=True, capture_output=True)
+            self.assertEqual(open(key_file).read(), key, "a rebuild keeps the side key")
+            (again,) = [json.loads(l) for l in open(os.path.join(d, "out", "tasks.jsonl"))]
+            self.assertEqual(again["private"]["a_is"], p["a_is"])
             self.assertTrue(os.path.exists(os.path.join(d, "out", "clips", task["word"])))
             self.assertTrue(os.path.exists(os.path.join(d, "out", "clips", task["line"])))
             self.assertFalse(any(k in json.load(open(os.path.join(d, "out", "language.json"))) for k in ("a_is", "private")))
