@@ -1,0 +1,14 @@
+# Optional one-way copy of the hand-off root to R2 (handoff-r2-copy.sh, #1367). Not a controller
+# step: its failure never reaches a tick. Does nothing until the R2 env file is installed.
+[Unit]
+Description=usnewsmap hand-off root: one-way copy to R2
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/usnm-handoff-r2/handoff-r2-copy.sh
+SyslogIdentifier=usnm-handoff-r2-copy
+TimeoutStartSec=1h
+Nice=15
+IOSchedulingClass=idle
