@@ -19,7 +19,7 @@
 //!   transient failure, and the pair log is journaled by call id, so a repeated or retried call
 //!   adds nothing twice. See docs/boinc/server/bridge-steps.md, "Validate gold results for the
 //!   cloud server (dev only)".
-use super::{read_entry, Config, Request, Res};
+use super::{Config, Request, Res};
 use crate::cloud::pull::{self, OutFile};
 use crate::quality::validate as quality_validate;
 use anyhow::{bail, ensure, Context};
@@ -328,52 +328,86 @@ impl Comparer<'_> {
 }
 
 /// Appends one compare's log line to `pairs.jsonl` exactly once for its key (call id and the two
-/// results). The line and the file length it goes at are saved first; a repeat finds the line
-/// there (or its torn start, which it removes) and only marks the key done.
+/// results).
+///
+/// Journal, under `pairs-journal/`: `pending/<key>.intent` holds the line and the file length it
+/// goes at, saved durably before the append; `<key>.done` is written after the append is
+/// fsynced, and then the intent is removed. Before any new line is written, every unfinished
+/// intent is finished first, in offset order (`recover`), under the log lock: a torn tail left
+/// by a crash is truncated and its line appended whole before another key can write behind it.
+/// A repeat of a finished key does nothing.
 pub(super) fn record_pair(side: &Path, key: &str, line: &[u8]) -> anyhow::Result<()> {
     let journal = side.join("pairs-journal");
-    std::fs::create_dir_all(&journal)?;
-    let done = journal.join(format!("{key}.done"));
+    let pending = journal.join("pending");
+    std::fs::create_dir_all(&pending)?;
     let _guard = PAIRS.lock().unwrap_or_else(|e| e.into_inner());
-    if done.exists() {
+    if journal.join(format!("{key}.done")).exists() {
+        return Ok(());
+    }
+    recover(side)?;
+    if journal.join(format!("{key}.done")).exists() {
         return Ok(());
     }
     let log = side.join("pairs.jsonl");
-    let intent = journal.join(format!("{key}.intent"));
-    let (offset, line) = match read_entry(&intent)? {
-        Some(bytes) => {
-            let v: Value = serde_json::from_slice(&bytes).context("pair journal entry")?;
-            (
-                v["offset"].as_u64().context("pair journal offset")?,
-                v["line"]
-                    .as_str()
-                    .context("pair journal line")?
-                    .as_bytes()
-                    .to_vec(),
-            )
-        }
-        None => {
-            let offset = match std::fs::metadata(&log) {
-                Ok(m) => m.len(),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
-                Err(e) => return Err(e.into()),
-            };
-            let text = String::from_utf8(line.to_vec()).context("pair log line")?;
-            crate::atomic(
-                &intent,
-                &serde_json::to_vec(&json!({ "offset": offset, "line": text }))?,
-            )?;
-            (offset, line.to_vec())
-        }
+    let offset = match std::fs::metadata(&log) {
+        Ok(m) => m.len(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(e) => return Err(e.into()),
     };
+    let text = String::from_utf8(line.to_vec()).context("pair log line")?;
+    crate::atomic(
+        &pending.join(format!("{key}.intent")),
+        &serde_json::to_vec(&json!({ "offset": offset, "line": text }))?,
+    )?;
+    finish(side, key, offset, line)?;
+    let _ = std::fs::remove_file(pending.join(format!("{key}.intent")));
+    Ok(())
+}
+
+/// Finishes every intent that has no `.done`, lowest offset first. The caller holds the lock.
+fn recover(side: &Path) -> anyhow::Result<()> {
+    let journal = side.join("pairs-journal");
+    let mut todo = Vec::new();
+    for e in std::fs::read_dir(journal.join("pending"))? {
+        let name = e?.file_name().to_string_lossy().into_owned();
+        let Some(key) = name.strip_suffix(".intent") else {
+            continue;
+        };
+        if journal.join(format!("{key}.done")).exists() {
+            // Crashed between the mark and the clean-up.
+            let _ = std::fs::remove_file(journal.join("pending").join(&name));
+            continue;
+        }
+        let bytes = std::fs::read(journal.join("pending").join(&name))?;
+        let v: Value = serde_json::from_slice(&bytes).context("pair journal entry")?;
+        let offset = v["offset"].as_u64().context("pair journal offset")?;
+        let line = v["line"].as_str().context("pair journal line")?;
+        todo.push((offset, key.to_owned(), line.as_bytes().to_vec()));
+    }
+    todo.sort();
+    for (offset, key, line) in todo {
+        finish(side, &key, offset, &line)?;
+        let _ = std::fs::remove_file(journal.join("pending").join(format!("{key}.intent")));
+    }
+    Ok(())
+}
+
+/// Makes sure the intent's line is in the log exactly once, then marks it done. If the line is
+/// not where the intent says (the file is shorter, or something else is there), it goes at the
+/// end, and the intent is rewritten durably with that offset first, so a crash after the append
+/// is recognized on replay. Returns the offset the line is at. The caller removes the intent.
+pub(super) fn finish(side: &Path, key: &str, offset: u64, line: &[u8]) -> anyhow::Result<u64> {
+    let journal = side.join("pairs-journal");
+    let intent = journal.join("pending").join(format!("{key}.intent"));
     let mut f = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(&log)?;
+        .open(side.join("pairs.jsonl"))?;
     let len = f.metadata()?.len();
-    let mut appended = false;
+    let mut at = offset;
+    let mut present = false;
     if len > offset {
         let have = (len - offset).min(line.len() as u64) as usize;
         let mut tail = vec![0u8; have];
@@ -381,20 +415,29 @@ pub(super) fn record_pair(side: &Path, key: &str, line: &[u8]) -> anyhow::Result
         f.read_exact(&mut tail)?;
         if tail == line[..have] {
             if have == line.len() {
-                appended = true;
+                present = true;
             } else {
                 // Only the start of the line is there, at the end of the file: a torn write.
                 f.set_len(offset)?;
             }
         }
     }
-    if !appended {
+    if !present {
+        let end = f.metadata()?.len();
+        if end != offset {
+            at = end;
+            let text = String::from_utf8(line.to_vec()).context("pair log line")?;
+            crate::atomic(
+                &intent,
+                &serde_json::to_vec(&json!({ "offset": at, "line": text }))?,
+            )?;
+        }
         f.seek(SeekFrom::End(0))?;
-        f.write_all(&line)?;
+        f.write_all(line)?;
         f.sync_all()?;
     }
-    crate::atomic(&done, b"")?;
-    Ok(())
+    crate::atomic(&journal.join(format!("{key}.done")), b"")?;
+    Ok(at)
 }
 
 /// For `Request::check`: what the pairwise apps need beyond the gold apps.

@@ -942,56 +942,111 @@ async fn pairwise_requests_need_a_mode_a_quorum_and_a_canonical_result() {
     assert_eq!(post(&run.base, "usnm_ndlocr", None, &b).await.0, 401);
 }
 
+fn intent(side: &Path, key: &str, offset: u64, line: &[u8]) {
+    let dir = side.join("pairs-journal/pending");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(format!("{key}.intent")),
+        serde_json::to_vec(
+            &json!({"offset": offset, "line": String::from_utf8(line.to_vec()).unwrap()}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+/// The log is valid JSON Lines and holds exactly these lines, in this order.
+fn assert_log(side: &Path, want: &[&[u8]]) {
+    let got = std::fs::read(side.join("pairs.jsonl")).unwrap();
+    assert_eq!(got, want.concat(), "{}", String::from_utf8_lossy(&got));
+    for l in String::from_utf8(got).unwrap().lines() {
+        serde_json::from_str::<Value>(l).unwrap();
+    }
+}
+
 #[test]
 fn the_pair_journal_adds_a_line_once_even_after_a_crash_between_its_steps() {
     let dir = tempfile::tempdir().unwrap();
     let side = dir.path();
-    let log = side.join("pairs.jsonl");
-    let (l1, l2, l3) = (
-        b"{\"n\":1}\n".to_vec(),
-        b"{\"n\":2}\n".to_vec(),
-        b"{\"n\":3}\n".to_vec(),
-    );
-    pairwise_record(side, "k1", &l1);
-    pairwise_record(side, "k1", &l1);
-    pairwise_record(side, "k2", &l2);
-    assert_eq!(
-        std::fs::read(&log).unwrap(),
-        [l1.clone(), l2.clone()].concat()
-    );
-    // A crash after the append and before the mark: the line is there, the mark is not.
+    let (l1, l2) = (b"{\"n\":1}\n".as_slice(), b"{\"n\":2}\n".as_slice());
+    pairwise_record(side, "k1", l1);
+    pairwise_record(side, "k1", l1);
+    pairwise_record(side, "k2", l2);
+    assert_log(side, &[l1, l2]);
+    // A crash after the append and before the mark: the line is there, the intent is pending.
     std::fs::remove_file(side.join("pairs-journal/k2.done")).unwrap();
-    pairwise_record(side, "k2", b"{\"n\":\"a later attempt, another time\"}\n");
-    assert_eq!(
-        std::fs::read(&log).unwrap(),
-        [l1.clone(), l2.clone()].concat()
+    intent(side, "k2", l1.len() as u64, l2);
+    pairwise_record(side, "k2", b"{\"n\":\"a later attempt\"}\n");
+    assert_log(side, &[l1, l2]);
+}
+
+#[test]
+fn a_torn_append_is_repaired_before_another_key_writes_behind_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let side = dir.path();
+    let (l1, a, b) = (
+        b"{\"n\":1}\n".as_slice(),
+        b"{\"n\":\"a\"}\n".as_slice(),
+        b"{\"n\":\"b\"}\n".as_slice(),
     );
-    // A crash in the middle of the append: only the start of the line is there.
-    let torn = [l1.clone(), l2.clone(), l3[..4].to_vec()].concat();
-    std::fs::write(&log, &torn).unwrap();
-    let journal = side.join("pairs-journal");
-    let off = (l1.len() + l2.len()) as u64;
-    std::fs::write(
-        journal.join("k3.intent"),
-        serde_json::to_vec(&json!({"offset": off, "line": String::from_utf8(l3.clone()).unwrap()}))
-            .unwrap(),
-    )
-    .unwrap();
-    pairwise_record(side, "k3", &l3);
-    assert_eq!(
-        std::fs::read(&log).unwrap(),
-        [l1.clone(), l2.clone(), l3.clone()].concat()
+    pairwise_record(side, "k1", l1);
+    // Key A crashed in the middle of its append: its intent and the start of its line.
+    intent(side, "ka", l1.len() as u64, a);
+    std::fs::write(side.join("pairs.jsonl"), [l1, &a[..5]].concat()).unwrap();
+    // Key B runs first after the restart: A is finished before B writes.
+    pairwise_record(side, "kb", b);
+    assert_log(side, &[l1, a, b]);
+    // A's replay, and B's, add nothing.
+    pairwise_record(side, "ka", a);
+    pairwise_record(side, "kb", b);
+    assert_log(side, &[l1, a, b]);
+    // Two unfinished intents, one torn and one never started, finish in offset order.
+    let (c, d, e) = (
+        b"{\"n\":\"c\"}\n".as_slice(),
+        b"{\"n\":\"d\"}\n".as_slice(),
+        b"{\"n\":\"e\"}\n".as_slice(),
     );
-    // A crash before the append, and another call's line went in meanwhile: neither is lost.
-    let l4 = b"{\"n\":4}\n".to_vec();
-    std::fs::write(
-        journal.join("k4.intent"),
-        serde_json::to_vec(&json!({"offset": off, "line": String::from_utf8(l4.clone()).unwrap()}))
-            .unwrap(),
-    )
-    .unwrap();
-    pairwise_record(side, "k4", &l4);
-    assert_eq!(std::fs::read(&log).unwrap(), [l1, l2, l3, l4].concat());
+    let end = std::fs::metadata(side.join("pairs.jsonl")).unwrap().len();
+    intent(side, "kc", end, c);
+    intent(side, "kd", end + c.len() as u64, d);
+    let mut log = std::fs::read(side.join("pairs.jsonl")).unwrap();
+    log.extend_from_slice(&c[..3]);
+    std::fs::write(side.join("pairs.jsonl"), log).unwrap();
+    pairwise_record(side, "ke", e);
+    assert_log(side, &[l1, a, b, c, d, e]);
+}
+
+#[test]
+fn an_intent_whose_offset_is_not_where_the_file_ends_is_rewritten_before_the_append() {
+    let dir = tempfile::tempdir().unwrap();
+    let side = dir.path();
+    let (l1, l2) = (b"{\"n\":1}\n".as_slice(), b"{\"n\":2}\n".as_slice());
+    pairwise_record(side, "k1", l1);
+    // The file is shorter than the intent says (or holds other bytes there): the line goes at the
+    // end, and the intent now says so, durably, before the append.
+    intent(side, "k2", 1000, l2);
+    let at = super::super::pairwise::finish(side, "k2", 1000, l2).unwrap();
+    assert_eq!(at, l1.len() as u64);
+    assert_log(side, &[l1, l2]);
+    let saved = |key: &str| -> u64 {
+        let b = std::fs::read(side.join(format!("pairs-journal/pending/{key}.intent"))).unwrap();
+        serde_json::from_slice::<Value>(&b).unwrap()["offset"]
+            .as_u64()
+            .unwrap()
+    };
+    assert_eq!(saved("k2"), at);
+    // Another line is where the intent points but is not this one: same.
+    let l3 = b"{\"n\":3}\n".as_slice();
+    intent(side, "k3", 0, l3);
+    let at = super::super::pairwise::finish(side, "k3", 0, l3).unwrap();
+    assert_eq!(at, (l1.len() + l2.len()) as u64);
+    assert_log(side, &[l1, l2, l3]);
+    assert_eq!(saved("k3"), at);
+    // A crash after the append, before the mark: the rewritten intent is what a replay reads, and
+    // the line is found there, not appended again.
+    std::fs::remove_file(side.join("pairs-journal/k3.done")).unwrap();
+    pairwise_record(side, "k3", l3);
+    assert_log(side, &[l1, l2, l3]);
 }
 
 fn pairwise_record(side: &Path, key: &str, line: &[u8]) {
