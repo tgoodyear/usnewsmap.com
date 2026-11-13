@@ -2,14 +2,19 @@
 #
 # Tesseract, Leptonica and the image libraries here are the same Debian packages at the same
 # versions as ocr/engines/tesseract/Containerfile, from the same snapshot: this links Debian's
-# own static libraries rather than building them again, so the code that reads a page is the
-# code the container runs. Only the command-line main() is compiled here, from Debian's source
-# package, because Debian's -dev packages don't ship it.
+# own static libraries rather than building them again. The exception is libtesseract.a. Since
+# #1835 it is built from Debian's 5.5.0 source plus the upstream patches in
+# boinc/apps/native/tesseract-patches.lock, with the flags of Debian's debian/rules, and the
+# command-line main() is compiled from the same patched source (Debian's -dev packages don't ship
+# main()). The version stays 5.5.0. Each patch is checked against its sha256 in the lock first.
+#
+# --build-arg PATCHES=none skips the patches and links Debian's own libtesseract.a, which is how
+# the build was made before #1835; CI builds it that way to compare outputs on one runner.
 #
 #   podman build -f boinc/apps/native/Containerfile -t usnm-ocr/tesseract-native boinc/apps/native
 #   podman run --rm --network=none usnm-ocr/tesseract-native cat /out/usnm_tesseract > usnm_tesseract
 #
-# The two differences from the container's engine are recorded in docs/boinc/apps/native-ocr.md:
+# The differences from the container's engine are recorded in docs/boinc/apps/native-ocr.md:
 # libcurl and libarchive are replaced by stubs.c, and main() is compiled without
 # HAVE_FEENABLEEXCEPT, which does what the container's LD_PRELOAD shim (fpshim.c) does.
 #
@@ -43,14 +48,46 @@ RUN printf 'Types: deb deb-src\nURIs: http://snapshot.debian.org/archive/debian/
 
 FROM ${NATIVE_BASE}
 ARG SNAPSHOT
+ARG PATCHES=lock
 RUN grep -qxF "URIs: http://snapshot.debian.org/archive/debian/$SNAPSHOT" /etc/apt/sources.list.d/debian.sources \
       || { echo "the base's Debian snapshot is not SNAPSHOT=$SNAPSHOT (boinc/apps/native/base.lock)" >&2; exit 1; }
 COPY stubs.c /src/stubs.c
+COPY tesseract-patches.lock /src/tesseract-patches.lock
+COPY patches/ /src/patches/
+# The patches: each file must be in the lock with its sha256, and every file in the lock must exist.
+# Applied, in the lock's order, to one copy of the source for main() and one for libtesseract.
+RUN set -eu; cd /src; \
+    case "$PATCHES" in lock|none) ;; *) echo "PATCHES is lock or none, not $PATCHES" >&2; exit 1;; esac; \
+    awk '!/^#/ && NF {print $1}' tesseract-patches.lock > patches.expected; \
+    ls patches | LC_ALL=C sort > patches.found; \
+    cmp patches.expected patches.found \
+      || { echo "patches/ and tesseract-patches.lock list different files" >&2; exit 1; }; \
+    awk '!/^#/ && NF {print $3 "  patches/" $1}' tesseract-patches.lock | sha256sum --check --strict --quiet; \
+    if [ "$PATCHES" = lock ]; then \
+      mkdir lib main; cp -a tesseract-5.5.0 lib/tesseract; cp -a tesseract-5.5.0 main/tesseract; \
+      for p in $(cat patches.expected); do \
+        for t in lib main; do (cd /src/$t/tesseract && patch -p1 --forward --no-backup-if-mismatch < /src/patches/$p >/dev/null) \
+          || { echo "patch $p does not apply" >&2; exit 1; }; done; \
+      done; \
+      rm -rf /usr/include/tesseract /usr/lib/x86_64-linux-gnu/libtesseract* /usr/lib/x86_64-linux-gnu/pkgconfig/tesseract.pc; \
+    else \
+      mkdir main; cp -a tesseract-5.5.0 main/tesseract; \
+    fi
+# libtesseract.a from the patched source, with the flags of Debian's debian/rules.
+RUN set -eu; [ "$PATCHES" = lock ] || exit 0; cd /src/lib/tesseract; export DEB_BUILD_MAINT_OPTIONS=hardening=+all; \
+    CFLAGS="$(dpkg-buildflags --get CXXFLAGS) -Wall -g -fPIC -DTESSDATA_PREFIX='\"/usr/share/tesseract-ocr/5\"'"; \
+    LDFLAGS="$(dpkg-buildflags --get LDFLAGS)"; \
+    ./autogen.sh >/dev/null; \
+    ./configure --disable-tessdata-prefix --prefix=/usr --libdir='${prefix}/lib/x86_64-linux-gnu' \
+      CXXFLAGS="$CFLAGS" LDFLAGS="-lleptonica -Wl,-z,defs $LDFLAGS" >/dev/null; \
+    make -j"$(nproc)" libtesseract.la >/dev/null; \
+    ls -l .libs/libtesseract.a
 # configure writes config_auto.h, which the internal headers tesseract.cpp includes depend on.
-RUN set -eu; cd /src/tesseract-5.5.0; ./autogen.sh >/dev/null; \
+RUN set -eu; cd /src/main/tesseract; ./autogen.sh >/dev/null; \
     ./configure --disable-tessdata-prefix --prefix=/usr >/dev/null; \
     sed -i '/HAVE_FEENABLEEXCEPT/d; /HAVE_LIBCURL/d; /HAVE_LIBARCHIVE/d' include/config_auto.h; \
     grep -q 'define HAVE_TIFFIO_H' include/config_auto.h; \
+    if [ "$PATCHES" = lock ]; then tess=/src/lib/tesseract/.libs/libtesseract.a; else tess=-ltesseract; fi; \
     mkdir /out; \
     gcc -O2 -Wall -Werror -c /src/stubs.c -o /src/stubs.o; \
     g++ -O2 -std=c++17 -fopenmp -DHAVE_CONFIG_H -DTESSDATADIR='"/nonexistent"' \
@@ -59,12 +96,14 @@ RUN set -eu; cd /src/tesseract-5.5.0; ./autogen.sh >/dev/null; \
       -I/usr/include/leptonica \
       -c src/tesseract.cpp -o /src/main.o; \
     g++ -static -fopenmp -s -o /out/usnm_tesseract /src/main.o /src/stubs.o \
-      -ltesseract -lleptonica -ltiff -lwebpmux -lwebp -lsharpyuv -lpng16 -ljpeg -lgif -lopenjp2 \
+      $tess -lleptonica -ltiff -lwebpmux -lwebp -lsharpyuv -lpng16 -ljpeg -lgif -lopenjp2 \
       -ldeflate -lzstd -llzma -lLerc -ljbig -lz -lm; \
     file /out/usnm_tesseract; \
     ! ldd /out/usnm_tesseract; \
     { dpkg-query -W libtesseract-dev libleptonica-dev libtiff-dev libpng-dev libjpeg62-turbo-dev \
         libopenjp2-7-dev libwebp-dev libgif-dev libc6-dev libgomp1 libstdc++-14-dev; \
       echo "tesseract source $(sed -n 's/^Version: //p' /src/tesseract_5.5.0-1.dsc)"; \
+      if [ "$PATCHES" = lock ]; then awk '!/^#/ && NF {print "tesseract patch", $1, $2, $3}' /src/tesseract-patches.lock; \
+      else echo "tesseract patches none"; fi; \
     } > /out/usnm_tesseract.packages; \
     sha256sum /out/usnm_tesseract

@@ -18,10 +18,31 @@ A build is a set of files, and each is a BOINC app version file:
 
 It comes to 202 MB, the same models as the worker image. The notices are the image's `/opt/tessdata/notices/` too: CI fetches them from the model's release and checks them against its `SHA256SUMS`, whose hash `ocr/engines/tesseract/Containerfile` pins (`ARG CHR_PHOENIX_SUMS`). `usnm_ocr manifest` reads them from `<tessdata>/notices/<model>/`, and the worker (`native::Manifest::validate`) and `boinc/scripts/check-native-ocr-build.py` refuse a build without them or with other bytes.
 
-**Tesseract.** The Containerfile takes the engine image's Debian snapshot and links Debian's own static libraries: `libtesseract.a`, `libleptonica.a`, OpenJPEG, libjpeg-turbo and the rest, at the versions in the worker image. Debian's `-dev` packages don't ship the command-line `main()`, so that one file is compiled from Debian's source package. The code that reads a page is therefore the code in the container, not a rebuild of it. There are two differences:
+**Tesseract.** The Containerfile takes the engine image's Debian snapshot and links Debian's own static libraries: `libleptonica.a`, OpenJPEG, libjpeg-turbo and the rest, at the versions in the worker image. `libtesseract.a` is the exception: it is built from Debian's 5.5.0 source with the upstream patches described in [Tesseract patches](#tesseract-patches), with the flags of Debian's `debian/rules`. Debian's `-dev` packages don't ship the command-line `main()`, so that one file is compiled from the same patched source. The engine still reports 5.5.0. There are three differences from the container's engine:
 
+- `libtesseract.a` carries the three patches, which the container's does not.
 - libcurl and libarchive are replaced by `boinc/apps/native/stubs.c`. Tesseract uses curl only for a URL input and libarchive only for a model packed as an archive, and neither happens here.
 - `main()` is compiled without `HAVE_FEENABLEEXCEPT`. The container reaches the same state with `fpshim.c`, an `LD_PRELOAD` no-op, so floating-point traps are off in both.
+
+### Tesseract patches
+
+The native build is Tesseract 5.5.0 plus three upstream patches, on every platform CI builds. They are the `src/` part of each upstream commit, in `boinc/apps/native/patches/`, and `boinc/apps/native/tesseract-patches.lock` pins each file by upstream commit and sha256. Every build refuses a patch whose sha256 differs from the lock, and a file in `patches/` that the lock doesn't list.
+
+| Patch | Upstream | What it does |
+| --- | --- | --- |
+| `0001-avoid-quadratic-paragraph-restart-scan-4599.patch` | pull request 4599, commit `2cd9955e` | `PageIterator::RestartParagraph` finds the paragraph start by comparing identities instead of calling `cmp()`, which searched the page and made the scan quadratic. |
+| `0002-avoid-redundant-result-iterator-restarts-4601.patch` | pull request 4601, commit `fb87a84b` | `ResultIterator` skips `RestartParagraph` and `RestartRow` when already at the start of the paragraph or line, and `Next` tests for a paragraph start directly. |
+| `0003-fix-use-after-free-in-replacecurrentword-4667.patch` | pull request 4667, commit `a95faa00` | `PAGE_RES_IT::ReplaceCurrentWord` gives a word a `WERD` of its own when a language's recogniser returned the input word's shared copy, which the function then deleted (a use-after-free with several languages). |
+
+Why these three and not 5.5.4, which is where upstream has them ([#1835](https://github.com/tgoodyear/usnewsmap.com/issues/1835)): 5.5.4 changes the recogniser's output. On the pages and crops tried it changed text, and it merged side-by-side columns into one paragraph block. That would mean a new calibration, new gold and new host trust. The three patches were measured on the same host against stock 5.5.0: text identical on 63 of 63 items (30 challenge crops and 33 pages), ALTO byte-identical on 63 of 63, and user CPU about 0.91 of stock (median of 21 pairs, noisy). The use-after-free fix is in the build but the measurement did not exercise it. The measurements are in the report of draft pull request [#1851](https://github.com/tgoodyear/usnewsmap.com/pull/1851) (`docs/reports/2026-11-tesseract-5-5-4/report.md` on its branch). Upstream's fourth candidate, pull request 4632, is left out because it changes paragraph boxes.
+
+Limits of that measurement: one CPU model, and the patched binary was built in a dev container, so it is not the CI artifact and has a different digest. A word-confidence digit can differ between CPUs for the same binary, so only a comparison on one machine means anything.
+
+The build record names the patch set where the build already records its inputs. The Linux `usnm_tesseract.packages` gets a `tesseract patch <file> <commit> <sha256>` line per patch, and the macOS and Windows `usnm_tesseract.sources` get a `tesseract-patch` line each. `usnm_tesseract --version` is unchanged, and so is the manifest format.
+
+`boinc-ocr-native.yml` builds the stock 5.5.0 on each runner as well (`--build-arg PATCHES=none` for Linux, `--no-patches` and `-NoPatches` for the macOS and Windows scripts) and `boinc/apps/native/compare-builds.py` runs both builds over the same images, failing if any text or ALTO byte differs. The images are the few the repository holds, not the challenge crops, which are not in the repository.
+
+A patched build has a new digest. It is not trusted until it passes the calibrated challenge and a parity run, and its digest is recorded in `boinc/project/native-build-trust.json` like any other ([Trust per build](#trust-per-build)). An equivalence entry there doesn't carry trust from the old digest to the new one: see [Identity and validation](#identity-and-validation).
 
 **The worker.** A task is three processes:
 
@@ -241,7 +262,7 @@ Every platform runs the same worker, `usnm_ocr` from `crates/usnm-ocr-app`, whic
 
 Off Linux, output identical to the container's can't be assumed:
 
-- **macOS** uses upstream sources without Debian's patches, Apple's clang and libm, no OpenMP, libjpeg-turbo without SIMD, libtiff with only zlib and JPEG, and no GIF. The scans are JPEG and JP2. It is built from the same versions as the Linux build: Tesseract 5.5.0, Leptonica 1.84.1, libjpeg-turbo 2.1.5, libpng 1.6.48, libtiff 4.7.0, OpenJPEG 2.5.3, libwebp 1.5.0.
+- **macOS** uses upstream sources without Debian's patches (but with the three upstream patches above), Apple's clang and libm, no OpenMP, libjpeg-turbo without SIMD, libtiff with only zlib and JPEG, and no GIF. The scans are JPEG and JP2. It is built from the same versions as the Linux build: Tesseract 5.5.0, Leptonica 1.84.1, libjpeg-turbo 2.1.5, libpng 1.6.48, libtiff 4.7.0, OpenJPEG 2.5.3, libwebp 1.5.0.
 - **Windows** adds MSVC and its C runtime, with the same differences from the Linux build as macOS: no OpenMP, libjpeg-turbo without SIMD, libtiff with only zlib and JPEG, and no GIF.
 
 So before any host gets a platform's build, that build needs its own run of the calibrated challenge, at or under the threshold and recorded in `native-build-trust.json`. A parity run against the container worker on the same pages shows whether the build can be listed as equivalent to anything. Without an equivalence it is still trusted on its own digest. macOS arm64 has no equivalence: 0 of 14 pages were identical to Linux.

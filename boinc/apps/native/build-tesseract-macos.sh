@@ -10,14 +10,19 @@
 # sources, the compiler and the libraries the executable loads. Differences from the Linux build
 # (Containerfile) are in docs/boinc/apps/native-ocr.md: upstream sources without Debian's
 # patches, no GIF, no OpenMP, libjpeg-turbo without SIMD, and libtiff with only zlib and JPEG.
+#
+# Tesseract gets the upstream patches of tesseract-patches.lock (#1835), each checked against its
+# sha256 there, as the Linux build does. --no-patches builds the stock 5.5.0 instead, which CI
+# does to compare the two on one runner.
 set -Eeuo pipefail
 
-out='' work=''
+out='' work='' patches=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out="$2"; shift 2 ;;
     --work) work="$2"; shift 2 ;;
-    *) echo "usage: build-tesseract-macos.sh --out DIR --work DIR" >&2; exit 2 ;;
+    --no-patches) patches=0; shift ;;
+    *) echo "usage: build-tesseract-macos.sh --out DIR --work DIR [--no-patches]" >&2; exit 2 ;;
   esac
 done
 [ -n "$out" ] && [ -n "$work" ] || { echo "--out and --work are required" >&2; exit 2; }
@@ -85,6 +90,20 @@ grep -v '^#' "$here/static-sources.lock" | while read -r name url tag commit; do
   [ -n "$name" ] && fetch "$name" "$url" "$tag" "$commit"
 done
 
+# The upstream patches, in the lock's order: every file in patches/ must be in the lock with its
+# sha256, and every line of the lock must have its file.
+if [ "$patches" = 1 ]; then
+  [ "$(grep -v '^#' "$here/tesseract-patches.lock" | awk 'NF {print $1}')" = "$(ls "$here/patches")" ] ||
+    { echo "patches/ and tesseract-patches.lock list different files" >&2; exit 1; }
+  grep -v '^#' "$here/tesseract-patches.lock" | while read -r file commit sum; do
+    [ -n "$file" ] || continue
+    [ "$(shasum -a 256 "$here/patches/$file" | cut -d' ' -f1)" = "$sum" ] ||
+      { echo "$file does not have the sha256 in tesseract-patches.lock" >&2; exit 1; }
+    git -C "$src/tesseract" apply --ignore-whitespace "$here/patches/$file" ||
+      { echo "patch $file does not apply" >&2; exit 1; }
+  done
+fi
+
 build zlib -DZLIB_BUILD_EXAMPLES=OFF
 # libjpeg-turbo resolves a relative CMAKE_INSTALL_LIBDIR against the working directory, not the prefix.
 build libjpeg-turbo -DCMAKE_INSTALL_LIBDIR="$prefix/lib" -DENABLE_SHARED=OFF -DENABLE_STATIC=ON -DWITH_SIMD=OFF -DWITH_TURBOJPEG=OFF
@@ -141,6 +160,11 @@ file "$out/usnm_tesseract" | grep -q "Mach-O 64-bit executable $arch" ||
 
 {
   grep -v '^#' "$here/static-sources.lock" | awk 'NF {print "source", $1, $3, $4}'
+  if [ "$patches" = 1 ]; then
+    grep -v '^#' "$here/tesseract-patches.lock" | awk 'NF {print "tesseract-patch", $1, $2, $3}'
+  else
+    echo "tesseract-patches none"
+  fi
   echo "compiler $(clang --version | head -n 1)"
   echo "sdk $(xcrun --show-sdk-version)"
   echo "deployment-target $MACOSX_DEPLOYMENT_TARGET"
