@@ -654,8 +654,10 @@ class StepLockTimeout(RuntimeError):
 # Steps that take the host's shared step lock (usnm-boinc-step.lock), where a Qwen ship or collect
 # holds it for 5 to 17 minutes. With --step-lock-wait-secs they ask for a longer wait than the
 # host's own default (300 s), per step, so the other steps keep the host's setting.
-LONG_LOCK_STEPS = {("bridge", "submit-remote"), ("bridge", "gold-onboard"), ("bridge", "gold-promote"),
-                   ("bridge", "native-spot")}
+LONG_LOCK_STEPS = {("bridge", "submit-remote"), ("bridge", "gold-onboard"), ("bridge", "gold-promote")}
+# The native spot-check step (#1919) is never one of them: it always asks for its plan's short
+# wait (native_spot_check.lock_wait_secs), and a busy lock skips it for the tick.
+NATIVE_SPOT_STEP = ("bridge", "native-spot")
 MAX_STEP_LOCK_WAIT_SECS = 1200
 # A native plan retries a submit that only timed out on the step lock this many ticks in a row
 # before it pauses like any other failed submit.
@@ -1003,7 +1005,12 @@ class Transport:
                 and self.lock_fence is not None):
             variables["LOCK_HOLDER"], variables["LOCK_GENERATION"] = self.lock_fence
         wait_mins, timeout, extra = (2, 120, []) if lock_step else (30, 2100, [])
-        if (onprem and self.config.get("step_command") and self.step_lock_wait_secs
+        if onprem and self.config.get("step_command") and (target, step) == NATIVE_SPOT_STEP:
+            # Seconds, in place of the host's setting and of --step-lock-wait-secs: the spot
+            # check runs after submit and is skipped for the tick when the lock stays held.
+            spec = self.config.get(NATIVE_SPOT_KEY) or {}
+            extra = ["--lock-wait-secs", str(spec.get("lock_wait_secs", NATIVE_SPOT_LOCK_WAIT_SECS))]
+        elif (onprem and self.config.get("step_command") and self.step_lock_wait_secs
                 and (target, step) in LONG_LOCK_STEPS):
             # The wait comes out of --wait-mins, so it is added to it: the step keeps its 30
             # minutes after the lock is won. The command's own timeout follows.
@@ -2812,13 +2819,21 @@ def native_submit_untouched(transport, job_ids, clock):
 # byte for byte, ALTO confidence attributes excepted, on the BOINC host (usnm-boinc host-trust
 # native-spot). Off unless the plan has native_spot_check; with it, a host's room is its full room only while its checks run.
 NATIVE_SPOT_KEY = "native_spot_check"
-NATIVE_SPOT_FIELDS = {"share", "canary_pages_per_host", "max_outstanding_per_peer", "fresh_hours", "peers"}
+NATIVE_SPOT_FIELDS = {"share", "canary_pages_per_host", "max_outstanding_per_peer", "fresh_hours", "peers",
+                      "lock_wait_secs"}
 # 1 page in 20 by default: a systematic fault on a host shows within about 20 of its pages,
 # and a peer reading for one other host spends about 5% of that host's output on it.
 NATIVE_SPOT_SHARE = 0.05
 NATIVE_SPOT_CANARY = 10
 NATIVE_SPOT_PER_PEER = 4
 NATIVE_SPOT_FRESH_HOURS = 48
+# How long the native-spot step waits for the BOINC host's step lock (#1919). The step runs after
+# submit; past this wait it is skipped for the tick and tried again on the next one.
+NATIVE_SPOT_LOCK_WAIT_SECS = 10
+NATIVE_SPOT_MAX_LOCK_WAIT_SECS = 60
+# Skipped on a busy lock for this long in a row: native_spot_lock_busy is raised. Well inside
+# fresh_hours' default, after which the hosts fall back to canary size.
+NATIVE_SPOT_LOCK_BUSY_ALERT_SECS = 6 * 3600
 # A replay not back after this long (BOINC's delay_bound is 72 hours) is given up as unverified.
 NATIVE_SPOT_MAX_AGE = 96 * 3600
 # What a mismatch record keeps of each host's results published since its last match.
@@ -2856,6 +2871,9 @@ def _validate_native_spot(config):
     require(type(per_peer) is int and 1 <= per_peer <= 100, f"{NATIVE_SPOT_KEY}.max_outstanding_per_peer: 1 to 100")
     fresh = spec.get("fresh_hours", NATIVE_SPOT_FRESH_HOURS)
     require(type(fresh) is int and 1 <= fresh <= 720, f"{NATIVE_SPOT_KEY}.fresh_hours: 1 to 720")
+    wait = spec.get("lock_wait_secs", NATIVE_SPOT_LOCK_WAIT_SECS)
+    require(type(wait) is int and 0 <= wait <= NATIVE_SPOT_MAX_LOCK_WAIT_SECS,
+            f"{NATIVE_SPOT_KEY}.lock_wait_secs: 0 to {NATIVE_SPOT_MAX_LOCK_WAIT_SECS}")
     peers = spec.get("peers", [])
     require(isinstance(peers, list) and len(peers) <= MAX_NATIVE_HOSTS, f"{NATIVE_SPOT_KEY}.peers is a list")
     seen = set()
@@ -2876,29 +2894,40 @@ def _spot(state):
     return state.setdefault("native_spot", {})
 
 
-def native_spot_peers(config, state, slots, host):
+def native_spot_active(snapshot):
+    """The hosts the inventory saw ask for work in the last day (its host_cpus), or None from a
+    server image whose inventory has no host_cpus."""
+    cpus = snapshot.get("host_cpus")
+    return None if cpus is None else {int(host) for host in cpus}
+
+
+def native_spot_peers(config, state, slots, host, active=None):
     """The hosts that may read `host`'s pages again, with their build: the plan's other active
-    hosts, and the configured peers on a listed build, none of them held."""
+    hosts, and the configured peers on a listed build that are active (`active`, the hosts the
+    inventory saw lately; None: not known), none of them held. A replay is assigned to its peer,
+    and BOINC sends it only when that host asks for work (#1919)."""
     spec = config.get(NATIVE_SPOT_KEY) or {}
     held = _spot(state).get("holds", {})
     peers = [(other, config["image"]) for other in config["native_hosts"]
              if other != host and slots.get(other, 0) > 0 and str(other) not in held]
-    peers += [(peer["host"], peer["image"]) for peer in spec.get("peers", []) if str(peer["host"]) not in held]
+    peers += [(peer["host"], peer["image"]) for peer in spec.get("peers", [])
+              if str(peer["host"]) not in held and (active is None or peer["host"] in active)]
     return peers
 
 
-def native_spot_running(config, state, slots, host, now):
+def native_spot_running(config, state, slots, host, now, active=None):
     """Whether `host`'s checks run: a peer is there, nothing has stopped the replay step, and one
-    of its pages matched a peer's within fresh_hours. Until then it stays at canary size."""
+    of its pages matched a peer's within fresh_hours. Until then it stays at canary size. A step
+    skipped on a busy lock stops nothing: only fresh_hours without a match does."""
     spec = config.get(NATIVE_SPOT_KEY) or {}
     spot = _spot(state)
     fresh = spec.get("fresh_hours", NATIVE_SPOT_FRESH_HOURS) * 3600
     last = spot.get("last_match", {}).get(str(host))
-    return (bool(native_spot_peers(config, state, slots, host)) and not spot.get("failing")
+    return (bool(native_spot_peers(config, state, slots, host, active)) and not spot.get("failing")
             and last is not None and now - last <= fresh)
 
 
-def native_spot_slots(config, state, slots, now):
+def native_spot_slots(config, state, slots, now, active=None):
     """A native plan's room on each host (native_capacity), as its spot checks allow (#1863):
     unchanged without native_spot_check; otherwise none for a held host, and at most
     canary_pages_per_host for one whose checks aren't running."""
@@ -2911,14 +2940,14 @@ def native_spot_slots(config, state, slots, now):
     for host, room in slots.items():
         if str(host) in held:
             out[host] = 0
-        elif native_spot_running(config, state, slots, host, now):
+        elif native_spot_running(config, state, slots, host, now, active):
             out[host] = room
         else:
             out[host] = min(room, canary)
     return out
 
 
-def native_spot_sample(config, state, slots, published, now, rng=None):
+def native_spot_sample(config, state, slots, published, now, rng=None, active=None):
     """Note each newly published native page against its host, and draw each one for a replay
     with probability `share` (SPOT_RANDOM, after the result came back). `published` is
     (job id, host, page, original spool). A drawn page goes to the peer with the fewest replays
@@ -2945,10 +2974,10 @@ def native_spot_sample(config, state, slots, published, now, rng=None):
         out = {}
         for entry in pending.values():
             out[entry["target"]] = out.get(entry["target"], 0) + 1
-        peers = [(out.get(peer, 0), peer, image) for peer, image in native_spot_peers(config, state, slots, host)
-                 if out.get(peer, 0) < per_peer]
+        candidates = native_spot_peers(config, state, slots, host, active)
+        peers = [(out.get(peer, 0), peer, image) for peer, image in candidates if out.get(peer, 0) < per_peer]
         if not peers:
-            reason = "no_peer" if not native_spot_peers(config, state, slots, host) else "peer_busy"
+            reason = "no_peer" if not candidates else "peer_busy"
             counts[reason] = counts.get(reason, 0) + 1
             continue
         _, peer, image = min(peers)
@@ -2961,12 +2990,15 @@ def _spot_item(job_id, entry, spool):
     return item + (f":{entry['spool']}" if spool else "")
 
 
-def native_spot_step(config, state, transport, now, submit_room=100):
+def native_spot_step(config, state, transport, now, submit_room=100, active=None):
     """Run the bridge's native-spot step for the queued replays and the submitted ones, and act on
     what it reports: a match refreshes the host's checks and settles its unchecked pages up to
     that one; a mismatch holds both hosts (here and, already, in trust.json) with the pages each
     published since its last match; a refused, failed or unverified replay is counted and
-    dropped. A step that fails marks the checks failing, which caps every host."""
+    dropped. A step that fails marks the checks failing, which caps every host. A step that never
+    started because the BOINC host's step lock stayed held for its short wait (#1919) is skipped:
+    everything stays as it was for the next tick, and the streak is kept in `lock_busy`.
+    Returns what the step did: "ran", "idle" (nothing to make or ask), "skipped" or "failed"."""
     spot = _spot(state)
     pending = spot.get("pending", {})
     counts = spot.setdefault("counts", {})
@@ -2981,21 +3013,43 @@ def native_spot_step(config, state, transport, now, submit_room=100):
         if entry["stage"] == "queued" and now - entry["at"] > NATIVE_SPOT_MAX_AGE:
             expire(job_id)
     # `submit_room` new replay units at most: none while draining, and none past the global cap.
-    queued = [(j, e) for j, e in pending.items() if e["stage"] == "queued"][:max(0, min(100, submit_room))]
+    # Only for a peer the inventory sees asking for work (`active`; None: not known): a unit
+    # assigned to a host that has gone away is never sent (#1919). The others stay queued until
+    # their peer is back or they are given up at NATIVE_SPOT_MAX_AGE.
+    queued = [(j, e) for j, e in pending.items() if e["stage"] == "queued"
+              and (active is None or e["target"] in active)][:max(0, min(100, submit_room))]
     # The 100 least recently polled, so every replay is looked at in turn, however many are out.
     submitted = sorted(((j, e) for j, e in pending.items() if e["stage"] == "submitted"),
                        key=lambda item: (item[1].get("polled", 0), item[0]))[:100]
-    for _, entry in submitted:
-        entry["polled"] = int(now)
     if not queued and not submitted:
-        return
+        # Nothing to make or ask: no run of skips goes on, so none is left to alert on.
+        spot.pop("lock_busy", None)
+        return "idle"
     try:
         report = transport.native_spot(",".join(_spot_item(j, e, False) for j, e in queued),
                                        ",".join(_spot_item(j, e, True) for j, e in submitted))
+    except StepLockTimeout:
+        # Nothing ran: no replay was made and none compared. The queued ones keep their place
+        # and their age (a queued one is given up after NATIVE_SPOT_MAX_AGE), and the draw
+        # stays bounded by max_outstanding_per_peer, so a run of skips piles nothing up.
+        busy = spot.get("lock_busy") or {"since": int(now), "ticks": 0}
+        spot["lock_busy"] = {"since": busy["since"], "ticks": busy["ticks"] + 1, "last": int(now)}
+        counts["lock_busy"] = counts.get("lock_busy", 0) + 1
+        return "skipped"
     except (RuntimeError, OSError, ValueError, KeyError) as error:
+        # The step may have started: these go to the back of the line, so one replay that keeps
+        # failing the step can't keep the same 100 in front of the rest.
+        for _, entry in submitted:
+            entry["polled"] = int(now)
+        spot.pop("lock_busy", None)
         spot["failing"] = {"at": int(now), "reason": str(error)[:500]}
-        return
+        return "failed"
+    spot.pop("lock_busy", None)
     spot.pop("failing", None)
+    # Asked: these go to the back of the line for the next tick's 100. A skipped step, which
+    # started nothing, leaves the order as it was.
+    for _, entry in submitted:
+        entry["polled"] = int(now)
     for outcome in report.get("submitted", []):
         entry = pending.get(outcome["job"])
         if entry is None:
@@ -3041,13 +3095,14 @@ def native_spot_step(config, state, transport, now, submit_room=100):
         else:
             spot["last_unverified"] = {"job": job_id, "at": int(now), "status": status,
                                        "detail": outcome["detail"][:500]}
+    return "ran"
 
 
-def native_spot_tick(config, state, transport, persist, now, owned, server, slots, rng=None,
-                     submit_room=100):
-    """After a native plan's collection: draw from its published pages not yet drawn from (by
-    the journals and its host assignments, so a page a stopped tick published is still drawn,
-    and only once), then replay and compare. `server` is the inventory's jobs, with each one's
+def native_spot_draw(config, state, persist, now, owned, server, slots, rng=None, active=None):
+    """After a native plan's collection, before its submit: draw from its published pages not
+    yet drawn from (by the journals and its host assignments, so a page a stopped tick published
+    is still drawn, and only once). Local work only: the replays are made and compared by
+    native_spot_step after submit (#1919). `server` is the inventory's jobs, with each one's
     assimilator spool."""
     targets = state.get("native_targets", {})
     spot = _spot(state)
@@ -3066,9 +3121,7 @@ def native_spot_tick(config, state, transport, persist, now, owned, server, slot
             counts = spot.setdefault("counts", {})
             counts["no_spool"] = counts.get("no_spool", 0) + 1
     spot["seen"] = seen
-    native_spot_sample(config, state, slots, published, now, rng)
-    persist()
-    native_spot_step(config, state, transport, now, submit_room)
+    native_spot_sample(config, state, slots, published, now, rng, active)
     persist()
 
 
@@ -3100,17 +3153,29 @@ def native_spot_alerts(config, state):
     if spot.get("failing"):
         alerts.append({"code": "native_spot_failing", "app": NATIVE_APP_NAME, **spot["failing"],
                        "message": "the native-spot step failed; every native host is held to canary size"})
+    busy = spot.get("lock_busy")
+    if busy and busy["last"] - busy["since"] >= NATIVE_SPOT_LOCK_BUSY_ALERT_SECS:
+        alerts.append({"code": "native_spot_lock_busy", "app": NATIVE_APP_NAME, **busy,
+                       "message": "the native-spot step keeps finding the BOINC host's step lock held and is "
+                                  "skipped; submit goes on, and hosts fall back to canary size once their last "
+                                  "match is older than fresh_hours"})
     return alerts
 
 
-def native_spot_summary(config, state, slots, now):
+def native_spot_summary(config, state, slots, now, active=None, step=None):
+    """The tick line's native.spot_check. `step` is what this tick's native-spot step did: ran,
+    idle (nothing to send or ask), skipped (the step lock stayed held) or failed."""
     if NATIVE_SPOT_KEY not in config:
         return None
     spot = state.get("native_spot", {})
-    return {"running": {str(host): native_spot_running(config, state, slots, host, now)
+    pending = spot.get("pending", {})
+    return {"running": {str(host): native_spot_running(config, state, slots, host, now, active)
                         for host in config["native_hosts"]},
-            "pending": len(spot.get("pending", {})), "held": sorted(int(h) for h in spot.get("holds", {})),
-            "counts": spot.get("counts", {}), "failing": spot.get("failing")}
+            "pending": len(pending),
+            "queued": sum(entry["stage"] == "queued" for entry in pending.values()),
+            "held": sorted(int(h) for h in spot.get("holds", {})),
+            "counts": spot.get("counts", {}), "failing": spot.get("failing"),
+            "lock_busy": spot.get("lock_busy"), "step": step}
 
 
 def tick(config, state, transport, persist, now=None, *, drain=False, dead_letter_failed=False,
@@ -3154,7 +3219,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         require(type(snapshot[key]) is int and snapshot[key] >= 0, "invalid capacity inventory")
     # A native plan's room before and after its spot checks' limit (#1863).
     native_room = native_capacity(config, snapshot) if native else None
-    native_slots = native_spot_slots(config, state, native_room, now) if native else None
+    spot_active = native_spot_active(snapshot) if native else None
+    native_slots = native_spot_slots(config, state, native_room, now, spot_active) if native else None
     pending_jobs = snapshot["pending_jobs"]
     require(isinstance(pending_jobs, list) and len(pending_jobs) <= MAX_JOBS and
             all(isinstance(job_id, str) and ID.fullmatch(job_id) for job_id in pending_jobs) and
@@ -3406,13 +3472,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                                       "jobs": (unpublished + kept)[:5]}
             persist()
     if native and NATIVE_SPOT_KEY in config:
-        # A replay is a workunit like any other: none while draining, none past the global cap.
-        spot_cap = max_global_pending if max_global_pending is not None else config.get("max_global_pending")
-        spot_room = 0 if drain else (100 if spot_cap is None else spot_cap - snapshot["pending_workunits"])
-        native_spot_tick(config, state, transport, persist, now, owned, server, native_room,
-                         submit_room=spot_room)
-        # A mismatch, a failing step or a match just now changes what each host may get.
-        native_slots = native_spot_slots(config, state, native_room, now)
+        # The draw only: local, before the submit below prunes settled jobs from native_targets.
+        # The replays are made and compared after submit (#1919).
+        native_spot_draw(config, state, persist, now, owned, server, native_room, active=spot_active)
     native_paused = state.get("native_paused") if native else None
     settle_failed(owned)
     status = _extract_status(snapshot, transport, server_status=server_status, drain=drain)
@@ -3655,6 +3717,30 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                 transport.submit(job_id)
         submitted += len(to_submit)
 
+    spot_step = None
+    if native and NATIVE_SPOT_KEY in config:
+        # After submit, never before it (#1919): the step takes the BOINC host's step lock with a
+        # short wait and is skipped for this tick when the lock stays held. What it finds (a
+        # mismatch, a failing step, a match) sets the hosts' room from the next tick on. A
+        # replay is a workunit like any other: none while draining, none past the global cap,
+        # counting the units this tick just submitted, and none while the plan is paused: a
+        # failed native submit may have made units `submitted` doesn't count. Comparisons go on.
+        spot_cap = max_global_pending if max_global_pending is not None else config.get("max_global_pending")
+        spot_room = 0 if drain or state.get("native_paused") else (
+            100 if spot_cap is None else spot_cap - snapshot["pending_workunits"] - submitted)
+        try:
+            spot_step = native_spot_step(config, state, transport, now, submit_room=spot_room,
+                                         active=spot_active)
+        except Exception as error:
+            # The tick's submit is done: whatever went wrong here is the spot check's, recorded
+            # and alerted on as a failing step, and the tick goes on to report.
+            spot = _spot(state)
+            spot.pop("lock_busy", None)
+            spot["failing"] = {"at": int(now), "reason": f"{type(error).__name__}: {error}"[:500]}
+            spot_step = "failed"
+        persist()
+        native_slots = native_spot_slots(config, state, native_room, now, spot_active)
+
     post_uncollected_not_pending = sum(
         not settled(record) and record["job"]["id"] not in pending_jobs
         for record in (owned.values() if native else records)
@@ -3819,7 +3905,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             "paused": native_paused,
         }
         if NATIVE_SPOT_KEY in config:
-            event["native"]["spot_check"] = native_spot_summary(config, state, native_slots, now)
+            event["native"]["spot_check"] = native_spot_summary(config, state, native_room, now, spot_active,
+                                                                spot_step)
     return with_timings(event, transport)
 
 
