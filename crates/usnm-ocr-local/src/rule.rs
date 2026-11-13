@@ -379,15 +379,16 @@ pub mod line_merge {
     }
 }
 
-/// The rule and the metric, as a version's `ocr_local.json` records them.
-pub fn record() -> Value {
+/// The rule and the metric, as a version's `ocr_local.json` records them, with the completeness
+/// thresholds the build ran on.
+pub fn record(completeness: &Completeness) -> Value {
     json!({
         "rule": {
             "version": VERSION,
             "margin": MARGIN,
             "head_test": HEAD_TEST,
             "same_language": true,
-            "completeness": Completeness::from_env().unwrap_or_default(),
+            "completeness": completeness,
         },
         "line_merge": {
             "version": line_merge::VERSION,
@@ -529,7 +530,7 @@ mod tests {
 
     #[test]
     fn the_record_names_the_rule_and_the_metric() {
-        let r = record();
+        let r = record(&Completeness::default());
         assert_eq!(r["rule"]["version"], VERSION);
         assert_eq!(r["rule"]["margin"], MARGIN);
         assert_eq!(r["metric"]["version"], usnm_core::damage::VERSION);
@@ -672,9 +673,14 @@ mod tests {
 
     #[test]
     fn the_record_names_the_completeness_gate() {
-        let r = record();
+        let r = record(&Completeness::default());
         assert_eq!(r["rule"]["completeness"]["min_len_ratio"], MIN_LEN_RATIO);
         assert_eq!(r["rule"]["completeness"]["min_cover"], MIN_COVER);
+        let own = Completeness {
+            min_len_ratio: 0.5,
+            ..Completeness::default()
+        };
+        assert_eq!(record(&own)["rule"]["completeness"]["min_len_ratio"], 0.5);
     }
 
     const PHOENIX: &str = "tesseract/5.5.0 profile=chr_phoenix image=sha256:3f9a0c1d2e4b \

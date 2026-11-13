@@ -41,6 +41,9 @@ pub struct Built {
     /// The release weighs our own OCR from `ocr-local` against LoC's text
     /// (`--ocr-local`, 12 §12.5 Step 9) by rule v1.
     pub ocr_local: bool,
+    /// The completeness thresholds those replacements ran on, with `ocr_local`. A finish
+    /// replays the build and must run on the same ones.
+    pub completeness: Option<crate::ocr_local::rule::Completeness>,
     /// The decade layout (05 §5.5.5): of the main index this run writes,
     /// and of the version's main indexes, which all have the `decade` field
     /// or none does.
@@ -130,6 +133,7 @@ pub fn summary(b: &Built) -> Value {
     }
     if b.ocr_local {
         features["ocr_local"] = json!(crate::ocr_local::rule::VERSION);
+        features["ocr_local_completeness"] = json!(b.completeness);
     }
     // Likewise, as its `congress` block (#229).
     if b.congress {
@@ -177,6 +181,7 @@ mod tests {
             american_stories: false,
             ja_latin: false,
             ocr_local: false,
+            completeness: None,
             decades: crate::sink::Decades::Off,
             text_layout: usnm_core::text_layout::TextLayout::Separate,
             page_language: false,
