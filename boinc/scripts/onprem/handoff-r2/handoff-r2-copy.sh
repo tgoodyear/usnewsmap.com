@@ -24,6 +24,8 @@
 # unit fails. Nothing watches that yet: feed-health does not read this unit or its status file. Do not
 # enable the timer until something does, such as an alert on `systemctl is-failed
 # usnm-handoff-r2-copy.service` or on the age of the status file, or a stale copy goes unnoticed.
+# It copies the live root, not a snapshot with a completion manifest (the design note's recovery-grade
+# copy): until that lands the copy is for inspection, and a recovery from it must verify first.
 # rclone runs at error level with no progress, so the journal carries failures, not per-object paths.
 set -euo pipefail
 export PATH="${PATH:+$PATH:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
