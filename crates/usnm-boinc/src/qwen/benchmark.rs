@@ -44,6 +44,9 @@ fn notice(provenance: &Value) -> anyhow::Result<Vec<u8>> {
         "https://creativecommons.org/licenses/by/4.0/"
     } else if upper.contains("CC0-1.0") {
         "https://creativecommons.org/publicdomain/zero/1.0/"
+    } else if upper.contains("APACHE-2.0") {
+        // American Stories' transcriptions (#968's en-as); its page images are public domain.
+        "https://www.apache.org/licenses/LICENSE-2.0"
     } else {
         anyhow::bail!("unsupported source licence");
     };
@@ -1050,6 +1053,33 @@ mod tests {
         assert!(collect(&opts.root, &spool, &out).is_err());
         opts.engine.image = format!("sha256:{}", "f".repeat(64));
         assert!(stage(&opts).is_err());
+    }
+
+    #[test]
+    fn an_apache_licensed_source_gets_its_licence_terms_in_the_notice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let opts = fixture(tmp.path());
+        let path = tmp.path().join("manifest.jsonl");
+        let mut row: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        row["source_license"] =
+            "Apache-2.0 (repository metadata). The page images are public domain".into();
+        std::fs::write(&path, row.to_string()).unwrap();
+        stage(&opts).unwrap();
+        let manifest = staged(&opts);
+        let dir = units(&opts.root).join(&manifest.entries[0].job.id);
+        let notice = std::fs::read_to_string(dir.join(NOTICE_FILE)).unwrap();
+        assert!(
+            notice.contains("https://www.apache.org/licenses/LICENSE-2.0"),
+            "{notice}"
+        );
+        row["source_license"] = "All rights reserved".into();
+        std::fs::write(&path, row.to_string()).unwrap();
+        let mut other = opts.clone();
+        other.root = tmp.path().join("reserved");
+        assert!(stage(&other)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported source licence"));
     }
 
     #[test]
