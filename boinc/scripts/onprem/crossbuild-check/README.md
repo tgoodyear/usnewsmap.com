@@ -17,17 +17,18 @@ The same engine and models differ by 1% to 8% per page across builds, mostly pag
 
 ## Install
 
-On the host that has the Linux build, the handoff directory and the scans (read-only):
+Runs on CT 211 (usnm-scanfetch, on pve-big), which has `/tank/ocr/scans` locally. As root:
 
-1. `useradd --system usnm-crossbuild`; copy `native_crossbuild_check.py` and `boinc/project/native-build-trust.json` to `/opt/usnm-crossbuild-check/`; put the Linux build's `usnm_tesseract` and a `tessdata/` (the locked models and a `configs/` with `alto` and `txt`) in `/opt/usnm-crossbuild-check/linux-build/`.
+1. `useradd --system usnm-crossbuild`. Copy `native_crossbuild_check.py` and `boinc/project/native-build-trust.json` to `/opt/usnm-crossbuild/`. Put the Linux native artifact's `usnm_tesseract` (sha256 `21877bc3...`) in `/opt/usnm-crossbuild/linux-build/` and the locked models there as `tessdata/<model>.traineddata` (at least `eng`), plus `tessdata/configs/alto` (`tessedit_create_alto 1`) and `tessdata/configs/txt` (`tessedit_create_txt 1`). The service user needs read access to all of it.
 2. `/etc/usnm-crossbuild-check.env`:
    ```
-   HANDOFF_DIR=<directory with spool/ and dispatch/jobs/>
-   SCANS_DIR=<directory holding keep/>
-   TRACKING_ISSUE=<issue number>
+   HANDOFF_DIR=<directory with spool/<job>/ and dispatch/jobs/<job>/ for native-feed-5's collected results>
+   SCANS_DIR=/tank/ocr/scans
+   TRACKING_ISSUE=1911
    CER_LIMIT=0.10
    F1_LIMIT=0.90
    ```
-3. Copy the two units to `/etc/systemd/system/`, then `systemctl daemon-reload && systemctl enable --now usnm-crossbuild-check.timer`. Try it once with `systemctl start usnm-crossbuild-check.service` and read `journalctl -u usnm-crossbuild-check`.
+   `HANDOFF_DIR` has the layout the bridge's `spool-out` step writes (`spool/<id>/host_id`, `usnm_<id>__file_result.json`, `usnm_<id>__file_text.txt`) next to the dispatch records (`dispatch/jobs/<id>/request.json`). Read it from where the plan's collect step leaves it; the check opens no new path.
+3. Copy the two units to `/etc/systemd/system/`, then `systemctl daemon-reload && systemctl enable --now usnm-crossbuild-check.timer` (06:30 daily, Nice=19, CPUQuota=200%). Try it with `systemctl start usnm-crossbuild-check.service` and read `journalctl -u usnm-crossbuild-check`. `gh` for the issue comments needs a login or `GH_TOKEN` for the service user; without it the check still writes its JSON.
 
 Tests: `python3 -m unittest boinc/scripts/test_native_crossbuild_check.py`.
