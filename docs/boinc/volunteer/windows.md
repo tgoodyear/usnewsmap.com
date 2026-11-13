@@ -20,9 +20,11 @@ joined PC can sit idle for a while. That is normal.
   Windows version is currently available for Intel GPUs; they get GPU work on
   Linux ([app versions](../apps/quality.md#app-versions-and-plan-classes)).
   On 12 November 2026 the live Windows GPU versions were `amd_vulkan_8b`,
-  `nvidia_vulkan_8b` (NVIDIA cards with 7 GB or more) and `nvidia_vulkan_6gb_8b`
-  (NVIDIA cards with 5.5 to 7 GB). A PC with an eligible AMD or NVIDIA GPU gets
-  GPU work. On a PC without one, add `-AllowCpuOnly` to the preview and apply
+  `nvidia_vulkan_8b` (NVIDIA cards with 7,000 MiB or more) and
+  `nvidia_vulkan_6gb_8b` (NVIDIA cards with 5,500 to 6,999 MiB). A PC with an
+  eligible AMD or NVIDIA GPU can get GPU work, but a live version does not
+  guarantee it: batches can be closed, and your BOINC preferences and free
+  resources still apply. On a PC without one, add `-AllowCpuOnly` to the preview and apply
   commands below (not to `-Status`) to offer CPU time instead. The only live
   Windows CPU app is the quality-check app `usnm_quality`; there is no Windows
   CPU version of the OCR app, so CPU work is optional and not always available.
