@@ -208,6 +208,21 @@ class ResultsTest(unittest.TestCase):
             self.assertIn("/results/qwen-nonenglish-v1/snapshots/", load)
             self.assertNotIn("--qwen-crop-states", command)
 
+    def test_a_held_xiaomi_root_is_collected_from_batch_108_and_never_loaded(self):
+        args = self.args()
+        args.campaign = args.qwen_campaign = "x08-fre-wf1415"
+        args.hold = True
+        with mock.patch.object(results.subprocess, "run") as run:
+            report = results.run(args)
+        collect, pull, keep = [c.args[0] for c in run.call_args_list]
+        self.assertIn("--qwen-xiaomi-spool /project/usnmocr/results/108", collect[-1])
+        self.assertIn("--qwen-root /project/qwen/x08-fre-wf1415", collect[-1])
+        self.assertIn("--snapshot-only", pull)
+        self.assertFalse(any("load.py" in " ".join(map(str, call.args[0])) for call in run.call_args_list))
+        self.assertEqual(keep[-2:], ["/var/lib/usnm-quality-feed/results/x08-fre-wf1415", "a" * 32])
+        self.assertEqual((report["loaded"], report["held"]),
+                         (False, "/var/lib/usnm-quality-feed/results/x08-fre-wf1415/held/latest/out/pages.parquet"))
+
     def test_no_xiaomi_spool_without_a_qwen_campaign(self):
         with mock.patch.object(results.subprocess, "run") as run:
             results.run(self.args())

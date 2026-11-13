@@ -1,0 +1,25 @@
+# Collects the Xiaomi-OCR-0 roots (#1867): batch-108 canonical readings joined with their
+# same-campaign QUALITY jobs, pulled to the preparation host and HELD, never loaded, until each
+# root's gain is scored. These roots never go in NATIVE_QWEN_ARGS (usnm-qwen-results.service),
+# which loads. ENGINE_IMAGE identifies the QUALITY scorer, not the Qwen model or native app.
+[Unit]
+Description=usnewsmap Xiaomi-OCR-0 canonical science, collected and held
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/usnm/quality-ship.env
+ConditionPathExists=/etc/usnm/quality-results-x08.env
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/usnm/quality-ship.env
+Environment=CTID=215
+# X08_QWEN_ARGS: one --native-campaign NAME[=COLLECTOR] per Xiaomi-OCR-0 root, e.g.
+# "--native-campaign x08-fre-wf1415 --native-campaign x08-eng-pilot". The collector must be from
+# #1849 on (it reads results/108); never the server image's usnm-boinc, which every rebuild replaces.
+Environment=QUALITY_COLLECTOR=/project/ops/quality-results/usnm-boinc
+Environment="CROP_STATES_ARGS=--qwen-crop-states /project/usnmocr/qwen/crop-states"
+Environment="QWEN_PAGES_ARGS=--qwen-pages /project/usnmocr/qwen/pages"
+EnvironmentFile=/etc/usnm/quality-results-x08.env
+ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/quality_results.py $X08_QWEN_ARGS $CROP_STATES_ARGS $QWEN_PAGES_ARGS --hold --engine-image ${ENGINE_IMAGE} --ctid ${CTID} --incremental --collector ${QUALITY_COLLECTOR} --step-lock-wait-secs 60 --lock /run/usnm-quality-results-x08.lock
+TimeoutStartSec=100min
+Nice=10
