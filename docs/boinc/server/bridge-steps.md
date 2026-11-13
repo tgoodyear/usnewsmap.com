@@ -231,7 +231,8 @@ usnm-boinc cloud pull --base-url https://<dev server> --token-file <file> --spoo
 - Layout under `--spool-dir`: `results/<batch>/<workunit>__file_<open_name>` for each output, `<workunit>_error`
   holding `0x<hex>\n` for a failed workunit, `<workunit>_no_output_files` for a success with no output file to take (as the stock assimilator, when it renames none), and
   `<workunit>__host_id` with the canonical result's host id. For a success the `__host_id` file is written last, so it
-  marks the workunit complete.
+  marks the workunit complete. A marker or sidecar already there with identical content is left as it is (same inode and mtime); different
+  content is rewritten.
 - Each file is downloaded into `<spool>/.incoming/`, checked against the listed size and MD5, fsynced, renamed into
   place and the directory fsynced. Only then is the workunit acknowledged (`POST /admin/v1/assimilate/ack`). A failed
   workunit stays unacknowledged and the run exits non-zero. A rerun skips files already in place that verify. Run one
@@ -264,6 +265,9 @@ usnm-boinc cloud spool-out --spool-dir <spool> --to-url <hand-off store> [--trus
   canonical result), means no host id, as when the bridge's query returns nothing.
 - `--to-url` is the same location `handoff put-spool --to-url` takes, and the store's own credentials apply (no new
   authentication). `--trust` is put with each job as the bridge does with the share's `gold/trust.json`.
+- Names under `results/` that are no job's spool file (a workunit not named `usnm_<64 hex>`, a stray file) are counted as
+  `ignored` in the summary, with up to five examples on stderr, so a spool with nothing recognised shows apart from one
+  with nothing to do. This holds in a dry run too.
 - `--dry-run` lists what would be handed off and writes nothing, not even the ledger; it needs no `--to-url`.
 - After `put_spool` returns, a ledger entry `<spool>/.handed-off/<workunit>.json` records a fingerprint of the files,
   host id and trust file. A repeat run skips a job whose fingerprint is unchanged, and hands a changed one off again. A

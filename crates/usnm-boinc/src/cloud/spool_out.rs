@@ -44,18 +44,37 @@ pub struct Report {
     pub incomplete: Vec<String>,
     pub unsupported: Vec<String>,
     pub failed: Vec<String>,
+    /// Entries under `results/` that are no job's spool file and no bundle's (a workunit with
+    /// another naming, a stray file), so "nothing recognised" shows apart from "nothing to do".
+    pub ignored: usize,
+    /// The first few of them (`MAX_IGNORED_EXAMPLES`), as `<batch>/<name>`.
+    pub ignored_examples: Vec<String>,
+}
+
+/// How many ignored names the report keeps to show.
+pub const MAX_IGNORED_EXAMPLES: usize = 5;
+
+impl Report {
+    fn ignore(&mut self, batch: &Path, name: &str) {
+        self.ignored += 1;
+        if self.ignored_examples.len() < MAX_IGNORED_EXAMPLES {
+            let b = batch.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            self.ignored_examples.push(format!("{b}/{name}"));
+        }
+    }
 }
 
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "handed off {}, already done {}, incomplete {}, not handled {}, failed {}",
+            "handed off {}, already done {}, incomplete {}, not handled {}, failed {}, ignored {}",
             self.handed_off.len(),
             self.already,
             self.incomplete.len(),
             self.unsupported.len(),
-            self.failed.len()
+            self.failed.len(),
+            self.ignored
         )?;
         for (label, list) in [
             ("handed off", &self.handed_off),
@@ -117,17 +136,27 @@ pub async fn spool_out_once(cfg: &Config) -> anyhow::Result<Report> {
     if results.is_dir() {
         for batch in sorted_entries(&results)? {
             if !is_real_dir(&batch)? {
+                report.ignore(
+                    &results,
+                    &batch.file_name().unwrap_or_default().to_string_lossy(),
+                );
                 continue;
             }
             let mut seen_here: BTreeMap<String, ()> = BTreeMap::new();
             for path in sorted_entries(&batch)? {
                 let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                    report.ignore(
+                        &batch,
+                        &path.file_name().unwrap_or_default().to_string_lossy(),
+                    );
                     continue;
                 };
                 if !is_real_file(&path)? {
+                    report.ignore(&batch, name);
                     continue;
                 }
                 let Some(rest) = name.strip_prefix("usnm_") else {
+                    report.ignore(&batch, name);
                     continue;
                 };
                 if let Some(bundle) = rest.strip_prefix("ocrb_") {
@@ -136,13 +165,17 @@ pub async fn spool_out_once(cfg: &Config) -> anyhow::Result<Report> {
                         if !report.unsupported.contains(&wu) {
                             report.unsupported.push(wu);
                         }
+                    } else {
+                        report.ignore(&batch, name);
                     }
                     continue;
                 }
                 let Some(job) = rest.get(..64).filter(|j| boinc::is_sha256(j)) else {
+                    report.ignore(&batch, name);
                     continue;
                 };
                 let Some(suffix) = SUFFIXES.iter().find(|s| &rest[64..] == **s) else {
+                    report.ignore(&batch, name);
                     continue;
                 };
                 let u = units.entry(job.to_owned()).or_default();
@@ -713,6 +746,12 @@ mod tests {
         fx.put("8", &format!("usnm_{ID2}_no_output_files"), "");
         let r = spool_out_once(&fx.cfg(false)).await.unwrap();
         assert_eq!(r.unsupported, [format!("usnm_ocrb_{ID}")]);
+        assert_eq!(r.ignored, 2, "{r}");
+        assert!(
+            r.ignored_examples.contains(&"7/other.txt".to_owned()),
+            "{:?}",
+            r.ignored_examples
+        );
         assert_eq!((r.handed_off.len(), r.failed.len()), (0, 1), "{r}");
         assert!(fs::read_dir(fx.store.path()).unwrap().next().is_none());
     }
@@ -723,5 +762,31 @@ mod tests {
         let mut cfg = fx.cfg(true);
         cfg.spool = fx.spool.path().join("nope");
         assert!(spool_out_once(&cfg).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn names_it_does_not_recognise_are_counted_and_shown_also_in_a_dry_run() {
+        let fx = Fx::new();
+        // The dev server's workunit names are not `usnm_<64 hex>`.
+        for i in 0..8 {
+            fx.put("0", &format!("load123_{i}__file_out"), "x");
+            fx.put("0", &format!("load123_{i}__host_id"), "5");
+        }
+        fx.put("0", "usnm_short__file_result.json", "x");
+        for dry in [true, false] {
+            let r = spool_out_once(&fx.cfg(dry)).await.unwrap();
+            assert_eq!(r.handed_off.len(), 0, "{r}");
+            assert_eq!(r.ignored, 17, "{r}");
+            assert_eq!(r.ignored_examples.len(), MAX_IGNORED_EXAMPLES);
+            assert!(r.to_string().contains("ignored 17"), "{r}");
+        }
+        // With a recognised job beside them, both counts show.
+        fx.success(ID, "42");
+        let r = spool_out_once(&fx.cfg(true)).await.unwrap();
+        assert_eq!((r.handed_off.len(), r.ignored), (1, 17), "{r}");
+        // A spool with nothing in it has nothing ignored.
+        let empty = Fx::new();
+        let r = spool_out_once(&empty.cfg(true)).await.unwrap();
+        assert_eq!((r.handed_off.len(), r.ignored), (0, 0));
     }
 }
