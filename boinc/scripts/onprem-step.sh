@@ -167,7 +167,7 @@ case $TARGET in
       die "--target publish needs --image <appver image>" ;;
   handoff)
     [ -z "$APPVER_IMAGE" ] || die "--image is for --target publish"
-    case $STEP in claim | release | dead-letter | deadline-retry | collect | export | line-report | lock-acquire | lock-renew | lock-release | lock-status | read-object | read-journals) ;; *) die "--target handoff runs claim, release, dead-letter, deadline-retry, collect, export, line-report, lock-acquire|renew|release|status or read-object|read-journals on-prem; $STEP stays in Azure" ;; esac
+    case $STEP in claim | release | dead-letter | deadline-retry | collect | export | line-report | lock-acquire | lock-renew | lock-release | lock-status | read-object | read-journals | write-held-pages) ;; *) die "--target handoff runs claim, release, dead-letter, deadline-retry, collect, export, line-report, lock-acquire|renew|release|status read-object|read-journals or write-held-pages on-prem; $STEP stays in Azure" ;; esac
     [ "$STEP" != deadline-retry ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
       die "--step deadline-retry is an operator's, as root on the host; it isn't allowed over ssh"
     [ "$STEP" != line-report ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
@@ -205,7 +205,7 @@ if [ "$TARGET" = handoff ] || [ "$TARGET" = bridge ]; then
       $WHAT_IF && { echo "would run $LOCK_TOOL ${STEP#lock-} on $HANDOFF_LOCK_ROOT"; exit 0; }
       exec python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" "${STEP#lock-}" ${lock_args[@]+"${lock_args[@]}"} ;;
     handoff/claim | handoff/release | handoff/dead-letter | handoff/collect | handoff/export | \
-      bridge/spool-out | bridge/submit-remote | bridge/batch-inventory)
+      handoff/write-held-pages | bridge/spool-out | bridge/submit-remote | bridge/batch-inventory)
       if [ -n "$fence_holder$fence_generation" ]; then
         [ -n "$fence_holder" ] && [ -n "$fence_generation" ] || die "LOCK_HOLDER and LOCK_GENERATION go together"
         if ! $WHAT_IF; then
@@ -237,6 +237,31 @@ if [ "$TARGET" = handoff ]; then
       $WHAT_IF && { echo "would run $READ_TOOL $STEP on $HANDOFF_LOCK_ROOT"; exit 0; }
       exec python3 "$READ_TOOL" --root "$HANDOFF_LOCK_ROOT" "$STEP" ${read_args[@]+"${read_args[@]}"} ;;
   esac
+fi
+
+# The controller's held-pages parts (#1367, boinc/scripts/handoff_write.py), as JSON on stdin. The
+# input is read before the step lock is waited for, and the write runs under that lock after the
+# fence is checked again, so it is serialised with the other writers and with a takeover.
+WRITE_TOOL=$(dirname "$(readlink -f "$0")")/handoff_write.py
+held_stdin="" held_plan=""
+if [ "$TARGET:$STEP" = handoff:write-held-pages ]; then
+  held_kept=()
+  for v in ${VARS[@]+"${VARS[@]}"}; do
+    case $v in
+      HELD_PLAN=*) held_plan=${v#*=} ;;
+      EXPECTED_HANDOFF_URL=*) held_kept+=("$v") ;;
+      *) die "--step $STEP takes only HELD_PLAN=<plan>" ;;
+    esac
+  done
+  [ -n "$held_plan" ] || die "--step $STEP needs HELD_PLAN=<plan>"
+  VARS=(${held_kept[@]+"${held_kept[@]}"})
+  [[ $held_plan =~ ^[A-Za-z0-9-]{1,64}$ ]] || die "HELD_PLAN is a plan name: letters, digits and dashes"
+  [ -f "$WRITE_TOOL" ] || die "no $WRITE_TOOL: install handoff_write.py beside this script"
+  [ -d "$HANDOFF_LOCK_ROOT" ] && [ ! -L "$HANDOFF_LOCK_ROOT" ] || die "no local hand-off root $HANDOFF_LOCK_ROOT"
+  $WHAT_IF && { echo "would run $WRITE_TOOL held-pages --plan=$held_plan on $HANDOFF_LOCK_ROOT"; exit 0; }
+  held_stdin=$(mktemp "$RUN_DIR/usnm-boinc-held.XXXXXX")
+  trap 'rm -f "$held_stdin"' EXIT
+  head -c $((256 * 1024 * 1024 + 1)) > "$held_stdin"
 fi
 
 STAGE=${USNM_BOINC_SCAN_STAGE:-/srv/usnm-boinc/project/handoff-scans}
@@ -617,6 +642,13 @@ step_timeout=$((step_timeout - (SECONDS - lock_started)))
 if [ -n "${fence_holder:-}" ]; then
   python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" fence --holder "$fence_holder" \
     --generation "$fence_generation" > /dev/null || die "the controller lock expired while waiting for the step lock; $STEP not run"
+fi
+if [ -n "$held_stdin" ]; then
+  # Still holding the step lock (fd 9): the write, then out.
+  rc=0
+  timeout "$step_timeout" python3 "$WRITE_TOOL" --root "$HANDOFF_LOCK_ROOT" held-pages --plan="$held_plan" \
+    < "$held_stdin" || rc=$?
+  exit "$rc"
 fi
 envfile=$(mktemp "$RUN_DIR/usnm-boinc-step.XXXXXX")
 trap 'rm -f "$envfile"' EXIT

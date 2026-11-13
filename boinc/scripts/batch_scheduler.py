@@ -758,12 +758,19 @@ LOCK_TTL_SECS = 300
 # already in flight and clock rounding; the host's clock decides, this one is conservative.
 LOCK_DISPATCH_MARGIN_SECS = 150
 # Read steps that run on the BOINC host without a container (--ssh-reads).
-HOST_READ_STEPS = frozenset(("read-object", "read-journals"))
+HOST_READ_STEPS = frozenset(("read-object", "read-journals", "write-held-pages"))
 # The hand-off steps that change state; with the local lock each carries the holder and
 # generation, and the host refuses it if the record has moved on.
-FENCED_HANDOFF_STEPS = frozenset(("claim", "release", "dead-letter", "collect", "export"))
+FENCED_HANDOFF_STEPS = frozenset(("claim", "release", "dead-letter", "collect", "export", "write-held-pages"))
 # The bridge steps that write the hand-off root (spool-out, the inventory) or dispatch work.
 FENCED_BRIDGE_STEPS = frozenset(("spool-out", "submit-remote", "batch-inventory"))
+
+
+def held_pages_stem(plan):
+    """The file name stem of a plan's held-pages lists. A store lists only names whose segments
+    start with a letter or digit, so a plan such as -q goes under p_-q; plans hold no underscore,
+    so this cannot equal any other plan's stem. handoff_write.py has the same rule."""
+    return plan if plan[:1].isalnum() else f"p_{plan}"
 
 
 class Transport:
@@ -898,13 +905,13 @@ class Transport:
                         f"{label} failed; private command failure receipt cleanup failed"
                     ) from failure
 
-    def run(self, argv, label, timeout=2100, ok=(0,), *, execution_route=None):
+    def run(self, argv, label, timeout=2100, ok=(0,), *, execution_route=None, stdin=None):
         # In the tick's timings a storage call goes by its az verb (list, download, lease, ...).
         kind = f"storage {argv[3]}" if argv[:3] == ["az", "storage", "blob"] and len(argv) > 3 else label
         start, cpu, passed = self.timings.clock(), self.timings.cpu(), False
         try:
             done = subprocess.run(argv, check=False, text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE, timeout=timeout, cwd=REPO)
+                                  stderr=subprocess.PIPE, timeout=timeout, cwd=REPO, input=stdin)
             passed = done.returncode in ok
         except (OSError, subprocess.SubprocessError) as error:
             self.retain_failure(
@@ -989,7 +996,7 @@ class Transport:
         if onprem and self.config.get("step_command"):
             command = self.config["step_command"]
         variables = dict(variables)
-        if target == "handoff" and onprem and not lock_step:
+        if target == "handoff" and onprem and (not lock_step or step == "write-held-pages"):
             variables["EXPECTED_HANDOFF_URL"] = self.handoff_url
         if (((target == "handoff" and step in FENCED_HANDOFF_STEPS)
              or (target == "bridge" and step in FENCED_BRIDGE_STEPS)) and onprem
@@ -1122,7 +1129,7 @@ class Transport:
                 "--proposed-lease-id", lease, "-o", "none")
         return lease
 
-    def step(self, target, step, **variables):
+    def step(self, target, step, *, _stdin=None, **variables):
         if self.lock_lost is not None and step not in ("lock-release", "lock-status"):
             raise RuntimeError(f"controller lock lost: {self.lock_lost}; the tick stops")
         if (self.lock_deadline is not None and step not in ("lock-release", "lock-status", "lock-renew")
@@ -1130,7 +1137,7 @@ class Transport:
             self.lock_lost = f"no lock renewal inside {LOCK_TTL_SECS - LOCK_DISPATCH_MARGIN_SECS} s"
             raise RuntimeError(f"controller lock lost: {self.lock_lost}; the tick stops")
         argv, timeout, route = self._step_argv(target, step, variables)
-        return self.run(argv, f"{target}/{step}", timeout=timeout, execution_route=route)
+        return self.run(argv, f"{target}/{step}", timeout=timeout, execution_route=route, stdin=_stdin)
 
     @timed("inventory")
     def inventory(self):
@@ -1543,11 +1550,21 @@ class Transport:
         items = sorted(pages.items())
         parts = {}
         for number, start in enumerate(range(0, len(items), HELD_PAGES_PER_PART)):
-            parts[f"{HELD_PAGES_PREFIX}{plan}.{number:04d}.json"] = (json.dumps(
+            parts[f"{HELD_PAGES_PREFIX}{held_pages_stem(plan)}.{number:04d}.json"] = (json.dumps(
                 {"schema_version": 1, "pages": dict(items[start:start + HELD_PAGES_PER_PART])},
                 sort_keys=True, separators=(",", ":")) + "\n").encode()
-        digest = hashlib.sha256(b"".join(name.encode() + b"\n" + body
-                                         for name, body in parts.items())).hexdigest()
+        # The marker names where the list went as well as what it holds, so a state directory
+        # reused after switching between Azure, a local root and --ssh-reads publishes again.
+        if self.ssh_reads:
+            # handoff_url is the same path on every host: the runner says which host it is.
+            runner = " ".join(self.config.get("step_command") or ())
+            destination = f"ssh:{runner}:{self.handoff_url}"
+        elif self.handoff_root is not None:
+            destination = f"root:{self.handoff_root}"
+        else:
+            destination = f"azure:{self.config['account']}"
+        digest = hashlib.sha256(destination.encode() + b"\0" + b"".join(
+            name.encode() + b"\n" + body for name, body in parts.items())).hexdigest()
         marker = self.directory / "held-pages.sha256"
         try:
             if marker.read_text().strip() == digest:
@@ -1556,19 +1573,23 @@ class Transport:
             pass
         # These writes check neither holder nor generation, so a controller that lost the lock
         # could change the list a successor relies on. Until they go through a fenced host step
-        # (write-held-pages), the local lock refuses to publish.
-        if self.local_lock:
+        # (write-held-pages, with --ssh-reads), the local lock refuses to publish.
+        if self.local_lock and not self.ssh_reads:
             raise RuntimeError("--local-lock cannot publish held pages yet: the write is not fenced")
-        mine = f"{HELD_PAGES_PREFIX}{plan}."
-        require(not self.ssh_reads, "held pages over ssh arrive with the ssh write steps")
-        if self.handoff_root is not None:
+        mine = f"{HELD_PAGES_PREFIX}{held_pages_stem(plan)}."
+        if self.ssh_reads:
+            # The BOINC host writes them: the parts go in as JSON on stdin, which the step
+            # checks and renames into place, then it removes this plan's longer-list parts.
+            self.step("handoff", "write-held-pages", HELD_PLAN=plan,
+                      _stdin=json.dumps({"parts": {name: body.decode() for name, body in parts.items()}}))
+        elif self.handoff_root is not None:
             directory = self.handoff_root / HELD_PAGES_PREFIX
             directory.mkdir(parents=True, exist_ok=True)
             for name, body in parts.items():
                 staged = directory / ".held-pages.tmp"
                 staged.write_bytes(body)
                 os.replace(staged, self.handoff_root / name)
-            there = [f"{HELD_PAGES_PREFIX}{path.name}" for path in directory.glob(f"{plan}.*.json")]
+            there = [f"{HELD_PAGES_PREFIX}{path.name}" for path in directory.glob(f"{held_pages_stem(plan)}.*.json")]
             for name in there:
                 if name not in parts:
                     (self.handoff_root / name).unlink()
