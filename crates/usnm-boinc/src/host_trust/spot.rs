@@ -303,42 +303,90 @@ pub(super) fn judge(job: &boinc::Job, files: Files) -> anyhow::Result<Returned> 
 }
 
 /// The confidence attributes of ALTO: word (`WC`), glyph (`CC`) and block or page (`PC`).
-const CONFIDENCE: [&str; 3] = ["WC", "CC", "PC"];
+const CONFIDENCE: [&[u8]; 3] = [b"WC", b"CC", b"PC"];
 
-/// `alto` with every confidence attribute removed and everything else kept: element names,
-/// the other attributes (word strings, box coordinates, ids), their order, and the text. The
-/// same Tesseract build on two CPUs can differ in one word's `WC` in the last digit (#1835), so
-/// a native spot check leaves confidences out and compares the rest exactly.
+/// `alto` with the confidence attributes of its ALTO elements cut out, byte for byte: the rest
+/// of every tag (quoting, spacing, attribute order) and everything between tags are kept as
+/// they were, and so are attributes with these names on elements outside the ALTO namespaces.
+/// The same Tesseract build on two CPUs can differ in one word's `WC` in the last digit (#1835),
+/// so a native spot check leaves confidences out and compares the rest exactly. `alto` has
+/// passed `check_alto`: UTF-8 and well-formed.
 pub(super) fn alto_without_confidence(alto: &[u8]) -> anyhow::Result<Vec<u8>> {
-    use quick_xml::events::{BytesStart, Event};
-    let strip = |e: &BytesStart<'_>| -> anyhow::Result<BytesStart<'static>> {
-        let mut out = BytesStart::new(e.name().as_ref().to_owned());
-        for attr in e.attributes() {
-            let attr = attr?;
-            if !CONFIDENCE.contains(&attr.key.as_ref()) {
-                out.push_attribute(attr);
+    use quick_xml::events::Event;
+    use quick_xml::name::{Namespace, ResolveResult};
+    let text = std::str::from_utf8(alto)?;
+    let mut reader = quick_xml::NsReader::from_str(text);
+    let mut out = Vec::with_capacity(alto.len());
+    let mut copied = 0;
+    loop {
+        let (namespace, event) = reader.read_resolved_event()?;
+        let alto_element = matches!(
+            namespace,
+            ResolveResult::Bound(Namespace(uri))
+                if usnm_alto::NAMESPACES.iter().any(|(n, _)| *n == uri)
+        );
+        let kind = match event {
+            Event::Eof => break,
+            Event::Start(_) | Event::Empty(_) => true,
+            _ => false,
+        };
+        let end = reader.buffer_position() as usize;
+        if kind && alto_element {
+            let start = text[..end].rfind('<').context("a tag has no start")?;
+            for (from, to) in confidence_spans(&alto[start..end]) {
+                out.extend_from_slice(&alto[copied..start + from]);
+                copied = start + to;
             }
         }
-        Ok(out)
-    };
-    let mut reader = quick_xml::Reader::from_reader(alto);
-    let mut writer = quick_xml::Writer::new(Vec::new());
+    }
+    out.extend_from_slice(&alto[copied..]);
+    Ok(out)
+}
+
+/// The byte ranges in one start tag (`<name a="1" WC="2"/>`) of its confidence attributes, each
+/// with the whitespace before it.
+fn confidence_spans(tag: &[u8]) -> Vec<(usize, usize)> {
+    let blank = |b: u8| b.is_ascii_whitespace();
+    let mut spans = Vec::new();
+    let mut i = 1;
+    while i < tag.len() && !blank(tag[i]) && tag[i] != b'/' && tag[i] != b'>' {
+        i += 1;
+    }
     loop {
-        match reader.read_event()? {
-            Event::Eof => break,
-            Event::Start(e) => writer.write_event(Event::Start(strip(&e)?))?,
-            Event::Empty(e) => writer.write_event(Event::Empty(strip(&e)?))?,
-            other => writer.write_event(other)?,
+        let before = i;
+        while i < tag.len() && blank(tag[i]) {
+            i += 1;
+        }
+        if i >= tag.len() || tag[i] == b'/' || tag[i] == b'>' {
+            return spans;
+        }
+        let key = i;
+        while i < tag.len() && tag[i] != b'=' && !blank(tag[i]) {
+            i += 1;
+        }
+        let name = &tag[key..i];
+        while i < tag.len() && (blank(tag[i]) || tag[i] == b'=') {
+            i += 1;
+        }
+        let Some(&quote) = tag.get(i) else {
+            return spans;
+        };
+        i += 1;
+        while i < tag.len() && tag[i] != quote {
+            i += 1;
+        }
+        i += 1;
+        if CONFIDENCE.contains(&name) {
+            spans.push((before, i));
         }
     }
-    Ok(writer.into_inner())
 }
 
 /// Whether two results agree. They are compared only between results of one build, or of two
 /// builds `builds` lists as equivalent (#1418): output from builds not shown to be identical is
 /// never compared byte for byte, so this fails. A container spot check compares the text as
-/// `import` stores it; a native one (`exact`, #1863) the returned text bytes and the ALTO bytes without their
-/// confidence attributes.
+/// `import` stores it; a native one (`exact`, #1863) the returned text bytes and
+/// the ALTO bytes without their confidence attributes.
 pub(super) fn agree(
     builds: &crate::trust::BuildTrust,
     a: &Returned,
@@ -495,9 +543,8 @@ pub(super) mod tests {
     #[test]
     fn exact_comparison_leaves_confidence_out_and_nothing_else() {
         let builds = crate::trust::BuildTrust::embedded().unwrap();
-        let same = |a: &str, b: &str| {
-            agree(builds, &returned_alto(a), &returned_alto(b), true).unwrap()
-        };
+        let same =
+            |a: &str, b: &str| agree(builds, &returned_alto(a), &returned_alto(b), true).unwrap();
         let base = alto_line("0.11", "o1", 1100);
         // One word's WC at 0.11 on one host and 0.10 on the other: still equal.
         assert!(same(&base, &alto_line("0.10", "o1", 1100)));
@@ -508,15 +555,38 @@ pub(super) mod tests {
         assert!(!same(&base, &alto_line("0.11", "o1", 1101)));
         assert!(!same(&base, &alto_line("0.10", "o1", 1101)));
         // The confidence is the only thing removed.
-        let stripped = String::from_utf8(alto_without_confidence(base.as_bytes()).unwrap()).unwrap();
+        let stripped =
+            String::from_utf8(alto_without_confidence(base.as_bytes()).unwrap()).unwrap();
         assert!(!stripped.contains("WC="), "{stripped}");
         assert!(stripped.contains(r#"HPOS="1100""#) && stripped.contains(r#"CONTENT="o1""#));
-        // Glyph and block confidences go too; a different attribute order or name does not.
-        let a = r#"<alto><Page><String CC="01" PC="0.5" WC="0.3" CONTENT="x"/></Page></alto>"#;
-        let b = r#"<alto><Page><String CONTENT="x"/></Page></alto>"#;
-        assert!(same(a, b));
-        assert!(!same(b, r#"<alto><Page><String CONTENT="x" ID="1"/></Page></alto>"#));
-        assert!(!same(b, r#"<alto><Page><Word CONTENT="x"/></Page></alto>"#));
+        // Glyph and block confidences go too; other attributes and elements do not.
+        let alto = |inner: &str| {
+            format!(
+                r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Page>{inner}</Page></alto>"#
+            )
+        };
+        let a = alto(r#"<String CC="01" PC="0.5" WC="0.3" CONTENT="x"/>"#);
+        let b = alto(r#"<String CONTENT="x"/>"#);
+        assert!(same(&a, &b));
+        assert!(!same(&b, &alto(r#"<String CONTENT="x" ID="1"/>"#)));
+        assert!(!same(&b, &alto(r#"<Word CONTENT="x"/>"#)));
+        // Spacing and quoting of the kept attributes are part of the comparison.
+        assert!(!same(&b, &alto(r#"<String  CONTENT="x"/>"#)));
+        assert!(!same(&b, &alto(r#"<String CONTENT='x'/>"#)));
+        assert!(!same(&b, &alto(r#"<String CONTENT="x" />"#)));
+        // A confidence attribute is removed alone: the others around it stay as written.
+        assert!(same(
+            &alto(r#"<String ID="1" WC="0.1" CONTENT="x"/>"#),
+            &alto(r#"<String ID="1" CONTENT="x"/>"#)
+        ));
+        // The same names on elements outside the ALTO namespaces are not confidences.
+        let foreign = |wc: &str| {
+            alto(&format!(
+                r#"<Tags><XmlData><x:m xmlns:x="urn:example:x" WC="{wc}"/></XmlData></Tags>"#
+            ))
+        };
+        assert!(!same(&foreign("a"), &foreign("b")));
+        assert!(same(&foreign("a"), &foreign("a")));
     }
 
     #[test]
