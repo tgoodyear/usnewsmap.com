@@ -19,7 +19,7 @@ COHORT_CLASSES = (
 # so a restart keeps a bounded window and otherwise leaves them closed. Each is its own window,
 # like AMD's: it rides on no other class's admission.
 XIAOMI_CLASSES = ("mt_x08", "apple_gpu_x08", "nvidia_vulkan_x08", "intel_vulkan_x08", "amd_vulkan_x08")
-SINGLE_WORKUNIT_CLASSES = ("amd_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b") + XIAOMI_CLASSES
+SINGLE_WORKUNIT_CLASSES = ("amd_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b")
 AMD_GENERAL_MARKER = "usnm-amd-general-admission-v1"
 NVIDIA_GENERAL_MARKER = "usnm-nvidia-general-admission-v1"
 # Classes an operator can open to all of the app's work (native-qwen-cohort.php --general).
@@ -113,7 +113,9 @@ def merge_policy(source: bytes, current: bytes) -> bytes:
         if any(len(field) != 1 for field in fields) or name not in reviewed:
             raise ValueError(f"Cannot preserve cohort bounds for {name}")
         low, high = (int(field[0].text) for field in fields)
-        if (low, high) != (2, 1) and not (2 <= low <= high and high - low < 10):
+        # The Xiaomi-OCR-0 classes take batch 108 only; native-qwen-cohort.php --plan-class x08
+        # opens them over every workunit of named roots, which can be any length (#1867).
+        if (low, high) != (2, 1) and not (2 <= low <= high and (high - low < 10 or name in XIAOMI_CLASSES)):
             raise ValueError(f"Invalid bounded cohort for {name}")
         if name in SINGLE_WORKUNIT_CLASSES and (low, high) != (2, 1) and low != high:
             raise ValueError(f"{name} acceptance requires exactly one workunit")

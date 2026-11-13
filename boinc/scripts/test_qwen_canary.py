@@ -153,7 +153,7 @@ class PlanPolicyRefresh(unittest.TestCase):
         self.assertTrue(POLICY.refresh(source, self.target, log=lines.append))
         self.assertEqual(lines, [f"{removed}: admission no workunit bounds -> class absent"])
 
-    def test_xiaomi_classes_ship_closed_and_a_restart_keeps_a_one_workunit_window_only(self):
+    def test_xiaomi_classes_ship_closed_and_a_restart_keeps_their_window(self):
         classes = POLICY.XIAOMI_CLASSES
         self.assertEqual(len(classes), 5)
         source = self.source.read_bytes()
@@ -174,12 +174,17 @@ class PlanPolicyRefresh(unittest.TestCase):
         for name in classes:
             if name != "nvidia_vulkan_x08":
                 self.assertEqual((kept[name].findtext("min_wu_id"), kept[name].findtext("max_wu_id")), ("2", "1"))
-        # More than one workunit, or an admission marker, is refused and nothing is replaced.
-        for low, high in (("700", "702"),):
-            root.find("plan_class[name='mt_x08']").find("min_wu_id").text = low
-            root.find("plan_class[name='mt_x08']").find("max_wu_id").text = high
-            with self.assertRaisesRegex(ValueError, "mt_x08 acceptance requires exactly one workunit"):
-                POLICY.merge_policy(source, ET.tostring(root))
+        # A range of any length is kept too: --plan-class x08 opens a root's units at once (#1867).
+        for name in classes:
+            root.find(f"plan_class[name='{name}']").find("min_wu_id").text = "700"
+            root.find(f"plan_class[name='{name}']").find("max_wu_id").text = "758"
+        _, kept = POLICY.parse_policy(POLICY.merge_policy(source, ET.tostring(root)))
+        for name in classes:
+            self.assertEqual((kept[name].findtext("min_wu_id"), kept[name].findtext("max_wu_id")), ("700", "758"))
+        # A backward range is refused and nothing is replaced.
+        root.find("plan_class[name='mt_x08']").find("min_wu_id").text = "760"
+        with self.assertRaisesRegex(ValueError, "Invalid bounded cohort for mt_x08"):
+            POLICY.merge_policy(source, ET.tostring(root))
         self.assertEqual(self.target.read_bytes(), source)
         # The Xiaomi classes are not in the general-admission table, so no marker is known for them.
         for name in classes:
