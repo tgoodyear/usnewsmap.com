@@ -84,10 +84,22 @@ class HelperTests(unittest.TestCase):
         with patch.object(write, "MAX_LISTS", 1), self.assertRaisesRegex(write.WriteError, "more than"):
             write.held_pages(self.root, "q", {PART: GOOD})
 
+    def test_a_boolean_or_float_schema_version_is_refused(self):
+        for version in (True, 1.0):
+            body = json.dumps({"schema_version": version, "pages": {}})
+            with self.subTest(version=version), self.assertRaises(write.WriteError):
+                write.held_pages(self.root, "q", {PART: body})
+
     def test_scheduler_valid_plan_names_are_accepted(self):
-        part = "scheduler/held-pages/-q.0000.json"
+        part = "scheduler/held-pages/p_-q.0000.json"
         write.held_pages(self.root, "-q", {part: GOOD})
         self.assertTrue((self.root / part).exists())
+        self.assertEqual(batch.held_pages_stem("-q"), write.stem("-q"))
+        self.assertEqual(batch.held_pages_stem("queue-a"), "queue-a")
+        # The name starts with a letter, so the store lists it, and it is not another plan's.
+        self.assertTrue(batch.held_pages_stem("-q")[0].isalnum())
+        with self.assertRaises(write.WriteError):
+            write.held_pages(self.root, "-q", {"scheduler/held-pages/-q.0000.json": GOOD})
 
     def test_main_reads_stdin(self):
         body = json.dumps({"parts": {PART: GOOD}})
@@ -142,11 +154,11 @@ class StepTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertTrue((self.state / PART).exists())
         self.assertNotEqual(self.step("handoff", "write-held-pages", "JOB_ID=x", stdin=body).returncode, 0)
-        dash = json.dumps({"parts": {"scheduler/held-pages/-q.0000.json": GOOD}})
+        dash = json.dumps({"parts": {"scheduler/held-pages/p_-q.0000.json": GOOD}})
         again = self.step("handoff", "write-held-pages", "HELD_PLAN=-q", "EXPECTED_HANDOFF_URL=/handoff-state", "LOCK_HOLDER=a-1",
                           "LOCK_GENERATION=1", stdin=dash)
         self.assertEqual(again.returncode, 0, again.stderr)
-        self.assertTrue((self.state / "scheduler/held-pages/-q.0000.json").exists())
+        self.assertTrue((self.state / "scheduler/held-pages/p_-q.0000.json").exists())
 
     def test_write_held_pages_checks_the_fence_again_after_the_step_lock(self):
         lock.acquire(self.state, "a-1", "h", 1)
@@ -219,6 +231,20 @@ class ControllerTests(unittest.TestCase):
         argv, kwargs = run.call_args.args[0], run.call_args.kwargs
         self.assertIn("HELD_PLAN=q", argv)
         self.assertIn(PART, json.loads(kwargs["stdin"])["parts"])
+
+    def test_held_pages_step_carries_the_expected_url_and_the_marker_names_the_host(self):
+        transport = self.transport()
+        with patch.object(transport, "run", return_value="{}") as run:
+            transport.publish_held({"doc1": ["a" * 64]})
+        self.assertIn("EXPECTED_HANDOFF_URL=/handoff-state", run.call_args.args[0])
+        marker = (transport.directory / "held-pages.sha256").read_text()
+        other = self.transport()
+        other.config["step_command"] = ["ssh", "root@other.example", "--"]
+        other.directory = transport.directory
+        with patch.object(other, "run", return_value="{}") as again:
+            self.assertTrue(other.publish_held({"doc1": ["a" * 64]}))
+        self.assertTrue(again.called)
+        self.assertNotEqual(marker, (transport.directory / "held-pages.sha256").read_text())
 
     def test_a_marker_from_another_destination_does_not_suppress_the_first_upload(self):
         ssh = self.transport()

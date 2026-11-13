@@ -763,6 +763,13 @@ FENCED_HANDOFF_STEPS = frozenset(("claim", "release", "dead-letter", "collect", 
 FENCED_BRIDGE_STEPS = frozenset(("spool-out", "submit-remote", "batch-inventory"))
 
 
+def held_pages_stem(plan):
+    """The file name stem of a plan's held-pages lists. A store lists only names whose segments
+    start with a letter or digit, so a plan such as -q goes under p_-q; plans hold no underscore,
+    so this cannot equal any other plan's stem. handoff_write.py has the same rule."""
+    return plan if plan[:1].isalnum() else f"p_{plan}"
+
+
 class Transport:
     def __init__(self, config, directory, *, status_url=None, status_file=None,
                  batch_submit=False, batch_spool_out=False, batch_collect=False, batch_export=False,
@@ -986,7 +993,7 @@ class Transport:
         if onprem and self.config.get("step_command"):
             command = self.config["step_command"]
         variables = dict(variables)
-        if target == "handoff" and onprem and not lock_step:
+        if target == "handoff" and onprem and (not lock_step or step == "write-held-pages"):
             variables["EXPECTED_HANDOFF_URL"] = self.handoff_url
         if (((target == "handoff" and step in FENCED_HANDOFF_STEPS)
              or (target == "bridge" and step in FENCED_BRIDGE_STEPS)) and onprem
@@ -1524,13 +1531,15 @@ class Transport:
         items = sorted(pages.items())
         parts = {}
         for number, start in enumerate(range(0, len(items), HELD_PAGES_PER_PART)):
-            parts[f"{HELD_PAGES_PREFIX}{plan}.{number:04d}.json"] = (json.dumps(
+            parts[f"{HELD_PAGES_PREFIX}{held_pages_stem(plan)}.{number:04d}.json"] = (json.dumps(
                 {"schema_version": 1, "pages": dict(items[start:start + HELD_PAGES_PER_PART])},
                 sort_keys=True, separators=(",", ":")) + "\n").encode()
         # The marker names where the list went as well as what it holds, so a state directory
         # reused after switching between Azure, a local root and --ssh-reads publishes again.
         if self.ssh_reads:
-            destination = f"ssh:{self.handoff_url}"
+            # handoff_url is the same path on every host: the runner says which host it is.
+            runner = " ".join(self.config.get("step_command") or ())
+            destination = f"ssh:{runner}:{self.handoff_url}"
         elif self.handoff_root is not None:
             destination = f"root:{self.handoff_root}"
         else:
@@ -1548,7 +1557,7 @@ class Transport:
         # (write-held-pages, with --ssh-reads), the local lock refuses to publish.
         if self.local_lock and not self.ssh_reads:
             raise RuntimeError("--local-lock cannot publish held pages yet: the write is not fenced")
-        mine = f"{HELD_PAGES_PREFIX}{plan}."
+        mine = f"{HELD_PAGES_PREFIX}{held_pages_stem(plan)}."
         if self.ssh_reads:
             # The BOINC host writes them: the parts go in as JSON on stdin, which the step
             # checks and renames into place, then it removes this plan's longer-list parts.
@@ -1561,7 +1570,7 @@ class Transport:
                 staged = directory / ".held-pages.tmp"
                 staged.write_bytes(body)
                 os.replace(staged, self.handoff_root / name)
-            there = [f"{HELD_PAGES_PREFIX}{path.name}" for path in directory.glob(f"{plan}.*.json")]
+            there = [f"{HELD_PAGES_PREFIX}{path.name}" for path in directory.glob(f"{held_pages_stem(plan)}.*.json")]
             for name in there:
                 if name not in parts:
                     (self.handoff_root / name).unlink()
