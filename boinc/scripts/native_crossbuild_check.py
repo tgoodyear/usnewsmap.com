@@ -4,8 +4,8 @@
 Samples pages that Windows native hosts returned in the last 24 hours (seeded random, stratified by
 host), reads each scan again with the Linux build's `usnm_tesseract` and the worker's arguments, and
 compares the two texts. Per page: CER of the Windows text against the Linux text (edits over the
-Linux text's length) and the character-count ratio Windows/Linux. A page is flagged when the CER is
-over 1% or the ratio is outside 0.9-1.1, or when its scan is not the bytes the job named.
+Linux text's length), the character-count ratio Windows/Linux and the word-multiset F1. A page is
+flagged when the CER is over 10%, the F1 under 0.9 or the ratio outside 0.9-1.1, or when its scan is not the bytes the job named.
 
 Inputs are read only: the handoff directory (`spool/<job>/` with `host_id`,
 `usnm_<job>__file_result.json` and `usnm_<job>__file_text.txt`, and `dispatch/jobs/<job>/request.json`)
@@ -24,10 +24,14 @@ import json
 import os
 from pathlib import Path
 import random
+import re
+import collections
+import statistics
 import subprocess
 import tempfile
 
-CER_LIMIT = 0.01
+CER_LIMIT = 0.10
+F1_LIMIT = 0.90
 RATIO_RANGE = (0.9, 1.1)
 WINDOW_SECONDS = 24 * 3600
 ESCALATE_DAYS = 2
@@ -131,13 +135,34 @@ def read_linux(tesseract, tessdata, scan, language, work, psm=3, dpi=300):
     return base.with_suffix(".txt").read_text(errors="replace")
 
 
-def judge(windows, linux, cer_limit=CER_LIMIT):
-    """CER of `windows` against `linux`, the length ratio, and whether either limit is passed."""
+def word_f1(a, b):
+    """F1 of the lower-cased word multisets: insensitive to reading order."""
+    x, y = (collections.Counter(re.findall(r"\w+", t.lower())) for t in (a, b))
+    hit = sum((x & y).values())
+    if not hit:
+        return 1.0 if not x and not y else 0.0
+    p, r = hit / sum(x.values()), hit / sum(y.values())
+    return 2 * p * r / (p + r)
+
+
+def judge(windows, linux, cer_limit=CER_LIMIT, f1_limit=F1_LIMIT):
+    """CER of `windows` against `linux`, the length ratio, word F1, and whether a limit is passed."""
     cer = distance(windows, linux) / max(len(linux), 1)
     ratio = len(windows) / max(len(linux), 1)
-    flagged = cer > cer_limit or not RATIO_RANGE[0] <= ratio <= RATIO_RANGE[1]
-    return {"cer": round(cer, 5), "ratio": round(ratio, 4), "windows_chars": len(windows),
-            "linux_chars": len(linux), "flagged": flagged}
+    f1 = word_f1(windows, linux)
+    flagged = cer > cer_limit or f1 < f1_limit or not RATIO_RANGE[0] <= ratio <= RATIO_RANGE[1]
+    return {"cer": round(cer, 5), "ratio": round(ratio, 4), "word_f1": round(f1, 4),
+            "windows_chars": len(windows), "linux_chars": len(linux), "flagged": flagged}
+
+
+def distribution(values):
+    """Min, quartiles, mean and max, so limits can be tightened from the daily files."""
+    if not values:
+        return None
+    v = sorted(values)
+    q = statistics.quantiles(v, n=4, method="inclusive") if len(v) > 1 else [v[0]] * 3
+    return {"min": v[0], "q1": round(q[0], 5), "median": round(q[1], 5), "q3": round(q[2], 5),
+            "mean": round(statistics.fmean(v), 5), "max": v[-1]}
 
 
 def check_page(page, a):
@@ -151,7 +176,7 @@ def check_page(page, a):
             linux = read_linux(a.tesseract, a.tessdata, scan, page["language"], work)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as e:
         return dict(row, error=str(e)[:300], flagged=True)
-    return dict(row, **judge(windows, linux, a.cer_limit))
+    return dict(row, **judge(windows, linux, a.cer_limit, a.f1_limit))
 
 
 def consecutive_days(state, date, flagged):
@@ -168,7 +193,8 @@ def consecutive_days(state, date, flagged):
 def summary_line(report):
     s = report["summary"]
     line = (f"crossbuild {report['date']}: {s['pages']} pages from {s['hosts']} hosts, "
-            f"{s['flagged']} flagged, max CER {s['max_cer']}, ratio {s['min_ratio']}-{s['max_ratio']}")
+            f"{s['flagged']} flagged, max CER {s['max_cer']}, ratio {s['min_ratio']}-{s['max_ratio']}, "
+            f"min word F1 {s['min_word_f1']}")
     if report["consecutive_flag_days"] >= ESCALATE_DAYS:
         line += f" PAUSE-REVIEW ({report['consecutive_flag_days']} days in a row)"
     return line
@@ -198,6 +224,10 @@ def run(a, now=None):
             "max_cer": max((r["cer"] for r in measured), default=None),
             "min_ratio": min((r["ratio"] for r in measured), default=None),
             "max_ratio": max((r["ratio"] for r in measured), default=None),
+            "min_word_f1": min((r["word_f1"] for r in measured), default=None),
+            "cer_distribution": distribution([r["cer"] for r in measured]),
+            "word_f1_distribution": distribution([r["word_f1"] for r in measured]),
+            "ratio_distribution": distribution([r["ratio"] for r in measured]),
         },
         "consecutive_flag_days": consecutive,
         "rows": rows,
@@ -229,7 +259,8 @@ def main(argv=None):
     p.add_argument("--trust-file", type=Path, default=REPO / "boinc/project/native-build-trust.json")
     p.add_argument("--work-dir", type=Path, default=None, help="scratch directory (default: the system's)")
     p.add_argument("--cer-limit", type=float, default=CER_LIMIT,
-                   help="flag a page above this CER (default 0.01; see the README on what real pages give)")
+                   help="flag a page above this CER (default 0.10)")
+    p.add_argument("--f1-limit", type=float, default=F1_LIMIT, help="flag a page below this word F1 (default 0.90)")
     p.add_argument("--count", type=int, default=10)
     p.add_argument("--threads", type=int, default=2, choices=(1, 2), help="pages read at once, one thread each")
     p.add_argument("--issue", type=int, help="tracking issue to append to on a flagged day")

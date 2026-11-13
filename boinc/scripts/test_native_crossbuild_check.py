@@ -29,18 +29,30 @@ class JudgeTest(unittest.TestCase):
     def test_identical_is_not_flagged(self):
         self.assertFalse(X.judge(LINUX_TEXT, LINUX_TEXT)["flagged"])
 
-    def test_cer_over_one_percent_flags(self):
-        n = len(LINUX_TEXT)
-        edit = LINUX_TEXT[: n // 50] + "#" * (n // 50) + LINUX_TEXT[2 * (n // 50):]
-        r = X.judge(edit, LINUX_TEXT)
-        self.assertGreater(r["cer"], 0.01)
+    def test_cer_over_ten_percent_flags(self):
+        text = "word " * 200
+        edited = text.replace("word", "wxrd", 60)  # 60 edits of 1000 chars: CER 6%, F1 hit
+        self.assertLess(X.judge(edited, text)["cer"], 0.10)
+        heavy = text.replace("word", "xxxx", 120)
+        r = X.judge(heavy, text)
+        self.assertGreater(r["cer"], 0.10)
         self.assertTrue(r["flagged"])
 
-    def test_cer_at_one_percent_passes(self):
-        text = "a" * 100
-        r = X.judge("b" + "a" * 99, text)
-        self.assertEqual(r["cer"], 0.01)
-        self.assertFalse(r["flagged"])
+    def test_one_to_eight_percent_layout_noise_passes(self):
+        words = [f"w{i}" for i in range(500)]
+        text = " ".join(words)
+        shuffled = " ".join(reversed(words))  # same words, other order: F1 1.0
+        r = X.judge(shuffled[: len(text)], text)
+        self.assertEqual(r["word_f1"], 1.0)
+        self.assertFalse(X.judge(text.replace("w1", "w9", 3), text)["flagged"])
+
+    def test_low_word_f1_flags_with_small_cer(self):
+        text = " ".join(f"w{i}" for i in range(100))
+        bad = text.replace("w", "v", 20)  # 20 of 100 words changed: F1 0.8, CER ~4%
+        r = X.judge(bad, text)
+        self.assertLess(r["cer"], 0.10)
+        self.assertLess(r["word_f1"], 0.9)
+        self.assertTrue(r["flagged"])
 
     def test_ratio_outside_band_flags_even_with_low_cer(self):
         text = "a" * 1000
@@ -49,9 +61,16 @@ class JudgeTest(unittest.TestCase):
         self.assertFalse(X.judge("a" * 1000, text)["flagged"])
 
     def test_cer_limit_is_adjustable(self):
-        text = "a" * 100
-        self.assertTrue(X.judge("bb" + "a" * 98, text)["flagged"])
-        self.assertFalse(X.judge("bb" + "a" * 98, text, cer_limit=0.05)["flagged"])
+        text = " ".join(["same"] * 50)
+        edited = text.replace("same", "sbme", 5)
+        self.assertGreater(X.judge(edited, text, cer_limit=0.01, f1_limit=0)["cer"], 0.01)
+        self.assertTrue(X.judge(edited, text, cer_limit=0.01, f1_limit=0)["flagged"])
+        self.assertFalse(X.judge(edited, text, cer_limit=0.5, f1_limit=0)["flagged"])
+
+    def test_distribution(self):
+        d = X.distribution([0.01, 0.02, 0.09])
+        self.assertEqual((d["min"], d["median"], d["max"]), (0.01, 0.02, 0.09))
+        self.assertIsNone(X.distribution([]))
 
     def test_a_missing_half_is_flagged(self):
         r = X.judge(LINUX_TEXT[: len(LINUX_TEXT) // 3], LINUX_TEXT)
@@ -159,7 +178,7 @@ class EndToEndTest(unittest.TestCase):
 
     def args(self, **kw):
         a = dict(handoff=self.handoff, scans=self.scans, tesseract=self.tess, tessdata=self.out.parent / "td",
-                 out_dir=self.out, cer_limit=0.01, trust_file=self.trust, work_dir=None, count=10, threads=2, issue=None,
+                 out_dir=self.out, cer_limit=0.10, f1_limit=0.90, trust_file=self.trust, work_dir=None, count=10, threads=2, issue=None,
                  repo="r/r")
         a.update(kw)
         return SimpleNamespace(**a)

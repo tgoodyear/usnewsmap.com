@@ -13,7 +13,7 @@ ExecStart=/usr/bin/python3 /opt/usnm-crossbuild-check/native_crossbuild_check.py
     --tesseract /opt/usnm-crossbuild-check/linux-build/usnm_tesseract \
     --tessdata /opt/usnm-crossbuild-check/linux-build/tessdata \
     --trust-file /opt/usnm-crossbuild-check/native-build-trust.json \
-    --out-dir /var/lib/usnm-crossbuild-check --issue ${TRACKING_ISSUE} --threads 2 --cer-limit ${CER_LIMIT}
+    --out-dir /var/lib/usnm-crossbuild-check --issue ${TRACKING_ISSUE} --threads 2 --cer-limit ${CER_LIMIT} --f1-limit ${F1_LIMIT}
 SuccessExitStatus=3
 SyslogIdentifier=usnm-crossbuild-check
 StateDirectory=usnm-crossbuild-check
