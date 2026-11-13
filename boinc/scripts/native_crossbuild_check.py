@@ -131,11 +131,11 @@ def read_linux(tesseract, tessdata, scan, language, work, psm=3, dpi=300):
     return base.with_suffix(".txt").read_text(errors="replace")
 
 
-def judge(windows, linux):
+def judge(windows, linux, cer_limit=CER_LIMIT):
     """CER of `windows` against `linux`, the length ratio, and whether either limit is passed."""
     cer = distance(windows, linux) / max(len(linux), 1)
     ratio = len(windows) / max(len(linux), 1)
-    flagged = cer > CER_LIMIT or not RATIO_RANGE[0] <= ratio <= RATIO_RANGE[1]
+    flagged = cer > cer_limit or not RATIO_RANGE[0] <= ratio <= RATIO_RANGE[1]
     return {"cer": round(cer, 5), "ratio": round(ratio, 4), "windows_chars": len(windows),
             "linux_chars": len(linux), "flagged": flagged}
 
@@ -151,7 +151,7 @@ def check_page(page, a):
             linux = read_linux(a.tesseract, a.tessdata, scan, page["language"], work)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as e:
         return dict(row, error=str(e)[:300], flagged=True)
-    return dict(row, **judge(windows, linux))
+    return dict(row, **judge(windows, linux, a.cer_limit))
 
 
 def consecutive_days(state, date, flagged):
@@ -228,6 +228,8 @@ def main(argv=None):
     p.add_argument("--out-dir", type=Path, required=True)
     p.add_argument("--trust-file", type=Path, default=REPO / "boinc/project/native-build-trust.json")
     p.add_argument("--work-dir", type=Path, default=None, help="scratch directory (default: the system's)")
+    p.add_argument("--cer-limit", type=float, default=CER_LIMIT,
+                   help="flag a page above this CER (default 0.01; see the README on what real pages give)")
     p.add_argument("--count", type=int, default=10)
     p.add_argument("--threads", type=int, default=2, choices=(1, 2), help="pages read at once, one thread each")
     p.add_argument("--issue", type=int, help="tracking issue to append to on a flagged day")

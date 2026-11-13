@@ -48,6 +48,11 @@ class JudgeTest(unittest.TestCase):
         self.assertTrue(X.judge("a" * 1101, text)["flagged"])
         self.assertFalse(X.judge("a" * 1000, text)["flagged"])
 
+    def test_cer_limit_is_adjustable(self):
+        text = "a" * 100
+        self.assertTrue(X.judge("bb" + "a" * 98, text)["flagged"])
+        self.assertFalse(X.judge("bb" + "a" * 98, text, cer_limit=0.05)["flagged"])
+
     def test_a_missing_half_is_flagged(self):
         r = X.judge(LINUX_TEXT[: len(LINUX_TEXT) // 3], LINUX_TEXT)
         self.assertTrue(r["flagged"])
@@ -154,7 +159,7 @@ class EndToEndTest(unittest.TestCase):
 
     def args(self, **kw):
         a = dict(handoff=self.handoff, scans=self.scans, tesseract=self.tess, tessdata=self.out.parent / "td",
-                 out_dir=self.out, trust_file=self.trust, work_dir=None, count=10, threads=2, issue=None,
+                 out_dir=self.out, cer_limit=0.01, trust_file=self.trust, work_dir=None, count=10, threads=2, issue=None,
                  repo="r/r")
         a.update(kw)
         return SimpleNamespace(**a)
