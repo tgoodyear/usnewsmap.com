@@ -197,9 +197,17 @@ verify no writer remains).
   the lease.
 - **Takeover drains old mutators.** `lock-acquire` of a new generation, after it sees an expired
   record, takes the step lock once before returning. A mutator that already passed its check holds
-  that lock until it finishes (every step has a hard timeout well under the TTL), so the successor
-  starts only after the old holder's last write has landed or the step was killed. A killed step
-  leaves temp files only, because objects are published by atomic rename.
+  that lock until it ends, so the successor starts only after the old holder's last write has landed
+  or the step was killed. The bound is the step's own execution budget, not the TTL: the runner
+  allows a step up to 30 minutes, so after a heartbeat loss a takeover can wait that long for an old
+  collect to finish. Acquire waits for the lock up to its ssh timeout and otherwise fails with the
+  holder named; the next tick tries again. Shortening step budgets below the TTL would need each long
+  step qualified separately and is not proposed.
+- **An interrupted step is replayed, not assumed clean.** Each object is published by atomic rename,
+  but a step publishes several (`put` and `put_spool` write objects one after another), so a step
+  killed between publications leaves committed objects as well as temporary files. Takeover
+  reconciles receipts and journals first (the existing reconcile and replay paths) and re-runs
+  incomplete work idempotently; no step relies on an interrupted predecessor having changed nothing.
 - **Offsite copy consistency.** The R2 copy is a one-way disaster-recovery aid. A collect writes
   kept results before its settled journal, so copying the live root can hold a journal without its
   result. The backup timer therefore stages a local snapshot first: under the step lock it takes a
