@@ -134,11 +134,11 @@ class LeaseBreak(unittest.TestCase):
                     ["bash", str(LEASE_BREAK), "--lock", str(Path(folder) / "tick.lock"), "--delay", "0"],
                     capture_output=True, text=True,
                     env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_AZ_LOG": str(log)})
+                self.assertEqual(done.returncode, 1)
+                self.assertFalse(log.exists())
             finally:
                 holder.kill()
                 holder.wait()
-        self.assertEqual(done.returncode, 1)
-        self.assertFalse(log.exists())
 
     @unittest.skipUnless(shutil.which("pgrep"), "needs pgrep")
     def test_a_running_scheduler_is_left_alone(self):
@@ -185,8 +185,9 @@ class UnitFiles(unittest.TestCase):
         (start,) = unit["Service"]["ExecStart"]
         argv = start.split()
         self.assertEqual(REPO / argv[1].removeprefix("/opt/usnm/"), LEASE_BREAK)
-        # Before=timers.target would be an ordering cycle with the default dependencies.
-        self.assertNotIn("Before", unit["Unit"])
+        # Before=timers.target would be an ordering cycle with the default dependencies; the
+        # held archive takes the same lease, so recovery goes first.
+        self.assertEqual(unit["Unit"]["Before"], ["usnm-boinc-held-archive.service"])
         # The tick service waits for it when both are queued (#1698).
         tick_after = parse_unit(SERVICE)["Unit"]["After"][0].split()
         self.assertIn(LEASE_BREAK_UNIT.name, tick_after)

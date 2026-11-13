@@ -5,6 +5,9 @@ Wants=network-online.target
 # No tick has run yet at boot. The timers' first ticks come 5 minutes after boot, and each tick
 # service orders itself after this unit (usnm-boinc-priority-controller@.service). No
 # Before=timers.target: with default dependencies that is an ordering cycle through basic.target.
+# The persistent held-archive timer can start a missed run at boot and takes the same blob lease,
+# so recovery goes first.
+Before=usnm-boinc-held-archive.service
 
 [Service]
 Type=oneshot
