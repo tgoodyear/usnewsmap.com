@@ -97,6 +97,7 @@ pub struct Stats {
     pub files_written: usize,
     pub files_skipped: usize,
     pub acked: usize,
+    pub already_acked: usize,
     pub failed: Vec<String>,
 }
 
@@ -104,11 +105,12 @@ impl fmt::Display for Stats {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "pulled {} workunits ({} files written, {} already present), acknowledged {}, failed {}",
+            "pulled {} workunits ({} files written, {} already present), acknowledged {} ({} already acknowledged), failed {}",
             self.workunits,
             self.files_written,
             self.files_skipped,
             self.acked,
+            self.already_acked,
             self.failed.len()
         )?;
         for w in &self.failed {
@@ -148,8 +150,31 @@ struct Canonical {
 struct OutFile {
     name: String,
     open_name: Option<String>,
+    #[serde(default)]
+    index: Option<i64>,
+    /// Absent on an older server, which lists only files in storage: then true.
+    #[serde(default = "yes")]
+    present: bool,
+    #[serde(default)]
     nbytes: u64,
+    #[serde(default)]
     md5: String,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl OutFile {
+    /// The name after `__file_`: the template's `open_name`, or for a file without one the
+    /// template position (the server's documented suggestion).
+    fn logical_name(&self) -> anyhow::Result<String> {
+        match (&self.open_name, self.index) {
+            (Some(n), _) => Ok(n.clone()),
+            (None, Some(i)) => Ok(i.to_string()),
+            (None, None) => bail!("output {:?} has no open_name and no index", self.name),
+        }
+    }
 }
 
 /// Longest file name component on the spool's filesystems.
@@ -181,7 +206,13 @@ pub async fn pull_once(cfg: &Config, limit: Option<usize>) -> anyhow::Result<Sta
     );
     let mut stats = Stats::default();
     let mut left = limit.unwrap_or(usize::MAX);
-    for app in &cfg.apps {
+    // No --app: one pass over every app.
+    let apps: Vec<Option<&str>> = if cfg.apps.is_empty() {
+        vec![None]
+    } else {
+        cfg.apps.iter().map(|a| Some(a.as_str())).collect()
+    };
+    for app in apps {
         let mut after = 0i64;
         while left > 0 {
             let n = cfg.page_size.min(u32::try_from(left).unwrap_or(u32::MAX));
@@ -199,7 +230,26 @@ pub async fn pull_once(cfg: &Config, limit: Option<usize>) -> anyhow::Result<Sta
                 }
             }
             if cfg.ack && !done.is_empty() {
-                stats.acked += ack(cfg, &done).await?;
+                let r = ack(cfg, &done).await?;
+                stats.acked += r.acknowledged.len();
+                stats.already_acked += r.already_acked.len();
+                eprintln!(
+                    "ack: {} acknowledged, {} already acknowledged, {} not ready, {} unknown",
+                    r.acknowledged.len(),
+                    r.already_acked.len(),
+                    r.not_ready.len(),
+                    r.unknown.len()
+                );
+                for id in &r.not_ready {
+                    stats.failed.push(format!(
+                        "workunit {id}: the server says it is not ready to assimilate"
+                    ));
+                }
+                for id in &r.unknown {
+                    stats
+                        .failed
+                        .push(format!("workunit {id}: the server does not know this id"));
+                }
             }
             match (page.has_more, page.next_after) {
                 (true, Some(next)) if next > after => after = next,
@@ -211,16 +261,19 @@ pub async fn pull_once(cfg: &Config, limit: Option<usize>) -> anyhow::Result<Sta
     Ok(stats)
 }
 
-async fn list(cfg: &Config, app: &str, after: i64, limit: u32) -> anyhow::Result<Page> {
+async fn list(cfg: &Config, app: Option<&str>, after: i64, limit: u32) -> anyhow::Result<Page> {
+    let mut query = vec![
+        ("state", "ready".to_owned()),
+        ("after", after.to_string()),
+        ("limit", limit.to_string()),
+    ];
+    if let Some(app) = app {
+        query.push(("app", app.to_owned()));
+    }
     let resp = cfg
         .client
         .get(cfg.url(&["assimilate"]))
-        .query(&[
-            ("app", app),
-            ("state", "ready"),
-            ("after", &after.to_string()),
-            ("limit", &limit.to_string()),
-        ])
+        .query(&query)
         .bearer_auth(&cfg.token)
         .send()
         .await
@@ -233,11 +286,20 @@ async fn list(cfg: &Config, app: &str, after: i64, limit: u32) -> anyhow::Result
     resp.json().await.context("parsing the ready list")
 }
 
-async fn ack(cfg: &Config, ids: &[i64]) -> anyhow::Result<usize> {
-    #[derive(Deserialize)]
-    struct Acked {
-        acknowledged: Vec<i64>,
-    }
+/// The ack reply. An older server sends only `acknowledged`.
+#[derive(Deserialize)]
+struct Acked {
+    // Required: a reply without it is not an ack reply.
+    acknowledged: Vec<i64>,
+    #[serde(default)]
+    already_acked: Vec<i64>,
+    #[serde(default)]
+    not_ready: Vec<i64>,
+    #[serde(default)]
+    unknown: Vec<i64>,
+}
+
+async fn ack(cfg: &Config, ids: &[i64]) -> anyhow::Result<Acked> {
     let resp = cfg
         .client
         .post(cfg.url(&["assimilate", "ack"]))
@@ -248,7 +310,7 @@ async fn ack(cfg: &Config, ids: &[i64]) -> anyhow::Result<usize> {
         .context("acknowledging")?;
     let status = resp.status();
     ensure!(status.is_success(), "acknowledging: HTTP {status}");
-    Ok(resp.json::<Acked>().await?.acknowledged.len())
+    Ok(resp.json::<Acked>().await?)
 }
 
 async fn pull_workunit(cfg: &Config, wu: &Workunit, stats: &mut Stats) -> anyhow::Result<()> {
@@ -273,15 +335,15 @@ async fn pull_workunit(cfg: &Config, wu: &Workunit, stats: &mut Stats) -> anyhow
         "workunit name {} is too long for its marker files",
         wu.name
     );
+    // Stock batch_collect_assimilator renames each output that exists and skips the rest; a file
+    // the server lists as not present is never fetched or written, and the others keep their names.
     let mut seen = BTreeSet::new();
-    for f in files {
-        let open = f
-            .open_name
-            .as_deref()
-            .ok_or_else(|| anyhow!("output {:?} has no open_name", f.name))?;
-        ensure!(safe_component(open), "unsafe open_name {open:?}");
+    let mut named: Vec<(String, &OutFile)> = Vec::new();
+    for f in files.iter().filter(|f| f.present) {
+        let open = f.logical_name()?;
+        ensure!(safe_component(&open), "unsafe open_name {open:?}");
         ensure!(safe_component(&f.name), "unsafe file name {:?}", f.name);
-        ensure!(seen.insert(open), "duplicate open_name {open:?}");
+        ensure!(seen.insert(open.clone()), "duplicate open_name {open:?}");
         ensure!(
             wu.name.len() + "__file_".len() + open.len() <= MAX_NAME,
             "output name for {open:?} is longer than {MAX_NAME} bytes"
@@ -291,6 +353,7 @@ async fn pull_workunit(cfg: &Config, wu: &Workunit, stats: &mut Stats) -> anyhow
             "bad md5 for {:?}",
             f.name
         );
+        named.push((open, f));
     }
     // The spool root must exist already; every directory made below is synced into its parent
     // before anything is acknowledged.
@@ -307,7 +370,9 @@ async fn pull_workunit(cfg: &Config, wu: &Workunit, stats: &mut Stats) -> anyhow
         )?;
         return Ok(());
     }
-    if files.is_empty() {
+    // As the stock assimilator: `_no_output_files` when no output file is there to take, whether
+    // the template names none or every one is missing.
+    if named.is_empty() {
         durable_write(
             &incoming,
             &dir,
@@ -315,8 +380,8 @@ async fn pull_workunit(cfg: &Config, wu: &Workunit, stats: &mut Stats) -> anyhow
             b"",
         )?;
     }
-    for f in files {
-        let final_name = format!("{}__file_{}", wu.name, f.open_name.as_deref().unwrap());
+    for (open, f) in named {
+        let final_name = format!("{}__file_{}", wu.name, open);
         let dest = dir.join(&final_name);
         if verified(&dest, f)? {
             stats.files_skipped += 1;
@@ -378,6 +443,16 @@ async fn download_inner(cfg: &Config, f: &OutFile, part: &Path) -> anyhow::Resul
         .with_context(|| format!("fetching {}", f.name))?;
     let status = resp.status();
     ensure!(status.is_success(), "fetching {}: HTTP {status}", f.name);
+    // The server's own MD5 for the object, when it sends one: it must be the listed one.
+    if let Some(v) = resp.headers().get("x-content-md5") {
+        let v = v.to_str().unwrap_or("");
+        ensure!(
+            v.eq_ignore_ascii_case(&f.md5),
+            "{}: X-Content-MD5 {v:?} differs from the listed {}",
+            f.name,
+            f.md5
+        );
+    }
     let mut out = File::create(part)?;
     let mut h = Md5::new();
     let mut got = 0u64;
@@ -471,6 +546,18 @@ mod tests {
         acked: Vec<i64>,
         fetched: Vec<String>,
         bad_auth: usize,
+        /// Raw query strings of the list calls.
+        queries: Vec<String>,
+        /// Ack answers: ids reported already acknowledged / not ready / unknown (nothing is
+        /// recorded for them), and whether the reply has only `acknowledged` (older server).
+        already: BTreeSet<i64>,
+        not_ready: BTreeSet<i64>,
+        unknown: BTreeSet<i64>,
+        old_ack_shape: bool,
+        /// `X-Content-MD5` per output name: true md5 by default, this overrides it, and
+        /// `no_md5_header` leaves it off (older server).
+        md5_header: BTreeMap<String, String>,
+        no_md5_header: bool,
     }
     type Shared = Arc<Mutex<Mock>>;
 
@@ -490,12 +577,16 @@ mod tests {
         State(s): State<Shared>,
         h: HeaderMap,
         Query(q): Query<HashMap<String, String>>,
+        uri: axum::http::Uri,
     ) -> Response {
         let mut m = s.lock().unwrap();
         if !authed(&mut m, &h) {
             return StatusCode::UNAUTHORIZED.into_response();
         }
-        assert_eq!(q["app"], "usnm_test");
+        m.queries.push(uri.query().unwrap_or("").to_owned());
+        if let Some(app) = q.get("app") {
+            assert_eq!(app, "usnm_test");
+        }
         assert_eq!(q["state"], "ready");
         let after: i64 = q["after"].parse().unwrap();
         let limit: usize = q["limit"].parse().unwrap();
@@ -529,7 +620,18 @@ mod tests {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
         match m.outputs.get(&name) {
-            Some(b) => b.clone().into_response(),
+            Some(b) => {
+                let mut headers = HeaderMap::new();
+                if !m.no_md5_header {
+                    let v = m
+                        .md5_header
+                        .get(&name)
+                        .cloned()
+                        .unwrap_or_else(|| md5_of(b));
+                    headers.insert("x-content-md5", v.parse().unwrap());
+                }
+                (headers, b.clone()).into_response()
+            }
             None => StatusCode::NOT_FOUND.into_response(),
         }
     }
@@ -545,8 +647,26 @@ mod tests {
             .iter()
             .map(|v| v.as_i64().unwrap())
             .collect();
-        m.acked.extend(&ids);
-        Json(json!({ "acknowledged": ids })).into_response()
+        let (mut changed, mut already, mut not_ready, mut unknown) =
+            (vec![], vec![], vec![], vec![]);
+        for id in ids {
+            if m.unknown.contains(&id) {
+                unknown.push(id);
+            } else if m.not_ready.contains(&id) {
+                not_ready.push(id);
+            } else if m.already.contains(&id) {
+                already.push(id);
+            } else {
+                m.acked.push(id);
+                changed.push(id);
+            }
+        }
+        if m.old_ack_shape {
+            return Json(json!({ "acknowledged": changed })).into_response();
+        }
+        Json(json!({"acknowledged": changed, "already_acked": already,
+                    "not_ready": not_ready, "unknown": unknown}))
+        .into_response()
     }
 
     async fn serve(m: Mock) -> (Shared, String) {
@@ -568,7 +688,7 @@ mod tests {
             .enumerate()
             .map(|(i, (name, open, body))| {
                 m.outputs.insert((*name).into(), body.to_vec());
-                json!({"name": name, "open_name": open, "index": i,
+                json!({"name": name, "open_name": open, "index": i, "present": true,
                        "nbytes": body.len(), "md5": md5_of(body)})
             })
             .collect();
@@ -689,6 +809,8 @@ mod tests {
         let mut m = Mock::default();
         wu_ok(&mut m, 1, 1, &[("o1", Some("result.json"), b"good")]);
         m.outputs.insert("o1".into(), b"evil".to_vec());
+        // No header, so it is the body's MD5 that catches this.
+        m.no_md5_header = true;
         wu_ok(&mut m, 2, 1, &[("o2", Some("result.json"), b"fine")]);
         let (s, base) = serve(m).await;
         let spool = tempfile::tempdir().unwrap();
@@ -790,7 +912,6 @@ mod tests {
         wu_ok(&mut m, 1, 1, &[("o1", Some("../escape"), b"x")]);
         wu_ok(&mut m, 2, 1, &[("o2", Some("a/b"), b"x")]);
         wu_ok(&mut m, 3, 1, &[("o3", Some(""), b"x")]);
-        wu_ok(&mut m, 4, 1, &[("o4", None, b"x")]);
         wu_ok(&mut m, 5, 1, &[("../o5", Some("ok"), b"x")]);
         m.ready.push(json!({"id": 6, "name": "../wu", "batch": 1, "error_mask": 2, "canonical_result": null}));
         m.ready.push(
@@ -804,13 +925,261 @@ mod tests {
         let st = pull_once(&cfg(&base, spool.path(), true, 100), None)
             .await
             .unwrap();
-        assert_eq!((st.failed.len(), st.acked), (8, 0));
+        assert_eq!((st.failed.len(), st.acked), (7, 0));
         assert!(s.lock().unwrap().fetched.is_empty());
         assert!(s.lock().unwrap().acked.is_empty());
         assert!(!spool.path().join("escape").exists());
         assert!(!spool.path().join("results/escape").exists());
         assert!(!spool.path().join("results").exists());
         assert!(!spool.path().join(".incoming").exists());
+    }
+
+    /// A server with one ready workunit whose ack reply is the given raw JSON.
+    async fn serve_raw_ack(reply: &'static str) -> String {
+        let mut m = Mock::default();
+        m.ready.push(wu_json(1, vec![]));
+        let s: Shared = Arc::new(Mutex::new(m));
+        let app = Router::new()
+            .route("/admin/v1/assimilate", get(assimilate))
+            .route(
+                "/admin/v1/assimilate/ack",
+                post(move || async move {
+                    ([("content-type", "application/json")], reply).into_response()
+                }),
+            )
+            .with_state(s);
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        format!("http://{addr}")
+    }
+
+    fn cfg_apps(base: &str, spool: &Path, apps: &[&str]) -> Config {
+        Config::new(
+            base,
+            "secret".into(),
+            spool.to_owned(),
+            true,
+            apps.iter().map(|a| (*a).to_owned()).collect(),
+            100,
+        )
+        .unwrap()
+    }
+
+    fn file_json(name: &str, open: Option<&str>, index: usize, body: Option<&[u8]>) -> Value {
+        match body {
+            Some(b) => json!({"name": name, "open_name": open, "index": index, "present": true,
+                              "nbytes": b.len(), "md5": md5_of(b)}),
+            None => json!({"name": name, "open_name": open, "index": index, "present": false,
+                           "nbytes": 0, "md5": ""}),
+        }
+    }
+
+    fn wu_json(id: i64, files: Vec<Value>) -> Value {
+        json!({"id": id, "name": format!("wu_{id}"), "app": "usnm_test", "batch": 3,
+               "error_mask": 0,
+               "canonical_result": {"id": id * 10, "name": "r", "host_id": 9, "files": files}})
+    }
+
+    #[tokio::test]
+    async fn a_file_that_is_not_present_is_neither_fetched_nor_written() {
+        let mut m = Mock::default();
+        m.outputs.insert("a".into(), b"AAA".to_vec());
+        m.ready.push(wu_json(
+            1,
+            vec![
+                file_json("a", Some("result.json"), 0, Some(b"AAA")),
+                file_json("b", Some("text.txt"), 1, None),
+            ],
+        ));
+        let (s, base) = serve(m).await;
+        let spool = tempfile::tempdir().unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap();
+        assert_eq!((st.failed.len(), st.acked, st.files_written), (0, 1, 1));
+        let d = spool.path().join("results/3");
+        assert_eq!(read(d.join("wu_1__file_result.json")), b"AAA");
+        assert!(!d.join("wu_1__file_text.txt").exists());
+        // Some output was taken, so no `_no_output_files`, as batch_collect_assimilator.
+        assert!(!d.join("wu_1_no_output_files").exists());
+        assert!(d.join("wu_1__host_id").exists());
+        assert_eq!(s.lock().unwrap().fetched, ["a"]);
+    }
+
+    #[tokio::test]
+    async fn a_workunit_whose_files_are_all_missing_leaves_the_no_output_marker() {
+        let mut m = Mock::default();
+        m.ready.push(wu_json(
+            1,
+            vec![
+                file_json("a", Some("result.json"), 0, None),
+                file_json("b", Some("text.txt"), 1, None),
+            ],
+        ));
+        let (s, base) = serve(m).await;
+        let spool = tempfile::tempdir().unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap();
+        assert_eq!((st.failed.len(), st.acked), (0, 1));
+        let d = spool.path().join("results/3");
+        assert!(d.join("wu_1_no_output_files").exists());
+        assert!(!d.join("wu_1_error").exists());
+        assert_eq!(read(d.join("wu_1__host_id")), b"9\n");
+        assert!(s.lock().unwrap().fetched.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_older_server_without_present_or_new_headers_still_works() {
+        let mut m = Mock::default();
+        m.outputs.insert("a".into(), b"AAA".to_vec());
+        let mut f = file_json("a", Some("result.json"), 0, Some(b"AAA"));
+        f.as_object_mut().unwrap().remove("present");
+        m.ready.push(wu_json(1, vec![f]));
+        m.old_ack_shape = true;
+        m.no_md5_header = true;
+        let (s, base) = serve(m).await;
+        let spool = tempfile::tempdir().unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap();
+        assert_eq!((st.failed.len(), st.acked, st.already_acked), (0, 1, 0));
+        assert_eq!(
+            read(spool.path().join("results/3/wu_1__file_result.json")),
+            b"AAA"
+        );
+        assert_eq!(s.lock().unwrap().acked, [1]);
+    }
+
+    #[tokio::test]
+    async fn no_app_lists_every_app_and_apps_are_repeatable() {
+        let mut m = Mock::default();
+        m.ready.push(wu_json(1, vec![]));
+        let (s, base) = serve(m).await;
+        let spool = tempfile::tempdir().unwrap();
+        pull_once(&cfg_apps(&base, spool.path(), &[]), None)
+            .await
+            .unwrap();
+        {
+            let g = s.lock().unwrap();
+            assert_eq!(g.queries.len(), 1);
+            assert!(!g.queries[0].contains("app="), "{}", g.queries[0]);
+        }
+        s.lock().unwrap().queries.clear();
+        s.lock().unwrap().acked.clear();
+        pull_once(
+            &cfg_apps(&base, spool.path(), &["usnm_test", "usnm_test"]),
+            None,
+        )
+        .await
+        .unwrap();
+        let g = s.lock().unwrap();
+        assert_eq!(g.queries.len(), 2);
+        assert!(g.queries.iter().all(|q| q.contains("app=usnm_test")));
+    }
+
+    #[tokio::test]
+    async fn a_file_without_an_open_name_is_named_by_its_index() {
+        let mut m = Mock::default();
+        m.outputs.insert("a".into(), b"AAA".to_vec());
+        m.ready
+            .push(wu_json(1, vec![file_json("a", None, 2, Some(b"AAA"))]));
+        let (_s, base) = serve(m).await;
+        let spool = tempfile::tempdir().unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap();
+        assert_eq!(st.failed.len(), 0, "{:?}", st.failed);
+        assert_eq!(read(spool.path().join("results/3/wu_1__file_2")), b"AAA");
+    }
+
+    #[tokio::test]
+    async fn the_servers_md5_header_must_match_the_listing() {
+        let mut m = Mock::default();
+        m.outputs.insert("a".into(), b"AAA".to_vec());
+        m.md5_header.insert("a".into(), md5_of(b"other"));
+        m.ready.push(wu_json(
+            1,
+            vec![file_json("a", Some("result.json"), 0, Some(b"AAA"))],
+        ));
+        let (s, base) = serve(m).await;
+        let spool = tempfile::tempdir().unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap();
+        assert_eq!((st.failed.len(), st.acked), (1, 0));
+        assert!(st.failed[0].contains("X-Content-MD5"), "{:?}", st.failed);
+        assert!(!spool
+            .path()
+            .join("results/3/wu_1__file_result.json")
+            .exists());
+        assert!(!spool.path().join("results/3/wu_1__host_id").exists());
+        assert!(incoming_is_empty(spool.path()));
+        assert!(s.lock().unwrap().acked.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_ack_report_is_read() {
+        let mut m = Mock::default();
+        for id in 1..=4 {
+            m.ready.push(wu_json(id, vec![]));
+        }
+        m.already.insert(2);
+        m.not_ready.insert(3);
+        m.unknown.insert(4);
+        let (_s, base) = serve(m).await;
+        let spool = tempfile::tempdir().unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap();
+        assert_eq!((st.acked, st.already_acked), (1, 1));
+        assert_eq!(st.failed.len(), 2, "{:?}", st.failed);
+        assert!(st
+            .failed
+            .iter()
+            .any(|f| f.contains("not ready") && f.contains('3')));
+        assert!(st
+            .failed
+            .iter()
+            .any(|f| f.contains("does not know") && f.contains('4')));
+        // One entry per workunit.
+        let mut m = Mock::default();
+        for id in 1..=5 {
+            m.ready.push(wu_json(id, vec![]));
+        }
+        m.not_ready.extend([1, 2, 3]);
+        m.unknown.extend([4, 5]);
+        let (_s, base) = serve(m).await;
+        let spool = tempfile::tempdir().unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap();
+        assert_eq!(st.failed.len(), 5, "{:?}", st.failed);
+        for id in 1..=5 {
+            let prefix = format!("workunit {id}:");
+            assert_eq!(
+                st.failed.iter().filter(|f| f.starts_with(&prefix)).count(),
+                1
+            );
+        }
+        // A reply without `acknowledged` is refused.
+        let base = serve_raw_ack("{}").await;
+        let spool = tempfile::tempdir().unwrap();
+        let err = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("acknowledged"), "{err:#}");
+        // already_acked alone is success.
+        let mut m = Mock::default();
+        m.ready.push(wu_json(1, vec![]));
+        m.already.insert(1);
+        let (_s, base) = serve(m).await;
+        let spool = tempfile::tempdir().unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap();
+        assert_eq!((st.acked, st.already_acked, st.failed.len()), (0, 1, 0));
     }
 
     fn new_cfg(url: &str) -> anyhow::Result<Config> {

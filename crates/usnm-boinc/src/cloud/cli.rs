@@ -29,8 +29,8 @@ pub struct PullArgs {
     /// Stop after this many workunits in total (per pass).
     #[arg(long)]
     limit: Option<usize>,
-    /// Application to pull (the API requires one); repeat for several.
-    #[arg(long = "app", required = true)]
+    /// Application to pull; repeat for several. Without it, every app is pulled.
+    #[arg(long = "app")]
     apps: Vec<String>,
     /// Workunits per request (1 to 500).
     #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=500))]
