@@ -67,6 +67,19 @@ class JudgeTest(unittest.TestCase):
         self.assertTrue(X.judge(edited, text, cer_limit=0.01, f1_limit=0)["flagged"])
         self.assertFalse(X.judge(edited, text, cer_limit=0.5, f1_limit=0)["flagged"])
 
+    def test_ratio_range_is_adjustable(self):
+        text = "same " * 200
+        longer = text + "same " * 10  # ratio 1.05, CER 5%, word F1 0.98
+        self.assertFalse(X.judge(longer, text, f1_limit=0.9)["flagged"])
+        self.assertTrue(X.judge(longer, text, f1_limit=0.9, ratio_range=(0.98, 1.02))["flagged"])
+
+    def test_linux_replication_thresholds(self):
+        words = " ".join(f"w{i}" for i in range(200))
+        edited = words.replace("w1", "x1", 5)
+        self.assertTrue(X.judge(edited, words, 0.01, 0.98, (0.98, 1.02))["flagged"])
+        self.assertFalse(X.judge(words, words, 0.01, 0.98, (0.98, 1.02))["flagged"])
+        self.assertFalse(X.judge(edited, words)["flagged"])  # the Windows defaults let it through
+
     def test_distribution(self):
         d = X.distribution([0.01, 0.02, 0.09])
         self.assertEqual((d["min"], d["median"], d["max"]), (0.01, 0.02, 0.09))
@@ -340,6 +353,50 @@ class EndToEndTest(unittest.TestCase):
         self.add(1, "15", LINUX_TEXT)
         self.assertEqual(X.run(self.args(), now=NOW), 3)
         self.assertIn("exited 1", self.report()["rows"][0]["error"])
+
+    def linux_args(self, **kw):
+        out = self.out.parent / "out-linux"
+        return self.args(out_dir=out, image="4d6e", hosts=["13"], cer_limit=0.01, f1_limit=0.98,
+                         ratio_min=0.98, ratio_max=1.02, label="linux", plan="native-feed-4", **kw)
+
+    def set_linux_build(self):
+        self.lin = "sha256:4d6e" + "b" * 60
+        self.trust.write_text(json.dumps({"builds": {
+            WIN: {"platform": "windows_x86_64", "engine_base": "sha256:" + "c" * 64},
+            self.lin: {"platform": "x86_64-pc-linux-gnu",
+                       "engine_base": "sha256:" + hashlib.sha256(FAKE_TESSERACT.encode()).hexdigest()}}}))
+
+    def test_image_and_host_selector_picks_only_that_build(self):
+        self.set_linux_build()
+        self.add(1, "13", LINUX_TEXT, image=self.lin)
+        self.add(2, "14", LINUX_TEXT, image=self.lin)  # other host
+        self.add(3, "13", LINUX_TEXT)  # Windows build
+        self.assertEqual(X.run(self.linux_args(), now=NOW), 0)
+        r = json.loads((self.out.parent / "out-linux/crossbuild-2026-11-14.json").read_text())
+        self.assertEqual([(x["host"], x["job"]) for x in r["rows"]], [("13", f"{1:064x}")])
+        self.assertEqual(r["windows_images"], [self.lin])
+        self.assertEqual(r["plan"], "native-feed-4")
+        self.assertEqual(r["limits"]["ratio"], [0.98, 1.02])
+        # the default selector still means the Windows builds, in its own state dir
+        self.assertEqual(X.run(self.args(), now=NOW), 0)
+        self.assertEqual([x["job"] for x in self.report()["rows"]], [f"{3:064x}"])
+
+    def test_unknown_image_prefix_is_an_error(self):
+        with self.assertRaises(SystemExit):
+            X.run(self.args(image="deadbeef"), now=NOW)
+
+    def test_instances_keep_separate_state_and_streaks(self):
+        self.set_linux_build()
+        self.add(1, "13", LINUX_TEXT.replace("quick", "quack", 4), image=self.lin)  # CER 0.4%, F1 passes defaults
+        self.add(2, "13", LINUX_TEXT, image=WIN)
+        self.assertEqual(X.run(self.linux_args(), now=NOW), 3)  # 4 of 20 lines changed: F1 under 0.98
+        self.assertEqual(X.run(self.args(), now=NOW), 0)
+        lin_dir = self.out.parent / "out-linux"
+        self.assertEqual(json.loads((lin_dir / "state.json").read_text())["flagged_days"], {"2026-11-14": True})
+        self.assertEqual(json.loads((self.out / "state.json").read_text())["flagged_days"], {"2026-11-14": False})
+        self.assertIn("crossbuild [linux] 2026-11-14", X.summary_line(
+            json.loads((lin_dir / "crossbuild-2026-11-14.json").read_text())))
+        self.assertTrue(X.summary_line(self.report()).startswith("crossbuild 2026-11-14"))
 
 
 if __name__ == "__main__":
