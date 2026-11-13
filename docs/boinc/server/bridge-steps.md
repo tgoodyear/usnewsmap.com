@@ -378,10 +378,23 @@ Side effects of the stock scripts, and what this service does with each. State l
 | `usnm_qwen_*`: `seen/`, `pairs.jsonl`, `pages/`, `crop-states`, the operator files `validator-rule` and `bundle-verdict`                                      | `<project>/qwen/`               | Later step (B3). `usnm_quality` and `usnm_ndlocr` read no operator rule file.                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `script_validator`'s own work: credit, suspicious-result handling (`VAL_RESULT_SUSPICIOUS`), the transient exit code 3 of an init script                      | the validator daemon            | Credit is computed by the server. Suspicious-result handling has no webhook form (D39). Neither init script ever exits 3 (they read local files); a failed fetch is the `retry` case instead.                                                                                                                                                                                                                                                                                                                                                   |
 
+The loops, the threshold and the exit-code mapping were checked against `check_set` and `check_pair` in
+`sched/validate_util2.cpp` and `init_result` and `compare_results` in `sched/script_validator.cpp` (the BOINC fork the
+cloud server tracks). The same: results that failed init are never compared; nothing is compared when fewer than
+`min_quorum` results passed init; each candidate is compared (candidate first) with every other usable result before its
+count is read, so a candidate's whole row is run even when the first comparison already reaches the threshold; the loop
+stops at the first candidate with `min_quorum / 2 + 1` matches, itself counted; `check_pair` compares the new result
+first and the canonical result second; a compare that exits non-zero but not 3 is "no match". The server needs no pair
+this service did not compute: it counts, per candidate, the listed pairs naming it, in result order, and every pair
+naming a candidate at or before the canonical one was compared (candidates after it are never needed). The pairs are
+read as unordered, which only matters for a compare that is not symmetric.
+
 Where this differs from the stock validators: a `check_set` with a `retry` result compares nothing, where stock goes on
-comparing the others (D41: the server defers the call either way); the `at` time of a log line is the validator's clock
-when it was first computed; a pair is unordered in the reply, so a compare function whose answer depends on its argument
-order cannot be told apart; and fetching the outputs is new (stock reads local files).
+comparing the others and aborts only on a transient compare (D41: the server defers the call either way); a file
+system failure while keeping a `seen/` copy or writing the pair log is a 500 the server retries, where stock's script
+would exit 1 and the result would be invalid or the pair "no match"; neither wrapper ever exits 3 (the transient code),
+so a failed fetch is the only `retry` case; the `at` time of a log line is the validator's clock when it was first
+computed; and fetching the outputs is new (stock reads local files).
 
 A unit file, as text only:
 

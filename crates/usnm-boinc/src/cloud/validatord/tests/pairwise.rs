@@ -520,6 +520,16 @@ async fn quality_matches_the_stock_check_set_on_agreeing_and_differing_results()
     // Quorum 1: the first result is canonical with nothing to compare it with.
     run.agree("wu5-rev1-check_set", "check_set", 1, None, &[(11, &a)])
         .await;
+    // Quorum 1 with two results: stock's inner loop still compares the first against the second
+    // before it looks at the count (validate_util2.cpp, check_set), so one log line.
+    run.agree(
+        "wu6-rev1-check_set",
+        "check_set",
+        1,
+        None,
+        &[(12, &a), (13, &b)],
+    )
+    .await;
     // The side effects over all of the above, in order.
     let cases: Vec<(i64, Vec<(i64, &Files)>)> = vec![
         (2, vec![(1, &a), (2, &b)]),
@@ -527,6 +537,7 @@ async fn quality_matches_the_stock_check_set_on_agreeing_and_differing_results()
         (2, vec![(5, &bad), (6, &a), (7, &b)]),
         (2, vec![(8, &c), (9, &a), (10, &b)]),
         (1, vec![(11, &a)]),
+        (1, vec![(12, &a), (13, &b)]),
     ];
     let dir = tempfile::tempdir().unwrap();
     // One stock run over all five, appending to one log, as the daemon would.
