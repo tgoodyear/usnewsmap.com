@@ -2809,8 +2809,8 @@ def native_submit_untouched(transport, job_ids, clock):
 # Native spot checks (#1863, docs/boinc/apps/native-ocr.md): a share of each native host's
 # published pages is read again by a second host trusted for the same build, or for one
 # boinc/project/native-build-trust.json lists as identical, and the two results are compared
-# byte for byte on the BOINC host (usnm-boinc host-trust native-spot). Off unless the plan has
-# native_spot_check; with it, a host's room is its full room only while its checks run.
+# byte for byte, ALTO confidence attributes excepted, on the BOINC host (usnm-boinc host-trust
+# native-spot). Off unless the plan has native_spot_check; with it, a host's room is its full room only while its checks run.
 NATIVE_SPOT_KEY = "native_spot_check"
 NATIVE_SPOT_FIELDS = {"share", "canary_pages_per_host", "max_outstanding_per_peer", "fresh_hours", "peers"}
 # 1 page in 20 by default: a systematic fault on a host shows within about 20 of its pages,

@@ -229,13 +229,14 @@ pub(super) async fn stage(
 }
 
 /// A spot-check member's result: its build (the `engine.image` its manifest names), its text as
-/// `import` stores it, and the sha256 of the text and ALTO bytes it returned.
+/// `import` stores it, the sha256 of the text bytes it returned, and the sha256 of its ALTO
+/// with the confidence attributes removed (see [`alto_without_confidence`]).
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Returned {
     pub image: String,
     pub text: String,
     pub text_sha256: String,
-    pub alto_sha256: String,
+    pub alto_exact_sha256: String,
 }
 
 pub(super) fn result(job: &boinc::Job, spool: &Path, workunit: &str) -> anyhow::Result<Returned> {
@@ -297,14 +298,47 @@ pub(super) fn judge(job: &boinc::Job, files: Files) -> anyhow::Result<Returned> 
         image: manifest.engine.image,
         text: crate::normalized_text(job, &text)?,
         text_sha256: boinc::sha256(&text),
-        alto_sha256: boinc::sha256(&alto),
+        alto_exact_sha256: boinc::sha256(&alto_without_confidence(&alto)?),
     })
+}
+
+/// The confidence attributes of ALTO: word (`WC`), glyph (`CC`) and block or page (`PC`).
+const CONFIDENCE: [&str; 3] = ["WC", "CC", "PC"];
+
+/// `alto` with every confidence attribute removed and everything else kept: element names,
+/// the other attributes (word strings, box coordinates, ids), their order, and the text. The
+/// same Tesseract build on two CPUs can differ in one word's `WC` in the last digit (#1835), so
+/// a native spot check leaves confidences out and compares the rest exactly.
+pub(super) fn alto_without_confidence(alto: &[u8]) -> anyhow::Result<Vec<u8>> {
+    use quick_xml::events::{BytesStart, Event};
+    let strip = |e: &BytesStart<'_>| -> anyhow::Result<BytesStart<'static>> {
+        let mut out = BytesStart::new(e.name().as_ref().to_owned());
+        for attr in e.attributes() {
+            let attr = attr?;
+            if !CONFIDENCE.contains(&attr.key.as_ref()) {
+                out.push_attribute(attr);
+            }
+        }
+        Ok(out)
+    };
+    let mut reader = quick_xml::Reader::from_reader(alto);
+    let mut writer = quick_xml::Writer::new(Vec::new());
+    loop {
+        match reader.read_event()? {
+            Event::Eof => break,
+            Event::Start(e) => writer.write_event(Event::Start(strip(&e)?))?,
+            Event::Empty(e) => writer.write_event(Event::Empty(strip(&e)?))?,
+            other => writer.write_event(other)?,
+        }
+    }
+    Ok(writer.into_inner())
 }
 
 /// Whether two results agree. They are compared only between results of one build, or of two
 /// builds `builds` lists as equivalent (#1418): output from builds not shown to be identical is
 /// never compared byte for byte, so this fails. A container spot check compares the text as
-/// `import` stores it; a native one (`exact`, #1863) the returned text and ALTO bytes.
+/// `import` stores it; a native one (`exact`, #1863) the returned text bytes and the ALTO bytes without their
+/// confidence attributes.
 pub(super) fn agree(
     builds: &crate::trust::BuildTrust,
     a: &Returned,
@@ -318,7 +352,7 @@ pub(super) fn agree(
         b.image
     );
     Ok(if exact {
-        a.text_sha256 == b.text_sha256 && a.alto_sha256 == b.alto_sha256
+        a.text_sha256 == b.text_sha256 && a.alto_exact_sha256 == b.alto_exact_sha256
     } else {
         a.text == b.text
     })
@@ -410,7 +444,7 @@ pub(super) mod tests {
             image: image.to_owned(),
             text: text.to_owned(),
             text_sha256: boinc::sha256(text.as_bytes()),
-            alto_sha256: "a".repeat(64),
+            alto_exact_sha256: "a".repeat(64),
         };
         assert!(agree(builds, &r(macos, "a"), &r(macos, "a"), false).unwrap());
         assert!(!agree(builds, &r(macos, "a"), &r(macos, "b"), false).unwrap());
@@ -430,8 +464,59 @@ pub(super) mod tests {
         assert!(agree(builds, &r(macos, "a"), &other, false).unwrap());
         assert!(!agree(builds, &r(macos, "a"), &other, true).unwrap());
         let mut alto = r(macos, "a");
-        alto.alto_sha256 = "c".repeat(64);
+        alto.alto_exact_sha256 = "c".repeat(64);
         assert!(!agree(builds, &r(macos, "a"), &alto, true).unwrap());
+    }
+
+    /// A few lines of a real Tesseract 5.5.0 page (a Chronicling America Fraktur scan, #1835):
+    /// the same word read on two CPUs with `WC` 0.11 and 0.10.
+    fn alto_line(wc: &str, content: &str, hpos: u32) -> String {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<alto xmlns=\"http://www.loc.gov/standards/alto/ns-v3#\">\n\
+\t<Layout>\n\t\t<Page WIDTH=\"2200\" HEIGHT=\"3104\" PHYSICAL_IMG_NR=\"0\" ID=\"page_0\">\n\
+\t\t\t<PrintSpace HPOS=\"0\" VPOS=\"0\" WIDTH=\"2200\" HEIGHT=\"3104\">\n\
+\t\t\t\t<TextBlock ID=\"block_1\" HPOS=\"302\" VPOS=\"368\" WIDTH=\"1251\" HEIGHT=\"193\">\n\
+\t\t\t\t\t<TextLine ID=\"line_4\" HPOS=\"320\" VPOS=\"421\" WIDTH=\"1197\" HEIGHT=\"66\">\n\
+\t\t\t\t\t\t<String ID=\"string_20\" HPOS=\"373\" VPOS=\"422\" WIDTH=\"92\" HEIGHT=\"37\" WC=\"0.0\" CONTENT=\"be\u{17f}iehen\"/><SP WIDTH=\"635\" VPOS=\"422\" HPOS=\"465\"/>\n\
+\t\t\t\t\t\t<String ID=\"string_21\" HPOS=\"{hpos}\" VPOS=\"432\" WIDTH=\"42\" HEIGHT=\"55\" WC=\"{wc}\" CONTENT=\"{content}\"/>\n\
+\t\t\t\t\t</TextLine>\n\t\t\t\t</TextBlock>\n\t\t\t</PrintSpace>\n\t\t</Page>\n\t</Layout>\n</alto>\n"
+        )
+    }
+
+    fn returned_alto(alto: &str) -> Returned {
+        Returned {
+            image: "sha256:4d6e2a3be41b3b9c9cf50e6404c6f056177cef547e9d9675298ee1fec94cc5d1".into(),
+            text: "text".into(),
+            text_sha256: boinc::sha256(b"text"),
+            alto_exact_sha256: boinc::sha256(&alto_without_confidence(alto.as_bytes()).unwrap()),
+        }
+    }
+
+    #[test]
+    fn exact_comparison_leaves_confidence_out_and_nothing_else() {
+        let builds = crate::trust::BuildTrust::embedded().unwrap();
+        let same = |a: &str, b: &str| {
+            agree(builds, &returned_alto(a), &returned_alto(b), true).unwrap()
+        };
+        let base = alto_line("0.11", "o1", 1100);
+        // One word's WC at 0.11 on one host and 0.10 on the other: still equal.
+        assert!(same(&base, &alto_line("0.10", "o1", 1100)));
+        // A one-character text difference mismatches.
+        assert!(!same(&base, &alto_line("0.11", "o2", 1100)));
+        assert!(!same(&base, &alto_line("0.10", "o2", 1100)));
+        // So does a box coordinate.
+        assert!(!same(&base, &alto_line("0.11", "o1", 1101)));
+        assert!(!same(&base, &alto_line("0.10", "o1", 1101)));
+        // The confidence is the only thing removed.
+        let stripped = String::from_utf8(alto_without_confidence(base.as_bytes()).unwrap()).unwrap();
+        assert!(!stripped.contains("WC="), "{stripped}");
+        assert!(stripped.contains(r#"HPOS="1100""#) && stripped.contains(r#"CONTENT="o1""#));
+        // Glyph and block confidences go too; a different attribute order or name does not.
+        let a = r#"<alto><Page><String CC="01" PC="0.5" WC="0.3" CONTENT="x"/></Page></alto>"#;
+        let b = r#"<alto><Page><String CONTENT="x"/></Page></alto>"#;
+        assert!(same(a, b));
+        assert!(!same(b, r#"<alto><Page><String CONTENT="x" ID="1"/></Page></alto>"#));
+        assert!(!same(b, r#"<alto><Page><Word CONTENT="x"/></Page></alto>"#));
     }
 
     #[test]
