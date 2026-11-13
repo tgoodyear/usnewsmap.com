@@ -20,6 +20,8 @@ usnm-alto.workspace = true
 usnm-ocr-worker = { path = "../usnm-ocr-worker" }
 usnm-ocr-local.workspace = true
 anyhow.workspace = true
+# The dev-only validator webhook service (cloud validatord); it was a dev-dependency (tests).
+axum.workspace = true
 arrow-array.workspace = true
 arrow-schema.workspace = true
 parquet.workspace = true
@@ -45,7 +47,6 @@ tracing-subscriber.workspace = true
 usnm-test-support.workspace = true
 rustix = { workspace = true, features = ["event"] }
 tokio = { workspace = true, features = ["test-util"] }
-axum.workspace = true
 usnm-ocr-worker = { path = "../usnm-ocr-worker", features = ["standin"] }
 
 [target.'cfg(windows)'.dependencies]

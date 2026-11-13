@@ -1,6 +1,7 @@
 //! The `usnm-boinc cloud` command line. `main.rs` only names the group.
 use super::pull::{self, Config};
 use super::spool_out;
+use super::validatord;
 use anyhow::{bail, Context};
 use clap::{Args, Subcommand};
 use std::{path::PathBuf, time::Duration};
@@ -13,6 +14,39 @@ pub enum CloudCommands {
     /// Hand the spool `cloud pull` wrote to the hand-off store with `handoff::put_spool`, one
     /// finished single-page job at a time. Dev cloud server only.
     SpoolOut(SpoolOutArgs),
+    /// The cloud server's validation webhook for the gold apps (POST /v1/validate/<app>). Dev
+    /// only; nothing in the running bridge calls it.
+    Validatord(ValidatordArgs),
+}
+
+#[derive(Args)]
+pub struct ValidatordArgs {
+    /// Where to listen. Loopback by default: the service speaks plain http, so put TLS in front.
+    #[arg(long, default_value = "127.0.0.1:8787")]
+    listen: std::net::SocketAddr,
+    /// Allow a non-loopback --listen (the bearer token would then cross that network in clear).
+    #[arg(long)]
+    allow_non_loopback: bool,
+    /// File holding the webhook bearer token the cloud server sends (its WEBHOOK_TOKEN).
+    #[arg(long)]
+    secret_file: PathBuf,
+    /// Verdicts by call id and scratch space.
+    #[arg(long)]
+    state_dir: PathBuf,
+    /// The project's gold/ directory, which `gold submit` writes.
+    #[arg(long)]
+    gold_dir: PathBuf,
+    /// The cloud server's root (https unless loopback), to fetch outputs from.
+    #[arg(long)]
+    base_url: String,
+    /// File holding the admin bearer token for output reads, or CBOINC_TOKEN.
+    #[arg(long)]
+    token_file: Option<PathBuf>,
+    #[arg(long, default_value_t = 1 << 20)]
+    max_body_bytes: usize,
+    /// Per call; the server's `<webhook_timeout_secs>` is 20 by default.
+    #[arg(long, default_value_t = 15)]
+    timeout_secs: u64,
 }
 
 #[derive(Args)]
@@ -70,8 +104,41 @@ pub struct PullArgs {
     interval_secs: u64,
 }
 
+fn read_token(file: &Option<PathBuf>, env: &str) -> anyhow::Result<String> {
+    let t = match file {
+        Some(p) => std::fs::read_to_string(p)
+            .with_context(|| format!("reading token file {}", p.display()))?,
+        None => std::env::var(env).with_context(|| format!("give a token file or set {env}"))?,
+    };
+    let t = t.trim().to_owned();
+    if t.is_empty() {
+        bail!("the token is empty");
+    }
+    Ok(t)
+}
+
 pub async fn run(command: CloudCommands) -> anyhow::Result<()> {
     match command {
+        CloudCommands::Validatord(a) => {
+            if !a.listen.ip().is_loopback() && !a.allow_non_loopback {
+                bail!("--listen is not a loopback address; add --allow-non-loopback to serve it");
+            }
+            let secret = read_token(&Some(a.secret_file), "")?;
+            let admin = read_token(&a.token_file, "CBOINC_TOKEN")?;
+            let fetch =
+                pull::Config::new(&a.base_url, admin, a.state_dir.clone(), false, vec![], 1)?;
+            let cfg = validatord::Config {
+                secret,
+                state_dir: a.state_dir,
+                gold_dir: a.gold_dir,
+                fetch,
+                max_body: a.max_body_bytes,
+                call_timeout: Duration::from_secs(a.timeout_secs),
+            };
+            let listener = tokio::net::TcpListener::bind(a.listen).await?;
+            eprintln!("validatord listening on {}", listener.local_addr()?);
+            validatord::serve(cfg, listener).await
+        }
         CloudCommands::SpoolOut(a) => {
             let cfg = spool_out::Config {
                 spool: a.spool_dir,

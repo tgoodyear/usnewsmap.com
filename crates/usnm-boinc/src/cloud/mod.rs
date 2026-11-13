@@ -5,3 +5,4 @@
 pub mod cli;
 pub mod pull;
 pub mod spool_out;
+pub mod validatord;
