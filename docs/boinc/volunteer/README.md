@@ -380,12 +380,9 @@ or work around an enforced Group Policy; ask your administrator instead.
   `nvidia_vulkan_6gb_8b` for NVIDIA cards under 7,000 MB). These are the Windows GPU classes
   ([app versions](../apps/quality.md#app-versions-and-plan-classes));
   no Windows version is currently available for Intel GPUs, though they get GPU
-  work on Linux. **No Windows version of the NVIDIA classes is released yet.** On
-  9 November 2026 the only live Windows GPU version was `amd_vulkan_8b`: the release
-  tooling allows `nvidia_vulkan_8b`, `nvidia_vulkan_6gb_8b` and `intel_vulkan_8b` on
-  `windows_x86_64` and the helper accepts NVIDIA cards, but until a version is
-  released ([#1672](https://github.com/tgoodyear/usnewsmap.com/issues/1672)) a
-  Windows PC with only an NVIDIA GPU gets no GPU work. The helper reads each display adapter's
+  work on Linux. On 12 November 2026 the live Windows GPU versions were
+  `amd_vulkan_8b`, `nvidia_vulkan_8b` and `nvidia_vulkan_6gb_8b`; `intel_vulkan_8b`
+  is allowed by the release tooling for `windows_x86_64` but has no live version. The helper reads each display adapter's
   vendor and memory size from the Windows registry and checks for the driver's
   `vulkan-1.dll`. It cannot see free video memory; the app needs 7,000 MiB free
   when a task starts (5,120 MiB for the 6 GB class), so close GPU-heavy applications.
@@ -400,10 +397,9 @@ or work around an enforced Group Policy; ask your administrator instead.
 - Scheduling also depends on BOINC's GPU and memory report and your resource
   preferences. CPU participation is **optional**. GPU-only volunteers disable
   **Use CPU** in normal project preferences. To knowingly onboard a CPU-only or unsupported-GPU host use
-  `-AllowCpuOnly` with the same command; this only relaxes the local GPU check,
-  does not enable CPU work, and does not promise a published CPU app. Ask the
-  operator about `usnm_quality` or the multi-threaded Qwen CPU class before
-  expecting work.
+  `-AllowCpuOnly` with the same command; this only relaxes the local GPU check
+  and does not enable CPU work. The only live Windows CPU app is `usnm_quality`
+  (12 November 2026); work for it is not always available.
 - **Release status (2026-10-16): native Windows Qwen 1.3 is signed and
   published; live GPU, pause and validation acceptance and automatic
   failure-report acceptance remain unverified.** Native CUDA supports stable
