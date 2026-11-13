@@ -320,6 +320,19 @@ class NativeSpotTests(unittest.TestCase):
         self.assertEqual(spot["pending"], {})
         self.assertEqual(spot["counts"]["expired"], 1)
 
+    def test_every_replay_is_polled_in_turn_while_the_step_fails(self):
+        spot = self.state.setdefault("native_spot", {})
+        spot["pending"] = {f"{n:064x}": {"source": 13, "target": 240, "image": "sha256:" + "a" * 64, "page": "p",
+                                         "spool": "/project/usnmocr/results/7", "at": NOW, "stage": "submitted"}
+                           for n in range(150)}
+        self.fake.spot_error = "a replay journal is unreadable"
+        batch.native_spot_step(self.config, self.state, self.fake, NOW)
+        batch.native_spot_step(self.config, self.state, self.fake, NOW + 60)
+        polled = set()
+        for _, check in self.fake.spot_calls:
+            polled |= {item.split("=")[0] for item in check.split(",")}
+        self.assertEqual(len(polled), 150)
+
     def test_a_mismatch_record_keeps_its_evidence(self):
         self.cycle()
         spot = self.state["native_spot"]

@@ -3037,12 +3037,17 @@ def native_spot_step(config, state, transport, now, submit_room=100, active=None
         counts["lock_busy"] = counts.get("lock_busy", 0) + 1
         return "skipped"
     except (RuntimeError, OSError, ValueError, KeyError) as error:
+        # The step may have started: these go to the back of the line, so one replay that keeps
+        # failing the step can't keep the same 100 in front of the rest.
+        for _, entry in submitted:
+            entry["polled"] = int(now)
         spot.pop("lock_busy", None)
         spot["failing"] = {"at": int(now), "reason": str(error)[:500]}
         return "failed"
     spot.pop("lock_busy", None)
     spot.pop("failing", None)
-    # Asked: these go to the back of the line for the next tick's 100.
+    # Asked: these go to the back of the line for the next tick's 100. A skipped step, which
+    # started nothing, leaves the order as it was.
     for _, entry in submitted:
         entry["polled"] = int(now)
     for outcome in report.get("submitted", []):
