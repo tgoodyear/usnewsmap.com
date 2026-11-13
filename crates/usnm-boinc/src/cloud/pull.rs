@@ -49,15 +49,23 @@ impl Config {
         page_size: u32,
     ) -> anyhow::Result<Config> {
         let mut base = Url::parse(base_url).context("--base-url")?;
+        let host = base.host_str().unwrap_or("");
+        let loopback = host
+            .trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+            .map_or(host.eq_ignore_ascii_case("localhost"), |a| a.is_loopback());
         ensure!(
-            matches!(base.scheme(), "http" | "https"),
-            "--base-url must be http or https"
+            base.scheme() == "https" || (base.scheme() == "http" && loopback),
+            "--base-url must be https (plain http is allowed only for a loopback host), \
+             because every request carries the admin token"
         );
         // Keep a trailing slash off so segments append cleanly.
         base.path_segments_mut()
             .map_err(|()| anyhow!("--base-url cannot carry a path"))?
             .pop_if_empty();
+        // No redirects: the token must go only to the server named by --base-url.
         let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(600))
             .build()?;
@@ -144,6 +152,14 @@ struct OutFile {
     md5: String,
 }
 
+/// Longest file name component on the spool's filesystems.
+const MAX_NAME: usize = 255;
+
+/// A bounded staging path: batch plus the MD5 of the destination name (a name, not a secret).
+fn staging(incoming: &Path, batch: i64, final_name: &str) -> PathBuf {
+    incoming.join(format!("{batch}.{}.part", hex(&Md5::digest(final_name))))
+}
+
 /// Names that become path components or URL segments: no separators, no `..`, not empty.
 pub fn safe_component(s: &str) -> bool {
     !s.is_empty()
@@ -158,6 +174,11 @@ pub fn safe_component(s: &str) -> bool {
 /// acknowledges each page's fully written workunits. A workunit that fails is left
 /// unacknowledged and listed in `failed`; the others continue.
 pub async fn pull_once(cfg: &Config, limit: Option<usize>) -> anyhow::Result<Stats> {
+    ensure!(
+        cfg.spool.is_dir(),
+        "--spool-dir {} does not exist; create it first (and sync its parent) so it is durable",
+        cfg.spool.display()
+    );
     let mut stats = Stats::default();
     let mut left = limit.unwrap_or(usize::MAX);
     for app in &cfg.apps {
@@ -245,6 +266,13 @@ async fn pull_workunit(cfg: &Config, wu: &Workunit, stats: &mut Stats) -> anyhow
         (Some(c), _) => &c.files[..],
         (None, _) => bail!("no error and no canonical result"),
     };
+    // Whole basenames, so a name that fits as a component is the only kind written.
+    let longest_marker = wu.name.len() + "_no_output_files".len();
+    ensure!(
+        longest_marker <= MAX_NAME,
+        "workunit name {} is too long for its marker files",
+        wu.name
+    );
     let mut seen = BTreeSet::new();
     for f in files {
         let open = f
@@ -255,15 +283,20 @@ async fn pull_workunit(cfg: &Config, wu: &Workunit, stats: &mut Stats) -> anyhow
         ensure!(safe_component(&f.name), "unsafe file name {:?}", f.name);
         ensure!(seen.insert(open), "duplicate open_name {open:?}");
         ensure!(
+            wu.name.len() + "__file_".len() + open.len() <= MAX_NAME,
+            "output name for {open:?} is longer than {MAX_NAME} bytes"
+        );
+        ensure!(
             f.md5.len() == 32 && f.md5.chars().all(|c| c.is_ascii_hexdigit()),
             "bad md5 for {:?}",
             f.name
         );
     }
-    fs::create_dir_all(&incoming)?;
-    fs::create_dir_all(&dir)?;
-    sync_dir(&cfg.spool)?;
-    sync_dir(&cfg.spool.join("results"))?;
+    // The spool root must exist already; every directory made below is synced into its parent
+    // before anything is acknowledged.
+    make_dir(&cfg.spool, &incoming)?;
+    make_dir(&cfg.spool, &cfg.spool.join("results"))?;
+    make_dir(&cfg.spool.join("results"), &dir)?;
     if wu.error_mask != 0 {
         let marker = format!("0x{:x}\n", wu.error_mask);
         durable_write(
@@ -281,7 +314,6 @@ async fn pull_workunit(cfg: &Config, wu: &Workunit, stats: &mut Stats) -> anyhow
             &format!("{}_no_output_files", wu.name),
             b"",
         )?;
-        return Ok(());
     }
     for f in files {
         let final_name = format!("{}__file_{}", wu.name, f.open_name.as_deref().unwrap());
@@ -290,7 +322,7 @@ async fn pull_workunit(cfg: &Config, wu: &Workunit, stats: &mut Stats) -> anyhow
             stats.files_skipped += 1;
             continue;
         }
-        let part = incoming.join(format!("{}.{}.part", wu.batch, final_name));
+        let part = staging(&incoming, wu.batch, &final_name);
         download(cfg, f, &part).await?;
         fs::rename(&part, &dest).with_context(|| format!("placing {final_name}"))?;
         sync_dir(&dir)?;
@@ -379,15 +411,25 @@ async fn download_inner(cfg: &Config, f: &OutFile, part: &Path) -> anyhow::Resul
 
 /// Writes `bytes` to `.incoming`, fsyncs, renames to `dir/name`, fsyncs `dir`.
 fn durable_write(incoming: &Path, dir: &Path, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
-    let tmp = incoming.join(format!(
-        "{}.{name}.part",
-        dir.file_name().unwrap().to_string_lossy()
-    ));
+    let batch = dir.file_name().unwrap().to_string_lossy();
+    let tmp = incoming.join(format!("{batch}.{}.part", hex(&Md5::digest(name))));
     let mut f = File::create(&tmp)?;
     f.write_all(bytes)?;
     f.sync_all()?;
     fs::rename(&tmp, dir.join(name))?;
     sync_dir(dir)
+}
+
+/// Creates `dir` (whose parent exists) if missing and syncs it and its parent, so the new
+/// entry survives a power loss.
+fn make_dir(parent: &Path, dir: &Path) -> anyhow::Result<()> {
+    match fs::create_dir(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => {}
+        Err(e) => return Err(e).with_context(|| format!("creating {}", dir.display())),
+    }
+    sync_dir(dir)?;
+    sync_dir(parent)
 }
 
 fn sync_dir(dir: &Path) -> anyhow::Result<()> {
@@ -637,6 +679,7 @@ mod tests {
         assert_eq!(st.acked, 2);
         assert_eq!(read(d.join("wu_1_error")), b"0x22\n");
         assert!(d.join("wu_2_no_output_files").exists());
+        assert_eq!(read(d.join("wu_2__host_id")), b"7\n");
         assert!(!d.join("wu_2_error").exists());
         assert_eq!(s.lock().unwrap().acked, [1, 2]);
     }
@@ -768,6 +811,111 @@ mod tests {
         assert!(!spool.path().join("results/escape").exists());
         assert!(!spool.path().join("results").exists());
         assert!(!spool.path().join(".incoming").exists());
+    }
+
+    fn new_cfg(url: &str) -> anyhow::Result<Config> {
+        Config::new(
+            url,
+            "t".into(),
+            PathBuf::from("/x"),
+            true,
+            vec!["a".into()],
+            10,
+        )
+    }
+
+    #[test]
+    fn plain_http_is_only_for_loopback() {
+        for ok in [
+            "https://boinc.example.org",
+            "http://127.0.0.1:8080",
+            "http://localhost:1",
+            "http://[::1]:9",
+        ] {
+            assert!(new_cfg(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "http://boinc.example.org",
+            "http://203.0.113.5",
+            "http://localhost.example.org",
+            "ftp://127.0.0.1",
+        ] {
+            let e = new_cfg(bad).err().unwrap_or_else(|| panic!("{bad}"));
+            assert!(e.to_string().contains("https"), "{bad}: {e}");
+        }
+    }
+
+    #[tokio::test]
+    async fn redirects_are_not_followed_with_the_token() {
+        let (other, other_base) = serve(Mock::default()).await;
+        let target = format!("{other_base}/admin/v1/assimilate");
+        let app = Router::new().fallback(move || {
+            let t = target.clone();
+            async move { (StatusCode::FOUND, [("location", t)]).into_response() }
+        });
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        let spool = tempfile::tempdir().unwrap();
+        let err = pull_once(
+            &cfg(&format!("http://{addr}"), spool.path(), true, 10),
+            None,
+        )
+        .await
+        .err()
+        .expect("a redirect is an error");
+        assert!(err.to_string().contains("302"), "{err:#}");
+        assert_eq!(other.lock().unwrap().bad_auth, 0);
+        assert!(other.lock().unwrap().fetched.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_missing_spool_root_is_refused_before_any_request() {
+        let (s, base) = serve(Mock::default()).await;
+        let t = tempfile::tempdir().unwrap();
+        let missing = t.path().join("nope/spool");
+        let err = pull_once(&cfg(&base, &missing, true, 10), None)
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("does not exist"), "{err:#}");
+        assert!(!t.path().join("nope").exists());
+        assert!(s.lock().unwrap().acked.is_empty());
+    }
+
+    #[tokio::test]
+    async fn long_names_are_bounded_or_refused_before_any_write() {
+        let mut m = Mock::default();
+        // The reviewer's example: 220 + 7 + 20 = 247 fits; a staging name built from it with
+        // the batch prefix would not.
+        let wu = "w".repeat(220);
+        let open = "o".repeat(20);
+        m.outputs.insert("f1".into(), b"data".to_vec());
+        m.ready.push(json!({"id": 1, "name": wu, "batch": 2147483647, "error_mask": 0,
+            "canonical_result": {"id": 10, "name": "r", "host_id": 3, "files": [
+                {"name": "f1", "open_name": open, "index": 0, "nbytes": 4, "md5": md5_of(b"data")}]}}));
+        m.ready.push(
+            json!({"id": 2, "name": "x".repeat(239), "batch": 2147483647,
+            "error_mask": 2, "canonical_result": null}),
+        );
+        m.ready.push(json!({"id": 3, "name": "y".repeat(250), "batch": 1,
+            "error_mask": 0, "canonical_result": {"id": 30, "name": "r", "host_id": 3, "files": []}}));
+        m.ready.push(json!({"id": 4, "name": "z".repeat(235), "batch": 1,
+            "error_mask": 0, "canonical_result": {"id": 40, "name": "r", "host_id": 3, "files": [
+                {"name": "f1", "open_name": "o".repeat(20), "index": 0, "nbytes": 4, "md5": md5_of(b"data")}]}}));
+        let (s, base) = serve(m).await;
+        let spool = tempfile::tempdir().unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap();
+        // 1 and 2 fit; 3 (marker too long) and 4 (output name too long) are refused.
+        assert_eq!((st.failed.len(), st.acked), (2, 2), "{:?}", st.failed);
+        assert_eq!(s.lock().unwrap().acked, [1, 2]);
+        let d = spool.path().join("results/2147483647");
+        assert_eq!(read(d.join(format!("{wu}__file_{open}"))), b"data");
+        assert!(d.join(format!("{}_error", "x".repeat(239))).exists());
+        assert!(!spool.path().join("results/1").exists());
+        assert!(incoming_is_empty(spool.path()));
     }
 
     #[test]
