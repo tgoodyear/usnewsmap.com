@@ -164,7 +164,7 @@ case $TARGET in
       die "--target publish needs --image <appver image>" ;;
   handoff)
     [ -z "$APPVER_IMAGE" ] || die "--image is for --target publish"
-    case $STEP in claim | release | dead-letter | deadline-retry | collect | export | line-report | lock-acquire | lock-renew | lock-release | lock-status) ;; *) die "--target handoff runs claim, release, dead-letter, deadline-retry, collect, export, line-report or lock-acquire|renew|release|status on-prem; $STEP stays in Azure" ;; esac
+    case $STEP in claim | release | dead-letter | deadline-retry | collect | export | line-report | lock-acquire | lock-renew | lock-release | lock-status | read-object | read-journals) ;; *) die "--target handoff runs claim, release, dead-letter, deadline-retry, collect, export, line-report, lock-acquire|renew|release|status or read-object|read-journals on-prem; $STEP stays in Azure" ;; esac
     [ "$STEP" != deadline-retry ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
       die "--step deadline-retry is an operator's, as root on the host; it isn't allowed over ssh"
     [ "$STEP" != line-report ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
@@ -212,6 +212,27 @@ if [ "$TARGET" = handoff ] || [ "$TARGET" = bridge ]; then
       fi
       VARS=(${kept[@]+"${kept[@]}"}) ;;
     *) [ -z "$fence_holder$fence_generation" ] || die "--step $STEP is not fenced" ;;
+  esac
+fi
+
+# Read-only steps for a controller on another host (#1367, boinc/scripts/handoff_read.py): one
+# hand-off object, or every journal with its digest, from the hand-off root. No container.
+READ_TOOL=$(dirname "$(readlink -f "$0")")/handoff_read.py
+if [ "$TARGET" = handoff ]; then
+  case $STEP in
+    read-object | read-journals)
+      read_args=()
+      for v in ${VARS[@]+"${VARS[@]}"}; do
+        case $STEP:$v in
+          read-object:OBJECT=*) read_args+=(--object "${v#*=}") ;;
+          read-object:OBJECT_OPTIONAL=1) read_args+=(--optional) ;;
+          *) die "--step $STEP takes only OBJECT=<path> and OBJECT_OPTIONAL=1 (read-object), nothing else" ;;
+        esac
+      done
+      [ -f "$READ_TOOL" ] || die "no $READ_TOOL: install handoff_read.py beside this script"
+      [ -d "$HANDOFF_LOCK_ROOT" ] && [ ! -L "$HANDOFF_LOCK_ROOT" ] || die "no local hand-off root $HANDOFF_LOCK_ROOT"
+      $WHAT_IF && { echo "would run $READ_TOOL $STEP on $HANDOFF_LOCK_ROOT"; exit 0; }
+      exec python3 "$READ_TOOL" --root "$HANDOFF_LOCK_ROOT" "$STEP" ${read_args[@]+"${read_args[@]}"} ;;
   esac
 fi
 

@@ -754,6 +754,8 @@ LOCK_TTL_SECS = 300
 # The controller stops dispatching this long before the lease could lapse, covering a step
 # already in flight and clock rounding; the host's clock decides, this one is conservative.
 LOCK_DISPATCH_MARGIN_SECS = 150
+# Read steps that run on the BOINC host without a container (--ssh-reads).
+HOST_READ_STEPS = frozenset(("read-object", "read-journals"))
 # The hand-off steps that change state; with the local lock each carries the holder and
 # generation, and the host refuses it if the record has moved on.
 FENCED_HANDOFF_STEPS = frozenset(("claim", "release", "dead-letter", "collect", "export"))
@@ -766,7 +768,7 @@ class Transport:
                  batch_submit=False, batch_spool_out=False, batch_collect=False, batch_export=False,
                  onprem_handoff=(), timings=None, rest_journals=False, collect_parallel=1,
                  skip_truncated=False, extra_claim_languages=(), step_lock_wait_secs=0,
-                 local_lock=False):
+                 local_lock=False, ssh_reads=False):
         self.config = config
         # --local-lock: the controller lock is a record on the BOINC host with a heartbeat, not
         # an Azure lease or a local flock. Off by default.
@@ -777,6 +779,14 @@ class Transport:
         require(not local_lock or "handoff_root" in config,
                 "--local-lock is for a plan with a local handoff_root, not one backed by Azure")
         self.local_lock = local_lock
+        # --ssh-reads: the hand-off root is on the BOINC host and this controller reads inventory,
+        # journals and objects through read steps over step_command, not from a directory.
+        require(not ssh_reads or (config.get("step_command") and local_lock
+                                  and "handoff_root" not in config
+                                  and set(onprem_handoff) == set(ONPREM_HANDOFF)),
+                "--ssh-reads needs step_command, --local-lock, every hand-off step on-prem and no handoff_root")
+        self.ssh_reads = ssh_reads
+        self._ssh_journals = None
         self.lock_fence = None
         self.lock_lost = None
         self.lock_deadline = None
@@ -843,7 +853,7 @@ class Transport:
 
     @property
     def handoff_url(self):
-        if self.handoff_root is not None:
+        if self.handoff_root is not None or self.ssh_reads:
             return "/handoff-state"
         return f"https://{self.config['account']}.blob.core.windows.net/boinc-handoff"
 
@@ -911,12 +921,25 @@ class Transport:
         return done.stdout
 
     def az(self, *args):
-        require(self.handoff_root is None, "Azure handoff access forbidden in local mode")
+        require(self.handoff_root is None and not self.ssh_reads, "Azure handoff access forbidden in local mode")
         return self.run(["az", "storage", "blob", *args, "--auth-mode", "login",
                          "--account-name", self.config["account"], "--container-name",
                          "boinc-handoff", "--only-show-errors"], "hand-off storage")
 
+    def _ssh_object(self, name, optional=False):
+        require(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*", name)
+                and all(part not in (".", "..") for part in name.split("/")),
+                "invalid local handoff object path")
+        variables = {"OBJECT": name}
+        if optional:
+            variables["OBJECT_OPTIONAL"] = 1
+        return json.loads(self.step("handoff", "read-object", **variables))
+
     def blob(self, name):
+        if self.ssh_reads:
+            value = self._ssh_object(name)
+            require(value is not None, "missing hand-off object")
+            return value
         if self.handoff_root is not None:
             path = self._local_object(name)
             require(path.stat().st_size <= 16 * 1024 * 1024, "hand-off JSON exceeds limit")
@@ -931,6 +954,8 @@ class Transport:
         (`usnm-boinc claim deadline-retry`, #1417), or None. Only a claim conflict asks."""
         require(ID.fullmatch(job_id) and ID.fullmatch(message_sha256), "invalid deadline retry lookup")
         name = f"dispatch/jobs/{job_id}/deadline-retry/{message_sha256}.json"
+        if self.ssh_reads:
+            return self._ssh_object(name, optional=True)
         if self.handoff_root is not None:
             path = self.handoff_root / name
             if not path.exists():
@@ -956,7 +981,7 @@ class Transport:
         # onprem_handoff (--onprem-handoff), which sends them there too as --target handoff.
         # The lock steps (--local-lock) always run there.
         command = ["bash", str(REPO / "boinc/scripts/start-boinc-bridge.sh")]
-        lock_step = target == "handoff" and step.startswith("lock-")
+        lock_step = target == "handoff" and (step.startswith("lock-") or step in HOST_READ_STEPS)
         onprem = target == "bridge" or (target == "handoff" and (step in self.onprem_steps or lock_step))
         if onprem and self.config.get("step_command"):
             command = self.config["step_command"]
@@ -1202,6 +1227,11 @@ class Transport:
                                  self.timings.cpu() - cpu, passed)
 
     def journal_inventory(self):
+        if self.ssh_reads:
+            self._ssh_journals = json.loads(self.step("handoff", "read-journals"))["journals"]
+            require(isinstance(self._ssh_journals, dict) and len(self._ssh_journals) <= MAX_JOBS,
+                    "dispatch inventory limit; reconcile drained journals")
+            return {name: item["sha256"] for name, item in self._ssh_journals.items()}
         if self.handoff_root is not None:
             listing = {}
             jobs = self.handoff_root / "dispatch/jobs"
@@ -1266,6 +1296,15 @@ class Transport:
     def records(self):
         snapshot = self.journal_inventory()
         names = list(snapshot)
+        if self.ssh_reads:
+            # The host read, hashed and re-listed them in one step: the inventory is the read.
+            records = []
+            for name in sorted(names):
+                record = self._ssh_journals[name]["record"]
+                require(isinstance(record, dict) and record["job"]["id"] == name.split("/")[2],
+                        "journal filename/identity mismatch")
+                records.append(record)
+            return records
         if self.handoff_root is not None:
             records = []
             for name in sorted(names):
@@ -1502,6 +1541,7 @@ class Transport:
         if self.local_lock:
             raise RuntimeError("--local-lock cannot publish held pages yet: the write is not fenced")
         mine = f"{HELD_PAGES_PREFIX}{plan}."
+        require(not self.ssh_reads, "held pages over ssh arrive with the ssh write steps")
         if self.handoff_root is not None:
             directory = self.handoff_root / HELD_PAGES_PREFIX
             directory.mkdir(parents=True, exist_ok=True)
@@ -3487,6 +3527,9 @@ def main(argv=None):
     parser.add_argument("--local-lock", action="store_true",
                         help="hold the controller lock as an expiring record on the BOINC host (30 s heartbeat, "
                              "5 min TTL) through step_command, and fence the mutating hand-off steps with it (#1367)")
+    parser.add_argument("--ssh-reads", action="store_true",
+                        help="read the hand-off inventory, journals and objects from the BOINC host through "
+                             "step_command read steps instead of a local directory; needs --local-lock (#1367)")
     parser.add_argument("--onprem-handoff", action="append", choices=sorted(ONPREM_HANDOFF), default=[],
                         help="run this hand-off step (claim, with its release, or collect) on the on-prem BOINC "
                              "host through step_command instead of the Azure hand-off job; repeat for both (#967)")
@@ -3531,8 +3574,10 @@ def main(argv=None):
         require(not args.local_lock or (config.get("step_command") and not surya
                                         and set(args.onprem_handoff) == set(ONPREM_HANDOFF)),
                 "--local-lock needs a hand-off plan with step_command and --onprem-handoff claim, collect and export")
-        require(not args.local_lock or "handoff_root" in config,
-                "--local-lock is for a plan with a local handoff_root, not one backed by Azure")
+        require(not args.local_lock or "handoff_root" in config or args.ssh_reads,
+                "--local-lock is for a plan with a local handoff_root or --ssh-reads, not one backed by Azure")
+        require(not args.ssh_reads or (args.local_lock and not surya),
+                "--ssh-reads needs --local-lock and a hand-off plan")
         require(not args.onprem_handoff or (config.get("step_command") and not surya),
                 "--onprem-handoff needs a hand-off plan with step_command")
         if not args.apply and surya:
@@ -3557,7 +3602,7 @@ def main(argv=None):
                 "allocated_pages": len(config["pages"]),
                 "max_pending": config["max_pending"], "config_sha256": digest(config),
                 "onprem_handoff": sorted(set(args.onprem_handoff)),
-                "local_lock": args.local_lock,
+                "local_lock": args.local_lock, "ssh_reads": args.ssh_reads,
                 "batch_size": config["batch_size"],
                 "refill_cap": (config["batch_size"] if args.refill_cap is None
                                else min(config["batch_size"], args.refill_cap)),
@@ -3608,6 +3653,7 @@ def main(argv=None):
                 skip_truncated=args.skip_truncated_scans,
                 extra_claim_languages=tuple(args.claim_language),
                 step_lock_wait_secs=args.step_lock_wait_secs, local_lock=args.local_lock,
+                ssh_reads=args.ssh_reads,
             )
             tick_kwargs = {"drain": args.drain, "dead_letter_failed": args.dead_letter_failed}
             if args.resume_native:
