@@ -728,7 +728,7 @@ mod tests {
         assert!(!d.join("wu_1__host_id").exists());
         // A torn staging file and a corrupt placed file are both handled on rerun.
         fs::write(
-            spool.path().join(".incoming/1.wu_1__file_text.txt.part"),
+            staging(&spool.path().join(".incoming"), 1, "wu_1__file_text.txt"),
             "junk",
         )
         .unwrap();
