@@ -1,0 +1,12 @@
+# Once a day, early morning US Eastern on a host set to Eastern. Persistent: a run missed while the host
+# was off happens at boot.
+[Unit]
+Description=usnewsmap native OCR cross-build check, daily
+
+[Timer]
+OnCalendar=*-*-* 06:30:00
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

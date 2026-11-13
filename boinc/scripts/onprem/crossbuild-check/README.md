@@ -1,0 +1,34 @@
+# Native OCR cross-build check
+
+[#1418](https://github.com/tgoodyear/usnewsmap.com/issues/1418). Once a day, `native_crossbuild_check.py` takes 10 pages that Windows native hosts returned in the last 24 hours (seeded by the date, spread evenly over hosts), reads each scan again with the Linux build, and compares the two texts. No agent is involved.
+
+Per page it records the CER of the Windows text against the Linux text and the character ratio Windows/Linux. Before reading, it refuses to run unless `usnm_tesseract` is a recorded Linux build's `engine_base` and each model is the locked one. A returned result that doesn't match its dispatch request (job id, scan sha256, engine), its text checksum or UTF-8, or whose scan isn't the named bytes, is reported as `invalid`, not as a build difference. A missing `spool/` or `dispatch/jobs/` is an error that records nothing, and a job is sampled once. The window is the result's `completed_at`. A page is flagged at a CER over 10%, a word-multiset F1 under 0.9, a ratio outside 0.9 to 1.1, a scan whose bytes aren't the ones the job named, or a Linux read that failed. It writes `crossbuild-<date>.json` and `state.json` to `/var/lib/usnm-crossbuild-check/`, prints one summary line to the journal, and exits 3 if any page was flagged.
+
+The Linux read is the worker's: `usnm_tesseract <scan> <base> -l <profile> --psm 3 --dpi 300 txt alto` with `OMP_THREAD_LIMIT=1` and the locked models, from the Linux build's own `usnm_tesseract` (compare its sha256 with `engine_base` in `native-build-trust.json`; the report records it). Two pages are read at a time, one thread each, niced, in a 200% CPU quota.
+
+## What to expect
+
+The same engine and models differ by 1% to 8% per page across builds, mostly page layout and not characters (the 30-crop challenge gave CER 7.19% on Windows against 7.16% on Linux). Measured on 13 Nov 2026, Windows `fd620775...` against the Linux engine `21877bc3...`: CER 0.9%, 1.3%, 2.1%, 4.5% and 8.0% (a page with a segmentation miss), with character ratios of 0.99 to 1.01. So the limits are loose: ratio 0.9 to 1.1, word F1 0.9 (insensitive to column order), CER 10%. Each daily JSON records the CER, F1 and ratio distributions (`summary.*_distribution`); tighten the limits after two weeks of them.
+
+## Escalation
+
+- A flagged day: with `TRACKING_ISSUE` set the script appends the flagged pages to that issue through `gh` (needs a `gh` login or `GH_TOKEN` for the service user; failure is logged and not fatal).
+- Two flagged days in a row: the summary line ends `PAUSE-REVIEW`. That is the cue to ask the Compute Coordinator to pause the native plan. The check pauses nothing.
+
+## Install
+
+Runs on CT 211 (usnm-scanfetch, on pve-big), which has `/tank/ocr/scans` locally. As root:
+
+1. `useradd --system usnm-crossbuild`. Copy `native_crossbuild_check.py`, `boinc/project/native-build-trust.json` and `ocr/engines/tesseract/models.lock` to `/opt/usnm-crossbuild/`. Put the Linux native artifact's `usnm_tesseract` (sha256 `21877bc3...`) in `/opt/usnm-crossbuild/linux-build/` and the locked models there as `tessdata/<model>.traineddata` (at least `eng`), plus `tessdata/configs/alto` (`tessedit_create_alto 1`) and `tessdata/configs/txt` (`tessedit_create_txt 1`). The service user needs read access to all of it.
+2. `/etc/usnm-crossbuild-check.env`:
+   ```
+   HANDOFF_DIR=<directory with spool/<job>/ and dispatch/jobs/<job>/ for native-feed-5's collected results>
+   SCANS_DIR=/tank/ocr/scans
+   TRACKING_ISSUE=1911
+   CER_LIMIT=0.10
+   F1_LIMIT=0.90
+   ```
+   `HANDOFF_DIR` has the layout the bridge's `spool-out` step writes (`spool/<id>/host_id`, `usnm_<id>__file_result.json`, `usnm_<id>__file_text.txt`) next to the dispatch records (`dispatch/jobs/<id>/request.json`). Read it from where the plan's collect step leaves it; the check opens no new path.
+3. Copy the two units to `/etc/systemd/system/`, then `systemctl daemon-reload && systemctl enable --now usnm-crossbuild-check.timer` (06:30 daily, Nice=19, CPUQuota=200%). Try it with `systemctl start usnm-crossbuild-check.service` and read `journalctl -u usnm-crossbuild-check`. `gh` for the issue comments needs a login or `GH_TOKEN` for the service user; without it the check still writes its JSON.
+
+Tests: `python3 -m unittest boinc/scripts/test_native_crossbuild_check.py`.

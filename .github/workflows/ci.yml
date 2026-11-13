@@ -213,6 +213,9 @@ jobs:
       - name: BOINC feed monitoring collects live facts and preserves alert durations
         working-directory: .
         run: python3 -m unittest -v boinc/scripts/test_feed_status.py boinc/scripts/test_feed_collect.py
+      - name: The native OCR cross-build check flags what it should
+        working-directory: .
+        run: python3 -m unittest -v boinc/scripts/test_native_crossbuild_check.py
       - name: The Arc token path sends its key only to a loopback endpoint
         run: python3 -m unittest -v images/server/test_lib_kv_token.py
       - name: Key Vault reads retry transient failures (#958)
