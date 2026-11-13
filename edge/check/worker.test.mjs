@@ -150,3 +150,57 @@ test("a language update that keeps examples keeps the stored ones, read in the s
   assert.deepEqual(get("chr"), { examples: { "Ꭰ": ["chr/new.png"] }, intro: "new", name: "Cherokee" });
   assert.deepEqual(get("sr"), { intro: "new", name: "Serbian" });
 });
+
+test("a blind task's private fields stay off /api/next, and off /api/export until it settles", async () => {
+  const open = { page: "p", a: "tbe", b: "the", line: "l", word: "w", private: { a_is: "loc", b_is: "xiaomi", truth: "b", strata: { decade: 1890 } } };
+  const plain = { page: "p", a: "x", b: "y", a_is: "loc", b_is: "ours" };
+  const rows = [
+    { id: "en/s/1", set_name: "s", body: JSON.stringify(open), outcome: null, settled: 0, a: 0, b: 1 },
+    { id: "en/s/2", set_name: "s", body: JSON.stringify(open), outcome: "b", settled: 1, a: 0, b: 3 },
+    { id: "chr/s/3", set_name: "s", body: JSON.stringify(plain), outcome: null, settled: 0, a: 1, b: 0 },
+  ];
+  const DB = { prepare: (sql) => ({ bind: () => ({ first: async () => (sql.includes("FROM tasks t WHERE lang") ? { id: "en/s/1", body: rows[0].body, n: 1 } : { k: 0 }), all: async () => ({ results: rows }) }), all: async () => ({ results: rows }) }) };
+  const token = await signSession(env.SESSION_KEY, "c1");
+  const next = await worker.fetch(new Request("https://check.usnewsmap.com/api/next?lang=en", { headers: { authorization: "Bearer " + token } }), { ...env, DB }, {});
+  const task = (await next.json()).task;
+  assert.equal(task.a, "tbe");
+  assert.equal(JSON.stringify(task).includes("xiaomi"), false);
+  assert.equal("private" in task, false);
+  const exp = await worker.fetch(new Request("https://check.usnewsmap.com/api/export?lang=en"), { ...env, DB }, {});
+  const lines = (await exp.text()).trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(lines[0].a_is, undefined);
+  assert.equal(lines[0].truth, undefined);
+  assert.deepEqual(lines[0].strata, { decade: 1890 });
+  assert.equal(lines[1].b_is, "xiaomi");
+  assert.equal(lines[1].truth, "b");
+  // a task with no `private` exports as before
+  assert.equal(lines[2].a_is, "loc");
+  assert.equal("strata" in lines[2], false);
+});
+
+test("a settled blind task takes no more answers, and other tasks still take revisions", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { ANSWER_SQL, SETTLE_SQL } = await import("./worker.mjs");
+  const { readFileSync } = await import("node:fs");
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('blind', 'en', 's', ?), ('plain', 'chr', 's', '{}')").run(JSON.stringify({ private: { a_is: "loc" } }));
+  const answer = (task, who, choice) => { db.prepare(ANSWER_SQL).run(task, who, choice, 0); db.prepare(SETTLE_SQL).run(task); };
+  const row = (id) => ({ ...db.prepare("SELECT n, settled, outcome FROM tasks WHERE id = ?").get(id) });
+  for (const id of ["blind", "plain"]) { answer(id, "c1", "a"); answer(id, "c2", "a"); answer(id, "c3", "b"); }
+  assert.deepEqual(row("blind"), { n: 3, settled: 1, outcome: "a" });
+  for (const id of ["blind", "plain"]) answer(id, "c1", "unsure");
+  assert.deepEqual(row("blind"), { n: 3, settled: 1, outcome: "a" }, "the blind task stays settled");
+  assert.equal(db.prepare("SELECT choice FROM answers WHERE task_id = 'blind' AND contributor = 'c1'").get().choice, "a");
+  assert.deepEqual(row("plain"), { n: 3, settled: 0, outcome: null }, "other tasks reopen as before");
+});
+
+test("answers records nothing and answers 409 when the conditional write saves no row", async () => {
+  const DB = {
+    prepare: (sql) => ({ sql, bind() { return this; }, first: async () => ({ id: "t", settled: 0, blind: "object" }) }),
+    batch: async () => [{ meta: { changes: 0 } }, { meta: { changes: 1 } }],
+  };
+  const token = await signSession(env.SESSION_KEY, "c1");
+  const r = await worker.fetch(new Request("https://check.usnewsmap.com/api/answers", { method: "POST", headers: { authorization: "Bearer " + token }, body: JSON.stringify({ task: "t", choice: "a" }) }), { ...env, DB }, {});
+  assert.equal(r.status, 409);
+});

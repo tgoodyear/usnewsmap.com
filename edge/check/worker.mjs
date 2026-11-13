@@ -159,6 +159,13 @@ function lang(url) {
   return l;
 }
 
+// A task's body as the page gets it. `private` (blind tasks: which reading is which, the truth for a
+// calibration item, the sampling strata) stays on the server until the task has settled and been exported.
+export function shownBody(text) {
+  const { private: _hidden, ...shown } = JSON.parse(text);
+  return shown;
+}
+
 async function api(request, env, url) {
   const p = url.pathname;
   if (p === "/api/config" && request.method === "GET") {
@@ -198,14 +205,15 @@ async function api(request, env, url) {
       .bind(l, c, ...skip)
       .first();
     const mine = await env.DB.prepare("SELECT COUNT(*) AS k FROM answers WHERE contributor = ?").bind(c).first();
-    return json({ task: row ? { id: row.id, ...JSON.parse(row.body) } : null, answered: mine.k });
+    return json({ task: row ? { id: row.id, ...shownBody(row.body) } : null, answered: mine.k });
   }
   if (p === "/api/answers" && request.method === "POST") {
     const c = await contributorOf(request, env, { limited: true });
     const b = await body(request);
     if (typeof b.task !== "string" || b.task.length > 300 || !CHOICES.has(b.choice)) throw new HttpError(400, "task and choice required");
-    const t = await env.DB.prepare("SELECT id FROM tasks WHERE id = ?").bind(b.task).first();
+    const t = await env.DB.prepare("SELECT id, settled, json_type(body, '$.private') AS blind FROM tasks WHERE id = ?").bind(b.task).first();
     if (!t) throw new HttpError(404, "no such task");
+    if (t.settled && t.blind) throw new HttpError(409, "this word is already checked");
     await record(env, b.task, c, b.choice);
     return json({ ok: true });
   }
@@ -235,8 +243,13 @@ async function api(request, env, url) {
       .all();
     const lines = rows.results.map((r) => {
       const t = JSON.parse(r.body);
+      // A blind task keeps what each reading is, and the truth for a calibration item, in `private`: they are
+      // exported once the task has settled, never before.
+      const reveal = t.private && r.settled ? t.private : {};
       return JSON.stringify({
-        id: r.id, set: r.set_name, page: t.page, source: t.source, a: t.a, b: t.b, a_is: t.a_is, b_is: t.b_is,
+        id: r.id, set: r.set_name, page: t.page, source: t.source, a: t.a, b: t.b,
+        a_is: t.private ? reveal.a_is : t.a_is, b_is: t.private ? reveal.b_is : t.b_is,
+        ...(t.private ? { strata: t.private.strata, truth: reveal.truth } : {}),
         counts: { a: r.a || 0, b: r.b || 0, neither: r.neither || 0, unsure: r.unsure || 0, notext: r.notext || 0 },
         settled: !!r.settled, outcome: r.outcome,
       });
@@ -283,13 +296,21 @@ UPDATE tasks SET
   outcome = (SELECT CASE WHEN n >= ${SETTLE_MIN} AND top * 3 >= n * 2 THEN pick WHEN n >= ${DISPUTE_AT} THEN 'disputed' END FROM t)
 WHERE id = ?1`;
 
+// A settled blind task (its body has `private`) takes no more answers, so a revision can't reopen it after its
+// readings were exported. The condition is in the statement, so it holds against a racing request too.
+export const ANSWER_SQL = `
+INSERT INTO answers (task_id, contributor, choice, at)
+SELECT ?1, ?2, ?3, ?4
+WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND settled = 1 AND json_type(body, '$.private') IS NOT NULL)
+ON CONFLICT (task_id, contributor) DO UPDATE SET choice = excluded.choice, at = excluded.at`;
+
 export async function record(env, task, contributor, choice, at = Date.now()) {
-  await env.DB.batch([
-    env.DB.prepare(
-      "INSERT INTO answers (task_id, contributor, choice, at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (task_id, contributor) DO UPDATE SET choice = excluded.choice, at = excluded.at",
-    ).bind(task, contributor, choice, at),
+  const res = await env.DB.batch([
+    env.DB.prepare(ANSWER_SQL).bind(task, contributor, choice, at),
     env.DB.prepare(SETTLE_SQL).bind(task),
   ]);
+  // Zero rows written: the task settled (blind) between the check in /api/answers and this statement.
+  if (res && res[0] && res[0].meta && res[0].meta.changes === 0) throw new HttpError(409, "this word is already checked");
 }
 
 // ---------- clips ----------
