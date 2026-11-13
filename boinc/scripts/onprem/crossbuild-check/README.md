@@ -2,7 +2,7 @@
 
 [#1418](https://github.com/tgoodyear/usnewsmap.com/issues/1418). Once a day, `native_crossbuild_check.py` takes 10 pages that Windows native hosts returned in the last 24 hours (seeded by the date, spread evenly over hosts), reads each scan again with the Linux build, and compares the two texts. No agent is involved.
 
-Per page it records the CER of the Windows text against the Linux text and the character ratio Windows/Linux. A page is flagged at a CER over 10%, a word-multiset F1 under 0.9, a ratio outside 0.9 to 1.1, a scan whose bytes aren't the ones the job named, or a Linux read that failed. It writes `crossbuild-<date>.json` and `state.json` to `/var/lib/usnm-crossbuild-check/`, prints one summary line to the journal, and exits 3 if any page was flagged.
+Per page it records the CER of the Windows text against the Linux text and the character ratio Windows/Linux. Before reading, it refuses to run unless `usnm_tesseract` is a recorded Linux build's `engine_base` and each model is the locked one. A returned result that doesn't match its dispatch request (job id, scan sha256, engine), its text checksum or UTF-8, or whose scan isn't the named bytes, is reported as `invalid`, not as a build difference. A missing `spool/` or `dispatch/jobs/` is an error that records nothing, and a job is sampled once. The window is the result's `completed_at`. A page is flagged at a CER over 10%, a word-multiset F1 under 0.9, a ratio outside 0.9 to 1.1, a scan whose bytes aren't the ones the job named, or a Linux read that failed. It writes `crossbuild-<date>.json` and `state.json` to `/var/lib/usnm-crossbuild-check/`, prints one summary line to the journal, and exits 3 if any page was flagged.
 
 The Linux read is the worker's: `usnm_tesseract <scan> <base> -l <profile> --psm 3 --dpi 300 txt alto` with `OMP_THREAD_LIMIT=1` and the locked models, from the Linux build's own `usnm_tesseract` (compare its sha256 with `engine_base` in `native-build-trust.json`; the report records it). Two pages are read at a time, one thread each, niced, in a 200% CPU quota.
 
@@ -19,7 +19,7 @@ The same engine and models differ by 1% to 8% per page across builds, mostly pag
 
 Runs on CT 211 (usnm-scanfetch, on pve-big), which has `/tank/ocr/scans` locally. As root:
 
-1. `useradd --system usnm-crossbuild`. Copy `native_crossbuild_check.py` and `boinc/project/native-build-trust.json` to `/opt/usnm-crossbuild/`. Put the Linux native artifact's `usnm_tesseract` (sha256 `21877bc3...`) in `/opt/usnm-crossbuild/linux-build/` and the locked models there as `tessdata/<model>.traineddata` (at least `eng`), plus `tessdata/configs/alto` (`tessedit_create_alto 1`) and `tessdata/configs/txt` (`tessedit_create_txt 1`). The service user needs read access to all of it.
+1. `useradd --system usnm-crossbuild`. Copy `native_crossbuild_check.py`, `boinc/project/native-build-trust.json` and `ocr/engines/tesseract/models.lock` to `/opt/usnm-crossbuild/`. Put the Linux native artifact's `usnm_tesseract` (sha256 `21877bc3...`) in `/opt/usnm-crossbuild/linux-build/` and the locked models there as `tessdata/<model>.traineddata` (at least `eng`), plus `tessdata/configs/alto` (`tessedit_create_alto 1`) and `tessdata/configs/txt` (`tessedit_create_txt 1`). The service user needs read access to all of it.
 2. `/etc/usnm-crossbuild-check.env`:
    ```
    HANDOFF_DIR=<directory with spool/<job>/ and dispatch/jobs/<job>/ for native-feed-5's collected results>

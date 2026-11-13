@@ -67,37 +67,54 @@ def windows_images(trust_file):
     return sorted(d for d, b in builds.items() if b["platform"] == "windows_x86_64")
 
 
-def returned_pages(handoff, images, now, window=WINDOW_SECONDS):
-    """Pages a Windows build returned in the window, each as a dict, oldest first."""
+class InvalidInput(Exception):
+    """A returned result that can't be compared: reported apart from build differences."""
+
+
+def returned_pages(handoff, images, now, window=WINDOW_SECONDS, seen=()):
+    """Windows pages returned in the window, oldest first, each as a dict.
+
+    The window is the result manifest's `completed_at`, not a file time (a refreshed copy of the hand-off
+    rewrites files), and a job already checked on an earlier day is skipped. A result that doesn't match
+    its dispatch request (job id, scan sha256, engine) or its own text checksum, or whose text isn't UTF-8,
+    comes back with an `invalid` reason instead of a text.
+    """
     out = []
-    spool = Path(handoff) / "spool"
-    for job in sorted(spool.iterdir()) if spool.is_dir() else []:
-        try:
-            returned = max(f.stat().st_mtime for f in job.iterdir())
-        except (OSError, ValueError):
-            continue
-        if not now - window <= returned <= now:
+    spool, jobs = Path(handoff) / "spool", Path(handoff) / "dispatch/jobs"
+    for job in sorted(spool.iterdir()):
+        if job.name in seen:
             continue
         try:
             result = json.loads((job / f"usnm_{job.name}__file_result.json").read_text())
             if result["engine"]["image"] not in images:
                 continue
-            request = json.loads((Path(handoff) / "dispatch/jobs" / job.name / "request.json").read_text())
-            out.append({
-                "job": job.name,
-                "host": (job / "host_id").read_text().strip(),
-                "page": request["message"]["page"],
-                "batch": request["message"]["batch"],
-                "language": result["engine"]["profile"],
-                "engine": result["engine"],
-                "scan_sha256": request["scan"]["sha256"],
-                "scan_url": request["scan"]["url"],
-                "text": job / f"usnm_{job.name}__file_text.txt",
-                "returned": returned,
-            })
+            completed = dt.datetime.fromisoformat(result["completed_at"]).timestamp()
         except (OSError, KeyError, ValueError):
-            continue  # not a native result, or not readable yet
-    return out
+            continue  # not a native result, or not complete yet
+        if not now - window <= completed <= now:
+            continue
+        page = {"job": job.name, "completed": completed, "engine": result["engine"]}
+        try:
+            request = json.loads((jobs / job.name / "request.json").read_text())
+            page.update(host=(job / "host_id").read_text().strip(), page=request["message"]["page"],
+                        batch=request["message"]["batch"], language=result["engine"]["profile"],
+                        scan_sha256=request["scan"]["sha256"], scan_url=request["scan"]["url"])
+            raw = (job / f"usnm_{job.name}__file_text.txt").read_bytes()
+            if not (result["job_id"] == job.name == request["id"]
+                    and result["scan_sha256"] == request["scan"]["sha256"]
+                    and result["engine"] == request["engine"]):
+                page["invalid"] = "result does not match its dispatch request"
+            elif hashlib.sha256(raw).hexdigest() != result["text_sha256"]:
+                page["invalid"] = "text does not match its checksum"
+            else:
+                page["windows_text"] = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            page["invalid"] = "text is not UTF-8"
+        except (OSError, KeyError, ValueError) as e:
+            page.update(host=page.get("host", "?"), page=page.get("page", job.name), batch="", language="",
+                        scan_sha256="", scan_url="", invalid=f"unreadable: {str(e)[:100]}")
+        out.append(page)
+    return sorted(out, key=lambda p: p["completed"])
 
 
 def sample(pages, date, count):
@@ -167,16 +184,42 @@ def distribution(values):
 
 def check_page(page, a):
     row = {k: page[k] for k in ("job", "host", "page", "language")}
+    if "invalid" in page:
+        return dict(row, invalid=page["invalid"], flagged=False)
     scan = scan_path(a.scans, page)
     try:
         if hashlib.sha256(scan.read_bytes()).hexdigest() != page["scan_sha256"]:
-            return dict(row, error="scan is not the bytes the job named", flagged=True)
-        windows = page["text"].read_text(errors="replace")
+            return dict(row, invalid="scan is not the bytes the job named", flagged=False)
         with tempfile.TemporaryDirectory(dir=a.work_dir) as work:
             linux = read_linux(a.tesseract, a.tessdata, scan, page["language"], work)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as e:
         return dict(row, error=str(e)[:300], flagged=True)
-    return dict(row, **judge(windows, linux, a.cer_limit, a.f1_limit))
+    return dict(row, **judge(page["windows_text"], linux, a.cer_limit, a.f1_limit))
+
+
+def lock_hashes(lock_file):
+    """`tessdata/<model>.traineddata` -> sha256, from models.lock."""
+    out = {}
+    for line in Path(lock_file).read_text().splitlines():
+        fields = line.split()
+        if len(fields) == 3 and not line.startswith("#"):
+            out[Path(fields[0]).name] = fields[2]
+    return out
+
+
+def verify_engine(a, languages):
+    """Refuse to run with a Linux engine that isn't a recorded build's, or models that aren't locked."""
+    trust = json.loads(Path(a.trust_file).read_text())["builds"]
+    bases = {b["engine_base"] for b in trust.values() if b["platform"] == "x86_64-pc-linux-gnu"}
+    got = "sha256:" + hashlib.sha256(Path(a.tesseract).read_bytes()).hexdigest()
+    if got not in bases:
+        raise SystemExit(f"{a.tesseract} ({got}) is not a recorded Linux build's engine_base")
+    locked = lock_hashes(a.models_lock)
+    for language in sorted(languages):
+        name = f"{language}.traineddata"
+        have = hashlib.sha256((Path(a.tessdata) / name).read_bytes()).hexdigest()
+        if locked.get(name) != have:
+            raise SystemExit(f"{a.tessdata}/{name} is not the locked model")
 
 
 def consecutive_days(state, date, flagged):
@@ -193,7 +236,7 @@ def consecutive_days(state, date, flagged):
 def summary_line(report):
     s = report["summary"]
     line = (f"crossbuild {report['date']}: {s['pages']} pages from {s['hosts']} hosts, "
-            f"{s['flagged']} flagged, max CER {s['max_cer']}, ratio {s['min_ratio']}-{s['max_ratio']}, "
+            f"{s['flagged']} flagged, {s['invalid']} invalid, max CER {s['max_cer']}, ratio {s['min_ratio']}-{s['max_ratio']}, "
             f"min word F1 {s['min_word_f1']}")
     if report["consecutive_flag_days"] >= ESCALATE_DAYS:
         line += f" PAUSE-REVIEW ({report['consecutive_flag_days']} days in a row)"
@@ -204,15 +247,19 @@ def run(a, now=None):
     now = now or dt.datetime.now(dt.timezone.utc).timestamp()
     date = dt.datetime.fromtimestamp(now, dt.timezone.utc).date().isoformat()
     images = windows_images(a.trust_file)
-    pages = returned_pages(a.handoff, images, now)
+    for needed in ("spool", "dispatch/jobs"):
+        if not (a.handoff / needed).is_dir():
+            raise SystemExit(f"{a.handoff / needed} is not readable: nothing recorded")
+    a.out_dir.mkdir(parents=True, exist_ok=True)
+    state_file = a.out_dir / "state.json"
+    state = json.loads(state_file.read_text()) if state_file.exists() else {}
+    pages = returned_pages(a.handoff, images, now, seen=set(state.get("checked_jobs", [])))
     picked = sample(pages, date, a.count)
+    verify_engine(a, {p["language"] for p in picked if "invalid" not in p})
     with ThreadPoolExecutor(a.threads) as pool:
         rows = list(pool.map(lambda p: check_page(p, a), picked))
     measured = [r for r in rows if "cer" in r]
     flagged = [r for r in rows if r["flagged"]]
-    a.out_dir.mkdir(parents=True, exist_ok=True)
-    state_file = a.out_dir / "state.json"
-    state = json.loads(state_file.read_text()) if state_file.exists() else {}
     consecutive, days = consecutive_days(state, date, bool(flagged))
     report = {
         "date": date,
@@ -220,7 +267,7 @@ def run(a, now=None):
         "windows_images": images,
         "returned_in_window": len(pages),
         "summary": {
-            "pages": len(rows), "hosts": len({r["host"] for r in rows}), "flagged": len(flagged),
+            "pages": len(rows), "invalid": sum("invalid" in r for r in rows), "hosts": len({r["host"] for r in rows}), "flagged": len(flagged),
             "max_cer": max((r["cer"] for r in measured), default=None),
             "min_ratio": min((r["ratio"] for r in measured), default=None),
             "max_ratio": max((r["ratio"] for r in measured), default=None),
@@ -233,14 +280,16 @@ def run(a, now=None):
         "rows": rows,
     }
     (a.out_dir / f"crossbuild-{date}.json").write_text(json.dumps(report, indent=1) + "\n")
-    state_file.write_text(json.dumps({"flagged_days": dict(sorted(days.items())[-30:])}, indent=1) + "\n")
+    state_file.write_text(json.dumps({"flagged_days": dict(sorted(days.items())[-30:]),
+                                       "checked_jobs": (state.get("checked_jobs", []) + [r["job"] for r in rows])[-20000:]}, indent=1) + "\n")
     line = summary_line(report)
     print(line)
-    if flagged and a.issue:
+    reportable = [r for r in rows if r["flagged"] or "invalid" in r]
+    if reportable and a.issue:
         body = line + "\n\n" + "\n".join(
             f"- {r['page']} (host {r['host']}, job {r['job']}): "
-            + (r["error"] if "error" in r else f"CER {r['cer']}, ratio {r['ratio']}")
-            for r in flagged)
+            + (r["error"] if "error" in r else r["invalid"] if "invalid" in r else f"CER {r['cer']}, ratio {r['ratio']}, word F1 {r['word_f1']}")
+            for r in reportable)
         try:
             subprocess.run(["gh", "issue", "comment", str(a.issue), "--repo", a.repo, "--body", body],
                            check=True, timeout=120)
@@ -256,6 +305,7 @@ def main(argv=None):
     p.add_argument("--tesseract", type=Path, required=True, help="the Linux build's usnm_tesseract")
     p.add_argument("--tessdata", type=Path, required=True, help="directory with the locked models and configs/")
     p.add_argument("--out-dir", type=Path, required=True)
+    p.add_argument("--models-lock", type=Path, default=REPO / "ocr/engines/tesseract/models.lock")
     p.add_argument("--trust-file", type=Path, default=REPO / "boinc/project/native-build-trust.json")
     p.add_argument("--work-dir", type=Path, default=None, help="scratch directory (default: the system's)")
     p.add_argument("--cer-limit", type=float, default=CER_LIMIT,

@@ -150,41 +150,50 @@ class EndToEndTest(unittest.TestCase):
         self.tess.write_text(FAKE_TESSERACT)
         self.tess.chmod(0o755)
         (t / "td").mkdir()
+        model = b"model"
+        (t / "td/eng.traineddata").write_bytes(model)
+        self.lock = t / "models.lock"
+        self.lock.write_text("# c\ntessdata/eng.traineddata http://x %s\n" % hashlib.sha256(model).hexdigest())
+        base = "sha256:" + hashlib.sha256(FAKE_TESSERACT.encode()).hexdigest()
         self.trust = t / "trust.json"
-        self.trust.write_text(json.dumps({"builds": {WIN: {"platform": "windows_x86_64"},
-                                                     "sha256:" + "b" * 64: {"platform": "x86_64-pc-linux-gnu"}}}))
+        self.trust.write_text(json.dumps({"builds": {
+            WIN: {"platform": "windows_x86_64", "engine_base": "sha256:" + "c" * 64},
+            "sha256:" + "b" * 64: {"platform": "x86_64-pc-linux-gnu", "engine_base": base}}}))
 
-    def add(self, n, host, windows_text, scan_text=LINUX_TEXT, image=WIN, age=3600, scan_bytes=None):
+    def add(self, n, host, windows_text, scan_text=LINUX_TEXT, image=WIN, completed=NOW - 3600,
+            scan_bytes=None, text_sha=None, request_scan_sha=None):
         job = f"{n:064x}"
+        engine = {"image": image, "profile": "eng", "version": "5.5.0"}
+        raw = windows_text.encode()
+        scan_sha = hashlib.sha256(scan_text.encode()).hexdigest()
         spool = self.handoff / "spool" / job
         spool.mkdir()
         (spool / "host_id").write_text(host + "\n")
-        (spool / f"usnm_{job}__file_result.json").write_text(json.dumps(
-            {"engine": {"image": image, "profile": "eng", "version": "5.5.0"}}))
-        (spool / f"usnm_{job}__file_text.txt").write_text(windows_text)
-        scan = scan_text.encode() if scan_bytes is None else scan_bytes
+        (spool / f"usnm_{job}__file_result.json").write_text(json.dumps({
+            "job_id": job, "scan_sha256": scan_sha, "engine": engine,
+            "text_sha256": text_sha or hashlib.sha256(raw).hexdigest(),
+            "completed_at": dt.datetime.fromtimestamp(completed, dt.timezone.utc).isoformat()}))
+        (spool / f"usnm_{job}__file_text.txt").write_bytes(raw)
         jobs = self.handoff / "dispatch/jobs" / job
         jobs.mkdir()
         (jobs / "request.json").write_text(json.dumps({
+            "id": job, "engine": engine,
             "message": {"page": f"sn1/1900-01-0{n}/ed-1/seq-1", "batch": "b"},
-            "scan": {"url": "https://x/0001.jp2", "sha256": hashlib.sha256(scan_text.encode()).hexdigest()}}))
+            "scan": {"url": "https://x/0001.jp2", "sha256": request_scan_sha or scan_sha}}))
         d = self.scans / "keep/b/sn1" / f"1900-01-0{n}" / "1"
         d.mkdir(parents=True)
-        (d / "1.jp2").write_bytes(scan)
-        import os
-        for f in spool.iterdir():
-            os.utime(f, (NOW - age, NOW - age))
+        (d / "1.jp2").write_bytes(scan_text.encode() if scan_bytes is None else scan_bytes)
         return job
 
     def args(self, **kw):
         a = dict(handoff=self.handoff, scans=self.scans, tesseract=self.tess, tessdata=self.out.parent / "td",
-                 out_dir=self.out, cer_limit=0.10, f1_limit=0.90, trust_file=self.trust, work_dir=None, count=10, threads=2, issue=None,
-                 repo="r/r")
+                 out_dir=self.out, cer_limit=0.10, f1_limit=0.90, trust_file=self.trust,
+                 models_lock=self.lock, work_dir=None, count=10, threads=2, issue=None, repo="r/r")
         a.update(kw)
         return SimpleNamespace(**a)
 
-    def report(self):
-        return json.loads((self.out / "crossbuild-2026-11-14.json").read_text())
+    def report(self, day="2026-11-14"):
+        return json.loads((self.out / f"crossbuild-{day}.json").read_text())
 
     def test_clean_day(self):
         self.add(1, "15", LINUX_TEXT)
@@ -194,36 +203,93 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(r["summary"]["pages"], 2)
         self.assertEqual(r["summary"]["flagged"], 0)
         self.assertEqual(r["consecutive_flag_days"], 0)
+        self.assertEqual(r["summary"]["cer_distribution"]["max"], 0.0)
 
     def test_ignores_old_pages_and_other_builds(self):
-        self.add(1, "15", LINUX_TEXT, age=25 * 3600)
+        self.add(1, "15", LINUX_TEXT, completed=NOW - 25 * 3600)
         self.add(2, "15", LINUX_TEXT, image="sha256:" + "b" * 64)
         self.assertEqual(X.run(self.args(), now=NOW), 0)
         self.assertEqual(self.report()["summary"]["pages"], 0)
+
+    def test_window_follows_completed_at_not_file_times(self):
+        import os
+        job = self.add(1, "15", LINUX_TEXT, completed=NOW - 25 * 3600)
+        for f in (self.handoff / "spool" / job).iterdir():
+            os.utime(f, (NOW, NOW))
+        self.assertEqual(X.run(self.args(), now=NOW), 0)
+        self.assertEqual(self.report()["summary"]["pages"], 0)
+
+    def test_a_checked_job_is_not_sampled_again(self):
+        self.add(1, "15", LINUX_TEXT[: len(LINUX_TEXT) // 3])
+        self.assertEqual(X.run(self.args(), now=NOW), 3)
+        self.assertEqual(X.run(self.args(), now=NOW + 3600), 0)
+        self.assertEqual(self.report()["summary"]["pages"], 0)
+
+    def test_missing_handoff_records_nothing(self):
+        import shutil
+        shutil.rmtree(self.handoff / "spool")
+        with self.assertRaises(SystemExit):
+            X.run(self.args(), now=NOW)
+        self.assertFalse((self.out / "state.json").exists())
 
     def test_flags_a_short_windows_text_and_counts_days(self):
         self.add(1, "15", LINUX_TEXT[: len(LINUX_TEXT) // 3])
         self.assertEqual(X.run(self.args(), now=NOW), 3)
         self.assertEqual(self.report()["consecutive_flag_days"], 1)
-        self.add(2, "15", LINUX_TEXT[: len(LINUX_TEXT) // 3], age=-23 * 3600)
+        self.add(2, "15", LINUX_TEXT[: len(LINUX_TEXT) // 3], completed=NOW + 3600)
         self.assertEqual(X.run(self.args(), now=NOW + 24 * 3600), 3)
-        r = json.loads((self.out / "crossbuild-2026-11-15.json").read_text())
-        self.assertEqual(r["consecutive_flag_days"], 2)
+        self.assertEqual(self.report("2026-11-15")["consecutive_flag_days"], 2)
 
     def test_two_flagged_days_say_pause_review(self):
-        (self.out).mkdir()
+        self.out.mkdir()
         (self.out / "state.json").write_text(json.dumps({"flagged_days": {"2026-11-13": True}}))
         self.add(1, "15", "x" * 10)
         X.run(self.args(), now=NOW)
         self.assertIn("PAUSE-REVIEW", X.summary_line(self.report()))
 
-    def test_scan_with_other_bytes_is_flagged_not_compared(self):
+    def test_scan_with_other_bytes_is_invalid_not_compared(self):
         self.add(1, "15", LINUX_TEXT, scan_bytes=b"different")
-        self.assertEqual(X.run(self.args(), now=NOW), 3)
-        self.assertIn("not the bytes", self.report()["rows"][0]["error"])
+        self.assertEqual(X.run(self.args(), now=NOW), 0)
+        r = self.report()
+        self.assertEqual(r["summary"]["invalid"], 1)
+        self.assertIn("not the bytes", r["rows"][0]["invalid"])
+
+    def test_text_checksum_and_request_binding_are_checked(self):
+        self.add(1, "15", LINUX_TEXT, text_sha="0" * 64)
+        self.add(2, "15", LINUX_TEXT, request_scan_sha="1" * 64)
+        self.assertEqual(X.run(self.args(), now=NOW), 0)
+        reasons = sorted(r["invalid"] for r in self.report()["rows"])
+        self.assertEqual(reasons, ["result does not match its dispatch request", "text does not match its checksum"])
+
+    def test_non_utf8_text_is_invalid(self):
+        job = self.add(1, "15", LINUX_TEXT)
+        f = self.handoff / "spool" / job / f"usnm_{job}__file_text.txt"
+        raw = b"\xff\xfe bad"
+        f.write_bytes(raw)
+        rf = self.handoff / "spool" / job / f"usnm_{job}__file_result.json"
+        r = json.loads(rf.read_text())
+        r["text_sha256"] = hashlib.sha256(raw).hexdigest()
+        rf.write_text(json.dumps(r))
+        X.run(self.args(), now=NOW)
+        self.assertIn("UTF-8", self.report()["rows"][0]["invalid"])
+
+    def test_unrecorded_engine_or_model_is_refused(self):
+        self.add(1, "15", LINUX_TEXT)
+        self.tess.write_text(FAKE_TESSERACT + "# other\n")
+        with self.assertRaises(SystemExit):
+            X.run(self.args(), now=NOW)
+        self.tess.write_text(FAKE_TESSERACT)
+        (self.out.parent / "td/eng.traineddata").write_bytes(b"drifted")
+        with self.assertRaises(SystemExit):
+            X.run(self.args(), now=NOW)
 
     def test_engine_failure_is_flagged(self):
-        self.tess.write_text("#!/bin/sh\nexit 1\n")
+        bad = "#!/bin/sh\nexit 1\n"
+        self.tess.write_text(bad)
+        self.trust.write_text(json.dumps({"builds": {
+            WIN: {"platform": "windows_x86_64", "engine_base": "sha256:" + "c" * 64},
+            "sha256:" + "b" * 64: {"platform": "x86_64-pc-linux-gnu",
+                                   "engine_base": "sha256:" + hashlib.sha256(bad.encode()).hexdigest()}}}))
         self.add(1, "15", LINUX_TEXT)
         self.assertEqual(X.run(self.args(), now=NOW), 3)
         self.assertIn("exited 1", self.report()["rows"][0]["error"])
