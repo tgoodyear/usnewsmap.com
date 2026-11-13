@@ -137,6 +137,24 @@ usnm-glyphs add-checked --bank bank --out bank-checked --export check-chr-rare.j
   --index check-glyph-index.jsonl --images images --exclude-manifest testset/v2/manifest.json
 ```
 
+## Blind picks: Xiaomi against LoC on English (#1867)
+
+`en` holds a blind comparison of Xiaomi-OCR-0 and LoC's OCR on Chronicling America English pages. It uses the same pick page and answers as the other languages; nothing is new on the page. Nothing is loaded yet, so `/en` doesn't exist and the language list doesn't show it: `languages/en.json` is skipped by the language sync until the language is loaded.
+
+**Blind tasks.** A task body may carry a `private` object. The Worker leaves it out of `/api/next`, and out of `/api/export` until the task has settled; before that the export has the readings, counts and `strata` but not `a_is`, `b_is` or `truth`. A task with no `private` behaves as before. `en_pick.py` puts in `private`: `a_is` and `b_is` (`xiaomi` or `loc`; which reading is `a` is drawn from the seed and the task id), `strata` (`decade`, `damage_band`), `crop`, and for a calibration item `truth` (`xiaomi`, `loc` or `neither`: which reading matches the human transcription exactly), `truth_word` and `closer`.
+
+**Making tasks.** `tools/en_pick.py` takes one JSON line per page (LoC's ALTO, the page image, the damage rate, and each crop's box and Xiaomi text; its docstring has the format). It takes LoC's words in each crop, aligns them with Xiaomi's words and keeps the words where they differ, but only when the alignment is certain: the readings agree on most of the crop, the differing stretch has agreeing words on both sides and as many words on each side, and each pair is alike enough. Words it cannot place (at a crop's edge, split, joined or dropped, or too unlike) are counted in `report.json`, never guessed. It then draws up to `--per-page` words per page (one per distinct pair of readings) and at most `--per-stratum` per decade and damage band, with `--seed`, and cuts the word and line images from the page image at LoC's boxes.
+
+**Calibration.** There is no gold-item machinery: the Cherokee sets' seed answers count as one person's answer. A calibration set is ordinary tasks, in the same language and queue so volunteers can't tell them apart, whose `private.truth` comes from a human transcription (en-op, en-as). `tools/en_pick_gold.py` makes the pages file from a gold set directory (crops, manifest, ALTO, Xiaomi readings). Load them as a separate `--set` and never seed answers for them.
+
+```sh
+python3 tools/en_pick_gold.py --set-dir sets/en-op --xiaomi xiaomi.jsonl --id-prefix en-op/ --alto-dir loc --out pages-cal.jsonl
+python3 tools/en_pick.py --pages pages-cal.jsonl --set cal-v1 --language-config languages/en.json --out-dir out-cal --per-page 20
+python3 tools/en_pick.py --pages pages-pilot.jsonl --set xiaomi-loc-v1 --language-config languages/en.json --out-dir out-pilot --per-page 8 --per-stratum 500
+```
+
+**Analysis.** `tools/en_pick_analysis.py --export check-en.jsonl --set xiaomi-loc-v1 --calibration-set cal-v1` gives Xiaomi's win rate (Xiaomi picks over Xiaomi plus LoC picks) with a page-clustered bootstrap interval, overall and by decade and damage band, the shares of neither, can't tell, not text and disputed, and for the calibration set how often the settled pick matches the truth.
+
 ## Loading a language
 
 On the build host (pve-big for Cherokee and Yiddish), make the files. For Cherokee:

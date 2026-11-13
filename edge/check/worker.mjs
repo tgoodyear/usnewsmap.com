@@ -159,6 +159,13 @@ function lang(url) {
   return l;
 }
 
+// A task's body as the page gets it. `private` (blind tasks: which reading is which, the truth for a
+// calibration item, the sampling strata) stays on the server until the task has settled and been exported.
+export function shownBody(text) {
+  const { private: _hidden, ...shown } = JSON.parse(text);
+  return shown;
+}
+
 async function api(request, env, url) {
   const p = url.pathname;
   if (p === "/api/config" && request.method === "GET") {
@@ -198,7 +205,7 @@ async function api(request, env, url) {
       .bind(l, c, ...skip)
       .first();
     const mine = await env.DB.prepare("SELECT COUNT(*) AS k FROM answers WHERE contributor = ?").bind(c).first();
-    return json({ task: row ? { id: row.id, ...JSON.parse(row.body) } : null, answered: mine.k });
+    return json({ task: row ? { id: row.id, ...shownBody(row.body) } : null, answered: mine.k });
   }
   if (p === "/api/answers" && request.method === "POST") {
     const c = await contributorOf(request, env, { limited: true });
@@ -235,8 +242,13 @@ async function api(request, env, url) {
       .all();
     const lines = rows.results.map((r) => {
       const t = JSON.parse(r.body);
+      // A blind task keeps what each reading is, and the truth for a calibration item, in `private`: they are
+      // exported once the task has settled, never before.
+      const reveal = t.private && r.settled ? t.private : {};
       return JSON.stringify({
-        id: r.id, set: r.set_name, page: t.page, source: t.source, a: t.a, b: t.b, a_is: t.a_is, b_is: t.b_is,
+        id: r.id, set: r.set_name, page: t.page, source: t.source, a: t.a, b: t.b,
+        a_is: t.private ? reveal.a_is : t.a_is, b_is: t.private ? reveal.b_is : t.b_is,
+        ...(t.private ? { strata: t.private.strata, truth: reveal.truth } : {}),
         counts: { a: r.a || 0, b: r.b || 0, neither: r.neither || 0, unsure: r.unsure || 0, notext: r.notext || 0 },
         settled: !!r.settled, outcome: r.outcome,
       });
