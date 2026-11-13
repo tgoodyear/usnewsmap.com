@@ -51,6 +51,11 @@ class Align(unittest.TestCase):
         got = en_pick.sample(rows, type("A", (), {"seed": "1", "per_page": 8, "per_stratum": 0})())
         self.assertEqual(sorted((r["loc"], r["xiaomi"]) for r in got), [("tbe", "the"), ("wltb", "with")])
 
+    def test_truth_replacement_with_offsetting_split_and_join_is_unmapped(self):
+        got = en_pick.truth_for("we visited New York today at noon".split(), "we visited NewYork to day at noon".split())
+        self.assertNotIn(4, got)
+        self.assertEqual(got[0], "we")
+
     def test_truth_side(self):
         self.assertEqual(en_pick.who_is_right("tbe", "the", "the"), "xiaomi")
         self.assertEqual(en_pick.who_is_right("the", "tbe", "the"), "loc")
@@ -63,6 +68,7 @@ class Align(unittest.TestCase):
         sides = [en_pick.side("1", f"id{i}") for i in range(200)]
         self.assertEqual(sides, [en_pick.side("1", f"id{i}") for i in range(200)])
         self.assertTrue(60 < sides.count("xiaomi") < 140)
+        self.assertNotEqual(sides, [en_pick.side("2", f"id{i}") for i in range(200)])
 
     def test_bands(self):
         self.assertEqual([en_pick.band(x) for x in (None, 0.1, 0.2, 0.3)], ["unknown", "fine", "moderate", "bad"])
@@ -123,6 +129,10 @@ class Analysis(unittest.TestCase):
         self.assertEqual(an.verdict({"settled": True, "outcome": "b", "a_is": "loc", "b_is": "xiaomi"}), "xiaomi")
         self.assertEqual(an.verdict({"settled": True, "outcome": "neither"}), "neither")
         self.assertIsNone(an.verdict({"settled": False, "outcome": None}))
+
+    def test_truth_rows_are_not_pilot_rows(self):
+        rows = self.rows()
+        self.assertTrue(all(r.get("truth") for r in rows))  # the fixture rows are all calibration items
 
     def test_rate_and_bootstrap(self):
         rows = self.rows()

@@ -24,7 +24,8 @@ words where the two differ. A pair is made only when it is certain:
 
 Every other differing word is counted and left out, never guessed. Per page it keeps up to --per-page words
 (at most one for each distinct pair of readings), drawn with --seed, then at most --per-stratum for each decade and
-damage band. Which reading is `a` is drawn from the seed and the task id, so neither side is always first.
+damage band. Which reading is `a` is drawn from a secret side key and the task id, so neither side is always first: --side-key FILE
+(default: a random key written to OUT_DIR/side-key.private, which is never loaded to the site and stays on the build host).
 
 Writes OUT_DIR/clips/en/<set>/{lines,words}/..., OUT_DIR/tasks.jsonl, OUT_DIR/language.json and OUT_DIR/report.json
 (the counts: differing words, what was left out and why, and, with truth, how often each reading is right).
@@ -149,12 +150,19 @@ def aligned_words(a: list, b: list, min_similarity: float, max_block: int) -> tu
     return pairs, c
 
 
-def truth_for(loc: list, truth: list) -> dict:
+def truth_for(loc: list, truth: list, min_similarity: float = 0.5) -> dict:
     """{index in loc: the truth word at that place}, for words LoC read the same as the truth and for 1:1 replacements."""
     out = {}
     for op, i1, i2, j1, j2 in SequenceMatcher(None, loc, truth, autojunk=False).get_opcodes():
-        if op == "equal" or (op == "replace" and i2 - i1 == j2 - j1):
+        if op == "equal":
             out.update((i1 + k, truth[j1 + k]) for k in range(i2 - i1))
+        elif op == "replace" and i2 - i1 == j2 - j1:
+            # as in aligned_words: the whole block or none, so an offsetting split and join leaves it unmapped
+            fa, fb = loc[i1:i2], truth[j1:j2]
+            block = range(i2 - i1)
+            if (all(SequenceMatcher(None, fa[k], fb[k], autojunk=False).ratio() >= min_similarity for k in block)
+                    and not any(bt.split_or_joined(fa, fb, k, k) for k in block)):
+                out.update((i1 + k, truth[j1 + k]) for k in block)
     return out
 
 
@@ -166,9 +174,10 @@ def who_is_right(loc: str, xiaomi: str, truth: str) -> str:
     return "neither"
 
 
-def side(seed, task_id: str) -> str:
-    """Which reading is `a`: 'xiaomi' or 'loc', fixed by the seed and the task id."""
-    return "xiaomi" if hashlib.sha256(f"{seed}:{task_id}:side".encode()).digest()[0] & 1 else "loc"
+def side(key, task_id: str) -> str:
+    """Which reading is `a`: 'xiaomi' or 'loc', fixed by the secret side key and the task id (never the public
+    --seed: task ids are public, so a guessable key would give the sides away)."""
+    return "xiaomi" if hashlib.sha256(f"{key}:{task_id}:side".encode()).digest()[0] & 1 else "loc"
 
 
 def rank(seed, task_id: str) -> str:
@@ -213,7 +222,7 @@ def candidates(page: dict, args, root: str, stats: Counter) -> list:
         stats["crops_used"] += 1
         pairs, c = aligned_words(loc, xi, args.min_similarity, args.max_block)
         stats.update(c)
-        tw = truth_for(loc, bt.clean(crop["truth"]).split()) if crop.get("truth") else None
+        tw = truth_for(loc, bt.clean(crop["truth"]).split(), args.min_similarity) if crop.get("truth") else None
         for i, j in pairs:
             wl, wx = loc[i], xi[j]
             if not bt.has_letter(wl) or not bt.has_letter(wx):
@@ -291,7 +300,7 @@ def write_task(r: dict, args, root: str, out_dir: str, images: dict, f) -> None:
         limg = limg.resize((MAX_LINE_WIDTH, max(1, round(limg.size[1] * scale))))
     limg.save(os.path.join(out_dir, "clips", line_key), quality=args.quality)
     cw, ch = cx1 - cx0, cy1 - cy0
-    a_is = side(args.seed, r["id"])
+    a_is = side(args.side_key, r["id"])
     b_is = "loc" if a_is == "xiaomi" else "xiaomi"
     a, b = r[a_is], r[b_is]
     ad, bd = bt.letter_diff(a, b, {})
@@ -315,7 +324,8 @@ def main() -> None:
     ap.add_argument("--set", required=True)
     ap.add_argument("--language-config", required=True)
     ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--seed", default="1")
+    ap.add_argument("--seed", default="1", help="seeds the sampling (public)")
+    ap.add_argument("--side-key", help="file holding the secret that decides which reading is a (default: a new random one)")
     ap.add_argument("--per-page", type=int, default=8)
     ap.add_argument("--per-stratum", type=int, default=0, help="cap per decade and damage band (0: no cap)")
     ap.add_argument("--min-agree", type=float, default=0.5, help="a crop whose readings agree on less of its words is left out")
@@ -336,6 +346,13 @@ def main() -> None:
     chosen = sample(rows, args)
     stats["sampled"] = len(chosen)
     os.makedirs(args.out_dir, exist_ok=True)
+    if args.side_key:
+        args.side_key = open(args.side_key, encoding="utf-8").read().strip()
+    else:
+        args.side_key = os.urandom(16).hex()
+        with open(os.path.join(args.out_dir, "side-key.private"), "w", encoding="utf-8") as f:
+            f.write(args.side_key + "\n")
+        os.chmod(os.path.join(args.out_dir, "side-key.private"), 0o600)
     if not args.no_clips:
         images = {}
         with open(os.path.join(args.out_dir, "tasks.jsonl"), "w", encoding="utf-8") as f:

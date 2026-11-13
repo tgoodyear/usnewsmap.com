@@ -226,6 +226,11 @@ async function choose(choice) {
     busy = false;
     await next(had);
   } catch (e) {
+    if (e.status === 409) {
+      // A checked word of a blind set takes no more answers (someone else settled it): go on to another word.
+      busy = false; await next(had); status("That word was already checked. Here is another.");
+      return;
+    }
     busy = false; render(); keepFocus(had);
     status(e.status === 429 ? "Too fast. Wait a few seconds, then answer again." : "That answer wasn't saved: " + e.message, true);
   }

@@ -68,14 +68,15 @@ def truth_key(row: dict):
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--export", required=True)
-    ap.add_argument("--set", help="only this set's tasks (the pick set; calibration tasks are never mixed in)")
+    ap.add_argument("--set", help="only this set's tasks (the pick set)")
     ap.add_argument("--calibration-set")
     ap.add_argument("--reps", type=int, default=2000)
     ap.add_argument("--seed", default="1")
     a = ap.parse_args()
     rows = [json.loads(l) for l in open(a.export, encoding="utf-8") if l.strip()]
     settled = [r for r in rows if r.get("settled")]
-    main_rows = [r for r in settled if (a.set is None or r["set"] == a.set) and r["set"] != a.calibration_set]
+    # A row with a truth is a calibration item (the export has `truth` for those only): never in the pilot figures.
+    main_rows = [r for r in settled if (a.set is None or r["set"] == a.set) and r["set"] != a.calibration_set and not r.get("truth")]
     report = {"exported": len(rows), "settled": len(settled), "overall": summary(main_rows, a.reps, a.seed)}
     for name, get in (("decade", lambda r: (r.get("strata") or {}).get("decade")),
                       ("damage_band", lambda r: (r.get("strata") or {}).get("damage_band"))):

@@ -46,9 +46,11 @@ def main() -> None:
     manifest = {r["crop_id"]: r for r in read_jsonl(os.path.join(a.set_dir, "manifest.jsonl"))}
     crops = {r["crop_id"]: r for r in read_jsonl(os.path.join(a.set_dir, "crops.jsonl"))}
     xiaomi = {(r.get("crop_id") or r["id"]): r["text"] for r in read_jsonl(a.xiaomi)}
-    prov = {}
+    prov, dates = {}, {}
     if a.provenance:
-        prov = {r["file"]: r["alto"] for r in json.load(open(a.provenance))}
+        rows = json.load(open(a.provenance))
+        prov = {r["file"]: r["alto"] for r in rows}
+        dates = {r["file"]: r["date"] for r in rows}
     pages = {}
     for cid, m in manifest.items():
         text = xiaomi.get(a.id_prefix + cid)
@@ -62,8 +64,12 @@ def main() -> None:
             alto, image = (os.path.abspath(os.path.join(a.alto_dir, stem + ext)) for ext in (".xml", ".jpg"))
         key = page_key(m)
         c = crops[cid]
-        page = pages.setdefault(key, {"page": key, "source": m.get("page_url"), "date": c["date"],
-                                      "label": f"{c.get('title', '').strip()}, {c['date']}", "alto": alto, "image": image,
+        # American Stories crops have no date of their own: take the page's from the provenance.
+        date = c.get("date") or dates.get(src)
+        if not date:
+            raise SystemExit(f"{cid}: no date in crops.jsonl or the provenance")
+        page = pages.setdefault(key, {"page": key, "source": m.get("page_url"), "date": date,
+                                      "label": f"{c.get('title', '').strip()}, {date}", "alto": alto, "image": image,
                                       "crops": []})
         page["crops"].append({"id": cid, "box": m["box"], "xiaomi": text, "truth": c["transcription"]})
     from PIL import Image
