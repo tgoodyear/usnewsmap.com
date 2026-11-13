@@ -342,6 +342,23 @@ class NativeSpotTests(unittest.TestCase):
         self.assertEqual(spot["counts"]["drawn"], 2)
 
 
+    def test_no_replay_is_made_while_draining_or_past_the_global_cap(self):
+        self.tick()
+        self.results_in()
+        self.tick(drain=True)
+        submits = [submit for submit, _ in self.fake.spot_calls if submit]
+        self.assertEqual(submits, [])
+        self.assertEqual({e["stage"] for e in self.state["native_spot"]["pending"].values()}, {"queued"})
+        self.fake.other = 5
+        pending = self.fake.inventory()["pending_workunits"]
+        self.assertGreaterEqual(pending, 5)
+        batch.tick(self.config, self.state, self.fake, lambda: None, NOW, max_global_pending=pending)
+        self.assertEqual([submit for submit, _ in self.fake.spot_calls if submit], [])
+        self.fake.other = 0
+        self.tick()
+        self.assertTrue([submit for submit, _ in self.fake.spot_calls if submit])
+
+
 class SamplingTests(unittest.TestCase):
     def setUp(self):
         self.config = spot_config(max_outstanding_per_peer=100)

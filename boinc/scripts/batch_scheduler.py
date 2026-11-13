@@ -2900,7 +2900,7 @@ def _spot_item(job_id, entry, spool):
     return item + (f":{entry['spool']}" if spool else "")
 
 
-def native_spot_step(config, state, transport, now):
+def native_spot_step(config, state, transport, now, submit_room=100):
     """Run the bridge's native-spot step for the queued replays and the submitted ones, and act on
     what it reports: a match refreshes the host's checks and settles its unchecked pages up to
     that one; a mismatch holds both hosts (here and, already, in trust.json) with the pages each
@@ -2919,7 +2919,8 @@ def native_spot_step(config, state, transport, now):
     for job_id, entry in list(pending.items()):
         if entry["stage"] == "queued" and now - entry["at"] > NATIVE_SPOT_MAX_AGE:
             expire(job_id)
-    queued = [(j, e) for j, e in pending.items() if e["stage"] == "queued"][:100]
+    # `submit_room` new replay units at most: none while draining, and none past the global cap.
+    queued = [(j, e) for j, e in pending.items() if e["stage"] == "queued"][:max(0, min(100, submit_room))]
     # The 100 least recently polled, so every replay is looked at in turn, however many are out.
     submitted = sorted(((j, e) for j, e in pending.items() if e["stage"] == "submitted"),
                        key=lambda item: (item[1].get("polled", 0), item[0]))[:100]
@@ -2981,7 +2982,8 @@ def native_spot_step(config, state, transport, now):
                                        "detail": outcome["detail"][:500]}
 
 
-def native_spot_tick(config, state, transport, persist, now, owned, server, slots, rng=None):
+def native_spot_tick(config, state, transport, persist, now, owned, server, slots, rng=None,
+                     submit_room=100):
     """After a native plan's collection: draw from its published pages not yet drawn from (by
     the journals and its host assignments, so a page a stopped tick published is still drawn,
     and only once), then replay and compare. `server` is the inventory's jobs, with each one's
@@ -3005,7 +3007,7 @@ def native_spot_tick(config, state, transport, persist, now, owned, server, slot
     spot["seen"] = seen
     native_spot_sample(config, state, slots, published, now, rng)
     persist()
-    native_spot_step(config, state, transport, now)
+    native_spot_step(config, state, transport, now, submit_room)
     persist()
 
 
@@ -3343,7 +3345,11 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                                       "jobs": (unpublished + kept)[:5]}
             persist()
     if native and NATIVE_SPOT_KEY in config:
-        native_spot_tick(config, state, transport, persist, now, owned, server, native_room)
+        # A replay is a workunit like any other: none while draining, none past the global cap.
+        spot_cap = max_global_pending if max_global_pending is not None else config.get("max_global_pending")
+        spot_room = 0 if drain else (100 if spot_cap is None else spot_cap - snapshot["pending_workunits"])
+        native_spot_tick(config, state, transport, persist, now, owned, server, native_room,
+                         submit_room=spot_room)
         # A mismatch, a failing step or a match just now changes what each host may get.
         native_slots = native_spot_slots(config, state, native_room, now)
     native_paused = state.get("native_paused") if native else None

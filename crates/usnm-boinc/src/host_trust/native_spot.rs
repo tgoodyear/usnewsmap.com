@@ -452,6 +452,10 @@ async fn check_one(
             hold_both(p, r, &source)?;
             return finish(p, &path, &mut journal, verdict, execute);
         }
+        // Stage `keeping`: the verdict is in, its files not all moved yet.
+        if journal.stage == "keeping" && execute {
+            return finish(p, &path, &mut journal, verdict, execute);
+        }
         return Ok(verdict);
     }
     ensure!(
@@ -651,10 +655,14 @@ fn finish(
     execute: bool,
 ) -> anyhow::Result<Outcome> {
     if execute {
+        // The verdict is journaled before the files move, so a run stopped in between keeps it
+        // and finishes the move the next time it reads it.
+        journal.stage = "keeping".into();
+        journal.verdict = Some(verdict.clone());
+        atomic(path, &serde_json::to_vec_pretty(journal)?)?;
         let into = path.parent().context("a journal has a directory")?;
         keep_replay_files(&p.spool, &journal.workunit, into)?;
         journal.stage = "compared".into();
-        journal.verdict = Some(verdict.clone());
         atomic(path, &serde_json::to_vec_pretty(journal)?)?;
     }
     Ok(verdict)
@@ -1300,5 +1308,24 @@ mod tests {
         .unwrap();
         assert_eq!(o.status, Status::Refused);
         assert!(o.detail.starts_with("original journal"), "{o:?}");
+    }
+
+    #[test]
+    fn a_verdict_whose_files_were_not_all_moved_finishes_the_move() {
+        let f = fixture();
+        let r = replay(&f, 240, LINUX, true);
+        submitted(&f, &r);
+        returned(&f.job, &f.paths.spool, &r.workunit(), "HELLO\n");
+        // As a run that stopped after journaling a match and before moving its files.
+        let path = journal_path(&f.paths.root, &r);
+        let mut journal: Journal = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        journal.stage = "keeping".into();
+        journal.verdict = Some(outcome(&r, Status::Match, "recorded"));
+        atomic(&path, &serde_json::to_vec(&journal).unwrap()).unwrap();
+        let o = block(check_one(&f.paths, &trust(&f), &f.builds, &r, true)).unwrap();
+        assert_eq!(o.status, Status::Match);
+        assert_eq!(std::fs::read_dir(&f.paths.spool).unwrap().count(), 0);
+        let journal: Journal = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(journal.stage, "compared");
     }
 }
