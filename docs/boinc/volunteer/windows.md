@@ -19,9 +19,8 @@ joined PC can sit idle for a while. That is normal.
   page, and needs 5,120 MiB of video memory free when a task starts. No
   Windows version is currently available for Intel GPUs; they get GPU work on
   Linux ([app versions](../apps/quality.md#app-versions-and-plan-classes)).
-  Windows GPU versions for both AMD (`amd_vulkan_8b`) and NVIDIA
-  (`nvidia_vulkan_8b`, and `nvidia_vulkan_6gb_8b` for 6 GB cards) have been
-  live since `usnm_qwen` 1.19 (November 2026). On a PC
+  On 12 November 2026 the live Windows GPU versions were `amd_vulkan_8b`,
+  `nvidia_vulkan_8b`, and `nvidia_vulkan_6gb_8b` for 6 GB NVIDIA cards. On a PC
   without an eligible AMD or NVIDIA GPU, add `-AllowCpuOnly` to the preview and apply
   commands below (not to `-Status`) to offer CPU time instead. CPU work is
   optional and not always available.
