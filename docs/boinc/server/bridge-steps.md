@@ -269,6 +269,13 @@ usnm-boinc cloud spool-out --spool-dir <spool> --to-url <hand-off store> [--trus
   host id and trust file. A repeat run skips a job whose fingerprint is unchanged, and hands a changed one off again. A
   crash between the put and the ledger write repeats the put, which overwrites the same objects. `--redo` ignores the
   ledger (for example after the store was reset).
+- In the destination store it may delete, and only before a job's put: objects under that job's own `spool/<job id>/`
+  prefix with one of the names `put_spool` writes (`usnm_<job id>__file_result.json`, `__file_text.txt`,
+  `__file_layout.xml`, `_error`, `_no_output_files`) or `host_id`, which the current spool no longer produces. Without
+  that, an earlier marker, result file or host id would stay and `collect` would read a stale mix (an old `_error` beside
+  new result files, say). Other objects under the prefix, other jobs' objects and `gold/trust.json` are never touched.
+  Removal uses the store's `list_info` and `delete_if_match`; if a store cannot do that, or an object changed meanwhile,
+  the job fails with a message and no ledger entry is written.
 - It never deletes or renames a spool file. The stock flow does not either at this point: `spool-out` and `collect` leave
   `results/` alone, and `archive_history.py bridge` moves drained jobs' spool files later.
 - Not handled, and listed as such: OCR bundle workunits (`usnm_ocrb_*`), which need the server's journals to split a result

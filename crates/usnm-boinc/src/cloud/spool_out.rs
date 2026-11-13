@@ -215,9 +215,15 @@ async fn hand_off(
         // Dry run: say it would be handed off, touch nothing.
         return Ok(Outcome::Done);
     };
-    if host_id.is_none() {
-        remove_stale_host_id(store, id).await?;
+    let mut keep: Vec<String> = handoff::spool_names(wu)
+        .into_iter()
+        .map(|(n, _)| n)
+        .filter(|n| dir.join(n).exists())
+        .collect();
+    if host_id.is_some() {
+        keep.push("host_id".to_owned());
     }
+    remove_stale(store, id, &keep).await?;
     let spooled = handoff::put_spool(store, None, dir, id, host_id, cfg.trust.as_deref()).await?;
     let outcome = match spooled {
         Spooled::Files(n) => format!("files:{n}"),
@@ -238,32 +244,56 @@ async fn hand_off(
     Ok(Outcome::Done)
 }
 
-/// `put_spool` writes `host_id` only when it has one, so an object left by an earlier hand-off
-/// (the sidecar said 42, now it says 0 or is gone) would still be read by `collect` as the
-/// host. The writer is bridge code and stays as it is; here the stale object is removed through
-/// the store before the new put. A store that cannot delete (no `list_info` / `delete_if_match`)
-/// fails the job with that message, and no ledger entry is written.
-async fn remove_stale_host_id(store: &dyn usnm_store::ObjectStore, id: &str) -> anyhow::Result<()> {
-    let path = format!("spool/{id}/host_id");
-    if !store.exists(&path).await? {
-        return Ok(());
-    }
-    let removed = async {
-        let listed = store.list_info(&format!("spool/{id}")).await?;
-        match listed.iter().find(|o| o.path == path) {
-            Some(o) => store.delete_if_match(&path, &o.etag).await,
-            None => Ok(true),
+/// `put_spool` only writes; it never removes. An object left by an earlier hand-off that the
+/// spool no longer produces (a marker the job outgrew, result files a marker replaced, a host id
+/// that went away) would still be copied by `get_spool` and read by `collect`, which would take
+/// the job for a terminal failure or the wrong host. The writer is bridge code and stays as it
+/// is; here those objects are removed through the store before the new put.
+///
+/// Only this job's own names under `spool/<id>/` can go: the five spool names `put_spool`
+/// writes and `host_id`, and only those the current spool will not write (`keep`). Anything
+/// else under the prefix, and `gold/trust.json` (which is outside the prefix and put_spool's own
+/// to handle), is left alone. A store that cannot list or delete, or an object that changed
+/// during removal, fails the job with a message, and no ledger entry is written.
+async fn remove_stale(
+    store: &dyn usnm_store::ObjectStore,
+    id: &str,
+    keep: &[String],
+) -> anyhow::Result<()> {
+    // The prefix is built from nothing but a checked job id, so it cannot widen.
+    ensure!(boinc::is_sha256(id), "invalid job id {id:?}");
+    let prefix = format!("spool/{id}/");
+    let wu = format!("usnm_{id}");
+    let mut ours: Vec<String> = handoff::spool_names(&wu)
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    ours.push("host_id".to_owned());
+    let stale: Vec<String> = ours
+        .into_iter()
+        .filter(|n| !keep.contains(n))
+        .map(|n| format!("{prefix}{n}"))
+        .collect();
+    let listed = store
+        .list_info(&format!("spool/{id}"))
+        .await
+        .map_err(|e| anyhow::anyhow!("cannot list {prefix} in the hand-off store ({e})"))?;
+    for o in listed {
+        if !stale.contains(&o.path) {
+            continue;
+        }
+        debug_assert!(o.path.starts_with(&prefix));
+        match store.delete_if_match(&o.path, &o.etag).await {
+            Ok(true) => {}
+            Ok(false) => bail!("the stale {} changed while it was being removed; run again", o.path),
+            Err(e) => bail!(
+                "the hand-off store holds {} from an earlier hand-off that the spool no longer \
+                 produces, and the store cannot delete it ({e}); remove that object, then run again",
+                o.path
+            ),
         }
     }
-    .await;
-    match removed {
-        Ok(true) => Ok(()),
-        Ok(false) => bail!("the stale {path} changed while it was being removed; run again"),
-        Err(e) => bail!(
-            "the hand-off store holds a host_id from an earlier hand-off ({path}), the spool now \
-             has none, and the store cannot delete it ({e}); remove that object, then run again"
-        ),
-    }
+    Ok(())
 }
 
 /// The sidecar's decimal host id. 0 (what `cloud pull` writes when the server gave none) and a
@@ -477,6 +507,114 @@ mod tests {
                 .unwrap(),
             handoff::Spool::Files(None)
         );
+    }
+
+    fn remove_local(fx: &Fx, id: &str, suffixes: &[&str]) {
+        for s in suffixes {
+            let _ = fs::remove_file(fx.spool.path().join(format!("results/7/usnm_{id}{s}")));
+        }
+    }
+
+    async fn read_back(fx: &Fx, id: &str) -> (handoff::Spool, Vec<String>) {
+        let store = usnm_store::open(fx.store.path().to_str().unwrap()).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let got = handoff::get_spool(store.as_ref(), id, out.path())
+            .await
+            .unwrap();
+        let mut names: Vec<String> = fs::read_dir(out.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        (got, names)
+    }
+
+    #[tokio::test]
+    async fn a_marker_replaced_by_success_files_leaves_no_marker_behind() {
+        let fx = Fx::new();
+        fx.put("7", &format!("usnm_{ID}_error"), "0x2\n");
+        spool_out_once(&fx.cfg(false)).await.unwrap();
+        remove_local(&fx, ID, &["_error"]);
+        fx.success(ID, "42");
+        let r = spool_out_once(&fx.cfg(false)).await.unwrap();
+        assert_eq!((r.handed_off.len(), r.failed.len()), (1, 0), "{r}");
+        let (got, names) = read_back(&fx, ID).await;
+        assert_eq!(got, handoff::Spool::Files(Some(42)));
+        assert!(names.iter().all(|n| !n.ends_with("_error")), "{names:?}");
+        assert_eq!(names.len(), 3, "{names:?}");
+    }
+
+    #[tokio::test]
+    async fn success_files_replaced_by_a_marker_leave_no_result_files_behind() {
+        let fx = Fx::new();
+        fx.success(ID, "42");
+        spool_out_once(&fx.cfg(false)).await.unwrap();
+        remove_local(
+            &fx,
+            ID,
+            &[
+                "__file_result.json",
+                "__file_text.txt",
+                "__file_layout.xml",
+                "__host_id",
+            ],
+        );
+        fx.put("7", &format!("usnm_{ID}_error"), "0x2\n");
+        let r = spool_out_once(&fx.cfg(false)).await.unwrap();
+        assert_eq!((r.handed_off.len(), r.failed.len()), (1, 0), "{r}");
+        let (got, names) = read_back(&fx, ID).await;
+        assert_eq!(got, handoff::Spool::Files(None));
+        assert_eq!(names, [format!("usnm_{ID}_error")]);
+    }
+
+    #[tokio::test]
+    async fn one_marker_replaced_by_the_other_leaves_only_the_new_one() {
+        let fx = Fx::new();
+        fx.put("7", &format!("usnm_{ID}_error"), "0x2\n");
+        spool_out_once(&fx.cfg(false)).await.unwrap();
+        remove_local(&fx, ID, &["_error"]);
+        fx.put("7", &format!("usnm_{ID}_no_output_files"), "");
+        spool_out_once(&fx.cfg(false)).await.unwrap();
+        let (_, names) = read_back(&fx, ID).await;
+        assert_eq!(names, [format!("usnm_{ID}_no_output_files")]);
+    }
+
+    #[tokio::test]
+    async fn removal_stays_inside_the_jobs_own_names_and_prefix() {
+        let fx = Fx::new();
+        fx.put("7", &format!("usnm_{ID}_error"), "0x2\n");
+        spool_out_once(&fx.cfg(false)).await.unwrap();
+        // Another job's objects, the trust object and an unrelated object under the prefix.
+        let other = fx.store.path().join(format!("spool/{ID2}"));
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join(format!("usnm_{ID2}_error")), "x").unwrap();
+        fs::create_dir_all(fx.store.path().join("gold")).unwrap();
+        fs::write(fx.store.path().join("gold/trust.json"), "{}").unwrap();
+        fs::write(fx.store.path().join(format!("spool/{ID}/requeued")), "n").unwrap();
+        remove_local(&fx, ID, &["_error"]);
+        fx.put("7", &format!("usnm_{ID}_no_output_files"), "");
+        spool_out_once(&fx.cfg(false)).await.unwrap();
+        assert!(other.join(format!("usnm_{ID2}_error")).exists());
+        assert!(fx.store.path().join("gold/trust.json").exists());
+        assert!(fx
+            .store
+            .path()
+            .join(format!("spool/{ID}/requeued"))
+            .exists());
+        assert!(!fx
+            .store
+            .path()
+            .join(format!("spool/{ID}/usnm_{ID}_error"))
+            .exists());
+        // A malformed or empty id cannot form a prefix.
+        let store = usnm_store::open(fx.store.path().to_str().unwrap()).unwrap();
+        for bad in ["", "..", "a/b", &ID[..63]] {
+            assert!(
+                remove_stale(store.as_ref(), bad, &[]).await.is_err(),
+                "{bad:?}"
+            );
+        }
+        assert!(other.join(format!("usnm_{ID2}_error")).exists());
     }
 
     #[tokio::test]
