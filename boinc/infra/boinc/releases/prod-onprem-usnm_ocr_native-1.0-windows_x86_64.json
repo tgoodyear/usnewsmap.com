@@ -1,0 +1,135 @@
+{
+  "ct": "230",
+  "env": "prod",
+  "host": "pve.tjg.fyi",
+  "images": {
+    "base": "sha256:dc49f2267d8bfec9d7fdf503260b34897b4aad7edc1a4e5a5641d8a6e5da8f17",
+    "bin": "sha256:eeb27dca9f0367b437e11f73ddcbed45d429652b5b749347b8e60993c8a6d813",
+    "bridge": "sha256:046bc184ca048a45748876ac51c8c5cd21f1e80c011841f24e1cca501f52b8d6",
+    "server": "sha256:2c57f9c4a03969d72329e4bc959010525210e52892e0a224adf49cab25d5b556",
+    "worker": null
+  },
+  "release": {
+    "app": "usnm_ocr_native",
+    "kind": "native",
+    "plan_class": "",
+    "platform": "windows_x86_64",
+    "version": "1.0"
+  },
+  "schema": 1,
+  "source_commit": "7095e5eb9d58486e6dc576ec8dddb18e9ccc0f03",
+  "worker": {
+    "extra_files": {
+      "notice_chr_phoenix_LICENSE-Apache-2.0.txt": {
+        "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "notice_chr_phoenix_NOTICE.md": {
+        "sha256": "1e4abb6931e4cee7a4b4ac49054cd41eec58dc63fcf08418dbea790af0e847e0",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_ces.traineddata": {
+        "sha256": "d821773116d3c4e0360ea750066436c60ae45af02c39da3a840a543d761b3f41",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_chr_phoenix.traineddata": {
+        "sha256": "88eb101611962ec6b6b421985203aa6722849da6b7350197e11ce2c0ff71f7f8",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_dan.traineddata": {
+        "sha256": "28901bf4b58a657b511fddafce4ce245a1f21c5ee075734b479d01ab8d4cb6a5",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_deu.traineddata": {
+        "sha256": "8407331d6aa0229dc927685c01a7938fc5a641d1a9524f74838cdac599f0d06e",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_deu_latf.traineddata": {
+        "sha256": "429b8c33d37e1a4823a2bb082a644ff13e252f735b7945e08a518d22ddcc459e",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_eng.traineddata": {
+        "sha256": "8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_fin.traineddata": {
+        "sha256": "96745dd0900fe997541516863d859616df6120430db546424feae72923828423",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_fra.traineddata": {
+        "sha256": "907743d98915c91a3906dfbf6e48b97598346698fe53aaa797e1a064ffcac913",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_frak2021.traineddata": {
+        "sha256": "1da2384254fa8462c776faf3b43307fe19ce51be0931c623b2fdd560f96e299a",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_heb.traineddata": {
+        "sha256": "dbaa827aea6bc21215638447f17783a1004987c2d0bf5573d111fee397abdae5",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_hun.traineddata": {
+        "sha256": "08786ad5fe25d502d1cfcdf606ba215f320409a1630109582fa1a38d93b3e32d",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_ita.traineddata": {
+        "sha256": "8df9c89176fb93f56bf4b2d4ede04c01c1f31d4b7697fbd76cc336df700f3f38",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_lit.traineddata": {
+        "sha256": "7d47a118f60509408e1dae2dd967d7c553a770e57390fedf8e7af07a192fefe3",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_nor.traineddata": {
+        "sha256": "451d52ba1559aa1aecf163ccbfdeced2b9605fbd49480f5e8a53ace29b9eb0e7",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_pol.traineddata": {
+        "sha256": "e80cc4cefbdface06e9223f43f089556b9dcf104020fbc0a200f6863c57d4405",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_rus.traineddata": {
+        "sha256": "b617eb6830ffabaaa795dd87ea7fd251adfe9cf0efe05eb9a2e8128b7728d6b6",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_slk.traineddata": {
+        "sha256": "3553e335f64408412c8741fec19e443b5fda81d88abe59aa1401cba4e8825bed",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_slv.traineddata": {
+        "sha256": "199c39cc570812db5011ad7e8552c04b0784413043a8e4561d85c8ac364fba5c",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_spa.traineddata": {
+        "sha256": "e2c1ffdad8b30f26c45d4017a9183d3a7f9aa69e59918be4f88b126fac99ab2c",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_srp.traineddata": {
+        "sha256": "b090f9bb22366d9b4b0cb6baa2136c4f75e992ddba01ecb78240896e359e4072",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_srp_latn.traineddata": {
+        "sha256": "9bc6caa2ad9daf1706bf4c21741992dd5a334e9ff64cfc1ecd32aa43dd7a150c",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_swe.traineddata": {
+        "sha256": "360303308aa5d4a912ac3b3637691152b7532d9bd6e960639db1affb83db7ea9",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "tessdata_yid.traineddata": {
+        "sha256": "086ec92aea9c7016c74b503c3d24906381e7e57cc3f487f12e1784eb2530ba94",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "usnm_native_build.json": {
+        "sha256": "fd6207755c4cdec5506d44c360ac9c2a2bd5ab9d246c3cb20a2cb83fba1bf37d",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      },
+      "usnm_tesseract": {
+        "sha256": "275924151b8a52cbaebfcd27b7cef036f8d26800d6d7761dd89ba2d54deb4843",
+        "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+      }
+    },
+    "sha256": "684b69998080b171f035fefbd69fd3519a34117a6aeaa71ab4dc5adf7439f9c6",
+    "source_commit": "27a634e76f44324a989e3f61ff5bd0dca42daff4"
+  }
+}
