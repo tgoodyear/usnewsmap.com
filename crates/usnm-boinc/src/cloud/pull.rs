@@ -205,7 +205,10 @@ async fn list(cfg: &Config, app: &str, after: i64, limit: u32) -> anyhow::Result
         .await
         .context("listing ready workunits")?;
     let status = resp.status();
-    ensure!(status.is_success(), "listing ready workunits: HTTP {status}");
+    ensure!(
+        status.is_success(),
+        "listing ready workunits: HTTP {status}"
+    );
     resp.json().await.context("parsing the ready list")
 }
 
@@ -228,7 +231,11 @@ async fn ack(cfg: &Config, ids: &[i64]) -> anyhow::Result<usize> {
 }
 
 async fn pull_workunit(cfg: &Config, wu: &Workunit, stats: &mut Stats) -> anyhow::Result<()> {
-    ensure!(safe_component(&wu.name), "unsafe workunit name {:?}", wu.name);
+    ensure!(
+        safe_component(&wu.name),
+        "unsafe workunit name {:?}",
+        wu.name
+    );
     ensure!(wu.batch >= 0, "negative batch {}", wu.batch);
     let dir = cfg.spool.join("results").join(wu.batch.to_string());
     let incoming = cfg.spool.join(".incoming");
@@ -259,11 +266,21 @@ async fn pull_workunit(cfg: &Config, wu: &Workunit, stats: &mut Stats) -> anyhow
     sync_dir(&cfg.spool.join("results"))?;
     if wu.error_mask != 0 {
         let marker = format!("0x{:x}\n", wu.error_mask);
-        durable_write(&incoming, &dir, &format!("{}_error", wu.name), marker.as_bytes())?;
+        durable_write(
+            &incoming,
+            &dir,
+            &format!("{}_error", wu.name),
+            marker.as_bytes(),
+        )?;
         return Ok(());
     }
     if files.is_empty() {
-        durable_write(&incoming, &dir, &format!("{}_no_output_files", wu.name), b"")?;
+        durable_write(
+            &incoming,
+            &dir,
+            &format!("{}_no_output_files", wu.name),
+            b"",
+        )?;
         return Ok(());
     }
     for f in files {
@@ -334,7 +351,12 @@ async fn download_inner(cfg: &Config, f: &OutFile, part: &Path) -> anyhow::Resul
     let mut got = 0u64;
     while let Some(chunk) = resp.chunk().await.with_context(|| f.name.clone())? {
         got += chunk.len() as u64;
-        ensure!(got <= f.nbytes, "{} is larger than the listed {} bytes", f.name, f.nbytes);
+        ensure!(
+            got <= f.nbytes,
+            "{} is larger than the listed {} bytes",
+            f.name,
+            f.nbytes
+        );
         h.update(&chunk);
         out.write_all(&chunk)?;
     }
@@ -357,7 +379,10 @@ async fn download_inner(cfg: &Config, f: &OutFile, part: &Path) -> anyhow::Resul
 
 /// Writes `bytes` to `.incoming`, fsyncs, renames to `dir/name`, fsyncs `dir`.
 fn durable_write(incoming: &Path, dir: &Path, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
-    let tmp = incoming.join(format!("{}.{name}.part", dir.file_name().unwrap().to_string_lossy()));
+    let tmp = incoming.join(format!(
+        "{}.{name}.part",
+        dir.file_name().unwrap().to_string_lossy()
+    ));
     let mut f = File::create(&tmp)?;
     f.write_all(bytes)?;
     f.sync_all()?;
@@ -435,7 +460,9 @@ mod tests {
         let rest: Vec<&Value> = m
             .ready
             .iter()
-            .filter(|w| w["id"].as_i64().unwrap() > after && !m.acked.contains(&w["id"].as_i64().unwrap()))
+            .filter(|w| {
+                w["id"].as_i64().unwrap() > after && !m.acked.contains(&w["id"].as_i64().unwrap())
+            })
             .collect();
         let page: Vec<&Value> = rest.iter().take(limit).copied().collect();
         Json(json!({
@@ -446,7 +473,11 @@ mod tests {
         .into_response()
     }
 
-    async fn output(State(s): State<Shared>, h: HeaderMap, AxPath(name): AxPath<String>) -> Response {
+    async fn output(
+        State(s): State<Shared>,
+        h: HeaderMap,
+        AxPath(name): AxPath<String>,
+    ) -> Response {
         let mut m = s.lock().unwrap();
         if !authed(&mut m, &h) {
             return StatusCode::UNAUTHORIZED.into_response();
@@ -508,8 +539,15 @@ mod tests {
     }
 
     fn cfg(base: &str, spool: &Path, ack: bool, page: u32) -> Config {
-        Config::new(base, "secret".into(), spool.to_owned(), ack, vec!["usnm_test".into()], page)
-            .unwrap()
+        Config::new(
+            base,
+            "secret".into(),
+            spool.to_owned(),
+            ack,
+            vec!["usnm_test".into()],
+            page,
+        )
+        .unwrap()
     }
 
     fn read(p: PathBuf) -> Vec<u8> {
@@ -517,16 +555,29 @@ mod tests {
     }
 
     fn incoming_is_empty(spool: &Path) -> bool {
-        fs::read_dir(spool.join(".incoming")).unwrap().next().is_none()
+        fs::read_dir(spool.join(".incoming"))
+            .unwrap()
+            .next()
+            .is_none()
     }
 
     #[tokio::test]
     async fn writes_the_stock_layout_and_acknowledges() {
         let mut m = Mock::default();
-        wu_ok(&mut m, 1, 5, &[("r_0", Some("result.json"), b"{}"), ("r_1", Some("text.txt"), b"hi")]);
+        wu_ok(
+            &mut m,
+            1,
+            5,
+            &[
+                ("r_0", Some("result.json"), b"{}"),
+                ("r_1", Some("text.txt"), b"hi"),
+            ],
+        );
         let (s, base) = serve(m).await;
         let spool = tempfile::tempdir().unwrap();
-        let st = pull_once(&cfg(&base, spool.path(), true, 100), None).await.unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap();
         assert_eq!((st.workunits, st.files_written, st.acked), (1, 2, 1));
         let d = spool.path().join("results/5");
         assert_eq!(read(d.join("wu_1__file_result.json")), b"{}");
@@ -541,17 +592,29 @@ mod tests {
     async fn pages_through_has_more() {
         let mut m = Mock::default();
         for id in 1..=5 {
-            wu_ok(&mut m, id, 1, &[(&format!("o{id}"), Some("result.json"), b"x")]);
+            wu_ok(
+                &mut m,
+                id,
+                1,
+                &[(&format!("o{id}"), Some("result.json"), b"x")],
+            );
         }
         let (s, base) = serve(m).await;
         let spool = tempfile::tempdir().unwrap();
-        let st = pull_once(&cfg(&base, spool.path(), false, 2), None).await.unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), false, 2), None)
+            .await
+            .unwrap();
         assert_eq!(st.workunits, 5);
         for id in 1..=5 {
-            assert!(spool.path().join(format!("results/1/wu_{id}__file_result.json")).exists());
+            assert!(spool
+                .path()
+                .join(format!("results/1/wu_{id}__file_result.json"))
+                .exists());
         }
         assert!(s.lock().unwrap().acked.is_empty());
-        let st = pull_once(&cfg(&base, spool.path(), false, 2), Some(3)).await.unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), false, 2), Some(3))
+            .await
+            .unwrap();
         assert_eq!(st.workunits, 3);
     }
 
@@ -559,7 +622,8 @@ mod tests {
     async fn errored_and_empty_workunits_leave_markers() {
         let mut m = Mock::default();
         m.ready.push(json!({"id": 1, "name": "wu_1", "batch": 2, "error_mask": 34, "canonical_result": null}));
-        m.ready.push(json!({"id": 2, "name": "wu_2", "batch": 2, "error_mask": 0,
+        m.ready
+            .push(json!({"id": 2, "name": "wu_2", "batch": 2, "error_mask": 0,
             "canonical_result": {"id": 20, "name": "wu_2_0", "host_id": 7, "files": []}}));
         let (s, base) = serve(m).await;
         let spool = tempfile::tempdir().unwrap();
@@ -567,7 +631,9 @@ mod tests {
         fs::create_dir_all(&d).unwrap();
         // A stale marker from an earlier run is replaced, not appended to.
         fs::write(d.join("wu_1_error"), "0x2\n").unwrap();
-        let st = pull_once(&cfg(&base, spool.path(), true, 100), None).await.unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap();
         assert_eq!(st.acked, 2);
         assert_eq!(read(d.join("wu_1_error")), b"0x22\n");
         assert!(d.join("wu_2_no_output_files").exists());
@@ -583,7 +649,9 @@ mod tests {
         wu_ok(&mut m, 2, 1, &[("o2", Some("result.json"), b"fine")]);
         let (s, base) = serve(m).await;
         let spool = tempfile::tempdir().unwrap();
-        let st = pull_once(&cfg(&base, spool.path(), true, 100), None).await.unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap();
         assert_eq!(st.failed.len(), 1);
         assert!(st.failed[0].contains("md5"), "{:?}", st.failed);
         let d = spool.path().join("results/1");
@@ -596,25 +664,53 @@ mod tests {
     #[tokio::test]
     async fn a_crash_midway_is_repaired_by_a_rerun() {
         let mut m = Mock::default();
-        wu_ok(&mut m, 1, 1, &[("a", Some("result.json"), b"AAA"), ("b", Some("text.txt"), b"BBB")]);
+        wu_ok(
+            &mut m,
+            1,
+            1,
+            &[
+                ("a", Some("result.json"), b"AAA"),
+                ("b", Some("text.txt"), b"BBB"),
+            ],
+        );
         m.failing.insert("b".into());
         let (s, base) = serve(m).await;
         let spool = tempfile::tempdir().unwrap();
-        let st = pull_once(&cfg(&base, spool.path(), true, 100), None).await.unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap();
         assert_eq!((st.failed.len(), st.acked), (1, 0));
         let d = spool.path().join("results/1");
         assert!(d.join("wu_1__file_result.json").exists());
         assert!(!d.join("wu_1__host_id").exists());
         // A torn staging file and a corrupt placed file are both handled on rerun.
-        fs::write(spool.path().join(".incoming/1.wu_1__file_text.txt.part"), "junk").unwrap();
+        fs::write(
+            spool.path().join(".incoming/1.wu_1__file_text.txt.part"),
+            "junk",
+        )
+        .unwrap();
         {
             let mut g = s.lock().unwrap();
             g.failing.clear();
             g.fetched.clear();
         }
-        let st = pull_once(&cfg(&base, spool.path(), true, 100), None).await.unwrap();
-        assert_eq!((st.failed.len(), st.acked, st.files_skipped, st.files_written), (0, 1, 1, 1));
-        assert_eq!(s.lock().unwrap().fetched, ["b"], "the verified file is not fetched again");
+        let st = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                st.failed.len(),
+                st.acked,
+                st.files_skipped,
+                st.files_written
+            ),
+            (0, 1, 1, 1)
+        );
+        assert_eq!(
+            s.lock().unwrap().fetched,
+            ["b"],
+            "the verified file is not fetched again"
+        );
         assert_eq!(read(d.join("wu_1__file_text.txt")), b"BBB");
         assert!(d.join("wu_1__host_id").exists());
         assert!(incoming_is_empty(spool.path()));
@@ -622,7 +718,9 @@ mod tests {
         fs::write(d.join("wu_1__file_result.json"), "AAX").unwrap();
         s.lock().unwrap().acked.clear();
         s.lock().unwrap().fetched.clear();
-        pull_once(&cfg(&base, spool.path(), false, 100), None).await.unwrap();
+        pull_once(&cfg(&base, spool.path(), false, 100), None)
+            .await
+            .unwrap();
         assert_eq!(read(d.join("wu_1__file_result.json")), b"AAA");
     }
 
@@ -632,10 +730,15 @@ mod tests {
         wu_ok(&mut m, 1, 1, &[("o", Some("result.json"), b"x")]);
         let (s, base) = serve(m).await;
         let spool = tempfile::tempdir().unwrap();
-        let st = pull_once(&cfg(&base, spool.path(), false, 100), None).await.unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), false, 100), None)
+            .await
+            .unwrap();
         assert_eq!((st.workunits, st.acked), (1, 0));
         assert!(s.lock().unwrap().acked.is_empty());
-        assert!(spool.path().join("results/1/wu_1__file_result.json").exists());
+        assert!(spool
+            .path()
+            .join("results/1/wu_1__file_result.json")
+            .exists());
     }
 
     #[tokio::test]
@@ -647,17 +750,24 @@ mod tests {
         wu_ok(&mut m, 4, 1, &[("o4", None, b"x")]);
         wu_ok(&mut m, 5, 1, &[("../o5", Some("ok"), b"x")]);
         m.ready.push(json!({"id": 6, "name": "../wu", "batch": 1, "error_mask": 2, "canonical_result": null}));
-        m.ready.push(json!({"id": 7, "name": "", "batch": 1, "error_mask": 2, "canonical_result": null}));
-        m.ready.push(json!({"id": 8, "name": "a\\b", "batch": 1, "error_mask": 2, "canonical_result": null}));
+        m.ready.push(
+            json!({"id": 7, "name": "", "batch": 1, "error_mask": 2, "canonical_result": null}),
+        );
+        m.ready.push(
+            json!({"id": 8, "name": "a\\b", "batch": 1, "error_mask": 2, "canonical_result": null}),
+        );
         let (s, base) = serve(m).await;
         let spool = tempfile::tempdir().unwrap();
-        let st = pull_once(&cfg(&base, spool.path(), true, 100), None).await.unwrap();
+        let st = pull_once(&cfg(&base, spool.path(), true, 100), None)
+            .await
+            .unwrap();
         assert_eq!((st.failed.len(), st.acked), (8, 0));
         assert!(s.lock().unwrap().fetched.is_empty());
         assert!(s.lock().unwrap().acked.is_empty());
         assert!(!spool.path().join("escape").exists());
         assert!(!spool.path().join("results/escape").exists());
-        assert!(!spool.path().join("results").exists() || fs::read_dir(spool.path().join("results/1")).map_or(true, |mut d| d.next().is_none()));
+        assert!(!spool.path().join("results").exists());
+        assert!(!spool.path().join(".incoming").exists());
     }
 
     #[test]
