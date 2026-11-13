@@ -1,6 +1,9 @@
 name: boinc-ocr-native
 # The native usnm_ocr and usnm_gold build (#1418, docs/boinc/apps/native-ocr.md). It builds and smoke
 # tests; it publishes nothing. The artifact is what a release would stage and sign.
+# Each platform's Tesseract is 5.5.0 plus the upstream patches of boinc/apps/native/tesseract-patches.lock
+# (#1835). Each job also builds the stock 5.5.0 and compares the two builds' text and ALTO on one
+# runner (boinc/scripts/compare-native-builds.py), and fails if a byte differs.
 on:
   workflow_dispatch:
   pull_request:
@@ -11,6 +14,7 @@ on:
       - boinc/scripts/smoke-native-ocr.ps1
       - scripts/ci/apt-base.sh
       - boinc/scripts/check-native-ocr-build.py
+      - boinc/scripts/compare-native-builds.py
       - boinc/scripts/install.py
       - boinc/images/appver/check_appver.py
       - ocr/engines/tesseract/models.lock
@@ -128,6 +132,20 @@ jobs:
           for name in NOTICE.md LICENSE-Apache-2.0.txt; do
             cp "$name" "$GITHUB_WORKSPACE/build/notice_chr_phoenix_$name"
           done
+      - name: Build the stock Tesseract and compare it with the patched build
+        run: |
+          # The previous build: Debian's libtesseract.a, no patches (--build-arg PATCHES=none).
+          lines=$(scripts/ci/apt-base.sh --app native --check-label docker)
+          bases=()
+          while IFS= read -r line; do [ -z "$line" ] || bases+=(--build-arg "$line"); done <<< "$lines"
+          docker build "${bases[@]}" --build-arg PATCHES=none -f boinc/apps/native/Containerfile -t usnm-tesseract-native-stock boinc/apps/native
+          mkdir stock
+          docker run --rm --network=none usnm-tesseract-native-stock cat /out/usnm_tesseract > stock/usnm_tesseract
+          chmod +x stock/usnm_tesseract
+          python3 boinc/scripts/compare-native-builds.py --tessdata tessdata --images \
+            web/public/og-image.png crates/usnm-ocr-dash/assets/og.png docs/images/ocr-dash-step-throughput.png \
+            docs/design/images/legacy-ui-local-render.png \
+            crates/usnm-boinc/tests/fixtures/line-60x40.jp2 --old stock/usnm_tesseract --new build/usnm_tesseract
       - name: Make the build manifest
         # bash -eo pipefail, so tee doesn't hide a failure.
         shell: bash
@@ -234,6 +252,13 @@ jobs:
           for name in NOTICE.md LICENSE-Apache-2.0.txt; do
             cp "$name" "$GITHUB_WORKSPACE/build/notice_chr_phoenix_$name"
           done
+      - name: Build the stock Tesseract and compare it with the patched build
+        run: |
+          boinc/apps/native/build-tesseract-macos.sh --no-patches --out engine-stock --work "$RUNNER_TEMP/tesseract-stock"
+          python3 boinc/scripts/compare-native-builds.py --tessdata tessdata --images \
+            web/public/og-image.png crates/usnm-ocr-dash/assets/og.png docs/images/ocr-dash-step-throughput.png \
+            docs/design/images/legacy-ui-local-render.png \
+            crates/usnm-boinc/tests/fixtures/line-60x40.jp2 --old engine-stock/usnm_tesseract --new build/usnm_tesseract
       - name: Make the build manifest
         shell: bash
         run: |
@@ -340,6 +365,15 @@ jobs:
           for name in NOTICE.md LICENSE-Apache-2.0.txt; do
             cp "$name" "$GITHUB_WORKSPACE/build/notice_chr_phoenix_$name"
           done
+      - name: Build the stock Tesseract and compare it with the patched build
+        shell: pwsh
+        run: |
+          boinc/apps/native/build-tesseract-windows.ps1 -NoPatches -Out engine-stock -Work "$env:RUNNER_TEMP\tesseract-stock"
+          python boinc/scripts/compare-native-builds.py --tessdata tessdata --images `
+            web/public/og-image.png crates/usnm-ocr-dash/assets/og.png docs/images/ocr-dash-step-throughput.png `
+            docs/design/images/legacy-ui-local-render.png `
+            crates/usnm-boinc/tests/fixtures/line-60x40.jp2 --old engine-stock/usnm_tesseract.exe --new engine/usnm_tesseract.exe
+          if ($LASTEXITCODE -ne 0) { throw 'the patched and stock builds differ' }
       # The build directory holds each file by its open name, with no extension: the manifest is
       # made from the engine under the name Windows will run, and the worker is copied in under
       # its open name.

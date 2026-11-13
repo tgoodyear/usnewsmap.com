@@ -13,10 +13,15 @@
 # SIMD: as on macOS, nothing is compiled for a CPU newer than the x86-64 baseline (SSE2).
 # Tesseract's CMake builds its AVX, AVX2, FMA and SSE4.1 files with their own flags (-DENABLE_NATIVE
 # is off, so no global /arch) and chooses among them when it runs.
+#
+# Tesseract gets the upstream patches of tesseract-patches.lock (#1835), each checked against its
+# sha256 there, as the Linux build does. -NoPatches builds the stock 5.5.0 instead, which CI does
+# to compare the two on one runner.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Out,
-    [Parameter(Mandatory = $true)][string]$Work
+    [Parameter(Mandatory = $true)][string]$Work,
+    [switch]$NoPatches
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -107,6 +112,25 @@ try {
         Copy-Item (Join-Path $lib $from) (Join-Path $lib $to) -Force
     }
 
+    # The upstream patches, in the lock's order: every file in patches/ must be in the lock with
+    # its sha256, and every line of the lock must have its file. --ignore-whitespace, since a
+    # Windows git may have checked the source out with CRLF line ends.
+    $patchLines = @(Get-Content (Join-Path $here 'tesseract-patches.lock') | Where-Object { $_ -notmatch '^\s*(#|$)' })
+    if (-not $NoPatches) {
+        $expected = ($patchLines | ForEach-Object { ($_ -split '\s+')[0] }) -join ','
+        $found = (Get-ChildItem (Join-Path $here 'patches') -File | Where-Object { $_.Name -ne '.gitattributes' } |
+            ForEach-Object { $_.Name } | Sort-Object { $_ } ) -join ','
+        if ($expected -ne $found) { throw 'patches/ and tesseract-patches.lock list different files' }
+        foreach ($line in $patchLines) {
+            $file, $commit, $sum = $line -split '\s+'
+            $path = Join-Path $here "patches\$file"
+            if ((Get-FileHash -Algorithm SHA256 $path).Hash.ToLower() -ne $sum) {
+                throw "$file does not have the sha256 in tesseract-patches.lock"
+            }
+            Invoke-Native $null git @('-C', (Join-Path $src 'tesseract'), 'apply', '--ignore-whitespace', $path)
+        }
+    }
+
     Build 'zlib' @('-DZLIB_BUILD_EXAMPLES=OFF')
     # zlib installs a shared copy and its import library under the plain names.
     Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $prefix 'bin\*.dll'), (Join-Path $prefix 'lib\zlib.lib')
@@ -189,6 +213,8 @@ Get-Content (Join-Path $here 'static-sources.lock') | Where-Object { $_ -notmatc
     $name, $url, $tag, $commit = $_ -split '\s+'
     $record += "source $name $tag $commit"
 }
+if ($NoPatches) { $record += 'tesseract-patches none' }
+else { $record += $patchLines | ForEach-Object { 'tesseract-patch ' + ($_ -replace '\s+', ' ') } }
 $record += "compiler msvc $msvc"
 $record += "sdk $sdk"
 $record += "runtime static (/MT)"
