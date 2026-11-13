@@ -96,6 +96,8 @@ def returned_pages(handoff, images, now, window=WINDOW_SECONDS, seen=()):
         page = {"job": job.name, "completed": completed, "engine": result["engine"]}
         try:
             request = json.loads((jobs / job.name / "request.json").read_text())
+            if request.get("lines"):
+                continue  # line reads use crop boxes; this check re-reads whole pages
             page.update(host=(job / "host_id").read_text().strip(), page=request["message"]["page"],
                         batch=request["message"]["batch"], language=result["engine"]["profile"],
                         scan_sha256=request["scan"]["sha256"], scan_url=request["scan"]["url"])
@@ -110,6 +112,8 @@ def returned_pages(handoff, images, now, window=WINDOW_SECONDS, seen=()):
                 page["windows_text"] = raw.decode("utf-8")
         except UnicodeDecodeError:
             page["invalid"] = "text is not UTF-8"
+        except FileNotFoundError:
+            continue  # the hand-off writes a result's files one by one: look again next run
         except (OSError, KeyError, ValueError) as e:
             page.update(host=page.get("host", "?"), page=page.get("page", job.name), batch="", language="",
                         scan_sha256="", scan_url="", invalid=f"unreadable: {str(e)[:100]}")
@@ -134,10 +138,12 @@ def sample(pages, date, count):
 
 
 def scan_path(scans, page):
-    """`keep/<batch>/<sn>/<date>/<ed>/<seq>.<ext>` for `<sn>/<date>/ed-<n>/seq-<m>`."""
+    """`keep/` (else `buffer/`) `<batch>/<sn>/<date>/<ed>/<seq>.<ext>` for `<sn>/<date>/ed-<n>/seq-<m>`."""
     sn, date, ed, seq = page["page"].split("/")
     ext = Path(page["scan_url"].split("?")[0]).suffix or ".jp2"
-    return Path(scans) / "keep" / page["batch"] / sn / date / ed.removeprefix("ed-") / f"{seq.removeprefix('seq-')}{ext}"
+    rel = Path(page["batch"]) / sn / date / ed.removeprefix("ed-") / f"{seq.removeprefix('seq-')}{ext}"
+    found = [Path(scans) / tree / rel for tree in ("keep", "buffer") if (Path(scans) / tree / rel).is_file()]
+    return found[0] if found else Path(scans) / "keep" / rel
 
 
 def read_linux(tesseract, tessdata, scan, language, work, psm=3, dpi=300):
@@ -215,8 +221,8 @@ def verify_engine(a, languages):
     if got not in bases:
         raise SystemExit(f"{a.tesseract} ({got}) is not a recorded Linux build's engine_base")
     locked = lock_hashes(a.models_lock)
-    for language in sorted(languages):
-        name = f"{language}.traineddata"
+    for model in sorted({m for language in languages for m in language.split("+")}):
+        name = f"{model}.traineddata"
         have = hashlib.sha256((Path(a.tessdata) / name).read_bytes()).hexdigest()
         if locked.get(name) != have:
             raise SystemExit(f"{a.tessdata}/{name} is not the locked model")
@@ -257,7 +263,10 @@ def run(a, now=None):
     picked = sample(pages, date, a.count)
     verify_engine(a, {p["language"] for p in picked if "invalid" not in p})
     with ThreadPoolExecutor(a.threads) as pool:
-        rows = list(pool.map(lambda p: check_page(p, a), picked))
+        new_rows = list(pool.map(lambda p: check_page(p, a), picked))
+    report_file = a.out_dir / f"crossbuild-{date}.json"
+    earlier = json.loads(report_file.read_text())["rows"] if report_file.exists() else []
+    rows = earlier + new_rows  # a rerun adds to the day's findings and never clears them
     measured = [r for r in rows if "cer" in r]
     flagged = [r for r in rows if r["flagged"]]
     consecutive, days = consecutive_days(state, date, bool(flagged))
@@ -281,7 +290,7 @@ def run(a, now=None):
     }
     (a.out_dir / f"crossbuild-{date}.json").write_text(json.dumps(report, indent=1) + "\n")
     state_file.write_text(json.dumps({"flagged_days": dict(sorted(days.items())[-30:]),
-                                       "checked_jobs": (state.get("checked_jobs", []) + [r["job"] for r in rows])[-20000:]}, indent=1) + "\n")
+                                       "checked_jobs": (state.get("checked_jobs", []) + [r["job"] for r in new_rows])[-20000:]}, indent=1) + "\n")
     line = summary_line(report)
     print(line)
     reportable = [r for r in rows if r["flagged"] or "invalid" in r]

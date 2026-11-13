@@ -222,8 +222,55 @@ class EndToEndTest(unittest.TestCase):
     def test_a_checked_job_is_not_sampled_again(self):
         self.add(1, "15", LINUX_TEXT[: len(LINUX_TEXT) // 3])
         self.assertEqual(X.run(self.args(), now=NOW), 3)
-        self.assertEqual(X.run(self.args(), now=NOW + 3600), 0)
+        self.assertEqual(X.run(self.args(), now=NOW + 3600), 3)  # the day's earlier finding stays
+        self.assertEqual(self.report()["summary"]["pages"], 1)  # and the job isn't read twice
+        self.assertEqual(X.run(self.args(), now=NOW + 25 * 3600), 0)
+        self.assertEqual(self.report("2026-11-15")["summary"]["pages"], 0)
+
+    def test_line_jobs_are_skipped(self):
+        job = self.add(1, "15", LINUX_TEXT)
+        f = self.handoff / "dispatch/jobs" / job / "request.json"
+        r = json.loads(f.read_text())
+        r["lines"] = [{"x": 1}]
+        f.write_text(json.dumps(r))
+        X.run(self.args(), now=NOW)
         self.assertEqual(self.report()["summary"]["pages"], 0)
+
+    def test_a_result_still_being_written_is_deferred(self):
+        job = self.add(1, "15", LINUX_TEXT)
+        (self.handoff / "spool" / job / "host_id").unlink()
+        X.run(self.args(), now=NOW)
+        self.assertEqual(self.report()["summary"]["pages"], 0)
+        (self.handoff / "spool" / job / "host_id").write_text("15\n")
+        X.run(self.args(), now=NOW + 60)
+        self.assertEqual(self.report()["summary"]["pages"], 1)
+
+    def test_scan_in_buffer_is_found(self):
+        self.add(1, "15", LINUX_TEXT)
+        keep = self.scans / "keep/b/sn1/1900-01-01/1/1.jp2"
+        (self.scans / "buffer/b/sn1/1900-01-01/1").mkdir(parents=True)
+        keep.rename(self.scans / "buffer/b/sn1/1900-01-01/1/1.jp2")
+        self.assertEqual(X.run(self.args(), now=NOW), 0)
+        self.assertEqual(self.report()["summary"]["pages"], 1)
+
+    def test_multi_model_profile_checks_each_model(self):
+        model = self.out.parent / "td"
+        (model / "deu.traineddata").write_bytes(b"d")
+        (model / "deu_latf.traineddata").write_bytes(b"l")
+        self.lock.write_text(self.lock.read_text() + "".join(
+            f"tessdata/{n}.traineddata http://x {hashlib.sha256(b).hexdigest()}\n"
+            for n, b in (("deu", b"d"), ("deu_latf", b"l"))))
+        X.verify_engine(self.args(), {"deu_latf+deu"})
+        (model / "deu.traineddata").write_bytes(b"x")
+        with self.assertRaises(SystemExit):
+            X.verify_engine(self.args(), {"deu_latf+deu"})
+
+    def test_rerun_keeps_the_days_flags(self):
+        self.add(1, "15", LINUX_TEXT[: len(LINUX_TEXT) // 3])
+        self.assertEqual(X.run(self.args(), now=NOW), 3)
+        self.assertEqual(X.run(self.args(), now=NOW + 60), 3)
+        r = self.report()
+        self.assertEqual((r["summary"]["pages"], r["summary"]["flagged"], r["consecutive_flag_days"]), (1, 1, 1))
 
     def test_missing_handoff_records_nothing(self):
         import shutil
