@@ -153,11 +153,15 @@ fn entries(fx: &Fx, files: &Files, register: bool) -> Vec<Value> {
         .enumerate()
         .map(|(i, (name, bytes))| {
             if register {
-                fx.output(name, bytes)
-            } else {
-                json!({"name": name, "open_name": null, "index": i,
-                       "md5": md5_hex(bytes), "nbytes": bytes.len()})
+                fx.mock
+                    .outputs
+                    .lock()
+                    .unwrap()
+                    .insert(name.clone(), bytes.clone());
             }
+            // The same entry either way: a call id belongs to its first request.
+            json!({"name": name, "open_name": null, "index": i,
+                   "md5": md5_hex(bytes), "nbytes": bytes.len()})
         })
         .collect()
 }
@@ -808,6 +812,8 @@ async fn ndlocr_matches_the_stock_check_and_compare() {
     assert_eq!(matches_of(&r), BTreeSet::from([(1, 10)]));
     // The stock ndlocr scripts leave no file; neither does this.
     assert!(!run.quality_dir().exists());
+    let d = named(App::Ndlocr, "d", nd_outputs(&text.replacen('日', "曰", 1)));
+    let e = named(App::Ndlocr, "e", nd_outputs(&text.replacen('語', "悟", 1)));
     // A fetch failure is a retry, with a verdict that is not stored: the same id runs again.
     let (_, r) = run
         .post(
@@ -815,7 +821,7 @@ async fn ndlocr_matches_the_stock_check_and_compare() {
             "check_set",
             2,
             None,
-            &[(11, &a), (12, &b)],
+            &[(11, &d), (12, &e)],
             false,
         )
         .await;
@@ -827,7 +833,7 @@ async fn ndlocr_matches_the_stock_check_and_compare() {
             "check_set",
             2,
             None,
-            &[(11, &a), (12, &b)],
+            &[(11, &d), (12, &e)],
         )
         .await;
     assert!(fx.mock.fetches.load(Ordering::SeqCst) > fetched);
@@ -837,7 +843,7 @@ async fn ndlocr_matches_the_stock_check_and_compare() {
             "check_set",
             2,
             None,
-            &[(11, &a), (12, &b)],
+            &[(11, &d), (12, &e)],
             true,
         )
         .await;
@@ -867,7 +873,14 @@ async fn the_file_rules_of_the_init_scripts_hold_for_both_apps() {
             &run.base,
             app.name(),
             Some("hook"),
-            &pbody("c1", app, "check_set", 1, None, results),
+            &pbody(
+                &format!("c-{}", app.name()),
+                app,
+                "check_set",
+                1,
+                None,
+                results,
+            ),
         )
         .await;
         assert_eq!(s, 200, "{reply}");
