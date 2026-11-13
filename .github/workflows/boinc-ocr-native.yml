@@ -3,7 +3,7 @@ name: boinc-ocr-native
 # tests; it publishes nothing. The artifact is what a release would stage and sign.
 # Each platform's Tesseract is 5.5.0 plus the upstream patches of boinc/apps/native/tesseract-patches.lock
 # (#1835). Each job also builds the stock 5.5.0 and compares the two builds' text and ALTO on one
-# runner (boinc/apps/native/compare-builds.py), and fails if a byte differs.
+# runner (boinc/scripts/compare-native-builds.py), and fails if a byte differs.
 on:
   workflow_dispatch:
   pull_request:
@@ -14,6 +14,7 @@ on:
       - boinc/scripts/smoke-native-ocr.ps1
       - scripts/ci/apt-base.sh
       - boinc/scripts/check-native-ocr-build.py
+      - boinc/scripts/compare-native-builds.py
       - boinc/scripts/install.py
       - boinc/images/appver/check_appver.py
       - ocr/engines/tesseract/models.lock
@@ -141,9 +142,9 @@ jobs:
           mkdir stock
           docker run --rm --network=none usnm-tesseract-native-stock cat /out/usnm_tesseract > stock/usnm_tesseract
           chmod +x stock/usnm_tesseract
-          python3 boinc/apps/native/compare-builds.py --tessdata tessdata --images \
+          python3 boinc/scripts/compare-native-builds.py --tessdata tessdata --images \
             web/public/og-image.png crates/usnm-ocr-dash/assets/og.png docs/images/ocr-dash-step-throughput.png \
-            docs/design/images/legacy-ui-local-render.png ocr/ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg \
+            docs/design/images/legacy-ui-local-render.png \
             crates/usnm-boinc/tests/fixtures/line-60x40.jp2 --old stock/usnm_tesseract --new build/usnm_tesseract
       - name: Make the build manifest
         # bash -eo pipefail, so tee doesn't hide a failure.
@@ -254,9 +255,9 @@ jobs:
       - name: Build the stock Tesseract and compare it with the patched build
         run: |
           boinc/apps/native/build-tesseract-macos.sh --no-patches --out engine-stock --work "$RUNNER_TEMP/tesseract-stock"
-          python3 boinc/apps/native/compare-builds.py --tessdata tessdata --images \
+          python3 boinc/scripts/compare-native-builds.py --tessdata tessdata --images \
             web/public/og-image.png crates/usnm-ocr-dash/assets/og.png docs/images/ocr-dash-step-throughput.png \
-            docs/design/images/legacy-ui-local-render.png ocr/ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg \
+            docs/design/images/legacy-ui-local-render.png \
             crates/usnm-boinc/tests/fixtures/line-60x40.jp2 --old engine-stock/usnm_tesseract --new build/usnm_tesseract
       - name: Make the build manifest
         shell: bash
@@ -368,9 +369,9 @@ jobs:
         shell: pwsh
         run: |
           boinc/apps/native/build-tesseract-windows.ps1 -NoPatches -Out engine-stock -Work "$env:RUNNER_TEMP\tesseract-stock"
-          python boinc/apps/native/compare-builds.py --tessdata tessdata --images `
+          python boinc/scripts/compare-native-builds.py --tessdata tessdata --images `
             web/public/og-image.png crates/usnm-ocr-dash/assets/og.png docs/images/ocr-dash-step-throughput.png `
-            docs/design/images/legacy-ui-local-render.png ocr/ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg `
+            docs/design/images/legacy-ui-local-render.png `
             crates/usnm-boinc/tests/fixtures/line-60x40.jp2 --old engine-stock/usnm_tesseract.exe --new engine/usnm_tesseract.exe
           if ($LASTEXITCODE -ne 0) { throw 'the patched and stock builds differ' }
       # The build directory holds each file by its open name, with no extension: the manifest is

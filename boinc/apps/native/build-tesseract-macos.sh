@@ -93,7 +93,7 @@ done
 # The upstream patches, in the lock's order: every file in patches/ must be in the lock with its
 # sha256, and every line of the lock must have its file.
 if [ "$patches" = 1 ]; then
-  [ "$(grep -v '^#' "$here/tesseract-patches.lock" | awk 'NF {print $1}')" = "$(ls "$here/patches")" ] ||
+  [ "$(grep -v '^#' "$here/tesseract-patches.lock" | cut -d' ' -f1)" = "$(ls "$here/patches")" ] ||
     { echo "patches/ and tesseract-patches.lock list different files" >&2; exit 1; }
   grep -v '^#' "$here/tesseract-patches.lock" | while read -r file commit sum; do
     [ -n "$file" ] || continue
