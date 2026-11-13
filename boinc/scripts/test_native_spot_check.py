@@ -518,6 +518,44 @@ class SpotStepLockTests(unittest.TestCase):
         self.tick()
         self.assertTrue(any(":300:" in submit for submit, _ in self.fake.spot_calls))
 
+    def test_a_queued_replay_waits_while_its_peer_is_away(self):
+        self.tick()
+        self.results_in()
+        self.fake.lock_held = True
+        self.tick()
+        queued = dict(self.state["native_spot"]["pending"])
+        self.assertEqual(len(queued), 2)
+        # Host 240 stops asking for work while the lock is busy: its replay isn't made.
+        self.fake.lock_held = False
+        self.fake.cpus = {13: 24}
+        self.tick(NOW + 600)
+        (submit, _), = self.fake.spot_calls
+        self.assertEqual([item.split("=")[1].split(":")[1] for item in submit.split(",")], ["13"])
+        waiting = [job for job, entry in self.state["native_spot"]["pending"].items() if entry["stage"] == "queued"]
+        self.assertEqual(len(waiting), 1)
+        self.assertEqual(queued[waiting[0]]["target"], 240)
+
+    def test_no_replay_is_made_while_the_plan_is_paused(self):
+        self.tick()
+        self.results_in()
+        self.state["native_paused"] = {"at": NOW, "reason": "test", "jobs": []}
+        self.tick()
+        self.assertEqual([submit for submit, _ in self.fake.spot_calls if submit], [])
+
+    def test_an_unexpected_error_ends_a_run_of_skips(self):
+        self.tick()
+        self.results_in()
+        self.fake.lock_held = True
+        self.tick()
+        self.assertIn("lock_busy", self.state["native_spot"])
+
+        def broken(submit, check):
+            raise TypeError("unexpected report")
+
+        self.fake.native_spot = broken
+        self.tick(NOW + 60)
+        self.assertNotIn("lock_busy", self.state["native_spot"])
+
     def test_replay_room_counts_the_units_this_tick_submitted(self):
         self.tick()
         self.results_in()

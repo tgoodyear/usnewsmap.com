@@ -2990,7 +2990,7 @@ def _spot_item(job_id, entry, spool):
     return item + (f":{entry['spool']}" if spool else "")
 
 
-def native_spot_step(config, state, transport, now, submit_room=100):
+def native_spot_step(config, state, transport, now, submit_room=100, active=None):
     """Run the bridge's native-spot step for the queued replays and the submitted ones, and act on
     what it reports: a match refreshes the host's checks and settles its unchecked pages up to
     that one; a mismatch holds both hosts (here and, already, in trust.json) with the pages each
@@ -3013,7 +3013,11 @@ def native_spot_step(config, state, transport, now, submit_room=100):
         if entry["stage"] == "queued" and now - entry["at"] > NATIVE_SPOT_MAX_AGE:
             expire(job_id)
     # `submit_room` new replay units at most: none while draining, and none past the global cap.
-    queued = [(j, e) for j, e in pending.items() if e["stage"] == "queued"][:max(0, min(100, submit_room))]
+    # Only for a peer the inventory sees asking for work (`active`; None: not known): a unit
+    # assigned to a host that has gone away is never sent (#1919). The others stay queued until
+    # their peer is back or they are given up at NATIVE_SPOT_MAX_AGE.
+    queued = [(j, e) for j, e in pending.items() if e["stage"] == "queued"
+              and (active is None or e["target"] in active)][:max(0, min(100, submit_room))]
     # The 100 least recently polled, so every replay is looked at in turn, however many are out.
     submitted = sorted(((j, e) for j, e in pending.items() if e["stage"] == "submitted"),
                        key=lambda item: (item[1].get("polled", 0), item[0]))[:100]
@@ -3714,16 +3718,20 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # short wait and is skipped for this tick when the lock stays held. What it finds (a
         # mismatch, a failing step, a match) sets the hosts' room from the next tick on. A
         # replay is a workunit like any other: none while draining, none past the global cap,
-        # counting the units this tick just submitted.
+        # counting the units this tick just submitted, and none while the plan is paused: a
+        # failed native submit may have made units `submitted` doesn't count. Comparisons go on.
         spot_cap = max_global_pending if max_global_pending is not None else config.get("max_global_pending")
-        spot_room = 0 if drain else (100 if spot_cap is None
-                                     else spot_cap - snapshot["pending_workunits"] - submitted)
+        spot_room = 0 if drain or state.get("native_paused") else (
+            100 if spot_cap is None else spot_cap - snapshot["pending_workunits"] - submitted)
         try:
-            spot_step = native_spot_step(config, state, transport, now, submit_room=spot_room)
+            spot_step = native_spot_step(config, state, transport, now, submit_room=spot_room,
+                                         active=spot_active)
         except Exception as error:
             # The tick's submit is done: whatever went wrong here is the spot check's, recorded
             # and alerted on as a failing step, and the tick goes on to report.
-            _spot(state)["failing"] = {"at": int(now), "reason": f"{type(error).__name__}: {error}"[:500]}
+            spot = _spot(state)
+            spot.pop("lock_busy", None)
+            spot["failing"] = {"at": int(now), "reason": f"{type(error).__name__}: {error}"[:500]}
             spot_step = "failed"
         persist()
         native_slots = native_spot_slots(config, state, native_room, now, spot_active)
