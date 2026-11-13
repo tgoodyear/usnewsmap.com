@@ -10,7 +10,8 @@ Issue [#1835](https://github.com/tgoodyear/usnewsmap.com/issues/1835), steps 1 t
 - **ALTO changes in every class.** The version moved to its own element on all 63 files, 5.5.0's confidence formatting is gone, and paragraph and block counts differ on 34 of 63 files.
 - **5.5.4 is faster on dense English pages**, by about a third on the densest: see [Timing](#timing).
 - **Our ALTO readers take 5.5.4's ALTO.** Their tests pass unchanged, and all 63 real 5.5.4 files parse, rewrite and parse again.
-- **Re-calibration is needed.** Gold results and host trust bind to builds, and the output differs, so the upgrade needs a new challenge run and new parity runs, as the issue's later steps say.
+- **5.5.0 with the two speed patches and the crash fix reads identically to 5.5.0.** On all 63 items text is identical and ALTO is identical apart from one `WC` digit on two items that stock 5.5.0 shows on the same host; the patches carry part of 5.5.4's speed gain. See [5.5.0 with patches](#550-with-patches).
+- **Re-calibration is needed for 5.5.4 as it is.** Gold results and host trust bind to builds, and the output differs, so the upgrade needs a new challenge run and new parity runs, as the issue's later steps say.
 
 ## Build
 
@@ -21,6 +22,7 @@ New files, all outside the default build:
 | `boinc/apps/native/tesseract-upstream.lock` | Version, tarball URL, commit and sha256 for 5.5.0 to 5.5.4, the same discipline as `macos-sources.lock`. |
 | `boinc/apps/native/Containerfile.upstream` | Builds `usnm_tesseract` from a locked tarball. It starts from the default Containerfile's `apt-native` stage, so Leptonica, the image libraries, the compiler and every other package are the same. |
 | `boinc/scripts/build-native-tesseract-upstream.sh` | `--version 5.5.4 --out FILE`: builds the `apt-native` stage, then `Containerfile.upstream`. `--network host` is for build hosts where podman's default network doesn't start. `--main-std c++20` is for 5.5.3 only: its headers don't compile as C++17 (5.5.4 fixes that), so `main()` is compiled as C++20 for that one release. |
+| `boinc/apps/native/Containerfile.patched`, `patches/` | 5.5.0 from Debian's source plus upstream patches, opt-in with `--patches`: see [5.5.0 with patches](#550-with-patches). |
 | `boinc/scripts/bisect-tesseract-step.sh`, `bisect-tesseract-test.sh` | One command per step of a `git bisect` over upstream commits: build the commit in a persistent tree inside the same base image, read a set of pages, compare a signature of one page with a reference. [Why the output differs](#why-the-output-differs) uses them. |
 
 The recipe deletes Debian's `libtesseract` and its headers, then builds `libtesseract.a` from the tarball with Debian's `debian/rules` options: `--disable-tessdata-prefix`, hardening `+all`, `-g -fPIC`, the `TESSDATA_PREFIX` define, and `-lleptonica -Wl,-z,defs` in `LDFLAGS`. `main()` is compiled and the binary is linked exactly as in the default Containerfile, with the same `stubs.c`. The tarball is checked against its sha256 and against the commit in its tar header.
@@ -217,6 +219,81 @@ How far to trust it:
 - **The multi-language profile.** `deu_latf+deu` shows no clear gain on the two pages run three times. The densest `deu_latf+deu` page, `cg-008-latf` (319 and 323 paragraphs), was read once by each: 990.6 s for 5.5.0 and 684.1 s for 5.5.4 (0.69). One read each is not a measurement of spread. Its three-run timing was stopped because it would have taken hours at this load.
 - **Sample.** 11 pages with three runs each, plus one with one. The densest pages gain the most (0.62 to 0.69 for the pages with 250 or more paragraphs), the sparse ones nothing measurable. A rate on a volunteer's CPU would also depend on the code path its CPU picks.
 
+## 5.5.0 with patches
+
+The maintainer decided not to take 5.5.4 as it is and asked for 5.5.0 plus only the useful fixes. `boinc/apps/native/Containerfile.patched` builds that: the Debian 5.5.0 source the default build already unpacks (with Debian's help-text patch), the patches below applied in order, `libtesseract.a` built from it with the flags of `Containerfile.upstream`, and `main()` and the link exactly as in the default build. The version stays 5.5.0. It is opt-in: `build-native-tesseract-upstream.sh --patches "FILE FILE..." --out FILE`, and the script refuses a patch whose sha256 isn't in `tesseract-upstream.lock`. The default build is unchanged.
+
+| Patch | Upstream | What it does |
+| --- | --- | --- |
+| `0001-avoid-quadratic-paragraph-restart-scan-4599.patch` | `2cd9955e` (#4599) | `PageIterator::RestartParagraph()` found the current paragraph by calling `PAGE_RES_IT::cmp()` at every paragraph, which searches the page each time. It now compares block and paragraph pointers, so the scan is linear. |
+| `0002-avoid-redundant-result-iterator-restarts-4601.patch` | `fb87a84b` (#4601) | `ResultIterator` skips paragraph and text-line restarts when the iterator is already at the start, and detects a new paragraph with `IsAtBeginningOf(RIL_PARA)`. |
+| `0003-fix-use-after-free-in-replacecurrentword-4667.patch` | `a95faa00` (#4667) | With several languages, `ReplaceCurrentWord` could keep a word that shared the input word's `WERD` and then free it. The word now gets its own `WERD`. |
+| `0004-fix-position-dependent-paragraph-bounding-box-4632.patch` | `3dc583fa` (#4632) | Not part of the build above. Builds the paragraph box from the union of its rows' full boxes instead of seeding it from the current row's restricted box. |
+
+Each is the `src/` part of the upstream commit; the unit tests are left out. The random number generator change and the list-class rewrite of 5.5.1 are not included. All four apply cleanly to the upstream 5.5.0 tag with `git apply --check`, alone and together (0001 to 0003, and 0001 to 0004), and to Debian's source inside the build, so the macOS and Windows builds can take the same files.
+
+**Patch 0004.** #4599 added a test that visits every word, restarts a copy of the iterator and compares the paragraph box, and that test exposed the position dependence #4632 fixes. Our output doesn't need it: the 63-item check below is byte-identical without it. Including it changes ALTO: between 5.5.3 and 5.5.4, where #4632 and the `WC` fix arrive together, the small set had 3 of 60, 1 of 32 and 2 of 42 paragraph boxes change, nothing else but the `WC` text. 0004 was not built here.
+
+### Output
+
+`tess-p123` (patches 0001 to 0003) was compared with stock 5.5.0, text and ALTO, byte for byte, on all 63 items of the first comparison, run one at a time.
+
+| Items | Text identical | ALTO identical |
+| --- | ---: | ---: |
+| 30 challenge crops | 30 | 30 |
+| 33 pages | 33 | 31 |
+| All 63 | 63 | 61 |
+
+The two ALTO differences are `cg-004-frak` and `cg-008-latf`. Each is one word's `WC` (0.11 against 0.10, one word of 605 and one of 9,399) and nothing else. They are not a patch effect: the references were made on another host, and stock 5.5.0 run on the host that ran the check gives the same bytes as `tess-p123` on that host for both items. The check host's CPU has AVX-512, and I did not look at the first host's; the native build's documentation already says output can differ across CPUs. On that host stock 5.5.0 also reproduced the earlier stock text and ALTO exactly on crop 046. So patched 5.5.0 and stock 5.5.0 give the same text and ALTO on all 63 items, with the version string still 5.5.0.
+
+### Speed
+
+User CPU seconds (`getrusage`, not wall time), `OMP_THREAD_LIMIT=1`, one tesseract process at a time, niced, on the second host. Three passes over seven pages, each pass running the three builds back to back for each page, with the order rotated between passes. The page set is the earlier timing set without `carson-05` and `cg-001-frak`. Stock 5.5.0 is the Debian-static build, "patched" is 5.5.0 with patches 0001 to 0003, and 5.5.4 is the upstream-source build.
+
+| Profile | Page | Paragraphs 5.5.0 / 5.5.4 | 5.5.0 median (min-max) | patched median (min-max) | 5.5.4 median (min-max) |
+|---|---|---|---|---|---|
+| eng | asgold-006 | 333 / 303 | 173.4 (99.9-251.3) | 183.8 (81.3-244.6) | 101.6 (78.4-144.1) |
+| eng | asgold-001 | 152 / 180 | 37.7 (33.0-55.9) | 31.9 (30.0-40.8) | 33.9 (28.3-48.1) |
+| frak2021 | cg-008-frak | 348 / 318 | 194.7 (139.8-261.8) | 144.5 (117.8-249.7) | 170.6 (121.4-175.3) |
+| frak2021 | cg-005-frak | 154 / 156 | 20.6 (18.6-21.7) | 17.3 (15.9-18.3) | 16.2 (14.9-56.3) |
+| frak2021 | cg-011-frak | 101 / 92 | 35.8 (31.8-53.4) | 28.6 (26.6-32.4) | 27.1 (23.7-28.1) |
+| deu_latf+deu | cg-005-latf | 152 / 154 | 51.3 (46.6-55.7) | 47.4 (45.3-113.7) | 48.5 (43.0-65.2) |
+| deu_latf+deu | cg-001-latf | 107 / 98 | 31.8 (30.0-36.1) | 30.3 (28.1-35.6) | 29.4 (27.4-34.0) |
+
+How much of 5.5.4's gain the two patches carry:
+
+- Paired within a pass, patched takes 0.91 of stock's CPU (median of 21 page-and-pass pairs) and 5.5.4 takes 0.86. By profile: `eng` 0.88 and 0.82, `frak2021` 0.84 and 0.76, `deu_latf+deu` 0.96 and 0.93.
+- Summed over all 21 runs of each build: stock 1,681 s, patched 1,564 s (0.93), 5.5.4 1,315 s (0.78).
+- So the two patches carry some of the gain: roughly a third to two thirds of it, depending on the measure. They are not the whole of it. On the densest English page, `asgold-006`, 5.5.4 is clearly faster (0.57, 0.59 and 0.78 of stock in the three passes) and the patched build is 0.97, 1.06 and 0.81.
+- The earlier timing on the first host showed 5.5.4 at 0.62 to 0.69 of stock on dense pages; the gain here is smaller. The rest of 5.5.4's gain comes from other changes between 5.5.0 and 5.5.4; which ones was not measured. The patched build has the same paragraph counts as stock.
+
+How far to trust it: the host runs other work, and the same build on the same page varies by up to 2.5 times (`asgold-006`, stock: 99.9 to 251.3 s; `cg-008-frak`, stock: 139.8 to 261.8 s). Interleaving and pairing cancel some of that, not all. Ratios within about 10% of 1 (`cg-001-latf`, `cg-005-latf`) are inside the noise, and one run of each of `cg-005-frak` (5.5.4, 56 s against a median of 16) and `cg-005-latf` (patched, 114 s against a median of 47) is an outlier. Three runs per page is a small sample. A quiet host would give cleaner numbers.
+
+### Safety
+
+The use-after-free fix (0003) is in the build, but it was not exercised: no memory-checker run was done on this host. Whether the bug fires on our pages and whether the patch clears it is not known. A stock-5.5.0 AddressSanitizer build on `deu_latf+deu` pages was started earlier on another host: its first two pages (`cg-001`, `cg-002`) ran clean, and it was stopped when that host hung. `srp+srp_latn` has no data here.
+
+### Other fixes in 5.5.3 and 5.5.4
+
+From the release notes and commit log, fixes that need no crafted model file and touch code we run. Named only, none backported:
+
+- #4630: float overflow for unclassified-word certainty (the SIGFPE in the command-line tool). It changes the certainty of such words, so output changes.
+- #4655: leak of orphaned outline cycles in `EliminateDuplicateOutlines` (layout).
+- #4656 and #4659: seam search budgets in `wordrec`, against timeouts on degenerate input.
+- #4652: input names escaped in ALTO (`altorenderer.cpp`).
+- #4616: the `WC` formatting fix (output changes; see above).
+- #4622: a leak in `baseapi.cpp`.
+- #4598: recursive static initialization in `SIMDDetect::GetDetector()`.
+- The Coverity batches (#4597, #4606, #4611): uninitialized values, integer overflows and one out-of-bounds read in `recodebeam.cpp`, `paragraphs.cpp`, `fpchop.cpp`, `adaptmatch.cpp` and others.
+
+Left out because they need a crafted model or a different output: #4588, #4609, #4617, the `.traineddata` deserialization checks (#4581, #4639 to #4645, #4649, #4657), and #4647 (PAGE XML).
+
+### Adopting it
+
+If the output is identical, as here, adoption needs new build digests and new app versions, but no re-calibration: the text and ALTO bytes match stock 5.5.0 (apart from the host-CPU `WC` effect stock 5.5.0 already has), so the calibrated challenge, gold results and host trust stay valid. What it does need: a `usnm_tesseract` built through `Containerfile.patched` for each platform (the macOS and Windows builds apply the same patch files to upstream 5.5.0), the engine image rebuilt, the manifest digest and app versions changed as for any new build, and the parity run repeated for the new build as the native-OCR rollout already requires. The engine still reports 5.5.0, so the version-string checks pass.
+
+What was not tested: the crash fix, a second CPU for the patched build, single-patch builds, patch 0004, and the macOS and Windows builds themselves (only `git apply --check` on the upstream tag).
+
 ## What this means for the issue
 
 - Step 1 (build) and step 2 (compare) are done for the profiles and sets above; step 3 (time) is done with the limits above. Nothing in the issue body is ticked.
@@ -236,7 +313,7 @@ boinc/scripts/compare-tesseract-builds.sh --old usnm_tesseract_5.5.0 --new usnm_
   --tessdata tessdata --pages pages.tsv --out compare --compare-tool tesseract-compare
 ```
 
-`tessdata` holds the locked models by their open names (`eng.traineddata`) and `configs/alto` and `configs/txt`, as `crates/usnm-boinc/src/native.rs` lays them out. `pages.tsv` is one tab-separated line per page: id, image path, profile, reference text path or `-`, repetitions. `compare.jsonl` and `runs.tsv` in the output directory hold the per-file comparison and every run's CPU time. The per-file results behind this report are in [2026-11-12-tesseract-554-compare.json](../../notes/2026-11-12-tesseract-554-compare.json).
+`tessdata` holds the locked models by their open names (`eng.traineddata`) and `configs/alto` and `configs/txt`, as `crates/usnm-boinc/src/native.rs` lays them out. `pages.tsv` is one tab-separated line per page: id, image path, profile, reference text path or `-`, repetitions. `compare.jsonl` and `runs.tsv` in the output directory hold the per-file comparison and every run's CPU time. The per-file results behind this report are in [2026-11-12-tesseract-554-compare.json](../../notes/2026-11-12-tesseract-554-compare.json), and the patched-build results in [2026-11-13-tesseract-550-patched-compare.json](../../notes/2026-11-13-tesseract-550-patched-compare.json).
 
 ## Per-file results
 

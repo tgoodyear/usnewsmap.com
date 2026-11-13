@@ -1,0 +1,889 @@
+{
+ "identity_vs_stock_5_5_0": [
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-022",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-046",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-049",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-052",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-056",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-101",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-113",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-136",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-168",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-169",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-193",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-196",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-216",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-225",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-237",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-278",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-301",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-342",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-357",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-396",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-401",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-426",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-443",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-446",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-462",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-491",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-524",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-552",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-584",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "pub-bln600-599",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "asgold-001",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "asgold-002",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "asgold-003",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "asgold-004",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "asgold-005",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "asgold-006",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "carson-01",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "carson-02",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "carson-03",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "carson-04",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "carson-05",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "carson-06",
+   "profile": "eng",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-001-frak",
+   "profile": "frak2021",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-002-frak",
+   "profile": "frak2021",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-003-frak",
+   "profile": "frak2021",
+   "text_identical": true
+  },
+  {
+   "alto_identical": false,
+   "item": "cg-004-frak",
+   "profile": "frak2021",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-005-frak",
+   "profile": "frak2021",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-006-frak",
+   "profile": "frak2021",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-007-frak",
+   "profile": "frak2021",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-008-frak",
+   "profile": "frak2021",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-009-frak",
+   "profile": "frak2021",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-010-frak",
+   "profile": "frak2021",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-011-frak",
+   "profile": "frak2021",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-012-frak",
+   "profile": "frak2021",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-013-frak",
+   "profile": "frak2021",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-001-latf",
+   "profile": "deu_latf+deu",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-002-latf",
+   "profile": "deu_latf+deu",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-003-latf",
+   "profile": "deu_latf+deu",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-004-latf",
+   "profile": "deu_latf+deu",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-005-latf",
+   "profile": "deu_latf+deu",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-006-latf",
+   "profile": "deu_latf+deu",
+   "text_identical": true
+  },
+  {
+   "alto_identical": true,
+   "item": "cg-007-latf",
+   "profile": "deu_latf+deu",
+   "text_identical": true
+  },
+  {
+   "alto_identical": false,
+   "item": "cg-008-latf",
+   "profile": "deu_latf+deu",
+   "text_identical": true
+  }
+ ],
+ "note": "two ALTO differences (cg-004-frak, cg-008-latf) are one WC digit; stock 5.5.0 on the same host is byte-identical to the patched build for both",
+ "timing_runs": [
+  {
+   "page": "asgold-006",
+   "paragraphs": 333,
+   "profile": "eng",
+   "sys_s": 1.578,
+   "user_s": 251.307,
+   "version": "5.5.0"
+  },
+  {
+   "page": "asgold-006",
+   "paragraphs": 333,
+   "profile": "eng",
+   "sys_s": 2.312,
+   "user_s": 244.56,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "asgold-006",
+   "paragraphs": 303,
+   "profile": "eng",
+   "sys_s": 1.496,
+   "user_s": 144.052,
+   "version": "5.5.4"
+  },
+  {
+   "page": "asgold-001",
+   "paragraphs": 152,
+   "profile": "eng",
+   "sys_s": 0.453,
+   "user_s": 55.933,
+   "version": "5.5.0"
+  },
+  {
+   "page": "asgold-001",
+   "paragraphs": 152,
+   "profile": "eng",
+   "sys_s": 0.396,
+   "user_s": 40.84,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "asgold-001",
+   "paragraphs": 180,
+   "profile": "eng",
+   "sys_s": 0.435,
+   "user_s": 48.118,
+   "version": "5.5.4"
+  },
+  {
+   "page": "cg-008-frak",
+   "paragraphs": 348,
+   "profile": "frak2021",
+   "sys_s": 1.864,
+   "user_s": 261.77,
+   "version": "5.5.0"
+  },
+  {
+   "page": "cg-008-frak",
+   "paragraphs": 348,
+   "profile": "frak2021",
+   "sys_s": 1.092,
+   "user_s": 249.72,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "cg-008-frak",
+   "paragraphs": 318,
+   "profile": "frak2021",
+   "sys_s": 1.128,
+   "user_s": 170.577,
+   "version": "5.5.4"
+  },
+  {
+   "page": "cg-005-frak",
+   "paragraphs": 154,
+   "profile": "frak2021",
+   "sys_s": 0.229,
+   "user_s": 21.699,
+   "version": "5.5.0"
+  },
+  {
+   "page": "cg-005-frak",
+   "paragraphs": 154,
+   "profile": "frak2021",
+   "sys_s": 0.225,
+   "user_s": 18.3,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "cg-005-frak",
+   "paragraphs": 156,
+   "profile": "frak2021",
+   "sys_s": 2.303,
+   "user_s": 56.292,
+   "version": "5.5.4"
+  },
+  {
+   "page": "cg-011-frak",
+   "paragraphs": 101,
+   "profile": "frak2021",
+   "sys_s": 0.397,
+   "user_s": 53.434,
+   "version": "5.5.0"
+  },
+  {
+   "page": "cg-011-frak",
+   "paragraphs": 101,
+   "profile": "frak2021",
+   "sys_s": 0.305,
+   "user_s": 32.372,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "cg-011-frak",
+   "paragraphs": 92,
+   "profile": "frak2021",
+   "sys_s": 0.306,
+   "user_s": 28.061,
+   "version": "5.5.4"
+  },
+  {
+   "page": "cg-005-latf",
+   "paragraphs": 152,
+   "profile": "deu_latf+deu",
+   "sys_s": 0.573,
+   "user_s": 55.741,
+   "version": "5.5.0"
+  },
+  {
+   "page": "cg-005-latf",
+   "paragraphs": 152,
+   "profile": "deu_latf+deu",
+   "sys_s": 1.398,
+   "user_s": 113.685,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "cg-005-latf",
+   "paragraphs": 154,
+   "profile": "deu_latf+deu",
+   "sys_s": 0.734,
+   "user_s": 65.184,
+   "version": "5.5.4"
+  },
+  {
+   "page": "cg-001-latf",
+   "paragraphs": 107,
+   "profile": "deu_latf+deu",
+   "sys_s": 0.448,
+   "user_s": 36.116,
+   "version": "5.5.0"
+  },
+  {
+   "page": "cg-001-latf",
+   "paragraphs": 107,
+   "profile": "deu_latf+deu",
+   "sys_s": 0.406,
+   "user_s": 35.629,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "cg-001-latf",
+   "paragraphs": 98,
+   "profile": "deu_latf+deu",
+   "sys_s": 0.44,
+   "user_s": 34.024,
+   "version": "5.5.4"
+  },
+  {
+   "page": "asgold-006",
+   "paragraphs": 333,
+   "profile": "eng",
+   "sys_s": 0.955,
+   "user_s": 183.791,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "asgold-006",
+   "paragraphs": 303,
+   "profile": "eng",
+   "sys_s": 0.881,
+   "user_s": 101.578,
+   "version": "5.5.4"
+  },
+  {
+   "page": "asgold-006",
+   "paragraphs": 333,
+   "profile": "eng",
+   "sys_s": 1.3,
+   "user_s": 173.361,
+   "version": "5.5.0"
+  },
+  {
+   "page": "asgold-001",
+   "paragraphs": 152,
+   "profile": "eng",
+   "sys_s": 0.311,
+   "user_s": 31.905,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "asgold-001",
+   "paragraphs": 180,
+   "profile": "eng",
+   "sys_s": 0.328,
+   "user_s": 33.893,
+   "version": "5.5.4"
+  },
+  {
+   "page": "asgold-001",
+   "paragraphs": 152,
+   "profile": "eng",
+   "sys_s": 0.302,
+   "user_s": 37.706,
+   "version": "5.5.0"
+  },
+  {
+   "page": "cg-008-frak",
+   "paragraphs": 348,
+   "profile": "frak2021",
+   "sys_s": 0.698,
+   "user_s": 144.497,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "cg-008-frak",
+   "paragraphs": 318,
+   "profile": "frak2021",
+   "sys_s": 1.151,
+   "user_s": 175.322,
+   "version": "5.5.4"
+  },
+  {
+   "page": "cg-008-frak",
+   "paragraphs": 348,
+   "profile": "frak2021",
+   "sys_s": 0.665,
+   "user_s": 139.8,
+   "version": "5.5.0"
+  },
+  {
+   "page": "cg-005-frak",
+   "paragraphs": 154,
+   "profile": "frak2021",
+   "sys_s": 0.188,
+   "user_s": 15.904,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "cg-005-frak",
+   "paragraphs": 156,
+   "profile": "frak2021",
+   "sys_s": 0.177,
+   "user_s": 14.86,
+   "version": "5.5.4"
+  },
+  {
+   "page": "cg-005-frak",
+   "paragraphs": 154,
+   "profile": "frak2021",
+   "sys_s": 0.185,
+   "user_s": 18.565,
+   "version": "5.5.0"
+  },
+  {
+   "page": "cg-011-frak",
+   "paragraphs": 101,
+   "profile": "frak2021",
+   "sys_s": 0.246,
+   "user_s": 26.561,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "cg-011-frak",
+   "paragraphs": 92,
+   "profile": "frak2021",
+   "sys_s": 0.253,
+   "user_s": 23.725,
+   "version": "5.5.4"
+  },
+  {
+   "page": "cg-011-frak",
+   "paragraphs": 101,
+   "profile": "frak2021",
+   "sys_s": 0.242,
+   "user_s": 31.819,
+   "version": "5.5.0"
+  },
+  {
+   "page": "cg-005-latf",
+   "paragraphs": 152,
+   "profile": "deu_latf+deu",
+   "sys_s": 0.499,
+   "user_s": 45.348,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "cg-005-latf",
+   "paragraphs": 154,
+   "profile": "deu_latf+deu",
+   "sys_s": 0.494,
+   "user_s": 43.029,
+   "version": "5.5.4"
+  },
+  {
+   "page": "cg-005-latf",
+   "paragraphs": 152,
+   "profile": "deu_latf+deu",
+   "sys_s": 0.53,
+   "user_s": 46.649,
+   "version": "5.5.0"
+  },
+  {
+   "page": "cg-001-latf",
+   "paragraphs": 107,
+   "profile": "deu_latf+deu",
+   "sys_s": 0.347,
+   "user_s": 28.068,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "cg-001-latf",
+   "paragraphs": 98,
+   "profile": "deu_latf+deu",
+   "sys_s": 0.345,
+   "user_s": 27.378,
+   "version": "5.5.4"
+  },
+  {
+   "page": "cg-001-latf",
+   "paragraphs": 107,
+   "profile": "deu_latf+deu",
+   "sys_s": 0.365,
+   "user_s": 29.965,
+   "version": "5.5.0"
+  },
+  {
+   "page": "asgold-006",
+   "paragraphs": 303,
+   "profile": "eng",
+   "sys_s": 0.691,
+   "user_s": 78.378,
+   "version": "5.5.4"
+  },
+  {
+   "page": "asgold-006",
+   "paragraphs": 333,
+   "profile": "eng",
+   "sys_s": 0.749,
+   "user_s": 99.868,
+   "version": "5.5.0"
+  },
+  {
+   "page": "asgold-006",
+   "paragraphs": 333,
+   "profile": "eng",
+   "sys_s": 0.748,
+   "user_s": 81.324,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "asgold-001",
+   "paragraphs": 180,
+   "profile": "eng",
+   "sys_s": 0.272,
+   "user_s": 28.275,
+   "version": "5.5.4"
+  },
+  {
+   "page": "asgold-001",
+   "paragraphs": 152,
+   "profile": "eng",
+   "sys_s": 0.306,
+   "user_s": 32.97,
+   "version": "5.5.0"
+  },
+  {
+   "page": "asgold-001",
+   "paragraphs": 152,
+   "profile": "eng",
+   "sys_s": 0.309,
+   "user_s": 29.968,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "cg-008-frak",
+   "paragraphs": 318,
+   "profile": "frak2021",
+   "sys_s": 0.611,
+   "user_s": 121.351,
+   "version": "5.5.4"
+  },
+  {
+   "page": "cg-008-frak",
+   "paragraphs": 348,
+   "profile": "frak2021",
+   "sys_s": 0.724,
+   "user_s": 194.716,
+   "version": "5.5.0"
+  },
+  {
+   "page": "cg-008-frak",
+   "paragraphs": 348,
+   "profile": "frak2021",
+   "sys_s": 0.753,
+   "user_s": 117.77,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "cg-005-frak",
+   "paragraphs": 156,
+   "profile": "frak2021",
+   "sys_s": 0.22,
+   "user_s": 16.24,
+   "version": "5.5.4"
+  },
+  {
+   "page": "cg-005-frak",
+   "paragraphs": 154,
+   "profile": "frak2021",
+   "sys_s": 0.208,
+   "user_s": 20.633,
+   "version": "5.5.0"
+  },
+  {
+   "page": "cg-005-frak",
+   "paragraphs": 154,
+   "profile": "frak2021",
+   "sys_s": 0.215,
+   "user_s": 17.27,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "cg-011-frak",
+   "paragraphs": 92,
+   "profile": "frak2021",
+   "sys_s": 0.303,
+   "user_s": 27.059,
+   "version": "5.5.4"
+  },
+  {
+   "page": "cg-011-frak",
+   "paragraphs": 101,
+   "profile": "frak2021",
+   "sys_s": 0.281,
+   "user_s": 35.838,
+   "version": "5.5.0"
+  },
+  {
+   "page": "cg-011-frak",
+   "paragraphs": 101,
+   "profile": "frak2021",
+   "sys_s": 0.271,
+   "user_s": 28.595,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "cg-005-latf",
+   "paragraphs": 154,
+   "profile": "deu_latf+deu",
+   "sys_s": 0.629,
+   "user_s": 48.498,
+   "version": "5.5.4"
+  },
+  {
+   "page": "cg-005-latf",
+   "paragraphs": 152,
+   "profile": "deu_latf+deu",
+   "sys_s": 0.576,
+   "user_s": 51.311,
+   "version": "5.5.0"
+  },
+  {
+   "page": "cg-005-latf",
+   "paragraphs": 152,
+   "profile": "deu_latf+deu",
+   "sys_s": 0.577,
+   "user_s": 47.443,
+   "version": "5.5.0+0001-0003"
+  },
+  {
+   "page": "cg-001-latf",
+   "paragraphs": 98,
+   "profile": "deu_latf+deu",
+   "sys_s": 0.389,
+   "user_s": 29.447,
+   "version": "5.5.4"
+  },
+  {
+   "page": "cg-001-latf",
+   "paragraphs": 107,
+   "profile": "deu_latf+deu",
+   "sys_s": 0.387,
+   "user_s": 31.775,
+   "version": "5.5.0"
+  },
+  {
+   "page": "cg-001-latf",
+   "paragraphs": 107,
+   "profile": "deu_latf+deu",
+   "sys_s": 0.433,
+   "user_s": 30.334,
+   "version": "5.5.0+0001-0003"
+  }
+ ]
+}
