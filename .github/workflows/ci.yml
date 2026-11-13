@@ -891,7 +891,8 @@ jobs:
         run: scripts/ci/ocr-worker-release.sh --dist dist
 
   # Every change, documentation included: no private (RFC 1918) address
-  # may be committed anywhere.
+  # may be committed anywhere, and the Rust version is the one in rust-toolchain.toml
+  # (scripts/ci/check-rust-toolchain.py; a change to one workflow must not skip it).
   private-addresses:
     name: no private addresses
     runs-on: ubuntu-latest
@@ -900,6 +901,8 @@ jobs:
         with:
           persist-credentials: false
       - run: scripts/ci/no-private-addresses.sh
+      - name: Rust toolchain pin agrees across workflows and images
+        run: scripts/ci/check-rust-toolchain.py
 
   infra-checks:
     name: infra configuration checks

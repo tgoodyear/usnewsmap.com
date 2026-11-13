@@ -1,6 +1,7 @@
 # Weekly update PRs. GitHub Actions are pinned to commit SHAs in the
 # workflows and in the composite actions under .github/actions, so this is
-# what keeps those pins current.
+# what keeps those pins current. The Rust toolchain version in rust-toolchain.toml is the other
+# pin here; docs/guides/development.md, "Rust toolchain", says what a bump pull request must show.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -19,6 +20,10 @@ updates:
     groups:
       cargo-minor:
         update-types: [minor, patch]
+  - package-ecosystem: rust-toolchain
+    directory: /
+    schedule:
+      interval: weekly
   - package-ecosystem: npm
     directory: /web
     schedule:
