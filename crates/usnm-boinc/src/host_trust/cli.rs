@@ -3,6 +3,8 @@
 use clap::Subcommand;
 use std::path::PathBuf;
 
+// A command line, parsed once: the native-spot variant's size doesn't matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub enum HostTrustCommands {
     /// Read existing quarantine reasons without connecting to BOINC or modifying results.

@@ -278,7 +278,9 @@ pub(super) fn fetch(spool: &Path, workunit: &str) -> std::io::Result<Files> {
 pub(super) fn judge(job: &boinc::Job, files: Files) -> anyhow::Result<Returned> {
     let Files { result, text, alto } = files;
     ensure!(
-        result.len() <= boinc::MAX_JSON && text.len() <= boinc::MAX_TEXT && alto.len() <= boinc::MAX_ALTO,
+        result.len() <= boinc::MAX_JSON
+            && text.len() <= boinc::MAX_TEXT
+            && alto.len() <= boinc::MAX_ALTO,
         "result over size limit"
     );
     let manifest: ResultManifest = serde_json::from_slice(&result)?;
