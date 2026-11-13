@@ -76,10 +76,11 @@ RUN set -eu; cd /src; \
 # libtesseract.a from the patched source, with the flags of Debian's debian/rules.
 RUN set -eu; [ "$PATCHES" = lock ] || exit 0; cd /src/lib/tesseract; export DEB_BUILD_MAINT_OPTIONS=hardening=+all; \
     CFLAGS="$(dpkg-buildflags --get CXXFLAGS) -Wall -g -fPIC -DTESSDATA_PREFIX='\"/usr/share/tesseract-ocr/5\"'"; \
+    CPPFLAGS="$(dpkg-buildflags --get CPPFLAGS)"; \
     LDFLAGS="$(dpkg-buildflags --get LDFLAGS)"; \
     ./autogen.sh >/dev/null; \
     ./configure --disable-tessdata-prefix --prefix=/usr --libdir='${prefix}/lib/x86_64-linux-gnu' \
-      CXXFLAGS="$CFLAGS" LDFLAGS="-lleptonica -Wl,-z,defs $LDFLAGS" >/dev/null; \
+      CPPFLAGS="$CPPFLAGS" CXXFLAGS="$CFLAGS" LDFLAGS="-lleptonica -Wl,-z,defs $LDFLAGS" >/dev/null; \
     make -j"$(nproc)" libtesseract.la >/dev/null; \
     ls -l .libs/libtesseract.a
 # configure writes config_auto.h, which the internal headers tesseract.cpp includes depend on.
