@@ -2,8 +2,14 @@
 // Operator-only dispatch window; never changes account preferences or scientific rows.
 // shared_8b opens Intel/NVIDIA Vulkan classes over the same audited, bounded workunit range.
 // Xiaomi-OCR-0 (0.8B) classes (#1776): batch-108 workunits, shipped closed, opened one audited
-// workunit at a time like the other independent classes and never generally.
+// workunit at a time like the other independent classes and never generally. `--plan-class x08`
+// (#1867) opens all five together over the workunits of named Xiaomi-OCR-0 roots: the #968
+// benchmark roots at once, the production roots only with --production, which stays off until
+// the benchmark replicate is scored. Any other batch-108 workunit inside the range refuses it.
 const NATIVE_XIAOMI_CLASSES = ["mt_x08", "apple_gpu_x08", "nvidia_vulkan_x08", "intel_vulkan_x08", "amd_vulkan_x08"];
+const X08_BENCHMARK_ROOT = '/^bench-968-x08-[a-z0-9][a-z0-9-]{0,30}$/D';
+const X08_PRODUCTION_ROOT = '/^x08-[a-z0-9][a-z0-9-]{0,36}$/D';
+const X08_DISK_BOUND = 12884901888;
 const NATIVE_QWEN_CLASSES = ["nvidia_cuda_2b", "nvidia_cuda_8b", "intel_vulkan_8b", "nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b", "amd_vulkan_8b", ...NATIVE_XIAOMI_CLASSES];
 const INDEPENDENT_QWEN_CLASSES = ["amd_vulkan_8b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_2b", ...NATIVE_XIAOMI_CLASSES];
 // Native classes that run the 2B model on batch-2 workunits; the rest run 8B on batch 8.
@@ -309,7 +315,8 @@ function native_qwen_reservation_guard($original, $updated) {
     foreach (array_merge(NATIVE_QWEN_CLASSES, ["docker_nvidia_cuda_8b"]) as $name) {
         $node = $new->query("//plan_class[name='$name']")->item(0);
         // A policy from before the Xiaomi classes (#1776) has none of them; that is not a lease problem.
-        if (!$node && in_array($name, NATIVE_XIAOMI_CLASSES, true)) continue;
+        // They take batch 108 only, so no range of theirs competes for the reserved batch-8 unit.
+        if (in_array($name, NATIVE_XIAOMI_CLASSES, true)) continue;
         $low = $node ? $new->query("min_wu_id", $node) : null;
         $high = $node ? $new->query("max_wu_id", $node) : null;
         if (!$low || $low->length !== 1 || $high->length !== 1
@@ -354,6 +361,88 @@ function native_qwen_fresh_pair_lock($db) {
     };
 }
 
+// The workunit names of the submitted units of `$roots` under `$share/qwen`, each to its root.
+// A production root needs `$production`; a root that is neither kind is refused.
+function native_qwen_x08_jobs($share, $roots, $production) {
+    if (!$roots) throw new RuntimeException("--plan-class x08 needs at least one --root");
+    $names = [];
+    foreach ($roots as $root) {
+        if (preg_match(X08_PRODUCTION_ROOT, $root)) {
+            if (!$production) {
+                throw new RuntimeException("Production root $root needs --production, which stays off until the benchmark replicate is scored");
+            }
+        } elseif (!preg_match(X08_BENCHMARK_ROOT, $root)) {
+            throw new RuntimeException("$root is not a Xiaomi-OCR-0 benchmark (bench-968-x08-*) or production (x08-*) root");
+        }
+        $dir = "$share/qwen/$root";
+        if (is_link($dir) || !is_dir("$dir/units")) throw new RuntimeException("Missing root $dir");
+        foreach (glob("$dir/units/*/qwen.json") ?: [] as $path) {
+            $marker = dirname($path)."/submitted";
+            if (!is_file($marker)) continue;
+            $job = json_decode(file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+            if (!preg_match('/^[a-f0-9]{64}$/D', $job["id"] ?? "") || ($job["model"] ?? null) !== "xiaomi-ocr-0-q8"
+                || ($job["prompt_version"] ?? null) !== 5) {
+                throw new RuntimeException("$path is not a Xiaomi-OCR-0 request-version-5 job");
+            }
+            // The marker holds the workunit name submit gave create_work; a job that no longer
+            // matches it is no evidence of what the root submitted.
+            $name = "usnm_qwen_".$job["id"];
+            if (file_get_contents($marker) !== $name) {
+                throw new RuntimeException("$marker does not name $name");
+            }
+            $names[$name] = $root;
+        }
+    }
+    if (!$names) throw new RuntimeException("The named roots have no submitted units");
+    return $names;
+}
+
+// [first, last] workunit id of `$owned` (the roots' workunits), after checking each is a
+// quorum-2 Xiaomi-OCR-0 workunit and that `$inside` (every batch-108 Qwen workunit from first to
+// last) holds no workunit of another root.
+function native_qwen_x08_range($owned, $inside, $names) {
+    $ids = [];
+    foreach ($owned as $wu) {
+        if (!isset($names[$wu->name]) || intval($wu->batch) !== 108 || intval($wu->min_quorum) !== 2
+            || intval($wu->target_nresults) !== 2 || intval($wu->rsc_disk_bound) !== X08_DISK_BOUND) {
+            throw new RuntimeException("Workunit {$wu->id} is not a quorum-2 Xiaomi-OCR-0 unit of the named roots");
+        }
+        $ids[] = intval($wu->id);
+    }
+    if (count($ids) !== count($names)) throw new RuntimeException("A submitted unit of the named roots has no workunit");
+    $first = min($ids);
+    $last = max($ids);
+    if ($first <= 1) throw new RuntimeException("Unexpected workunit id");
+    foreach ($inside as $wu) {
+        if (intval($wu->id) >= $first && intval($wu->id) <= $last && !isset($names[$wu->name])) {
+            throw new RuntimeException("Batch-108 workunit {$wu->id} ({$wu->name}) lies inside the range and is not from a named root");
+        }
+    }
+    return [$first, $last];
+}
+
+// All five Xiaomi-OCR-0 classes bounded to [$low, $high]; [2, 1] closes them.
+function native_qwen_x08_xml($xml, $low, $high) {
+    if (!(($low === 2 && $high === 1) || (2 <= $low && $low <= $high))) {
+        throw new RuntimeException("Invalid x08 range");
+    }
+    $doc = new DOMDocument();
+    if (!$doc->loadXML($xml, LIBXML_NONET)) throw new RuntimeException("Invalid plan XML");
+    $xpath = new DOMXPath($doc);
+    foreach (NATIVE_XIAOMI_CLASSES as $name) {
+        $nodes = $xpath->query("//plan_class[name='$name']");
+        if ($nodes->length !== 1) throw new RuntimeException("Missing or duplicate $name class");
+        $node = $nodes->item(0);
+        if ($xpath->query("project_prefs_tag", $node)->length) throw new RuntimeException("Unexpected $name account gate");
+        foreach (["min_wu_id" => $low, "max_wu_id" => $high] as $tag => $value) {
+            $fields = $xpath->query($tag, $node);
+            if ($fields->length !== 1) throw new RuntimeException("Missing bounded cohort field");
+            $fields->item(0)->nodeValue = $value;
+        }
+    }
+    return $doc->saveXML();
+}
+
 function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $last_id = null, $general = false,
         $ordinary_canary = false, $tiebreaker = false, $expected_sha256 = null, $revalidate = null,
         $admit_until = null, $keep_general = false, $publication_guard = null) {
@@ -396,13 +485,16 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
             }
         };
         $admission_expired();
-        $updated = $general ? native_qwen_general_xml($original, $plan_class)
-            : native_qwen_cohort_xml($original, $plan_class, $workunit_id, $last_id, $keep_general);
+        $updated = $plan_class === "x08"
+            ? native_qwen_x08_xml($original, $workunit_id > 1 ? $workunit_id : 2, $workunit_id > 1 ? $last_id : 1)
+            : ($general ? native_qwen_general_xml($original, $plan_class)
+                : native_qwen_cohort_xml($original, $plan_class, $workunit_id, $last_id, $keep_general));
         native_qwen_reservation_guard($original, $updated);
         $proof = [
             "plan_class" => $plan_class, "workunit_id" => $workunit_id,
             "last_workunit_id" => $last_id ?? $workunit_id,
-            "other_managed_class_closed" => !$general && native_qwen_other_closed($updated, $plan_class),
+            "other_managed_class_closed" => $plan_class === "x08"
+                || (!$general && native_qwen_other_closed($updated, $plan_class)),
             "admission_mode" => $general ? "general"
                 : ($workunit_id > 1 ? ($ordinary_canary ? "ordinary_canary" : ($tiebreaker ? "tiebreaker" : "bounded")) : "closed"),
             "independent_amd_window" => true, "general_admission" => native_qwen_general_admitted($updated),
@@ -459,11 +551,74 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
     }
 }
 
+function native_qwen_x08_main($options, $project, $db_project) {
+    $stop = array_key_exists("stop", $options);
+    $roots = (array)($options["root"] ?? []);
+    $production = array_key_exists("production", $options);
+    $expected_sha256 = $options["expected-policy-sha256"] ?? null;
+    foreach (["workunit", "workunit-end", "keep-general", "general", "ordinary-canary", "tiebreaker",
+              "fresh-pair", "admit-until"] as $flag) {
+        if (array_key_exists($flag, $options)) throw new RuntimeException("--plan-class x08 takes --root, not --$flag");
+    }
+    if (($stop && ($roots || $production)) || (!$stop && !$roots)
+        || ($expected_sha256 !== null && !preg_match('/^[a-f0-9]{64}$/D', $expected_sha256))) {
+        throw new RuntimeException("usage: --project PATH [--db-project PATH] --plan-class x08 (--stop | --root NAME [--root NAME ...] [--production]) [--expected-policy-sha256 SHA256] [--apply]");
+    }
+    if ($stop) {
+        return native_qwen_cohort_write($project, "x08", 0, array_key_exists("apply", $options), 0,
+            false, false, false, $expected_sha256);
+    }
+    // Roots live beside the live project; --db-project is only the database connection.
+    $share = dirname($project);
+    $names = native_qwen_x08_jobs($share, $roots, $production);
+    chdir("$db_project/html/inc");
+    require_once("boinc_db.inc");
+    $app = BoincApp::lookup("name='usnm_qwen'");
+    if (!$app) throw new RuntimeException("Qwen app missing");
+    $revalidate = function() use ($app, $names, &$range, $share, $roots, $production) {
+        // A unit submitted since the preview would be left out of the range: rerun instead.
+        if (native_qwen_x08_jobs($share, $roots, $production) !== $names) {
+            throw new RuntimeException("The named roots' submitted units changed; preview again");
+        }
+        $owned = [];
+        foreach (array_chunk(array_keys($names), 500) as $chunk) {
+            $quoted = implode(",", array_map(fn($n) => "'$n'", $chunk));
+            $owned = array_merge($owned, BoincWorkunit::enum("appid=".intval($app->id)." AND name IN ($quoted)"));
+        }
+        $ids = array_map(fn($wu) => intval($wu->id), $owned);
+        $inside = $ids ? BoincWorkunit::enum("appid=".intval($app->id)." AND batch=108 AND id>=".min($ids)
+            ." AND id<=".max($ids)) : [];
+        $found = native_qwen_x08_range($owned, $inside, $names);
+        if (isset($range) && $found !== $range) throw new RuntimeException("x08 range changed under the policy lock");
+        $range = $found;
+    };
+    $range = null;
+    $revalidate();
+    $apply = array_key_exists("apply", $options);
+    // As for a fresh pair: database read locks hold through the last check and the policy rename,
+    // so no workunit can move into batch 108 inside the range unchecked.
+    $proof = native_qwen_cohort_write($project, "x08", $range[0], $apply, $range[1],
+        false, false, false, $expected_sha256, $revalidate, null, false,
+        $apply ? fn() => native_qwen_fresh_pair_lock(BoincDb::get()) : null);
+    return $proof + ["roots" => array_values(array_unique(array_values($names))), "workunits" => count($names),
+        "production" => $production];
+}
+
 function native_qwen_cohort_main() {
-    $options = getopt("", ["project:", "db-project:", "plan-class:", "workunit:", "workunit-end:", "stop", "keep-general", "general", "ordinary-canary", "tiebreaker", "apply", "fresh-pair", "expected-policy-sha256:", "admit-until:"]);
+    $options = getopt("", ["project:", "db-project:", "plan-class:", "workunit:", "workunit-end:", "stop", "keep-general", "general", "ordinary-canary", "tiebreaker", "apply", "fresh-pair", "expected-policy-sha256:", "admit-until:", "root:", "production"]);
     $project = isset($options["project"]) ? realpath($options["project"]) : false;
     $db_project = isset($options["db-project"]) ? realpath($options["db-project"]) : $project;
     $plan_class = $options["plan-class"] ?? "nvidia_cuda_2b";
+    if ($plan_class === "x08") {
+        if (!$project || !is_dir($project) || !$db_project || !is_file("$db_project/config.xml")) {
+            throw new RuntimeException("usage: --project PATH [--db-project PATH] --plan-class x08 ...");
+        }
+        echo json_encode(native_qwen_x08_main($options, $project, $db_project), JSON_PRETTY_PRINT)."\n";
+        return;
+    }
+    if (isset($options["root"]) || array_key_exists("production", $options)) {
+        throw new RuntimeException("--root and --production are for --plan-class x08 only");
+    }
     $stop = array_key_exists("stop", $options);
     $keep_general = array_key_exists("keep-general", $options);
     $general = array_key_exists("general", $options);
