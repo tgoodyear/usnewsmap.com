@@ -164,7 +164,7 @@ case $TARGET in
       die "--target publish needs --image <appver image>" ;;
   handoff)
     [ -z "$APPVER_IMAGE" ] || die "--image is for --target publish"
-    case $STEP in claim | release | dead-letter | deadline-retry | collect | export | line-report) ;; *) die "--target handoff runs claim, release, dead-letter, deadline-retry, collect, export or line-report on-prem; $STEP stays in Azure" ;; esac
+    case $STEP in claim | release | dead-letter | deadline-retry | collect | export | line-report | lock-acquire | lock-renew | lock-release | lock-status) ;; *) die "--target handoff runs claim, release, dead-letter, deadline-retry, collect, export, line-report or lock-acquire|renew|release|status on-prem; $STEP stays in Azure" ;; esac
     [ "$STEP" != deadline-retry ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
       die "--step deadline-retry is an operator's, as root on the host; it isn't allowed over ssh"
     [ "$STEP" != line-report ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
@@ -172,6 +172,46 @@ case $TARGET in
   *) die "--target $TARGET does not run on-prem; only bridge, publish, handoff, scans and archive steps do" ;;
 esac
 [[ $STEP =~ ^[a-z][a-z-]{0,40}$ ]] || die "--step is a bridge step name, such as register-apps or submit"
+
+# The controller's local expiring lock (#1367, boinc/scripts/handoff_lock.py), kept in the
+# hand-off root. lock-* steps run on the host with no container. A mutating hand-off step given
+# LOCK_HOLDER and LOCK_GENERATION first checks that the stored record is still that holder's
+# unexpired generation (fencing); the two never reach the container. Without them nothing changes.
+HANDOFF_LOCK_ROOT=${USNM_BOINC_HANDOFF_ROOT:-/srv/usnm-boinc/handoff-state}
+LOCK_TOOL=$(dirname "$(readlink -f "$0")")/handoff_lock.py
+if [ "$TARGET" = handoff ]; then
+  fence_holder="" fence_generation="" kept=() lock_args=()
+  for v in ${VARS[@]+"${VARS[@]}"}; do
+    case $v in
+      LOCK_HOLDER=*) fence_holder=${v#*=} ;;
+      LOCK_GENERATION=*) fence_generation=${v#*=} ;;
+      LOCK_HOST=*) lock_args+=(--host "${v#*=}") ;;
+      LOCK_PID=*) lock_args+=(--pid "${v#*=}") ;;
+      LOCK_TTL=*) lock_args+=(--ttl "${v#*=}") ;;
+      *) kept+=("$v") ;;
+    esac
+  done
+  case $STEP in
+    lock-*)
+      [ ${#kept[@]} -eq 0 ] || die "--step $STEP takes only LOCK_HOLDER, LOCK_GENERATION, LOCK_HOST, LOCK_PID and LOCK_TTL"
+      [ -f "$LOCK_TOOL" ] || die "no $LOCK_TOOL: install handoff_lock.py beside this script"
+      [ -d "$HANDOFF_LOCK_ROOT" ] && [ ! -L "$HANDOFF_LOCK_ROOT" ] || die "no local hand-off root $HANDOFF_LOCK_ROOT"
+      [ -z "$fence_holder" ] || lock_args+=(--holder "$fence_holder")
+      [ -z "$fence_generation" ] || lock_args+=(--generation "$fence_generation")
+      $WHAT_IF && { echo "would run $LOCK_TOOL ${STEP#lock-} on $HANDOFF_LOCK_ROOT"; exit 0; }
+      exec python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" "${STEP#lock-}" ${lock_args[@]+"${lock_args[@]}"} ;;
+    claim | release | dead-letter | collect | export)
+      if [ -n "$fence_holder$fence_generation" ]; then
+        [ -n "$fence_holder" ] && [ -n "$fence_generation" ] || die "LOCK_HOLDER and LOCK_GENERATION go together"
+        if ! $WHAT_IF; then
+          python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" fence --holder "$fence_holder" \
+            --generation "$fence_generation" > /dev/null || die "the controller lock is not this controller's; $STEP not run"
+        fi
+      fi
+      VARS=(${kept[@]+"${kept[@]}"}) ;;
+    *) [ -z "$fence_holder$fence_generation" ] || die "--step $STEP is not fenced" ;;
+  esac
+fi
 
 STAGE=${USNM_BOINC_SCAN_STAGE:-/srv/usnm-boinc/project/handoff-scans}
 if [ "$TARGET" = scans ]; then
