@@ -95,13 +95,61 @@ The German Tesseract text (`frak2021`, PSM 3, 300 DPI) is live in search, and th
 
 The crops, boxes and per-crop readings (live ALTO, LoC ALTO and Tesseract on the crop) stay on disk, and `scripts/score_de968.py` stays in this change, so the check can run if a truth source appears. All German frak2021 text is revoked at the next full rebuild, and the check was only ever about which bands could earn their way back later.
 
+## English held-out set: `en-as`
+
+13 November 2026. The protocol has no held-out English set now that `en-bln` is dropped. `en-as` is one: the 10 hand-transcribed full pages of the American Stories gold set (Dell et al. 2023, [arXiv:2308.12477](https://arxiv.org/abs/2308.12477)), cut into one crop per transcribed region. It was built and frozen before any reader ran on it, with `scripts/build_en_as.py`, and `gold.py validate` passes with 0 errors.
+
+**What it is.** 507 crops from 10 pages, 194,649 characters after normalization. The dataset has 597 regions, and 90 of them have no text, so they have no crop. The crops are 307 articles, 199 headlines and 1 image caption. By length they are 257 under 100 characters, 173 from 100 to 500 and 77 over 500. The crops total 46.8 MB (median 32 KB, largest 1.6 MB), up to 4,311 px wide and 7,958 px tall. The text comes from the Hugging Face repository `dell-research-harvard/AmericanStoriesTraining`, folder `gold_data/`, taken once on 13 November.
+
+**Provenance.** The dataset doesn't say where its pages come from. Each one is a Chronicling America front page (edition 1, sequence 1). I matched each page's transcription against LoC's OCR for the issue named in the dataset's own metadata: 75% to 99% of the words match the right page, against 56% or less for any other page in the issue.
+
+| File | LCCN | Title | Date |
+| --- | --- | --- | --- |
+| 0004 | sn82014248 | Daily Kennebec Journal | 1880-07-01 |
+| 0015 | sn96060045 | Eskimo Bulletin | 1902-05-01 |
+| 0042 | sn89055163 | Long Valley Advocate | 1904-12-01 |
+| 0075 | sn83045462 | Evening Star | 1909-05-07 |
+| 0102 | 2016270502 | Waterbury Democrat | 1895-10-15 |
+| 0131 | sn84026758 | Democratic Messenger | 1881-10-22 |
+| 0272 | sn89055091 | Weiser Signal | 1898-03-24 |
+| 0424 | sn84029386 | Abilene Weekly Reflector | 1899-09-07 |
+| 0810 | sn87057934 | Audubon County Journal | 1905-10-12 |
+| 1230 | sn83040592 | Baxter Springs News | 1915-10-28 |
+
+**Licence.** The repository's metadata says Apache-2.0 and its card is empty. The page images are Chronicling America scans, which are public domain. This settles the two open points in the source policy in `docs/ocr/gold-set.md`, so `en-as` is a scoring source.
+
+**Leakage.**
+- American Stories isn't held out on this set. It is the set the dataset's authors evaluated on, and the paper doesn't say whether the 10 pages were kept out of the layout detector's training. Any American Stories column here is marked as not held out.
+- CHURRO-DS, the training set of the CHURRO reader, holds 5 of the 10 pages as dataset `stories`: 0004 and 0102 in its dev split, 0131, 0810 and 1230 in its test split, none in train. CHURRO isn't a reader in this comparison, so this is a note only. I read the splits through the Hugging Face dataset server, so a page filed under another name would not show.
+- The training data of Xiaomi-OCR-0, Qwen3-VL and Tesseract is undisclosed. The text has been public on Hugging Face since 2023, so I can't rule out that a reader saw it.
+
+**Results.** Tesseract 5.5.0 (Debian build, Leptonica 1.84.1, `eng` from tessdata_best, SHA-256 `8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba`, 300 DPI) ran on CT 245 with 3 threads. LoC is the clipped ALTO text, with 507 of 507 crops aligned. The scorer and limits are those above: pooled CER, 95% percentile bootstrap over whole pages, 2,000 resamples, seed 202611. There are 10 pages, so the limits are wide. Empty outputs, scored as empty, are 1 for PSM 6, 4 for PSM 3 and 3 for LoC.
+
+| Reader | CER (95% limits) | WER | Median crop CER | Against PSM 6, points (95% limits) |
+| --- | --- | ---: | ---: | --- |
+| Tesseract PSM 6 | 3.62% (2.20 to 5.79) | 12.82% | 1.50% | |
+| Tesseract PSM 3 | 3.40% (2.08 to 5.51) | 11.32% | 1.36% | -0.22 (-0.68 to 0.37) |
+| LoC | 7.71% (2.88 to 16.41) | 19.16% | 1.72% | +4.09 (0.56 to 10.84) |
+
+By region length, CER with the PSM 3 difference from PSM 6 and LoC's difference from PSM 6:
+
+| Region length | Crops | PSM 6 | PSM 3 | PSM 3 minus PSM 6 | LoC | LoC minus PSM 6 |
+| --- | ---: | --- | --- | --- | --- | --- |
+| Under 100 characters | 257 | 4.56% (3.25 to 7.36) | 3.50% (2.63 to 4.91) | -1.06 (-2.57 to -0.39) | 7.24% (3.99 to 13.40) | +2.68 (0.16 to 6.07) |
+| 100 to 500 | 173 | 2.63% (1.71 to 4.77) | 3.44% (1.79 to 7.34) | +0.80 (-0.40 to 2.87) | 4.28% (2.09 to 9.62) | +1.65 (0.18 to 5.17) |
+| Over 500 | 77 | 3.82% (2.09 to 6.24) | 3.38% (1.81 to 5.54) | -0.44 (-0.75 to -0.16) | 8.67% (2.74 to 19.75) | +4.85 (0.54 to 12.73) |
+
+PSM 3 is lower than PSM 6 with limits that exclude zero under 100 characters and over 500. Overall and from 100 to 500 the limits include zero. LoC is worse than Tesseract PSM 6 overall and in every band, with limits that exclude zero.
+
+**Freeze record.** `manifest.jsonl` SHA-256 `eafddeb411ae59af4ebab968b673f1705732a44fe7983b0d9ceeaa3e7ae86f50`, `crops.jsonl` `37f188de2831edffb08b895e25417d35b6f32f0143acc6345db4d8c97a2b7dae`, the images (all 507 `images/*.jpg`, hashed in path order) `06434ad89d11a28ac854829f43fcf2a0a95e342624beb00f24b8c25894491fe2`. Built with Pillow 11.1.0. `usnm-ocr-survey` built from this branch has SHA-256 `6e935b81e8db522cbaf74c68b95038632b1d6bd4196a79317db2a2ec0842f1f7`, the same as the binary the #968 LoC column used. `gpu-study` was built from this branch with the same two `model: None` initialisers as for the other sets. Outputs SHA-256: PSM 6 `96f3e642f0036edfe90a19e82722d836d727ca466ef02d5f53d8e94a660450ff`, PSM 3 `c0b97b0f913b9c02fb9a71d0658759a4de7f8b170e816e8a4c3471163f66ab41`, LoC `9ac9de3284950578dff6a1ed84a7de39db7bb893c3d9c162454f1d7feb86c7d2`. The set and results are on pve-big in `/tank/usnm-lake/as-gold-20261113/en-as/`; the source files are in its parent directory. The crops and page images aren't committed. Xiaomi-OCR-0 and Qwen3-VL 8B haven't run on it; the BOINC benchmark is to run them.
+
 ## What is not in this report
 
 - Qwen3-VL 2B, and BOINC runs of Xiaomi and 8B. Xiaomi on volunteer hardware (1.20 app versions) is being staged as a cross-hardware replicate. Guarded 8B ran locally only.
-- English held-out set (`en-bln`): dropped, because BLN600's images are bilevel TIFFs that a unit can't carry unchanged under its No-Derivatives licence. English has only the second-use set, so its result stays provisional.
+- English held-out set (`en-bln`): dropped, because BLN600's images are bilevel TIFFs that a unit can't carry unchanged under its No-Derivatives licence. `en-as` (above) replaces it as the held-out English set, but Xiaomi and Qwen haven't run on it, so the English recommendation stays provisional.
 - `de-rz700` and `de-onb`: not frozen, because their crop lists (Study 7's and the benchmark release's) can't be rebuilt from the GPU studies' data release; see the departures log.
 - The GPU and CPU host comparison. No CPU app version is live.
 
 ## Reproducing
 
-`scripts/ocr-survey/tesseract_crops.py`, `scripts/ocr-survey/loc_column.py`, `scripts/ocr-survey/reader_draw.py` and the scripts in `scripts/` beside the protocol rebuild every input and score in this report. The sets and per-crop outputs stay on usnm-dev2 because the source terms of several sets restrict redistribution.
+`scripts/ocr-survey/tesseract_crops.py`, `scripts/ocr-survey/loc_column.py`, `scripts/ocr-survey/reader_draw.py` and the scripts in `scripts/` beside the protocol rebuild every input and score in this report. The sets and per-crop outputs stay on usnm-dev2 (`en-as`: on pve-big, see above) because the source terms of several sets restrict redistribution.
