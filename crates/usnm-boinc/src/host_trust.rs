@@ -14,10 +14,12 @@ use usnm_ocr_contract::boinc;
 
 mod capability;
 pub mod cli;
+mod native_spot;
 mod onboard;
 mod promote;
 mod spot;
 
+pub use native_spot::{native_spot, Canonical, Outcome, Paths, Replay, Report, Status};
 pub use onboard::onboard;
 pub use promote::{promote, HostFailure, Promotion};
 pub use spot::{spot_compare, spot_submit};
@@ -139,15 +141,25 @@ impl Config {
 }
 
 async fn query(c: &Config, sql: &str) -> anyhow::Result<String> {
+    query_db(&c.mysql_defaults, &c.mysql_ca, &c.database, sql).await
+}
+
+/// One read-only query against the BOINC database, its rows as text.
+async fn query_db(
+    mysql_defaults: &Path,
+    mysql_ca: &Path,
+    database: &str,
+    sql: &str,
+) -> anyhow::Result<String> {
     let mut command = Command::new("mysql");
     let command = command
         .arg(format!(
             "--defaults-extra-file={}",
-            c.mysql_defaults.display()
+            mysql_defaults.display()
         ))
         .args(["--ssl", "--ssl-verify-server-cert"])
-        .arg(format!("--ssl-ca={}", c.mysql_ca.display()))
-        .args(["--batch", "--skip-column-names", &c.database, "-e", sql])
+        .arg(format!("--ssl-ca={}", mysql_ca.display()))
+        .args(["--batch", "--skip-column-names", database, "-e", sql])
         .kill_on_drop(true);
     let out = tokio::time::timeout(std::time::Duration::from_secs(60), command.output())
         .await
@@ -404,6 +416,7 @@ mod tests {
             scope: Some(scope.clone()),
             max_cer,
             policies: Vec::new(),
+            holds: Default::default(),
             v: crate::trust::TRUST_VERSION,
         };
         let builds = crate::trust::BuildTrust::embedded().unwrap();

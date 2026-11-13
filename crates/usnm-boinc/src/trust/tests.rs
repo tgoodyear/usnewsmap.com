@@ -1393,6 +1393,7 @@ fn a_hold_is_lifted_only_by_a_calibration_within_its_limit() {
         scope: Some(deu_scope()),
         max_cer,
         policies: Vec::new(),
+        holds: Default::default(),
         v: TRUST_VERSION,
     };
     // The 20 Oct policy again, or anything above the limit, is refused.
@@ -1432,6 +1433,7 @@ fn a_hold_is_lifted_only_by_a_calibration_within_its_limit() {
         scope: Some(scope()),
         max_cer: ADMIT_CER,
         policies: Vec::new(),
+        holds: Default::default(),
         v: TRUST_VERSION,
     };
     let merged = english.promote_to(&out, None).unwrap();
@@ -1600,6 +1602,7 @@ fn calibrated_srp(max_cer: f64) -> Trust {
         scope: Some(scope),
         max_cer,
         policies: Vec::new(),
+        holds: Default::default(),
         v: TRUST_VERSION,
     }
 }
@@ -1633,6 +1636,7 @@ fn with_line_scope(max_cer: f64) -> Trust {
         scope: Some(scope()),
         max_cer: 0.1,
         policies: vec![eng, lines],
+        holds: Default::default(),
         v: TRUST_VERSION,
     }
 }

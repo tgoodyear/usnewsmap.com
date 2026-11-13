@@ -179,7 +179,13 @@ pub async fn spot_submit(c: &Config, jobs: &Path, execute: bool) -> anyhow::Resu
 }
 
 async fn stage_inputs(c: &Config, job: &boinc::Job, workunit: &str) -> anyhow::Result<()> {
-    let input = crate::dir(&c.jobs_root, &job.id)?;
+    let (scan, request) = job_inputs(&c.jobs_root, job)?;
+    stage(&c.project, workunit, scan, request).await
+}
+
+/// The scan and the request.json bytes `jobs_root` holds for `job`, checked against it.
+pub(super) fn job_inputs(jobs_root: &Path, job: &boinc::Job) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    let input = crate::dir(jobs_root, &job.id)?;
     let request = read(&input.join("request.json"), boinc::MAX_REQUEST)?;
     ensure!(
         serde_json::from_slice::<boinc::Job>(&request)? == *job,
@@ -190,11 +196,22 @@ async fn stage_inputs(c: &Config, job: &boinc::Job, workunit: &str) -> anyhow::R
         scan.len() as u64 == job.scan.bytes && boinc::sha256(&scan) == job.scan.sha256,
         "staged scan changed"
     );
+    Ok((scan, request))
+}
+
+/// Puts a spot unit's two inputs in the project's download tree under `<workunit>_page` and
+/// `<workunit>_request_json`.
+pub(super) async fn stage(
+    project: &Path,
+    workunit: &str,
+    scan: Vec<u8>,
+    request: Vec<u8>,
+) -> anyhow::Result<()> {
     for (name, bytes) in [("page", scan), ("request_json", request)] {
         let physical = format!("{workunit}_{name}");
-        let output = Command::new(c.project.join("bin/dir_hier_path"))
+        let output = Command::new(project.join("bin/dir_hier_path"))
             .arg(&physical)
-            .current_dir(&c.project)
+            .current_dir(project)
             .output()
             .await?;
         ensure!(output.status.success(), "dir_hier_path failed");
@@ -204,46 +221,107 @@ async fn stage_inputs(c: &Config, job: &boinc::Job, workunit: &str) -> anyhow::R
         let path = if path.is_absolute() {
             path.to_owned()
         } else {
-            c.project.join(path)
+            project.join(path)
         };
         crate::atomic_download(&path, &bytes)?;
     }
     Ok(())
 }
 
-/// A spot-check member's build (the `engine.image` its result manifest names) and its normalized
-/// text.
-fn result(job: &boinc::Job, spool: &Path, workunit: &str) -> anyhow::Result<(String, String)> {
-    let file = |name| spool.join(format!("{workunit}__file_{name}"));
+/// A spot-check member's result: its build (the `engine.image` its manifest names), its text as
+/// `import` stores it, and the sha256 of the text and ALTO bytes it returned.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Returned {
+    pub image: String,
+    pub text: String,
+    pub text_sha256: String,
+    pub alto_sha256: String,
+}
+
+pub(super) fn result(job: &boinc::Job, spool: &Path, workunit: &str) -> anyhow::Result<Returned> {
     ensure!(
         !spool.join(format!("{workunit}_error")).exists()
             && !spool.join(format!("{workunit}_no_output_files")).exists(),
         "spot-check member failed"
     );
-    let manifest: ResultManifest =
-        serde_json::from_slice(&read(&file("result.json"), boinc::MAX_JSON)?)?;
-    let text = read(&file("text.txt"), boinc::MAX_TEXT)?;
-    let alto = read(&file("layout.xml"), boinc::MAX_ALTO)?;
-    manifest.matches(job, &text, &alto)?;
-    usnm_ocr_local::checks::check_alto(&alto).map_err(|r| anyhow::anyhow!("{}", r.code()))?;
-    Ok((manifest.engine.image, crate::normalized_text(job, &text)?))
+    judge(job, fetch(spool, workunit)?)
 }
 
-/// Whether two results agree, each its build and its text. Text is compared only between
-/// results of one build, or of two builds `builds` lists as equivalent (#1418): output from
-/// builds not shown to be identical is never compared byte for byte, so this fails.
-fn agree(
+/// A result's three returned files, as read.
+pub(super) struct Files {
+    result: Vec<u8>,
+    text: Vec<u8>,
+    alto: Vec<u8>,
+}
+
+/// Reads a result's files. An error here is the filesystem's (missing, unreadable), not the
+/// host's: the bytes themselves are judged by [`judge`].
+pub(super) fn fetch(spool: &Path, workunit: &str) -> std::io::Result<Files> {
+    // At most a byte past each limit is read, so [`judge`] can refuse an oversized file without
+    // it being held in memory whole.
+    let file = |name: &str, limit: usize| -> std::io::Result<Vec<u8>> {
+        use std::io::Read as _;
+        let path = spool.join(format!("{workunit}__file_{name}"));
+        if std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} is a symlink", path.display()),
+            ));
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take(limit as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        Ok(bytes)
+    };
+    Ok(Files {
+        result: file("result.json", boinc::MAX_JSON)?,
+        text: file("text.txt", boinc::MAX_TEXT)?,
+        alto: file("layout.xml", boinc::MAX_ALTO)?,
+    })
+}
+
+/// Whether `files` are a valid result of `job`, and what it returned.
+pub(super) fn judge(job: &boinc::Job, files: Files) -> anyhow::Result<Returned> {
+    let Files { result, text, alto } = files;
+    ensure!(
+        result.len() <= boinc::MAX_JSON
+            && text.len() <= boinc::MAX_TEXT
+            && alto.len() <= boinc::MAX_ALTO,
+        "result over size limit"
+    );
+    let manifest: ResultManifest = serde_json::from_slice(&result)?;
+    manifest.matches(job, &text, &alto)?;
+    usnm_ocr_local::checks::check_alto(&alto).map_err(|r| anyhow::anyhow!("{}", r.code()))?;
+    Ok(Returned {
+        image: manifest.engine.image,
+        text: crate::normalized_text(job, &text)?,
+        text_sha256: boinc::sha256(&text),
+        alto_sha256: boinc::sha256(&alto),
+    })
+}
+
+/// Whether two results agree. They are compared only between results of one build, or of two
+/// builds `builds` lists as equivalent (#1418): output from builds not shown to be identical is
+/// never compared byte for byte, so this fails. A container spot check compares the text as
+/// `import` stores it; a native one (`exact`, #1863) the returned text and ALTO bytes.
+pub(super) fn agree(
     builds: &crate::trust::BuildTrust,
-    a: &(String, String),
-    b: &(String, String),
+    a: &Returned,
+    b: &Returned,
+    exact: bool,
 ) -> anyhow::Result<bool> {
     ensure!(
-        builds.comparable(&a.0, &b.0),
+        builds.comparable(&a.image, &b.image),
         "results from builds {} and {} are not comparable byte for byte",
-        a.0,
-        b.0
+        a.image,
+        b.image
     );
-    Ok(a.1 == b.1)
+    Ok(if exact {
+        a.text_sha256 == b.text_sha256 && a.alto_sha256 == b.alto_sha256
+    } else {
+        a.text == b.text
+    })
 }
 
 /// A conservative two-host quorum: both canonical hosts must still be trusted and produce
@@ -286,7 +364,7 @@ pub async fn spot_compare(
     );
     let a = result(&record.job, original_spool, &record.job.workunit())?;
     let b = result(&record.job, spot_spool, &spot.workunit)?;
-    let agrees = agree(crate::trust::BuildTrust::embedded()?, &a, &b)?;
+    let agrees = agree(crate::trust::BuildTrust::embedded()?, &a, &b, false)?;
     atomic(
         &path.join("comparison.json"),
         &serde_json::to_vec_pretty(&serde_json::json!({
@@ -301,7 +379,7 @@ pub async fn spot_compare(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     fn trust() -> Trust {
@@ -316,6 +394,7 @@ mod tests {
             }),
             max_cer: 0.1,
             policies: Vec::new(),
+            holds: Default::default(),
             v: crate::trust::TRUST_VERSION,
         }
     }
@@ -327,16 +406,32 @@ mod tests {
         let worker = "sha256:dac9c123a52d7b10281d3204a815233da1fe9819afdadd4341a034a95441eb34";
         let macos = "sha256:78065a0a43d8f8bf67c00c014ae2b0540d51d0038e4050dbbd509e14b63fa836";
         let windows = format!("sha256:{}", "7".repeat(64));
-        let r = |image: &str, text: &str| (image.to_owned(), text.to_owned());
-        assert!(agree(builds, &r(macos, "a"), &r(macos, "a")).unwrap());
-        assert!(!agree(builds, &r(macos, "a"), &r(macos, "b")).unwrap());
+        let r = |image: &str, text: &str| Returned {
+            image: image.to_owned(),
+            text: text.to_owned(),
+            text_sha256: boinc::sha256(text.as_bytes()),
+            alto_sha256: "a".repeat(64),
+        };
+        assert!(agree(builds, &r(macos, "a"), &r(macos, "a"), false).unwrap());
+        assert!(!agree(builds, &r(macos, "a"), &r(macos, "b"), false).unwrap());
         // Linux and the worker image it was shown identical to, as today.
-        assert!(agree(builds, &r(linux, "a"), &r(worker, "a")).unwrap());
-        assert!(!agree(builds, &r(worker, "a"), &r(linux, "b")).unwrap());
+        assert!(agree(builds, &r(linux, "a"), &r(worker, "a"), false).unwrap());
+        assert!(!agree(builds, &r(worker, "a"), &r(linux, "b"), false).unwrap());
         // No pair across platforms is listed, whatever the text.
         for (a, b) in [(macos, linux), (macos, worker), (windows.as_str(), linux)] {
-            assert!(agree(builds, &r(a, "a"), &r(b, "a")).is_err(), "{a} {b}");
+            assert!(
+                agree(builds, &r(a, "a"), &r(b, "a"), true).is_err(),
+                "{a} {b}"
+            );
         }
+        // Exact: the same normalized text with other bytes, or other ALTO, differs.
+        let mut other = r(macos, "a");
+        other.text_sha256 = "b".repeat(64);
+        assert!(agree(builds, &r(macos, "a"), &other, false).unwrap());
+        assert!(!agree(builds, &r(macos, "a"), &other, true).unwrap());
+        let mut alto = r(macos, "a");
+        alto.alto_sha256 = "c".repeat(64);
+        assert!(!agree(builds, &r(macos, "a"), &alto, true).unwrap());
     }
 
     #[test]
@@ -376,6 +471,7 @@ mod tests {
             }),
             max_cer: 0.08,
             policies: Vec::new(),
+            holds: Default::default(),
             v: crate::trust::TRUST_VERSION,
         };
         let coexisting = eng.merge(&deu).unwrap();
@@ -419,7 +515,7 @@ mod tests {
     }
 
     /// A job as the bridge makes it for a page in `language` read with `profile`.
-    fn job(language: &str, profile: &str) -> boinc::Job {
+    pub(in crate::host_trust) fn job(language: &str, profile: &str) -> boinc::Job {
         let mut job = boinc::Job {
             retry_of: None,
             lines: None,
@@ -459,7 +555,12 @@ mod tests {
     }
 
     /// Writes a spot-check member's returned files for `job` into `spool`.
-    fn returned(job: &boinc::Job, spool: &Path, workunit: &str, text: &str) {
+    pub(in crate::host_trust) fn returned(
+        job: &boinc::Job,
+        spool: &Path,
+        workunit: &str,
+        text: &str,
+    ) {
         const ALTO: &str = r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Description><sourceImageInformation><fileName>page</fileName></sourceImageInformation></Description><Layout><Page WIDTH="1000" HEIGHT="1000"><PrintSpace><TextBlock><TextLine><String CONTENT="HELLO"/></TextLine></TextBlock></PrintSpace></Page></Layout></alto>"#;
         let manifest = ResultManifest {
             v: 1,
@@ -486,10 +587,14 @@ mod tests {
         let spool = tmp.path();
         let read = |job: &boinc::Job, text: &str| {
             returned(job, spool, "wu", text);
-            let (image, got) = result(job, spool, "wu").unwrap();
-            assert_eq!(image, job.engine.image);
-            assert_eq!(got, crate::normalized_text(job, text.as_bytes()).unwrap());
-            got
+            let got = result(job, spool, "wu").unwrap();
+            assert_eq!(got.image, job.engine.image);
+            assert_eq!(got.text_sha256, boinc::sha256(text.as_bytes()));
+            assert_eq!(
+                got.text,
+                crate::normalized_text(job, text.as_bytes()).unwrap()
+            );
+            got.text
         };
         // One host's engine printed an em dash at the line end, another's a
         // `⸗`, a third's a hyphen: the same word.

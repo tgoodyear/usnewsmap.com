@@ -175,6 +175,11 @@
 #                               and active-host counts to stdout; safe to repeat
 #   BRIDGE_STEP=batch-inventory BATCH_NONCE=<32 hex> HANDOFF_URL=<container URL>; writes the
 #                               read-only queue/host/journal/spool inventory to scheduler/
+#   BRIDGE_STEP=native-spot     BATCH_NONCE HANDOFF_URL, NATIVE_SPOT_SUBMIT and/or NATIVE_SPOT_CHECK
+#                               (#1863): usnm-boinc host-trust native-spot creates the native
+#                               replays and compares the ones back, holding both hosts in
+#                               $SHARE_DIR/gold/trust.json on a mismatch; its report goes to
+#                               scheduler/native-spot.json
 #
 # Start a step with boinc/scripts/start-boinc-bridge.sh, which sets these on the job: an
 # `az containerapp job start --env-vars` override drops the job's own settings and the share.
@@ -589,7 +594,8 @@ esac
 if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != surya-submit ] &&
   [ "$step" != quality-submit ] && [ "$step" != qwen-submit ] && [ "$step" != train-submit ] &&
   [ "$step" != register-apps ] && [ "$step" != work-volume ] && [ "$step" != batch-inventory ] &&
-  [ "$step" != gold-onboard ] && [ "$step" != gold-promote ] && [ "$step" != gold-collect ] && [ "$step" != iris-bundle-submit ] && [ "$step" != iris-bundle-cancel ]; then
+  [ "$step" != gold-onboard ] && [ "$step" != gold-promote ] && [ "$step" != gold-collect ] && [ "$step" != iris-bundle-submit ] && [ "$step" != iris-bundle-cancel ] &&
+  [ "$step" != native-spot ]; then
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
   [[ "$JOB_ID" =~ ^[A-Za-z0-9_-]+$ ]] || fail "JOB_ID has characters outside [A-Za-z0-9_-]"
 fi
@@ -824,6 +830,37 @@ case "$step" in
     share_readable "$stamp" "$PROJ/download" "$PROJ/templates" "$PROJ/gold"
     rm -f "$stamp"
     exit "$rc" ;;
+  native-spot)
+    # Native spot checks (#1863, docs/boinc/apps/native-ocr.md): the controller names the pages
+    # and the peers; usnm-boinc checks every peer against the trust list and the build list.
+    [[ "${BATCH_NONCE:-}" =~ ^[0-9a-f]{32}$ ]] || fail "BATCH_NONCE must be 32 hex"
+    item='[0-9a-f]{64}=[1-9][0-9]{0,9}:[1-9][0-9]{0,9}:[0-9a-f]{64}'
+    [[ "${NATIVE_SPOT_SUBMIT:-}" =~ ^($item(,$item){0,99})?$ ]] || fail "NATIVE_SPOT_SUBMIT is up to 100 <job>=<source>:<target>:<image hex>"
+    check="$item:$PROJ/results/[A-Za-z0-9_./-]+"
+    [[ "${NATIVE_SPOT_CHECK:-}" =~ ^($check(,$check){0,99})?$ ]] && [[ "${NATIVE_SPOT_CHECK:-}" != *..* ]] ||
+      fail "NATIVE_SPOT_CHECK is up to 100 <job>=<source>:<target>:<image hex>:<spool under $PROJ/results>"
+    [ -n "${NATIVE_SPOT_SUBMIT:-}${NATIVE_SPOT_CHECK:-}" ] || fail "set NATIVE_SPOT_SUBMIT or NATIVE_SPOT_CHECK"
+    [ -f "$SHARE_DIR/gold/trust.json" ] || fail "native spot checks need the trust list $SHARE_DIR/gold/trust.json"
+    validate_handoff_location
+    write_mycnf
+    # The native versions the feeder loads, as for a native unit in submit-remote.
+    versions=$(mysql --defaults-extra-file="$mycnf" --ssl --ssl-verify-server-cert \
+      --ssl-ca=/usr/local/share/usnm/mysql-ca.pem --batch --skip-column-names "$DB_NAME" \
+      -e "SELECT COALESCE(GROUP_CONCAT(v.version_num ORDER BY v.version_num), '') FROM app_version v JOIN app a ON a.id = v.appid WHERE a.name = 'usnm_ocr_native' AND v.deprecated = 0 AND ((a.min_version > 0 AND v.version_num >= a.min_version) OR (a.min_version = 0 AND v.version_num = (SELECT MAX(w.version_num) FROM app_version w WHERE w.appid = v.appid AND w.platformid = v.platformid AND w.plan_class = v.plan_class AND w.deprecated = 0)))") ||
+      fail "could not read the usnm_ocr_native versions"
+    mkdir -p "$HANDOFF_DIR/scheduler"
+    stamp="$(mktemp)"
+    rc=0
+    usnm-boinc host-trust native-spot --root "$SHARE_DIR/host-trust" --project "$PROJ" \
+      --jobs-root "$HANDOFF_DIR" --trust "$SHARE_DIR/gold/trust.json" --spool "$PROJ/results/0" \
+      --mysql-defaults "$mycnf" --mysql-ca /usr/local/share/usnm/mysql-ca.pem --database "$DB_NAME" \
+      --native-versions "$versions" --submit "${NATIVE_SPOT_SUBMIT:-}" --check "${NATIVE_SPOT_CHECK:-}" \
+      --out "$HANDOFF_DIR/scheduler/native-spot.json" --nonce "$BATCH_NONCE" --execute || rc=$?
+    share_readable "$stamp" "$PROJ/download"
+    rm -f "$stamp"
+    [ "$rc" -eq 0 ] || exit "$rc"
+    usnm-boinc handoff put --from "$HANDOFF_DIR/scheduler" --to-url "$HANDOFF_URL" --prefix scheduler
+    exit 0 ;;
   gold-onboard | gold-promote)
     # gold-onboard: one bounded host-trust onboard pass, a targeted gold unit for each untrusted
     # host without one outstanding, including hosts whose last unit failed
@@ -899,5 +936,5 @@ case "$step" in
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;
-  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, work-volume, assess-stage, assess-submit, assess-collect, surya-stage, surya-stage-crops, surya-stage-gold, surya-submit, surya-collect, surya-gold-hyp, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-onboard, gold-promote, gold-collect, gold-trust, gold-bundle, gold-mirror-loc, iris-bundle-stage, iris-bundle-submit, iris-bundle-cancel or iris-bundle-collect" ;;
+  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, work-volume, assess-stage, assess-submit, assess-collect, surya-stage, surya-stage-crops, surya-stage-gold, surya-submit, surya-collect, surya-gold-hyp, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-onboard, gold-promote, gold-collect, gold-trust, gold-bundle, gold-mirror-loc, native-spot, iris-bundle-stage, iris-bundle-submit, iris-bundle-cancel or iris-bundle-collect" ;;
 esac

@@ -214,7 +214,11 @@ pub async fn submit_native(
 /// build whose worker would refuse the job. None packages it: an error.
 /// A directory a failed publication left without its `app_version` row isn't in `registered`, so it
 /// is never chosen.
-fn native_version(project: &Path, image: &str, registered: &[u32]) -> anyhow::Result<u32> {
+pub(crate) fn native_version(
+    project: &Path,
+    image: &str,
+    registered: &[u32],
+) -> anyhow::Result<u32> {
     let digest = image
         .strip_prefix("sha256:")
         .filter(|d| usnm_ocr_contract::boinc::is_sha256(d))

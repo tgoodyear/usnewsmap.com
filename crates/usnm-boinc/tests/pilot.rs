@@ -1497,6 +1497,7 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
         }),
         max_cer: 0.1,
         policies: Vec::new(),
+        holds: Default::default(),
         v: usnm_boinc::trust::TRUST_VERSION,
     };
     let run = |t: Trust| {
@@ -1595,6 +1596,7 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
         }),
         max_cer: 0.08,
         policies: Vec::new(),
+        holds: Default::default(),
         v: usnm_boinc::trust::TRUST_VERSION,
     };
     let coexisting = trust.merge(&deu_trust).unwrap();
@@ -1698,6 +1700,7 @@ async fn a_held_scope_keeps_german_results_until_a_calibration_lifts_it() {
             },
             eng,
         ],
+        holds: Default::default(),
         v: usnm_boinc::trust::TRUST_VERSION,
     };
     let run = |t: Trust, host: Option<u64>| {
@@ -1762,6 +1765,7 @@ async fn a_held_scope_keeps_german_results_until_a_calibration_lifts_it() {
         scope: Some(deu_scope.clone()),
         max_cer,
         policies: Vec::new(),
+        holds: Default::default(),
         v: usnm_boinc::trust::TRUST_VERSION,
     };
     assert!(held.merge(&calibrated(1.0)).is_err());
@@ -2158,6 +2162,7 @@ async fn remote_handoff_round_trip_through_the_container() {
         }),
         max_cer: 0.1,
         policies: Vec::new(),
+        holds: Default::default(),
         v: usnm_boinc::trust::TRUST_VERSION,
     };
     let trust_path = fx.tmp.path().join("gold/trust.json");
@@ -4534,6 +4539,7 @@ fn line_trust(image: &str, host: u64) -> usnm_boinc::trust::Trust {
         scope: Some(eng.scope.clone()),
         max_cer: eng.max_cer,
         policies: vec![eng, lines],
+        holds: Default::default(),
         v: usnm_boinc::trust::TRUST_VERSION,
     }
 }

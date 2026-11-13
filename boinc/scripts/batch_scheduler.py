@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -124,7 +125,7 @@ OPTIONAL_FIELDS = {
     "app", "platform", "resource", "cohort", "cohorts",
     "low_watermark", "high_watermark", "max_global_pending", "server_status_url", "step_command",
     "gold_onboarding", "pages_per_unit", "bundle_app_version", "handoff_root", "native_hosts",
-    "units_per_cpu",
+    "units_per_cpu", "native_spot_check",
 }
 # OCR bundles (#1059): at most this many pages of one queue in one usnm_ocr workunit
 # (crates/usnm-ocr-contract/src/boinc.rs, bundle::MAX_PAGES), 1 (a page alone) by default.
@@ -486,6 +487,7 @@ def load_config(path):
     if "gold_onboarding" in config:
         _validate_gold_onboarding(config["gold_onboarding"])
     _validate_native_plan(config)
+    _validate_native_spot(config)
     if "pages_per_unit" in config:
         units = config["pages_per_unit"]
         require(isinstance(units, dict) and units and set(units) <= set(QUEUES) and
@@ -537,7 +539,7 @@ def load_config(path):
 
 # Not allocation: turning these on or changing them needs no migration. A native plan's hosts
 # (#1780) are widened one at a time, by hand.
-UNALLOCATED = ("gold_onboarding", "native_hosts")
+UNALLOCATED = ("gold_onboarding", "native_hosts", "native_spot_check")
 
 
 def digest(config):
@@ -652,7 +654,8 @@ class StepLockTimeout(RuntimeError):
 # Steps that take the host's shared step lock (usnm-boinc-step.lock), where a Qwen ship or collect
 # holds it for 5 to 17 minutes. With --step-lock-wait-secs they ask for a longer wait than the
 # host's own default (300 s), per step, so the other steps keep the host's setting.
-LONG_LOCK_STEPS = {("bridge", "submit-remote"), ("bridge", "gold-onboard"), ("bridge", "gold-promote")}
+LONG_LOCK_STEPS = {("bridge", "submit-remote"), ("bridge", "gold-onboard"), ("bridge", "gold-promote"),
+                   ("bridge", "native-spot")}
 MAX_STEP_LOCK_WAIT_SECS = 1200
 # A native plan retries a submit that only timed out on the step lock this many ticks in a row
 # before it pauses like any other failed submit.
@@ -1136,6 +1139,22 @@ class Transport:
                   HANDOFF_URL=self.handoff_url)
         result = self.blob("scheduler/inventory.json")
         require(result.get("nonce") == nonce, "stale/concurrent inventory; another controller may be active")
+        return result
+
+    @timed("native-spot")
+    def native_spot(self, submit, check):
+        """The bridge's native-spot step (#1863): create the `submit` replays and compare the
+        `check` ones (usnm-boinc host-trust native-spot's item lists), and return its report."""
+        nonce = uuid.uuid4().hex
+        variables = {"BATCH_NONCE": nonce, "HANDOFF_URL": self.handoff_url}
+        if submit:
+            variables["NATIVE_SPOT_SUBMIT"] = submit
+        if check:
+            variables["NATIVE_SPOT_CHECK"] = check
+        self.step("bridge", "native-spot", **variables)
+        result = self.blob("scheduler/native-spot.json")
+        require(result.get("nonce") == nonce and result.get("schema_version") == 1,
+                "stale native-spot report; another controller may be active")
         return result
 
     def storage_token(self):
@@ -2766,10 +2785,317 @@ def native_submit_untouched(transport, job_ids, clock):
         return False
 
 
+# Native spot checks (#1863, docs/boinc/apps/native-ocr.md): a share of each native host's
+# published pages is read again by a second host trusted for the same build, or for one
+# boinc/project/native-build-trust.json lists as identical, and the two results are compared
+# byte for byte on the BOINC host (usnm-boinc host-trust native-spot). Off unless the plan has
+# native_spot_check; with it, a host's room is its full room only while its checks run.
+NATIVE_SPOT_KEY = "native_spot_check"
+NATIVE_SPOT_FIELDS = {"share", "canary_pages_per_host", "max_outstanding_per_peer", "fresh_hours", "peers"}
+# 1 page in 20 by default: a systematic fault on a host shows within about 20 of its pages,
+# and a peer reading for one other host spends about 5% of that host's output on it.
+NATIVE_SPOT_SHARE = 0.05
+NATIVE_SPOT_CANARY = 10
+NATIVE_SPOT_PER_PEER = 4
+NATIVE_SPOT_FRESH_HOURS = 48
+# A replay not back after this long (BOINC's delay_bound is 72 hours) is given up as unverified.
+NATIVE_SPOT_MAX_AGE = 96 * 3600
+# What a mismatch record keeps of each host's results published since its last match.
+NATIVE_SPOT_UNCHECKED = 2000
+NATIVE_SPOT_MISMATCHES = 100
+NATIVE_BUILD_TRUST = REPO / "boinc/project/native-build-trust.json"
+# Sampling draws from the OS: chosen after the result came back, so a host can't tell at dispatch
+# which of its units will be checked. Tests replace it.
+SPOT_RANDOM = random.SystemRandom()
+
+
+def native_comparable(a, b, registry=None):
+    """Whether results of builds `a` and `b` compare byte for byte: the same digest, or a pair
+    native-build-trust.json lists (as usnm-boinc's BuildTrust::comparable)."""
+    if a == b:
+        return True
+    if registry is None:
+        registry = json.loads(NATIVE_BUILD_TRUST.read_text())
+    return sorted((a, b)) in [pair.get("digests") for pair in registry.get("equivalent", [])]
+
+
+def _validate_native_spot(config):
+    if NATIVE_SPOT_KEY not in config:
+        return
+    spec = config[NATIVE_SPOT_KEY]
+    require(config.get("app") == NATIVE_APP_NAME, f"{NATIVE_SPOT_KEY} is for {NATIVE_APP_NAME} plans")
+    require(isinstance(spec, dict) and set(spec) <= NATIVE_SPOT_FIELDS,
+            f"{NATIVE_SPOT_KEY} takes {', '.join(sorted(NATIVE_SPOT_FIELDS))}")
+    share = spec.get("share", NATIVE_SPOT_SHARE)
+    require(type(share) in (int, float) and 0 < share <= 0.5, f"{NATIVE_SPOT_KEY}.share: above 0, at most 0.5")
+    canary = spec.get("canary_pages_per_host", NATIVE_SPOT_CANARY)
+    require(type(canary) is int and 0 <= canary <= config["pages_per_host"],
+            f"{NATIVE_SPOT_KEY}.canary_pages_per_host: 0 to pages_per_host")
+    per_peer = spec.get("max_outstanding_per_peer", NATIVE_SPOT_PER_PEER)
+    require(type(per_peer) is int and 1 <= per_peer <= 100, f"{NATIVE_SPOT_KEY}.max_outstanding_per_peer: 1 to 100")
+    fresh = spec.get("fresh_hours", NATIVE_SPOT_FRESH_HOURS)
+    require(type(fresh) is int and 1 <= fresh <= 720, f"{NATIVE_SPOT_KEY}.fresh_hours: 1 to 720")
+    peers = spec.get("peers", [])
+    require(isinstance(peers, list) and len(peers) <= MAX_NATIVE_HOSTS, f"{NATIVE_SPOT_KEY}.peers is a list")
+    seen = set()
+    for peer in peers:
+        require(isinstance(peer, dict) and set(peer) == {"host", "image"} and type(peer["host"]) is int
+                and 1 <= peer["host"] <= 9999999999 and isinstance(peer["image"], str)
+                and re.fullmatch(r"sha256:[0-9a-f]{64}", peer["image"]),
+                f"a {NATIVE_SPOT_KEY} peer is {{host, image}}")
+        require(peer["host"] not in config["native_hosts"] and peer["host"] not in seen,
+                f"a {NATIVE_SPOT_KEY} peer is not one of the plan's native_hosts, and is listed once")
+        require(native_comparable(config["image"], peer["image"]),
+                f"peer {peer['host']}'s build {peer['image']} is not listed as identical to the plan's "
+                "in boinc/project/native-build-trust.json")
+        seen.add(peer["host"])
+
+
+def _spot(state):
+    return state.setdefault("native_spot", {})
+
+
+def native_spot_peers(config, state, slots, host):
+    """The hosts that may read `host`'s pages again, with their build: the plan's other active
+    hosts, and the configured peers on a listed build, none of them held."""
+    spec = config.get(NATIVE_SPOT_KEY) or {}
+    held = _spot(state).get("holds", {})
+    peers = [(other, config["image"]) for other in config["native_hosts"]
+             if other != host and slots.get(other, 0) > 0 and str(other) not in held]
+    peers += [(peer["host"], peer["image"]) for peer in spec.get("peers", []) if str(peer["host"]) not in held]
+    return peers
+
+
+def native_spot_running(config, state, slots, host, now):
+    """Whether `host`'s checks run: a peer is there, nothing has stopped the replay step, and one
+    of its pages matched a peer's within fresh_hours. Until then it stays at canary size."""
+    spec = config.get(NATIVE_SPOT_KEY) or {}
+    spot = _spot(state)
+    fresh = spec.get("fresh_hours", NATIVE_SPOT_FRESH_HOURS) * 3600
+    last = spot.get("last_match", {}).get(str(host))
+    return (bool(native_spot_peers(config, state, slots, host)) and not spot.get("failing")
+            and last is not None and now - last <= fresh)
+
+
+def native_spot_slots(config, state, slots, now):
+    """A native plan's room on each host (native_capacity), as its spot checks allow (#1863):
+    unchanged without native_spot_check; otherwise none for a held host, and at most
+    canary_pages_per_host for one whose checks aren't running."""
+    if NATIVE_SPOT_KEY not in config:
+        return slots
+    spec = config[NATIVE_SPOT_KEY]
+    canary = spec.get("canary_pages_per_host", NATIVE_SPOT_CANARY)
+    held = _spot(state).get("holds", {})
+    out = {}
+    for host, room in slots.items():
+        if str(host) in held:
+            out[host] = 0
+        elif native_spot_running(config, state, slots, host, now):
+            out[host] = room
+        else:
+            out[host] = min(room, canary)
+    return out
+
+
+def native_spot_sample(config, state, slots, published, now, rng=None):
+    """Note each newly published native page against its host, and draw each one for a replay
+    with probability `share` (SPOT_RANDOM, after the result came back). `published` is
+    (job id, host, page, original spool). A drawn page goes to the peer with the fewest replays
+    out, if one has room; otherwise it is counted as skipped, never queued for later."""
+    spec = config[NATIVE_SPOT_KEY]
+    rng = SPOT_RANDOM if rng is None else rng
+    spot = _spot(state)
+    share = spec.get("share", NATIVE_SPOT_SHARE)
+    per_peer = spec.get("max_outstanding_per_peer", NATIVE_SPOT_PER_PEER)
+    pending = spot.setdefault("pending", {})
+    unchecked = spot.setdefault("unchecked", {})
+    counts = spot.setdefault("counts", {})
+    for job_id, host, page, spool in published:
+        if job_id in pending:
+            continue
+        mine = unchecked.setdefault(str(host), {"pages": [], "overflow": 0})
+        mine["pages"].append([job_id, page, int(now)])
+        if len(mine["pages"]) > NATIVE_SPOT_UNCHECKED:
+            mine["overflow"] += len(mine["pages"]) - NATIVE_SPOT_UNCHECKED
+            del mine["pages"][:len(mine["pages"]) - NATIVE_SPOT_UNCHECKED]
+        if rng.random() >= share:
+            continue
+        counts["drawn"] = counts.get("drawn", 0) + 1
+        out = {}
+        for entry in pending.values():
+            out[entry["target"]] = out.get(entry["target"], 0) + 1
+        peers = [(out.get(peer, 0), peer, image) for peer, image in native_spot_peers(config, state, slots, host)
+                 if out.get(peer, 0) < per_peer]
+        if not peers:
+            reason = "no_peer" if not native_spot_peers(config, state, slots, host) else "peer_busy"
+            counts[reason] = counts.get(reason, 0) + 1
+            continue
+        _, peer, image = min(peers)
+        pending[job_id] = {"source": host, "target": peer, "image": image, "page": page,
+                           "spool": spool, "at": int(now), "stage": "queued"}
+
+
+def _spot_item(job_id, entry, spool):
+    item = f"{job_id}={entry['source']}:{entry['target']}:{entry['image'].removeprefix('sha256:')}"
+    return item + (f":{entry['spool']}" if spool else "")
+
+
+def native_spot_step(config, state, transport, now, submit_room=100):
+    """Run the bridge's native-spot step for the queued replays and the submitted ones, and act on
+    what it reports: a match refreshes the host's checks and settles its unchecked pages up to
+    that one; a mismatch holds both hosts (here and, already, in trust.json) with the pages each
+    published since its last match; a refused, failed or unverified replay is counted and
+    dropped. A step that fails marks the checks failing, which caps every host."""
+    spot = _spot(state)
+    pending = spot.get("pending", {})
+    counts = spot.setdefault("counts", {})
+    def expire(job_id):
+        counts["expired"] = counts.get("expired", 0) + 1
+        spot["last_unverified"] = {"job": job_id, "at": int(now), "detail": "replay not back in time"}
+        del pending[job_id]
+
+    # A queued replay too old is given up; a submitted one only once the bridge has been asked
+    # and still reports it pending, so one that came back in a long outage is still compared.
+    for job_id, entry in list(pending.items()):
+        if entry["stage"] == "queued" and now - entry["at"] > NATIVE_SPOT_MAX_AGE:
+            expire(job_id)
+    # `submit_room` new replay units at most: none while draining, and none past the global cap.
+    queued = [(j, e) for j, e in pending.items() if e["stage"] == "queued"][:max(0, min(100, submit_room))]
+    # The 100 least recently polled, so every replay is looked at in turn, however many are out.
+    submitted = sorted(((j, e) for j, e in pending.items() if e["stage"] == "submitted"),
+                       key=lambda item: (item[1].get("polled", 0), item[0]))[:100]
+    for _, entry in submitted:
+        entry["polled"] = int(now)
+    if not queued and not submitted:
+        return
+    try:
+        report = transport.native_spot(",".join(_spot_item(j, e, False) for j, e in queued),
+                                       ",".join(_spot_item(j, e, True) for j, e in submitted))
+    except (RuntimeError, OSError, ValueError, KeyError) as error:
+        spot["failing"] = {"at": int(now), "reason": str(error)[:500]}
+        return
+    spot.pop("failing", None)
+    for outcome in report.get("submitted", []):
+        entry = pending.get(outcome["job"])
+        if entry is None:
+            continue
+        if outcome["status"] == "submitted":
+            entry["stage"] = "submitted"
+        else:
+            counts["refused"] = counts.get("refused", 0) + 1
+            spot["last_refused"] = {"job": outcome["job"], "at": int(now), "detail": outcome["detail"][:500]}
+            del pending[outcome["job"]]
+    for outcome in report.get("checked", []):
+        job_id, status = outcome["job"], outcome["status"]
+        entry = pending.get(job_id)
+        if entry is None:
+            continue
+        if status == "pending":
+            if now - entry["at"] > NATIVE_SPOT_MAX_AGE:
+                expire(job_id)
+            continue
+        del pending[job_id]
+        counts[status] = counts.get(status, 0) + 1
+        source, target = str(entry["source"]), str(entry["target"])
+        unchecked = spot.setdefault("unchecked", {})
+        if status == "match":
+            spot.setdefault("last_match", {})[source] = int(now)
+            mine = unchecked.get(source, {"pages": [], "overflow": 0})
+            done = next((i for i, row in enumerate(mine["pages"]) if row[0] == job_id), None)
+            if done is not None:
+                mine["pages"] = mine["pages"][done + 1:]
+                mine["overflow"] = 0
+        elif status == "mismatch":
+            record = {"job": job_id, "page": entry["page"], "at": int(now), "source": entry["source"],
+                      "target": entry["target"], "detail": outcome["detail"][:1000],
+                      # A copy: later matches settle the live lists, never this evidence.
+                      "unchecked": {host: copy.deepcopy(unchecked.get(host, {"pages": [], "overflow": 0}))
+                                    for host in (source, target)}}
+            mismatches = spot.setdefault("mismatches", [])
+            mismatches.append(record)
+            del mismatches[:-NATIVE_SPOT_MISMATCHES]
+            holds = spot.setdefault("holds", {})
+            for host, peer in ((source, entry["target"]), (target, entry["source"])):
+                holds.setdefault(host, {"at": int(now), "job": job_id, "peer": peer})
+        else:
+            spot["last_unverified"] = {"job": job_id, "at": int(now), "status": status,
+                                       "detail": outcome["detail"][:500]}
+
+
+def native_spot_tick(config, state, transport, persist, now, owned, server, slots, rng=None,
+                     submit_room=100):
+    """After a native plan's collection: draw from its published pages not yet drawn from (by
+    the journals and its host assignments, so a page a stopped tick published is still drawn,
+    and only once), then replay and compare. `server` is the inventory's jobs, with each one's
+    assimilator spool."""
+    targets = state.get("native_targets", {})
+    spot = _spot(state)
+    # A job leaves native_targets once settled, so the marker list stays as short as it is.
+    seen = {job_id: at for job_id, at in spot.get("seen", {}).items() if job_id in targets}
+    published = []
+    for page, record in sorted(owned.items()):
+        job_id = record["job"]["id"]
+        if record["stage"] != "published" or job_id not in targets or job_id in seen:
+            continue
+        seen[job_id] = int(now)
+        spool = server.get(job_id, {}).get("spool")
+        if spool:
+            published.append((job_id, targets[job_id], page, spool))
+        else:
+            counts = spot.setdefault("counts", {})
+            counts["no_spool"] = counts.get("no_spool", 0) + 1
+    spot["seen"] = seen
+    native_spot_sample(config, state, slots, published, now, rng)
+    persist()
+    native_spot_step(config, state, transport, now, submit_room)
+    persist()
+
+
+def release_native_spot_hold(state, host, note, now):
+    """An operator's release of a host's spot-check hold, after looking (#1863). Its trust.json
+    hold is released separately, on the BOINC host (usnm-boinc host-trust release-hold). The
+    release is kept on record, and the host starts again at canary size."""
+    require(isinstance(note, str) and note.strip() and len(note) <= 500 and "\n" not in note,
+            "a release needs a one-line note of what was looked at")
+    spot = _spot(state)
+    hold = spot.get("holds", {}).pop(str(host), None)
+    require(hold is not None, f"host {host} has no native spot hold in this plan")
+    spot.setdefault("releases", []).append({"host": host, "hold": hold, "note": note, "at": int(now)})
+    del spot["releases"][:-NATIVE_SPOT_MISMATCHES]
+    spot.get("last_match", {}).pop(str(host), None)
+    spot.get("unchecked", {}).pop(str(host), None)
+
+
+def native_spot_alerts(config, state):
+    if NATIVE_SPOT_KEY not in config:
+        return []
+    spot = state.get("native_spot", {})
+    alerts = []
+    for host, hold in sorted(spot.get("holds", {}).items()):
+        alerts.append({"code": "native_spot_mismatch", "app": NATIVE_APP_NAME, "host": int(host), **hold,
+                       "message": "a native spot check found different bytes; the host gets no work. Look at "
+                                  "the mismatch record, then release with host-trust release-hold on the BOINC "
+                                  "host and --release-native-spot-hold here"})
+    if spot.get("failing"):
+        alerts.append({"code": "native_spot_failing", "app": NATIVE_APP_NAME, **spot["failing"],
+                       "message": "the native-spot step failed; every native host is held to canary size"})
+    return alerts
+
+
+def native_spot_summary(config, state, slots, now):
+    if NATIVE_SPOT_KEY not in config:
+        return None
+    spot = state.get("native_spot", {})
+    return {"running": {str(host): native_spot_running(config, state, slots, host, now)
+                        for host in config["native_hosts"]},
+            "pending": len(spot.get("pending", {})), "held": sorted(int(h) for h in spot.get("holds", {})),
+            "counts": spot.get("counts", {}), "failing": spot.get("failing")}
+
+
 def tick(config, state, transport, persist, now=None, *, drain=False, dead_letter_failed=False,
          low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None,
          refill_cap=None, other_app_budget=None, sibling_archived=None, sibling_claims=None,
-         resume_native=False):
+         resume_native=False, release_spot_hold=None):
     if config.get("app") == SURYA_APP_NAME:
         require(refill_cap is None, "--refill-cap is for OCR plans")
         require(other_app_budget is None, "--other-app-budget is for OCR plans")
@@ -2784,6 +3110,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         cleared = [state.pop("native_paused", None), state.pop("native_lock_retry", None)]
         if any(value is not None for value in cleared):
             persist()
+    if release_spot_hold is not None:
+        require(native and NATIVE_SPOT_KEY in config, f"--release-native-spot-hold is for plans with {NATIVE_SPOT_KEY}")
+        release_native_spot_hold(state, *release_spot_hold, time.time() if now is None else now)
+        persist()
     # Claims, exports and submits per tick (#1447). Collection still takes up to batch_size, so a
     # shorter tick doesn't leave held results that stop the next refill.
     refill = config["batch_size"] if refill_cap is None else min(config["batch_size"], refill_cap)
@@ -2801,7 +3131,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         warn_near_cap("archived_held", len(feed.archived_held), MAX_ARCHIVED_HELD, now)
     for key in ("pending_workunits", "active_hosts"):
         require(type(snapshot[key]) is int and snapshot[key] >= 0, "invalid capacity inventory")
-    native_slots = native_capacity(config, snapshot) if native else None
+    # A native plan's room before and after its spot checks' limit (#1863).
+    native_room = native_capacity(config, snapshot) if native else None
+    native_slots = native_spot_slots(config, state, native_room, now) if native else None
     pending_jobs = snapshot["pending_jobs"]
     require(isinstance(pending_jobs, list) and len(pending_jobs) <= MAX_JOBS and
             all(isinstance(job_id, str) and ID.fullmatch(job_id) for job_id in pending_jobs) and
@@ -3052,6 +3384,14 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             state["native_paused"] = {"at": since, "reason": "; ".join(reasons),
                                       "jobs": (unpublished + kept)[:5]}
             persist()
+    if native and NATIVE_SPOT_KEY in config:
+        # A replay is a workunit like any other: none while draining, none past the global cap.
+        spot_cap = max_global_pending if max_global_pending is not None else config.get("max_global_pending")
+        spot_room = 0 if drain else (100 if spot_cap is None else spot_cap - snapshot["pending_workunits"])
+        native_spot_tick(config, state, transport, persist, now, owned, server, native_room,
+                         submit_room=spot_room)
+        # A mismatch, a failing step or a match just now changes what each host may get.
+        native_slots = native_spot_slots(config, state, native_room, now)
     native_paused = state.get("native_paused") if native else None
     settle_failed(owned)
     status = _extract_status(snapshot, transport, server_status=server_status, drain=drain)
@@ -3378,6 +3718,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     if native_paused:
         alerts.append({"code": "native_paused", "app": NATIVE_APP_NAME, **native_paused,
                        "message": "native OCR paused; inspect the held results, then --resume-native"})
+    alerts += native_spot_alerts(config, state)
     for run in gold_runs:
         for step, outcome in run["steps"].items():
             if outcome not in ("ok", GOLD_SKIPPED_AT_CAP):
@@ -3456,6 +3797,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             "outstanding": {str(host): sum(h == host for h in targets.values()) for host in config["native_hosts"]},
             "paused": native_paused,
         }
+        if NATIVE_SPOT_KEY in config:
+            event["native"]["spot_check"] = native_spot_summary(config, state, native_slots, now)
     return with_timings(event, transport)
 
 
@@ -3518,6 +3861,11 @@ def main(argv=None):
                         help=f"a {NATIVE_APP_NAME} plan paused on a native result it could not publish, or "
                              "a refused submission (#1780): clear the pause and go on; a result still held "
                              "pauses it again")
+    parser.add_argument("--release-native-spot-hold", type=int, metavar="HOST",
+                        help="a native plan with native_spot_check: release HOST's spot-check hold after "
+                             "looking at its mismatch record (#1863), with --note; release its trust.json "
+                             "hold on the BOINC host too (usnm-boinc host-trust release-hold)")
+    parser.add_argument("--note", help="what was looked at, for --release-native-spot-hold")
     parser.add_argument("--step-lock-wait-secs", type=int, default=0, metavar="SECONDS",
                         help="how long submit-remote and the gold steps wait for the BOINC host's step lock "
                              f"(0 to {MAX_STEP_LOCK_WAIT_SECS}; default 0: the host's own wait). Sent to "
@@ -3658,6 +4006,8 @@ def main(argv=None):
             tick_kwargs = {"drain": args.drain, "dead_letter_failed": args.dead_letter_failed}
             if args.resume_native:
                 tick_kwargs["resume_native"] = True
+            if args.release_native_spot_hold is not None:
+                tick_kwargs["release_spot_hold"] = (args.release_native_spot_hold, args.note)
             if args.low_watermark is not None:
                 tick_kwargs["low_watermark"] = args.low_watermark
             if args.high_watermark is not None:
