@@ -177,6 +177,29 @@ verify no writer remains).
 - Changing spool names, layout or the BOINC MySQL read path.
 - SAS tokens or shared keys for any remaining Azure access.
 
+## Review follow-ups
+
+- **Held pages.** `Transport.publish_held` writes and deletes `scheduler/held-pages/` parts, so it
+  is a remote, fenced step too (`write-held-pages`, JSON on stdin, other plans' parts untouched).
+  The controller's digest marker is written only after the step succeeds.
+- **Heartbeat during long steps.** The `lock-*` steps do not take `/run/usnm-boinc-handoff.lock`.
+  They take only a short flock on the lock record's sidecar, and the heartbeat runs on its own
+  thread beside the controller's blocking step calls, so a collect longer than the TTL does not
+  starve renewal.
+- **Fencing.** Every controller step that writes the root carries the holder and generation:
+  claim, release, dead-letter, collect, export, `write-held-pages` and `bridge spool-out`. The
+  host checks at entry and again after waiting for the step lock, immediately before launching.
+  Bridge submissions write BOINC's database, not the root, and stay under the controller's single
+  tick; they are not fenced by the record. A mutator that has already passed its check can finish
+  after a takeover. The successor therefore does not claim until the old holder's TTL has passed
+  (acquire fails while the record is unexpired), which bounds the overlap to one step.
+- **Offsite copy consistency.** The R2 copy is a one-way disaster-recovery aid, not a point-in-time
+  snapshot: a collect writes kept results before its settled journal, so a copy taken mid-collect
+  can hold the journal without its result. Using it for recovery needs a verification pass (every
+  settled journal has its retained results) before any writer starts, and a reverse copy of the
+  complete root, not only changed journals. Cutting a consistent snapshot with a completion
+  manifest is a follow-up if the copy is ever used for recovery rather than inspection.
+
 ## Decisions
 
 The maintainer decided the earlier open questions (PR #1884 comment):
