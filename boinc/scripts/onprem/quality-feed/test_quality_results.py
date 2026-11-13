@@ -393,7 +393,8 @@ class ResultsTest(unittest.TestCase):
             self.assertIn("--root /project/quality/qwen-nonenglish-v1", command)
             self.assertIn("--qwen-root /project/qwen/qwen-nonenglish-v1", command)
             self.assertIn("--qwen-spool /project/usnmocr/results/8", command)
-            self.assertIn("--qwen-xiaomi-spool /project/usnmocr/results/108", command)
+            # A loaded root's collector may predate the flag; its jobs never read batch 108.
+            self.assertNotIn("--qwen-xiaomi-spool", command)
             self.assertIn("quality collect", command)
             self.assertNotIn("submit", command)
             self.assertEqual(report["qwen_campaign"], args.campaign)

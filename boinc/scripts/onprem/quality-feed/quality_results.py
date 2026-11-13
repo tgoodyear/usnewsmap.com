@@ -182,8 +182,10 @@ def run(args):
         "--qwen-root", qwen_root,
         "--qwen-spool", "/project/usnmocr/results/8" if args.qwen_campaign else root + "/no-qwen",
     ]
-    if args.qwen_campaign:
-        # Xiaomi-OCR-0 units are batch 108 (#1776); their jobs read only this spool.
+    if args.qwen_campaign and getattr(args, "hold", False):
+        # Xiaomi-OCR-0 units are batch 108 (#1776); their jobs read only this spool. Only a held
+        # (Xiaomi-OCR-0) root passes it: the loaded roots never read batch 108, and their collectors
+        # (older than #1849) reject the flag.
         collect_args.extend(["--qwen-xiaomi-spool", "/project/usnmocr/results/108"])
     crop_states = getattr(args, "qwen_crop_states", None)
     if args.qwen_campaign and crop_states:
