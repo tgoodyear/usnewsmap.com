@@ -257,7 +257,10 @@ pub(super) struct Files {
 /// Reads a result's files. An error here is the filesystem's (missing, unreadable), not the
 /// host's: the bytes themselves are judged by [`judge`].
 pub(super) fn fetch(spool: &Path, workunit: &str) -> std::io::Result<Files> {
-    let file = |name: &str| -> std::io::Result<Vec<u8>> {
+    // At most a byte past each limit is read, so [`judge`] can refuse an oversized file without
+    // it being held in memory whole.
+    let file = |name: &str, limit: usize| -> std::io::Result<Vec<u8>> {
+        use std::io::Read as _;
         let path = spool.join(format!("{workunit}__file_{name}"));
         if std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
             return Err(std::io::Error::new(
@@ -265,12 +268,16 @@ pub(super) fn fetch(spool: &Path, workunit: &str) -> std::io::Result<Files> {
                 format!("{} is a symlink", path.display()),
             ));
         }
-        std::fs::read(path)
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take(limit as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        Ok(bytes)
     };
     Ok(Files {
-        result: file("result.json")?,
-        text: file("text.txt")?,
-        alto: file("layout.xml")?,
+        result: file("result.json", boinc::MAX_JSON)?,
+        text: file("text.txt", boinc::MAX_TEXT)?,
+        alto: file("layout.xml", boinc::MAX_ALTO)?,
     })
 }
 

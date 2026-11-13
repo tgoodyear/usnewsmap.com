@@ -1,4 +1,5 @@
 """Native OCR spot checks in the controller (#1863, docs/boinc/apps/native-ocr.md)."""
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -282,6 +283,63 @@ class NativeSpotTests(unittest.TestCase):
         for _, check in self.fake.spot_calls:
             polled |= {item.split("=")[0] for item in check.split(",")}
         self.assertEqual(len(polled), 150)
+
+
+    def test_a_null_setting_is_refused(self):
+        config = tbs.native_config((13, 240))
+        config["native_spot_check"] = None
+        with self.assertRaises(ValueError):
+            validate(config)
+
+    def test_an_overdue_replay_is_compared_before_it_is_given_up(self):
+        self.cycle()
+        jobs = list(self.state["native_spot"]["pending"])
+        for entry in self.state["native_spot"]["pending"].values():
+            entry["at"] = NOW - batch.NATIVE_SPOT_MAX_AGE - 3600
+        self.fake.verdicts[jobs[0]] = "mismatch"
+        batch.native_spot_step(self.config, self.state, self.fake, NOW)
+        spot = self.state["native_spot"]
+        # The one back is judged; the one still pending past its age is given up.
+        self.assertIn(str(spot["mismatches"][0]["source"]), spot["holds"])
+        self.assertEqual(spot["pending"], {})
+        self.assertEqual(spot["counts"]["expired"], 1)
+
+    def test_a_mismatch_record_keeps_its_evidence(self):
+        self.cycle()
+        spot = self.state["native_spot"]
+        first, second = list(spot["pending"])
+        source = str(spot["pending"][first]["source"])
+        self.fake.verdicts[first] = "mismatch"
+        batch.native_spot_step(self.config, self.state, self.fake, NOW)
+        before = copy.deepcopy(spot["mismatches"][0])
+        # A later match for the same host settles its live list, not the record.
+        spot["pending"][second].update(source=int(source), target=99 if source == "13" else 13)
+        self.fake.verdicts[second] = "match"
+        batch.native_spot_step(self.config, self.state, self.fake, NOW + 60)
+        self.assertEqual(spot["mismatches"][0], before)
+
+    def test_a_page_a_stopped_tick_published_is_still_drawn_once(self):
+        self.tick()
+        self.results_in()
+
+        class Stop(Exception):
+            pass
+
+        def stop(*args, **kwargs):
+            raise Stop()
+
+        original = batch.native_spot_tick
+        batch.native_spot_tick = stop
+        try:
+            with self.assertRaises(Stop):
+                self.tick()
+        finally:
+            batch.native_spot_tick = original
+        self.tick()
+        spot = self.state["native_spot"]
+        self.assertEqual(len(spot["pending"]), 2)
+        self.tick()
+        self.assertEqual(spot["counts"]["drawn"], 2)
 
 
 class SamplingTests(unittest.TestCase):

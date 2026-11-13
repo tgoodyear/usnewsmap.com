@@ -442,12 +442,15 @@ async fn check_one(
         "native spot journal changed"
     );
     if let Some(verdict) = journal.verdict.clone() {
-        if verdict.status == Status::Mismatch && execute {
+        // Stage `holding`: a run stopped between the verdict and its holds. Once the holds are
+        // in (`compared`), they are never written again, so a released hold stays released.
+        if journal.stage == "holding" && execute {
             let source = journal
                 .source_image
                 .clone()
                 .context("a recorded mismatch names the original's build")?;
             hold_both(p, r, &source)?;
+            return finish(p, &path, &mut journal, verdict, execute);
         }
         return Ok(verdict);
     }
@@ -460,8 +463,7 @@ async fn check_one(
     if p.spool.join(format!("{workunit}_error")).exists()
         || p.spool.join(format!("{workunit}_no_output_files")).exists()
     {
-        return finish(
-            &path,
+        return finish(p, &path,
             &mut journal,
             outcome(r, Status::Failed, "the replay unit failed in BOINC"),
             execute,
@@ -477,8 +479,7 @@ async fn check_one(
     let job = match load(&p.jobs_root, &r.job) {
         Ok(record) => record.job,
         Err(error) => {
-            return finish(
-                &path,
+            return finish(p, &path,
                 &mut journal,
                 outcome(
                     r,
@@ -491,8 +492,7 @@ async fn check_one(
     };
     let target = target_job(&job, &r.target_image)?;
     if let Some(reason) = refuse(trust, builds, &job, &target, r) {
-        return finish(
-            &path,
+        return finish(p, &path,
             &mut journal,
             outcome(r, Status::Unverified, reason),
             execute,
@@ -508,8 +508,7 @@ async fn check_one(
             Ok(found) => {
                 let detail =
                     format!("{unit}'s canonical result is host {found:?}'s, not host {host}'s");
-                return finish(
-                    &path,
+                return finish(p, &path,
                     &mut journal,
                     outcome(r, Status::Unverified, detail),
                     execute,
@@ -533,8 +532,7 @@ async fn check_one(
     let original = match fetch(spool, &job.workunit()) {
         Ok(files) => files,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return finish(
-                &path,
+            return finish(p, &path,
                 &mut journal,
                 outcome(r, Status::Unverified, format!("original: {error}")),
                 execute,
@@ -545,8 +543,7 @@ async fn check_one(
     let original = match judge(&job, original) {
         Ok(original) => original,
         Err(error) => {
-            return finish(
-                &path,
+            return finish(p, &path,
                 &mut journal,
                 outcome(r, Status::Unverified, format!("original: {error:#}")),
                 execute,
@@ -574,8 +571,7 @@ async fn check_one(
         }
     };
     if agree(builds, &original, &replay, true)? {
-        return finish(
-            &path,
+        return finish(p, &path,
             &mut journal,
             outcome(r, Status::Match, "text and ALTO bytes identical"),
             execute,
@@ -599,12 +595,16 @@ fn mismatch(
     detail: String,
     execute: bool,
 ) -> anyhow::Result<Outcome> {
-    journal.source_image = Some(job.engine.image.clone());
-    let verdict = finish(path, journal, outcome(r, Status::Mismatch, detail), execute)?;
-    if execute {
-        hold_both(p, r, &job.engine.image)?;
+    let verdict = outcome(r, Status::Mismatch, detail);
+    if !execute {
+        return Ok(verdict);
     }
-    Ok(verdict)
+    journal.source_image = Some(job.engine.image.clone());
+    journal.stage = "holding".into();
+    journal.verdict = Some(verdict.clone());
+    atomic(path, &serde_json::to_vec_pretty(journal)?)?;
+    hold_both(p, r, &job.engine.image)?;
+    finish(p, path, journal, verdict, execute)
 }
 
 /// Holds the source host for its build and the peer for its own; a hold already there stays.
@@ -630,17 +630,49 @@ fn hold_both(p: &Paths, r: &Replay, source_image: &str) -> anyhow::Result<()> {
 }
 
 fn finish(
+    p: &Paths,
     path: &Path,
     journal: &mut Journal,
     verdict: Outcome,
     execute: bool,
 ) -> anyhow::Result<Outcome> {
     if execute {
+        let into = path.parent().context("a journal has a directory")?;
+        keep_replay_files(&p.spool, &journal.workunit, into)?;
         journal.stage = "compared".into();
         journal.verdict = Some(verdict.clone());
         atomic(path, &serde_json::to_vec_pretty(journal)?)?;
     }
     Ok(verdict)
+}
+
+/// Moves a judged replay's files out of the results directory into its journal's: they stay as
+/// evidence, and don't pile up where the batch inventory counts entries.
+fn keep_replay_files(spool: &Path, workunit: &str, into: &Path) -> anyhow::Result<()> {
+    let kept = into.join("replay");
+    for suffix in [
+        "__file_result.json",
+        "__file_text.txt",
+        "__file_layout.xml",
+        "_error",
+        "_no_output_files",
+    ] {
+        let from = spool.join(format!("{workunit}{suffix}"));
+        match std::fs::symlink_metadata(&from) {
+            Ok(meta) if meta.is_file() => {
+                std::fs::create_dir_all(&kept)?;
+                let to = kept.join(format!("{workunit}{suffix}"));
+                if std::fs::rename(&from, &to).is_err() {
+                    atomic(&to, &std::fs::read(&from)?)?;
+                    std::fs::remove_file(&from)?;
+                }
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }
 
 /// Creates the `submit` replays and compares the `check` ones, under the journal root's lock.
@@ -1175,7 +1207,7 @@ mod tests {
         let path = journal_path(&f.paths.root, &r);
         let mut journal: Journal = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         journal.source_image = Some(LINUX.into());
-        journal.stage = "compared".into();
+        journal.stage = "holding".into();
         journal.verdict = Some(outcome(&r, Status::Mismatch, "recorded"));
         atomic(&path, &serde_json::to_vec(&journal).unwrap()).unwrap();
         assert!(trust(&f).holds.is_empty());
@@ -1185,6 +1217,38 @@ mod tests {
             trust(&f).holds[LINUX].keys().copied().collect::<Vec<_>>(),
             vec![13, 240]
         );
+        // Once complete, a released hold isn't written again by reading the verdict.
+        Trust::release_hold(&f.paths.trust, LINUX, 240, "reviewed").unwrap();
+        let o = block(check_one(&f.paths, &trust(&f), &f.builds, &r, true)).unwrap();
+        assert_eq!(o.status, Status::Mismatch);
+        assert!(trust(&f).held_host(LINUX, 240).is_none());
+    }
+
+    #[test]
+    fn a_judged_replays_files_leave_the_results_directory() {
+        let f = fixture();
+        let r = replay(&f, 240, LINUX, true);
+        submitted(&f, &r);
+        returned(&f.job, r.original_spool.as_deref().unwrap(), &f.job.workunit(), "HELLO\n");
+        returned(&f.job, &f.paths.spool, &r.workunit(), "HELLO\n");
+        block(check_one(&f.paths, &trust(&f), &f.builds, &r, true)).unwrap();
+        assert_eq!(std::fs::read_dir(&f.paths.spool).unwrap().count(), 0);
+        let kept = journal_path(&f.paths.root, &r).parent().unwrap().join("replay");
+        assert!(kept.join(format!("{}__file_text.txt", r.workunit())).is_file());
+        // The original's files are the plan's, and stay.
+        let original = r.original_spool.as_deref().unwrap();
+        assert!(original.join(format!("{}__file_text.txt", f.job.workunit())).is_file());
+    }
+
+    #[test]
+    fn an_oversized_replay_is_judged_without_being_read_whole() {
+        let f = fixture();
+        let r = replay(&f, 240, LINUX, true);
+        returned(&f.job, &f.paths.spool, &r.workunit(), "HELLO\n");
+        let text = f.paths.spool.join(format!("{}__file_text.txt", r.workunit()));
+        std::fs::write(&text, vec![b'a'; boinc::MAX_TEXT + 10]).unwrap();
+        let files = super::super::spot::fetch(&f.paths.spool, &r.workunit()).unwrap();
+        assert!(super::super::spot::judge(&f.job, files).is_err());
     }
 
     #[test]

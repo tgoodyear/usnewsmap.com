@@ -2780,9 +2780,9 @@ def native_comparable(a, b, registry=None):
 
 
 def _validate_native_spot(config):
-    spec = config.get(NATIVE_SPOT_KEY)
-    if spec is None:
+    if NATIVE_SPOT_KEY not in config:
         return
+    spec = config[NATIVE_SPOT_KEY]
     require(config.get("app") == NATIVE_APP_NAME, f"{NATIVE_SPOT_KEY} is for {NATIVE_APP_NAME} plans")
     require(isinstance(spec, dict) and set(spec) <= NATIVE_SPOT_FIELDS,
             f"{NATIVE_SPOT_KEY} takes {', '.join(sorted(NATIVE_SPOT_FIELDS))}")
@@ -2909,11 +2909,16 @@ def native_spot_step(config, state, transport, now):
     spot = _spot(state)
     pending = spot.get("pending", {})
     counts = spot.setdefault("counts", {})
+    def expire(job_id):
+        counts["expired"] = counts.get("expired", 0) + 1
+        spot["last_unverified"] = {"job": job_id, "at": int(now), "detail": "replay not back in time"}
+        del pending[job_id]
+
+    # A queued replay too old is given up; a submitted one only once the bridge has been asked
+    # and still reports it pending, so one that came back in a long outage is still compared.
     for job_id, entry in list(pending.items()):
-        if now - entry["at"] > NATIVE_SPOT_MAX_AGE:
-            counts["expired"] = counts.get("expired", 0) + 1
-            spot["last_unverified"] = {"job": job_id, "at": int(now), "detail": "replay not back in time"}
-            del pending[job_id]
+        if entry["stage"] == "queued" and now - entry["at"] > NATIVE_SPOT_MAX_AGE:
+            expire(job_id)
     queued = [(j, e) for j, e in pending.items() if e["stage"] == "queued"][:100]
     # The 100 least recently polled, so every replay is looked at in turn, however many are out.
     submitted = sorted(((j, e) for j, e in pending.items() if e["stage"] == "submitted"),
@@ -2942,7 +2947,11 @@ def native_spot_step(config, state, transport, now):
     for outcome in report.get("checked", []):
         job_id, status = outcome["job"], outcome["status"]
         entry = pending.get(job_id)
-        if entry is None or status == "pending":
+        if entry is None:
+            continue
+        if status == "pending":
+            if now - entry["at"] > NATIVE_SPOT_MAX_AGE:
+                expire(job_id)
             continue
         del pending[job_id]
         counts[status] = counts.get(status, 0) + 1
@@ -2958,7 +2967,8 @@ def native_spot_step(config, state, transport, now):
         elif status == "mismatch":
             record = {"job": job_id, "page": entry["page"], "at": int(now), "source": entry["source"],
                       "target": entry["target"], "detail": outcome["detail"][:1000],
-                      "unchecked": {host: unchecked.get(host, {"pages": [], "overflow": 0})
+                      # A copy: later matches settle the live lists, never this evidence.
+                      "unchecked": {host: copy.deepcopy(unchecked.get(host, {"pages": [], "overflow": 0}))
                                     for host in (source, target)}}
             mismatches = spot.setdefault("mismatches", [])
             mismatches.append(record)
@@ -2971,16 +2981,28 @@ def native_spot_step(config, state, transport, now):
                                        "detail": outcome["detail"][:500]}
 
 
-def native_spot_tick(config, state, transport, persist, now, owned, collected, slots, rng=None):
-    """After a native plan's collection: draw from the pages it just published, then replay and
-    compare. `collected` is the (job id, spool) pairs this tick tried to collect."""
+def native_spot_tick(config, state, transport, persist, now, owned, server, slots, rng=None):
+    """After a native plan's collection: draw from its published pages not yet drawn from (by
+    the journals and its host assignments, so a page a stopped tick published is still drawn,
+    and only once), then replay and compare. `server` is the inventory's jobs, with each one's
+    assimilator spool."""
     targets = state.get("native_targets", {})
-    by_job = {record["job"]["id"]: (page, record) for page, record in owned.items()}
+    spot = _spot(state)
+    # A job leaves native_targets once settled, so the marker list stays as short as it is.
+    seen = {job_id: at for job_id, at in spot.get("seen", {}).items() if job_id in targets}
     published = []
-    for job_id, spool in collected:
-        page, record = by_job.get(job_id, (None, None))
-        if record is not None and record["stage"] == "published" and job_id in targets:
+    for page, record in sorted(owned.items()):
+        job_id = record["job"]["id"]
+        if record["stage"] != "published" or job_id not in targets or job_id in seen:
+            continue
+        seen[job_id] = int(now)
+        spool = server.get(job_id, {}).get("spool")
+        if spool:
             published.append((job_id, targets[job_id], page, spool))
+        else:
+            counts = spot.setdefault("counts", {})
+            counts["no_spool"] = counts.get("no_spool", 0) + 1
+    spot["seen"] = seen
     native_spot_sample(config, state, slots, published, now, rng)
     persist()
     native_spot_step(config, state, transport, now)
@@ -3321,7 +3343,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                                       "jobs": (unpublished + kept)[:5]}
             persist()
     if native and NATIVE_SPOT_KEY in config:
-        native_spot_tick(config, state, transport, persist, now, owned, to_collect, native_room)
+        native_spot_tick(config, state, transport, persist, now, owned, server, native_room)
         # A mismatch, a failing step or a match just now changes what each host may get.
         native_slots = native_spot_slots(config, state, native_room, now)
     native_paused = state.get("native_paused") if native else None
