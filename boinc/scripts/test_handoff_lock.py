@@ -15,8 +15,19 @@ from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-import batch_scheduler as batch
-import handoff_lock as lock
+import importlib.util
+
+
+def load(name):
+    """Load a sibling module by path: CI runs this file from the repository root."""
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(f"{name}.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+batch = load("batch_scheduler")
+lock = load("handoff_lock")
 
 SCRIPT = Path(__file__).resolve().parent / "onprem-step.sh"
 
