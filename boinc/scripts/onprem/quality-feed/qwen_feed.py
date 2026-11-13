@@ -381,7 +381,8 @@ def _ship_subsets(a):
             raise ValueError("active subset overlaps acknowledged membership")
         left = [member for member in parent["members"] if member["source"]["doc_id"] not in done]
         if left:
-            state = json.loads(remote(a.server_host, server + ["--inventory"]))
+            state = json.loads(remote(a.server_host, server + [
+                "--inventory", *(["--prompt-version", "5"] if version == 5 else [])]))
             pool = json.loads(remote(a.server_host, ["lvs", "--reportformat", "json", "--units", "b",
                                                     "--nosuffix", "-o", "lv_size,data_percent",
                                                     "pve/data"]))["report"][0]["lv"][0]
@@ -438,7 +439,9 @@ def _ship_subsets(a):
             submit = [*server[len(ct):], "--campaign", a.target, "--transaction", value["id"],
                       "--upload", transfer["upload"],
                       "--engine-plan", a.qwen_engine_plan, "--models", a.qwen_models,
-                      "--prompt-version", str(version), "--max-ready", str(a.qwen_max_ready),
+                      "--prompt-version", str(version),
+                      *(["--allow-english"] if getattr(a, "allow_english", False) and version == 5 else []),
+                      "--max-ready", str(a.qwen_max_ready),
                       "--max-unresolved", str(a.max_unresolved), "--min-free-gb", str(a.min_free_gb)]
             script = (inspect.getsource(shipment.locked_transaction)
                       + "\nimport json, sys\nraise SystemExit(locked_transaction(*json.loads(sys.argv[1])))\n")
@@ -510,7 +513,9 @@ def ship_main():
     ap.add_argument("--qwen-models", required=True)
     ap.add_argument("--qwen-root")
     ap.add_argument("--qwen-yiddish-root")
-    ap.add_argument("--prompt-version", type=int, choices=(1, 2, 3, 4), default=1)
+    ap.add_argument("--prompt-version", type=int, choices=(1, 2, 3, 4, 5), default=1)
+    ap.add_argument("--qwen-allow-english", dest="allow_english", action="store_true",
+                    help="With --prompt-version 5: a Xiaomi-OCR-0 root may take English pages (#1867)")
     ap.add_argument("--yiddish-prompt-version", type=int, choices=(1, 2, 3, 4), default=4)
     ap.add_argument("--readers", default="loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract")
     ap.add_argument("--bundle-size", type=int, default=200)
@@ -531,7 +536,8 @@ def ship_main():
             or not re.fullmatch(r"[a-z0-9_,-]+", a.readers)
             or not 1 <= a.bundle_size <= 500 or a.max_chunks < 1 or a.server_ct < 1
             or not 2 <= a.qwen_max_ready <= 1000 or not 1 <= a.max_unresolved <= 2000
-            or a.min_free_gb < 50 or not 0 <= a.step_window_minutes < 60):
+            or a.min_free_gb < 50 or not 0 <= a.step_window_minutes < 60
+            or (a.allow_english and a.prompt_version != 5)):
         ap.error("invalid subset shipment route or bounded limits")
     return ship_subsets(a)
 
@@ -546,6 +552,9 @@ def tick(a):
 
 def _tick(a):
     phase_started = time.monotonic()
+    # A listed Xiaomi-OCR-0 campaign (#1867); every other feed keeps its defaults.
+    version = getattr(a, "prompt_version", 1)
+    listed, listed_language = getattr(a, "pages", None), getattr(a, "language", None)
 
     def phase(name, **counts):
         nonlocal phase_started
@@ -558,7 +567,8 @@ def _tick(a):
     helper = "/opt/usnm-quality-feed/"
     inv = json.loads(remote(a.server_host, ["pct", "exec", str(a.server_ct), "--", "podman", "exec",
                                           "usnm-boinc-server", "python3",
-                                          "/project/ops/qwen-feed/qwen_submit.py", "--inventory"]))
+                                          "/project/ops/qwen-feed/qwen_submit.py", "--inventory",
+                                          *(["--prompt-version", str(version)] if version == 5 else [])]))
     pool = json.loads(remote(a.server_host, ["lvs", "--reportformat", "json", "--units", "b", "--nosuffix",
                                             "-o", "lv_size,data_percent", "pve/data"]))["report"][0]["lv"][0]
     pool_free = float(pool["lv_size"]) * (1 - float(pool["data_percent"]) / 100)
@@ -603,13 +613,18 @@ def _tick(a):
                          "--pages", "-", "--archives", a.archives, "--out", a.alto_export], b"", user=None))
     with urllib.request.urlopen(a.scan_server.rstrip("/") + "/index/full.jsonl", timeout=300) as r:
         index, total, retained = available_source_index(r, archive_inventory)
+    if listed is not None:
+        # A listed campaign (#1867) prepares only its own pages, in its own language.
+        index = listed_pages(index, listed)
     from qwen_source import priority_index, source_id
     excluded_requests = set()
 
     def select(limit, *filters):
         command(python + [helper + "quality_feed.py", "select", "--index", work + "/index.jsonl",
                          "--staged", work + "/staged.txt", "--curated", "/srv/curated", "--count", str(limit),
-                         "--out", work + "/selected.jsonl", "--non-english", "--order", "damage",
+                         "--out", work + "/selected.jsonl",
+                         *(["--classified"] if listed_language == "eng" else ["--non-english"]),
+                         "--order", "damage",
                          "--damage-dsn-file", "/etc/usnm/quality-db/dsn",
                          "--scan-server", a.scan_server,
                          "--quarantine-state", quarantine_state, *filters])
@@ -690,7 +705,8 @@ def _tick(a):
         command(ct + ["tee", work + "/index.jsonl"], selected_index)
         phase("retained_archive_filter", indexed_pages=total, retained_archive_pages=retained,
               source_request=request_id)
-        raw, pages = select(count * CANDIDATES_PER_PAGE, *filters)
+        raw, pages = select(count * CANDIDATES_PER_PAGE, *filters,
+                            *(("--language", listed_language) if listed_language else ()))
         pages = concentrate(pages, count)
         raw = "".join(json.dumps(p) + "\n" for p in pages).encode()
         if pages or request_id is None:
@@ -771,6 +787,15 @@ def main():
     ap.add_argument("--serbian-budget", type=int,
                     help="Total Serbian pages to prepare, as chunks of their own after any Yiddish and "
                          "German budgets; the normal order leaves Serbian out")
+    ap.add_argument("--pages", type=Path,
+                    help="A file of doc_ids, one a line: the campaign prepares only these pages, worst "
+                         "damage first (a listed Xiaomi-OCR-0 campaign, #1867). Needs --language")
+    ap.add_argument("--language",
+                    help="With --pages: the pages' language. eng is allowed only here, for the English "
+                         "pilot; every other campaign takes non-English pages only, as before")
+    ap.add_argument("--prompt-version", type=int, choices=(1, 2, 3, 4, 5), default=1,
+                    help="The request version the campaign's root reads at: its native capacity is that "
+                         "version's batch (108 for Xiaomi-OCR-0's 5, else 8)")
     ap.add_argument("--serbian-pages", type=Path,
                     help="With --serbian-budget: a file of doc_ids, one a line; the Serbian budget "
                          "takes only these pages, worst damage first")
@@ -782,7 +807,10 @@ def main():
             or (a.german_budget is not None and a.german_budget < 0)
             or (a.german_pages is not None and (a.german_budget is None or not a.german_pages.is_file()))
             or (a.serbian_budget is not None and a.serbian_budget < 0)
-            or (a.serbian_pages is not None and (a.serbian_budget is None or not a.serbian_pages.is_file()))):
+            or (a.serbian_pages is not None and (a.serbian_budget is None or not a.serbian_pages.is_file()))
+            or (a.pages is None) != (a.language is None)
+            or (a.pages is not None and (not a.pages.is_file() or not re.fullmatch(r"[a-z]{3}", a.language)))
+            or (a.language == "eng" and a.prompt_version != 5)):
         ap.error("invalid campaign or non-positive/out-of-range limits")
     tick(a)
 

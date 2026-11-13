@@ -169,7 +169,8 @@ elif "python3" in args and "-" in args:
 
     def test_request_versions_and_roots_are_native_only_and_checked(self):
         for extra, native in ((["--prompt-version", "3"], False), (["--qwen-root", "x"], False),
-                              (["--prompt-version", "5"], True), (["--qwen-root", "Bad_Name"], True),
+                              (["--prompt-version", "6"], True), (["--qwen-root", "Bad_Name"], True),
+                              (["--prompt-version", "3", "--qwen-allow-english"], True),
                               (["--qwen-submit-binary", "usnm-boinc"], False),
                               (["--qwen-submit-binary", "-x"], True), (["--qwen-submit-binary", "a b"], True)):
             with self.subTest(extra=extra):
@@ -208,6 +209,30 @@ elif "python3" in args and "-" in args:
                     if expected:
                         self.assertEqual(call[call.index("--bundle-size") + 1], expected)
                         self.assertEqual(call[call.index("--campaign") + 1], "guard-v3")
+
+    def test_xiaomi_version_5_and_its_english_flag_reach_every_native_call(self):
+        # #1867: a listed Xiaomi-OCR-0 root at request version 5, English allowed only there.
+        for extra, english in (([], False), (["--qwen-allow-english"], True)):
+            with self.subTest(extra=extra):
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                result = self.run_ship(["--prompt-version", "5", "--qwen-root", "x08-eng",
+                                        "--qwen-bundle-size", "32", *extra], langs="eng\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                native = self.native_calls()
+                self.assertEqual(len(native), 3)
+                for call in native:
+                    self.assertEqual(call[call.index("--prompt-version") + 1], "5")
+                    self.assertEqual(call[call.index("--campaign") + 1], "x08-eng")
+                    self.assertEqual("--allow-english" in call, english)
+        # A Yiddish chunk rerouted to its version-4 root never carries the English flag.
+        (self.root / "calls.jsonl").unlink(missing_ok=True)
+        result = self.run_ship(["--prompt-version", "5", "--qwen-root", "x08-eng", "--qwen-yiddish-root",
+                                "guard-v4", "--qwen-allow-english"], langs="yid\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for call in self.native_calls():
+            self.assertEqual(call[call.index("--prompt-version") + 1], "4")
+            self.assertEqual(call[call.index("--campaign") + 1], "guard-v4")
+            self.assertNotIn("--allow-english", call)
 
     def test_a_bundle_size_is_native_only_and_bounded(self):
         for extra, native in ((["--qwen-bundle-size", "8"], False), (["--qwen-bundle-size", "1"], True),

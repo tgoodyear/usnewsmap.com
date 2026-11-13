@@ -18,11 +18,27 @@ import subprocess
 import sys
 import time
 
-# The first app version that reads each request version (qwen-auto-cohort.py keeps the same table).
-REQUEST_MIN_APP = {1: 0, 2: 115, 3: 117, 4: 117}
+# The first app version that reads each request version (qwen-auto-cohort.py keeps the same table
+# for versions 1 to 4; it never admits Xiaomi-OCR-0).
+REQUEST_MIN_APP = {1: 0, 2: 115, 3: 117, 4: 117, 5: 120}
 # Requests with the loop guard. A server image from before #1437 refuses to submit them, so
 # without --submit-binary they go with the stage binary (#1449).
 GUARDED_VERSIONS = (3, 4)
+# Request version 5 is Xiaomi-OCR-0's (#1776): every job pinned to it, sent to the `_x08` plan
+# classes as batch 108. Every other version reads with the plan class's Qwen model, batch 8.
+XIAOMI_VERSION = 5
+XIAOMI_MODEL = "xiaomi-ocr-0-q8"
+NATIVE_BATCHES = (8, 108)
+
+
+def route(prompt_version):
+    """The submit target and workunit batch of a root at `prompt_version`."""
+    return ("native-xiaomi", 108) if prompt_version == XIAOMI_VERSION else ("native-8b", 8)
+
+
+def model_args(prompt_version):
+    """`qwen stage`'s model pin: Xiaomi-OCR-0 for version 5, none otherwise, as before."""
+    return ["--model", XIAOMI_MODEL] if prompt_version == XIAOMI_VERSION else []
 YIDDISH = "yid"
 # `qwen stage --bundle-size` above 1 names each bundle unit bundle-<index>-<first doc>, the index
 # at least five digits.
@@ -38,7 +54,7 @@ def documents(job):
     return {p["doc_id"] for p in job.get("pages", [])} or {job["doc_id"]}
 
 
-def inventory(share, project):
+def inventory(share, project, batch=8):
     seen = set()
     for _, job in jobs(share / "qwen"):
         seen.update(documents(job))
@@ -53,7 +69,7 @@ $app = BoincApp::lookup("name='usnm_qwen'");
 if (!$app) throw new RuntimeException("Qwen app missing");
 $ready = BoincResult::enum("appid=".intval($app->id)." AND server_state=2");
 $running = BoincResult::enum("appid=".intval($app->id)." AND server_state=4");
-$native = "appid=".intval($app->id)." AND batch=8 AND canonical_resultid=0 AND error_mask=0";
+$native = "appid=".intval($app->id)." AND batch=%d AND canonical_resultid=0 AND error_mask=0";
 $db = BoincDb::get();
 $unresolved = $db->count("workunit", $native);
 $fresh = $db->count("workunit", $native." AND min_quorum=2 AND target_nresults=2"
@@ -69,7 +85,7 @@ foreach (BoincAppVersion::enum("appid=".intval($app->id)." AND deprecated=0") as
 echo json_encode(["ready"=>count($ready), "dispatched"=>count($running),
     "fresh_pairs"=>intval($fresh), "unresolved_native"=>intval($unresolved),
     "app_versions"=>$versions, "min_version"=>intval($app->min_version)]);
-""" % json.dumps(str(project / "html/inc"))
+""" % (json.dumps(str(project / "html/inc")), batch)
     counts = json.loads(subprocess.check_output(["php", "-r", php], text=True))
     free = min(shutil.disk_usage(path).free
                for path in (share, share / "quality", project / "download"))
@@ -155,7 +171,8 @@ def source_status(share, project, sample):
             if row:
                 if (row["job_sha256"] != hashlib.sha256(path.read_bytes()).hexdigest()
                         or not (path.parent / "submitted").is_file()
-                        or row["batch"] != 8 or row["min_quorum"] != 2 or row["target_nresults"] != 2
+                        or row["batch"] not in NATIVE_BATCHES or row["min_quorum"] != 2
+                        or row["target_nresults"] != 2
                         or type(row["workunit_id"]) is not int or row["workunit_id"] < 1):
                     raise ValueError("changed or unbound native source audit: " + str(path))
             for doc in members:
@@ -389,7 +406,7 @@ def admission(a, state, root):
         raise SystemExit(75)
 
 
-def audit(root, project):
+def audit(root, project, batch=8):
     receipt = root / "audit.json"
     verified = json.loads(receipt.read_text()) if receipt.exists() else {}
     pending = {}
@@ -414,13 +431,13 @@ foreach (json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR)
     $rows = BoincWorkunit::enum("name='usnm_qwen_".$job["id"]."'");
     if (count($rows) !== 1) throw new RuntimeException("Missing or duplicate scientific identity");
     $wu = $rows[0];
-    if (intval($wu->batch) !== 8 || intval($wu->min_quorum) !== 2 || intval($wu->target_nresults) !== 2)
+    if (intval($wu->batch) !== %d || intval($wu->min_quorum) !== 2 || intval($wu->target_nresults) !== 2)
         throw new RuntimeException("Unexpected native routing or quorum");
-    $verified[$job["id"]] = ["job_sha256"=>$sha, "workunit_id"=>intval($wu->id), "batch"=>8,
+    $verified[$job["id"]] = ["job_sha256"=>$sha, "workunit_id"=>intval($wu->id), "batch"=>%d,
                              "min_quorum"=>2, "target_nresults"=>2];
 }
 echo json_encode($verified);
-""" % json.dumps(str(project / "html/inc"))
+""" % (json.dumps(str(project / "html/inc")), batch, batch)
     new = json.loads(subprocess.check_output(["php", "-r", php], input=json.dumps(pending), text=True))
     if set(new) != set(expected) or any(row["job_sha256"] != expected[job] for job, row in new.items()):
         raise RuntimeError("Incomplete or changed scientific audit receipt")
@@ -454,7 +471,7 @@ def selected_jobs(root, file, wanted):
     return selected
 
 
-def publication_rows(project, selected, app):
+def publication_rows(project, selected, app, batch=8):
     """Reconcile by exact scientific identity, not command exit or a marker alone."""
     import qwen_shipment as shipment
     expected = {str(path): shipment.file_hash(path) for path, _ in selected}
@@ -475,27 +492,27 @@ foreach (json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR)
     if (!$rows) continue;
     $wu = $rows[0];
     if (intval($wu->appid) !== intval($app->id) || intval($wu->min_quorum) !== 2 ||
-        intval($wu->target_nresults) !== 2 || ($appname === "usnm_qwen" && intval($wu->batch) !== 8) ||
+        intval($wu->target_nresults) !== 2 || ($appname === "usnm_qwen" && intval($wu->batch) !== %d) ||
         strpos($wu->xml_doc, $job["id"]."_".($appname === "usnm_qwen" ? "qwen" : "quality")."_json") === false)
         throw new RuntimeException("Unexpected scientific input, routing or quorum");
     $out[$job["id"]] = ["job_sha256"=>$sha, "workunit_id"=>intval($wu->id),
         "batch"=>intval($wu->batch), "min_quorum"=>2, "target_nresults"=>2];
 }
 echo json_encode((object)$out);
-""" % (json.dumps(str(project / "html/inc")), json.dumps(app))
+""" % (json.dumps(str(project / "html/inc")), json.dumps(app), batch)
     rows = json.loads(subprocess.check_output(["php", "-r", php], input=json.dumps(expected), text=True))
     known = {job["id"]: shipment.file_hash(path) for path, job in selected}
     if not isinstance(rows, dict) or not set(rows) <= known.keys() or any(
             row["job_sha256"] != known[identity] or type(row["workunit_id"]) is not int
             or row["workunit_id"] < 1 or row["min_quorum"] != 2 or row["target_nresults"] != 2
-            or (app == "usnm_qwen" and row["batch"] != 8) for identity, row in rows.items()):
+            or (app == "usnm_qwen" and row["batch"] != batch) for identity, row in rows.items()):
         raise RuntimeError("changed publication reconciliation")
     return rows
 
 
-def reconcile(project, selected, app):
+def reconcile(project, selected, app, batch=8):
     import qwen_shipment as shipment
-    rows = publication_rows(project, selected, app)
+    rows = publication_rows(project, selected, app, batch)
     for path, job in selected:
         unit = path.parent
         name = app + "_" + job["id"]
@@ -725,7 +742,8 @@ def verify_acknowledgement(a, tx, value, receipt):
                 raise RuntimeError("publication acknowledgement changed")
             if kind == "native":
                 audit_row = audited.get(job["id"], {})
-                if (row["batch"] != 8 or row.get("source_bindings") != source_bindings(root, job)
+                if (row["batch"] != route(value["recipe"]["prompt_version"])[1]
+                        or row.get("source_bindings") != source_bindings(root, job)
                         or any(audit_row.get(key) != item for key, item in row.items())):
                     raise RuntimeError("native acknowledgement lost bound audit")
                 states[job["doc_id"]] = "published"
@@ -787,7 +805,7 @@ def run_transaction(a):
     try:
         if any(value["recipe"][key] != item for key, item in recipe_inputs(a).items()):
             raise RuntimeError("changed frozen staging recipe")
-        state = inventory(a.share, a.project)
+        state = inventory(a.share, a.project, route(a.prompt_version)[1])
         if state["free_bytes"] - len(docs) * a.reserve_mib * 1024**2 < a.min_free_gb * 1024**3:
             receipt.update(shipment.publication_evidence(receipt),
                            phase="locked_storage", reason="reserved_input_free_space", reserve_pages=len(docs))
@@ -798,7 +816,8 @@ def run_transaction(a):
                 elsewhere.update(documents(job))
         for member in value["members"]:
             row = member["sample"]
-            if row["lang"] in ("eng", "", "und") or row["doc_id"] in elsewhere:
+            if (row["lang"] in ("", "und") or (row["lang"] == "eng" and not getattr(a, "allow_english", False))
+                    or row["doc_id"] in elsewhere):
                 raise RuntimeError("English, unclassified or duplicate transaction source")
             assert_request_cohort({"language": row["lang"], "doc_id": row["doc_id"]}, a.prompt_version)
         engine = value["recipe"]["native_engine"]
@@ -809,7 +828,8 @@ def run_transaction(a):
             "--engine-image", engine["image"], "--engine-llama", engine["llama"],
             "--engine-weights", engine["weights"], "--max-pages", str(len(docs)),
             "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", "1",
-            "--prompt-version", str(a.prompt_version), "--members", str(members_path)], check=True)
+            "--prompt-version", str(a.prompt_version), *model_args(a.prompt_version),
+            "--members", str(members_path)], check=True)
         states = transaction_native_sources(root, value)
         native = selected_jobs(root, "qwen.json", docs)
         quality_jobs = selected_jobs(quality, "quality.json", docs)
@@ -824,11 +844,12 @@ def run_transaction(a):
             if previous and (previous.get("job_sha256") != shipment.file_hash(path)
                              or previous.get("source_bindings") != source_bindings(root, job)):
                 raise RuntimeError("legacy/unbound or changed native audit; explicit reconciliation required")
-        native_rows = reconcile(a.project, native, "usnm_qwen")
+        target, batch = route(a.prompt_version)
+        native_rows = reconcile(a.project, native, "usnm_qwen", batch)
         reconcile(a.project, quality_jobs, "usnm_quality")
         # Published replays do not consume new queue capacity; disk reservation
         # remains the exact transferred subset, including terminal dispositions.
-        state = inventory(a.share, a.project)
+        state = inventory(a.share, a.project, batch)
         pending = sum(job["id"] not in native_rows for _, job in native)
         reason = None
         if unreadable_versions(state, a.prompt_version) and pending:
@@ -849,9 +870,9 @@ def run_transaction(a):
         receipt.update(phase="native_submit", publication_attempted=True)
         shipment.save(record_path, receipt)
         subprocess.run([a.stage_binary, "qwen", "submit", "--root", str(root), "--project", str(a.project),
-                        "--target", "native-8b", "--model-dir", str(a.models), "--max-units", str(len(docs)),
+                        "--target", target, "--model-dir", str(a.models), "--max-units", str(len(docs)),
                         "--members", str(members_path)], check=True)
-        native_rows = reconcile(a.project, native, "usnm_qwen")
+        native_rows = reconcile(a.project, native, "usnm_qwen", batch)
         if set(native_rows) != {job["id"] for _, job in native}:
             raise RuntimeError("native publication incomplete")
         for path, job in native:
@@ -971,7 +992,8 @@ def _stage_root(a, root, quality, new_pages):
             elsewhere.update(documents(job))
     for path in [*quality.glob("pages/*/quality.json"), *quality.glob("units/*/quality.json")]:
         job = json.loads(path.read_text())
-        if job["language"] in ("eng", "", "und") or job["doc_id"] in elsewhere:
+        if (job["language"] in ("", "und") or (job["language"] == "eng" and not getattr(a, "allow_english", False))
+                or job["doc_id"] in elsewhere):
             raise RuntimeError(f"Refusing English, unclassified or duplicate page: {path}")
         assert_request_cohort(job, a.prompt_version)
     engine = json.loads(a.engine_plan.read_text())["engine"]
@@ -979,7 +1001,7 @@ def _stage_root(a, root, quality, new_pages):
              "--engine-image", engine["image"], "--engine-llama", engine["llama"],
              "--engine-weights", engine["weights"], "--max-pages", str(new_pages),
              "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", str(a.bundle_size),
-             "--prompt-version", str(a.prompt_version)]
+             "--prompt-version", str(a.prompt_version), *model_args(a.prompt_version)]
     if a.page_records is not None:
         stage += ["--page-records", str(a.page_records)]
     subprocess.run(stage, check=True)
@@ -1020,8 +1042,12 @@ def main():
     ap.add_argument("--held-only", action="store_true",
                     help="With --bundle-size above 1 and no chunk: stage and submit only the held pages "
                          "whose hold has run out (#1435); admission counts every held page")
-    ap.add_argument("--prompt-version", type=int, choices=(1, 2, 3, 4), default=1,
-                    help="Request version to stage; every dispatchable app version must read it")
+    ap.add_argument("--prompt-version", type=int, choices=(1, 2, 3, 4, 5), default=1,
+                    help="Request version to stage; every dispatchable app version must read it. 5 is "
+                         "Xiaomi-OCR-0 (#1776): jobs pinned to it, sent to the _x08 classes as batch 108")
+    ap.add_argument("--allow-english", action="store_true",
+                    help="With --prompt-version 5 only: stage English pages too (the Xiaomi-OCR-0 English "
+                         "pilot, #1867). Every other root refuses English, as before")
     ap.add_argument("--max-ready", type=int, default=1000,
                     help="Fresh native original replicas, not host-ineligible retry replicas")
     ap.add_argument("--max-unresolved", type=int, default=2000)
@@ -1048,7 +1074,10 @@ def main():
             ap.error("invalid retirement identity")
         retire_parent(a)
         return
-    state = inventory(a.share, a.project)
+    if a.allow_english and a.prompt_version != XIAOMI_VERSION:
+        ap.error("--allow-english is for a Xiaomi-OCR-0 root (--prompt-version 5) only")
+    target, batch = route(a.prompt_version)
+    state = inventory(a.share, a.project, batch)
     if a.inventory:
         print(json.dumps(state))
         return
@@ -1103,19 +1132,20 @@ def main():
         # The shared model files are hashed here, outside the step lock; publication only checks
         # that they are staged.
         subprocess.run([a.stage_binary, "qwen", "submit", "--root", str(root), "--project", str(a.project),
-                        "--target", "native-8b", "--model-dir", str(a.models), "--models-only"], check=True)
+                        "--target", target, "--model-dir", str(a.models), "--models-only"], check=True)
         print(json.dumps({"campaign": a.campaign, "phase": "prepared", "staged_unsent_units": unsubmitted_units(root),
                           "held_pages": held_pages(root) if a.bundle_size > 1 else 0}, sort_keys=True))
         return
-    submit_binary = a.submit_binary or (a.stage_binary if a.prompt_version in GUARDED_VERSIONS else "usnm-boinc")
+    submit_binary = a.submit_binary or (
+        a.stage_binary if a.prompt_version in (*GUARDED_VERSIONS, XIAOMI_VERSION) else "usnm-boinc")
     submit = [submit_binary, "qwen", "submit", "--root", str(root), "--project", str(a.project),
-              "--target", "native-8b", "--model-dir", str(a.models), "--max-units", str(a.max_pages)]
+              "--target", target, "--model-dir", str(a.models), "--max-units", str(a.max_pages)]
     if a.phase == "publish" and submit_binary == a.stage_binary:
         # Only the stage binary knows the flag; the image's usnm-boinc hashes the models again.
         submit.append("--models-prechecked")
     subprocess.run(submit, check=True)
     assert_submitted(root)
-    print(json.dumps(audit(root, a.project), sort_keys=True))
+    print(json.dumps(audit(root, a.project, batch), sort_keys=True))
     if a.sample:
         assert_processed(root, a.sample)
 

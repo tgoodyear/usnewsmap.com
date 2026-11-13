@@ -244,7 +244,7 @@ def validate(value):
             or not re.fullmatch(r"[a-f0-9]{64}", parent["id"])
             or not 1 <= len(parent["sources"]) <= 490 or not 1 <= len(members) <= 490
             or not re.fullmatch(NAME, recipe["campaign"])
-            or recipe["prompt_version"] not in (1, 2, 3, 4)
+            or recipe["prompt_version"] not in (1, 2, 3, 4, 5)
             or not re.fullmatch(r"sha256:[a-f0-9]{64}", recipe["engine_image"])
             or not re.fullmatch(r"[a-z0-9_,-]+", recipe["readers"])
             or type(recipe["bundle_size"]) is not int or not 1 <= recipe["bundle_size"] <= 500):

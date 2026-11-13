@@ -32,15 +32,19 @@ class PhaseTest(unittest.TestCase):
         if bundle:
             argv += ["--bundle-size", str(bundle)]
         admitted = []
+        self.batches = []
         patches = (
             mock.patch.object(sys, "argv", argv),
-            mock.patch.object(qwen_submit, "inventory", return_value={}),
+            mock.patch.object(qwen_submit, "inventory",
+                              lambda share, project, batch=8: self.batches.append(("inventory", batch)) or {}),
             mock.patch.object(qwen_submit, "admission", lambda a, state, root: admitted.append(a.max_pages)),
             mock.patch.object(qwen_submit, "assert_bundle_layout"),
             mock.patch.object(qwen_submit, "unsubmitted_units", return_value=unsent),
             mock.patch.object(qwen_submit, "held_pages", return_value=0),
             mock.patch.object(qwen_submit, "assert_submitted"),
-            mock.patch.object(qwen_submit, "audit", return_value={"verified_new": 0}),
+            mock.patch.object(qwen_submit, "audit",
+                              lambda root, project, batch=8: self.batches.append(("audit", batch))
+                              or {"verified_new": 0}),
             mock.patch.object(qwen_submit.subprocess, "run", lambda cmd, **kw: self.calls.append(cmd)),
         )
         with contextlib.ExitStack() as stack:
@@ -116,6 +120,49 @@ class PhaseTest(unittest.TestCase):
                 with self.assertRaises(SystemExit) as stop, qwen_submit.stage_roots_lock(self.share, wait_secs=0):
                     pass
         self.assertEqual(stop.exception.code, 75)
+
+    def test_versions_1_to_4_stage_unpinned_and_send_native_8b_as_batch_8(self):
+        for version in ("1", "2", "3", "4"):
+            self.calls = []
+            self.run_main("--prompt-version", version)
+            stage, submit = self.calls
+            self.assertNotIn("--model", stage)
+            self.assertEqual(stage[stage.index("--prompt-version") + 1], version)
+            self.assertEqual(submit[submit.index("--target") + 1], "native-8b")
+            self.assertEqual(submit[0], "/ops/usnm-boinc-stage" if version in ("3", "4") else "usnm-boinc")
+            self.assertEqual(self.batches, [("inventory", 8), ("audit", 8)])
+
+    def test_version_5_pins_xiaomi_and_sends_native_xiaomi_as_batch_108(self):
+        self.run_main("--prompt-version", "5", bundle=32)
+        stage, submit = self.calls
+        self.assertEqual(stage[stage.index("--model") + 1], "xiaomi-ocr-0-q8")
+        self.assertEqual(stage[stage.index("--prompt-version") + 1], "5")
+        self.assertEqual(stage[stage.index("--bundle-size") + 1], "32")
+        self.assertEqual(submit[:3], ["/ops/usnm-boinc-stage", "qwen", "submit"])
+        self.assertEqual(submit[submit.index("--target") + 1], "native-xiaomi")
+        self.assertEqual(self.batches, [("inventory", 108), ("audit", 108)])
+        self.calls = []
+        self.run_main("--phase", "prepare", "--prompt-version", "5", bundle=32)
+        self.assertEqual(self.calls[1][self.calls[1].index("--target") + 1], "native-xiaomi")
+        self.assertEqual(qwen_submit.REQUEST_MIN_APP[5], 120)
+
+    def test_english_needs_a_xiaomi_root_that_allows_it(self):
+        page = self.share / "quality/camp/pages/sn1_1900-01-01_ed-1_seq-1"
+        page.mkdir(parents=True)
+        (page / "quality.json").write_text(json.dumps(
+            {"doc_id": page.name, "language": "eng", "pages": []}))
+        for extra in ((), ("--prompt-version", "4"), ("--prompt-version", "5")):
+            with self.assertRaisesRegex(RuntimeError, "Refusing English"):
+                self.run_main(*extra)
+        self.calls = []
+        self.run_main("--prompt-version", "5", "--allow-english")
+        self.assertEqual(self.verbs(), [("/ops/usnm-boinc-stage", "stage"), ("/ops/usnm-boinc-stage", "submit")])
+        argv = ["qwen_submit.py", "--share", str(self.share), "--campaign", "camp", "--engine-plan", str(self.plan),
+                "--models", "/models", "--prompt-version", "3", "--allow-english"]
+        with mock.patch.object(sys, "argv", argv):
+            with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit):
+                qwen_submit.main()
+        self.assertIn("--allow-english is for a Xiaomi-OCR-0 root", err.getvalue())
 
     def test_a_phase_is_not_a_preflight_or_a_transaction(self):
         argv = ["qwen_submit.py", "--share", str(self.share), "--campaign", "camp", "--engine-plan", str(self.plan),

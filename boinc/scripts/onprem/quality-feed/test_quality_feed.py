@@ -1442,3 +1442,32 @@ class ReceiveOwnerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ListedLanguageSelectTest(unittest.TestCase):
+    """The English pilot and the French list of #1867 select by their own language."""
+
+    def select(self, damage, **flags):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = [{"doc_id": f"sn1_1900-01-0{i}_ed-1_seq-1", "batch": "xx_test", "batch_version": 1,
+                     "bytes": 10, "sha256": "a" * 64, "path": "x.jpg"} for i in range(1, len(damage) + 1)]
+            (root / "index.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+            (root / "dsn").write_text("postgres://x\n")
+            csv_out = "".join(f"{r['doc_id']},{lang},0.5\n" for r, lang in zip(rows, damage))
+            args = types.SimpleNamespace(index=str(root / "index.jsonl"), staged=None, curated=str(root),
+                                         out=str(root / "out.jsonl"), count=10, order="damage",
+                                         damage_dsn_file=str(root / "dsn"), **flags)
+            done = types.SimpleNamespace(returncode=0, stdout=csv_out, stderr="")
+            with mock.patch("subprocess.run", return_value=done), contextlib.redirect_stdout(io.StringIO()):
+                feed.cmd_select(args)
+            return [json.loads(line)["lang"] for line in (root / "out.jsonl").read_text().splitlines()]
+
+    def test_english_takes_only_pages_classified_as_english(self):
+        damage = ["eng", "", "und", "xyz", "fra"]
+        self.assertEqual(self.select(damage, language="eng"), ["eng", "eng", "eng", "eng"])
+        self.assertEqual(self.select(damage, language="eng", classified=True), ["eng"])
+
+    def test_a_language_alias_selects_its_iso_code(self):
+        self.assertEqual(self.select(["fra", "eng"], language="fre"), ["fra"])
+        self.assertEqual(self.select(["fra", "eng"], language="fra"), ["fra"])
