@@ -360,8 +360,9 @@ def main(argv=None):
     p.add_argument("--image", default=env("XB_IMAGE") or None,
                    help="sample results whose engine.image starts with this digest prefix "
                         "(default: the Windows builds in the trust file; env XB_IMAGE)")
-    p.add_argument("--host", dest="hosts", action="append", default=[h for h in (env("XB_HOSTS") or "").split(",") if h],
-                   help="only results from this host id; repeatable (env XB_HOSTS, comma separated)")
+    p.add_argument("--host", dest="hosts", action="append", default=None,
+                   help="only results from this host id; repeatable (env XB_HOSTS, comma separated, used only "
+                        "when no --host is given)")
     p.add_argument("--plan", default=env("XB_PLAN") or None,
                    help="the plan the handoff holds, recorded in the report (env XB_PLAN)")
     p.add_argument("--label", default=env("XB_LABEL") or None,
@@ -370,7 +371,10 @@ def main(argv=None):
     p.add_argument("--threads", type=int, default=2, choices=(1, 2), help="pages read at once, one thread each")
     p.add_argument("--issue", type=int, help="tracking issue to append to on a flagged day")
     p.add_argument("--repo", default="tgoodyear/usnewsmap.com")
-    return run(p.parse_args(argv))
+    args = p.parse_args(argv)
+    if args.hosts is None:
+        args.hosts = [h for h in (env("XB_HOSTS") or "").split(",") if h]
+    return run(args)
 
 
 if __name__ == "__main__":

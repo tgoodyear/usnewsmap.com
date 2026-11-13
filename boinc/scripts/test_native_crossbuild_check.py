@@ -381,6 +381,17 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(X.run(self.args(), now=NOW), 0)
         self.assertEqual([x["job"] for x in self.report()["rows"]], [f"{3:064x}"])
 
+    def test_explicit_host_replaces_the_environment_hosts(self):
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"XB_HOSTS": "13"}):
+            with mock.patch.object(X, "run", side_effect=lambda a: a.hosts):
+                self.assertEqual(X.main(self.argv()), ["13"])
+                self.assertEqual(X.main(self.argv() + ["--host", "14"]), ["14"])
+
+    def argv(self):
+        return ["--handoff", "h", "--scans", "s", "--tesseract", "t", "--tessdata", "d", "--out-dir", "o"]
+
     def test_unknown_image_prefix_is_an_error(self):
         with self.assertRaises(SystemExit):
             X.run(self.args(image="deadbeef"), now=NOW)

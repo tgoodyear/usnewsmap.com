@@ -20,6 +20,7 @@ ExecStart=/usr/bin/python3 /opt/usnm-crossbuild/native_crossbuild_check.py \
     --image ${IMAGE_PREFIX} --host ${HOST_ID} --plan ${PLAN} --label linux
 SuccessExitStatus=3
 SyslogIdentifier=usnm-crossbuild-linux
+Slice=usnm-crossbuild.slice
 StateDirectory=usnm-crossbuild-linux
 User=usnm-crossbuild
 Nice=19

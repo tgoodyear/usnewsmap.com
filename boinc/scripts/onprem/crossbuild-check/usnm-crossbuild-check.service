@@ -17,6 +17,7 @@ ExecStart=/usr/bin/python3 /opt/usnm-crossbuild/native_crossbuild_check.py \
     --out-dir /var/lib/usnm-crossbuild-check --issue ${TRACKING_ISSUE} --threads 2 --cer-limit ${CER_LIMIT} --f1-limit ${F1_LIMIT}
 SuccessExitStatus=3
 SyslogIdentifier=usnm-crossbuild-check
+Slice=usnm-crossbuild.slice
 StateDirectory=usnm-crossbuild-check
 User=usnm-crossbuild
 Nice=19
