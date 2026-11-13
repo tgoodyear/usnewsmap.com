@@ -21,7 +21,10 @@
 #
 # Without the env file this exits 0 and does nothing: the copy is off until the token is installed.
 # Each run ends with one JSON line (event boinc_handoff_r2_copy); a failed copy exits non-zero so the
-# unit fails and the feed-health check can alert on it.
+# unit fails. Nothing watches that yet: feed-health does not read this unit or its status file. Do not
+# enable the timer until something does, such as an alert on `systemctl is-failed
+# usnm-handoff-r2-copy.service` or on the age of the status file, or a stale copy goes unnoticed.
+# rclone runs at error level with no progress, so the journal carries failures, not per-object paths.
 set -euo pipefail
 export PATH="${PATH:+$PATH:}/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 die() { echo "error: $*" >&2; exit 1; }
@@ -64,10 +67,12 @@ rc=0
 "$RCLONE" --config /dev/null --retries 3 --low-level-retries 10 copy "$ROOT" "r2:$BUCKET/handoff" \
   --exclude 'scheduler/controller.lock.json' --exclude 'scheduler/.controller.lock.flock' \
   --exclude '.controller.lock' --exclude '**/.*tmp*' --exclude '**/.lock-*' \
-  --transfers 8 --checkers 16 >&2 || rc=$?
+  --transfers 8 --checkers 16 --log-level ERROR --stats 0 >&2 || rc=$?
 result=ok; [ "$rc" -eq 0 ] || result=failed
 line=$(printf '{"event":"boinc_handoff_r2_copy","result":"%s","rclone_exit":%d,"started":"%s","finished":"%s","bucket":"%s"}' \
   "$result" "$rc" "$started" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$BUCKET")
 echo "$line"
-echo "$line" > "$STATUS.tmp" && mv "$STATUS.tmp" "$STATUS"
+# Separate commands, so a failed status write fails the unit even when the copy succeeded.
+echo "$line" > "$STATUS.tmp"
+mv "$STATUS.tmp" "$STATUS"
 exit "$rc"

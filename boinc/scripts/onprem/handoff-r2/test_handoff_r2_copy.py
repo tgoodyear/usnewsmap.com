@@ -74,6 +74,15 @@ class CopyTests(unittest.TestCase):
         self.assertEqual(json.loads(self.status.read_text())["result"], "failed")
         self.assertEqual(list(self.root.iterdir()), [])
 
+    def test_rclone_is_quiet_and_a_status_write_failure_fails_the_unit(self):
+        self.token()
+        self.assertEqual(self.run_copy().returncode, 0)
+        call = self.log.read_text()
+        self.assertIn("--log-level ERROR", call)
+        self.assertIn("--stats 0", call)
+        Path(f"{self.status}.tmp").mkdir()  # the status write cannot open its temporary file
+        self.assertNotEqual(self.run_copy().returncode, 0)
+
     def test_missing_root_and_bad_bucket_are_refused(self):
         self.token()
         self.root.rmdir()
