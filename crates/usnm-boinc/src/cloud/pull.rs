@@ -507,7 +507,7 @@ fn make_dir(parent: &Path, dir: &Path) -> anyhow::Result<()> {
     sync_dir(parent)
 }
 
-fn sync_dir(dir: &Path) -> anyhow::Result<()> {
+pub(super) fn sync_dir(dir: &Path) -> anyhow::Result<()> {
     // Windows can't open a directory as a file; the spool is on a Linux server.
     #[cfg(unix)]
     File::open(dir)?.sync_all()?;
