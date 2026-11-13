@@ -6,7 +6,8 @@
 //! routes each to its module.
 use clap::{Parser, Subcommand};
 use usnm_boinc::{
-    assess, claim, cli::job, cli::migrate, gold, handoff, host_trust, ndlocr, quality, qwen, surya,
+    assess, claim, cli::job, cli::migrate, cloud, gold, handoff, host_trust, ndlocr, quality, qwen,
+    surya,
 };
 
 #[derive(Parser)]
@@ -76,6 +77,9 @@ enum Commands {
     /// The remote hand-off between the OCR node and the BOINC server (#469, docs/boinc/server/scan-cache-handoff.md).
     #[command(subcommand)]
     Handoff(handoff::cli::HandoffCommands),
+    /// Adapter for the cloud BOINC server (dev only; not used by the running bridge).
+    #[command(subcommand)]
+    Cloud(cloud::cli::CloudCommands),
     /// Inspect the local submission/publication journal; emits no page text.
     Status(job::StatusArgs),
     /// Copy pipeline documents from Cosmos DB into PostgreSQL with their ETags, or verify the
@@ -135,6 +139,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Qwen(command) => qwen::cli::run(command).await,
         Commands::Ndlocr(command) => ndlocr::cli::run(command).await,
         Commands::Handoff(command) => handoff::cli::run(command).await,
+        Commands::Cloud(command) => cloud::cli::run(command).await,
         Commands::Status(args) => job::status(args),
         Commands::DocsMigrate(args) => migrate::docs_migrate(args).await,
         Commands::QueueMove(args) => migrate::queue_move(args).await,

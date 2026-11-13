@@ -31,6 +31,7 @@ pub mod assess;
 pub mod bundle;
 pub mod claim;
 pub mod cli;
+pub mod cloud;
 pub mod gold;
 pub mod handoff;
 pub mod host_trust;

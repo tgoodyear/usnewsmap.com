@@ -215,3 +215,28 @@ This is a manual single-writer protocol, not tested remote orchestration. Keep
 journals on persistent local storage at each stage; Azure Files/SMB lock and
 atomic-rename durability have not been verified. Exercise the hand-off on a
 small cohort before using the bridge's submission step on the on-prem server.
+
+## Pull from the cloud BOINC server (dev only)
+
+`usnm-boinc cloud pull` reads finished workunits from the cloud BOINC server's assimilation API (`GET /admin/v1/assimilate`
+and `GET /admin/v1/outputs/<name>`) and writes the spool the stock `batch_collect_assimilator` leaves. It is for the dev
+cloud server only. Nothing in the running bridge, the timers or the scripts calls it, and `collect` is unchanged.
+
+```
+usnm-boinc cloud pull --base-url https://<dev server> --token-file <file> --spool-dir <spool> --app <app> --once [--no-ack] [--limit N]
+```
+
+- The admin token comes from `--token-file`, or from the `CBOINC_TOKEN` environment variable. It is never a command-line
+  value and is not logged. `--app` is required (the API lists one application at a time) and can be repeated.
+- Layout under `--spool-dir`: `results/<batch>/<workunit>__file_<open_name>` for each output, `<workunit>_error`
+  holding `0x<hex>\n` for a failed workunit, `<workunit>_no_output_files` for a success with no stored files, and
+  `<workunit>__host_id` with the canonical result's host id. For a success the `__host_id` file is written last, so it
+  marks the workunit complete.
+- Each file is downloaded into `<spool>/.incoming/`, checked against the listed size and MD5, fsynced, renamed into
+  place and the directory fsynced. Only then is the workunit acknowledged (`POST /admin/v1/assimilate/ack`). A failed
+  workunit stays unacknowledged and the run exits non-zero. A rerun skips files already in place that verify. Run one
+  puller per spool.
+- `--no-ack` is shadow mode: it writes the spool and never acknowledges, so the server keeps listing the same
+  workunits and a later run with acknowledgement takes them.
+- Workunit and file names with a path separator, `..`, a control character or no text are refused before any file is
+  made, as are a listed output with no `open_name` and two outputs with the same `open_name`.
