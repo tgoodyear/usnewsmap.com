@@ -28,7 +28,7 @@ class SafeNames(unittest.TestCase):
         self.assertEqual(m.check_url("https://stusnmdffapzy.blob.core.windows.net/curated/"),
                          "https://stusnmdffapzy.blob.core.windows.net/curated")
         for url in ["http://a.blob.core.windows.net/curated", "https://evil.example.com/curated",
-                    "https://a.blob.core.windows.net/curated?sig=x", "https://u:p@a.blob.core.windows.net/curated",
+                    "https://a.blob.core.windows.net/curated?x=1", "https://user@a.blob.core.windows.net/curated",
                     "https://a.blob.core.windows.net/", "https://a.blob.core.windows.net/a/b",
                     "https://blob.core.windows.net/curated", "https://a.blob.core.windows.net.evil.com/curated"]:
             with self.assertRaises(SystemExit, msg=url):
