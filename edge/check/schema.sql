@@ -13,7 +13,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   body TEXT NOT NULL,             -- JSON shown to people: page, source, clips, box, a, b, diffs
   n INTEGER NOT NULL DEFAULT 0,   -- answers so far
   outcome TEXT,                   -- a, b, neither, unsure or notext once settled; "disputed" if never agreed
-  settled INTEGER NOT NULL DEFAULT 0
+  settled INTEGER NOT NULL DEFAULT 0,
+  confusable_display INTEGER NOT NULL DEFAULT 0,  -- 1: the readings looked alike in the visitor's font; answers given before are in answers_excluded
+  held INTEGER NOT NULL DEFAULT 0                 -- 1: kept out of the queue and closed to answers until reopened (confusable_display only)
 );
 CREATE INDEX IF NOT EXISTS tasks_open ON tasks (lang, settled, n);
 
@@ -25,3 +27,12 @@ CREATE TABLE IF NOT EXISTS answers (
   PRIMARY KEY (task_id, contributor)
 );
 CREATE INDEX IF NOT EXISTS answers_by_contributor ON answers (contributor);
+
+-- Answers set aside for a task marked confusable_display: kept and exported, never counted (README.md, "Words whose readings look alike").
+CREATE TABLE IF NOT EXISTS answers_excluded (
+  task_id TEXT NOT NULL,
+  contributor TEXT NOT NULL,
+  choice TEXT NOT NULL CHECK (choice IN ('a', 'b', 'neither', 'unsure', 'notext')),
+  at INTEGER NOT NULL,
+  PRIMARY KEY (task_id, contributor)
+);

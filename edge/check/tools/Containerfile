@@ -1,5 +1,6 @@
-# Tesseract 5.5 and Pillow, for yiddish_lines.py and build_tasks.py on the build host.
+# Tesseract 5.5 and Pillow, for yiddish_lines.py and build_tasks.py on the build host. fontconfig and the Noto fonts
+# are the reference fonts of build_tasks.py's look-alike check for scripts the site serves no font for (lookalike.py).
 FROM docker.io/library/debian:trixie-slim
-RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr python3-pil ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr python3-pil ca-certificates fontconfig fonts-noto-core \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /work

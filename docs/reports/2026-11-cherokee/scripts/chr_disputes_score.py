@@ -19,6 +19,10 @@ Reports, as JSON on standard output:
   most the distance between the two readings, whatever the print says.
 - `by_kind`: the same counts for news lines and lines that reprint the New Testament.
 
+Answers set aside on the site are never counted. A word marked `confusable_display` (its readings looked alike in the visitors'
+font, #1939) has its earlier answers in the export's `excluded_counts`, apart from `counts`; this script reads only `counts`, and
+a marked word that is still `held` (not yet reopened) counts as waiting, whatever else its row says.
+
 Only lines where the readings differ are loaded. Each reading can differ from the checked text only in the disputed word, and
 errors the readings share elsewhere on the page are not seen. The figures are not each reading's error on the page.
 The difference between them is what the disputes decide.
@@ -56,10 +60,18 @@ def task_key(task_id: str) -> tuple:
     return stem, int(k)
 
 
+def usable(row: dict) -> dict:
+    """The export row as scoring may see it. A held word marked `confusable_display` has no usable answers yet: it is
+    waiting, with no counts, no outcome and not settled. The answers it had are in `excluded_counts`, which nothing here reads."""
+    if row.get("confusable_display") and row.get("held"):
+        return {**row, "counts": dict.fromkeys(row["counts"], 0), "settled": False, "outcome": None}
+    return row
+
+
 def line_states(manifest: list, export: list) -> list:
     """One record per manifest line: its state (`resolved`, `open` when a word settled without a winner,
     `pending` while a word waits for answers or has none) and, when resolved, the checked words and each reading's errors."""
-    tasks = {task_key(r["id"]): r for r in export}
+    tasks = {task_key(r["id"]): usable(r) for r in export}
     out = []
     for m in manifest:
         rows = [tasks.get((m["id"], k)) for k in m["words"]]

@@ -451,7 +451,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      - run: node --test edge/check/worker.test.mjs edge/check/layout.test.mjs edge/check/languages.test.mjs edge/check/deploy.test.mjs
+      - run: node --test edge/check/worker.test.mjs edge/check/layout.test.mjs edge/check/languages.test.mjs edge/check/deploy.test.mjs edge/check/fonts.test.mjs
       - name: Wrangler dry-run build
         working-directory: edge/check
         run: npx --yes wrangler@4.154.0 deploy --dry-run --outdir "$RUNNER_TEMP/check-build"

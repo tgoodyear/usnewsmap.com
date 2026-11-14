@@ -1,7 +1,10 @@
 // The letter-check page. "/" lists languages; "/<lang>" shows one word at a time.
 const $ = (id) => document.getElementById(id);
 const SESSION = "usnm-check-session";
-let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false, loaded = false, failed = false;
+let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false, loaded = false, failed = false, fontFailed = false;
+// Sent with every answer. The Worker refuses answers to a word marked confusable_display from a page older than this: an
+// already-open tab has the old stylesheet and font, and would send answers about letters it draws alike (worker.mjs, DISPLAY_REVISION).
+const DISPLAY = 1;
 
 let memory = {};
 function store(k, v) {
@@ -125,14 +128,27 @@ function scriptText(text, diff) {
   return span;
 }
 
-function examples(text, diff) {
+// The names shown under a reading for pairs the task build flagged as look-alikes in the page's font (lookalikes:
+// [{a, a_label, b, b_label}], letter indexes as a_diff and b_diff): the syllable for Cherokee, else the Unicode name.
+// A Map from letter index to name. A flagged letter is shown even where the highlight doesn't mark it (a transposition).
+function lookalikeLabels(t, side) {
+  const labels = new Map(), n = letters(t[side]).length;
+  for (const p of t.lookalikes || []) if (typeof p[side + "_label"] === "string" && p[side] < n) labels.set(p[side], p[side + "_label"]);
+  return labels;
+}
+
+function examples(text, diff, labels = new Map()) {
   const box = document.createElement("div"); box.className = "examples";
   if (cfg.dir) box.dir = cfg.dir;
   const seen = new Set();
   letters(text).forEach((ch, i) => {
-    if (!diff.includes(i) || seen.has(ch)) return; seen.add(ch);
+    const name = labels.get(i), key = ch + "|" + (name || "");
+    if ((!diff.includes(i) && name === undefined) || seen.has(key)) return; seen.add(key);
     const ex = document.createElement("span"); ex.className = "ex";
     const l = document.createElement("span"); l.className = "letter"; l.lang = lang; l.textContent = ch; ex.appendChild(l);
+    if (name !== undefined) {
+      const n = document.createElement("span"); n.className = "name"; n.dir = "ltr"; n.textContent = name; ex.appendChild(n);
+    }
     const note = (cfg.notes || {})[ch];
     if (note) { const n = document.createElement("span"); n.className = "note"; n.dir = "auto"; n.textContent = note; ex.appendChild(n); }
     for (const key of ((cfg.examples || {})[ch] || []).slice(0, 3)) {
@@ -146,11 +162,22 @@ function examples(text, diff) {
   return box;
 }
 
+// A Cherokee reading is only answerable once the served font has loaded: otherwise a visitor's installed font may draw
+// letters alike (#1939). Resolves false when the font failed to load; true when it has, or the task has no Cherokee letters.
+const CHEROKEE = /[\u13A0-\u13FF\uAB70-\uABBF]/;
+async function fontReady(t) {
+  if (!t || !CHEROKEE.test(t.a + t.b) || !document.fonts || !document.fonts.load) return true;
+  try {
+    const faces = await document.fonts.load('32px "Noto Sans Cherokee"', t.a + t.b);
+    return faces.length > 0 && faces.every((f) => f.status === "loaded");
+  } catch { return false; }
+}
+
 function render(prev) {
   const card = $("card"); card.textContent = "";
   $("progress").textContent = answered ? `${answered} answered` : "";
   $("back").disabled = history.length === 0 || busy;
-  const live = !!task && !busy;
+  const live = !!task && !busy && !fontFailed;
   $("neither").disabled = $("unsure").disabled = $("notext").disabled = $("skip").disabled = !live;
   if (!task && !loaded) {
     const d = document.createElement("div"); d.className = "done";
@@ -165,6 +192,13 @@ function render(prev) {
     const s = document.createElement("strong"); s.textContent = "No words left for you";
     d.append(s, document.createTextNode("You've answered every open word, or the rest have enough answers. Thank you. Check back later for more."));
     card.appendChild(d); return;
+  }
+  if (fontFailed) {
+    const d = document.createElement("div"); d.className = "done";
+    d.textContent = "The Cherokee letters didn't load, so the readings can't be told apart here. ";
+    const again = document.createElement("button"); again.type = "button"; again.className = "small"; again.id = "retry";
+    again.textContent = "Reload the page"; again.addEventListener("click", () => location.reload());
+    d.appendChild(again); card.appendChild(d); return;
   }
   const t = task;
   if (t.label) { const top = document.createElement("div"); top.className = "label"; top.textContent = t.label; card.appendChild(top); }
@@ -182,7 +216,7 @@ function render(prev) {
     const b = document.createElement("button"); b.type = "button"; b.className = "opt"; b.id = "opt" + (k + 1); b.disabled = busy;
     if (prev === side) b.classList.add("chosen");
     const key = document.createElement("span"); key.className = "key"; key.textContent = `Reading ${k + 1}  (${k + 1})`;
-    b.append(key, scriptText(t[side], t[side + "_diff"]), examples(t[side], t[side + "_diff"]));
+    b.append(key, scriptText(t[side], t[side + "_diff"]), examples(t[side], t[side + "_diff"], lookalikeLabels(t, side)));
     b.addEventListener("click", () => choose(side));
     opts.appendChild(b);
   });
@@ -209,6 +243,8 @@ async function next(had = controlFocused()) {
     if (skipped.length) q.set("skip", skipped.slice(-50).join(","));
     const r = await authed("/api/next?" + q);
     task = r.task; answered = r.answered; loaded = true; failed = false; status("");
+    fontFailed = !(await fontReady(task));
+    if (fontFailed) status("The font for this word didn't load.", true);
   } catch (e) {
     failed = true;
     status(e.status === 429 ? "Slow down a little, then try again." : "The next word didn't load. " + e.message, true);
@@ -216,11 +252,11 @@ async function next(had = controlFocused()) {
 }
 
 async function choose(choice) {
-  if (!task || busy) return;
+  if (!task || busy || fontFailed) return;
   const had = controlFocused();
   busy = true; render();
   try {
-    await authed("/api/answers", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: task.id, choice }) });
+    await authed("/api/answers", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: task.id, choice, display: DISPLAY }) });
     history.push({ task, choice });
     if (history.length > 50) history.shift();
     busy = false;
@@ -232,6 +268,7 @@ async function choose(choice) {
       return;
     }
     busy = false; render(); keepFocus(had);
+    if (e.status === 426) { status("This page is out of date. Reload it, then answer again.", true); return; }
     status(e.status === 429 ? "Too fast. Wait a few seconds, then answer again." : "That answer wasn't saved: " + e.message, true);
   }
 }
