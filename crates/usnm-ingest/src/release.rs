@@ -1064,7 +1064,7 @@ impl Release {
                 // An overlay-only release plans no replacement, but it publishes, so the
                 // holds policy holds for it too: the database must be readable.
                 let quality = self.db_holds.open()?;
-                ocr_local::replace::release_revocations(
+                let (_, hold_rows) = ocr_local::replace::release_revocations_and_holds(
                     self.curated.as_ref(),
                     quality
                         .as_ref()
@@ -1072,6 +1072,10 @@ impl Release {
                     self.db_holds,
                 )
                 .await?;
+                // The same zero-match stop as a full release: this one publishes too.
+                let listing = ocr_local::replace::Listing::list(self.curated.as_ref()).await?;
+                ocr_local::replace::check_holds(self.curated.as_ref(), &listing, &hold_rows)
+                    .await?;
             }
             None
         };
