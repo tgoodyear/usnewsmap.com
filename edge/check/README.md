@@ -36,21 +36,21 @@ Answers are published under CC0. `GET /api/export?lang=chr` returns one JSON lin
 
 ## API
 
-| Method and path                           | Who         | What                                                                                                       |
-| ----------------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------- |
-| `GET /api/config`                         | anyone      | The Turnstile site key.                                                                                    |
-| `GET /api/languages`                      | anyone      | Languages with task and settled counts.                                                                    |
-| `GET /api/languages/<code>`               | anyone      | A language's configuration.                                                                                |
-| `POST /api/session`                       | anyone      | `{turnstile}` → `{session}`.                                                                               |
-| `GET /api/next?lang=<code>[&skip=id,...]` | session     | `{task, answered}`; `task` is null when none is left for this person.                                      |
+| Method and path                           | Who         | What                                                                                                                                                |
+| ----------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/config`                         | anyone      | The Turnstile site key.                                                                                                                             |
+| `GET /api/languages`                      | anyone      | Languages with task and settled counts.                                                                                                             |
+| `GET /api/languages/<code>`               | anyone      | A language's configuration.                                                                                                                         |
+| `POST /api/session`                       | anyone      | `{turnstile}` → `{session}`.                                                                                                                        |
+| `GET /api/next?lang=<code>[&skip=id,...]` | session     | `{task, answered}`; `task` is null when none is left for this person.                                                                               |
 | `POST /api/answers`                       | session     | `{task, choice[, display, font]}`: `a`, `b`, `neither`, `unsure` or `notext`; `font` is optional ([below](#which-font-each-answer-was-given-with)). |
-| `GET /api/stats?lang=<code>`              | anyone      | Tasks, settled, answers, people.                                                                           |
-| `GET /api/export?lang=<code>`             | anyone      | CC0 JSON lines (above).                                                                                    |
-| `PUT /admin/clips/<key>`                  | admin token | An image (JPEG, PNG or WebP).                                                                              |
-| `PUT /admin/languages/<code>`             | admin token | A language's configuration. With `?keep=examples` (an existing language only), the stored `examples` stay. |
-| `POST /admin/tasks`                       | admin token | JSON lines of tasks; a task already loaded keeps its answers.                                              |
-| `POST /admin/answers`                     | admin token | JSON lines of seed answers, `seed:` contributors only.                                                     |
-| `POST /admin/confusable`                  | admin token | `{action: "mark" or "reopen", tasks: [ids]}`, up to 500 ids ([below](#words-whose-readings-look-alike)).   |
+| `GET /api/stats?lang=<code>`              | anyone      | Tasks, settled, answers, people.                                                                                                                    |
+| `GET /api/export?lang=<code>`             | anyone      | CC0 JSON lines (above).                                                                                                                             |
+| `PUT /admin/clips/<key>`                  | admin token | An image (JPEG, PNG or WebP).                                                                                                                       |
+| `PUT /admin/languages/<code>`             | admin token | A language's configuration. With `?keep=examples` (an existing language only), the stored `examples` stay.                                          |
+| `POST /admin/tasks`                       | admin token | JSON lines of tasks; a task already loaded keeps its answers.                                                                                       |
+| `POST /admin/answers`                     | admin token | JSON lines of seed answers, `seed:` contributors only.                                                                                              |
+| `POST /admin/confusable`                  | admin token | `{action: "mark" or "reopen", tasks: [ids]}`, up to 500 ids ([below](#words-whose-readings-look-alike)).                                            |
 
 A task, as loaded: `id` (`<lang>/<set>/<word id>`), `lang`, `set`, then what the page shows: `page`, `source` (the page on Chronicling America), `label`, `line` and `word` (clip keys), `box` (the word in the line image, as fractions `[x, y, w, h]`), `a`, `b`, `a_diff`, `b_diff` (indexes of the letters that differ), `a_is`, `b_is` (what each reading is, e.g. `reference` and `loc`) and, when the build found letters the page draws almost alike, `lookalikes` (see below). The page shows `a` and `b` in an order fixed by the task id, so neither side is always first.
 
@@ -105,11 +105,11 @@ After merging, in this order:
 
 Each answer stores one small value about the page that sent it: whether the font the page serves for the word's script had loaded when the person answered (#1939). The page asks the browser's CSS Font Loading API (`document.fonts.check`) about the family `style.css` declares, for the letters shown, and sends the result as `font` (`fontState` in `public/app.js`). The stored values (`FONT_STATES` in `worker.mjs`, a `CHECK` on the column):
 
-| Value        | Meaning                                                                                                                                  |
-| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `loaded`     | The word has letters a bundled font covers (today Cherokee, `Noto Sans Cherokee`), and it had loaded.                                    |
-| `not_loaded` | The same, and it had not. The page keeps the answer buttons off in that state, so this value should be rare.                             |
-| `none`       | No bundled font applies to the letters shown (Hebrew letters, Cyrillic): the page draws them with whatever the visitor has.             |
+| Value        | Meaning                                                                                                                                                                                               |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `loaded`     | The word has letters a bundled font covers (today Cherokee, `Noto Sans Cherokee`), and it had loaded.                                                                                                 |
+| `not_loaded` | The same, and it had not. The page keeps the answer buttons off in that state, so this value should be rare.                                                                                          |
+| `none`       | No bundled font applies to the letters shown (Hebrew letters, Cyrillic): the page draws them with whatever the visitor has.                                                                           |
 | `unknown`    | The browser has no font loading API or the check threw; the page is from before the value existed (a cached page sends none); the answer is older than the column; or the request sent anything else. |
 
 Nothing else about the visitor is stored: no font list, no user agent, no screen size. The page does not enumerate fonts. An answer changed later takes the new answer's value. Seed answers are `unknown`. The export gives each word `font_counts` (`loaded`, `not_loaded`, `none`, `unknown`), which add up to the total of `counts`; a word marked `confusable_display` also has `excluded_font_counts` for its set-aside answers, which keep their value in `answers_excluded`. Existing readers that use `counts` and `excluded_counts` are unaffected.
