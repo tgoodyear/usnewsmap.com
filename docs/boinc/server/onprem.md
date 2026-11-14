@@ -214,7 +214,7 @@ and record all identities. Code tests or a merged PR do not prove this live gate
 A `usnm_ocr_native` page whose workunit failed is retried as a native unit on the same build. Any client error fails the workunit for good (`max_error_results` 0). Only a CPU-limit failure (`exit_status` 197, `too slow: SIGXCPU at timeout_secs N` in the task's stderr) gets a larger deadline; read the cause from the result before choosing. Any other failure (for example -226 or an exit 1) is retried at the same deadline, once. The steps are those above, with these differences:
 
 ```sh
-usnm-boinc retry --native --root /private/jobs --spool /private/assimilated \
+usnm-boinc retry --native-host <host id> --root /private/jobs --spool /private/assimilated \
   --job PARENT_JOB_ID --expected-error-mask 2 \
   --image <the parent's engine.image> --app-version-num <the native version that packages it> \
   --timeout-secs 3600 --reviewed-reason 'Reviewed: SIGXCPU at 1800 s' \
@@ -222,8 +222,8 @@ usnm-boinc retry --native --root /private/jobs --spool /private/assimilated \
   --curated-url /private/curated --reference-url /private/reference
 ```
 
-- `--native` refuses a retry that changes the build (`--image` must be the parent's) or shortens the deadline. `--timeout-secs` (up to 3600) is for a CPU-limit failure; leave it out for any other, which is retried at the parent's deadline only when the parent is a first attempt. A second failure at the same deadline, or one at 3600 s, is refused and logged as `boinc_page_retries_exhausted`: the page stays dead-lettered on that list.
-- Submit the child with the bridge's `NATIVE_UNITS=<child id>=<host id>` step (`usnm-boinc submit --app usnm_ocr_native`, which takes the retry stores for a retry's child). Trust is checked as for any native unit: the host must be admitted for the job's scope and native digest, and the build must have a passing challenge. The unit is pinned to the native version that packages the build, and the retry's `--app-version-num` must be that version.
+- `--native-host` is the host the child is for. The journal keeps it with the parent's build and deadline, so submission refuses another host, a changed build or a shorter deadline, and the spot-check draw reads the host from it. `retry` refuses a retry that changes the build (`--image` must be the parent's) or shortens the deadline. `--timeout-secs` (up to 3600) is for a CPU-limit failure; leave it out for any other, which is retried at the parent's deadline only when the parent is a first attempt. A second failure at the same deadline, or one at 3600 s, is refused and logged as `boinc_page_retries_exhausted`: the page stays dead-lettered on that list.
+- Submit the child with the bridge's `NATIVE_UNITS=<child id>=<that host id>` step (`usnm-boinc submit --app usnm_ocr_native`, which takes the retry stores for a retry's child). Trust is checked as for any native unit: the host must be admitted for the job's scope and native digest, and the build must have a passing challenge. The unit is pinned to the native version that packages the build, and the retry's `--app-version-num` must be that version.
 - Validation is unchanged: one result, then the same spot-check draw. There is no trust or validation shortcut.
 - The controller still never exports or submits a manual retry.
 

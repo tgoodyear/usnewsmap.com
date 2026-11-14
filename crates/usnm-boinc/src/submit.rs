@@ -244,13 +244,35 @@ pub async fn submit_native_retry(
     .await
 }
 
-/// The same build: a native retry's pinned version is the one that packages the job's own.
-fn check_native_retry_pin(retry_version: u32, pin: Option<u32>) -> anyhow::Result<()> {
-    ensure!(
-        Some(retry_version) == pin,
-        "a native retry is pinned to the version that packages its build"
-    );
-    Ok(())
+/// A retry goes to the app it was prepared for. A native retry (`--native-host`) is a native unit
+/// for that one host, pinned to the version that packages its build (the journal keeps the
+/// parent's build and the validation of the child's deadline); a container retry is never a
+/// native unit.
+fn check_retry_app(
+    retry: &crate::retry::Retry,
+    native_unit: bool,
+    target_host: Option<u64>,
+    pin: Option<u32>,
+) -> anyhow::Result<()> {
+    match (&retry.native, native_unit) {
+        (None, false) => Ok(()),
+        (Some(native), true) => {
+            ensure!(
+                Some(native.target_host) == target_host,
+                "a native retry is for host {}, not {target_host:?}",
+                native.target_host
+            );
+            ensure!(
+                Some(retry.app_version_num) == pin,
+                "a native retry is pinned to the version that packages its build"
+            );
+            Ok(())
+        }
+        (Some(_), false) => anyhow::bail!("a native retry is submitted as a {NATIVE_APP} unit"),
+        (None, true) => anyhow::bail!(
+            "only a retry prepared with --native-host is a {NATIVE_APP} unit; others are container work"
+        ),
+    }
 }
 
 /// The `max_error_results` of a unit. A native unit is assigned to one host, so BOINC's
@@ -375,8 +397,8 @@ async fn submit_unit(
         )?),
         Build::Container => pin,
     };
-    if let (Build::Native { .. }, Some(retry)) = (&build, &record.retry) {
-        check_native_retry_pin(retry.app_version_num, pin)?;
+    if let Some(retry) = &record.retry {
+        check_retry_app(retry, native_unit, target_host, pin)?;
     }
     ensure!(
         record.job.lines.is_none() || is_retry || pin.is_some(),
@@ -824,16 +846,54 @@ mod native_tests {
         assert_eq!(max_error_results(false), "3");
     }
 
+    fn retry(native: Option<(u64, u32)>) -> crate::retry::Retry {
+        crate::retry::Retry {
+            previous_job: "a".repeat(64),
+            previous_attempt: 0,
+            previous_workunit: format!("usnm_{}", "a".repeat(64)),
+            previous_ledger: crate::LedgerRow {
+                batch_version: 1,
+                reason: "bulk".into(),
+                language: "eng".into(),
+                plan: "p".into(),
+                attempt: 0,
+                request_day: None,
+                queued_at: "2026-10-24T12:00:00Z".into(),
+                retry_message_at: None,
+                retry_run: None,
+            },
+            terminal: crate::TerminalFailure::from_marker(Some(b"0x2\n")),
+            previous_error: "too many error results".into(),
+            app_version_num: native.map_or(27, |(_, version)| version),
+            reviewed_reason: "too slow".into(),
+            native: native.map(|(target_host, _)| crate::retry::NativeRetry {
+                previous_image: job(1).engine.image,
+                previous_timeout_secs: 1800,
+                target_host,
+            }),
+        }
+    }
+
     #[test]
-    fn a_native_retry_must_be_pinned_to_the_version_that_packages_its_build() {
-        assert!(check_native_retry_pin(100, Some(100)).is_ok());
-        for pin in [Some(101), None] {
-            let error = check_native_retry_pin(100, pin).unwrap_err();
+    fn a_retry_goes_only_to_the_app_and_host_it_was_prepared_for() {
+        let native = retry(Some((13, 100)));
+        assert!(check_retry_app(&native, true, Some(13), Some(100)).is_ok());
+        for (host, pin) in [
+            (Some(14), Some(100)),
+            (None, Some(100)),
+            (Some(13), Some(101)),
+            (Some(13), None),
+        ] {
             assert!(
-                error.to_string().contains("pinned to the version"),
-                "{error:#}"
+                check_retry_app(&native, true, host, pin).is_err(),
+                "{host:?} {pin:?}"
             );
         }
+        // A native retry is never a container unit, nor a container retry a native one.
+        assert!(check_retry_app(&native, false, None, None).is_err());
+        let container = retry(None);
+        assert!(check_retry_app(&container, false, None, None).is_ok());
+        assert!(check_retry_app(&container, true, Some(13), Some(27)).is_err());
     }
 
     #[tokio::test]

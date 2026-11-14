@@ -371,6 +371,26 @@ class NativeSpotTests(unittest.TestCase):
         self.assertEqual(spot["counts"]["drawn"], 2)
 
 
+    def test_a_manual_retrys_child_is_drawn_from_by_the_host_in_its_journal(self):
+        # #1919: a retry's child is never in native_targets (the automatic submit fills it), so
+        # its host comes from the journal, and it is noted once.
+        job = "c" * 64
+        owned = {"page-1": {"stage": "published", "job": {"id": job},
+                            "retry": {"native": {"target_host": 13}}},
+                 "page-2": {"stage": "published", "job": {"id": "d" * 64}}}
+        state = {}
+        drawn = []
+        original = batch.native_spot_sample
+        batch.native_spot_sample = lambda config, state, slots, published, *rest: drawn.extend(published)
+        try:
+            for _ in range(2):
+                batch.native_spot_draw({}, state, lambda: None, 1000, owned,
+                                       {job: {"spool": "/spool/c"}, "d" * 64: {"spool": "/spool/d"}}, {})
+        finally:
+            batch.native_spot_sample = original
+        # The page with no journal host and no target is skipped; the retry is drawn once.
+        self.assertEqual(drawn, [(job, 13, "page-1", "/spool/c")])
+
     def test_no_replay_is_made_while_draining_or_past_the_global_cap(self):
         self.tick()
         self.results_in()

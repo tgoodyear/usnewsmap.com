@@ -162,12 +162,15 @@ impl Exited {
     }
 }
 
-/// Whether `e` is Tesseract killed at its CPU limit ([`Exited::is_cpu_limit`]).
+/// Whether `e` is Tesseract killed at its CPU limit ([`Exited::is_cpu_limit`]). Looks inside an
+/// [`EngineError::Failed`] too: its `transparent` source skips the error it wraps, so a plain walk
+/// of the chain would miss the one a real read fails with.
 pub fn exited_cpu_limit(e: &anyhow::Error) -> bool {
     e.chain().any(|cause| {
         cause
             .downcast_ref::<Exited>()
             .is_some_and(Exited::is_cpu_limit)
+            || matches!(cause.downcast_ref::<EngineError>(), Some(EngineError::Failed(inner)) if exited_cpu_limit(inner))
     })
 }
 

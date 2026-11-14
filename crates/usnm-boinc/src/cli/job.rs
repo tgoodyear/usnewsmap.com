@@ -149,8 +149,11 @@ pub struct RetryArgs {
     /// packages it. `--timeout-secs` is longer than the parent's for a CPU-limit failure (exit
     /// status 197); any other failure is retried once at the same deadline, so none. Submit it
     /// with `submit --app usnm_ocr_native`.
-    #[arg(long)]
-    native: bool,
+    ///
+    /// `--native-host` is the host the child is for (it must be trusted for the build): the
+    /// spot-check draw reads it, and submission refuses another.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    native_host: Option<u64>,
     #[arg(long)]
     handoff_url: String,
     #[arg(long)]
@@ -189,7 +192,7 @@ pub async fn retry(args: RetryArgs) -> anyhow::Result<()> {
             image: &args.image,
             reviewed_reason: &args.reviewed_reason,
             timeout_secs: args.timeout_secs,
-            native: args.native,
+            native_host: args.native_host,
             handoff: handoff.as_ref(),
         },
         &State::new(docs),

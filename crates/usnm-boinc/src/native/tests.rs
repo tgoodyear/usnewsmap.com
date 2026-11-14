@@ -246,6 +246,17 @@ fn an_engine_killed_by_sigxcpu_becomes_a_cpu_limit_and_other_failures_do_not() {
         })
         .context("read failed")
     };
+    // A real read fails with the engine's error inside `EngineError::Failed`, whose transparent
+    // source hides it from a plain walk of the chain.
+    let wrapped = |signal: i32| {
+        anyhow::Error::new(usnm_ocr_worker::engine::EngineError::Failed(killed(signal)))
+            .context("page failed")
+    };
+    assert_eq!(
+        exit_code(&classify_unit_error(wrapped(24), Some(1800))),
+        CPU_LIMIT_EXIT
+    );
+    assert_eq!(exit_code(&classify_unit_error(wrapped(11), Some(1800))), 1);
     let error = classify_unit_error(killed(24), Some(1800));
     assert_eq!(
         error.root_cause().to_string(),
