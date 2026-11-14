@@ -367,6 +367,7 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
             &root,
             &project,
             &job,
+            download.as_ref(),
             sources.as_ref(),
             target_host,
             trust,

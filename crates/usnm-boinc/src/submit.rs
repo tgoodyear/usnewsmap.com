@@ -181,6 +181,7 @@ pub async fn submit_retry_targeted(
     root: &Path,
     project: &Path,
     id: &str,
+    download: Option<&Download>,
     native: Option<&RetryNative<'_>>,
     target_host: Option<u64>,
     trust: &crate::trust::Trust,
@@ -189,7 +190,7 @@ pub async fn submit_retry_targeted(
         root,
         project,
         id,
-        None,
+        download,
         native,
         None,
         target_host,
@@ -736,9 +737,10 @@ mod native_tests {
         let (s, ids) = Server::new(&[1]);
         std::fs::write(s.project.join("config.xml"), ASSIGNMENT).unwrap();
         let trust = trust(&s.root, &[13]);
-        let error = submit_retry_targeted(&s.root, &s.project, &ids[0], None, Some(13), &trust)
-            .await
-            .unwrap_err();
+        let error =
+            submit_retry_targeted(&s.root, &s.project, &ids[0], None, None, Some(13), &trust)
+                .await
+                .unwrap_err();
         assert!(
             error.to_string().contains("can be targeted at a host"),
             "{error:#}"

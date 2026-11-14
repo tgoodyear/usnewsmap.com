@@ -468,6 +468,7 @@ pub async fn run(request: &Request<'_>, stores: &Stores<'_>) -> anyhow::Result<O
         queued_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
         request: fingerprint(request, timeout),
     };
+    let stale = saved.is_some();
     let mut resumed = None;
     if let Some(saved) = saved {
         let at = DateTime::parse_from_rfc3339(&saved.queued_at)?.with_timezone(&Utc);
@@ -508,14 +509,24 @@ pub async fn run(request: &Request<'_>, stores: &Stores<'_>) -> anyhow::Result<O
                 queued_at: at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
                 request: want.request,
             };
-            stores
+            let bytes = serde_json::to_vec(&intent)?;
+            // A first intent is written only if none is there: of two runs that start together
+            // (the step's lock prevents it; a direct run takes none) the second finds the first's
+            // and stops. Replacing a stale one is for the holder of the lock.
+            if stale {
+                stores
+                    .handoff
+                    .put(&intent_path, bytes, "application/json")
+                    .await?;
+            } else if !stores
                 .handoff
-                .put(
-                    &intent_path,
-                    serde_json::to_vec(&intent)?,
-                    "application/json",
-                )
-                .await?;
+                .put_new(&intent_path, bytes, "application/json")
+                .await?
+            {
+                anyhow::bail!(
+                    "another retry of {id} wrote its intent first; run this one again to resume it"
+                );
+            }
             at
         }
     };

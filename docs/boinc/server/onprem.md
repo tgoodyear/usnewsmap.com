@@ -289,7 +289,9 @@ row is a run that stopped first, and is replaced. The time is set after the pare
 outcome (the reservation would move it there), so it is the ledger row's. The child's page and
 request are written first and its journal last, only if there is none: a journal that is there has
 its files, an interrupted export is repaired on the repeat, and a journal the server has moved on
-is never put back.
+is never put back. Run it through the step, which holds the hand-off lock: a direct
+`controller-retry` takes none, and two at once on one parent stop at the intent (the second finds
+the first's).
 
 **The live parent.** The controller reads a retry's lineage from the live journals and needs the
 parent there, failed. After the reservation, and before the child is written, the step writes the
