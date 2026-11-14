@@ -14,7 +14,11 @@ Fonts. Cherokee comes from the font the site serves (public/fonts). The site ser
 them the result only describes a reference font: the first family of the page's `--font-script` stack that can draw the
 script and is installed here (Hebrew: Noto Serif Hebrew, then Times New Roman; others: Times New Roman, then Noto
 Sans), or a file given with --font SCRIPT=PATH. A visitor whose machine has a different font sees different shapes.
-Letters are drawn with Pillow's basic layout engine, so the numbers don't depend on whether Raqm is installed.
+Letters are drawn with Pillow's basic layout engine, which is enough for a letter of one character (Cherokee,
+Cyrillic, bare Hebrew letters), so those numbers don't depend on whether Raqm is installed. A letter with a combining
+mark (פּ, אַ) needs shaping: the basic engine sets the mark beside the letter instead of on it, and a pair measured that
+way says nothing about what the browser draws. Such a pair is drawn with the Raqm layout engine (HarfBuzz, what a browser
+uses), and counted in `unshaped`, not measured, when this Pillow was built without Raqm.
 
 Command line: measure the letter pairs of an export (`GET /api/export?lang=...`) or a tasks.jsonl, with no rebuild.
 
@@ -86,6 +90,9 @@ class Fonts:
         self.overrides = {k.upper(): v for k, v in (overrides or {}).items()}
         self._fonts, self._bitmaps = {}, {}
         self.unmeasured = collections.Counter()  # script -> pairs with no font or no glyph
+        self.unshaped = collections.Counter()  # script -> pairs with a combining mark, not measured: no Raqm to shape them
+        from PIL import features
+        self.raqm = bool(features.check("raqm"))
 
     def path(self, script: str):
         if script not in self.paths:
@@ -98,11 +105,11 @@ class Fonts:
                 self.paths[script] = next((p for p in found if p), None)
         return self.paths[script]
 
-    def _font(self, path):
-        if path not in self._fonts:
-            layout = self._font_cls.Layout.BASIC
+    def _font(self, path, shaped=False):
+        if (path, shaped) not in self._fonts:
+            layout = self._font_cls.Layout.RAQM if shaped else self._font_cls.Layout.BASIC
             try:
-                self._fonts[path] = self._font_cls.truetype(path, PAGE_PX, layout_engine=layout)
+                self._fonts[(path, shaped)] = self._font_cls.truetype(path, PAGE_PX, layout_engine=layout)
             except OSError:
                 if not path.endswith(".woff2"):
                     raise
@@ -117,22 +124,23 @@ class Fonts:
                 buf = io.BytesIO()
                 font.save(buf)
                 buf.seek(0)
-                self._fonts[path] = self._font_cls.truetype(buf, PAGE_PX, layout_engine=layout)
-        return self._fonts[path]
+                self._fonts[(path, shaped)] = self._font_cls.truetype(buf, PAGE_PX, layout_engine=layout)
+        return self._fonts[(path, shaped)]
 
-    def bitmap(self, path: str, text: str):
-        """Black and white picture of `text` at PAGE_PX on a fixed baseline, or None when the font has no glyph."""
-        key = (path, text)
+    def bitmap(self, path: str, text: str, shaped: bool = False, direction: str = None):
+        """Black and white picture of `text` at PAGE_PX on a fixed baseline, or None when the font has no glyph.
+        `shaped`: lay it out with Raqm (needs self.raqm), so combining marks sit on their letter."""
+        key = (path, text, shaped, direction)
         if key not in self._bitmaps:
-            self._bitmaps[key] = self._draw(self._font(path), text)
+            self._bitmaps[key] = self._draw(self._font(path, shaped), text, direction if shaped else None)
         return self._bitmaps[key]
 
     @staticmethod
-    def _draw(font, text):
+    def _draw(font, text, direction=None):
         from PIL import Image, ImageDraw
         def render(s):
             im = Image.new("L", (2 * PAGE_PX, 2 * PAGE_PX), 0)
-            ImageDraw.Draw(im).text((PAGE_PX // 2, int(PAGE_PX * 1.25)), s, font=font, fill=255, anchor="ls")
+            ImageDraw.Draw(im).text((PAGE_PX // 2, int(PAGE_PX * 1.25)), s, font=font, fill=255, anchor="ls", direction=direction)
             return im.point(lambda v: 255 if v > 127 else 0)
         im = render(text)
         if im.getbbox() is None or im.tobytes() == render("\U0010fffd").tobytes():  # blank, or the font's missing-glyph box
@@ -152,14 +160,33 @@ def iou(a, b, shift: int = MAX_SHIFT) -> float:
     return best
 
 
+def unshaped_warning(fonts: Fonts) -> str:
+    """A warning for the task builders when pairs with combining marks were skipped for want of Raqm (else "")."""
+    if not fonts.unshaped:
+        return ""
+    return ("WARNING: " + ", ".join(f"{s or 'other'} {n}" for s, n in sorted(fonts.unshaped.items()))
+            + " letter pairs with combining marks were NOT checked for look-alikes: this Pillow has no Raqm to shape them, so the"
+            " tasks carry no `lookalikes` for them. Rebuild with a Pillow built with Raqm (Pillow's pip wheels have it).")
+
+
+def has_mark(letter: str) -> bool:
+    return any(unicodedata.category(ch).startswith("M") for ch in letter)
+
+
 def measure(fonts: Fonts, x: str, y: str):
-    """Overlap of two letters in the reference font of the first one's script (then the second's), or None when
-    neither font has both."""
+    """Overlap of two letters (each a base character with its marks, as the page draws it) in the reference font of
+    the first one's script (then the second's), or None when neither font has both, or when a letter has combining marks
+    and this Pillow can't shape them. Both letters of a pair are drawn the same way, with shaping when either has a mark."""
+    shaped = has_mark(x) or has_mark(y)
+    if shaped and not fonts.raqm:
+        fonts.unshaped[script_of(x)] += 1
+        return None
     for script in dict.fromkeys((script_of(x), script_of(y))):
         path = fonts.path(script)
         if not path:
             continue
-        bx, by = fonts.bitmap(path, x), fonts.bitmap(path, y)
+        direction = "rtl" if script == "HEBREW" else None
+        bx, by = fonts.bitmap(path, x, shaped, direction), fonts.bitmap(path, y, shaped, direction)
         if bx is not None and by is not None:
             return iou(bx, by)
     fonts.unmeasured[script_of(x)] += 1
@@ -247,6 +274,7 @@ def main() -> None:
         "fonts": {s: p for s, p in sorted(fonts.paths.items())},
         "threshold": a.threshold,
         "unmeasured_pairs": dict(fonts.unmeasured),
+        "unshaped_pairs": dict(fonts.unshaped),
         "languages": {l: {"tasks": r["tasks"], "tasks_flagged": r["tasks_flagged"], "flagged_pairs": sum(r["pairs"].values()),
                           "pairs": dict(r["pairs"].most_common()), **({"ids": r["ids"]} if a.ids else {})}
                       for l, r in sorted(result.items())},
@@ -257,6 +285,8 @@ def main() -> None:
     print(f"threshold {a.threshold}; fonts: " + ", ".join(f"{s or 'other'}={os.path.basename(p) if p else 'none found'}" for s, p in report["fonts"].items()))
     if fonts.unmeasured:
         print("pairs not measured (no font or no glyph): " + ", ".join(f"{s or 'other'} {n}" for s, n in fonts.unmeasured.items()))
+    if fonts.unshaped:
+        print("pairs not measured (a combining mark, and this Pillow has no Raqm to shape it): " + ", ".join(f"{s or 'other'} {n}" for s, n in fonts.unshaped.items()))
     for lang, r in report["languages"].items():
         print(f"{lang}: {r['tasks_flagged']} of {r['tasks']} tasks flagged, {r['flagged_pairs']} letter pairs")
         for pair, n in r["pairs"].items():

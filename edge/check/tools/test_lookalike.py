@@ -137,6 +137,31 @@ class Flags(unittest.TestCase):
         self.assertEqual(F.unmeasured["HEBREW"], 1)
 
     @need_font
+    def test_a_letter_with_a_mark_is_not_measured_without_shaping(self):
+        """The basic layout engine sets a mark beside its letter, so such a pair is counted, not measured, without Raqm."""
+        F = la.Fonts({"HEBREW": la.BUNDLED["CHEROKEE"]})
+        F.raqm = False
+        self.assertIsNone(la.measure(F, "אַ", "א"))
+        self.assertEqual(F.unshaped["HEBREW"], 1)
+        self.assertEqual(F.unmeasured["HEBREW"], 0)
+        self.assertTrue(la.has_mark("אַ") and la.has_mark("פּ") and not la.has_mark("א"))
+        self.assertIn("NOT checked", la.unshaped_warning(F))
+        self.assertEqual(la.unshaped_warning(la.Fonts()), "")
+        # letters of one character don't need shaping
+        self.assertIsNotNone(la.measure(F, "Ꭱ", "Ꮢ"))
+
+    TNR = "/System/Library/Fonts/Supplemental/Times New Roman.ttf"
+
+    @unittest.skipUnless(HAVE_PIL and os.path.exists(TNR) and HAVE_PIL and __import__("PIL.features").features.check("raqm"), "needs Raqm and macOS's Times New Roman")
+    def test_a_letter_with_its_mark_is_compared_as_one_shaped_letter(self):
+        F = la.Fonts({"HEBREW": self.TNR})
+        near = la.measure(F, "אַ", "אָ")  # patah and qamats under the same alef
+        self.assertGreater(near, 0.8)
+        self.assertLess(near, 1.0)
+        self.assertEqual(F.unshaped["HEBREW"], 0)
+        self.assertLess(la.measure(F, "ר", "ד"), 0.6)
+
+    @need_font
     def test_page_size_matches_the_stylesheet(self):
         css = open(os.path.join(HERE, "..", "public", "style.css"), encoding="utf-8").read()
         self.assertRegex(css, r"\.script \{[^}]*font-size: 2rem;")

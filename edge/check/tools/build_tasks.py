@@ -33,6 +33,7 @@ import argparse
 import difflib
 import json
 import os
+import sys
 import unicodedata
 
 BUILD_ONLY = ("drop_examples", "min_examples")
@@ -271,6 +272,8 @@ def main() -> None:
           + ", ".join(f"{s or 'other'}={os.path.basename(p) if p else 'none found'}" for s, p in sorted(fonts.paths.items())))
     if fonts.unmeasured:
         print("letter pairs not checked (no font or no glyph): " + ", ".join(f"{s or 'other'} {n}" for s, n in sorted(fonts.unmeasured.items())))
+    if lookalike.unshaped_warning(fonts):
+        print(lookalike.unshaped_warning(fonts), file=sys.stderr)
 
 
 if __name__ == "__main__":
