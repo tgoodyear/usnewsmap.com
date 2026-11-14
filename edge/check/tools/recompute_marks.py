@@ -360,6 +360,18 @@ def invalidate(out_dir: str, lang: str, reason: str) -> None:
     write_json(os.path.join(d, "report.json"), {"tool": "recompute_marks.py", "lang": lang, "passed": False, "reason": reason})
 
 
+def safe_invalidate(out_dir: str, lang: str, reason: str) -> None:
+    """invalidate(), but a failure to clean up is a warning: the other languages still run and the command still fails."""
+    try:
+        invalidate(out_dir, lang, reason)
+    except OSError as e:
+        print(f"WARNING could not invalidate the output of {lang} in {out_dir} ({e}): delete it before loading", file=sys.stderr)
+
+
+def reason_of(e: BaseException) -> str:
+    return str(e) if isinstance(e, Refused) else f"{type(e).__name__}: {e}"
+
+
 def dry_run(a, ctx: Context, records: list, full: bool) -> int:
     failed = False
     by_lang = collections.defaultdict(list)
@@ -371,13 +383,14 @@ def dry_run(a, ctx: Context, records: list, full: bool) -> int:
             if not recs:
                 raise Refused(f"{lang}: no tasks in the input")
             changed, rep = recompute_language(lang, recs, ctx, full)
-        except Refused as e:
-            print(f"REFUSED {e}", file=sys.stderr)
-            invalidate(a.out_dir, lang, str(e))
+            write_language(a.out_dir, lang, changed, rep)
+            print(report_text(rep), end="")
+        # A refusal, an unexpected error, a malformed option (the parsers exit with SystemExit) or a failure to write: whichever it
+        # was, no older output of this language may stay loadable, and the other languages still run.
+        except (Exception, SystemExit) as e:
+            print(f"REFUSED {e}" if isinstance(e, Refused) else f"FAILED {reason_of(e)}", file=sys.stderr)
+            safe_invalidate(a.out_dir, lang, reason_of(e))
             failed = True
-            continue
-        write_language(a.out_dir, lang, changed, rep)
-        print(report_text(rep), end="")
     return 1 if failed else 0
 
 
@@ -423,7 +436,10 @@ def load(a, site: Site) -> int:
             print(f"{lang}: {len(stale)} tasks changed on the site since the dry run read them and were not replaced: " + ", ".join(stale[:5]), file=sys.stderr)
         after = {r["id"]: r for r in site.dump_records() if r["lang"] == lang}
         wrong = [t["id"] for t in new if t["id"] not in stale and after.get(t["id"]) != t]
-        others = [i for i in old if i not in {t["id"] for t in new} and after.get(i) != old[i]]
+        # Every id in either snapshot that is not one of the changed tasks must be as it was: an edit, a deletion or a task
+        # another loader inserted during the load (in `after` only) all fail the check.
+        changed_ids = {t["id"] for t in new}
+        others = sorted(i for i in old.keys() | after.keys() if i not in changed_ids and after.get(i) != old.get(i))
         print(f"{lang}: sent {sent} bodies; {len(stale)} stale (changed since the read, not replaced); read back {len(new) - len(stale) - len(wrong)} as sent, {len(wrong)} not; {len(others)} other tasks changed")
         if wrong or others or stale:
             print("  check the site: " + ", ".join((wrong + others)[:5]), file=sys.stderr)
@@ -431,8 +447,25 @@ def load(a, site: Site) -> int:
     return 0
 
 
+def invalidate_from_argv(reason: str) -> None:
+    """Best effort after a usage error: read only --action, --lang and --out-dir (full names, as the main parser accepts only those), and invalidate those dry-run outputs."""
+    small = argparse.ArgumentParser(add_help=False, allow_abbrev=False, exit_on_error=False)
+    small.add_argument("--action", default="dry-run")
+    small.add_argument("--lang", action="append", default=[])
+    small.add_argument("--out-dir")
+    try:
+        found, rest = small.parse_known_args()
+    except (argparse.ArgumentError, SystemExit):
+        return
+    if any(tok.startswith("--a") and "--action".startswith(tok.split("=")[0]) for tok in rest):
+        return  # an abbreviated --action (`--act load`): what was asked is unknown, so leave the output alone
+    if found.action == "dry-run" and found.out_dir:
+        for lang in found.lang:
+            safe_invalidate(found.out_dir, lang, "usage error: " + reason)
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], allow_abbrev=False)  # full option names only: usage-error recovery reads them the same way
     ap.add_argument("--action", choices=("dry-run", "load"), default="dry-run")
     ap.add_argument("--lang", action="append", required=True, help="a loaded language (yi, sr, chr, chr-lines, chr-rare); repeatable")
     ap.add_argument("--out-dir", required=True, help="where the dry run writes <lang>/tasks.jsonl and report.json, and a load reads them")
@@ -446,7 +479,12 @@ def main() -> int:
     ap.add_argument("--equivalent", action="append", default=[], help="LETTER=LETTERS added to the language's equivalents, as build_tasks.py's flag")
     ap.add_argument("--lookalike-threshold", type=float, default=la.THRESHOLD)
     ap.add_argument("--allow-unmeasured", action="store_true", help="accept letter pairs with no font or glyph as unflagged")
-    a = ap.parse_args()
+    try:
+        a = ap.parse_args()
+    except SystemExit as e:
+        if e.code not in (0, None):  # a bad option value (--lookalike-threshold x): the dry run it was meant for must not leave older output loadable
+            invalidate_from_argv(str(e.code))
+        raise
     try:
         if a.action == "load":
             if not a.vault:
@@ -471,11 +509,12 @@ def main() -> int:
             records = Site(a.site, vault_token(a.vault)).dump_records()
         ctx = Context(la.Fonts(overrides), a.languages_dir, a.lookalike_threshold, a.equivalent, a.allow_unmeasured)
         return dry_run(a, ctx, records, full)
-    except Refused as e:
-        print(f"REFUSED {e}", file=sys.stderr)
+    except (Exception, SystemExit) as e:  # a refusal, a malformed option or an input that can't be read (malformed JSON, a missing file...): nothing was written yet
+        reason = reason_of(e)
+        print(f"REFUSED {reason}" if isinstance(e, Refused) else f"FAILED {reason}", file=sys.stderr)
         if a.action == "dry-run":
             for lang in a.lang:
-                invalidate(a.out_dir, lang, str(e))
+                safe_invalidate(a.out_dir, lang, reason)
         return 1
 
 
