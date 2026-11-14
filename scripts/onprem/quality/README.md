@@ -17,22 +17,23 @@ it's safe to run again.
 psql -v ON_ERROR_STOP=1 -d usnm_quality -f setup.sql
 ```
 
-| Table                   | One row per                    | From                                                                                                              |
-| ----------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `pages`                 | page of the corpus             | `curated/audit/damage/v2/<batch>_verNN.parquet` (`load.py damage`)                                                |
-| `damage`                | page                           | the same files: `damage_rate`, `garbage_share`, `function_share`, words                                           |
-| `campaigns`             | source of rows                 | each loader (`v1-wave9`, `damage-v2`, `ocr-local`, a text comparison)                                             |
-| `readers`               | text we hold of a page         | the reader names quality units use (`loc-hist`, `as`, `ours-*`, `qwen`)                                           |
-| `unit_pages`            | page in a quality campaign     | `quality collect`'s `pages.parquet`, or the wave runner's `collected/` parts                                      |
-| `reader_scores`         | page, campaign and reader      | the same files: `est_cer`, completeness, findability, the pairwise rates                                          |
-| `text_compare`          | page, campaign and reader pair | text-only comparisons, such as LoC against American Stories over the corpus                                       |
-| `ocr_outputs`           | published OCR run of a page    | `curated/ocr-local/pages` (`load.py ocr`)                                                                         |
-| `excluded_estimates`    | campaign whose hat is wrong    | campaigns left out of ranking's estimates until rescored (none now; see #1079)                                    |
-| `staging`               | page staged in a campaign      | the feeder's page lists, with the image and ALTO each unit was staged from                                        |
-| `loc_alto`              | page and source batch          | LoC's own word confidence (ALTO `WC`) from the bulk OCR archives: mean, median, share under 0.5 (`load.py locwc`) |
-| `loc_software`          | batch version                  | the software that made LoC's OCR, from each bulk OCR archive's first ALTO header (`load.py locsw`)                |
-| `boinc_page_provenance` | published BOINC OCR page       | which BOINC host, workunit and app version read it, from the BOINC database (`provenance.sql`, #1956)             |
-| `boinc_page_holds`      | held reading of a page         | a reading the release leaves out, by engine tag or node, added by hand as postgres (`holds.sql`, #1956)           |
+| Table                    | One row per                    | From                                                                                                                      |
+| ------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `pages`                  | page of the corpus             | `curated/audit/damage/v2/<batch>_verNN.parquet` (`load.py damage`)                                                        |
+| `damage`                 | page                           | the same files: `damage_rate`, `garbage_share`, `function_share`, words                                                   |
+| `campaigns`              | source of rows                 | each loader (`v1-wave9`, `damage-v2`, `ocr-local`, a text comparison)                                                     |
+| `readers`                | text we hold of a page         | the reader names quality units use (`loc-hist`, `as`, `ours-*`, `qwen`)                                                   |
+| `unit_pages`             | page in a quality campaign     | `quality collect`'s `pages.parquet`, or the wave runner's `collected/` parts                                              |
+| `reader_scores`          | page, campaign and reader      | the same files: `est_cer`, completeness, findability, the pairwise rates                                                  |
+| `text_compare`           | page, campaign and reader pair | text-only comparisons, such as LoC against American Stories over the corpus                                               |
+| `ocr_outputs`            | published OCR run of a page    | `curated/ocr-local/pages` (`load.py ocr`)                                                                                 |
+| `excluded_estimates`     | campaign whose hat is wrong    | campaigns left out of ranking's estimates until rescored (none now; see #1079)                                            |
+| `staging`                | page staged in a campaign      | the feeder's page lists, with the image and ALTO each unit was staged from                                                |
+| `loc_alto`               | page and source batch          | LoC's own word confidence (ALTO `WC`) from the bulk OCR archives: mean, median, share under 0.5 (`load.py locwc`)         |
+| `loc_software`           | batch version                  | the software that made LoC's OCR, from each bulk OCR archive's first ALTO header (`load.py locsw`)                        |
+| `boinc_page_provenance`  | published BOINC OCR page       | which BOINC host, workunit and app version read it, from the BOINC database (`provenance.sql`, #1956)                     |
+| `boinc_page_holds`       | held reading of a page         | a reading the release leaves out, by engine tag or node, added by hand as postgres (`holds.sql`, #1956)                   |
+| `excluded_qwen_readings` | excluded Qwen unit or crop     | a `usnm_qwen` unit, or one crop of it, kept out of the quality tables until re-read (`excluded_qwen_readings.sql`, #1919) |
 
 `boinc_page_provenance` is filled from the BOINC database, not by `load.py`: run
 `boinc_provenance.py` on exports of the workunit, result, host and app version rows, then
@@ -91,6 +92,28 @@ the OCR workunits (about 24 November 2026).
 Rows are added and removed as `postgres` on the primary; the release reads them with the
 provenance. The odd page goes here; node, run, time and page-list revocations stay files in
 `curated/ocr-local/revoked/`.
+
+`excluded_qwen_readings` (`excluded_qwen_readings.sql`) keeps `usnm_qwen` readings out of the
+quality tables until their unit is re-read. A row has the Qwen `job_id`, the workunit `wu_id`, the
+page `doc_id` when known (a bundle has a whole-unit row for each of its pages), a `crop_id` (empty for the whole unit; in a bundle the id is
+`<doc_id>:<crop>` as in the unit's `readings.json`), a `reason`, `created_at`, `created_by` and
+`released_at`. It is added as `postgres` on the primary and released by setting `released_at`;
+rows are never deleted (a trigger refuses a delete and any change but the release). A live row is
+one with `released_at` null, and a unit or crop has one live row at most.
+
+- `quality collect` reads the live rows as `quality_reader` (`--qwen-exclusions-dsn-file`, default
+  `USNM_QUALITY_DSN_FILE`) and builds no `vlm` reading from an excluded unit or crop: its crops and
+  every other reader's rows stay. The exclusions are part of the row cache's key, so adding or
+  releasing one re-collects the unit. Without a DSN file nothing is excluded, so run it with one.
+- `reader_scores_effective` is `reader_scores` without the vlm readers' rows of a page that has a
+  live exclusion with a `doc_id` (reader_scores has no Qwen job, so the page is the join).
+  `quality_gain.py` reads it. `page_signals` reads only LoC's and our readers' rows, which the
+  exclusions never touch, so it still reads `reader_scores`.
+- Readers of `crops.parquet` and `pages.parquet` files made before a unit was excluded
+  (`build-quality-assessment-db.py --excluded-qwen`) clear the excluded readings from an export of
+  the live rows' `job_id`, `doc_id` and `crop_id`.
+- To release, as `postgres`: `UPDATE quality.excluded_qwen_readings SET released_at = now() WHERE
+job_id = '<64 hex>' AND crop_id IS NULL AND released_at IS NULL;`, then collect again.
 
 Unit results carry the page hat's version (#1078): `hat_version` 2 is solved on the
 passage-matched disagreement, and `est_cer_v1` and the other `_v1` columns keep the unit's

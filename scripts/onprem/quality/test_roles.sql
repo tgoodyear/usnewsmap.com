@@ -47,7 +47,17 @@ BEGIN
       ('quality_reader', 'quality.boinc_page_holds', 'INSERT', false),
       ('quality_reader', 'quality.boinc_page_holds', 'DELETE', false),
       ('quality_loader', 'quality.boinc_page_provenance', 'INSERT', true),
-      ('quality_loader', 'quality.boinc_page_holds', 'INSERT', false)
+      ('quality_loader', 'quality.boinc_page_holds', 'INSERT', false),
+      ('quality_reader', 'quality.excluded_qwen_readings', 'SELECT', true),
+      ('quality_reader', 'quality.excluded_qwen_readings', 'INSERT', false),
+      ('quality_reader', 'quality.excluded_qwen_readings', 'UPDATE', false),
+      ('quality_reader', 'quality.excluded_qwen_readings', 'DELETE', false),
+      ('quality_reader', 'quality.reader_scores_effective', 'SELECT', true),
+      ('quality_reader', 'quality.reader_scores_effective', 'INSERT', false),
+      ('quality_loader', 'quality.excluded_qwen_readings', 'SELECT', true),
+      ('quality_loader', 'quality.excluded_qwen_readings', 'INSERT', false),
+      ('quality_loader', 'quality.excluded_qwen_readings', 'UPDATE', false),
+      ('quality_text_writer', 'quality.excluded_qwen_readings', 'INSERT', false)
     ) AS t(role, tbl, priv, expected)
   LOOP
     got := has_table_privilege(want.role, want.tbl, want.priv);

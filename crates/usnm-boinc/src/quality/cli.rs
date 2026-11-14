@@ -182,6 +182,11 @@ pub enum QualityCommands {
         /// an agreeing pair vouched for. Without it every canonical crop joins (`strict-v1`).
         #[arg(long)]
         qwen_crop_states: Option<PathBuf>,
+        /// The quality database's DSN file (default `USNM_QUALITY_DSN_FILE`, the read-only
+        /// role's): the units and crops in `quality.excluded_qwen_readings` and not released
+        /// are left out of the crop tables. Without a DSN file nothing is excluded.
+        #[arg(long)]
+        qwen_exclusions_dsn_file: Option<PathBuf>,
         /// The directory `qwen compare --pages` writes: a bundle unit with no canonical result
         /// joins each page two hosts agreed on (`page-strict-v1`, #1435). Without it only
         /// canonical results join.
@@ -486,6 +491,7 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             qwen_spool,
             qwen_xiaomi_spool,
             qwen_crop_states,
+            qwen_exclusions_dsn_file,
             qwen_pages,
             cache,
             max_dirty_units,
@@ -499,6 +505,8 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             out_dir,
             curated_url,
         } => {
+            let qwen_exclusions =
+                x::collect::load_exclusions(qwen_exclusions_dsn_file.as_deref()).await?;
             let opts = x::collect::Options {
                 campaign,
                 root,
@@ -507,6 +515,7 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
                 qwen_spool,
                 qwen_xiaomi_spool,
                 qwen_crop_states,
+                qwen_exclusions,
                 qwen_pages,
                 cache,
                 max_dirty_units,

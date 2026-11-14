@@ -34,6 +34,17 @@ pub struct PageHold {
     pub created_by: String,
 }
 
+/// One live row of `quality.excluded_qwen_readings`: a `usnm_qwen` unit (its
+/// `job_id`), or one crop of it, whose readings stay out of the quality tables
+/// until the unit is re-read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExcludedQwenReading {
+    pub job_id: String,
+    pub wu_id: i64,
+    /// None excludes the whole unit.
+    pub crop_id: Option<String>,
+}
+
 /// The quality database as the revocation loader sees it.
 #[async_trait]
 pub trait QualityHolds: Send + Sync {
@@ -90,6 +101,31 @@ impl QualityDb {
             }
         });
         Ok((client, task))
+    }
+}
+
+impl QualityDb {
+    /// The exclusions in force: every row of `quality.excluded_qwen_readings`
+    /// not yet released (`released_at IS NULL`), read by `quality collect`.
+    pub async fn excluded_qwen_readings(&self) -> anyhow::Result<Vec<ExcludedQwenReading>> {
+        let (client, task) = self.connect().await?;
+        let rows = client
+            .query(
+                "SELECT job_id, wu_id, crop_id FROM quality.excluded_qwen_readings \
+                 WHERE released_at IS NULL ORDER BY job_id, crop_id NULLS FIRST",
+                &[],
+            )
+            .await
+            .context("reading quality.excluded_qwen_readings");
+        task.abort();
+        Ok(rows?
+            .into_iter()
+            .map(|row| ExcludedQwenReading {
+                job_id: row.get("job_id"),
+                wu_id: row.get("wu_id"),
+                crop_id: row.get("crop_id"),
+            })
+            .collect())
     }
 }
 
