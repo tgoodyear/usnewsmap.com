@@ -26,20 +26,66 @@ IDENTITY_ENDPOINT = os.environ.get("IDENTITY_ENDPOINT", "http://localhost:40342/
 API = "2023-11-03"
 
 
+TOKEN_DIR = "/var/opt/azcmagent/tokens"
+KEY_MAX_BYTES = 4096
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def local_opener():
+    """The endpoint is local: never through a proxy, never redirected."""
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
+
+
 def arc_token():
-    """A storage token from the Arc agent's local endpoint (the challenge/key-file flow)."""
+    """A storage token from the Arc agent's local endpoint (the challenge/key-file flow), with
+    the checks of ArcIdentity in crates/usnm-store/src/credential.rs: http on loopback, no proxy
+    or redirect, a 401 Basic realm challenge naming a regular `.key` file of at most 4 KiB
+    directly in the agent's token directory."""
+    parts = urllib.parse.urlsplit(IDENTITY_ENDPOINT)
+    if parts.scheme != "http" or parts.hostname not in ("localhost", "127.0.0.1", "::1"):
+        raise SystemExit("the identity endpoint must be http on loopback")
+    opener = local_opener()
     url = IDENTITY_ENDPOINT + "?api-version=2020-06-01&resource=" + urllib.parse.quote("https://storage.azure.com/", safe="")
     try:
-        urllib.request.urlopen(urllib.request.Request(url, headers={"Metadata": "true"}))
+        opener.open(urllib.request.Request(url, headers={"Metadata": "true"}), timeout=15)
         raise SystemExit("the identity endpoint gave a token without a challenge")
     except urllib.error.HTTPError as e:
-        challenge = e.headers.get("WWW-Authenticate", "")
-    if "=" not in challenge:
-        raise SystemExit("the identity endpoint gave no key-file challenge")
-    with open(challenge.split("=", 1)[1]) as fh:
-        key = fh.read()
+        if e.code != 401:
+            raise SystemExit(f"the identity endpoint answered {e.code}, not a 401 challenge")
+        challenge = e.headers.get("WWW-Authenticate", "").strip()
+    if not challenge.startswith("Basic"):
+        raise SystemExit("the identity challenge is not Basic")
+    realm = challenge[len("Basic"):].strip()
+    if not realm.startswith("realm="):
+        raise SystemExit("the identity challenge names no realm")
+    realm = realm[len("realm="):].strip().strip('"')
+    path = os.path.realpath(realm)
+    token_dir = os.path.realpath(TOKEN_DIR)
+    if not path.endswith(".key") or os.path.dirname(path) != token_dir:
+        raise SystemExit("the identity challenge names a file outside the agent's token directory")
+    if not os.path.isfile(path) or os.path.getsize(path) > KEY_MAX_BYTES:
+        raise SystemExit("the identity key file is not a regular file of at most 4 KiB")
+    with open(path) as fh:
+        key = fh.read().strip()
     req = urllib.request.Request(url, headers={"Metadata": "true", "Authorization": "Basic " + key})
-    return json.load(urllib.request.urlopen(req))["access_token"]
+    return json.load(opener.open(req, timeout=15))["access_token"]
+
+
+def safe_rel(rel):
+    """`<title>/<part>.parquet` and nothing else: no empty, dot or dot-dot component."""
+    parts = rel.split("/")
+    ok = len(parts) == 2 and all(p not in ("", ".", "..") and "\\" not in p and "\0" not in p for p in parts)
+    return ok and parts[1].endswith(".parquet")
+
+
+def inside(root, path):
+    """True when `path` resolves under `root` (symlinks followed)."""
+    root = os.path.realpath(root)
+    return os.path.commonpath([root, os.path.realpath(path)]) == root
 
 
 def list_blobs(url, token, prefix):
@@ -79,12 +125,19 @@ def main():
     want = {}
     for b in list_blobs(a.url.rstrip("/"), token, a.prefix):
         if b["name"].endswith(".parquet"):
-            want[b["name"][len(a.prefix):]] = b
+            rel = b["name"][len(a.prefix):]
+            if not safe_rel(rel):
+                sys.exit(f"{b['name']}: not a <title>/<part>.parquet name under {a.prefix}")
+            want[rel] = b
     if not want:
         sys.exit(f"nothing listed under {a.prefix}: refusing to empty the copy")
     fetched = kept = 0
     for rel, b in sorted(want.items()):
         dst = os.path.join(a.to, rel)
+        if os.path.islink(dst) or os.path.islink(dst + ".partial") or os.path.islink(os.path.dirname(dst)):
+            sys.exit(f"{rel}: a symlink in the copy; refusing to write through it")
+        if not inside(a.to, os.path.dirname(dst)):
+            sys.exit(f"{rel}: resolves outside {a.to}")
         if os.path.isfile(dst) and os.path.getsize(dst) == b["size"] and (not b["md5"] or md5_b64(dst) == b["md5"]):
             kept += 1
             continue
@@ -93,7 +146,7 @@ def main():
                                      headers={"Authorization": "Bearer " + token, "x-ms-version": API})
         tmp = dst + ".partial"
         h = hashlib.md5()
-        with urllib.request.urlopen(req) as r, open(tmp, "wb") as out:
+        with urllib.request.urlopen(req) as r, os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644), "wb") as out:
             for chunk in iter(lambda: r.read(1 << 20), b""):
                 h.update(chunk)
                 out.write(chunk)
@@ -103,11 +156,11 @@ def main():
         os.replace(tmp, dst)
         fetched += 1
     removed = 0
-    for dirpath, _, files in os.walk(a.to):
+    for dirpath, _, files in os.walk(a.to):  # os.walk does not follow symlinked directories
         for f in files:
             rel = os.path.relpath(os.path.join(dirpath, f), a.to)
             if rel not in want:
-                os.unlink(os.path.join(dirpath, f))
+                os.unlink(os.path.join(dirpath, f))  # a symlink is removed, never followed
                 removed += 1
     print(f"curated pages: {len(want)} parts listed, {fetched} fetched, {kept} current, {removed} removed")
 
