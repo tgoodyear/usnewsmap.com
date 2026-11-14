@@ -2143,16 +2143,22 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         # stores, and never goes with a line pin or a native unit.
         text = open(BRIDGE_JOB_SCRIPT).read()
         function = "submit_ocr_job() {" + text.split("submit_ocr_job() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        function += "set_fail_for_good() {" + text.split("set_fail_for_good() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
         bindir = os.path.join(self.tmp, "retry-bin")
         os.makedirs(bindir)
         with open(os.path.join(bindir, "usnm-boinc"), "w") as f:
             f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_LOG"\n')
         os.chmod(os.path.join(bindir, "usnm-boinc"), 0o755)
+        with open(os.path.join(bindir, "mysql"), "w") as f:
+            f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_LOG.sql"\nprintf "%s\\n" "${STUB_UPDATED:-1}"\n')
+        os.chmod(os.path.join(bindir, "mysql"), 0o755)
         share = os.path.join(self.tmp, "retry-share")
         os.makedirs(os.path.join(share, "gold"))
-        script = 'fail() { echo "error: $*" >&2; exit 1; }\n' + function + "submit_ocr_job\n"
+        script = ('fail() { echo "error: $*" >&2; exit 1; }\n'
+                  f'write_mycnf() {{ mycnf={self.tmp}/retry.cnf; : > "$mycnf"; }}\n' + function + "submit_ocr_job\n")
         env = {**self.env, "PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log,
                "HANDOFF_DIR": "/h", "PROJ": "/p", "JOB_ID": "1" * 64, "SHARE_DIR": share,
+               "DB_NAME": "usnmocr",
                "COSMOS_ENDPOINT": "https://c.documents.azure.com:443/", "CURATED_URL": "https://d/curated"}
 
         def run(**extra):
@@ -2171,6 +2177,13 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertEqual(self.calls(), [
             f"submit --root /h --project /p --job {'1' * 64} --cosmos https://c.documents.azure.com:443/ "
             f"--curated-url https://d/curated --target-host 9 --trust {share}/gold/trust.json"])
+        # #1919: stock create_work refuses 0, so the child's row is set to 0 after it; a row that
+        # does not take it fails the step.
+        with open(self.log + ".sql") as f:
+            self.assertIn(f"UPDATE workunit SET max_error_results=0 WHERE name='usnm_{'1' * 64}'", f.read())
+        r = run(RETRY_TARGET_HOST="9", STUB_UPDATED="0")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("does not have max_error_results 0", r.stderr)
         for extra in ({"RETRY_TARGET_HOST": "0"}, {"RETRY_TARGET_HOST": "x"},
                       {"RETRY_TARGET_HOST": "9", "LINE_APP_VERSION": "108"},
                       {"RETRY_TARGET_HOST": "9", "NATIVE_TARGET_HOST": "13"}):
