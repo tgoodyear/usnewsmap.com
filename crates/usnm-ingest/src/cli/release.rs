@@ -494,6 +494,22 @@ pub(crate) async fn release_command(
     .await
 }
 
+/// A finish replays a release whose original `--expect-revoked` isn't in its record, so it
+/// must be told the release's own: with `--ocr-local`, one of the two flags is required.
+fn finish_db_holds(
+    ocr_local: bool,
+    no_db_holds: bool,
+    expect_revoked: Option<u64>,
+) -> anyhow::Result<DbHolds> {
+    if ocr_local && !no_db_holds && expect_revoked.is_none() {
+        bail!(
+            "release-finish with --ocr-local needs the release's --expect-revoked N, or \
+             --no-db-holds if it ran without the database holds"
+        );
+    }
+    DbHolds::from_flags(no_db_holds, expect_revoked)
+}
+
 pub(crate) async fn release_finish_command(
     cli: &Cli,
     state: State,
@@ -526,7 +542,7 @@ pub(crate) async fn release_finish_command(
         american_stories: *american_stories,
         ja_latin: *ja_latin,
         ocr_local: *ocr_local,
-        db_holds: DbHolds::from_flags(*no_db_holds, *expect_revoked)?,
+        db_holds: finish_db_holds(*ocr_local, *no_db_holds, *expect_revoked)?,
         congress: *congress,
         congress_manual: *congress_manual,
         partition_decade: *partition_decade,
@@ -802,5 +818,14 @@ mod tests {
         assert!(args(&["--no-db-holds"]).is_err());
         assert!(args(&["--expect-revoked", "1"]).is_err());
         assert!(args(&["--ocr-local", "--no-db-holds"]).is_ok());
+    }
+
+    #[test]
+    fn a_finish_must_repeat_the_releases_holds_setting() {
+        assert!(finish_db_holds(true, false, None).is_err());
+        assert!(finish_db_holds(true, false, Some(31786)).is_ok());
+        assert_eq!(finish_db_holds(true, true, None).unwrap(), DbHolds::Skip);
+        assert!(finish_db_holds(true, true, Some(3)).is_err());
+        assert!(finish_db_holds(false, false, None).is_ok());
     }
 }

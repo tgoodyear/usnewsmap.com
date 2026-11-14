@@ -36,10 +36,10 @@ pub(crate) struct RunArgs {
     #[arg(long)]
     ocr_local: bool,
     /// As for `release`.
-    #[arg(long, value_name = "N")]
+    #[arg(long, value_name = "N", requires = "ocr_local")]
     expect_revoked: Option<u64>,
     /// As for `release`.
-    #[arg(long)]
+    #[arg(long, requires = "ocr_local")]
     no_db_holds: bool,
     /// As for `release`.
     #[arg(long, env = "USNM_CONGRESS")]

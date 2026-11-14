@@ -1056,6 +1056,19 @@ impl Release {
                 estimate,
             })
         } else {
+            if self.ocr_local {
+                // An overlay-only release plans no replacement, but it publishes, so the
+                // holds policy holds for it too: the database must be readable.
+                let quality = self.db_holds.open()?;
+                ocr_local::replace::release_revocations(
+                    self.curated.as_ref(),
+                    quality
+                        .as_ref()
+                        .map(|q| q as &dyn ocr_local::quality_db::QualityHolds),
+                    self.db_holds,
+                )
+                .await?;
+            }
             None
         };
         if let Some(r) = resume {
@@ -1253,7 +1266,7 @@ impl Release {
             };
             // Before anything is staged or published: the pages given back must
             // be at least the count the operator expects.
-            if local.is_some() {
+            if self.ocr_local {
                 self.db_holds
                     .check_revoked(local_tally.kept.get("revoked").copied().unwrap_or(0))?;
             }
