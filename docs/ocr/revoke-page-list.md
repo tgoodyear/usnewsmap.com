@@ -138,18 +138,31 @@ no upload. A row names the page (`doc_id`) and the reading to give back: the sto
 and `created_by` are recorded. A row naming neither would take every reading of the page, so
 the table refuses it. Another reading of the page keeps its place.
 
-Add and remove rows as `postgres` on the primary (CT 231); the replica has them a second later.
-The roles that read have `SELECT` only. Adding a row twice leaves one.
+**Holds are written only through `usnm-ingest holds add`.** It checks the row against the
+stored pages (`ocr-local/pages`, read as the release reads them) with the release's own test
+(`Revocation::matches`: the stored `ocr_engine` tag in full, or its key
+`<family>/<version> <profile>`, and/or the `node`) and refuses a row that matches no stored
+row. A hold that matches nothing revokes nothing and says nothing, which is how the 9c8e hold
+(its tag had ` contract=0`, the stored one doesn't) went unnoticed. Copy the engine from the
+stored row, not from a job's `engine_tag()`. `--allow-zero-match` is for a reading that isn't
+stored yet (the row is marked `allow_zero_match` and the release does not stop on it). The
+tool writes with the DSN file named by `USNM_QUALITY_HOLDS_WRITER_DSN_FILE` (`postgres`, or a
+role with INSERT on the table, on the primary CT 231; the replica has the row a second later),
+and needs the same `--curated` as the release. The readers have `SELECT` only. Adding a row
+twice leaves one. Remove a row (`DELETE` as `postgres`) to give a reading back.
 
 ```sh
-psql -v ON_ERROR_STOP=1 -d usnm_quality <<'SQL'
-INSERT INTO quality.boinc_page_holds (doc_id, engine, reason, created_by)
-VALUES ('sn88084068_1917-11-01_ed-1_seq-1',
-        'tesseract/5.5.0 profile=frak2021 image=sha256:9c8eac0485d5 models=sha256:153518ad562f route=boinc@r1 contract=0',
-        'image dropped from gold trust 17 Oct (#1956)', 'tgoodyear')
-ON CONFLICT DO NOTHING;
-SQL
+usnm-ingest holds add --doc-id sn88084068_1917-11-01_ed-1_seq-1 \
+  --engine 'tesseract/5.5.0 profile=frak2021 image=sha256:9c8eac0485d5 models=sha256:153518ad562f route=boinc@r1' \
+  --reason 'image dropped from gold trust 17 Oct (#1956)' --created-by tgoodyear
 ```
+
+The column comes from `scripts/onprem/quality/holds_allow_zero_match.sql` (run it as `postgres`
+after `holds.sql`).
+
+At release, the log has one line per group of holds (reason, engine, node, author) with its
+source rows and the stored rows it matched. A release exits non-zero before publishing if any
+hold that isn't marked `allow_zero_match` matched no stored row.
 
 `ocr_local.json` lists the holds as revocations whose path is `quality.boinc_page_holds`, one
 for each reason, engine, node and author, with their pages and the latest `created_at` as `at`.

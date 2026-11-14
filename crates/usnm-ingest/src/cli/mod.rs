@@ -6,6 +6,7 @@ pub(crate) mod batches;
 pub(crate) mod common;
 pub(crate) mod congress;
 pub(crate) mod curate;
+pub(crate) mod holds;
 pub(crate) mod ja_ocr;
 pub(crate) mod ocr;
 pub(crate) mod ocr_local_copy;

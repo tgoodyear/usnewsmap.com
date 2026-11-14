@@ -39,6 +39,8 @@ psql_admin -d usnm_quality -c "ALTER TABLE quality.boinc_page_provenance DROP CO
 psql_admin -d usnm_quality < "$here/provenance.sql" > /dev/null
 psql_admin -d usnm_quality < "$here/holds.sql" > /dev/null
 psql_admin -d usnm_quality < "$here/holds.sql" > /dev/null
+psql_admin -d usnm_quality < "$here/holds_allow_zero_match.sql" > /dev/null
+psql_admin -d usnm_quality < "$here/holds_allow_zero_match.sql" > /dev/null
 psql_admin -d usnm_quality < "$here/excluded_qwen_readings.sql" > /dev/null
 psql_admin -d usnm_quality < "$here/excluded_qwen_readings.sql" > /dev/null
 psql_admin -d usnm_quality < "$here/test_roles.sql" >&2
@@ -64,6 +66,8 @@ got=$(psql_admin -d usnm_quality -tA -c "SELECT status, candidate_host_ids FROM 
 # and the reader sees the row but cannot change it.
 hold="INSERT INTO quality.boinc_page_holds (doc_id, engine, reason, created_by) VALUES ('sn1_1900-01-01_ed-1_seq-1', 'tesseract/5.5.0 profile=eng image=sha256:9c8eac0485d5', 'ci', 'ci') ON CONFLICT DO NOTHING"
 psql_admin -d usnm_quality -c "$hold" -c "$hold" > /dev/null
+got=$(psql_admin -d usnm_quality -tA -c "SELECT allow_zero_match FROM quality.boinc_page_holds WHERE doc_id = 'sn1_1900-01-01_ed-1_seq-1'")
+[ "$got" = "f" ] || die "a hold defaults to allow_zero_match=$got, not false"
 psql_admin -d usnm_quality -c "INSERT INTO quality.boinc_page_holds (doc_id, reason, created_by) VALUES ('x', 'r', 'c')" > /dev/null 2>&1 \
   && die "a hold naming neither node nor engine was accepted"
 got=$(psql_admin -d usnm_quality -tA -c "SET ROLE quality_reader" -c "SELECT count(*) FROM quality.boinc_page_holds" | tail -1)

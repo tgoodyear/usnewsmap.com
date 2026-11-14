@@ -8,8 +8,8 @@ mod cli;
 use clap::{Parser, Subcommand};
 use cli::common::{state, Stores};
 use cli::{
-    batches, congress, curate, ja_ocr, ocr, ocr_local_copy, oni, onprem, pictures, prune, release,
-    run, searchlog_copy, titles,
+    batches, congress, curate, holds, ja_ocr, ocr, ocr_local_copy, oni, onprem, pictures, prune,
+    release, run, searchlog_copy, titles,
 };
 use usnm_ingest::activity::{self, Reporter};
 use usnm_ingest::release::{Published, PublishedUnrecorded, TitlesLeft};
@@ -54,6 +54,8 @@ enum Command {
     /// batches that share title-days; changes nothing.
     Duplicates,
     Prune(prune::PruneArgs),
+    /// Write `quality.boinc_page_holds` rows (the only supported way).
+    Holds(holds::HoldsArgs),
     SeedState(onprem::SeedStateArgs),
     ImportStagedRun(onprem::ImportStagedRunArgs),
     MirrorStore(onprem::MirrorStoreArgs),
@@ -152,6 +154,7 @@ impl Command {
             Command::ArchiveCopy { .. } => "archive-copy",
             Command::OniFetch { .. } => "oni-fetch",
             Command::Prune { .. } => "prune",
+            Command::Holds { .. } => "holds",
             Command::SeedState { .. } => "seed-state",
             Command::PublishStaged { .. } => "publish-staged",
             Command::MirrorStore { .. } => "mirror-store",
@@ -200,6 +203,7 @@ fn first_step(command: &Command) -> Option<Step> {
         | Command::ArchiveCopy { .. }
         | Command::OniFetch { .. }
         | Command::Prune { .. }
+        | Command::Holds { .. }
         | Command::SeedState { .. }
         | Command::PublishStaged { .. }
         | Command::MirrorStore { .. }
@@ -262,6 +266,9 @@ fn outcome(result: &anyhow::Result<Option<Published>>) -> (Outcome, Option<Strin
 async fn run(cli: &Cli) -> anyhow::Result<()> {
     if let Command::JaOcrRun(args) = &cli.command {
         return ja_ocr::ja_ocr_run(args).await.map(drop);
+    }
+    if let Command::Holds(args) = &cli.command {
+        return holds::holds_command(cli, args).await;
     }
     let start = tokio::time::Instant::now();
     let state = state(&cli.stores)?;
@@ -337,6 +344,7 @@ async fn command(
         Command::PicturesScore(args) => pictures::pictures_score_command(args).await,
         Command::Duplicates => batches::duplicates_command(cli, state).await,
         Command::Prune(args) => prune::prune_command(cli, state, args).await,
+        Command::Holds(args) => holds::holds_command(cli, args).await.map(|()| None),
         Command::Curate(args) => curate::curate_command(cli, state, start, args).await,
         Command::Release(args) => release::release_command(cli, state, report, args).await,
         Command::ReleaseFinish(args) => {
