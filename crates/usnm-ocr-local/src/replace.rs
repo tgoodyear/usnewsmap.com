@@ -580,6 +580,38 @@ pub async fn revocations(
     Ok(out)
 }
 
+/// A digest of what a set of revocations effectively withdraws: each one's selectors, its
+/// page list as hashes and, for host holds, the readings its hosts resolved to, in a fixed
+/// order. A release logs it so a finish that reads the database again can tell that a hold
+/// moved since the run began.
+pub fn revocations_digest(revoked: &[Revocation]) -> String {
+    let mut parts: Vec<Value> = revoked
+        .iter()
+        .map(|r| {
+            let mut pages: Vec<u64> = r.listed.iter().copied().collect();
+            pages.sort_unstable();
+            let mut readings: Vec<(u64, &String)> =
+                r.host_readings.iter().map(|(p, n)| (*p, n)).collect();
+            readings.sort();
+            json!([
+                r.path,
+                r.reason,
+                r.reference,
+                r.node,
+                r.engine,
+                r.run,
+                r.from,
+                r.to,
+                r.hosts,
+                pages,
+                readings
+            ])
+        })
+        .collect();
+    parts.sort_by_key(Value::to_string);
+    hex(&Sha256::digest(Value::Array(parts).to_string().as_bytes()))
+}
+
 /// The path the revocations built from holds carry in `ocr_local.json`.
 pub const HOLDS_TABLE: &str = "quality.boinc_page_holds";
 
@@ -1465,6 +1497,19 @@ mod tests {
             loaded.pages["sn1_1900-01-01_ed-1_seq-3"].row.node,
             NODE_B.to_string()
         );
+        // The digest follows what is held, not the order it was read in.
+        let moved = db(
+            vec![
+                hold("sn1_1900-01-01_ed-1_seq-3", None, Some(NODE_A)),
+                hold("sn1_1900-01-01_ed-1_seq-2", Some(HELD_ENGINE), None),
+            ],
+            false,
+        );
+        let moved = revocations(curated.as_ref(), Some(&moved)).await.unwrap();
+        assert_ne!(revocations_digest(&revoked), revocations_digest(&moved));
+        let mut reversed = revoked.clone();
+        reversed.reverse();
+        assert_eq!(revocations_digest(&revoked), revocations_digest(&reversed));
         // A database that can't be read stops the release.
         assert!(revocations(curated.as_ref(), Some(&db(vec![], true)))
             .await

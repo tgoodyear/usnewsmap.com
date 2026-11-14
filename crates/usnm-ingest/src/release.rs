@@ -1030,6 +1030,7 @@ impl Release {
                 parts = listing.parts(),
                 titles = listing.titles(),
                 revocations = revoked.len(),
+                revocations_sha256 = %ocr_local::replace::revocations_digest(&revoked),
                 "our OCR in ocr-local"
             );
             let ja: HashSet<String> = overlay
@@ -1055,6 +1056,7 @@ impl Release {
                         "parts": l.listing.parts(),
                         "titles": l.listing.titles(),
                         "revocations": l.revoked.len(),
+                        "revocations_sha256": ocr_local::replace::revocations_digest(&l.revoked),
                     })
                 }),
             )?;

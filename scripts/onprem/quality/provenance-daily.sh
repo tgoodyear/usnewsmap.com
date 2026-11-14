@@ -5,6 +5,8 @@
 #
 #   provenance-daily.sh [--env-file /etc/usnm/quality-provenance.env]
 #
+# Runs the resolver with the feed's virtualenv (pyarrow), /opt/usnm-quality-feed/venv.
+#
 # Needs, in the env file:
 #   PAGES_DIR      the curated copy of ocr-local/pages (default /srv/curated/pages)
 #   BOINC_EXPORT   a command that writes the BOINC database export into the directory given as
@@ -38,7 +40,7 @@ psql "$(cat "$QUALITY_DSN")" -v ON_ERROR_STOP=1 -At -F "$(printf '\t')" \
   -c "SELECT doc_id, node FROM quality.boinc_page_provenance WHERE status = 'resolved'" > "$work/skip.tsv"
 "$BOINC_EXPORT" "$work"
 [ -s "$work/wu.tsv" ] && [ -s "$work/av.tsv" ] || die "the BOINC export wrote no wu.tsv or av.tsv"
-python3 "$HERE/boinc_provenance.py" --pages "$PAGES_DIR" --wu-tsv "$work/wu.tsv" --av-tsv "$work/av.tsv" \
+/opt/usnm-quality-feed/venv/bin/python "$HERE/boinc_provenance.py" --pages "$PAGES_DIR" --wu-tsv "$work/wu.tsv" --av-tsv "$work/av.tsv" \
   --bundles "$work/bundles" --skip "$work/skip.tsv" --out "$work/provenance.tsv"
 if [ -s "$work/provenance.tsv" ]; then
   psql "$(cat "$QUALITY_DSN")" -v ON_ERROR_STOP=1 -q -f "$HERE/provenance_load.sql" < "$work/provenance.tsv"

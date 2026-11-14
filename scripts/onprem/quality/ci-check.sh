@@ -42,13 +42,14 @@ psql_admin -d usnm_quality < "$here/holds.sql" > /dev/null
 psql_admin -d usnm_quality < "$here/test_roles.sql" >&2
 # provenance_load.sql as the loader: a host with no known CPU family stays resolved, a rerun
 # changes nothing, and a later less complete row never degrades a resolved one.
+docker cp "$here/provenance_load.sql" "$NAME:/tmp/provenance_load.sql"
 prov() { printf 'sn1_1900-01-01_ed-1_seq-1\tboinc-aaaaaaaaaaaa\tj\t7\t9\t12\t3\tx86_64-pc-linux-gnu\t\\N\twu_name\t2026-11-14T00:00:00Z\t%s\tabcdefabcdef\t\\N\t\\N\n' "$1"; }
-prov result_missing | psql_admin -d usnm_quality -f "$here/provenance_load.sql" > /dev/null
-prov resolved | psql_admin -d usnm_quality -f "$here/provenance_load.sql" > /dev/null
-prov resolved | psql_admin -d usnm_quality -f "$here/provenance_load.sql" > /dev/null
+prov result_missing | psql_admin -d usnm_quality -f /tmp/provenance_load.sql > /dev/null
+prov resolved | psql_admin -d usnm_quality -f /tmp/provenance_load.sql > /dev/null
+prov resolved | psql_admin -d usnm_quality -f /tmp/provenance_load.sql > /dev/null
 got=$(psql_admin -d usnm_quality -tA -c "SELECT status, hostid, family IS NULL FROM quality.boinc_page_provenance")
 [ "$got" = "resolved|12|t" ] || die "a host without a family: $got"
-prov result_missing | psql_admin -d usnm_quality -f "$here/provenance_load.sql" > /dev/null
+prov result_missing | psql_admin -d usnm_quality -f /tmp/provenance_load.sql > /dev/null
 got=$(psql_admin -d usnm_quality -tA -c "SELECT status FROM quality.boinc_page_provenance")
 [ "$got" = "resolved" ] || die "a resolved row was degraded: $got"
 # Holds: one row added twice is one hold, one naming neither a node nor an engine is refused,
