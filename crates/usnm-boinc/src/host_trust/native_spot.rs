@@ -160,15 +160,20 @@ pub struct Paths {
 /// What a same-build pair on different SIMD levels may differ by (page CER and word F1), set by
 /// the Science Coordinator on 14 Nov 2026 after one junk-glyph segmentation change in a noise
 /// line between an AVX2 and an AVX-512 host on build 4d6e2a3b (#1919). There is no length-ratio
-/// bound of its own: a CER of 0.002 already bounds the lengths to within 0.2%. Same build and
+/// bound of its own, because one would not be symmetric between the two hosts: the symmetric
+/// CER already bounds the lengths. Same build and
 /// same SIMD level stays byte-exact; two builds stay as they were. These are a first estimate:
 /// revisit them after about 200 cross-SIMD pairs have been compared.
 pub const CROSS_SIMD_SAME_BUILD: Limits = Limits {
     max_cer: 0.002,
     min_f1: 0.995,
-    min_ratio: 0.998,
-    max_ratio: 1.002,
+    min_ratio: 0.0,
+    max_ratio: f64::INFINITY,
 };
+
+/// The least the word-bag F1 of the two ALTO files' words may be, in the same tier: the text
+/// may agree while the layout does not, so the words of the layout are held to the text's bound.
+const CROSS_SIMD_MIN_ALTO_F1: f64 = CROSS_SIMD_SAME_BUILD.min_f1;
 
 /// How much of the CPU's SIMD the Tesseract build can use on a host, as far as it changes the
 /// output of the same build.
@@ -222,9 +227,11 @@ pub fn simd_level(p_model: &str, p_features: &str) -> Option<Simd> {
             .take_while(char::is_ascii_digit)
             .collect();
         // Ice Lake and Tiger Lake mobile (10xx, 11xx) and Rocket Lake desktop (11xxx) have
-        // AVX-512; every other Core generation here has AVX2 only.
+        // AVX-512; Haswell (4th generation) and later otherwise have AVX2 only.
         return match (digits.len(), digits.get(..2)) {
             (4, Some("10" | "11")) | (5, Some("11")) => Some(Simd::Avx512),
+            // Sandy and Ivy Bridge (2xxx, 3xxx) have no AVX2 at all.
+            (4, Some(g)) if g.starts_with(['2', '3']) => Some(Simd::Baseline),
             (4 | 5, _) => Some(Simd::Avx2),
             _ => None,
         };
@@ -787,7 +794,23 @@ async fn check_one(
     if matches!(pairing, Pairing::Cross(..)) && original.image == replay.image {
         let words = differing_words(&original.lines, &replay.lines);
         let counts = words_detail(words);
-        match outside(&CROSS_SIMD_SAME_BUILD, &original.text, &replay.text) {
+        let total = original
+            .lines
+            .iter()
+            .chain(&replay.lines)
+            .map(|l| l.words.len())
+            .sum::<usize>();
+        let differing = words.low + words.high + words.unscored;
+        let alto_f1 = if total == 0 {
+            1.0
+        } else {
+            1.0 - differing as f64 / total as f64
+        };
+        let verdict = outside(&CROSS_SIMD_SAME_BUILD, &original.text, &replay.text).or_else(|| {
+            (alto_f1 < CROSS_SIMD_MIN_ALTO_F1)
+                .then(|| format!("ALTO word F1 {alto_f1:.4} under {CROSS_SIMD_MIN_ALTO_F1}"))
+        });
+        match verdict {
             None => {
                 return finish(
                     p,
@@ -961,7 +984,7 @@ pub async fn native_spot(
 
 #[cfg(test)]
 mod tests {
-    use super::super::spot::tests::{job, returned};
+    use super::super::spot::tests::{job, returned, returned_alto_file};
     use super::*;
     use crate::trust::builds::with_build;
 
@@ -1392,6 +1415,63 @@ mod tests {
     }
 
     #[test]
+    fn equal_text_with_a_different_layout_is_not_a_cross_simd_match() {
+        let text = page();
+        let alto = |shift: usize| {
+            let strings: String = text
+                .split_whitespace()
+                .enumerate()
+                .map(|(i, w)| {
+                    format!(
+                        r#"<String CONTENT="{w}{}"/>"#,
+                        if i % 5 == 0 { shift } else { 0 }
+                    )
+                })
+                .collect();
+            format!(
+                r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Layout><Page WIDTH="1000" HEIGHT="1000"><PrintSpace><TextBlock><TextLine>{strings}</TextLine></TextBlock></PrintSpace></Page></Layout></alto>"#
+            )
+        };
+        let run = |replay_alto: String| {
+            let mut f = fixture();
+            f.paths.cpus = Cpus::Fixed(
+                [(13, RYZEN_3900X), (240, I7_1185G7)]
+                    .into_iter()
+                    .map(|(h, m)| (h, (m.to_owned(), String::new())))
+                    .collect(),
+            );
+            let r = replay(&f, 240, LINUX, true);
+            submitted(&f, &r);
+            let spool = r.original_spool.clone().unwrap();
+            returned_alto_file(&f.job, &spool, &f.job.workunit(), &text, &alto(0));
+            returned_alto_file(&f.job, &f.paths.spool, &r.workunit(), &text, &replay_alto);
+            block(check_one(&f.paths, &trust(&f), &f.builds, &r, true)).unwrap()
+        };
+        // A fifth of the layout's words changed with the same text: held.
+        let o = run(alto(1));
+        assert_eq!(o.status, Status::Mismatch, "{o:?}");
+        assert!(o.detail.contains("ALTO word F1"), "{}", o.detail);
+        // One word of 400: a match.
+        let one = alto(0).replacen(r#"CONTENT="w100x0""#, r#"CONTENT="w100y0""#, 1);
+        let o = run(one);
+        assert_eq!(o.status, Status::Match, "{o:?}");
+    }
+
+    #[test]
+    fn a_ratio_bound_does_not_make_the_tier_asymmetric() {
+        // 150 words and " x" appended: within the tier either way round, though the length ratio
+        // is 1.0013 one way and 0.9987 the other.
+        let original = format!("{}\n", ["wordabcde"; 150].join(" "));
+        let longer = original.trim_end().to_owned() + " x\n";
+        for (a, b) in [(&original, &longer), (&longer, &original)] {
+            let (o, _) = compared(a, b, [RYZEN_3900X, I7_1185G7]);
+            assert_eq!(o.status, Status::Match, "{o:?}");
+        }
+        assert_eq!(CROSS_SIMD_SAME_BUILD.min_ratio, 0.0);
+        assert!(CROSS_SIMD_SAME_BUILD.max_ratio.is_infinite());
+    }
+
+    #[test]
     fn simd_levels_come_from_the_features_or_the_model_table() {
         let level = simd_level;
         // Features win, whatever the model says.
@@ -1422,6 +1502,19 @@ mod tests {
         // Not guessed: a Ryzen 7000 series part, an unknown model, nothing.
         assert_eq!(level("AMD Ryzen 9 7950X 16-Core Processor", ""), None);
         assert_eq!(level("", ""), None);
+        // Before Haswell there is no AVX2: not the same level as an AVX2 host.
+        assert_eq!(
+            level("Intel(R) Core(TM) i7-2600 CPU @ 3.40GHz", ""),
+            Some(Simd::Baseline)
+        );
+        assert_eq!(
+            level("Intel(R) Core(TM) i7-3770 CPU @ 3.40GHz", ""),
+            Some(Simd::Baseline)
+        );
+        assert_eq!(
+            level("Intel(R) Core(TM) i7-4770 CPU @ 3.40GHz", ""),
+            Some(Simd::Avx2)
+        );
     }
 
     #[test]

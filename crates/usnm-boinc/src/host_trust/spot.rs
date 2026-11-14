@@ -866,21 +866,33 @@ pub(super) mod tests {
         workunit: &str,
         text: &str,
     ) {
-        const ALTO: &str = r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Description><sourceImageInformation><fileName>page</fileName></sourceImageInformation></Description><Layout><Page WIDTH="1000" HEIGHT="1000"><PrintSpace><TextBlock><TextLine><String CONTENT="HELLO"/></TextLine></TextBlock></PrintSpace></Page></Layout></alto>"#;
+        returned_alto_file(job, spool, workunit, text, ALTO);
+    }
+
+    const ALTO: &str = r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Description><sourceImageInformation><fileName>page</fileName></sourceImageInformation></Description><Layout><Page WIDTH="1000" HEIGHT="1000"><PrintSpace><TextBlock><TextLine><String CONTENT="HELLO"/></TextLine></TextBlock></PrintSpace></Page></Layout></alto>"#;
+
+    /// As [`returned`], with the given ALTO.
+    pub(in crate::host_trust) fn returned_alto_file(
+        job: &boinc::Job,
+        spool: &Path,
+        workunit: &str,
+        text: &str,
+        alto: &str,
+    ) {
         let manifest = ResultManifest {
             v: 1,
             job_id: job.id.clone(),
             scan_sha256: job.scan.sha256.clone(),
             engine: job.engine.clone(),
             text_sha256: boinc::sha256(text.as_bytes()),
-            alto_sha256: boinc::sha256(ALTO.as_bytes()),
+            alto_sha256: boinc::sha256(alto.as_bytes()),
             elapsed_ms: 100,
             completed_at: "2026-10-18T00:00:00Z".into(),
         };
         let file = |name: &str| spool.join(format!("{workunit}__file_{name}"));
         std::fs::write(file("result.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
         std::fs::write(file("text.txt"), text).unwrap();
-        std::fs::write(file("layout.xml"), ALTO).unwrap();
+        std::fs::write(file("layout.xml"), alto).unwrap();
     }
 
     /// The two-host quorum compares `result`s for equality, and `import`
