@@ -9,6 +9,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(__file__))
 
 try:
+    from PIL import Image  # noqa: F401
     import lookalike as la
     import mark_report as mr
     HAVE_PIL = True
