@@ -52,6 +52,12 @@ got=$(psql_admin -d usnm_quality -tA -c "SELECT status, hostid, family IS NULL F
 prov result_missing | psql_admin -d usnm_quality -f /tmp/provenance_load.sql > /dev/null
 got=$(psql_admin -d usnm_quality -tA -c "SELECT status FROM quality.boinc_page_provenance")
 [ "$got" = "resolved" ] || die "a resolved row was degraded: $got"
+# An ambiguous job's candidate hosts survive a later row with no host.
+psql_admin -d usnm_quality -c "INSERT INTO quality.boinc_page_provenance (doc_id, node, resolved_at, status, image12, candidate_host_ids) VALUES ('amb', 'boinc-dddddddddddd', now(), 'ambiguous_duplicate_wu', 'abcdefabcdef', '{2,4}')" > /dev/null
+printf 'amb\tboinc-dddddddddddd\t\\N\t\\N\t\\N\t\\N\t\\N\t\\N\t\\N\t\\N\t2026-11-14T00:00:00Z\thost_unknown\tabcdefabcdef\t\\N\t\\N\n' |
+  psql_admin -d usnm_quality -f /tmp/provenance_load.sql > /dev/null
+got=$(psql_admin -d usnm_quality -tA -c "SELECT status, candidate_host_ids FROM quality.boinc_page_provenance WHERE doc_id = 'amb'")
+[ "$got" = "ambiguous_duplicate_wu|{2,4}" ] || die "candidate hosts were erased: $got"
 # Holds: one row added twice is one hold, one naming neither a node nor an engine is refused,
 # and the reader sees the row but cannot change it.
 hold="INSERT INTO quality.boinc_page_holds (doc_id, engine, reason, created_by) VALUES ('sn1_1900-01-01_ed-1_seq-1', 'tesseract/5.5.0 profile=eng image=sha256:9c8eac0485d5', 'ci', 'ci') ON CONFLICT DO NOTHING"

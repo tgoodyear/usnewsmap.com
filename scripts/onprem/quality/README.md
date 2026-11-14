@@ -32,7 +32,7 @@ psql -v ON_ERROR_STOP=1 -d usnm_quality -f setup.sql
 | `loc_alto`              | page and source batch          | LoC's own word confidence (ALTO `WC`) from the bulk OCR archives: mean, median, share under 0.5 (`load.py locwc`) |
 | `loc_software`          | batch version                  | the software that made LoC's OCR, from each bulk OCR archive's first ALTO header (`load.py locsw`)                |
 | `boinc_page_provenance` | published BOINC OCR page       | which BOINC host, workunit and app version read it, from the BOINC database (`provenance.sql`, #1956)             |
-| `boinc_page_holds`      | held reading of a page         | a reading the release leaves out, by engine tag or node, added by hand as postgres (`holds.sql`, #1956)          |
+| `boinc_page_holds`      | held reading of a page         | a reading the release leaves out, by engine tag or node, added by hand as postgres (`holds.sql`, #1956)           |
 
 `boinc_page_provenance` is filled from the BOINC database, not by `load.py`: run
 `boinc_provenance.py` on exports of the workunit, result, host and app version rows, then
