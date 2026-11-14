@@ -3254,6 +3254,9 @@ def _validate_container_spot(config):
             f"{CONTAINER_SPOT_KEY} is for {OCR_APP_NAME} plans; a {NATIVE_APP_NAME} plan has native_spot_check")
     require(isinstance(spec, dict) and set(spec) <= CONTAINER_SPOT_FIELDS,
             f"{CONTAINER_SPOT_KEY} takes {', '.join(sorted(CONTAINER_SPOT_FIELDS))}")
+    units = config.get("pages_per_unit")
+    require(not isinstance(units, dict) or max(units.values(), default=1) == 1,
+            f"{CONTAINER_SPOT_KEY} replays single-page units; a plan with pages_per_unit above 1 can't have it")
     share = spec.get("share", CONTAINER_SPOT_SHARE)
     require(type(share) in (int, float) and 0 < share <= 0.5, f"{CONTAINER_SPOT_KEY}.share: above 0, at most 0.5")
     per_tick = spec.get("max_per_tick", CONTAINER_SPOT_PER_TICK)
@@ -3273,22 +3276,36 @@ def _cspot(state):
     return state.setdefault("container_spot", {})
 
 
-def container_spot_draw(config, state, persist, now, published, rng=None):
-    """Draw each page this tick published, `published` (job id, assimilator spool), with
-    probability `share` (SPOT_RANDOM, after the result came back and was published, so a host
-    can't tell at dispatch which of its pages will be read again). Local work only. A drawn page
-    is queued for the step, or counted as skipped when max_outstanding replays are already out:
-    never queued for later."""
-    if not published:
-        return
+def container_spot_draw(config, state, persist, now, owned, server, fresh, rng=None):
+    """Draw each published page not drawn from yet, with probability `share` (SPOT_RANDOM, after
+    the result came back and was published, so a host can't tell at dispatch which of its pages
+    will be read again). `owned` is the plan's records, `server` the inventory's jobs (each one's
+    assimilator spool), `fresh` the ids this tick's collect attempted. A page is drawn once: its
+    id is kept in `seen`, so a page a stopped or failed tick published is still drawn by a later
+    one. The first call only marks the pages already published (before `spot_check` was turned
+    on) as seen, apart from this tick's own. Local work only. A drawn page is queued for the
+    step, or counted as skipped when max_outstanding replays are already out: never queued for
+    later."""
     spec = config[CONTAINER_SPOT_KEY]
     rng = SPOT_RANDOM if rng is None else rng
     spot = _cspot(state)
+    published = {record["job"]["id"] for record in owned.values() if record["stage"] == "published"}
+    first = "seen" not in spot
+    # A job leaves `seen` once the plan no longer holds it, so the list stays as short as it is.
+    seen = {job_id: at for job_id, at in spot.get("seen", {}).items() if job_id in published}
+    if first:
+        seen = {job_id: int(now) for job_id in published - set(fresh)}
     pending = spot.setdefault("pending", {})
     counts = spot.setdefault("counts", {})
     share = spec.get("share", CONTAINER_SPOT_SHARE)
     cap = spec.get("max_outstanding", CONTAINER_SPOT_OUTSTANDING)
-    for job_id, spool in published:
+    for job_id in sorted(published - set(seen)):
+        spool = server.get(job_id, {}).get("spool")
+        if not spool:
+            counts["no_spool"] = counts.get("no_spool", 0) + 1
+            seen[job_id] = int(now)
+            continue
+        seen[job_id] = int(now)
         counts["published"] = counts.get("published", 0) + 1
         if job_id in pending or rng.random() >= share:
             continue
@@ -3297,6 +3314,7 @@ def container_spot_draw(config, state, persist, now, published, rng=None):
             counts["backlog"] = counts.get("backlog", 0) + 1
             continue
         pending[job_id] = {"spool": spool, "at": int(now), "stage": "queued"}
+    spot["seen"] = seen
     persist()
 
 
@@ -3354,8 +3372,11 @@ def container_spot_step(config, state, transport, now, submit_room=100, active=N
         return "failed"
     spot.pop("lock_busy", None)
     spot.pop("failing", None)
-    for _, entry in submitted:
-        entry["polled"] = int(now)
+    # Only the comparisons the step took: a deferred one keeps its place at the front.
+    reached = {o["job"] for o in report.get("checked", []) if o["status"] != "deferred"}
+    for job_id, entry in submitted:
+        if job_id in reached:
+            entry["polled"] = int(now)
     for outcome in report.get("submitted", []):
         entry = pending.get(outcome["job"])
         if entry is None:
@@ -3748,12 +3769,11 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # The draw only: local, before the submit below prunes settled jobs from native_targets.
         # The replays are made and compared after submit (#1919).
         native_spot_draw(config, state, persist, now, owned, server, native_room, active=spot_active)
-    if not native and CONTAINER_SPOT_KEY in config and collect_error is None and to_collect:
-        # The draw only: local, from the pages this tick's collect published (a held result is
-        # not one). The replays are made and compared after submit (#1934).
-        landed = {record["job"]["id"] for record in owned.values() if record["stage"] == "published"}
-        container_spot_draw(config, state, persist, now,
-                            [(job_id, spool) for job_id, spool in to_collect if job_id in landed])
+    if not native and CONTAINER_SPOT_KEY in config:
+        # The draw only: local, from the published pages not drawn from yet, so one a stopped tick
+        # published is still drawn, and only once. A held result is not one. The replays are made
+        # and compared after submit (#1934).
+        container_spot_draw(config, state, persist, now, owned, server, [j for j, _ in to_collect])
     native_paused = state.get("native_paused") if native else None
     settle_failed(owned)
     status = _extract_status(snapshot, transport, server_status=server_status, drain=drain)
@@ -3836,6 +3856,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     global_free = max(0, global_room(cohort_info, global_pending, budgeted_other))
     free = min(cohort_free, global_free)
     submitted = 0
+    spot_backlog = 0
     if feed:
         # Every tick, so the list stays current when this one claims nothing (#1754).
         feed.settled_messages = settled_messages(records, claimed_messages(state.get("claims"), sibling_claims))
@@ -3897,6 +3918,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         backlog = sum(not settled(record) and
                       record["job"]["id"] not in pending_jobs | candidates for record in records)
         backlog += sum(page not in owned and page not in conflicts for page in selected)
+        spot_backlog = backlog
         cohort_backlog = backlog
         if native:
             cohort_backlog = sum(not settled(record) and
@@ -4026,8 +4048,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # for this tick when the lock stays held, and a time budget on what it does when it runs.
         # A replay is a workunit like any other: none while draining or past the global cap,
         # counting the units this tick just submitted. Comparisons go on.
-        cap = max_global_pending if max_global_pending is not None else config.get("max_global_pending")
-        room = 0 if drain else (100 if cap is None else cap - snapshot["pending_workunits"] - submitted)
+        room = 0 if drain else max(0, global_room(cohort_info, global_in_flight + spot_backlog + submitted,
+                                                  budgeted_other))
         try:
             container_step = container_spot_step(config, state, transport, now, submit_room=room,
                                                  active=native_spot_active(snapshot))

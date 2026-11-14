@@ -28,7 +28,7 @@ def validate(config):
 
 def spot_config(**spec):
     value = tbs.queue_config()
-    value.update(batch_size=10, max_pending=40, pages_per_host=4, spot_check=spec)
+    value.update(batch_size=10, max_pending=40, pages_per_host=4, max_global_pending=1000, spot_check=spec)
     return value
 
 
@@ -180,13 +180,61 @@ class ContainerSpotTests(unittest.TestCase):
     def test_only_the_pages_a_tick_published_are_drawn(self):
         self.tick()
         self.assertEqual(self.fake.spot_calls, [])
-        self.assertNotIn("pending", self.state.get("container_spot", {}))
+        self.assertEqual(self.state.get("container_spot", {}).get("pending", {}), {})
         # A held result is not a published page.
         self.fake.scope_held = True
         self.results_in()
         self.tick()
         self.assertEqual(self.fake.spot_calls, [])
-        self.assertNotIn("pending", self.state.get("container_spot", {}))
+        self.assertEqual(self.state.get("container_spot", {}).get("pending", {}), {})
+
+    def test_a_page_a_stopped_tick_published_is_still_drawn_once(self):
+        self.tick()
+        self.results_in()
+        # The tick publishes the pages, then stops before the step: the draw already ran.
+        self.fake.container_spot = lambda *a: (_ for _ in ()).throw(KeyboardInterrupt())
+        with self.assertRaises(KeyboardInterrupt):
+            self.tick()
+        self.assertEqual(self.spot()["counts"]["drawn"], N)
+        # A later tick doesn't draw them again, and one that lost its draw does.
+        del self.fake.container_spot
+        self.tick()
+        self.assertEqual(self.spot()["counts"]["drawn"], N)
+        self.spot()["pending"].clear()
+        self.spot()["seen"].clear()
+        self.tick()
+        self.assertEqual(self.spot()["counts"]["drawn"], 2 * N)
+
+    def test_pages_published_before_the_setting_was_turned_on_are_not_drawn(self):
+        config = self.config
+        self.config = tbs.queue_config()
+        self.config.update(batch_size=10, max_pending=40, pages_per_host=4, max_global_pending=1000)
+        self.tick()
+        self.results_in()
+        self.tick()
+        self.config = config
+        self.tick()
+        self.assertEqual(self.spot()["pending"], {})
+        self.assertEqual(self.spot().get("counts", {}).get("drawn", 0), 0)
+
+    def test_a_plan_with_bundles_cannot_have_it(self):
+        value = spot_config()
+        value.update(pages_per_unit={"ocr-bulk": 4}, bundle_app_version=7)
+        with self.assertRaisesRegex(ValueError, "single-page"):
+            validate(value)
+        validate({**spot_config(), "pages_per_unit": {"ocr-bulk": 1}})
+
+    def test_a_deferred_comparison_keeps_its_place_in_the_rotation(self):
+        self.config = spot_config(max_per_tick=2)
+        self.cycle()
+        pending = self.spot()["pending"]
+        for job, entry in pending.items():
+            entry.update(stage="submitted", source=1, target=9)
+        first = sorted(pending)[:2]
+        self.fake.deferred = {first[0]}
+        self.tick(NOW)
+        self.assertNotIn("polled", pending[first[0]])
+        self.assertEqual(pending[first[1]]["polled"], NOW)
 
     def test_a_mismatch_holds_both_hosts_and_alerts_until_released(self):
         self.cycle()
@@ -392,10 +440,14 @@ class ContainerSpotTests(unittest.TestCase):
         (call,) = self.fake.spot_calls
         self.assertEqual(call["submit"], "")
         self.assertTrue(call["check"].startswith(f"{9:064x}=1:9:"))
-        # Past the global cap: nothing new.
+        # Past the global cap: nothing new, with or without an explicit max_global_pending.
         self.fake.spot_calls.clear()
         self.fake.other = 100
         self.config["max_global_pending"] = 50
+        self.tick()
+        self.assertEqual([c for c in self.fake.spot_calls if c["submit"]], [])
+        del self.config["max_global_pending"]
+        self.fake.other = 100000
         self.tick()
         self.assertEqual([c for c in self.fake.spot_calls if c["submit"]], [])
 
