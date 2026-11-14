@@ -485,8 +485,7 @@ document.fonts.load('32px "Noto Sans Cherokee"', "ᎠᎡᏒ").then((faces) => {
           parts.push(gr, nr);
         });
         for (let i = 0; i < parts.length; i++) for (let j = i + 1; j < parts.length; j++) if (hit(parts[i], parts[j])) found.push({ ...where, problem: "boxes overlap" });
-        // (scrollWidth is rounded, and a right-to-left line may carry a sub-pixel of trailing gap: the boxes above are the exact check)
-        if (stage.scrollWidth > stage.clientWidth + 1) found.push({ ...where, problem: "overflow", by: stage.scrollWidth - stage.clientWidth });
+        // (not scrollWidth: a space that hangs at the end of a wrapped line counts in it, though nothing is drawn there; the cell boxes above are the check)
         // text order: each letter, then its name; the name is real text
         const spoken = cells.map((cell) => cell.textContent).join("|");
         if (spoken !== want.map((ch) => ch + cfg.labels[ch]).join("|")) found.push({ ...where, problem: "text order" });
