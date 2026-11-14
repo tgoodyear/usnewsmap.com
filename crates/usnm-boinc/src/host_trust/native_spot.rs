@@ -228,6 +228,12 @@ pub fn simd_level(p_model: &str, p_features: &str) -> Option<Simd> {
             .collect();
         // Ice Lake and Tiger Lake mobile (10xx, 11xx) and Rocket Lake desktop (11xxx) have
         // AVX-512; Haswell (4th generation) and later otherwise have AVX2 only.
+        // The X and XE parts (Skylake-X and Cascade Lake-X) have AVX-512, except the two Kaby
+        // Lake-X parts, which do not.
+        let rest = model[at + digits.len()..].trim_start();
+        if rest.starts_with('x') && !["7640", "7740"].contains(&digits.as_str()) {
+            return Some(Simd::Avx512);
+        }
         return match (digits.len(), digits.get(..2)) {
             (4, Some("10" | "11")) | (5, Some("11")) => Some(Simd::Avx512),
             // Sandy and Ivy Bridge (2xxx, 3xxx) have no AVX2 at all.
@@ -1499,6 +1505,18 @@ mod tests {
             Some(Simd::Avx512)
         );
         assert_eq!(level("Intel(R) Xeon(R) CPU E5-2680 v4", ""), None);
+        assert_eq!(
+            level("Intel(R) Core(TM) i9-10980XE CPU @ 3.00GHz", ""),
+            Some(Simd::Avx512)
+        );
+        assert_eq!(
+            level("Intel(R) Core(TM) i7-7800X CPU @ 3.50GHz", ""),
+            Some(Simd::Avx512)
+        );
+        assert_eq!(
+            level("Intel(R) Core(TM) i7-7740X CPU @ 4.30GHz", ""),
+            Some(Simd::Avx2)
+        );
         // Not guessed: a Ryzen 7000 series part, an unknown model, nothing.
         assert_eq!(level("AMD Ryzen 9 7950X 16-Core Processor", ""), None);
         assert_eq!(level("", ""), None);

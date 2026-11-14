@@ -259,8 +259,9 @@ pub(super) struct Line {
 /// 0 to 1; a line's confidence is the mean over its words that have one, times 100.
 pub(super) fn alto_lines(alto: &[u8]) -> anyhow::Result<Vec<Line>> {
     use quick_xml::events::{BytesStart, Event};
+    use quick_xml::name::{Namespace, ResolveResult};
     let text = std::str::from_utf8(alto)?;
-    let mut reader = quick_xml::Reader::from_str(text);
+    let mut reader = quick_xml::NsReader::from_str(text);
     let mut lines = Vec::new();
     let mut open: Option<(Vec<String>, Vec<f64>)> = None;
     let word = |e: &BytesStart| -> anyhow::Result<Option<(String, Option<f64>)>> {
@@ -288,18 +289,28 @@ pub(super) fn alto_lines(alto: &[u8]) -> anyhow::Result<Vec<Line>> {
         Ok(content.map(|c| (c, wc)))
     };
     loop {
-        match reader.read_event()? {
+        let (namespace, event) = reader.read_resolved_event()?;
+        // Only elements in an ALTO namespace count: a foreign element with the same name is not
+        // a word or a line.
+        let alto_element = matches!(
+            namespace,
+            ResolveResult::Bound(Namespace(uri))
+                if usnm_alto::NAMESPACES.iter().any(|(n, _)| *n == uri)
+        );
+        match event {
             Event::Eof => break,
-            Event::Start(e) if e.local_name().into_inner() == "TextLine" => {
+            Event::Start(e) if alto_element && e.local_name().into_inner() == "TextLine" => {
                 open = Some((Vec::new(), Vec::new()));
             }
-            Event::Start(e) | Event::Empty(e) if e.local_name().into_inner() == "String" => {
+            Event::Start(e) | Event::Empty(e)
+                if alto_element && e.local_name().into_inner() == "String" =>
+            {
                 if let (Some((words, scores)), Some((content, wc))) = (open.as_mut(), word(&e)?) {
                     words.push(content);
                     scores.extend(wc);
                 }
             }
-            Event::End(e) if e.local_name().into_inner() == "TextLine" => {
+            Event::End(e) if alto_element && e.local_name().into_inner() == "TextLine" => {
                 if let Some((words, scores)) = open.take() {
                     let confidence = (!scores.is_empty())
                         .then(|| scores.iter().sum::<f64>() / scores.len() as f64 * 100.0);
@@ -657,13 +668,16 @@ pub(super) mod tests {
                 r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Layout><Page><PrintSpace><TextBlock>
 <TextLine><String CONTENT="clean" WC="0.90"/><String CONTENT="{a}" WC="0.80"/></TextLine>
 <TextLine><String CONTENT="noise" WC="0.10"/><String CONTENT="{b}" WC="0.30"/></TextLine>
-<TextLine><String CONTENT="{c}"/></TextLine>
+<TextLine><String CONTENT="{c}"/><x:String xmlns:x="urn:other" CONTENT="foreign"/></TextLine>
+<x:TextLine xmlns:x="urn:other"><String CONTENT="inside foreign"/></x:TextLine>
 </TextBlock></PrintSpace></Page></Layout></alto>"#
             )
         };
         let lines = |a: &str, b: &str, c: &str| alto_lines(alto(a, b, c).as_bytes()).unwrap();
         let base = lines("fine", "x1", "bare");
+        // The foreign element is neither a word nor a line.
         assert_eq!(base.len(), 3);
+        assert_eq!(base[2].words, vec!["bare".to_owned()]);
         assert_eq!(base[0].confidence.map(|c| c.round()), Some(85.0));
         assert_eq!(base[1].confidence.map(|c| c.round()), Some(20.0));
         assert_eq!(base[2].confidence, None);
