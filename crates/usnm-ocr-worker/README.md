@@ -343,6 +343,8 @@ Where files land:
 - `<out>/plan.json`, `<out>/fetched.jsonl` (one line per file fetched), `<out>/problems.jsonl`, `<out>/status.json`.
 - `<out>/CITATIONS.tsv`, written at the end of every fetch run: issue label, persistent link (or the manifest `@id` when the manifest gives none), attribution, access date.
 
+The tool follows no redirect, so every URL it asks for has been checked against `robots.txt`; a redirect counts as a failed file. An image is checked before it counts as fetched (the bytes must be the kind its extension says and, for JPEG and PNG, complete); one that is not is moved aside as `<name>.replaced-<n>` and reported. Documents already saved are reused only when their sidecar names the same URL, so a different collection needs a fresh `--out`. A file counts as fetched when its sidecar names the plan's URL and manifest and its sha256 matches; after a replan at another size, the earlier files are kept and reported, not replaced, so use a fresh `--out` for a new size.
+
 A file whose sha256 matches its sidecar is never fetched again. A file with no matching sidecar is kept, not fetched again and not written over, and is listed in `problems.jsonl`. Nothing is deleted: a plan or `CITATIONS.tsv` that is replaced leaves the old one beside it as `<name>.replaced-<n>`. One failed image (a 404, say) is recorded and the run goes on; the exit status is non-zero when any image failed or the run stopped early.
 
 ## Engine catalog and production licences

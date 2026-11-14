@@ -140,6 +140,43 @@ pub fn sniff(head: &[u8]) -> &'static str {
     }
 }
 
+/// Whether the file at `path` is a whole image of the kind its extension says: it starts
+/// like one and, for JPEG and PNG, ends like one. The kind is returned.
+pub(crate) fn whole_image(path: &Path) -> Result<&'static str, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let len = f.metadata().map_err(|e| e.to_string())?.len();
+    let mut head = [0u8; 16];
+    let n = f.read(&mut head).map_err(|e| e.to_string())?;
+    let kind = sniff(&head[..n]);
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default();
+    let want = match ext {
+        "jpg" | "jpeg" => Some("jpeg"),
+        "png" => Some("png"),
+        "tif" | "tiff" => Some("tiff"),
+        "jp2" => Some("jp2"),
+        "gif" => Some("gif"),
+        _ => None,
+    };
+    if want.is_some_and(|w| w != kind) {
+        return Err(format!("the bytes look like {kind}, not {ext}"));
+    }
+    let tail_len = len.min(64);
+    f.seek(SeekFrom::End(-(tail_len as i64)))
+        .map_err(|e| e.to_string())?;
+    let mut tail = vec![0u8; tail_len as usize];
+    f.read_exact(&mut tail).map_err(|e| e.to_string())?;
+    let end = tail.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
+    match kind {
+        "jpeg" if !tail[..end].ends_with(&[0xFF, 0xD9]) => Err("no end-of-image marker".to_owned()),
+        "png" if !tail[..end].ends_with(b"IEND\xaeB`\x82") => Err("no IEND chunk".to_owned()),
+        _ => Ok(kind),
+    }
+}
+
 pub(crate) fn sidecar_path(file: &Path) -> PathBuf {
     let mut p = file.as_os_str().to_owned();
     p.push(".json");
@@ -315,7 +352,19 @@ impl Client {
     /// for again). Returns the bytes. A new file gets a sidecar and a line in `fetched.jsonl`.
     pub async fn doc(&self, url: &str, dest: &Path, tmpl: Sidecar) -> anyhow::Result<Vec<u8>> {
         if let Ok(bytes) = std::fs::read(dest) {
-            return Ok(bytes);
+            // Reused only when its sidecar says it is this URL's and the bytes match; a
+            // different collection's output directory is kept and reported, not read.
+            let recorded = std::fs::read(sidecar_path(dest))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Sidecar>(&b).ok());
+            return match recorded {
+                Some(s) if s.url == url && s.sha256 == crate::ghn::sha256_hex(&bytes) => Ok(bytes),
+                _ => bail!(
+                    "{} is not the saved copy of {url} (no sidecar, another URL, or other \
+                     bytes); it is kept as it is. Use a fresh --out for a different collection",
+                    dest.display()
+                ),
+            };
         }
         self.check_robots(url).await?;
         if let Some(dir) = dest.parent() {
@@ -371,10 +420,19 @@ impl Client {
         sc.accessed = sc.fetched_at.clone();
         sc.user_agent = USER_AGENT.to_owned();
         if sc.kind == "image" {
-            let mut head = [0u8; 16];
-            if let Ok(mut f) = std::fs::File::open(dest) {
-                let n = std::io::Read::read(&mut f, &mut head).unwrap_or(0);
-                sc.sniffed = Some(sniff(&head[..n]).to_owned());
+            match whole_image(dest) {
+                Ok(kind) => sc.sniffed = Some(kind.to_owned()),
+                Err(why) => {
+                    // Kept beside the name, never deleted; the name is free for a later run.
+                    let kept = crate::fetcher::set_aside(dest)
+                        .and_then(|aside| std::fs::remove_file(dest).map(|()| aside));
+                    return Err(Fail::Refused(match kept {
+                        Ok(a) => {
+                            format!("{url}: not a whole image ({why}); kept as {}", a.display())
+                        }
+                        Err(e) => format!("{url}: not a whole image ({why}); left in place: {e}"),
+                    }));
+                }
             }
         } else {
             sc.sniffed = Some("json".to_owned());

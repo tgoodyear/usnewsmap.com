@@ -159,14 +159,17 @@ async fn walk(
         if seen.len() == 1 {
             total = c.total;
             top_doc = doc;
-            // Pages of a paged collection come after the top document's own members.
-            if let Some(f) = &c.first {
-                queue.push_back(f.clone());
-            }
         }
         manifests.extend(c.manifests);
-        // Sub-collections and the next page go in document order, ahead of what follows.
-        for sub in c.collections.into_iter().chain(c.next).rev() {
+        // The first page, sub-collections and the next page go in document order, ahead of
+        // what follows; any collection document may be paged.
+        let follow: Vec<String> = c
+            .first
+            .into_iter()
+            .chain(c.collections)
+            .chain(c.next)
+            .collect();
+        for sub in follow.into_iter().rev() {
             queue.push_front(sub);
         }
     }
@@ -289,7 +292,14 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
                         }
                     }
                 }
-                let size = iiif::size(Some(&info), (c.width, c.height), opts.max_dimension);
+                let Some(size) = iiif::size(Some(&info), (c.width, c.height), opts.max_dimension)
+                else {
+                    skipped.push(format!(
+                        "canvas {}: the service lists no size within the limit",
+                        c.index
+                    ));
+                    continue;
+                };
                 PlanCanvas {
                     index: c.index,
                     canvas_id: c.id,
@@ -333,7 +343,7 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
     let todo = issues
         .iter()
         .flat_map(|i| i.canvases.iter().map(move |c| (i, c)))
-        .filter(|(i, c)| !super::fetch::have(&image_path(&opts.out, &i.id, c)).is_verified())
+        .filter(|(i, c)| !super::fetch::have_for(&opts.out, i, c).is_verified())
         .count();
     let plan = Plan {
         version: 1,

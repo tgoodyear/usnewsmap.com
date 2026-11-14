@@ -92,6 +92,10 @@ pub struct Policy {
     /// follow, off its paths or off its hosts, counts as push-back.
     #[serde(default)]
     pub allow_paths: Vec<String>,
+    /// Follow no redirect: a 3xx answer is a refusal of that file. For a run that checks
+    /// `robots.txt` for each URL itself and so can't let a redirect pick a new one.
+    #[serde(default)]
+    pub no_redirects: bool,
     /// Plain `http://`, for a stand-in server in tests. No file can set it.
     #[serde(skip)]
     pub allow_plain_http: bool,

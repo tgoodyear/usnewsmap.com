@@ -250,15 +250,16 @@ pub fn manifest(doc: &Value, url: &str) -> anyhow::Result<Manifest> {
 
 /// The `size` segment for the largest image the service allows, within `max_dimension` on
 /// the longer side if asked. `info` is the service's `info.json` or the service object the
-/// manifest embeds. Without dimensions the answer is `full`.
+/// manifest embeds. Without dimensions the answer is `full`. `None` when the service lists
+/// only fixed sizes (level 0) and none is within the limit.
 pub fn size(
     info: Option<&Value>,
     dims: (Option<u64>, Option<u64>),
     max_dimension: Option<u64>,
-) -> String {
+) -> Option<String> {
     let get = |k: &str| info.and_then(|i| i.get(k)).and_then(Value::as_u64);
     let (Some(w), Some(h)) = (get("width").or(dims.0), get("height").or(dims.1)) else {
-        return "full".to_owned();
+        return Some("full".to_owned());
     };
     let (wf, hf) = (w as f64, h as f64);
     let (mut max_w, mut max_h, mut max_a, mut level0) = (None, None, None, false);
@@ -277,9 +278,13 @@ pub fn size(
         max_a = max_a.or_else(|| p.get("maxArea").and_then(Value::as_u64));
     }
     let mut s = 1.0f64;
+    // `maxHeight` alone limits the height; `maxWidth` alone limits both (the Image API
+    // takes the height limit to be the width's when it is not given).
     if let Some(mw) = max_w {
         s = s.min(mw as f64 / wf);
-        s = s.min(max_h.unwrap_or(mw) as f64 / hf);
+    }
+    if let Some(mh) = max_h.or(max_w) {
+        s = s.min(mh as f64 / hf);
     }
     if let Some(ma) = max_a {
         s = s.min((ma as f64 / (wf * hf)).sqrt());
@@ -288,7 +293,7 @@ pub fn size(
         s = s.min(d as f64 / wf.max(hf));
     }
     if s >= 1.0 {
-        return "full".to_owned();
+        return Some("full".to_owned());
     }
     if level0 {
         let best = info
@@ -299,9 +304,9 @@ pub fn size(
             .filter_map(|z| Some((z.get("width")?.as_u64()?, z.get("height")?.as_u64()?)))
             .filter(|(zw, _)| (*zw as f64) <= wf * s + 0.5)
             .max_by_key(|(zw, _)| *zw);
-        return best.map_or_else(|| "full".to_owned(), |(zw, zh)| format!("{zw},{zh}"));
+        return best.map(|(zw, zh)| format!("{zw},{zh}"));
     }
-    format!("{},", ((wf * s).floor() as u64).max(1))
+    Some(format!("{},", ((wf * s).floor() as u64).max(1)))
 }
 
 /// `<service>/full/<size>/0/default.jpg`.

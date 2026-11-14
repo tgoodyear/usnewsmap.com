@@ -44,8 +44,10 @@ fn sha_of_file(path: &Path) -> std::io::Result<String> {
     Ok(usnm_core::digest::hex(&h.finalize()))
 }
 
-/// Whether `dest` is already in hand.
-pub fn have(dest: &Path) -> Have {
+/// Whether `dest` is already in hand as the image at `url` of the manifest `manifest_id`:
+/// its sidecar names that URL and manifest and its sha256 matches the bytes. A file for
+/// another URL (a replan with a different size, say) is `Unverified`: kept, not replaced.
+pub fn have(dest: &Path, url: &str, manifest_id: &str) -> Have {
     if !dest.exists() {
         return Have::No;
     }
@@ -53,9 +55,22 @@ pub fn have(dest: &Path) -> Have {
         .ok()
         .and_then(|b| serde_json::from_slice::<Sidecar>(&b).ok());
     match (recorded, sha_of_file(dest)) {
-        (Some(s), Ok(sha)) if s.sha256 == sha => Have::Verified,
+        (Some(s), Ok(sha))
+            if s.sha256 == sha
+                && s.url == url
+                && s.citation
+                    .as_ref()
+                    .is_some_and(|c| c.manifest_id == manifest_id) =>
+        {
+            Have::Verified
+        }
         _ => Have::Unverified,
     }
+}
+
+/// [`have`] for a planned canvas.
+pub fn have_for(out: &Path, i: &super::plan::PlanIssue, c: &super::plan::PlanCanvas) -> Have {
+    have(&image_path(out, &i.id, c), &c.url, &i.citation.manifest_id)
 }
 
 fn problem(out: &Path, what: &str, message: &str) {
@@ -84,9 +99,12 @@ fn citations(out: &Path, plan: &Plan) -> anyhow::Result<()> {
             .iter()
             .filter_map(|c| {
                 let b = std::fs::read(sidecar_path(&image_path(out, &i.id, c))).ok()?;
-                serde_json::from_slice::<Sidecar>(&b)
-                    .ok()
-                    .map(|s| s.accessed)
+                let s = serde_json::from_slice::<Sidecar>(&b).ok()?;
+                // Only bytes this plan asked for: the same URL and manifest.
+                (s.url == c.url
+                    && s.citation
+                        .is_some_and(|m| m.manifest_id == i.citation.manifest_id))
+                .then_some(s.accessed)
             })
             .max();
         let Some(accessed) = accessed else { continue };
@@ -155,7 +173,7 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
     // Every path is checked against robots.txt before the first image is asked for.
     for i in &plan.issues {
         for c in &i.canvases {
-            if !have(&image_path(&opts.out, &i.id, c)).is_verified() {
+            if !have_for(&opts.out, i, c).is_verified() {
                 client.check_robots(&c.url).await?;
             }
         }
@@ -166,7 +184,7 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
     'all: for i in &plan.issues {
         for c in &i.canvases {
             let dest = image_path(&opts.out, &i.id, c);
-            match have(&dest) {
+            match have_for(&opts.out, i, c) {
                 Have::Verified => {
                     summary.already_have += 1;
                     continue;
@@ -220,7 +238,7 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
         .issues
         .iter()
         .flat_map(|i| i.canvases.iter().map(move |c| (i, c)))
-        .filter(|(i, c)| !have(&image_path(&opts.out, &i.id, c)).is_verified())
+        .filter(|(i, c)| !have_for(&opts.out, i, c).is_verified())
         .count();
     summary.estimated_requests = left;
     summary.estimated_seconds =

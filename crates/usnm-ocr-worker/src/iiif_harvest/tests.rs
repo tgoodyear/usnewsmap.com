@@ -26,6 +26,7 @@ struct Route {
     ct: &'static str,
     body: Vec<u8>,
     retry_after: Option<&'static str>,
+    location: Option<&'static str>,
     /// Answer 503 with `Retry-After: 0` this many times first.
     fail_first: usize,
 }
@@ -45,6 +46,7 @@ impl Site {
                 ct,
                 body,
                 retry_after: None,
+                location: None,
                 fail_first: 0,
             },
         );
@@ -96,6 +98,9 @@ async fn serve(State(site): State<Arc<Site>>, uri: Uri) -> Response {
         r.body,
     )
         .into_response();
+    if let Some(v) = r.location {
+        resp.headers_mut().insert("location", v.parse().unwrap());
+    }
     if let Some(v) = r.retry_after {
         resp.headers_mut().insert("retry-after", v.parse().unwrap());
     }
@@ -116,6 +121,7 @@ async fn start() -> (Arc<Site>, String) {
 fn jpeg(tag: u8) -> Vec<u8> {
     let mut b = vec![0xFF, 0xD8, 0xFF, 0xE0, tag];
     b.extend_from_slice(&[7u8; 64]);
+    b.extend_from_slice(&[0xFF, 0xD9]);
     b
 }
 
@@ -199,10 +205,18 @@ fn site_with_fixtures(site: &Site, base: &str) -> usize {
         }),
     );
     site.json(
+        "/sub/p1",
+        &json!({
+            "@id": format!("{base}/sub/p1"), "@type": "sc:Collection",
+            "manifests": [{"@id": format!("{base}/m4/manifest"), "@type": "sc:Manifest"}]
+        }),
+    );
+    // A paged sub-collection: a wrapper with only `first`.
+    site.json(
         "/sub",
         &json!({
             "@id": format!("{base}/sub"), "@type": "sc:Collection",
-            "manifests": [{"@id": format!("{base}/m4/manifest"), "@type": "sc:Manifest"}]
+            "first": format!("{base}/sub/p1")
         }),
     );
     let big =
@@ -303,7 +317,7 @@ fn site_with_fixtures(site: &Site, base: &str) -> usize {
     site.put(
         "/direct/two.png",
         "image/png",
-        b"\x89PNG\r\n\x1a\n-----".to_vec(),
+        b"\x89PNG\r\n\x1a\n-----IEND\xaeB`\x82".to_vec(),
     );
     site.put("/img/c/full/full/0/default.jpg", "image/jpeg", jpeg(4));
     site.put("/img/d/full/full/0/default.jpg", "image/jpeg", jpeg(5));
@@ -680,17 +694,24 @@ fn robots_rules() {
 #[test]
 fn image_sizes_respect_the_service_limits() {
     let d = (Some(2000), Some(3000));
-    assert_eq!(iiif::size(None, d, None), "full");
-    assert_eq!(iiif::size(None, (None, None), Some(500)), "full");
+    assert_eq!(iiif::size(None, d, None).unwrap(), "full");
+    assert_eq!(iiif::size(None, (None, None), Some(500)).unwrap(), "full");
     let w = json!({"profile": ["x/level1.json", {"maxWidth": 1000}]});
-    assert_eq!(iiif::size(Some(&w), d, None), "666,");
+    assert_eq!(iiif::size(Some(&w), d, None).unwrap(), "666,");
+    let h = json!({"profile": ["x/level1.json", {"maxHeight": 1500}]});
+    assert_eq!(iiif::size(Some(&h), d, None).unwrap(), "1000,");
     let area = json!({"profile": ["x/level2.json", {"maxArea": 600_000}]});
-    assert_eq!(iiif::size(Some(&area), d, None), "632,");
-    assert_eq!(iiif::size(None, d, Some(1500)), "1000,");
+    assert_eq!(iiif::size(Some(&area), d, None).unwrap(), "632,");
+    assert_eq!(iiif::size(None, d, Some(1500)).unwrap(), "1000,");
     let l0 = json!({"profile": "http://iiif.io/api/image/2/level0.json",
                     "sizes": [{"width": 200, "height": 300}, {"width": 800, "height": 1200}]});
-    assert_eq!(iiif::size(Some(&l0), d, Some(1500)), "800,1200");
-    assert_eq!(iiif::size(Some(&l0), d, None), "full");
+    assert_eq!(iiif::size(Some(&l0), d, Some(1500)).unwrap(), "800,1200");
+    assert_eq!(iiif::size(Some(&l0), d, None).unwrap(), "full");
+    assert_eq!(
+        iiif::size(Some(&l0), d, Some(100)),
+        None,
+        "nothing small enough: skipped, not full"
+    );
 }
 
 #[test]
@@ -728,6 +749,89 @@ fn issue_ids_are_unique_and_safe() {
     assert_eq!(ids[3], "i_x");
     assert_eq!(
         fetch::Have::No,
-        fetch::have(std::path::Path::new("/nonexistent/x"))
+        fetch::have(std::path::Path::new("/nonexistent/x"), "", "")
+    );
+}
+
+#[tokio::test]
+async fn a_page_that_is_not_an_image_is_kept_aside_and_reported() {
+    let (site, base) = start().await;
+    site_with_fixtures(&site, &base);
+    // A 200 with an error document, and a truncated JPEG.
+    site.put(
+        "/img/c/full/full/0/default.jpg",
+        "application/json",
+        b"{\"error\": \"busy\"}".to_vec(),
+    );
+    site.put(
+        "/img/d/full/full/0/default.jpg",
+        "image/jpeg",
+        vec![0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3],
+    );
+    let dir = tempfile::tempdir().unwrap();
+    run(opts(&base, dir.path(), Action::Plan)).await.unwrap();
+    let s = run(opts(&base, dir.path(), Action::Fetch)).await.unwrap();
+    assert_eq!(s.failed.len(), 3, "{s:?}");
+    assert_eq!(s.fetched, 3);
+    assert!(!dir.path().join("m3/0002.jpg").exists());
+    assert!(
+        std::fs::read_dir(dir.path().join("m3")).unwrap().count() >= 1,
+        "kept beside the name"
+    );
+    let log = std::fs::read_to_string(dir.path().join("fetched.jsonl")).unwrap();
+    assert!(!log.contains("m3/0002"), "no success line for a bad image");
+}
+
+#[tokio::test]
+async fn a_redirect_is_not_followed() {
+    let (site, base) = start().await;
+    site_with_fixtures(&site, &base);
+    site.tweak("/img/c/full/full/0/default.jpg", |r| {
+        r.status = 302;
+        r.location = Some("/private/secret.jpg");
+    });
+    site.put("/private/secret.jpg", "image/jpeg", jpeg(9));
+    let dir = tempfile::tempdir().unwrap();
+    run(opts(&base, dir.path(), Action::Plan)).await.unwrap();
+    let s = run(opts(&base, dir.path(), Action::Fetch)).await.unwrap();
+    assert!(s.failed.iter().any(|f| f.contains("redirect")), "{s:?}");
+    assert_eq!(site.hits_for("/private/"), 0);
+}
+
+#[tokio::test]
+async fn another_collections_saved_documents_are_not_reused() {
+    let (site, base) = start().await;
+    site_with_fixtures(&site, &base);
+    let dir = tempfile::tempdir().unwrap();
+    run(opts(&base, dir.path(), Action::Plan)).await.unwrap();
+    let (site2, base2) = start().await;
+    site_with_fixtures(&site2, &base2);
+    let err = run(opts(&base2, dir.path(), Action::Plan))
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("not the saved copy"), "{err:#}");
+}
+
+#[tokio::test]
+async fn a_replan_at_another_size_does_not_pass_old_files_for_new() {
+    let (site, base) = start().await;
+    site_with_fixtures(&site, &base);
+    let dir = tempfile::tempdir().unwrap();
+    run(opts(&base, dir.path(), Action::Plan)).await.unwrap();
+    run(opts(&base, dir.path(), Action::Fetch)).await.unwrap();
+    let mut o = opts(&base, dir.path(), Action::Plan);
+    o.max_dimension = Some(400);
+    run(o).await.unwrap();
+    site.put("/img/a/full/266,/0/default.jpg", "image/jpeg", jpeg(8));
+    let s = run(opts(&base, dir.path(), Action::Fetch)).await.unwrap();
+    assert!(s.kept_unverified >= 1, "{s:?}");
+    assert_eq!(
+        std::fs::read(dir.path().join("m1/0001.jpg")).unwrap(),
+        jpeg(1)
+    );
+    assert_eq!(
+        site.hits_for("/img/a/full/266"),
+        0,
+        "kept, not fetched over"
     );
 }

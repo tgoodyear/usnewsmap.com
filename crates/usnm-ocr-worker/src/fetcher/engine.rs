@@ -703,6 +703,12 @@ impl Engine {
                 .await
                 .map_err(|e| Fail::Transient(format!("{shown}: {}", e.without_url())))?;
             let status = resp.status();
+            if status.is_redirection() && first.policy.no_redirects {
+                return Err(Fail::Refused(format!(
+                    "{shown}: HTTP {} redirect; this policy follows none",
+                    status.as_u16()
+                )));
+            }
             if status.is_redirection() {
                 at = resp
                     .headers()

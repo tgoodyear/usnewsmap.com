@@ -88,5 +88,8 @@ max_hold_secs = 86400
     let mut p = Policy::parse(POLICY, &text)?;
     p.hosts = hosts.to_vec();
     p.allow_plain_http = loopback;
+    // Each URL is checked against robots.txt before it is asked for; a redirect would pick
+    // another one.
+    p.no_redirects = true;
     Ok(p)
 }
