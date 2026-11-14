@@ -81,40 +81,47 @@ def main():
     for p in read_tsv(a.wu_tsv):
         wu[p[2]] = dict(wu_id=int(p[0]), canon=int(p[3]), hostid=p[6], avid=p[7], os=p[10], vendor=p[11])
     av = {p[0]: p[3] for p in read_tsv([a.av_tsv])}
-    members = {}
+    members = collections.defaultdict(list)  # job id -> [(bundle workunit name, image digest)]
     for f in glob.glob(os.path.join(a.bundles, "**", "*_ocr_bundle_json"), recursive=True):
         d = json.load(open(f))
         for pg in d["pages"]:
-            members[pg["job"]["id"]] = ("usnm_ocrb_" + d["id"], pg["job"]["engine"]["image"])
+            members[pg["job"]["id"]].append(("usnm_ocrb_" + d["id"], pg["job"]["engine"]["image"]))
     cand = collections.defaultdict(list)  # job12 -> [(job id, workunit name, how)]
     for n in wu:
         if n.startswith("usnm_") and not n.startswith("usnm_ocrb_"):
             cand[n[5:17]].append((n[5:], n, "wu_name"))
-    for job, (bundle, _) in members.items():
-        cand[job[:12]].append((job, bundle, "bundle_member"))
+    for job, found in members.items():
+        for bundle, _ in found:
+            cand[job[:12]].append((job, bundle, "bundle_member"))
 
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     n = collections.Counter()
     seen = set()
     with open(a.out, "w") as out:
         for r in boinc_rows(a.pages):
-            if r["doc_id"] in seen:
+            if (r["doc_id"], r["node"]) in seen:
                 continue
-            seen.add(r["doc_id"])
+            seen.add((r["doc_id"], r["node"]))
             job12 = r["node"][6:]
             image12 = r["ocr_engine"].split("image=sha256:")[1][:12]
-            cs = cand.get(job12, [])
+            # A bundle request outlives its purged workunit: only surviving workunits count.
+            cs = [c for c in cand.get(job12, []) if c[1] in wu]
             jobs = {c[0] for c in cs}
             rec = dict(job_id=None, wu_id=None, canon=None, hostid=None, avid=None, platform=None,
                        family=None, via=None, digest=None, cands=None)
             if not cs:
                 status = "no_wu"
+                # The bundle request may still name the job and its image.
+                known = {j for j in members if j.startswith(job12)}
+                if len(known) == 1:
+                    rec["job_id"] = next(iter(known))
+                    rec["digest"] = members[rec["job_id"]][0][1]
             elif len(jobs) > 1:
                 status = "ambiguous_prefix"
             else:
                 job = next(iter(jobs))
                 rec["job_id"] = job
-                rec["digest"] = members[job][1] if job in members else None
+                rec["digest"] = members[job][0][1] if job in members else None
                 infos = [(how, name, wu[name]) for _, name, how in cs]
                 resolved = [i for i in infos if i[2]["canon"] > 0 and i[2]["hostid"] != ""]
                 hosts = {i[2]["hostid"] for i in resolved}
@@ -138,7 +145,7 @@ def main():
                             status = "result_missing"
                             rec.update(canon=None, hostid=None, avid=None, platform=None, family=None)
             n[status] += 1
-            row = [r["doc_id"], rec["job_id"], rec["wu_id"], rec["canon"], rec["hostid"], rec["avid"],
+            row = [r["doc_id"], r["node"], rec["job_id"], rec["wu_id"], rec["canon"], rec["hostid"], rec["avid"],
                    rec["platform"], rec["family"], rec["via"], now, status, image12, rec["digest"], rec["cands"]]
             out.write("\t".join("\\N" if x is None or x == "" else str(x) for x in row) + "\n")
     print(json.dumps(dict(n), sort_keys=True), file=sys.stderr)

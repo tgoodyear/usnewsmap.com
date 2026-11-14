@@ -1,6 +1,6 @@
--- Which BOINC host read a published page (#1956). One row per `route=boinc` page of
--- `curated/ocr-local/pages`, built from the BOINC database while the workunit and result rows
--- still exist (db_purge removes them 30 days after a workunit is done). Run as postgres in the
+-- Which BOINC host read a published page (#1956). One row per `route=boinc` reading in
+-- `curated/ocr-local/pages` (a page and its `node`), built from the BOINC database while the
+-- workunit and result rows still exist (db_purge removes them 30 days after a workunit is done). Run as postgres in the
 -- queue container; safe to run again:
 --
 --   psql -v ON_ERROR_STOP=1 -d usnm_quality -f provenance.sql
@@ -12,7 +12,9 @@
 -- never replaces a `resolved` row with a less complete one.
 
 CREATE TABLE IF NOT EXISTS quality.boinc_page_provenance (
-  doc_id              text PRIMARY KEY,
+  doc_id              text NOT NULL,
+  -- The published `node`, `boinc-<first 12 hex of the job id>`: with doc_id, one reading.
+  node                text NOT NULL,
   job_id              text,
   wu_id               integer,
   canonical_result_id integer,
@@ -33,6 +35,7 @@ CREATE TABLE IF NOT EXISTS quality.boinc_page_provenance (
   image_digest        text,
   -- Hosts behind a job that ran in two workunits with different canonical hosts.
   candidate_host_ids  integer[],
+  PRIMARY KEY (doc_id, node),
   CHECK (status <> 'resolved' OR (hostid IS NOT NULL AND wu_id IS NOT NULL AND family IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS boinc_page_provenance_host

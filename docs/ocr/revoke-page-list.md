@@ -131,7 +131,7 @@ resolved one is never replaced by a less complete one, so older files stay valid
 ```sh
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 psql -d usnm_quality -At -c "SELECT row_to_json(t) FROM (
-  SELECT doc_id, job_id, wu_id, canonical_result_id, hostid, app_version_id, platform,
+  SELECT doc_id, node, job_id, wu_id, canonical_result_id, hostid, app_version_id, platform,
          family, resolved_via, resolved_at, status, image12, image_digest, candidate_host_ids
   FROM quality.boinc_page_provenance ORDER BY doc_id) t" > provenance.jsonl
 az storage blob upload --auth-mode login --account-name "$CURATED_ACCOUNT" \

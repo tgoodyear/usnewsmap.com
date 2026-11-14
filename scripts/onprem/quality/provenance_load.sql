@@ -6,9 +6,9 @@
 \set ON_ERROR_STOP on
 BEGIN;
 CREATE TEMP TABLE prov_in (LIKE quality.boinc_page_provenance) ON COMMIT DROP;
-\copy prov_in (doc_id, job_id, wu_id, canonical_result_id, hostid, app_version_id, platform, family, resolved_via, resolved_at, status, image12, image_digest, candidate_host_ids) FROM pstdin
+\copy prov_in (doc_id, node, job_id, wu_id, canonical_result_id, hostid, app_version_id, platform, family, resolved_via, resolved_at, status, image12, image_digest, candidate_host_ids) FROM pstdin
 INSERT INTO quality.boinc_page_provenance SELECT * FROM prov_in
-ON CONFLICT (doc_id) DO UPDATE SET
+ON CONFLICT (doc_id, node) DO UPDATE SET
   job_id = EXCLUDED.job_id, wu_id = EXCLUDED.wu_id,
   canonical_result_id = EXCLUDED.canonical_result_id, hostid = EXCLUDED.hostid,
   app_version_id = EXCLUDED.app_version_id, platform = EXCLUDED.platform,

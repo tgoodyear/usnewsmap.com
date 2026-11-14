@@ -53,7 +53,7 @@ pub fn provenance_prefix() -> String {
 
 /// Which BOINC host read which published reading: the union of the
 /// `ocr-local/provenance/<stamp>.jsonl` files, create-only, one JSON object
-/// a line with at least `doc_id`, `job_id`, `status` and (for `resolved`)
+/// a line with at least `doc_id`, `node`, `status` and (for `resolved`)
 /// `hostid`; `candidate_host_ids` lists the hosts behind a reading whose job
 /// ran in two workunits (`ambiguous_duplicate_wu`). They are exports of the
 /// quality database's `quality.boinc_page_provenance` table. A reading is
@@ -79,8 +79,7 @@ pub type Readings = HashSet<(u64, String)>;
 struct ProvenanceLine {
     doc_id: String,
     status: String,
-    #[serde(default)]
-    job_id: Option<String>,
+    node: String,
     #[serde(default)]
     hostid: Option<u64>,
     #[serde(default)]
@@ -113,13 +112,7 @@ impl Provenance {
             }
             let l: ProvenanceLine =
                 serde_json::from_slice(line).with_context(|| format!("line {}", n + 1))?;
-            let Some(job) = l.job_id.as_deref().and_then(|j| j.get(..12)) else {
-                if l.status == "resolved" {
-                    bail!("line {}: `resolved` without a `job_id`", n + 1);
-                }
-                continue;
-            };
-            let key = (doc_hash(&l.doc_id), format!("boinc-{job}"));
+            let key = (doc_hash(&l.doc_id), l.node);
             match (l.status.as_str(), l.hostid) {
                 ("resolved", Some(h)) => {
                     self.candidates.remove(&key);
@@ -1114,8 +1107,8 @@ mod tests {
         assert_eq!(row.ours, Scores::of(stored, &["deu"]));
     }
 
-    const JOB_A: &str = "aaaaaaaaaaaa1111";
-    const JOB_B: &str = "bbbbbbbbbbbb2222";
+    const NODE_A: &str = "boinc-aaaaaaaaaaaa";
+    const NODE_B: &str = "boinc-bbbbbbbbbbbb";
 
     fn provenance_lines(lines: &[Value]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -1131,53 +1124,53 @@ mod tests {
         let mut p = Provenance::default();
         assert!(p.is_empty());
         p.add(&provenance_lines(&[
-            json!({"doc_id": "a", "job_id": JOB_A, "status": "resolved", "hostid": 2}),
-            json!({"doc_id": "b", "job_id": JOB_A, "status": "resolved", "hostid": 9}),
-            json!({"doc_id": "c", "job_id": JOB_A, "status": "ambiguous_duplicate_wu",
+            json!({"doc_id": "a", "node": NODE_A, "status": "resolved", "hostid": 2}),
+            json!({"doc_id": "b", "node": NODE_A, "status": "resolved", "hostid": 9}),
+            json!({"doc_id": "c", "node": NODE_A, "status": "ambiguous_duplicate_wu",
                    "candidate_host_ids": [2, 4]}),
-            json!({"doc_id": "d", "status": "no_wu"}),
+            json!({"doc_id": "d", "node": NODE_A, "status": "no_wu"}),
         ]))
         .unwrap();
         // A later file with less on a reading doesn't undo what an earlier one resolved.
         p.add(&provenance_lines(&[
-            json!({"doc_id": "a", "job_id": JOB_A, "status": "no_canonical"}),
-            json!({"doc_id": "c", "job_id": JOB_A, "status": "resolved", "hostid": 4}),
+            json!({"doc_id": "a", "node": NODE_A, "status": "no_canonical"}),
+            json!({"doc_id": "c", "node": NODE_A, "status": "resolved", "hostid": 4}),
         ]))
         .unwrap();
         assert!(!p.is_empty());
         let h = |ids: &[(&str, &str)]| -> Readings {
             ids.iter()
-                .map(|(d, j)| (doc_hash(d), format!("boinc-{}", &j[..12])))
+                .map(|(d, n)| (doc_hash(d), n.to_string()))
                 .collect()
         };
-        assert_eq!(p.readings_of(&[2], false), h(&[("a", JOB_A)]));
+        assert_eq!(p.readings_of(&[2], false), h(&[("a", NODE_A)]));
         assert_eq!(
             p.readings_of(&[2, 9], false),
-            h(&[("a", JOB_A), ("b", JOB_A)])
+            h(&[("a", NODE_A), ("b", NODE_A)])
         );
         // `c` resolved later, so it is no longer ambiguous.
-        assert_eq!(p.readings_of(&[4], true), h(&[("c", JOB_A)]));
+        assert_eq!(p.readings_of(&[4], true), h(&[("c", NODE_A)]));
         assert!(p.readings_of(&[77], true).is_empty());
         let mut q = Provenance::default();
         q.add(&provenance_lines(&[
-            json!({"doc_id": "c", "job_id": JOB_B, "status": "ambiguous_duplicate_wu",
+            json!({"doc_id": "c", "node": NODE_B, "status": "ambiguous_duplicate_wu",
                    "candidate_host_ids": [2, 4]}),
         ]))
         .unwrap();
         assert!(q.readings_of(&[2], false).is_empty());
-        assert_eq!(q.readings_of(&[2], true), h(&[("c", JOB_B)]));
+        assert_eq!(q.readings_of(&[2], true), h(&[("c", NODE_B)]));
         // A snapshot of only unresolved rows is a snapshot: it matches nothing.
         let mut only_unresolved = Provenance::default();
         only_unresolved
             .add(&provenance_lines(&[
-                json!({"doc_id": "d", "status": "no_wu"}),
+                json!({"doc_id": "d", "node": NODE_A, "status": "no_wu"}),
             ]))
             .unwrap();
         assert!(!only_unresolved.is_empty());
         assert!(only_unresolved.readings_of(&[2], true).is_empty());
-        // A resolved line without a host or a job, or a line that isn't JSON, is refused.
+        // A resolved line without a host or a node, or a line that isn't JSON, is refused.
         assert!(Provenance::default()
-            .add(br#"{"doc_id": "a", "job_id": "aaaaaaaaaaaa1111", "status": "resolved"}"#)
+            .add(br#"{"doc_id": "a", "node": "boinc-aaaaaaaaaaaa", "status": "resolved"}"#)
             .is_err());
         assert!(Provenance::default()
             .add(br#"{"doc_id": "a", "status": "resolved", "hostid": 2}"#)
@@ -1199,12 +1192,12 @@ mod tests {
             b
         };
         let x = StoredRow {
-            node: format!("boinc-{}", &JOB_A[..12]),
+            node: NODE_A.to_string(),
             ..row(Some(0.1), 1_000_000)
         };
         // The same page read by another BOINC job, and by a local worker.
         let retry = StoredRow {
-            node: format!("boinc-{}", &JOB_B[..12]),
+            node: NODE_B.to_string(),
             ..x.clone()
         };
         let local = StoredRow {
@@ -1217,9 +1210,9 @@ mod tests {
         };
         let mut p = Provenance::default();
         p.add(&provenance_lines(&[
-            json!({"doc_id": x.doc_id, "job_id": JOB_A, "status": "resolved", "hostid": 2}),
-            json!({"doc_id": x.doc_id, "job_id": JOB_B, "status": "resolved", "hostid": 9}),
-            json!({"doc_id": other.doc_id, "job_id": JOB_A, "status": "resolved", "hostid": 9}),
+            json!({"doc_id": x.doc_id, "node": NODE_A, "status": "resolved", "hostid": 2}),
+            json!({"doc_id": x.doc_id, "node": NODE_B, "status": "resolved", "hostid": 9}),
+            json!({"doc_id": other.doc_id, "node": NODE_A, "status": "resolved", "hostid": 9}),
         ]))
         .unwrap();
         let mut by_host = checked(with("hosts", json!([2]))).unwrap();
@@ -1269,10 +1262,10 @@ mod tests {
             imported(3, ENGLISH, text),
             imported(3, ENGLISH, text),
         ];
-        rows[0].node = format!("boinc-{}", &JOB_A[..12]);
-        rows[1].node = format!("boinc-{}", &JOB_B[..12]);
-        rows[2].node = format!("boinc-{}", &JOB_A[..12]);
-        rows[3].node = format!("boinc-{}", &JOB_B[..12]);
+        rows[0].node = NODE_A.to_string();
+        rows[1].node = NODE_B.to_string();
+        rows[2].node = NODE_A.to_string();
+        rows[3].node = NODE_B.to_string();
         curated
             .put_new(
                 &format!("{ROOT}/pages/sn1/20261011T000000Z-ab.parquet"),
@@ -1296,10 +1289,10 @@ mod tests {
             .put_new(
                 &format!("{ROOT}/provenance/20261114T000000Z.jsonl"),
                 provenance_lines(&[
-                    json!({"doc_id": held, "job_id": JOB_A, "status": "resolved", "hostid": 2}),
-                    json!({"doc_id": kept, "job_id": JOB_B, "status": "resolved", "hostid": 9}),
-                    json!({"doc_id": two_readers, "job_id": JOB_A, "status": "resolved", "hostid": 2}),
-                    json!({"doc_id": two_readers, "job_id": JOB_B, "status": "resolved", "hostid": 9}),
+                    json!({"doc_id": held, "node": NODE_A, "status": "resolved", "hostid": 2}),
+                    json!({"doc_id": kept, "node": NODE_B, "status": "resolved", "hostid": 9}),
+                    json!({"doc_id": two_readers, "node": NODE_A, "status": "resolved", "hostid": 2}),
+                    json!({"doc_id": two_readers, "node": NODE_B, "status": "resolved", "hostid": 9}),
                 ]),
                 "application/x-ndjson",
             )
@@ -1318,10 +1311,7 @@ mod tests {
         assert!(loaded.revoked.contains(held));
         assert!(loaded.pages.contains_key(kept));
         // The other host's reading of a page the held host also read still wins it.
-        assert_eq!(
-            loaded.pages[two_readers].row.node,
-            format!("boinc-{}", &JOB_B[..12])
-        );
+        assert_eq!(loaded.pages[two_readers].row.node, NODE_B.to_string());
     }
 
     /// An engine tag for `profile`, as a worker writes it.
