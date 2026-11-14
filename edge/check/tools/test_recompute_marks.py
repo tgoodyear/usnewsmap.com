@@ -272,6 +272,19 @@ class Commands(unittest.TestCase):
                 self.assertEqual(self.run_tool("--lang", "yi", "--bodies", self.bodies, "--out-dir", self.out).returncode, 0)
                 self.assert_stale_output_is_gone(self.run_tool("--lang", "yi", "--bodies", self.bodies, "--out-dir", self.out, *args))
 
+    def test_a_usage_error_removes_an_older_passing_report_but_help_and_a_load_do_not(self):
+        for args in (["--lookalike-threshold", "high"], ["--bogus"]):
+            with self.subTest(args):
+                self.assertEqual(self.run_tool("--lang", "yi", "--bodies", self.bodies, "--out-dir", self.out).returncode, 0)
+                r = self.run_tool("--lang", "yi", "--bodies", self.bodies, "--out-dir", self.out, *args)
+                self.assertEqual(r.returncode, 2)
+                self.assertFalse(os.path.exists(os.path.join(self.out, "yi", "tasks.jsonl")))
+                self.assertFalse(json.load(open(os.path.join(self.out, "yi", "report.json")))["passed"])
+        self.assertEqual(self.run_tool("--lang", "yi", "--bodies", self.bodies, "--out-dir", self.out).returncode, 0)
+        self.assertEqual(self.run_tool("--help").returncode, 0)
+        self.run_tool("--action", "load", "--lang", "yi", "--out-dir", self.out, "--bogus")  # a load never touches the dry-run output
+        self.assertTrue(json.load(open(os.path.join(self.out, "yi", "report.json")))["passed"])
+
     def test_a_failure_while_writing_one_language_does_not_skip_the_others_or_invalidate_finished_ones(self):
         real = rm.write_language
         def failing(out_dir, lang, changed, rep):

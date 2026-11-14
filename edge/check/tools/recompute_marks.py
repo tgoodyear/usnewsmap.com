@@ -447,6 +447,21 @@ def load(a, site: Site) -> int:
     return 0
 
 
+def invalidate_from_argv(argv: list, reason: str) -> None:
+    """Best effort after a usage error: read only --action, --lang and --out-dir, and invalidate those dry-run outputs."""
+    small = argparse.ArgumentParser(add_help=False, allow_abbrev=False, exit_on_error=False)
+    small.add_argument("--action", default="dry-run")
+    small.add_argument("--lang", action="append", default=[])
+    small.add_argument("--out-dir")
+    try:
+        found, _ = small.parse_known_args(argv)
+    except (argparse.ArgumentError, SystemExit):
+        return
+    if found.action == "dry-run" and found.out_dir:
+        for lang in found.lang:
+            safe_invalidate(found.out_dir, lang, "usage error: " + reason)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--action", choices=("dry-run", "load"), default="dry-run")
@@ -462,7 +477,12 @@ def main() -> int:
     ap.add_argument("--equivalent", action="append", default=[], help="LETTER=LETTERS added to the language's equivalents, as build_tasks.py's flag")
     ap.add_argument("--lookalike-threshold", type=float, default=la.THRESHOLD)
     ap.add_argument("--allow-unmeasured", action="store_true", help="accept letter pairs with no font or glyph as unflagged")
-    a = ap.parse_args()
+    try:
+        a = ap.parse_args()
+    except SystemExit as e:
+        if e.code not in (0, None):  # a bad option value (--lookalike-threshold x): the dry run it was meant for must not leave older output loadable
+            invalidate_from_argv(sys.argv[1:], str(e.code))
+        raise
     try:
         if a.action == "load":
             if not a.vault:
