@@ -87,6 +87,35 @@ test("the SQL settling rule matches settle()", async () => {
   }
 });
 
+test("/admin/tasks replaces a task's body and leaves its answers, counts, outcome, settled, confusable_display, held and set-aside answers alone", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  const old = { page: "p", a: "ᏒᎯ", b: "ᎡᎯ", a_is: "reference", b_is: "loc", lookalikes: [{ a: 0, a_label: "sv", b: 0, b_label: "e" }] };
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('chr/s/1', 'chr', 's', ?), ('chr/s/2', 'chr', 's', ?)").run(JSON.stringify(old), JSON.stringify(old));
+  const post = async (path, token, body) => worker.fetch(new Request("https://check.usnewsmap.com" + path, { method: "POST", headers: { authorization: "Bearer " + token }, body: JSON.stringify(body) }), E, {});
+  for (const c of ["c1", "c2", "c3"]) assert.equal((await post("/api/answers", await signSession(env.SESSION_KEY, c), { task: "chr/s/1", choice: c === "c3" ? "b" : "a" })).status, 200);
+  await post("/api/answers", await signSession(env.SESSION_KEY, "c1"), { task: "chr/s/2", choice: "a" });
+  // task 2 is marked, so it has set-aside answers and is held
+  assert.equal((await adminCall(DB, "/admin/confusable", { action: "mark", tasks: ["chr/s/2"] })).status, 200);
+  db.prepare("UPDATE tasks SET held = 1 WHERE id = 'chr/s/2'").run();
+  const state = () => ({
+    tasks: db.prepare("SELECT id, lang, set_name, n, outcome, settled, confusable_display, held FROM tasks ORDER BY id").all().map((r) => ({ ...r })),
+    answers: db.prepare("SELECT * FROM answers ORDER BY task_id, contributor").all().map((r) => ({ ...r })),
+    excluded: db.prepare("SELECT * FROM answers_excluded ORDER BY task_id, contributor").all().map((r) => ({ ...r })),
+  });
+  const before = state();
+  assert.deepEqual([before.tasks[0].n, before.tasks[0].settled, before.tasks[0].outcome], [3, 1, "a"]);
+  assert.deepEqual([before.tasks[1].confusable_display, before.tasks[1].held, before.excluded.length], [1, 1, 1]);
+  // the new bodies differ in lookalikes and mark_only only; the line carries id, lang and set as load.sh sends them
+  const fresh = { ...old, mark_only: [{ a: 1, a_marks: "\u05b7", b: 1, b_marks: "", base: "\u05d0", differ: "\u05b7" }] };
+  delete fresh.lookalikes;
+  const lines = ["chr/s/1", "chr/s/2"].map((id) => JSON.stringify({ id, lang: "chr", set: "s", ...fresh })).join("\n");
+  const r = await adminCall(DB, "/admin/tasks", null, lines);
+  assert.deepEqual(await r.json(), { ok: true, tasks: 2 });
+  for (const id of ["chr/s/1", "chr/s/2"]) assert.deepEqual(JSON.parse(db.prepare("SELECT body FROM tasks WHERE id = ?").get(id).body), fresh, "the body is replaced");
+  assert.deepEqual(state(), before, "everything but the body is as it was");
+});
+
 test("the dump has every table's rows", async () => {
   const data = { languages: [{ code: "chr", config: "{}" }], tasks: [{ id: "t1" }, { id: "t2" }], answers: [{ task_id: "t1", contributor: "c", choice: "a", at: 1 }],
     answers_excluded: [{ task_id: "t2", contributor: "d", choice: "b", at: 2 }] };
