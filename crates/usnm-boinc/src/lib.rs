@@ -1061,13 +1061,10 @@ pub async fn export(
 /// and the spot check compares two hosts' answers as this text, so a pair
 /// agrees exactly when what would be stored agrees.
 pub(crate) fn normalized_text(job: &Job, text: &[u8]) -> anyhow::Result<String> {
-    let hyphenation = usnm_core::text::Hyphenation::for_page(
+    Ok(usnm_core::text::stored_form(
+        std::str::from_utf8(text)?,
         &job.engine_tag()?.to_string(),
         &job.message.language,
-    );
-    Ok(usnm_core::text::normalize_ocr_for(
-        std::str::from_utf8(text)?,
-        hyphenation,
     ))
 }
 

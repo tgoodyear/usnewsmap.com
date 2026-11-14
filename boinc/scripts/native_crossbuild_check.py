@@ -42,6 +42,9 @@ import statistics
 import subprocess
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ocr_stored_form import stored_form  # noqa: E402
+
 CER_LIMIT = 0.10
 F1_LIMIT = 0.90
 RATIO_RANGE = (0.9, 1.1)
@@ -256,7 +259,10 @@ def check_page(page, a):
             linux = read_linux(a.tesseract, a.tessdata, scan, page["language"], work)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as e:
         return dict(row, error=str(e)[:300], flagged=True)
-    row = dict(row, **judge(page["windows_text"], linux, a.cer_limit, a.f1_limit,
+    # Both reads in the form the import stores (#1919), so a word broken at a line end is not an error.
+    # `language` is the profile, which names the Fraktur models.
+    windows, linux = (stored_form(t, page["language"], page["language"]) for t in (page["windows_text"], linux))
+    row = dict(row, **judge(windows, linux, a.cer_limit, a.f1_limit,
                             (getattr(a, "ratio_min", RATIO_RANGE[0]), getattr(a, "ratio_max", RATIO_RANGE[1]))))
     if getattr(a, "loc_texts", None):
         try:
@@ -265,7 +271,7 @@ def check_page(page, a):
             return dict(row, loc="missing")  # no LoC text: judged on the two builds alone
         if not loc.strip():
             return dict(row, loc="missing")  # an empty reference is no reference
-        row = judge_loc(row, page["windows_text"], linux, loc)
+        row = judge_loc(row, windows, linux, stored_form(loc, page["language"], page["language"]))
     return row
 
 

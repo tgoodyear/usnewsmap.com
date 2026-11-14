@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -186,6 +187,32 @@ test "$OMP_THREAD_LIMIT" = 1 || exit 9
 test "$3" = -l && test "$5" = --psm && test "$7" = --dpi && test "$9" = txt || exit 8
 cat "$1" > "$2.txt"
 """
+
+
+class HyphenatedLineTest(unittest.TestCase):
+    """A word broken at a line end is not an error between a worker's read and a re-read (#1919)."""
+
+    def check(self, windows, linux):
+        with tempfile.TemporaryDirectory() as t:
+            scan = Path(t) / "scan.jp2"
+            scan.write_bytes(b"scan")
+            page = {"job": "j", "host": "1", "page": "sn1/1900-01-01/ed-1/seq-1", "language": "frak2021",
+                    "scan_sha256": hashlib.sha256(b"scan").hexdigest(), "windows_text": windows}
+            a = SimpleNamespace(scans=t, tesseract="t", tessdata="d", work_dir=None, cer_limit=0.10, f1_limit=0.90)
+            with mock.patch.object(X, "scan_path", lambda *_: scan), \
+                    mock.patch.object(X, "read_linux", lambda *_args, **_kw: linux):
+                return X.check_page(page, a)
+
+    def test_hyphenated_fraktur_line_is_not_flagged(self):
+        row = self.check("Die Zeitung kam an.", "Die Zei\u2e17\ntung kam an.")
+        self.assertFalse(row["flagged"])
+        self.assertEqual(row["cer"], 0.0)
+
+    def test_raw_against_published_would_be_flagged(self):
+        self.assertTrue(X.judge("Zeitung", "Zei\u2e17\ntung")["flagged"])
+
+    def test_a_real_difference_is_still_flagged(self):
+        self.assertTrue(self.check("Die Zeitung kam an.", "Der Zei\u2e17\ntang ging ab.")["flagged"])
 
 
 class EndToEndTest(unittest.TestCase):
