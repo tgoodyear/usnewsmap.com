@@ -25,6 +25,7 @@ use super::{DIAG_FILE, READINGS_FILE, RESULT_FILE};
 use crate::read;
 use anyhow::{ensure, Context};
 use std::{
+    collections::BTreeMap,
     io::Write as _,
     path::{Path, PathBuf},
 };
@@ -79,10 +80,143 @@ pub fn is_benchmark(l: &Loaded) -> bool {
 }
 
 pub fn check(files: &[PathBuf], keep: Option<&Path>) -> anyhow::Result<()> {
+    check_with(files, keep, Guard::default())
+}
+
+/// The most crop readings a finished result may leave empty, as a percentage
+/// of the crops counted: more than this is invalid (the empty-return guard).
+pub const MAX_EMPTY_PERCENT: usize = 10;
+
+/// What the empty-return guard counted in one result.
+///
+/// A reading is *empty* when its text has nothing left after trimming (the
+/// analysis's "0 tokens after trimming"). A *looped* crop (the result's
+/// loop-guard bit, or a repeated run ending the reading) is a different
+/// failure and is counted apart, never as empty. Crops whose LoC text is
+/// blank too are left out of both sides of the share: a blank reading of a
+/// blank crop is right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmptyCounts {
+    pub crops: usize,
+    pub empty: usize,
+    pub looped: usize,
+    pub loc_blank: usize,
+    /// Whether LoC's text per crop was known. When it was not, `loc_blank`
+    /// is 0 and every empty reading counts.
+    pub loc_known: bool,
+}
+
+impl EmptyCounts {
+    /// Crops that count toward the share.
+    pub fn counted(&self) -> usize {
+        self.crops - self.loc_blank
+    }
+
+    /// Whether more than [`MAX_EMPTY_PERCENT`] of the counted crops are empty.
+    pub fn too_empty(&self) -> bool {
+        self.empty * 100 > self.counted() * MAX_EMPTY_PERCENT
+    }
+}
+
+/// Counts a result's empty readings. `loc_blank` maps a crop id to whether
+/// LoC's text for it is blank, when the unit's job was found.
+pub fn count_empty(l: &Loaded, loc_blank: Option<&BTreeMap<String, bool>>) -> EmptyCounts {
+    let sides = super::consensus::sides(l);
+    let mut c = EmptyCounts {
+        crops: l.readings.readings.len(),
+        empty: 0,
+        looped: 0,
+        loc_blank: 0,
+        loc_known: loc_blank.is_some(),
+    };
+    for r in &l.readings.readings {
+        if loc_blank.is_some_and(|m| m.get(&r.id).copied().unwrap_or(false)) {
+            c.loc_blank += 1;
+        } else if sides.get(r.id.as_str()).is_some_and(|s| s.looped) {
+            c.looped += 1;
+        } else if r.text.trim().is_empty() {
+            c.empty += 1;
+        }
+    }
+    c
+}
+
+/// Which crops of the unit LoC's text is blank for, read from its `qwen.json`.
+/// None when the file is missing or is not this result's job, so the guard
+/// falls back to counting every empty reading. A bundle's crop ids carry the
+/// `<doc_id>:` prefix in the job's flattened list, as in the readings.
+pub fn loc_blank_crops(job: &Path, job_id: &str) -> Option<BTreeMap<String, bool>> {
+    let job: qwen::Job = serde_json::from_slice(&read(job, qwen::MAX_JOB_JSON).ok()?).ok()?;
+    (job.id == job_id).then(|| {
+        job.crops
+            .iter()
+            .map(|c| (c.id.clone(), c.loc_text.trim().is_empty()))
+            .collect()
+    })
+}
+
+/// Finds the unit's `qwen.json` in a BOINC project's download tree with the
+/// project's own `bin/dir_hier_path`.
+pub fn project_job_file(project: &Path, job_id: &str) -> Option<PathBuf> {
+    let out = std::process::Command::new(project.join("bin/dir_hier_path"))
+        .arg(format!("{job_id}_qwen_json"))
+        .current_dir(project)
+        .output()
+        .ok()?;
+    let path = PathBuf::from(String::from_utf8(out.stdout).ok()?.trim());
+    (out.status.success() && path.is_file()).then_some(path)
+}
+
+/// Where the guard looks for LoC's text per crop.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Guard<'a> {
+    /// The unit's `qwen.json`.
+    pub job: Option<&'a Path>,
+    /// A BOINC project whose download tree holds it.
+    pub project: Option<&'a Path>,
+}
+
+/// `check`, then the empty-return guard on a finished, non-benchmark
+/// result: more than 10% empty readings (see [`EmptyCounts`]) is invalid.
+/// The result is kept first, so an invalid one stays on record. One log line
+/// says what was counted. A benchmark result and one that did not finish
+/// (its outcome already says so) are not guarded.
+pub fn check_with(files: &[PathBuf], keep: Option<&Path>, guard: Guard<'_>) -> anyhow::Result<()> {
     let l = load(files)?;
-    if let Some(dir) = keep.filter(|_| !is_benchmark(&l)) {
+    let benchmark = is_benchmark(&l);
+    if let Some(dir) = keep.filter(|_| !benchmark) {
         super::retain::capture(files, &l, dir).map_err(super::retain::CaptureError)?;
     }
+    if benchmark || l.result.outcome != qwen::Outcome::Ok {
+        return Ok(());
+    }
+    let job = guard.job.map(Path::to_path_buf).or_else(|| {
+        guard
+            .project
+            .and_then(|p| project_job_file(p, &l.result.job_id))
+    });
+    let loc = job.and_then(|j| loc_blank_crops(&j, &l.result.job_id));
+    let c = count_empty(&l, loc.as_ref());
+    let invalid = c.too_empty();
+    eprintln!(
+        "usnm_qwen_check: empty-guard job={} model={} device={} crops={} empty={} looped={} loc_blank_excluded={} counted={} loc_text={} verdict={}",
+        l.result.job_id.get(..12).unwrap_or(&l.result.job_id),
+        l.result.model.as_deref().unwrap_or("none"),
+        l.result.device,
+        c.crops,
+        c.empty,
+        c.looped,
+        c.loc_blank,
+        c.counted(),
+        if c.loc_known { "known" } else { "unknown" },
+        if invalid { "invalid" } else { "ok" },
+    );
+    anyhow::ensure!(
+        !invalid,
+        "empty-return guard: {} of {} counted crops read empty, over {MAX_EMPTY_PERCENT}%",
+        c.empty,
+        c.counted()
+    );
     Ok(())
 }
 
@@ -547,6 +681,17 @@ pub(crate) mod tests {
     };
 
     pub(crate) fn write(dir: &Path, tag: &str, texts: &[(&str, &str)]) -> Vec<PathBuf> {
+        write_crops(dir, tag, texts, None)
+    }
+
+    /// `write`, with the manifest saying the unit has `crops` crops when given
+    /// (a unit of more crops than the local job cuts).
+    pub(crate) fn write_crops(
+        dir: &Path,
+        tag: &str,
+        texts: &[(&str, &str)],
+        crops: Option<u32>,
+    ) -> Vec<PathBuf> {
         let tmp = dir.join(format!("unit_{tag}"));
         let unit = dir.join(format!("q_{tag}"));
         crate::quality::work::tests::unit(&unit);
@@ -584,7 +729,7 @@ pub(crate) mod tests {
             v: VERSION,
             job_id: j.id,
             completed_at: "2026-10-14T00:00:00Z".into(),
-            crops: j.crops.len() as u32,
+            crops: crops.unwrap_or(j.crops.len() as u32),
             device: "cuda".into(),
             diag_bytes: 4,
             diag_sha256: sha256(b"diag"),
@@ -609,6 +754,162 @@ pub(crate) mod tests {
         std::fs::write(&files[1], serde_json::to_vec(&r).unwrap()).unwrap();
         std::fs::write(&files[2], "diag").unwrap();
         files
+    }
+
+    // The empty-return guard (#1919).
+
+    fn loaded(texts: &[(String, String)], loop_bits: Option<&str>) -> Loaded {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut l = load(&write_crops(
+            tmp.path(),
+            "g",
+            &borrow(texts),
+            Some(texts.len() as u32),
+        ))
+        .unwrap();
+        if let Some(bits) = loop_bits {
+            l.readings
+                .diag
+                .insert("repetition_loop_crop_bits".into(), bits.into());
+        }
+        l
+    }
+
+    fn borrow(v: &[(String, String)]) -> Vec<(&str, &str)> {
+        v.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect()
+    }
+
+    /// `n` crops of which the first `empty` read blank.
+    fn crops(n: usize, empty: usize) -> Vec<(String, String)> {
+        (0..n)
+            .map(|i| {
+                let text = if i < empty {
+                    " \n\t ".to_string()
+                } else {
+                    format!("word{i} more")
+                };
+                (format!("c{i:03}"), text)
+            })
+            .collect()
+    }
+
+    /// LoC blank flags for crops `blank` of `texts`.
+    fn loc(texts: &[(String, String)], blank: impl Fn(usize) -> bool) -> BTreeMap<String, bool> {
+        texts
+            .iter()
+            .enumerate()
+            .map(|(i, (id, _))| (id.clone(), blank(i)))
+            .collect()
+    }
+
+    #[test]
+    fn nine_percent_empty_passes_and_eleven_is_invalid() {
+        for (empty, invalid) in [(9, false), (10, false), (11, true)] {
+            let c = count_empty(&loaded(&crops(100, empty), None), None);
+            assert_eq!((c.crops, c.empty, c.looped), (100, empty, 0));
+            assert_eq!(c.too_empty(), invalid, "{empty} of 100");
+        }
+    }
+
+    #[test]
+    fn crops_loc_has_blank_are_left_out_of_both_sides() {
+        // 100 crops, 12 read blank: 12%, invalid on its own.
+        let texts = crops(100, 12);
+        let l = loaded(&texts, None);
+        assert!(count_empty(&l, None).too_empty());
+        // LoC is blank for five of the empty ones: 7 of 95 is 7.4%.
+        let c = count_empty(&l, Some(&loc(&texts, |i| i < 5)));
+        assert_eq!((c.empty, c.loc_blank, c.counted()), (7, 5, 95));
+        assert!(c.loc_known && !c.too_empty());
+        // LoC blank on crops that were read leaves the share of the rest: 12 of 90.
+        let c = count_empty(&l, Some(&loc(&texts, |i| i >= 90)));
+        assert_eq!((c.empty, c.loc_blank, c.counted()), (12, 10, 90));
+        assert!(c.too_empty());
+        // LoC blank everywhere leaves nothing to count.
+        let c = count_empty(&l, Some(&loc(&texts, |_| true)));
+        assert_eq!((c.empty, c.counted()), (0, 0));
+        assert!(!c.too_empty());
+    }
+
+    #[test]
+    fn looped_crops_are_not_empty() {
+        let mut texts = crops(10, 0);
+        texts[1].1 = "[?] ".repeat(40);
+        let c = count_empty(&loaded(&texts, Some("01")), None);
+        assert_eq!((c.empty, c.looped), (0, 2));
+        assert!(!c.too_empty());
+        texts[3].1 = String::new();
+        texts[5].1 = String::new();
+        let c = count_empty(&loaded(&texts, None), None);
+        assert_eq!((c.empty, c.looped), (2, 1));
+        assert!(c.too_empty());
+    }
+
+    #[test]
+    fn check_judges_an_empty_heavy_return_on_its_own() {
+        let tmp = tempfile::tempdir().unwrap();
+        let keep = tmp.path().join("seen");
+        let bad = write_crops(tmp.path(), "bad", &borrow(&crops(20, 3)), Some(20));
+        let err = check_with(&bad, Some(&keep), Guard::default()).unwrap_err();
+        assert!(format!("{err}").contains("3 of 20 counted crops"), "{err}");
+        // The invalid result is still kept, and is not a transient failure.
+        assert!(keep.join("usnm_qwen_x_bad_r/readings.json").exists());
+        assert!(err
+            .downcast_ref::<super::super::retain::CaptureError>()
+            .is_none());
+        assert!(check(&bad, None).is_err());
+        let good = write_crops(tmp.path(), "good", &borrow(&crops(20, 2)), Some(20));
+        check_with(&good, Some(&keep), Guard::default()).unwrap();
+    }
+
+    #[test]
+    fn a_39_percent_empty_return_is_invalid_before_any_pairing() {
+        // WU 54155's pattern: init rejects the return, so page-v1 settling
+        // never sees it as a result to settle.
+        let tmp = tempfile::tempdir().unwrap();
+        let texts = crops(100, 39);
+        let files = write_crops(tmp.path(), "wu", &borrow(&texts), Some(100));
+        let err = check_with(&files, None, Guard::default()).unwrap_err();
+        assert!(
+            format!("{err}").contains("39 of 100 counted crops"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn check_reads_loc_blank_crops_from_the_units_job() {
+        let tmp = tempfile::tempdir().unwrap();
+        let texts = crops(20, 3);
+        let files = write_crops(tmp.path(), "loc", &borrow(&texts), Some(20));
+        let job_id = load(&files).unwrap().result.job_id;
+        let job_file = tmp.path().join("unit_loc").join("qwen.json");
+        let mut job: qwen::Job =
+            serde_json::from_slice(&std::fs::read(&job_file).unwrap()).unwrap();
+        // A job of this result's identity whose LoC text is blank on the three blank crops.
+        job.id = job_id.clone();
+        job.crops = texts
+            .iter()
+            .enumerate()
+            .map(|(i, (id, _))| qwen::Crop {
+                rect: [0, 0, 10, 10],
+                id: id.clone(),
+                loc_text: if i < 3 { "  ".into() } else { "words".into() },
+                stratum: "s".into(),
+            })
+            .collect();
+        let path = tmp.path().join("job.json");
+        std::fs::write(&path, serde_json::to_vec(&job).unwrap()).unwrap();
+        let map = loc_blank_crops(&path, &job_id).unwrap();
+        assert_eq!(map.values().filter(|b| **b).count(), 3);
+        let guard = Guard {
+            job: Some(&path),
+            project: None,
+        };
+        check_with(&files, None, guard).unwrap();
+        assert!(check_with(&files, None, Guard::default()).is_err());
+        // Another job's file is not used: the guard counts every empty reading.
+        assert!(loc_blank_crops(&path, &"0".repeat(64)).is_none());
+        assert!(loc_blank_crops(&tmp.path().join("missing"), &job_id).is_none());
     }
 
     #[test]

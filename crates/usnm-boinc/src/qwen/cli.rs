@@ -179,6 +179,14 @@ pub enum QwenCommands {
         files: Vec<PathBuf>,
         #[arg(long)]
         keep: Option<PathBuf>,
+        /// The BOINC project whose download tree holds the unit's `qwen.json`
+        /// (`bin/dir_hier_path`), for the empty-return guard to tell which
+        /// crops LoC's text also has blank.
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// The unit's `qwen.json` itself, in place of `--project`.
+        #[arg(long)]
+        job: Option<PathBuf>,
     },
     /// Every bundle page under --root with its own pair verdict (JSON Lines).
     PageLedger {
@@ -422,7 +430,19 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             println!("{}", j.id);
         }
         QwenCommands::Probe => print!("{}", x::work::probe()),
-        QwenCommands::Check { files, keep } => x::validate::check(&files, keep.as_deref())?,
+        QwenCommands::Check {
+            files,
+            keep,
+            project,
+            job,
+        } => x::validate::check_with(
+            &files,
+            keep.as_deref(),
+            x::validate::Guard {
+                job: job.as_deref(),
+                project: project.as_deref(),
+            },
+        )?,
         QwenCommands::Compare {
             files,
             files2,

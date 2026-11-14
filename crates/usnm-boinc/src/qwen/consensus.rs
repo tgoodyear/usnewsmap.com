@@ -425,8 +425,12 @@ impl Vouch {
 }
 
 /// What the kept records vouch for in the canonical result of `job_id` whose
-/// readings hash to `readings_sha256`. Only agreeing pairs that include that
-/// result count. A record that cannot be read fails the call, so a canonical
+/// readings hash to `readings_sha256`. Only pairs that include that result
+/// count. A pair whose crop-by-crop verdict was not agreement (a bundle
+/// settled by `page-v1` with text-versus-empty crops, say) vouches for the
+/// crops it judged `agree` and for no other: a disagreeing crop is never
+/// vouched, and the record never falls back to the strict rule's
+/// every-crop vouch. A record that cannot be read fails the call, so a canonical
 /// result is never used on a guess.
 pub fn vouched(dir: &Path, job_id: &str, readings_sha256: &str) -> anyhow::Result<Vouch> {
     let rank = |s: CropState| match s {
@@ -447,7 +451,14 @@ pub fn vouched(dir: &Path, job_id: &str, readings_sha256: &str) -> anyhow::Resul
             "{}: not a version {RECORD_VERSION} crop-state record for {job_id}",
             path.display()
         );
-        if !r.agree || !r.readings_sha256.iter().any(|s| s == readings_sha256) {
+        if !r.readings_sha256.iter().any(|s| s == readings_sha256) {
+            continue;
+        }
+        // A pair that did not agree as a whole still judged its crops: under
+        // `page-v1` (#1435) it can settle a bundle with disagreeing crops in
+        // it, and those crops are never vouched for. Its crop states
+        // therefore count, so the result is not taken as strict-vouched.
+        if !r.agree && r.basis == Basis::StrictV1 {
             continue;
         }
         if r.basis == Basis::StrictV1 {
@@ -806,6 +817,38 @@ mod tests {
     }
 
     #[test]
+    fn a_page_v1_settled_pair_with_disagreeing_crops_vouches_only_the_agreeing_ones() {
+        // WU 54155's pattern: about 39% of the crops are text on one side and
+        // empty on the other, so the pair's crop-state record says
+        // agree: false, yet `page-v1` settled the unit.
+        let tmp = tempfile::tempdir().unwrap();
+        let job = "job9";
+        let dir = tmp.path().join(job);
+        std::fs::create_dir_all(&dir).unwrap();
+        let crops: Vec<_> = (0..100)
+            .map(|i| {
+                let state = if i < 39 { "disagree" } else { "agree" };
+                serde_json::json!({"id": format!("c{i:03}"), "state": state, "score": null})
+            })
+            .collect();
+        let r = serde_json::json!({
+            "v": RECORD_VERSION, "rule": "crop-consensus-v2", "basis": "crop-consensus-v2",
+            "job_id": job, "results": ["x", "y"], "readings_sha256": ["mine", "peer"],
+            "agree": false, "crops": crops, "accuracy_established": false,
+        });
+        std::fs::write(dir.join("1.json"), serde_json::to_vec(&r).unwrap()).unwrap();
+        let v = vouched(tmp.path(), job, "mine").unwrap();
+        assert!(
+            matches!(v, Vouch::Crops(_)),
+            "not the strict every-crop vouch"
+        );
+        let vouches = (0..100).filter(|i| v.vouches(&format!("c{i:03}"))).count();
+        assert_eq!(vouches, 61);
+        assert!(!v.vouches("c000") && !v.vouches("c038") && v.vouches("c039"));
+        assert_eq!(v.label("c000"), "disagree");
+    }
+
+    #[test]
     fn vouching_takes_the_best_state_over_agreeing_pairs_and_rejects_unknown_records() {
         let tmp = tempfile::tempdir().unwrap();
         let job = "job1";
@@ -840,13 +883,14 @@ mod tests {
             "crop-consensus-v2",
             serde_json::json!([crop("c01", "looped"), crop("c02", "looped")]),
         );
-        // A disagreeing pair never vouches, whatever its crops say.
+        // A disagreeing pair vouches for no crop it judged otherwise, and
+        // its states stay crop by crop.
         put(
             "3.json",
             RECORD_VERSION,
             false,
             "crop-consensus-v2",
-            serde_json::json!([crop("c03", "agree")]),
+            serde_json::json!([crop("c03", "disagree"), crop("c04", "disagree")]),
         );
         // A staged temporary file is not a record.
         std::fs::write(tmp.path().join(job).join(".tmpXYZ"), b"{").unwrap();
@@ -859,7 +903,7 @@ mod tests {
                 v.label("c03"),
                 v.label("c04")
             ],
-            ["agree", "looped", "looped", "unjudged"]
+            ["agree", "looped", "looped", "disagree"]
         );
         assert!(Vouch::Strict.vouches("c09"));
         assert_eq!(Vouch::Strict.label("c09"), "strict-v1");

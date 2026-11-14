@@ -3148,6 +3148,11 @@ pub(super) mod tests {
         assert_eq!(strict.summary.with_readings, 1);
         // A disagreeing pair and an agreeing pair of other results vouch for nothing here.
         let all_agree: Vec<(&str, &str)> = crop_ids.iter().map(|c| (c.as_str(), "agree")).collect();
+        // A pair that included this result but did not agree judged every crop
+        // a disagreement here, so it vouches for none (and is not the strict
+        // every-crop vouch either).
+        let all_disagree: Vec<(&str, &str)> =
+            crop_ids.iter().map(|c| (c.as_str(), "disagree")).collect();
         crop_record(
             &states,
             "a",
@@ -3155,7 +3160,7 @@ pub(super) mod tests {
             [&digest, "other"],
             false,
             "crop-consensus-v2",
-            &all_agree,
+            &all_disagree,
         );
         crop_record(
             &states,
@@ -3167,7 +3172,7 @@ pub(super) mod tests {
             &all_agree,
         );
         let still = collect(&opts).unwrap();
-        assert_eq!(vlm_rows(&still).len(), crop_ids.len());
+        assert_eq!(vlm_rows(&still).len(), 0);
         // An agreeing pair that includes the canonical result vouches for its
         // `agree` crops only; a looped crop and an unjudged one lose the reading.
         crop_record(
