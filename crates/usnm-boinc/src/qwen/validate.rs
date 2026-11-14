@@ -158,6 +158,9 @@ pub fn loc_blank_crops(job: &Path, job_id: &str) -> Option<BTreeMap<String, bool
 /// Finds the unit's `qwen.json` in a BOINC project's download tree with the
 /// project's own `bin/dir_hier_path`.
 pub fn project_job_file(project: &Path, job_id: &str) -> Option<PathBuf> {
+    // The tool runs from the project, so a relative project path must not be
+    // resolved again from inside it.
+    let project = &project.canonicalize().ok()?;
     let out = std::process::Command::new(project.join("bin/dir_hier_path"))
         .arg(format!("{job_id}_qwen_json"))
         .current_dir(project)
@@ -899,9 +902,16 @@ pub(crate) mod tests {
         std::fs::write(&tool, "#!/bin/sh\necho download/ab/job_qwen_json\n").unwrap();
         std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
         // The test's own working directory is not the project, as under the validator.
+        let relative = Path::new("target").join("ignored");
+        assert!(project_job_file(&relative, &"0".repeat(64)).is_none());
         assert_eq!(
             project_job_file(&project, &"0".repeat(64)),
-            Some(project.join("download/ab/job_qwen_json"))
+            Some(
+                project
+                    .canonicalize()
+                    .unwrap()
+                    .join("download/ab/job_qwen_json")
+            )
         );
     }
 
