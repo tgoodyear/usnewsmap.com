@@ -39,6 +39,28 @@ class Score(unittest.TestCase):
         self.assertEqual(recs["l1"]["letters"], 7)
         self.assertEqual(recs["l5"]["answers"], 1)
 
+    def test_marked_answers_are_not_counted(self):
+        """A word marked confusable_display: its set-aside answers (excluded_counts) settle nothing and are not counted."""
+        held = {**row("l1", None, settled=False, counts={}), "confusable_display": True, "held": True, "excluded_counts": {"a": 0, "b": 3, "neither": 0, "unsure": 0, "notext": 0}}
+        # an export that still shows the old outcome on a held word (it should not, but scoring must not trust it)
+        stale = {**row("l2", "a", counts={"a": 3}), "confusable_display": True, "held": True}
+        reopened = {**row("l3", "b", counts={"b": 3}), "confusable_display": True, "held": False, "excluded_counts": {"a": 2, "b": 0, "neither": 0, "unsure": 0, "notext": 0}}
+        export = [held, stale, reopened] + self.export[3:]
+        recs = {r["id"]: r for r in cds.line_states(self.manifest, export)}
+        self.assertEqual({k: r["state"] for k, r in recs.items()}, {"l1": "pending", "l2": "pending", "l3": "resolved", "l4": "open", "l5": "pending"})
+        self.assertEqual(recs["l1"]["answers"], 0)
+        self.assertEqual(recs["l2"]["answers"], 0)
+        self.assertEqual(recs["l3"]["errors"], {"chr_phoenix": 0, "loc": 1})  # settled on its new answers only
+        rep = cds.report(self.manifest, export, target=10, draws=50, seed=1)
+        self.assertEqual(rep["progress"]["resolved_lines"], 1)
+        self.assertEqual(rep["progress"]["answers"], 4 + 3)  # l3's 3 answers and l4's 3, plus l5's 1 (not l1's or l2's)
+
+    def test_font_counts_in_the_export_change_nothing(self):
+        """The export also has font_counts (and excluded_font_counts): how many answers had the bundled font loaded. Scoring ignores them."""
+        fonts = {"loaded": 1, "not_loaded": 0, "none": 0, "unknown": 2}
+        with_fonts = [{**r, "font_counts": fonts, **({"excluded_font_counts": fonts} if "excluded_counts" in r else {})} for r in self.export]
+        self.assertEqual(cds.line_states(self.manifest, with_fonts), cds.line_states(self.manifest, self.export))
+
     def test_report_counts_and_progress(self):
         rep = cds.report(self.manifest, self.export, target=10, draws=200, seed=1)
         p = rep["progress"]

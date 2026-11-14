@@ -122,7 +122,11 @@ BOINC_LINE_PSM, BOINC_MAX_LINES, BOINC_MAX_LINE_ID, BOINC_MAX_COORD = 13, 2000, 
 BOINC_LINE_LANGUAGES = ("chr",)
 BOINC_MAX_SCAN = 128 * 1024 * 1024
 BOINC_RETRY_FIELDS = {"previous_job", "previous_attempt", "previous_workunit", "previous_ledger",
-                      "terminal", "previous_error", "app_version_num", "reviewed_reason", "provenance"}
+                      "terminal", "previous_error", "app_version_num", "reviewed_reason", "native",
+                      "provenance"}
+# `native` is only on a retry of a usnm_ocr_native page (#1919): the parent's build and deadline
+# and the one host the child is for.
+BOINC_NATIVE_RETRY_FIELDS = {"previous_image", "previous_timeout_secs", "target_host"}
 # `provenance` is only on a controller-side retry of a container page (#1938): the parent, the
 # image it ran on, why it is read again and the hosts the child may go to (none: the pool).
 BOINC_PROVENANCE_FIELDS = {"retry_of", "parent_image", "reason", "target_hosts"}
@@ -1034,6 +1038,12 @@ def check_boinc_job(job, record):
     retry = record.get("retry")
     require((retry is None) == (not is_retry), "retry job lacks its reservation journal, or the reverse")
     if is_retry:
+        native = retry.get("native") if isinstance(retry, dict) else None
+        require(native is None or (isinstance(native, dict) and set(native) == BOINC_NATIVE_RETRY_FIELDS and
+                                   isinstance(native["previous_image"], str) and
+                                   type(native["previous_timeout_secs"]) is int and
+                                   type(native["target_host"]) is int and native["target_host"] > 0),
+                "invalid native retry journal")
         provenance = retry.get("provenance") if isinstance(retry, dict) else None
         hosts = provenance.get("target_hosts", []) if isinstance(provenance, dict) else []
         require(provenance is None or (
@@ -1045,7 +1055,9 @@ def check_boinc_job(job, record):
                     provenance["reason"] in BOINC_RETRY_REASONS and isinstance(hosts, list) and
                     all(type(h) is int and h > 0 for h in hosts) and hosts == sorted(set(hosts))),
                 "invalid retry provenance")
-        require(isinstance(retry, dict) and set(retry) - {"provenance"} == BOINC_RETRY_FIELDS - {"provenance"} and
+        require(native is None or provenance is None, "a retry is native or controller-side, not both")
+        optional = {"native", "provenance"}
+        require(isinstance(retry, dict) and set(retry) - optional == BOINC_RETRY_FIELDS - optional and
                 retry["previous_job"] == retry_of and
                 type(retry["previous_attempt"]) is int and retry["previous_attempt"] + 1 == attempt and
                 retry["previous_workunit"] == "usnm_" + retry_of and record.get("bundle") is None,

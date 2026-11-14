@@ -526,6 +526,7 @@ fn supervise(
     start: &dyn Fn() -> anyhow::Result<Child>,
     control: &BoincControl,
     restart_after_suspend: bool,
+    cpu_secs: u64,
 ) -> anyhow::Result<Ended> {
     let mut progress = Progress::new(work);
     loop {
@@ -539,6 +540,9 @@ fn supervise(
                 control.set_child_pgid(None);
                 if let Some(reason) = control.should_exit() {
                     return Ok(Ended::Stopped(reason));
+                }
+                if status.code() == Some(i32::from(CPU_LIMIT_EXIT)) {
+                    return Err(anyhow::Error::new(CpuLimit { secs: cpu_secs }));
                 }
                 ensure!(status.success(), "the unit failed: {status}");
                 return Ok(Ended::Finished);
@@ -556,6 +560,42 @@ fn supervise(
             progress.report();
             std::thread::sleep(Duration::from_millis(100));
         }
+    }
+}
+
+/// The exit status of a native unit whose engine hit its CPU limit (`SIGXCPU`) and of the task
+/// that reports it, so BOINC's `result.exit_status` tells a page that is too slow for its
+/// `engine.timeout_secs` from any other failure (#1919). Not a status Tesseract, the unit or
+/// the BOINC client uses for anything else (the client's own are 192 to 211, such as 197 for
+/// its elapsed-time abort).
+pub const CPU_LIMIT_EXIT: u8 = 117;
+
+/// A page's read hit the CPU limit `engine.timeout_secs` sets: too slow, not broken. The page
+/// is retried with a larger limit (docs/boinc/apps/native-ocr.md, "A page that is too slow").
+#[derive(Debug, thiserror::Error)]
+#[error("too slow: SIGXCPU at timeout_secs {secs}")]
+pub struct CpuLimit {
+    pub secs: u64,
+}
+
+/// The status the process exits with for `error`: [`CPU_LIMIT_EXIT`] when it is a
+/// [`CpuLimit`], else failure.
+pub fn exit_code(error: &anyhow::Error) -> u8 {
+    if error.chain().any(|cause| cause.is::<CpuLimit>()) {
+        CPU_LIMIT_EXIT
+    } else {
+        1
+    }
+}
+
+/// `error` as the unit reports it: a [`CpuLimit`] when the engine was killed at its CPU limit
+/// of `secs`, else unchanged.
+fn classify_unit_error(error: anyhow::Error, secs: Option<u64>) -> anyhow::Error {
+    match secs {
+        Some(secs) if usnm_ocr_worker::engine::exited_cpu_limit(&error) => {
+            anyhow::Error::new(CpuLimit { secs }).context(format!("{error:#}"))
+        }
+        _ => error,
     }
 }
 
@@ -637,7 +677,13 @@ pub fn run_slot(work: &Path) -> anyhow::Result<()> {
             )?)
         }
     };
-    match supervise(&work, &start, &control, unit.restart_after_suspend)? {
+    match supervise(
+        &work,
+        &start,
+        &control,
+        unit.restart_after_suspend,
+        unit.timeout_secs.into(),
+    )? {
         Ended::Stopped(reason) => {
             eprintln!("stopped: {reason}");
             stopped_result(reason)?;
@@ -665,7 +711,12 @@ pub async fn run_unit(work: &Path) -> anyhow::Result<()> {
         #[cfg(target_os = "macos")]
         watch_parent(parent);
     }
-    crate::worker::run(work).await
+    let secs = std::env::var(CPU_DEADLINE_ENV)
+        .ok()
+        .and_then(|secs| secs.parse().ok());
+    crate::worker::run(work)
+        .await
+        .map_err(|error| classify_unit_error(error, secs))
 }
 
 #[cfg(unix)]

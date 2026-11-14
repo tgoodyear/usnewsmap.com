@@ -3,9 +3,19 @@
 // /admin/*. README.md describes the data, the settling rule and how tasks are loaded.
 
 const CHOICES = new Set(["a", "b", "neither", "unsure", "notext"]);
+// What the page reports about the bundled font when an answer was given (public/app.js, fontState): `loaded` and
+// `not_loaded` for the font the page declares for the word's script, `none` when no bundled font applies to the word,
+// `unknown` when the page couldn't tell (the browser has no font loading API) or is from before the value existed.
+// Anything else a request sends is stored as `unknown`. migrations/0003-answer-font.sql has the same list.
+export const FONT_STATES = ["loaded", "not_loaded", "none", "unknown"];
+const fontOf = (v) => (FONT_STATES.includes(v) ? v : "unknown");
 const SESSION_DAYS = 30;
 const SETTLE_MIN = 3; // answers before a word can settle
 const DISPUTE_AT = 7; // answers after which a word that never agreed is closed as disputed
+// The page's display revision (public/app.js, DISPLAY). An answer to a word marked confusable_display must come from a page
+// at this revision or later: an open tab from before the served font keeps drawing the letters alike, and its answer would
+// otherwise count as a new one once the word is reopened. Raise both together when a display change needs the same.
+export const DISPLAY_REVISION = 1;
 const enc = new TextEncoder();
 
 export default {
@@ -197,7 +207,7 @@ async function api(request, env, url) {
     const skip = (url.searchParams.get("skip") || "").split(",").filter(Boolean).slice(0, 50);
     const holes = skip.map(() => "?").join(",");
     const row = await env.DB.prepare(
-      `SELECT id, body, n FROM tasks t WHERE lang = ? AND settled = 0
+      `SELECT id, body, n FROM tasks t WHERE lang = ? AND settled = 0 AND held = 0
          AND NOT EXISTS (SELECT 1 FROM answers a WHERE a.task_id = t.id AND a.contributor = ?)
          ${skip.length ? `AND id NOT IN (${holes})` : ""}
        ORDER BY n DESC, random() LIMIT 1`,
@@ -211,10 +221,12 @@ async function api(request, env, url) {
     const c = await contributorOf(request, env, { limited: true });
     const b = await body(request);
     if (typeof b.task !== "string" || b.task.length > 300 || !CHOICES.has(b.choice)) throw new HttpError(400, "task and choice required");
-    const t = await env.DB.prepare("SELECT id, settled, json_type(body, '$.private') AS blind FROM tasks WHERE id = ?").bind(b.task).first();
+    const t = await env.DB.prepare("SELECT id, settled, held, confusable_display, json_type(body, '$.private') AS blind FROM tasks WHERE id = ?").bind(b.task).first();
     if (!t) throw new HttpError(404, "no such task");
     if (t.settled && t.blind) throw new HttpError(409, "this word is already checked");
-    await record(env, b.task, c, b.choice);
+    if (t.held) throw new HttpError(409, "this word is not open for answers");
+    if (t.confusable_display && !(Number(b.display) >= DISPLAY_REVISION)) throw new HttpError(426, "this page is out of date: reload it, then answer again");
+    await record(env, b.task, c, b.choice, Date.now(), Number(b.display) || 0, fontOf(b.font));
     return json({ ok: true });
   }
   if (p === "/api/stats" && request.method === "GET") {
@@ -234,13 +246,26 @@ async function api(request, env, url) {
   if (p === "/api/export" && request.method === "GET") {
     const l = lang(url);
     const rows = await env.DB.prepare(
-      `SELECT t.id, t.set_name, t.body, t.outcome, t.settled,
+      `SELECT t.id, t.set_name, t.body, t.outcome, t.settled, t.confusable_display, t.held,
          SUM(a.choice = 'a') AS a, SUM(a.choice = 'b') AS b, SUM(a.choice = 'neither') AS neither, SUM(a.choice = 'unsure') AS unsure,
-         SUM(a.choice = 'notext') AS notext
+         SUM(a.choice = 'notext') AS notext,
+         SUM(a.font = 'loaded') AS f_loaded, SUM(a.font = 'not_loaded') AS f_not_loaded, SUM(a.font = 'none') AS f_none, SUM(a.font = 'unknown') AS f_unknown
        FROM tasks t LEFT JOIN answers a ON a.task_id = t.id WHERE t.lang = ? GROUP BY t.id ORDER BY t.id`,
     )
       .bind(l)
       .all();
+    // Answers set aside for a task marked confusable_display (README.md, "Words whose readings look alike"): counted apart.
+    const set = await env.DB.prepare(
+      `SELECT e.task_id, COUNT(*) AS n, SUM(e.choice = 'a') AS a, SUM(e.choice = 'b') AS b, SUM(e.choice = 'neither') AS neither,
+         SUM(e.choice = 'unsure') AS unsure, SUM(e.choice = 'notext') AS notext,
+         SUM(e.font = 'loaded') AS f_loaded, SUM(e.font = 'not_loaded') AS f_not_loaded, SUM(e.font = 'none') AS f_none, SUM(e.font = 'unknown') AS f_unknown
+       FROM answers_excluded e JOIN tasks t ON t.id = e.task_id WHERE t.lang = ? GROUP BY e.task_id`,
+    )
+      .bind(l)
+      .all();
+    const fontCounts = (r) => ({ loaded: r.f_loaded || 0, not_loaded: r.f_not_loaded || 0, none: r.f_none || 0, unknown: r.f_unknown || 0 });
+    const excluded = new Map(set.results.map((e) => [e.task_id, { a: e.a || 0, b: e.b || 0, neither: e.neither || 0, unsure: e.unsure || 0, notext: e.notext || 0 }]));
+    const excludedFonts = new Map(set.results.map((e) => [e.task_id, fontCounts(e)]));
     const lines = rows.results.map((r) => {
       const t = JSON.parse(r.body);
       // A blind task keeps what each reading is, and the truth for a calibration item, in `private`: they are
@@ -250,7 +275,15 @@ async function api(request, env, url) {
         id: r.id, set: r.set_name, page: t.page, source: t.source, a: t.a, b: t.b,
         a_is: t.private ? reveal.a_is : t.a_is, b_is: t.private ? reveal.b_is : t.b_is,
         ...(t.private ? { strata: t.private.strata, truth: reveal.truth } : {}),
+        ...(t.lookalikes ? { lookalikes: t.lookalikes } : {}),
         counts: { a: r.a || 0, b: r.b || 0, neither: r.neither || 0, unsure: r.unsure || 0, notext: r.notext || 0 },
+        // The same answers by what the visitor's page reported about the bundled font (FONT_STATES). Answers given before
+        // the page reported it are `unknown`. The values add up to the counts' total.
+        font_counts: fontCounts(r),
+        // confusable_display: the readings looked alike in the visitor's font. The answers given before are in
+        // excluded_counts, never in counts, and they don't settle the word or count in any score. `held` is true until the
+        // word is reopened for new answers.
+        ...(r.confusable_display ? { confusable_display: true, held: !!r.held, excluded_counts: excluded.get(r.id) || { a: 0, b: 0, neither: 0, unsure: 0, notext: 0 }, excluded_font_counts: excludedFonts.get(r.id) || fontCounts({}) } : {}),
         settled: !!r.settled, outcome: r.outcome,
       });
     });
@@ -297,20 +330,70 @@ UPDATE tasks SET
 WHERE id = ?1`;
 
 // A settled blind task (its body has `private`) takes no more answers, so a revision can't reopen it after its
-// readings were exported. The condition is in the statement, so it holds against a racing request too.
+// readings were exported, and a held task (marked confusable_display, not yet reopened) takes none either. The
+// conditions are in the statement, so they hold against a racing request too. ?5 is the display revision the answer came
+// from: a marked task refuses an older one even if it was reopened after the request read the task. ?6 is the font state
+// (FONT_STATES); a replaced answer takes the new answer's state.
 export const ANSWER_SQL = `
-INSERT INTO answers (task_id, contributor, choice, at)
-SELECT ?1, ?2, ?3, ?4
-WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND settled = 1 AND json_type(body, '$.private') IS NOT NULL)
-ON CONFLICT (task_id, contributor) DO UPDATE SET choice = excluded.choice, at = excluded.at`;
+INSERT INTO answers (task_id, contributor, choice, at, font)
+SELECT ?1, ?2, ?3, ?4, ?6
+WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND ((settled = 1 AND json_type(body, '$.private') IS NOT NULL) OR held = 1
+  OR (confusable_display = 1 AND ?5 < ${DISPLAY_REVISION})))
+ON CONFLICT (task_id, contributor) DO UPDATE SET choice = excluded.choice, at = excluded.at, font = excluded.font`;
 
-export async function record(env, task, contributor, choice, at = Date.now()) {
+export async function record(env, task, contributor, choice, at = Date.now(), display = DISPLAY_REVISION, font = "unknown") {
   const res = await env.DB.batch([
-    env.DB.prepare(ANSWER_SQL).bind(task, contributor, choice, at),
+    env.DB.prepare(ANSWER_SQL).bind(task, contributor, choice, at, display, fontOf(font)),
     env.DB.prepare(SETTLE_SQL).bind(task),
   ]);
-  // Zero rows written: the task settled (blind) between the check in /api/answers and this statement.
-  if (res && res[0] && res[0].meta && res[0].meta.changes === 0) throw new HttpError(409, "this word is already checked");
+  // Zero rows written: the task settled (blind), was held, or was marked and the page is out of date, between the check in
+  // /api/answers and this statement.
+  if (res && res[0] && res[0].meta && res[0].meta.changes === 0) throw new HttpError(409, "this word can't take that answer now; reload the page");
+}
+
+// ---------- words whose readings look alike (README.md, "Words whose readings look alike") ----------
+
+// Marking a task confusable_display sets its existing answers aside, in one batch (one transaction) per task: they are
+// copied to answers_excluded, the copy is checked against the original, the originals leave `answers` (so they settle
+// nothing and count in no figure, and their authors may answer again) and the task is held out of the queue, unsettled,
+// with its count at zero. Nothing is deleted without a copy; the statement that checks the copy fails the batch if a row
+// is missing. Every statement is guarded by the task still being unmarked, inside the transaction, so a request that read
+// the task before another marked it (and the task was reopened and took new answers) changes nothing. ?1 is the task id.
+export const MARK_CONFUSABLE_SQL = [
+  `INSERT INTO answers_excluded (task_id, contributor, choice, at, font) SELECT task_id, contributor, choice, at, font FROM answers
+     WHERE task_id = ?1 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND confusable_display = 0)`,
+  `SELECT CASE WHEN EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND confusable_display = 0)
+     AND (SELECT COUNT(*) FROM answers_excluded WHERE task_id = ?1) < (SELECT COUNT(*) FROM answers WHERE task_id = ?1)
+     THEN json_extract('answers were not all copied', '$') END`,
+  `DELETE FROM answers WHERE task_id = ?1 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND confusable_display = 0)`,
+  `UPDATE tasks SET confusable_display = 1, held = 1, n = 0, settled = 0, outcome = NULL WHERE id = ?1 AND confusable_display = 0`,
+];
+// Reopening lets a marked task take new answers again. Its excluded answers stay excluded.
+export const REOPEN_CONFUSABLE_SQL = `UPDATE tasks SET held = 0 WHERE id = ?1 AND confusable_display = 1 AND held = 1`;
+
+// Applies "mark" or "reopen" to task ids. Marking a task that is already marked does nothing (so a second run can't
+// set aside the new answers); reopening a task that isn't held does nothing. `found` only tells which ids are tasks.
+export async function confusable(env, action, ids) {
+  const found = new Map();
+  for (let i = 0; i < ids.length; i += 50) {
+    const part = ids.slice(i, i + 50);
+    const rows = await env.DB.prepare(`SELECT id, confusable_display, held FROM tasks WHERE id IN (${part.map(() => "?").join(",")})`).bind(...part).all();
+    for (const r of rows.results) found.set(r.id, r);
+  }
+  const out = { action, requested: ids.length, changed: [], unchanged: [], missing: ids.filter((i) => !found.has(i)) };
+  for (const id of ids) {
+    if (!found.has(id)) continue;
+    // changed or not is what the guarded UPDATE did, not what was read above
+    let changes;
+    if (action === "mark") {
+      const res = await env.DB.batch(MARK_CONFUSABLE_SQL.map((sql) => env.DB.prepare(sql).bind(id)));
+      changes = res[res.length - 1].meta.changes;
+    } else {
+      changes = (await env.DB.prepare(REOPEN_CONFUSABLE_SQL).bind(id).run()).meta.changes;
+    }
+    (changes ? out.changed : out.unchanged).push(id);
+  }
+  return out;
 }
 
 // ---------- clips ----------
@@ -393,11 +476,19 @@ async function admin(request, env, url) {
     for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
     return json({ ok: true, tasks: stmts.length });
   }
+  if (p === "/admin/confusable" && request.method === "POST") {
+    const b = await body(request, 200000);
+    const ids = Array.isArray(b.tasks) ? [...new Set(b.tasks)] : [];
+    if ((b.action !== "mark" && b.action !== "reopen") || !ids.length || ids.length > 500 || ids.some((i) => typeof i !== "string" || !i || i.length > 300)) {
+      throw new HttpError(400, 'body wants {"action": "mark" or "reopen", "tasks": [1 to 500 task ids]}');
+    }
+    return json(await confusable(env, b.action, ids));
+  }
   if (p === "/admin/dump" && request.method === "GET") {
     // Everything in D1 as JSON lines, one {"table", "row"} per line, for the nightly backup
-    // (backup/README.md). The three reads run as one batch, which D1 runs as one transaction,
+    // (backup/README.md). The four reads run as one batch, which D1 runs as one transaction,
     // so tasks' counts and the answers come from the same moment and no row is read twice.
-    const tables = [["languages", "code"], ["tasks", "id"], ["answers", "task_id, contributor"]];
+    const tables = [["languages", "code"], ["tasks", "id"], ["answers", "task_id, contributor"], ["answers_excluded", "task_id, contributor"]];
     const results = await env.DB.batch(tables.map(([table, order]) => env.DB.prepare(`SELECT * FROM ${table} ORDER BY ${order}`)));
     const out = [];
     tables.forEach(([table], k) => { for (const row of results[k].results) out.push(JSON.stringify({ table, row })); });
@@ -406,15 +497,19 @@ async function admin(request, env, url) {
   if (p === "/admin/answers" && request.method === "POST") {
     // JSON lines: {task, contributor ("seed:<name>"), choice, at}. Imported answers count like any other.
     const text = await request.text();
-    let k = 0;
+    let k = 0, skipped = 0;
     for (const line of text.split("\n")) {
       if (!line.trim()) continue;
       const a = JSON.parse(line);
       if (typeof a.contributor !== "string" || !a.contributor.startsWith("seed:") || !CHOICES.has(a.choice)) throw new HttpError(400, "seed answers only");
-      await record(env, a.task, a.contributor, a.choice, Number(a.at) || Date.parse(a.at) || Date.now());
+      const at = Number(a.at) || Date.parse(a.at) || 0;
+      // An answer set aside for a marked task stays set aside when its file is loaded again (same contributor and time).
+      const old = await env.DB.prepare("SELECT 1 AS x FROM answers_excluded WHERE task_id = ? AND contributor = ? AND (at = ? OR ? = 0)").bind(a.task, a.contributor, at, at).first();
+      if (old) { skipped++; continue; }
+      await record(env, a.task, a.contributor, a.choice, at || Date.now());
       k++;
     }
-    return json({ ok: true, answers: k });
+    return json({ ok: true, answers: k, skipped });
   }
   throw new HttpError(404, "not found");
 }

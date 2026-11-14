@@ -10,6 +10,7 @@ Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language, Yiddish (Ne
 | ----------------------------- | ------------------------------------------------------------------------------------- |
 | `worker.mjs`                  | The Worker: `/api/*` for the page, `/clips/*` from R2, `/admin/*` for loading data.   |
 | `public/`                     | The page (static assets). `/` lists languages; `/<code>` (e.g. `/chr`) shows words.   |
+| `public/fonts/`               | The Cherokee font the page serves, with its licence and source (`fonts/README.md`).   |
 | D1 `usnm-check`               | `languages`, `tasks`, `answers` (`schema.sql`).                                       |
 | R2 `usnm-check-clips`         | Line and word images, and the example letters, at `<lang>/<set>/...`.                 |
 | Turnstile widget `usnm-check` | The browser check before a session is issued.                                         |
@@ -18,7 +19,9 @@ Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language, Yiddish (Ne
 | `tools/serbian_lines.py`      | Makes `build_tasks.py`'s input for Serbian: LoC's ALTO against our held BOINC ALTO.   |
 | `tools/from_tap_data.py`      | Turns a glyph-check data file (Cherokee) into tasks, clips and a configuration.       |
 | `tools/phoenix_lines.py`      | Picks Cherokee lines from LoC's ALTO and our production re-read for `build_tasks.py`. |
+| `tools/lookalike.py`          | Finds letters of two readings the page draws almost alike; also a command on exports. |
 | `languages/<code>.json`       | A language's name, intro, writing direction and letter notes, plus build options.     |
+| `confusable.sh`               | Marks tasks `confusable_display`, or reopens them, run by hand.                       |
 | `load.sh`, `set-secrets.sh`   | Loading data and setting secrets, run by hand.                                        |
 
 ## Who answers, and how answers count
@@ -29,26 +32,27 @@ A word **settles** once at least 3 answers are in and one choice has two thirds 
 
 Seed answers (from `load.sh --seed`) are stored as contributor `seed:<name>` and count as one person.
 
-Answers are published under CC0. `GET /api/export?lang=chr` returns one JSON line per word, with its readings, which is which (`a_is`, `b_is`), the count of each answer and the outcome. Contributor ids are never exported.
+Answers are published under CC0. `GET /api/export?lang=chr` returns one JSON line per word, with its readings, which is which (`a_is`, `b_is`), the count of each answer and the outcome. Contributor ids are never exported. Each word also has `font_counts`, the same answers counted by what the visitor's page reported about the bundled font ([below](#which-font-each-answer-was-given-with)). A word with look-alike letters also has its `lookalikes`; a word marked `confusable_display` also has `confusable_display`, `held`, `excluded_counts` and `excluded_font_counts` ([below](#words-whose-readings-look-alike)).
 
 ## API
 
-| Method and path                           | Who         | What                                                                                                       |
-| ----------------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------- |
-| `GET /api/config`                         | anyone      | The Turnstile site key.                                                                                    |
-| `GET /api/languages`                      | anyone      | Languages with task and settled counts.                                                                    |
-| `GET /api/languages/<code>`               | anyone      | A language's configuration.                                                                                |
-| `POST /api/session`                       | anyone      | `{turnstile}` → `{session}`.                                                                               |
-| `GET /api/next?lang=<code>[&skip=id,...]` | session     | `{task, answered}`; `task` is null when none is left for this person.                                      |
-| `POST /api/answers`                       | session     | `{task, choice}`: `a`, `b`, `neither`, `unsure` or `notext`.                                               |
-| `GET /api/stats?lang=<code>`              | anyone      | Tasks, settled, answers, people.                                                                           |
-| `GET /api/export?lang=<code>`             | anyone      | CC0 JSON lines (above).                                                                                    |
-| `PUT /admin/clips/<key>`                  | admin token | An image (JPEG, PNG or WebP).                                                                              |
-| `PUT /admin/languages/<code>`             | admin token | A language's configuration. With `?keep=examples` (an existing language only), the stored `examples` stay. |
-| `POST /admin/tasks`                       | admin token | JSON lines of tasks; a task already loaded keeps its answers.                                              |
-| `POST /admin/answers`                     | admin token | JSON lines of seed answers, `seed:` contributors only.                                                     |
+| Method and path                           | Who         | What                                                                                                                                                |
+| ----------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/config`                         | anyone      | The Turnstile site key.                                                                                                                             |
+| `GET /api/languages`                      | anyone      | Languages with task and settled counts.                                                                                                             |
+| `GET /api/languages/<code>`               | anyone      | A language's configuration.                                                                                                                         |
+| `POST /api/session`                       | anyone      | `{turnstile}` → `{session}`.                                                                                                                        |
+| `GET /api/next?lang=<code>[&skip=id,...]` | session     | `{task, answered}`; `task` is null when none is left for this person.                                                                               |
+| `POST /api/answers`                       | session     | `{task, choice[, display, font]}`: `a`, `b`, `neither`, `unsure` or `notext`; `font` is optional ([below](#which-font-each-answer-was-given-with)). |
+| `GET /api/stats?lang=<code>`              | anyone      | Tasks, settled, answers, people.                                                                                                                    |
+| `GET /api/export?lang=<code>`             | anyone      | CC0 JSON lines (above).                                                                                                                             |
+| `PUT /admin/clips/<key>`                  | admin token | An image (JPEG, PNG or WebP).                                                                                                                       |
+| `PUT /admin/languages/<code>`             | admin token | A language's configuration. With `?keep=examples` (an existing language only), the stored `examples` stay.                                          |
+| `POST /admin/tasks`                       | admin token | JSON lines of tasks; a task already loaded keeps its answers.                                                                                       |
+| `POST /admin/answers`                     | admin token | JSON lines of seed answers, `seed:` contributors only.                                                                                              |
+| `POST /admin/confusable`                  | admin token | `{action: "mark" or "reopen", tasks: [ids]}`, up to 500 ids ([below](#words-whose-readings-look-alike)).                                            |
 
-A task, as loaded: `id` (`<lang>/<set>/<word id>`), `lang`, `set`, then what the page shows: `page`, `source` (the page on Chronicling America), `label`, `line` and `word` (clip keys), `box` (the word in the line image, as fractions `[x, y, w, h]`), `a`, `b`, `a_diff`, `b_diff` (indexes of the letters that differ) and `a_is`, `b_is` (what each reading is, e.g. `reference` and `loc`). The page shows `a` and `b` in an order fixed by the task id, so neither side is always first.
+A task, as loaded: `id` (`<lang>/<set>/<word id>`), `lang`, `set`, then what the page shows: `page`, `source` (the page on Chronicling America), `label`, `line` and `word` (clip keys), `box` (the word in the line image, as fractions `[x, y, w, h]`), `a`, `b`, `a_diff`, `b_diff` (indexes of the letters that differ), `a_is`, `b_is` (what each reading is, e.g. `reference` and `loc`) and, when the build found letters the page draws almost alike, `lookalikes` (see below). The page shows `a` and `b` in an order fixed by the task id, so neither side is always first.
 
 ## A language's configuration
 
@@ -63,6 +67,68 @@ A task, as loaded: `id` (`<lang>/<set>/<word id>`), `lang`, `set`, then what the
 | `equivalents`                   | Letters that print alike (`"װ": "וו"`): `build_tasks.py` compares them as equal, and the page sets the two-letter spelling with no space inside it.  |
 
 The page highlights letters as `a_diff` and `b_diff` count them: a base character with the marks that follow it (פּ, אַ) is one letter.
+
+## Words whose readings look alike
+
+Some readings differ only in letters that a font draws the same way. On 13 November 2026 the page's font stack fell, on macOS, to a serif Cherokee font that draws Ꭱ (e) and Ꮢ (sv) as one R, so a person could not pick between ᏒᎯ and ᎡᎯ ([#1939](https://github.com/tgoodyear/usnewsmap.com/issues/1939)). Four parts deal with it.
+
+**A served font.** `public/fonts/NotoSansCherokee-Regular.woff2` (SIL OFL; source, version and hashes in `public/fonts/README.md`) is first in `--font-script`, for the Cherokee blocks only, so Cherokee readings don't depend on installed fonts. The site serves no font for the other scripts: Hebrew letters and Cyrillic still depend on what the visitor has.
+
+**A check at build.** `tools/lookalike.py` takes each pair of letters that differ at the same position between a task's two readings (readings of the same length are compared position by position, so a transposition gives two pairs), draws both in the font the page asks for first for that script, at the size the page shows them (32px), and flags the pair when the two pictures nearly coincide: intersection over union of the inked pixels, the best of one-pixel shifts, at least `THRESHOLD` (0.82). The threshold sits between the bundled font's closest pair of Cherokee letters (0.80, Ꮐ and Ᏻ; Ꭱ and Ꮢ score 0.71) and the pairs macOS's Plantagenet Cherokee draws alike (Ꭱ and Ꮢ 0.85); the table it was set from is in `tools/test_lookalike.py`. For a script the site serves no font for, the result only describes the reference font used (the first of the stack's families installed on the build host, or `--font SCRIPT=PATH`): a visitor with another font sees other shapes. A pair with no font or no glyph is counted, never guessed. `build_tasks.py` and `from_tap_data.py` write the flagged pairs into the task as `lookalikes`: `[{"a": 0, "a_label": "sv", "b": 0, "b_label": "e", "iou": 0.714}]`, the letter indexes as `a_diff` and `b_diff` count them. Tasks already loaded get the field when their tasks file is built again and loaded; `/admin/tasks` keeps their answers.
+
+To measure tasks already loaded, without rebuilding, run the same check on exports (`--font` repeats; `--ids` lists the tasks; `--threshold 1.0` flags only identical pictures):
+
+```sh
+for l in chr chr-lines chr-rare yi sr; do curl -s "https://check.usnewsmap.com/api/export?lang=$l" > check-$l.jsonl; done
+python3 edge/check/tools/lookalike.py --export check-chr.jsonl --export check-chr-lines.jsonl --export check-chr-rare.jsonl --ids
+python3 edge/check/tools/lookalike.py --export check-chr.jsonl --font Cherokee=PlantagenetCherokee.ttf   # the old macOS fallback
+```
+
+**Letters with combining marks.** A letter is a base character with its marks (פּ, אַ), compared as one unit, never a mark alone. Drawing it needs shaping: Pillow's basic layout engine sets the mark beside its letter. `lookalike.py` therefore draws a pair with a mark through Raqm (HarfBuzz, as a browser shapes it), and counts the pair in `unshaped_pairs`, not measured, when its Pillow has no Raqm. Run the command with a Pillow that has Raqm (`python3 -c "from PIL import features; print(features.check('raqm'))"`) for Yiddish. For the Yiddish export this changed no number, because a mark that doesn't overlap its letter adds the same ink wherever it sits; a mark inside the letter would.
+
+**Measured on 13 November 2026, no font added for Yiddish or Serbian.** On the exports of that day (720 Yiddish tasks, 939 Serbian), at the 0.82 threshold:
+
+| Yiddish reference font                        | Tasks flagged | Pairs flagged | What the flagged pairs are                                                                      |
+| --------------------------------------------- | ------------: | ------------: | ----------------------------------------------------------------------------------------------- |
+| Times New Roman (what the page uses on macOS) |           193 |            30 | Only a letter against the same letter with a point: אַ/אָ, א/אַ, א/אָ, פ/פּ, פֿ/פּ, ב/בּ, ך/ךּ… |
+| Noto Serif Hebrew 2.004 (notofonts, OFL)      |           194 |            32 | The same, plus יַ/יִ and ן/ןָ.                                                                  |
+| Noto Sans Hebrew 3.001 (notofonts, OFL)       |           213 |            34 | The same as Noto Serif Hebrew, plus ח/ה (both directions, 20 pairs).                            |
+
+No candidate font reduces the set, so none is bundled. The flagged pairs are all a letter with a small point against the same letter without it or with another point: the point is a few percent of the ink, so any font scores them high. In Chrome at 32px, in all three fonts, the points are drawn on the letters and told apart: patah (a bar) and qamats (a bar with a stem), dagesh and rafe in פּ and פֿ, hiriq under י, holam over ו, and the shin and sin dots. The presentation forms (U+FB1D to U+FB4E: אַ, אָ, פּ, פֿ, בּ, וּ, יִ, ײַ) draw the same as the letter plus mark in all three fonts; the tasks hold only the decomposed form, since the build normalises to NFC. So the overlap measure flags these pairs for what they are, a small mark, and says nothing about whether it shows. Whether the mark is visible in the worn print itself is the person's judgment on the clip; no font changes that.
+
+Serbian, Times New Roman, 62 of 939 tasks: п/н 45 (regular 0.88, italic 0.74), п/ц 6, н/ц 4, Ц/П 2, П/Н 2, И/Н 2, and one each of П/H (Latin H), ћ/h and п/џ. Each of these pairs shares a skeleton and differs by one stroke: п and н by the crossbar, п and ц by the tail, ц and н by both, П and Н by the crossbar, И and Н by the diagonal, ћ and h by the bar through the stem. At 32px in Times New Roman, regular and italic, the stroke shows in every pair. They are look-alikes in small or worn type (п/н, ћ/h, П/Н, where the one stroke is the whole difference), and detector noise elsewhere: overlap counts shared verticals, and an italic н or ц already scores 0.58 to 0.74 against п. The pages measured were not checked against the print.
+
+**A label.** Under each reading of a task with `lookalikes`, the page names the flagged letter next to its highlight: the syllable for Cherokee (`CHEROKEE LETTER SV` gives `sv`), else the Unicode character name (`hebrew letter alef + hebrew point patah`). A flagged letter is shown even where the highlight doesn't mark it (a transposition). The label is set left to right inside right-to-left readings. The page also keeps the answer buttons off, and offers a reload, when a Cherokee word's font fails to load, so a visitor's installed font can't stand in for it. `layout.test.mjs` renders it in Chrome for Cherokee, Hebrew letters and Cyrillic.
+
+**Answers given before the fix.** A task marked `confusable_display` keeps its existing answers, but they no longer count. `POST /admin/confusable` (run with `confusable.sh`) does two things:
+
+- `mark`: for each task not yet marked, in one transaction, the task's answers move to `answers_excluded` (kept, with their contributor, choice and time, and in the backup dump), the copy is checked against the original, and the task is set `confusable_display = 1`, `held = 1`, with `n = 0`, unsettled and no outcome. A held task is not served by `/api/next` and `/api/answers` answers 409. Marked tasks are not marked again, so a second run can't set aside answers given after the fix.
+- `reopen`: a held marked task becomes open for new answers (`held = 0`). The set-aside answers stay set aside. A person who answered before is asked again, since the one answer per person and word is now in `answers_excluded`; their new answer is stored as any other.
+
+A marked task takes answers only from a page at the current display revision: the page sends `display` with each answer (`DISPLAY` in `public/app.js`) and the Worker answers 426, storing nothing, when a marked task's answer has a lower one (`DISPLAY_REVISION` in `worker.mjs`; a test keeps the two equal). That keeps a tab opened before the font was served from answering about letters it draws alike. The check is in the answer's SQL, so it holds against a request that read the task before it was marked. Loading a seed file again skips a seed answer already set aside for a marked task (same contributor and time; `/admin/answers` reports `skipped`). Tasks never marked take answers from any page. Marked tasks settle only on new answers, by the same rule as any task. Set-aside answers are in no count, `/api/stats` figure or settled outcome. In the export a marked task has `confusable_display: true`, `held`, and `excluded_counts` (the same five choices); `counts` are only the new answers. `docs/reports/2026-11-cherokee/scripts/chr_disputes_score.py` reads only `counts` and treats a held marked word as waiting. Tasks that were never marked behave as before.
+
+After merging, in this order:
+
+1. Before the merge, run `migrations/0002-confusable-display.sql` on D1 (it only adds two columns and a table, so the running Worker is unaffected). The deploy does not run migrations, and the new Worker fails without them.
+2. Merge. CI deploys the Worker and page with the font, and sends `languages/*.json`. Nothing else changes: no task is marked and no data is loaded.
+3. Check `curl https://check.usnewsmap.com/build.txt` against `git rev-parse origin/main:edge/check`, and that `/fonts/NotoSansCherokee-Regular.woff2` loads.
+4. Put the task ids in a file and run `edge/check/confusable.sh --vault usnmtlskvprodffapzy --action mark --tasks ids.txt`, then `--action reopen` with the same file. Marking and reopening can be one after the other: the point of the pause is only to look at the export (`excluded_counts`) first.
+5. Rebuild and reload a language's tasks, as [below](#loading-a-language), to add `lookalikes` and their labels to tasks already loaded. Nothing needs this to be right: without `lookalikes` a task shows no label.
+
+## Which font each answer was given with
+
+Each answer stores one small value about the page that sent it: whether the font the page serves for the word's script had loaded when the person answered (#1939). The page asks the browser's CSS Font Loading API (`document.fonts.check`) about the family `style.css` declares, for the letters shown, and sends the result as `font` (`fontState` in `public/app.js`). The stored values (`FONT_STATES` in `worker.mjs`, a `CHECK` on the column):
+
+| Value        | Meaning                                                                                                                                                                                               |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `loaded`     | The word has letters a bundled font covers (today Cherokee, `Noto Sans Cherokee`), and it had loaded.                                                                                                 |
+| `not_loaded` | The same, and it had not. The page keeps the answer buttons off in that state, so this value should be rare.                                                                                          |
+| `none`       | No bundled font applies to the letters shown (Hebrew letters, Cyrillic): the page draws them with whatever the visitor has.                                                                           |
+| `unknown`    | The browser has no font loading API or the check threw; the page is from before the value existed (a cached page sends none); the answer is older than the column; or the request sent anything else. |
+
+Nothing else about the visitor is stored: no font list, no user agent, no screen size. The page does not enumerate fonts. An answer changed later takes the new answer's value. Seed answers are `unknown`. The export gives each word `font_counts` (`loaded`, `not_loaded`, `none`, `unknown`), which add up to the total of `counts`; a word marked `confusable_display` also has `excluded_font_counts` for its set-aside answers, which keep their value in `answers_excluded`. Existing readers that use `counts` and `excluded_counts` are unaffected.
+
+`migrations/0003-answer-font.sql` adds the column to `answers` and `answers_excluded` with `DEFAULT 'unknown'`, so every stored answer reads `unknown`. It only adds: the Worker from before it keeps working on the migrated database, so run it before the merge. The new Worker fails without it. The Worker still accepts answers from a page that sends no `font`.
 
 ## Making tasks from two readings
 
@@ -182,7 +248,7 @@ CI deploys the site: after `ci` passes on main, `.github/workflows/check-site-de
 
 Every run, whether it deploys or not, also sends `languages/*.json` to the site with `sync-languages.mjs`, so a merged change to a name, intro or letter note goes live with it. The site's `examples` are kept and the build options are left out, as `from_tap_data.py` does; a language the site doesn't have yet is skipped, since it needs its tasks and clips through `load.sh`. The CI identity reads `usnm-prod-check-admin-token` for this through the grant in `infra/modules/edge-worker-ci.bicep`. To see what a sync would change without sending anything: `node edge/check/sync-languages.mjs --dry-run`.
 
-Changes to an existing database are in `migrations/`, run once in order: `0001-answers-notext.sql` must run before a page with "Not text" is deployed. The D1 schema is applied with `wrangler d1 execute usnm-check --remote --file schema.sql`, or through the D1 API; every statement is idempotent.
+Changes to an existing database are in `migrations/`, run once in order: `0001-answers-notext.sql` must run before a page with "Not text" is deployed, `0002-confusable-display.sql` before the Worker that marks `confusable_display` is, and `0003-answer-font.sql` before the Worker that stores `font` is. The D1 schema is applied with `wrangler d1 execute usnm-check --remote --file schema.sql`, or through the D1 API; every statement is idempotent.
 
 ### Secrets
 
@@ -198,9 +264,9 @@ Changing `SESSION_KEY` (`--rotate`) signs everyone out; their earlier answers st
 ## Tests
 
 ```sh
-node --test edge/check/worker.test.mjs edge/check/layout.test.mjs edge/check/languages.test.mjs
+node --test edge/check/worker.test.mjs edge/check/layout.test.mjs edge/check/languages.test.mjs edge/check/fonts.test.mjs
 ```
 
-The `check site` job in `ci.yml` runs these, a Wrangler dry-run build (`npx wrangler@4.154.0 deploy --dry-run`), shellcheck of the scripts and the tools' unit tests whenever anything under `edge/check/` but its Markdown changes. `languages.test.mjs` checks each language configuration's fields and that its keys are sorted.
+The `check site` job in `ci.yml` runs these, a Wrangler dry-run build (`npx wrangler@4.154.0 deploy --dry-run`), shellcheck of the scripts and the tools' unit tests whenever anything under `edge/check/` but its Markdown changes. `languages.test.mjs` checks each language configuration's fields and that its keys are sorted. `fonts.test.mjs` checks the served font against the hash in `public/fonts/README.md`. `worker.test.mjs` runs the marking and reopening on SQLite with the real schema. `tools/test_lookalike.py` holds the table of letter pairs the threshold comes from and needs Pillow with a FreeType that reads woff2 (it skips otherwise).
 
 `layout.test.mjs` renders every language's sample words in headless Chrome, one highlighted letter at a time, and fails if a highlight box overlaps another character. It skips when no Chrome is found (set `CHROME=/path/to/chrome`) unless `CI` is set.

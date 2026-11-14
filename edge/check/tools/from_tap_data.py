@@ -1,7 +1,8 @@
 """Turn a glyph-check data file (the #1620 tap page's data.json) into check.usnewsmap.com tasks.
 
 Writes OUT_DIR/clips/<lang>/<set>/... (JPEG/PNG files, served at /clips/<same path>), OUT_DIR/tasks.jsonl
-for POST /admin/tasks, and OUT_DIR/language.json for PUT /admin/languages/<lang>. Standard library only.
+for POST /admin/tasks, and OUT_DIR/language.json for PUT /admin/languages/<lang>. Needs Pillow for the look-alike check
+(lookalike.py: a task's `lookalikes`, the letter pairs the site's Cherokee font draws almost alike); --no-lookalikes skips it.
 
   python3 from_tap_data.py --data data.json --lang chr --set phoenix-nt-v1 --language-config chr.json --out-dir OUT
 """
@@ -11,6 +12,7 @@ import collections
 import datetime
 import json
 import os
+import sys
 
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 
@@ -40,7 +42,15 @@ def main() -> None:
     ap.add_argument("--language-config", required=True, help="name, intro, notes, title, drop_examples")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--examples-set", help="where the example pictures go (default: --set); a new name keeps cached old pictures from being served")
+    ap.add_argument("--no-lookalikes", action="store_true", help="don't check for look-alike letters (no Pillow needed)")
+    ap.add_argument("--font", action="append", help="SCRIPT=PATH: reference font for the look-alike check (default: the site's Cherokee font)")
     a = ap.parse_args()
+
+    lookalike = fonts = None
+    if not a.no_lookalikes:
+        import lookalike
+        fonts = lookalike.Fonts(lookalike.parse_fonts(a.font))
+    flagged = 0
 
     data = json.load(open(a.data, encoding="utf-8"))
     os.makedirs(a.out_dir, exist_ok=True)
@@ -56,6 +66,8 @@ def main() -> None:
             line_key = rel(save(line["line"], os.path.join(root, prefix, "lines", stem)))
             for d in line["decisions"]:
                 word_key = rel(save(d["word"], os.path.join(root, prefix, "words", d["id"].replace("~", "_w"))))
+                alike = [] if fonts is None else lookalike.flags(d["a"], d["b"], {}, fonts)
+                flagged += bool(alike)
                 out.write(json.dumps({
                     "id": f"{prefix}/{d['id']}", "lang": a.lang, "set": a.set,
                     "page": line["page"], "source": f"https://chroniclingamerica.loc.gov/lccn/{line['page']}/",
@@ -63,6 +75,7 @@ def main() -> None:
                     "line": line_key, "word": word_key, "box": d["box"],
                     "a": d["a"], "b": d["b"], "a_diff": d["a_diff"], "b_diff": d["b_diff"],
                     "a_is": "reference", "b_is": "loc",
+                    **({"lookalikes": alike} if alike else {}),
                 }, ensure_ascii=False) + "\n")
                 n += 1
 
@@ -77,7 +90,9 @@ def main() -> None:
     language = {k: v for k, v in cfg.items() if k not in ("drop_examples", "min_examples")}
     language["examples"] = examples
     json.dump(language, open(os.path.join(a.out_dir, "language.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-    print(f"{n} tasks, {len(examples)} letters with examples")
+    print(f"{n} tasks, {len(examples)} letters with examples, {flagged} with look-alike letters")
+    if fonts is not None and lookalike.unshaped_warning(fonts):
+        print(lookalike.unshaped_warning(fonts), file=sys.stderr)
 
 
 if __name__ == "__main__":

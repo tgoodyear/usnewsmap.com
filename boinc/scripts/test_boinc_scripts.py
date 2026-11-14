@@ -2069,7 +2069,8 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
 
     def test_bridge_native_unit_submits_with_its_host_and_the_trust_list(self):
         # #1780: the single-job path gives usnm-boinc the native app, the host and the trust list,
-        # and never the line pin or retry stores.
+        # and never the line pin. The retry stores go with it (#1919): a native retry's child
+        # revalidates its reservation under the lease, and a first attempt ignores them.
         text = open(BRIDGE_JOB_SCRIPT).read()
         function = "submit_ocr_job() {" + text.split("submit_ocr_job() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
         bindir = os.path.join(self.tmp, "native-bin")
@@ -2105,7 +2106,8 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         r = run(NATIVE_TARGET_HOST="13")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.calls(), [f"submit --root /h --project /p --job {'1' * 64} --app usnm_ocr_native "
-                                        f"--target-host 13 --trust {share}/gold/trust.json --native-versions 100,101"])
+                                        f"--target-host 13 --trust {share}/gold/trust.json --native-versions 100,101 "
+                                        "--cosmos https://c.documents.azure.com:443/ --curated-url https://d/curated"])
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "native.cnf")))
         with open(self.log + ".sql") as f:
             query = f.read()

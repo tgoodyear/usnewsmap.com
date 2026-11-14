@@ -1,3 +1,9 @@
+/* The font the site serves for Cherokee (OFL, fonts/README.md): readings never depend on installed fonts. Only the Cherokee blocks use it. */
+@font-face {
+  font-family: "Noto Sans Cherokee"; font-style: normal; font-weight: 400; font-display: block;
+  src: url("fonts/NotoSansCherokee-Regular.woff2") format("woff2");
+  unicode-range: U+13A0-13FF, U+AB70-ABBF;
+}
 /* One word per screen in a single centred column: the printed word is the hero, the two readings are the controls. */
 :root {
   --paper: #f3f1ea;
@@ -78,6 +84,8 @@ h2 { font-size: 1rem; margin: 8px 0 0; }
 .ex { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
 .ex .letter { font-family: var(--font-script); font-size: 1.3rem; background: var(--mark); color: var(--mark-ink); border-radius: 3px; padding: 0 4px; }
 .ex img { height: 34px; width: auto; background: #fff; border-radius: 3px; }
+/* The plain name of a letter the font draws almost like its pair's (lookalikes): "sv" under one reading, "e" under the other. */
+.ex .name { font-size: .85rem; font-weight: 600; background: var(--paper); border: 1px solid var(--line); border-radius: 3px; padding: 0 5px; }
 .ex .note { font-size: .85rem; color: var(--muted); }
 .row { display: flex; flex-wrap: wrap; gap: 10px; }
 .small { font: inherit; color: var(--ink); background: transparent; border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; cursor: pointer; }

@@ -22,10 +22,24 @@ pub struct Retry {
     pub previous_error: String,
     pub app_version_num: u32,
     pub reviewed_reason: String,
+    /// Set for a retry of a `usnm_ocr_native` page (#1919): what the child must keep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<NativeRetry>,
     /// Why a controller-side retry (#1938) was made, which build it replaces and the hosts it
     /// may go to. Published with the page (`Provenance::alto_note`), so a rebuild counts re-reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<Provenance>,
+}
+
+/// What a native retry keeps of its parent, so submission can check it without the parent's
+/// journal: the build, a deadline that is not shorter, and the one host that reads it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeRetry {
+    pub previous_image: String,
+    pub previous_timeout_secs: u32,
+    /// The host the child is for: the spot-check draw reads it, and `submit` refuses another.
+    pub target_host: u64,
 }
 
 /// Why a page was read again.
@@ -182,10 +196,15 @@ pub fn validate(record: &Record) -> anyhow::Result<()> {
                     && !retry.reviewed_reason.chars().any(char::is_control)
                     && record.ledger.is_some()
                     && record.bundle.is_none()
-                    && retry
-                        .provenance
-                        .as_ref()
-                        .is_none_or(|p| p.valid(record, &retry.previous_job)),
+                    && retry.native.as_ref().is_none_or(|native| {
+                        native.target_host > 0
+                            && record.job.engine.image == native.previous_image
+                            && record.job.engine.timeout_secs >= native.previous_timeout_secs
+                            && record.job.engine.timeout_secs <= crate::claim::MAX_TIMEOUT_SECS
+                    })
+                    && retry.provenance.as_ref().is_none_or(|p| {
+                        retry.native.is_none() && p.valid(record, &retry.previous_job)
+                    }),
                 "invalid retry journal"
             );
             let key = record.job.message.key()?;
@@ -230,6 +249,12 @@ pub struct Options<'a> {
     /// The child's page deadline, when it isn't the parent's: a page that ran out of time on
     /// every host runs out again with the same one (#1159).
     pub timeout_secs: Option<u32>,
+    /// A retry of a `usnm_ocr_native` page (#1919), for this host: the child keeps the parent's build
+    /// (`image` must be its `engine.image`). A page that hit its CPU limit gets a longer page
+    /// deadline, since it runs out again with the same one; any other failure is retried at the
+    /// same one, once ([`native_retry_timeout`]). `app_version_num` is the native version that
+    /// packages that build, and the child is submitted as a native unit.
+    pub native_host: Option<u64>,
     /// A controller-side retry's reason and hosts (#1938); the parent's id and image are filled
     /// in from its journal.
     pub note: Option<(Reason, Vec<u64>)>,
@@ -237,6 +262,64 @@ pub struct Options<'a> {
     /// again in a fresh scratch root makes the same child (#1938). Default: now.
     pub now: Option<chrono::DateTime<Utc>>,
     pub handoff: &'a dyn ObjectStore,
+}
+
+/// The page deadline of a native page's retry. `requested` is `--timeout-secs`: longer than the
+/// parent's, up to the largest a job may have, for a page that hit its CPU limit (exit status
+/// 117); none for any other failure, which is retried at the same deadline, once (a first
+/// attempt's failure only). A page the policy leaves is logged as `boinc_page_retries_exhausted`
+/// and stays dead-lettered, never dropped without a trace.
+pub fn native_retry_timeout(job: &boinc::Job, requested: Option<u32>) -> anyhow::Result<u32> {
+    let parent = job.engine.timeout_secs;
+    let exhausted = |why: &str| {
+        eprintln!(
+            "boinc_page_retries_exhausted job={} workunit={} page={} attempt={} timeout_secs={parent}: {why}",
+            job.id,
+            job.workunit(),
+            job.message.page,
+            job.attempt
+        );
+        anyhow::anyhow!("{why}")
+    };
+    if parent >= crate::claim::MAX_TIMEOUT_SECS {
+        return Err(exhausted("no larger page deadline is left"));
+    }
+    match requested {
+        Some(secs) if secs > parent => {
+            ensure!(
+                secs <= crate::claim::MAX_TIMEOUT_SECS,
+                "the largest page deadline is {} s",
+                crate::claim::MAX_TIMEOUT_SECS
+            );
+            Ok(secs)
+        }
+        Some(secs) if secs < parent => Err(anyhow::anyhow!(
+            "a native retry never shortens the parent's {parent} s"
+        )),
+        // Equal to the parent's, or none: the same deadline.
+        _ if job.attempt > 0 => Err(exhausted(
+            "a retry at the same deadline is made once; the page needs a longer one for a CPU-limit failure, else it is listed",
+        )),
+        _ => Ok(parent),
+    }
+}
+
+/// A native retry keeps the parent's build, and only a page job has one: a line job is container
+/// work, and neither submission route would accept its child.
+fn check_native_parent(
+    parent_image: &str,
+    parent_is_line_job: bool,
+    image: &str,
+) -> anyhow::Result<()> {
+    ensure!(
+        !parent_is_line_job,
+        "a line job is container work: it has no native retry"
+    );
+    ensure!(
+        image == parent_image,
+        "a native retry keeps the parent's build: --image must be its engine.image"
+    );
+    Ok(())
 }
 
 pub async fn prepare(
@@ -265,6 +348,14 @@ pub async fn prepare(
                 && claim.ended.as_deref() == Some("dead_lettered"),
             "parent delivery is not conclusively deleted; reconcile its claim"
         );
+    }
+    if opts.native_host.is_some() {
+        check_native_parent(
+            &previous.job.engine.image,
+            previous.job.lines.is_some(),
+            opts.image,
+        )?;
+        native_retry_timeout(&previous.job, opts.timeout_secs)?;
     }
     let previous_dir = dir(opts.root, opts.previous_job)?;
     ensure!(
@@ -339,6 +430,11 @@ pub async fn prepare(
         previous_error: crate::terminal_reason(marker.as_deref(), previous.job.engine.timeout_secs),
         app_version_num: opts.app_version_num,
         reviewed_reason: opts.reviewed_reason.into(),
+        native: opts.native_host.map(|target_host| NativeRetry {
+            previous_image: previous.job.engine.image.clone(),
+            previous_timeout_secs: previous.job.engine.timeout_secs,
+            target_host,
+        }),
         provenance: opts.note.as_ref().map(|(reason, hosts)| Provenance {
             retry_of: previous.job.id.clone(),
             parent_image: previous.job.engine.image.clone(),
@@ -501,6 +597,38 @@ mod tests {
     use usnm_ocr_local::ledger;
     use usnm_state::docs::MemoryDocs;
 
+    #[test]
+    fn a_native_retry_keeps_the_build_and_is_never_for_a_line_job() {
+        let image = format!("sha256:{}", "b".repeat(64));
+        assert!(check_native_parent(&image, false, &image).is_ok());
+        assert!(check_native_parent(&image, false, "sha256:other").is_err());
+        assert!(check_native_parent(&image, true, &image).is_err());
+    }
+
+    #[test]
+    fn a_native_retry_lengthens_the_deadline_of_a_cpu_limit_failure_and_repeats_any_other_once() {
+        let mut job = crate::bundle::work::tests::job(1);
+        job.engine.timeout_secs = 1800;
+        // A first failure: longer for a CPU-limit failure, the same otherwise.
+        assert_eq!(native_retry_timeout(&job, Some(3600)).unwrap(), 3600);
+        assert_eq!(native_retry_timeout(&job, None).unwrap(), 1800);
+        assert_eq!(native_retry_timeout(&job, Some(1800)).unwrap(), 1800);
+        assert!(native_retry_timeout(&job, Some(3601)).is_err());
+        assert!(native_retry_timeout(&job, Some(600)).is_err());
+        // A retry's own failure is retried again only with a longer deadline.
+        job.attempt = 1;
+        assert_eq!(native_retry_timeout(&job, Some(3600)).unwrap(), 3600);
+        assert!(native_retry_timeout(&job, None).is_err());
+        assert!(native_retry_timeout(&job, Some(1800)).is_err());
+        // At the largest deadline there is nothing longer, first attempt or not.
+        for attempt in [0, 1] {
+            job.attempt = attempt;
+            job.engine.timeout_secs = 3600;
+            assert!(native_retry_timeout(&job, Some(3600)).is_err());
+            assert!(native_retry_timeout(&job, None).is_err());
+        }
+    }
+
     #[tokio::test]
     async fn reviewed_retry_is_idempotent_pins_worker_and_never_resubmits_uncertain_work() {
         let temp = tempfile::tempdir().unwrap();
@@ -616,6 +744,7 @@ mod tests {
             timeout_secs: None,
             note: None,
             now: None,
+            native_host: None,
             handoff: curated.as_ref(),
         };
         for stage in [Stage::Submitted, Stage::Submitting] {
@@ -700,6 +829,28 @@ mod tests {
         }
         save(&root, &parent).unwrap();
         assert_eq!(crate::records(&root).unwrap().len(), 1);
+        // #1919: a native retry keeps the parent's build and needs a longer deadline.
+        let parent_image = parent.job.engine.image.clone();
+        opts.native_host = Some(13);
+        opts.timeout_secs = Some(3600);
+        assert!(
+            prepare(&opts, &state, curated.as_ref(), reference.as_ref())
+                .await
+                .is_err(),
+            "another build"
+        );
+        opts.image = &parent_image;
+        opts.timeout_secs = Some(parent.job.engine.timeout_secs - 1);
+        assert!(
+            prepare(&opts, &state, curated.as_ref(), reference.as_ref())
+                .await
+                .is_err(),
+            "a shorter deadline"
+        );
+        assert_eq!(crate::records(&root).unwrap().len(), 1);
+        opts.native_host = None;
+        opts.image = &image;
+        opts.timeout_secs = None;
         // #1159: a page that ran out of time is retried with a longer deadline, within a job's.
         opts.timeout_secs = Some(3601);
         assert!(prepare(&opts, &state, curated.as_ref(), reference.as_ref())
@@ -989,6 +1140,7 @@ mod tests {
             timeout_secs: None,
             note: None,
             now: None,
+            native_host: None,
             handoff: curated.as_ref(),
         };
         // A tampered LoC ALTO is refused before anything is reserved.

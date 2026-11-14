@@ -543,6 +543,7 @@ pub async fn run(request: &Request<'_>, stores: &Stores<'_>) -> anyhow::Result<O
             timeout_secs: timeout,
             note: Some((request.reason, request.target_hosts.to_vec())),
             now: Some(queued_at),
+            native_host: None,
             handoff: stores.handoff,
         },
         stores.state,

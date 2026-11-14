@@ -2911,7 +2911,8 @@ def native_spot_peers(config, state, slots, host, active=None):
     peers = [(other, config["image"]) for other in config["native_hosts"]
              if other != host and slots.get(other, 0) > 0 and str(other) not in held]
     peers += [(peer["host"], peer["image"]) for peer in spec.get("peers", [])
-              if str(peer["host"]) not in held and (active is None or peer["host"] in active)]
+              if peer["host"] != host and str(peer["host"]) not in held
+              and (active is None or peer["host"] in active)]
     return peers
 
 
@@ -3104,7 +3105,13 @@ def native_spot_draw(config, state, persist, now, owned, server, slots, rng=None
     is still drawn, and only once). Local work only: the replays are made and compared by
     native_spot_step after submit (#1919). `server` is the inventory's jobs, with each one's
     assimilator spool."""
-    targets = state.get("native_targets", {})
+    targets = dict(state.get("native_targets", {}))
+    # A manual retry's child (#1919) is never in native_targets, which only the automatic
+    # submit fills; its host is in its journal, so it is drawn from like any other page.
+    for record in owned.values():
+        native = (record.get("retry") or {}).get("native")
+        if isinstance(native, dict) and type(native.get("target_host")) is int:
+            targets.setdefault(record["job"]["id"], native["target_host"])
     spot = _spot(state)
     # A job leaves native_targets once settled, so the marker list stays as short as it is.
     seen = {job_id: at for job_id, at in spot.get("seen", {}).items() if job_id in targets}

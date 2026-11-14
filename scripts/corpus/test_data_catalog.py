@@ -2216,9 +2216,9 @@ class BoincJournalTests(unittest.TestCase):
             "previous_ledger": ledger, "terminal": {"error_mask": 4, "no_output_files": False,
                                                     "marker_sha256": "33" * 32},
             "previous_error": "failed", "app_version_num": 7, "reviewed_reason": "reviewed",
-            # A controller-side retry (#1938) says why, and for which hosts.
-            "provenance": {"retry_of": failed["id"], "parent_image": "sha256:" + "a" * 64,
-                           "reason": "slow-class", "target_hosts": [1, 9]}}))
+            # A native retry (#1919) keeps the parent's build and deadline and its one host.
+            "native": {"previous_image": "sha256:" + "a" * 64, "previous_timeout_secs": 1800,
+                       "target_host": 13}}))
         self.write(self.record(lines, stage="prepared"))
         self.write(self.record(bundled, stage="submitted", bundle="f" * 64, held="trust scope held"))
         self.assertEqual(self.ingest()["inserted"], 4)
@@ -2253,6 +2253,47 @@ class BoincJournalTests(unittest.TestCase):
         with mock.patch.object(os, "open", side_effect=spy):
             self.ingest()
         self.assertEqual(sorted(opened), ["record.json", "result.json"])
+
+    def test_a_controller_retry_journal_carries_its_provenance(self):
+        # #1938: the note a controller-side retry keeps is checked like the rest of the journal.
+        def ingest_retry(provenance, native=None, tag="ok"):
+            shutil.rmtree(self.journal, ignore_errors=True)
+            failed = self.other_job("sn00000001/1900-01-01/ed-1/seq-3")
+            retry = copy.deepcopy(failed)
+            retry.update(v=2, attempt=1, retry_of=failed["id"], id="d" * 64)
+            terminal = {"error_mask": 2, "no_output_files": False, "marker_sha256": "33" * 32}
+            self.write(self.record(failed, stage="failed", error="failed for good", terminal=terminal))
+            ledger = {"batch_version": 1, "reason": "bulk", "language": "eng", "plan": "plan-a", "attempt": 1,
+                      "request_day": None, "queued_at": "2026-10-10T12:00:00.000000Z"}
+            body = {"previous_job": failed["id"], "previous_attempt": 0,
+                    "previous_workunit": "usnm_" + failed["id"], "previous_ledger": ledger,
+                    "terminal": terminal, "previous_error": "failed", "app_version_num": 7,
+                    "reviewed_reason": "reviewed"}
+            if provenance is not None:
+                body["provenance"] = {**provenance, "retry_of": provenance.get("retry_of", failed["id"])}
+            if native is not None:
+                body["native"] = native
+            self.write(self.record(retry, stage="reserved", retry=body))
+            return self.ingest(tag)
+
+        good = {"parent_image": "sha256:" + "a" * 64, "reason": "slow-class", "target_hosts": [1, 9]}
+        self.assertEqual(ingest_retry(good)["inserted"], 2)
+        # With no hosts it is for the pool (the same jobs, so nothing new is inserted).
+        ingest_retry({k: v for k, v in good.items() if k != "target_hosts"}, tag="pool")
+        bad = {
+            "parent image is a tag": {**good, "parent_image": "latest"},
+            "unknown reason": {**good, "reason": "because"},
+            "hosts are not sorted": {**good, "target_hosts": [9, 1]},
+            "a host is zero": {**good, "target_hosts": [0]},
+            "retry_of is another job": {**good, "retry_of": "b" * 64},
+            "unknown field": {**good, "who": "me"},
+        }
+        for name, provenance in bad.items():
+            with self.subTest(name), self.assertRaises(c.CatalogError):
+                ingest_retry(provenance, tag="bad-" + name.replace(" ", "-"))
+        with self.assertRaises(c.CatalogError):
+            ingest_retry(good, native={"previous_image": "sha256:" + "a" * 64,
+                                       "previous_timeout_secs": 1800, "target_host": 13}, tag="both")
 
     def test_a_half_prepared_job_directory_is_skipped_and_counted(self):
         self.write(self.record())
