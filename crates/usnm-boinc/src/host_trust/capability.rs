@@ -76,7 +76,7 @@ pub(super) struct Requirements {
     pub bound: Option<BTreeSet<String>>,
 }
 
-const X86_VENDORS: [&str; 3] = ["GenuineIntel", "AuthenticAMD", "HygonGenuine"];
+pub(super) const X86_VENDORS: [&str; 3] = ["GenuineIntel", "AuthenticAMD", "HygonGenuine"];
 
 /// The platforms a host's client reports, or None when its OS and CPU vendor don't say.
 fn platforms(host: &Host) -> Option<&'static [&'static str]> {

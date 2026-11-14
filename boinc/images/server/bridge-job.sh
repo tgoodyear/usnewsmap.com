@@ -189,6 +189,14 @@
 #                               replays and compares the ones back, holding both hosts in
 #                               $SHARE_DIR/gold/trust.json on a mismatch; its report goes to
 #                               scheduler/native-spot.json
+#   BRIDGE_STEP=container-spot  BATCH_NONCE HANDOFF_URL, CONTAINER_SPOT_SUBMIT (job ids) and/or
+#                               CONTAINER_SPOT_CHECK, CONTAINER_SPOT_ACTIVE (host ids, optional),
+#                               CONTAINER_SPOT_BUDGET_SECS (#1934): usnm-boinc host-trust
+#                               container-spot replays container pages on a second trusted host
+#                               and compares them, holding both hosts in
+#                               $SHARE_DIR/gold/trust.json on a result outside the pair's limits;
+#                               starts no item after the budget; its report goes to
+#                               scheduler/container-spot.json
 #
 # Start a step with boinc/scripts/start-boinc-bridge.sh, which sets these on the job: an
 # `az containerapp job start --env-vars` override drops the job's own settings and the share.
@@ -605,7 +613,7 @@ if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != su
   [ "$step" != register-apps ] && [ "$step" != work-volume ] && [ "$step" != batch-inventory ] &&
   [ "$step" != wu-terminal ] &&
   [ "$step" != gold-onboard ] && [ "$step" != gold-promote ] && [ "$step" != gold-collect ] && [ "$step" != iris-bundle-submit ] && [ "$step" != iris-bundle-cancel ] &&
-  [ "$step" != native-spot ]; then
+  [ "$step" != native-spot ] && [ "$step" != container-spot ]; then
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
   [[ "$JOB_ID" =~ ^[A-Za-z0-9_-]+$ ]] || fail "JOB_ID has characters outside [A-Za-z0-9_-]"
 fi
@@ -909,6 +917,40 @@ case "$step" in
       --mysql-defaults "$mycnf" --mysql-ca /usr/local/share/usnm/mysql-ca.pem --database "$DB_NAME" \
       --native-versions "$versions" --submit "${NATIVE_SPOT_SUBMIT:-}" --check "${NATIVE_SPOT_CHECK:-}" \
       --out "$HANDOFF_DIR/scheduler/native-spot.json" --nonce "$BATCH_NONCE" --execute || rc=$?
+    share_readable "$stamp" "$PROJ/download"
+    rm -f "$stamp"
+    [ "$rc" -eq 0 ] || exit "$rc"
+    usnm-boinc handoff put --from "$HANDOFF_DIR/scheduler" --to-url "$HANDOFF_URL" --prefix scheduler
+    exit 0 ;;
+  container-spot)
+    # Container spot checks (#1934, docs/boinc/server/batch-scheduler.md): the controller names
+    # the pages and the replays to compare; usnm-boinc finds each page's host and the peer, and
+    # checks both against the trust list.
+    [[ "${BATCH_NONCE:-}" =~ ^[0-9a-f]{32}$ ]] || fail "BATCH_NONCE must be 32 hex"
+    job='[0-9a-f]{64}'
+    [[ "${CONTAINER_SPOT_SUBMIT:-}" =~ ^($job(,$job){0,99})?$ ]] || fail "CONTAINER_SPOT_SUBMIT is up to 100 job ids"
+    check="$job=[1-9][0-9]{0,9}:[1-9][0-9]{0,9}:$PROJ/results/[A-Za-z0-9_./-]+"
+    [[ "${CONTAINER_SPOT_CHECK:-}" =~ ^($check(,$check){0,99})?$ ]] && [[ "${CONTAINER_SPOT_CHECK:-}" != *..* ]] ||
+      fail "CONTAINER_SPOT_CHECK is up to 100 <job>=<source>:<target>:<spool under $PROJ/results>"
+    host='[1-9][0-9]{0,9}'
+    [[ "${CONTAINER_SPOT_ACTIVE:-0}" =~ ^($host(,$host){0,999}|0)$ ]] || fail "CONTAINER_SPOT_ACTIVE is up to 1000 host ids"
+    [[ "${CONTAINER_SPOT_BUDGET_SECS:-60}" =~ ^[1-9][0-9]{0,2}$ ]] && [ "${CONTAINER_SPOT_BUDGET_SECS:-60}" -le 600 ] ||
+      fail "CONTAINER_SPOT_BUDGET_SECS is 1 to 600"
+    [ -n "${CONTAINER_SPOT_SUBMIT:-}${CONTAINER_SPOT_CHECK:-}" ] || fail "set CONTAINER_SPOT_SUBMIT or CONTAINER_SPOT_CHECK"
+    [ -f "$SHARE_DIR/gold/trust.json" ] || fail "container spot checks need the trust list $SHARE_DIR/gold/trust.json"
+    validate_handoff_location
+    write_mycnf
+    mkdir -p "$HANDOFF_DIR/scheduler"
+    stamp="$(mktemp)"
+    rc=0
+    active_args=()
+    [ -z "${CONTAINER_SPOT_ACTIVE:-}" ] || active_args=(--active "$CONTAINER_SPOT_ACTIVE")
+    usnm-boinc host-trust container-spot --root "$SHARE_DIR/host-trust" --project "$PROJ" \
+      --jobs-root "$HANDOFF_DIR" --trust "$SHARE_DIR/gold/trust.json" --spool "$PROJ/results/0" \
+      --mysql-defaults "$mycnf" --mysql-ca /usr/local/share/usnm/mysql-ca.pem --database "$DB_NAME" \
+      --submit "${CONTAINER_SPOT_SUBMIT:-}" --check "${CONTAINER_SPOT_CHECK:-}" \
+      ${active_args[@]+"${active_args[@]}"} --budget-secs "${CONTAINER_SPOT_BUDGET_SECS:-60}" \
+      --out "$HANDOFF_DIR/scheduler/container-spot.json" --nonce "$BATCH_NONCE" --execute || rc=$?
     share_readable "$stamp" "$PROJ/download"
     rm -f "$stamp"
     [ "$rc" -eq 0 ] || exit "$rc"

@@ -120,6 +120,9 @@ pub enum Status {
     Match,
     /// Different bytes within one build or a listed pair: both hosts are held.
     Mismatch,
+    /// Left for the next call: the call's time budget was spent before this item (a container
+    /// spot check, #1934). Not a verdict, and nothing was made or written for it.
+    Deferred,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,7 +168,7 @@ pub enum Canonical {
 }
 
 impl Canonical {
-    async fn host(&self, workunit: &str) -> anyhow::Result<Option<u64>> {
+    pub(super) async fn host(&self, workunit: &str) -> anyhow::Result<Option<u64>> {
         ensure!(
             workunit
                 .bytes()
@@ -678,7 +681,7 @@ fn finish(
 
 /// Moves a judged replay's files out of the results directory into its journal's: they stay as
 /// evidence, and don't pile up where the batch inventory counts entries.
-fn keep_replay_files(spool: &Path, workunit: &str, into: &Path) -> anyhow::Result<()> {
+pub(super) fn keep_replay_files(spool: &Path, workunit: &str, into: &Path) -> anyhow::Result<()> {
     let kept = into.join("replay");
     for suffix in [
         "__file_result.json",

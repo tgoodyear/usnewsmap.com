@@ -14,11 +14,13 @@ use usnm_ocr_contract::boinc;
 
 mod capability;
 pub mod cli;
+mod container_spot;
 mod native_spot;
 mod onboard;
 mod promote;
 mod spot;
 
+pub use container_spot::{container_spot, parse_check, parse_submit, Platforms};
 pub use native_spot::{native_spot, Canonical, Outcome, Paths, Replay, Report, Status};
 pub use onboard::onboard;
 pub use promote::{promote, HostFailure, Promotion};
