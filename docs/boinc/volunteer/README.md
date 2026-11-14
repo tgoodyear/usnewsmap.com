@@ -282,11 +282,11 @@ documented Linux multi-CPU and GPU pilot requirements or task resource limits.
    `tasks at once = (VM RAM in GiB - 1) / 1.5`
 
    | VM RAM | Tasks at once |
-   | --- | --- |
-   | 4 GiB | 2 |
-   | 8 GiB | 4 |
-   | 16 GiB | 10 |
-   | 24 GiB | 15 |
+   | ------ | ------------- |
+   | 4 GiB  | 2             |
+   | 8 GiB  | 4             |
+   | 16 GiB | 10            |
+   | 24 GiB | 15            |
 
    Pick one of two ways to make the numbers agree: raise the VM's RAM with
    `machine set --memory` as described above, or lower the task count with
@@ -294,13 +294,14 @@ documented Linux multi-CPU and GPU pilot requirements or task resource limits.
    scheduler cannot do this for you, because it sees the Mac's host RAM, not the
    VM's.
 
-   If the VM runs out of memory, its kernel is the likely cause of Tesseract being
-   killed, and the task log then shows `tesseract exited with signal: 9
-   (SIGKILL)`. The VM's kernel log (`Out of memory: Killed process`) confirms it. Pages finished before
-   the kill stay checkpointed, and the task resumes at the next page. Observed on
-   two Macs: an 8-CPU Mac ran up to 4 tasks at once with no kills, and a 14-CPU
-   Mac ran up to 21 at once and hit SIGKILLs, probably for that reason. If you see the
-   SIGKILL lines, lower the task count or raise the VM's RAM.
+   If the VM runs out of memory, its kernel is the likely cause of Tesseract
+   being killed. The task log then shows `tesseract exited with signal: 9 (SIGKILL)`,
+   and the VM's kernel log shows `Out of memory: Killed process`. Pages finished
+   before the kill stay checkpointed, and the task resumes at the next page.
+   Observed on two Macs: an 8-CPU Mac ran up to 4 tasks at once with no kills,
+   and a 14-CPU Mac ran up to 21 at once and hit SIGKILLs, probably for that
+   reason. If you see the SIGKILL lines, lower the task count or raise the VM's
+   RAM.
 
    This small OCR profile is **not** a Surya profile: the current Surya CPU job
    requires **12 GiB**, so the previous 8 GiB example was insufficient. Separate
