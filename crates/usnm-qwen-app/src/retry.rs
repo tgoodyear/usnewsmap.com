@@ -40,12 +40,14 @@ pub(crate) fn retriable(err: &anyhow::Error, server_exited: bool) -> bool {
 }
 
 /// Runs `attempt`, restarting the server and trying again after a retriable failure, at most
-/// [`MAX_CROP_RETRIES`] times. `is_blank` says a reading carries no text and no tokens. `stop` says the deadline passed or BOINC asked the task to exit,
+/// [`MAX_CROP_RETRIES`] times. `is_blank` says a reading carries no text and no tokens; `distrust` says this crop already hit trouble in an earlier run of the task, so a blank reply is no more believed than one after a restart. `stop` says the deadline passed or BOINC asked the task to exit,
 /// in which case nothing is retried. `note` hears about each restart.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_crop<S, T>(
     state: &mut S,
     mut attempt: impl FnMut(&mut S) -> anyhow::Result<T>,
     is_blank: impl Fn(&T) -> bool,
+    distrust: bool,
     mut exited: impl FnMut(&mut S) -> bool,
     mut restart: impl FnMut(&mut S) -> anyhow::Result<()>,
     mut stop: impl FnMut() -> bool,
@@ -58,7 +60,7 @@ pub(crate) fn run_crop<S, T>(
             // A blank, 0-token reply is real when the server was healthy throughout. From a
             // server that died, or one just restarted after dying, it is the damage of the
             // crash (a reset GPU answers nothing), so it is a failed attempt, never a reading.
-            Ok(v) if is_blank(&v) && (retries > 0 || exited(state)) => {
+            Ok(v) if is_blank(&v) && (distrust || retries > 0 || exited(state)) => {
                 transport("blank 0-token reply from a llama-server that had died or restarted")
             }
             Ok(v) => return CropEnd::Done(v),
@@ -173,6 +175,7 @@ mod tests {
                 }
             },
             |_| false,
+            false,
             |m| m.exited,
             |m| {
                 m.restarts += 1;
@@ -256,6 +259,7 @@ mod tests {
                 Err::<(), _>(broken())
             },
             |_| false,
+            false,
             |m| m.exited,
             |m| {
                 m.restarts += 1;
@@ -287,6 +291,7 @@ mod tests {
                 }
             },
             |_| false,
+            false,
             |m| m.exited,
             |m| {
                 m.restarts += 1;
@@ -315,6 +320,7 @@ mod tests {
                 }
             },
             |t| t.is_empty(),
+            false,
             |m| m.exited,
             |m| {
                 m.restarts += 1;
@@ -372,6 +378,7 @@ mod tests {
                 Ok("")
             },
             |t| t.is_empty(),
+            false,
             |m| m.exited,
             |m| {
                 m.restarts += 1;

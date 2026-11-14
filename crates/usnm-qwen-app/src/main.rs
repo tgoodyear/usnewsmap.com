@@ -21,6 +21,8 @@ mod locks;
 mod report;
 mod retry;
 mod server;
+#[cfg(all(test, unix))]
+mod stub_tests;
 #[cfg(test)]
 mod test_support;
 mod verified;
@@ -631,6 +633,10 @@ fn run_crops(
                 )
             },
             |(text, tokens, _)| text.trim().is_empty() && *tokens == 0,
+            // The checkpoint remembers restarts and temporary exits by crop, across runs.
+            cp.restart_log
+                .iter()
+                .any(|n| n.starts_with(&format!("{}:", crop.id))),
             |srv| srv.has_exited(),
             |srv| {
                 srv.restart(
