@@ -83,8 +83,9 @@ impl Provenance {
     /// The ALTO with the note as `fileIdentifier`s after the others in `sourceImageInformation`
     /// (where the scan's sha256 is, ADR-0015), so it is there on every published retry. They go
     /// before the element's real closing tag, in its namespace prefix if it has one: a closing
-    /// tag inside a comment or CDATA section is not it. An ALTO without that element is refused:
-    /// a retry is never published without its note.
+    /// tag inside a comment or CDATA section, or an element of another namespace, is not it. An
+    /// ALTO without that element, or with it empty, is refused: a retry is never published
+    /// without its note.
     pub fn alto_note(&self, alto: &str) -> anyhow::Result<String> {
         let (end, prefix) = source_image_information_end(alto)
             .context("the ALTO has no sourceImageInformation to carry the retry's note")?;
@@ -117,33 +118,46 @@ impl Provenance {
     }
 }
 
-/// Where the closing tag of ALTO's `sourceImageInformation` starts, and its namespace prefix
-/// (`"alto:"` or empty), skipping comments and CDATA sections. `None` when there is no such
-/// closing tag.
+/// Where the closing tag of ALTO's own `sourceImageInformation` starts (`alto/Description/
+/// sourceImageInformation`, all in an ALTO namespace), and its namespace prefix (`"alto:"` or
+/// empty). Comments, CDATA sections and foreign elements of the same name are not it, and an
+/// empty element has no closing tag to put the note before. `None` when there is no such element.
 fn source_image_information_end(alto: &str) -> Option<(usize, String)> {
-    let mut at = 0;
-    while let Some(found) = alto[at..].find('<') {
-        let start = at + found;
-        let rest = &alto[start..];
-        if rest.starts_with("<!--") {
-            at = start + rest.find("-->")? + 3;
-        } else if rest.starts_with("<![CDATA[") {
-            at = start + rest.find("]]>")? + 3;
-        } else if let Some(closing) = rest.strip_prefix("</") {
-            let name = &closing[..closing.find('>')?];
-            let name = name.trim_end();
-            if name == "sourceImageInformation" {
-                return Some((start, String::new()));
+    use quick_xml::{events::Event, name::ResolveResult, NsReader};
+    let mut reader = NsReader::from_str(alto);
+    // The open elements: whether each is in an ALTO namespace, and its local name.
+    let mut open: Vec<(bool, String)> = Vec::new();
+    loop {
+        let start = usize::try_from(reader.buffer_position()).ok()?;
+        let (ns, event) = reader.read_resolved_event().ok()?;
+        let in_alto = matches!(
+            ns,
+            ResolveResult::Bound(ns) if ns.as_ref().starts_with("http://www.loc.gov/standards/alto/ns-v")
+        );
+        match event {
+            Event::Start(e) => open.push((in_alto, e.local_name().as_ref().to_owned())),
+            Event::End(e) => {
+                let local = e.local_name().as_ref().to_owned();
+                let (closed_in_alto, _) = open.pop()?;
+                let within = |depth: usize, name: &str| {
+                    open.get(depth).is_some_and(|(alto, n)| *alto && n == name)
+                };
+                if closed_in_alto
+                    && local == "sourceImageInformation"
+                    && open.len() == 2
+                    && within(0, "alto")
+                    && within(1, "Description")
+                {
+                    let qname = e.name();
+                    let raw = qname.as_ref();
+                    let prefix = raw.get(..raw.len() - local.len())?;
+                    return Some((start, prefix.to_owned()));
+                }
             }
-            if let Some(prefix) = name.strip_suffix(":sourceImageInformation") {
-                return Some((start, format!("{prefix}:")));
-            }
-            at = start + 2;
-        } else {
-            at = start + 1;
+            Event::Eof => return None,
+            _ => {}
         }
     }
-    None
 }
 
 pub fn validate(record: &Record) -> anyhow::Result<()> {

@@ -285,7 +285,11 @@ the child is made at and a digest of what was asked (image, app version, deadlin
 text, hosts). If the step stops after the reservation, a repeat with the same settings makes the
 same child in fresh scratch, writes its files and index, and finishes; other settings are refused,
 since they would be a different child on the same reservation. An intent whose time is in no ledger
-row is a run that stopped first, and is replaced.
+row is a run that stopped first, and is replaced. The time is set after the parent's permanent
+outcome (the reservation would move it there), so it is the ledger row's. The child's page and
+request are written first and its journal last, only if there is none: a journal that is there has
+its files, an interrupted export is repaired on the repeat, and a journal the server has moved on
+is never put back.
 
 **The live parent.** The controller reads a retry's lineage from the live journals and needs the
 parent there, failed. After the reservation, and before the child is written, the step writes the
@@ -328,8 +332,10 @@ ordinary pool work.
 image the parent ran on), the `reason` and the target hosts (`retry.provenance`). The request the
 worker reads is unchanged, so no worker release is involved. `collect` publishes the page with the
 note in the ALTO's `sourceImageInformation`, after the scan's own identifiers (inserted before the
-element's real closing tag, in its namespace prefix if it has one, so a closing tag in a comment or
-CDATA section does not take it; an ALTO with no such element is not published):
+element's real closing tag, in its namespace prefix if it has one; the element is ALTO's own,
+`alto/Description/sourceImageInformation` in an ALTO namespace, so a closing tag in a comment or
+CDATA section, or a foreign element of that name, does not take it; an ALTO with no such element, or
+with it empty, is not published):
 
 ```xml
 <fileIdentifier fileIdentifierLocation="usnm_retry_of">PARENT JOB ID</fileIdentifier>

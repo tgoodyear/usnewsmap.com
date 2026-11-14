@@ -61,16 +61,21 @@ struct Fx {
 
 impl Fx {
     async fn new() -> Self {
-        Self::build(false, true).await
+        Self::build(false, true, None).await
     }
 
     /// A queue-fed parent: its journal holds the ledger row its claim carries.
     async fn queue_fed() -> Self {
-        Self::build(true, true).await
+        Self::build(true, true, None).await
     }
 
     /// `dead_lettered` is whether the ledger holds the parent's permanent failure.
-    async fn build(queue_fed: bool, dead_lettered: bool) -> Self {
+    /// `outcome_at` is when it settled, by default a minute after the parent's row.
+    async fn build(
+        queue_fed: bool,
+        dead_lettered: bool,
+        outcome_at: Option<DateTime<Utc>>,
+    ) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let open = |name: &str| usnm_store::open(temp.path().join(name).to_str().unwrap()).unwrap();
         let (handoff, curated, reference, out) = (
@@ -125,7 +130,7 @@ impl Fx {
         )
         .await
         .unwrap();
-        let at = previous.queued_at + chrono::Duration::minutes(1);
+        let at = outcome_at.unwrap_or(previous.queued_at + chrono::Duration::minutes(1));
         if dead_lettered {
             ledger::write_outcomes(
                 curated.as_ref(),
@@ -990,7 +995,7 @@ async fn a_dry_run_makes_the_checks_a_real_run_would() {
         }
     }
     // The ledger must hold the parent's permanent failure as the page's latest outcome.
-    let fx = Fx::build(false, false).await;
+    let fx = Fx::build(false, false, None).await;
     let archive = fx.archive();
     let request = Request {
         dry_run: true,
@@ -1208,6 +1213,120 @@ fn the_note_goes_in_the_real_source_image_information_element() {
         "<alto><!-- </sourceImageInformation> --></alto>",
         "<alto><sourceImageInformation/></alto>",
         "<alto><sourceImageInformation>",
+    ] {
+        assert!(provenance.alto_note(alto).is_err(), "{alto}");
+    }
+}
+
+#[tokio::test]
+async fn a_failure_settled_ahead_of_the_clock_is_resumed_at_the_reserved_time() {
+    // The reservation moves the child past the parent's outcome; the intent holds that time, so
+    // a repeat after an interruption finds the ledger row it made.
+    let fx = Fx::build(false, true, Some(Utc::now() + chrono::Duration::hours(2))).await;
+    let archive = fx.archive();
+    let request = fx.request(Some(&archive));
+    let Outcome::Prepared { child, .. } = fx.run(&request).await.unwrap() else {
+        panic!("expected a prepared child");
+    };
+    let intent: Intent = serde_json::from_slice(
+        &fx.handoff
+            .get(&format!("dispatch/retries/{}.intent.json", fx.id()))
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let doc = fx.parent.job.message.key().unwrap().doc_id();
+    let row = ledger::load(fx.curated.as_ref()).await.unwrap().queued[&doc].clone();
+    assert_eq!(
+        row.queued_at
+            .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+        intent.queued_at
+    );
+    for file in ["record.json", "page", "request.json"] {
+        fx.remove(&format!("dispatch/jobs/{child}/{file}"));
+    }
+    fx.remove(&format!("dispatch/retries/{}.json", fx.id()));
+    assert_eq!(
+        fx.run(&request).await.unwrap(),
+        Outcome::Prepared {
+            child,
+            exported: true
+        }
+    );
+}
+
+#[tokio::test]
+async fn an_interrupted_export_is_repaired_and_never_overwrites_an_advanced_journal() {
+    let fx = Fx::new().await;
+    let archive = fx.archive();
+    let request = fx.request(Some(&archive));
+    let Outcome::Prepared { child, .. } = fx.run(&request).await.unwrap() else {
+        panic!("expected a prepared child");
+    };
+    let record = format!("dispatch/jobs/{child}/record.json");
+    let index = format!("dispatch/retries/{}.json", fx.id());
+    // The journal goes last: stopped after the page, there is none and no index.
+    fx.remove(&record);
+    fx.remove(&format!("dispatch/jobs/{child}/request.json"));
+    fx.remove(&index);
+    assert!(matches!(
+        fx.run(&request).await.unwrap(),
+        Outcome::Prepared { exported: true, .. }
+    ));
+    // A journal with a file missing (another tool's partial copy) is repaired, and the server's
+    // later state of the journal stays.
+    let mut advanced: Record =
+        serde_json::from_slice(&fx.handoff.get(&record).await.unwrap().unwrap()).unwrap();
+    advanced.stage = Stage::Submitted;
+    let advanced = serde_json::to_vec_pretty(&advanced).unwrap();
+    fx.handoff
+        .put(&record, advanced.clone(), "application/json")
+        .await
+        .unwrap();
+    fx.remove(&format!("dispatch/jobs/{child}/request.json"));
+    fx.remove(&index);
+    assert_eq!(
+        fx.run(&request).await.unwrap(),
+        Outcome::Prepared {
+            child: child.clone(),
+            exported: false
+        }
+    );
+    assert_eq!(fx.handoff.get(&record).await.unwrap(), Some(advanced));
+    assert!(fx
+        .handoff
+        .exists(&format!("dispatch/jobs/{child}/request.json"))
+        .await
+        .unwrap());
+    assert!(fx.handoff.exists(&index).await.unwrap());
+}
+
+#[test]
+fn only_altos_own_source_image_information_takes_the_note() {
+    let provenance = Provenance {
+        retry_of: "a".repeat(64),
+        parent_image: format!("sha256:{}", "b".repeat(64)),
+        reason: Reason::SlowClass,
+        target_hosts: vec![],
+    };
+    // An empty ALTO element, with a foreign one of the same name in foreign XML: refused.
+    let foreign = r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Description><sourceImageInformation/><Processing><x:sourceImageInformation xmlns:x="urn:foreign"><fileName/></x:sourceImageInformation></Processing></Description></alto>"#;
+    assert!(provenance.alto_note(foreign).is_err());
+    // Foreign elements of that name inside the real element's neighbours are skipped.
+    let both = r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Description><Processing xmlns:x="urn:foreign"><x:sourceImageInformation><x:fileName/></x:sourceImageInformation></Processing><sourceImageInformation><fileName>x</fileName></sourceImageInformation></Description></alto>"#;
+    let noted = provenance.alto_note(both).unwrap();
+    let first = noted.find("usnm_retry_of").unwrap();
+    assert!(
+        first > noted.find("</x:sourceImageInformation>").unwrap(),
+        "{noted}"
+    );
+    assert!(noted.ends_with("</fileIdentifier></sourceImageInformation></Description></alto>"));
+    // Not in an ALTO namespace, or not where ALTO has it.
+    for alto in [
+        r#"<alto><Description><sourceImageInformation><fileName/></sourceImageInformation></Description></alto>"#,
+        r#"<alto xmlns="urn:other"><Description><sourceImageInformation><fileName/></sourceImageInformation></Description></alto>"#,
+        r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><sourceImageInformation><fileName/></sourceImageInformation></alto>"#,
     ] {
         assert!(provenance.alto_note(alto).is_err(), "{alto}");
     }

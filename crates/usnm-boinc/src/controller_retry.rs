@@ -485,8 +485,11 @@ pub async fn run(request: &Request<'_>, stores: &Stores<'_>) -> anyhow::Result<O
             resumed = Some(at);
         }
     }
+    // The time the child is made at is final: after the parent's permanent outcome, which the
+    // reservation would otherwise move it past, leaving the intent short of the ledger's row.
+    let mut settled_at = None;
     if resumed.is_none() {
-        preflight(&parent, stores).await?;
+        settled_at = Some(preflight(&parent, stores).await?);
     }
     // The controller reads a retry's lineage from the live journals: the parent is there, failed.
     // Checked before anything is reserved, written after the child is.
@@ -497,11 +500,23 @@ pub async fn run(request: &Request<'_>, stores: &Stores<'_>) -> anyhow::Result<O
     let queued_at = match resumed {
         Some(at) => at,
         None => {
+            let now = DateTime::parse_from_rfc3339(&want.queued_at)?.with_timezone(&Utc);
+            let at = settled_at.map_or(now, |settled| {
+                now.max(settled + chrono::Duration::microseconds(1))
+            });
+            let intent = Intent {
+                queued_at: at.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+                request: want.request,
+            };
             stores
                 .handoff
-                .put(&intent_path, serde_json::to_vec(&want)?, "application/json")
+                .put(
+                    &intent_path,
+                    serde_json::to_vec(&intent)?,
+                    "application/json",
+                )
                 .await?;
-            DateTime::parse_from_rfc3339(&want.queued_at)?.with_timezone(&Utc)
+            at
         }
     };
 
@@ -534,16 +549,10 @@ pub async fn run(request: &Request<'_>, stores: &Stores<'_>) -> anyhow::Result<O
         &serde_json::to_vec_pretty(&child_record.job)?,
     )?;
     write_parent(stores.handoff, id, parent_write).await?;
-    // The server pulls the child from here. A child already there is the server's to move on:
-    // its later journal is never put back to reserved.
+    // The server pulls the child from here. Its journal goes last, so one that is there has its
+    // page and request; a journal already there is the server's to move on and is never put back.
     let prefix = format!("dispatch/jobs/{child}");
-    let exported = !stores
-        .handoff
-        .exists(&format!("{prefix}/record.json"))
-        .await?;
-    if exported {
-        put_child(stores.handoff, &dir(&root, &child)?, &prefix).await?;
-    }
+    let exported = export_child(stores.handoff, &child_dir, &prefix).await?;
     stores
         .handoff
         .put_new(
@@ -585,7 +594,7 @@ fn fingerprint(request: &Request<'_>, timeout: Option<u32>) -> String {
 /// run says what a real one would: a queue-fed parent's claim is conclusively dead-lettered, the
 /// page's batch and title are still published, and the parent's row is the latest in the ledger
 /// with a message-bound permanent failure. The reservation checks them again under the lease.
-async fn preflight(parent: &Record, stores: &Stores<'_>) -> anyhow::Result<()> {
+async fn preflight(parent: &Record, stores: &Stores<'_>) -> anyhow::Result<DateTime<Utc>> {
     let key = parent.job.message.key()?;
     let doc_id = key.doc_id();
     let previous = parent.queued()?;
@@ -633,7 +642,7 @@ async fn preflight(parent: &Record, stores: &Stores<'_>) -> anyhow::Result<()> {
                 == Some(boinc::sha256(&serde_json::to_vec(&parent.job.message)?).as_str()),
         "only a message-bound settled permanent failure may be retried"
     );
-    Ok(())
+    Ok(outcome.at)
 }
 
 /// What the live hand-off needs for the parent's journal to be failed, with the proof the retry
@@ -709,33 +718,60 @@ struct Index {
     child: String,
 }
 
-/// Writes the child's files to the hand-off, trying five times. The reservation is made by now:
-/// a child that cannot be written is printed, so it can be restored by hand (a lost
-/// reservation's record cannot be made again), as the hand-off job does for its entries.
-async fn put_child(
+/// Writes the child to the hand-off: its page and request, checked against the scratch copies
+/// and written if missing or different (they are fixed by the child's identity), then its
+/// journal, last and only if there is none. Returns whether it wrote the journal. A journal
+/// that is there has its files, and an interrupted export is repaired, never overwritten.
+/// Each write is tried five times; the reservation is made by now, so a child that cannot be
+/// written has its journal printed to be restored by hand, as the hand-off job does for its
+/// entries (a lost reservation's record cannot be made again).
+async fn export_child(
     handoff: &dyn ObjectStore,
     child_dir: &Path,
     prefix: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
+    let record_path = format!("{prefix}/record.json");
+    let record = read(&child_dir.join("record.json"), boinc::MAX_REQUEST * 2)?;
+    let result = async {
+        for name in ["page", "request.json"] {
+            let path = format!("{prefix}/{name}");
+            let want = read(&child_dir.join(name), boinc::MAX_SCAN)?;
+            if handoff.get(&path).await?.as_ref() != Some(&want) {
+                put_retrying(handoff, &path, want).await?;
+            }
+        }
+        if handoff.exists(&record_path).await? {
+            return Ok(false);
+        }
+        put_retrying(handoff, &record_path, record.clone()).await?;
+        Ok::<_, anyhow::Error>(true)
+    }
+    .await;
+    if result.is_err() {
+        eprintln!(
+            "USNM-HANDOFF-RECORD {record_path} {}",
+            String::from_utf8_lossy(&record).replace('\n', "")
+        );
+    }
+    result.context("could not write the child to the hand-off; its journal is in the log")
+}
+
+async fn put_retrying(handoff: &dyn ObjectStore, path: &str, body: Vec<u8>) -> anyhow::Result<()> {
     let mut last = None;
     for attempt in 1..=5u64 {
-        match crate::handoff::put(handoff, child_dir, prefix).await {
-            Ok(_) => return Ok(()),
+        match handoff
+            .put(path, body.clone(), "application/octet-stream")
+            .await
+        {
+            Ok(()) => return Ok(()),
             Err(error) => {
-                eprintln!("writing {prefix} failed (attempt {attempt}): {error:#}");
+                eprintln!("writing {path} failed (attempt {attempt}): {error:#}");
                 last = Some(error);
                 tokio::time::sleep(std::time::Duration::from_secs(attempt * 10)).await;
             }
         }
     }
-    if let Ok(record) = std::fs::read_to_string(child_dir.join("record.json")) {
-        eprintln!(
-            "USNM-HANDOFF-RECORD {prefix}/record.json {}",
-            record.replace('\n', "")
-        );
-    }
-    Err(last.unwrap())
-        .context("could not write the child to the hand-off; its record is in the log")
+    Err(anyhow::Error::from(last.unwrap()))
 }
 
 #[derive(Args)]
