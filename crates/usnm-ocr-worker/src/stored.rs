@@ -2,6 +2,7 @@
 //! 5, 13 §13.4.7 steps 2 to 4): the engine's ALTO is parsed, the stored
 //! ALTO 3.1 is written from the parsed values (`usnm_alto::write`), and the
 //! page text is derived from that page in reading order, then normalized.
+//! Sliver words (a rule or a speck read as a letter) are dropped first.
 //! The text and the ALTO always hold the same words, and no engine XML is
 //! stored.
 
@@ -148,6 +149,10 @@ pub fn store_from(
     worker_version: &str,
     now: DateTime<Utc>,
 ) -> Stored {
+    // A column rule or a speck read as a letter is left out of both the
+    // ALTO and the text (`usnm_alto::slivers`).
+    let mut page = page;
+    let slivers = usnm_alto::drop_slivers(&mut page);
     let mut ids = Vec::new();
     if hex(source.sha256) {
         ids.push(("sha256".to_owned(), source.sha256.to_owned()));
@@ -198,6 +203,14 @@ pub fn store_from(
                 (
                     "text".into(),
                     "usnm-alto reading order, normalize_ocr".into(),
+                ),
+                (
+                    "slivers".into(),
+                    format!(
+                        "{} words dropped, narrower than {} line heights a letter",
+                        slivers.words,
+                        usnm_alto::slivers::MIN_LETTER
+                    ),
                 ),
             ],
             software: Software {
@@ -377,11 +390,34 @@ mod tests {
                 let new = from_engine_alto(&xml, TAG, "eng", 300, &source, "0.1.0", now).unwrap();
                 let old_alto = set_alto_source(&String::from_utf8_lossy(&xml), URL, SHA, md5);
                 let old_text = usnm_core::text::normalize_ocr(&txt);
-                // The same text.
-                assert_eq!(new.text, old_text, "{name}: text");
+                // Main's page less its slivers: on the 1894 page, nine rules
+                // between its columns that Tesseract read as `|`, each one
+                // to three pixels wide.
+                let mut old_page = page_of(&old_alto);
+                let slivers = usnm_alto::drop_slivers(&mut old_page);
+                let rules = if name.starts_with("testdata/tesseract-agave") {
+                    9
+                } else {
+                    0
+                };
+                assert_eq!(slivers.words, rules, "{name}: slivers");
+                // The same text, less those `|`.
+                let mut old_words: Vec<&str> = old_text.split_whitespace().collect();
+                let mut new_words: Vec<&str> = new.text.split_whitespace().collect();
+                old_words.sort_unstable();
+                new_words.sort_unstable();
+                let mut less = old_words.clone();
+                for _ in 0..rules {
+                    let i = less.iter().position(|w| *w == "|").unwrap();
+                    less.remove(i);
+                }
+                assert_eq!(new_words, less, "{name}: words");
+                if rules == 0 {
+                    assert_eq!(new.text, old_text, "{name}: text");
+                }
                 // The same page: size, blocks, lines, words, boxes,
-                // confidences and hyphens.
-                assert_eq!(page_of(&new.alto), page_of(&old_alto), "{name}: layout");
+                // confidences and hyphens, less the slivers.
+                assert_eq!(page_of(&new.alto), old_page, "{name}: layout");
                 // The same scan named, with the same identifiers.
                 for tag in ["fileName", "fileIdentifier"] {
                     assert_eq!(
@@ -413,10 +449,10 @@ mod tests {
             run_id: None,
             damage_before: None,
         };
-        let words = |t: &str| {
-            let mut w: Vec<String> = t.split_whitespace().map(str::to_owned).collect();
-            w.sort();
-            w
+        let letters = |t: &str| {
+            let mut c: Vec<char> = t.chars().filter(|c| !c.is_whitespace() && *c != '-').collect();
+            c.sort_unstable();
+            c
         };
         for (name, xml, _) in fixtures() {
             let stored = from_engine_alto(&xml, TAG, "eng", 300, &source, "0.1.0", now).unwrap();
@@ -425,7 +461,11 @@ mod tests {
                 let repair = repair.unwrap();
                 assert!(repair.lines_split > 0, "{name}");
                 assert_ne!(text, stored.text, "{name}");
-                assert_eq!(words(&text), words(&stored.text), "{name}");
+                // The same characters. Read by column, `con-` ends a line and
+                // `gastement.` starts the next, so `normalize_ocr` rejoins
+                // them; read across the columns they stay apart.
+                assert_eq!(letters(&text), letters(&stored.text), "{name}");
+                assert!(text.contains("congastement."), "{name}");
             } else {
                 assert_eq!(repair, None, "{name}");
                 assert_eq!(text, stored.text, "{name}");
