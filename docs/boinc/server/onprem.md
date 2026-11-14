@@ -357,7 +357,7 @@ on the way to the pool. It needs `<enable_assignment>1</enable_assignment>`, as 
 **A targeted unit is never reissued.** Stock `create_work` sets the transitioner's
 `TRANSITION_NO_NEW_RESULTS` flag on assigned work, so if its host goes offline or its result fails
 the transitioner makes no replacement result, and with `--max_error_results 3` a unit whose first
-result failed gets no error mask for good. Watch a targeted child's workunit and result rows
+result failed gets no error mask for good. Such a child is created with 1 (stock `create_work` refuses 0) and the bridge's submit step sets its workunit row to 0, so its first error fails it. Watch a targeted child's workunit and result rows
 directly; the stale-assignment fallback is the separate #1919 work. A child with no target hosts is
 ordinary pool work.
 
