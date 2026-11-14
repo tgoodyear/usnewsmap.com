@@ -58,7 +58,7 @@ class Report(unittest.TestCase):
         rep = self.run_report(self.tasks())["yi"]
         self.assertEqual(rep["marks"]["U+05BC dagesh or mapiq"]["all"], {"words": 2, "answers": 6, "note": "too few answers"})
         self.assertNotIn("note", rep["marks"]["U+05B7 patah"]["all"])
-        out = subprocess.run([sys.executable, os.path.join(HERE, "mark_report.py"), "--export", self.write(self.tasks())],
+        out = subprocess.run([sys.executable, os.path.join(HERE, "mark_report.py"), "--export", self.write(self.tasks()), "--allow-incomplete"],
                              check=True, capture_output=True, text=True).stdout
         self.assertIn("too few answers", out)
         self.assertIn("U+05BC dagesh or mapiq", out)
