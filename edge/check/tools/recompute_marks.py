@@ -25,7 +25,8 @@ Output, in --out-dir/<lang>/: tasks.jsonl (the changed tasks' new bodies, in the
 Loading (--action load) reads OUT/<lang>/report.json and refuses unless it passed, was made from full bodies, and its
 hash matches the tasks.jsonl on disk. It then reads the current bodies from the site again, refuses if they are not
 the ones the dry run saw, checks each new body against its current one again, sends the changed tasks to
-POST /admin/tasks, reads the bodies back and checks they are the new ones. /admin/tasks replaces a task's body and
+POST /admin/tasks with each line's `if_body` (the stored body text it read), so a task another loader changed meanwhile is not
+overwritten but reported stale and fails the run, reads the bodies back and checks they are the new ones. /admin/tasks replaces a task's body and
 touches nothing else (README.md, "Updating loaded tasks").
 
 Without Raqm, a language whose readings contain combining marks is refused: those letters can't be drawn the way the
@@ -62,8 +63,20 @@ class Refused(Exception):
     """The run can't produce bodies that are safe to load."""
 
 
+def js_numbers(value):
+    """`value` with every whole float as an int: /admin/tasks stores bodies through JSON.stringify, which writes 1.0 as 1,
+    so bodies read from build_tasks.py's output (--bodies) must compare and hash like the ones the site stores."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, list):
+        return [js_numbers(v) for v in value]
+    if isinstance(value, dict):
+        return {k: js_numbers(v) for k, v in value.items()}
+    return value
+
+
 def canonical(record: dict) -> str:
-    return json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+    return json.dumps(js_numbers(record), ensure_ascii=False, separators=(",", ":"))
 
 
 def sha256(text: str) -> str:
@@ -88,7 +101,8 @@ def read_bodies(path: str) -> list:
     return out
 
 
-def records_from_dump(text: str) -> list:
+def records_from_dump(text: str, texts: dict = None) -> list:
+    """The tasks of a /admin/dump response as records. `texts`, when given, is filled with each task's stored body text."""
     out = []
     for raw in text.splitlines():
         if not raw.strip():
@@ -98,6 +112,8 @@ def records_from_dump(text: str) -> list:
             continue
         row = line["row"]
         out.append({"id": row["id"], "lang": row["lang"], "set": row["set_name"], **json.loads(row["body"])})
+        if texts is not None:
+            texts[row["id"]] = row["body"]
     return out
 
 
@@ -136,8 +152,8 @@ class Site:
         except urllib.error.HTTPError as e:
             raise Refused(f"{path}: HTTP {e.code}") from None
 
-    def dump_records(self) -> list:
-        return records_from_dump(self._request("/admin/dump").decode("utf-8"))
+    def dump_records(self, texts: dict = None) -> list:
+        return records_from_dump(self._request("/admin/dump").decode("utf-8"), texts)
 
     def post_tasks(self, lines: list) -> dict:
         return json.loads(self._request("/admin/tasks", ("\n".join(lines) + "\n").encode("utf-8")))
@@ -334,6 +350,16 @@ def write_language(out_dir: str, lang: str, changed: list, rep: dict) -> None:
         f.write(report_text(rep))
 
 
+def invalidate(out_dir: str, lang: str, reason: str) -> None:
+    """After a refused dry run: no older passing report or bodies of that language may be left to satisfy a load."""
+    d = os.path.join(out_dir, lang)
+    os.makedirs(d, exist_ok=True)
+    for name in ("tasks.jsonl", "report.json", "report.txt"):
+        if os.path.exists(os.path.join(d, name)):
+            os.remove(os.path.join(d, name))
+    write_json(os.path.join(d, "report.json"), {"tool": "recompute_marks.py", "lang": lang, "passed": False, "reason": reason})
+
+
 def dry_run(a, ctx: Context, records: list, full: bool) -> int:
     failed = False
     by_lang = collections.defaultdict(list)
@@ -347,12 +373,7 @@ def dry_run(a, ctx: Context, records: list, full: bool) -> int:
             changed, rep = recompute_language(lang, recs, ctx, full)
         except Refused as e:
             print(f"REFUSED {e}", file=sys.stderr)
-            d = os.path.join(a.out_dir, lang)
-            os.makedirs(d, exist_ok=True)
-            for name in ("tasks.jsonl", "report.json"):  # an older passed report must not satisfy a load
-                if os.path.exists(os.path.join(d, name)):
-                    os.remove(os.path.join(d, name))
-            write_json(os.path.join(d, "report.json"), {"tool": "recompute_marks.py", "lang": lang, "passed": False, "reason": str(e)})
+            invalidate(a.out_dir, lang, str(e))
             failed = True
             continue
         write_language(a.out_dir, lang, changed, rep)
@@ -378,7 +399,8 @@ def load(a, site: Site) -> int:
         if not new:
             print(f"{lang}: nothing to load (no task changed)")
             continue
-        current = [r for r in site.dump_records() if r["lang"] == lang]
+        texts = {}
+        current = [r for r in site.dump_records(texts) if r["lang"] == lang]
         if input_hash(current) != rep["input_sha256"]:
             raise Refused(f"{lang}: the site's bodies are not the ones the dry run read (tasks were loaded or changed since); run the dry run again")
         old = {r["id"]: r for r in current}
@@ -390,14 +412,20 @@ def load(a, site: Site) -> int:
             why = check_only_fields_differ(old[t["id"]], t)
             if why:
                 raise Refused(f"{t['id']}: the new body differs in more than the two fields ({why})")
-        sent = 0
+        # Each line carries the body text the dry run read as `if_body`: the Worker replaces a body only while it is still that
+        # text, so a task another loader changed after the read is left alone and reported as stale.
+        sent, stale = 0, []
         for i in range(0, len(new), CHUNK):
-            sent += site.post_tasks([canonical(t) for t in new[i:i + CHUNK]])["tasks"]
+            res = site.post_tasks([json.dumps({**js_numbers(t), "if_body": texts[t["id"]]}, ensure_ascii=False, separators=(",", ":")) for t in new[i:i + CHUNK]])
+            sent += res["tasks"]
+            stale += res.get("stale", [])
+        if stale:
+            print(f"{lang}: {len(stale)} tasks changed on the site since the dry run read them and were not replaced: " + ", ".join(stale[:5]), file=sys.stderr)
         after = {r["id"]: r for r in site.dump_records() if r["lang"] == lang}
-        wrong = [t["id"] for t in new if after.get(t["id"]) != t]
+        wrong = [t["id"] for t in new if t["id"] not in stale and after.get(t["id"]) != t]
         others = [i for i in old if i not in {t["id"] for t in new} and after.get(i) != old[i]]
-        print(f"{lang}: sent {sent} bodies; read back {len(new) - len(wrong)} as sent, {len(wrong)} not; {len(others)} other tasks changed")
-        if wrong or others:
+        print(f"{lang}: sent {sent} bodies; {len(stale)} stale (changed since the read, not replaced); read back {len(new) - len(stale) - len(wrong)} as sent, {len(wrong)} not; {len(others)} other tasks changed")
+        if wrong or others or stale:
             print("  check the site: " + ", ".join((wrong + others)[:5]), file=sys.stderr)
             return 1
     return 0
@@ -445,6 +473,9 @@ def main() -> int:
         return dry_run(a, ctx, records, full)
     except Refused as e:
         print(f"REFUSED {e}", file=sys.stderr)
+        if a.action == "dry-run":
+            for lang in a.lang:
+                invalidate(a.out_dir, lang, str(e))
         return 1
 
 

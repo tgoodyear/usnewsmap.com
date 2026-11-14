@@ -116,6 +116,29 @@ test("/admin/tasks replaces a task's body and leaves its answers, counts, outcom
   assert.deepEqual(state(), before, "everything but the body is as it was");
 });
 
+test("/admin/tasks with if_body replaces a body only while it is still the one the sender read", async () => {
+  const { db, DB } = await sqliteD1();
+  const text = JSON.stringify({ page: "p", a: "x", b: "y" });
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('yi/s/1', 'yi', 's', ?), ('yi/s/2', 'yi', 's', ?)").run(text, text);
+  const line = (id, body, if_body, extra = {}) => JSON.stringify({ id, lang: "yi", set: "s", ...body, ...(if_body === undefined ? {} : { if_body }), ...extra });
+  // task 2 was edited by another loader after the sender read it
+  db.prepare("UPDATE tasks SET body = ? WHERE id = 'yi/s/2'").run(JSON.stringify({ page: "p", a: "x", b: "edited" }));
+  const next = { page: "p", a: "x", b: "y", mark_only: [] };
+  const r = await adminCall(DB, "/admin/tasks", null, [line("yi/s/1", next, text), line("yi/s/2", next, text), line("yi/s/missing", next, text)].join("\n"));
+  assert.deepEqual(await r.json(), { ok: true, tasks: 1, stale: ["yi/s/2", "yi/s/missing"] });
+  assert.deepEqual(JSON.parse(db.prepare("SELECT body FROM tasks WHERE id = 'yi/s/1'").get().body), next);
+  assert.equal(JSON.parse(db.prepare("SELECT body FROM tasks WHERE id = 'yi/s/2'").get().body).b, "edited", "the other loader's edit is kept");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM tasks").get().n, 2, "a conditional line never inserts");
+  // a wrong lang or set is stale too, and a line without if_body behaves as before
+  const r2 = await adminCall(DB, "/admin/tasks", null, line("yi/s/1", next, JSON.stringify(next), { lang: "sr" }));
+  assert.deepEqual(await r2.json(), { ok: true, tasks: 0, stale: ["yi/s/1"] });
+  assert.deepEqual(await (await adminCall(DB, "/admin/tasks", null, line("yi/s/3", next))).json(), { ok: true, tasks: 1 });
+  assert.equal((await adminCall(DB, "/admin/tasks", null, line("yi/s/1", next, 5))).status, 400);
+  // more than one batch of 50: the stale ids are still found
+  const many = Array.from({ length: 120 }, (_, i) => line(`yi/s/m${i}`, next, "no such body")).join("\n");
+  assert.equal((await (await adminCall(DB, "/admin/tasks", null, many)).json()).stale.length, 120);
+});
+
 test("the dump has every table's rows", async () => {
   const data = { languages: [{ code: "chr", config: "{}" }], tasks: [{ id: "t1" }, { id: "t2" }], answers: [{ task_id: "t1", contributor: "c", choice: "a", at: 1 }],
     answers_excluded: [{ task_id: "t2", contributor: "d", choice: "b", at: 2 }] };

@@ -38,12 +38,16 @@ def plain_task(tid="yi/s/2~0"):
 
 
 def context(**kw):
-    return rm.Context(la.Fonts(), os.path.join(HERE, "..", "languages"), la.THRESHOLD, [], kw.get("allow_unmeasured", False))
+    return rm.Context(la.Fonts(), os.path.join(HERE, "..", "languages"), la.THRESHOLD, [], kw.get("allow_unmeasured", True))  # a CI machine may have no Hebrew reference font
+
+
+def body_text(r):
+    return json.dumps({k: v for k, v in r.items() if k not in ("id", "lang", "set")}, ensure_ascii=False)
 
 
 def dump_text(records, table="tasks"):
-    return "\n".join(json.dumps({"table": table, "row": {"id": r["id"], "lang": r["lang"], "set_name": r["set"], "body": json.dumps(
-        {k: v for k, v in r.items() if k not in ("id", "lang", "set")}, ensure_ascii=False)}}, ensure_ascii=False) for r in records)
+    return "\n".join(json.dumps({"table": table, "row": {"id": r["id"], "lang": r["lang"], "set_name": r["set"], "body": body_text(r)}}, ensure_ascii=False)
+                     for r in records)
 
 
 @unittest.skipUnless(HAVE_RAQM, "Pillow with Raqm not installed")
@@ -117,7 +121,7 @@ class Recompute(unittest.TestCase):
 
     def test_unmeasured_pairs_fail_unless_allowed(self):
         t = body("yi/s/9~0", "ר", "ד")
-        ctx = context()
+        ctx = context(allow_unmeasured=False)
         ctx.fonts.overrides["HEBREW"] = os.path.join(HERE, "no-such-font.ttf")
         ctx.fonts.paths["HEBREW"] = None  # no font for the script
         with self.assertRaises(rm.Refused):
@@ -130,7 +134,10 @@ class Recompute(unittest.TestCase):
     def test_cherokee_uses_the_bundled_font(self):
         t = {"id": "chr/s/1~0", "lang": "chr", "set": "s", "a": "ᏒᎯ", "b": "ᎡᎯ", "a_is": "x", "b_is": "y"}
         ctx = rm.Context(la.Fonts(), os.path.join(HERE, "..", "languages"), la.THRESHOLD, [], False)
-        rm.recompute_language("chr", [t], ctx, True)
+        try:
+            rm.recompute_language("chr", [t], ctx, True)
+        except OSError as e:  # a FreeType that can't read woff2 and no fonttools
+            self.skipTest(str(e))
         self.assertEqual(ctx.fonts.paths["CHEROKEE"], la.BUNDLED["CHEROKEE"])
 
     def test_a_language_with_no_configuration_is_refused(self):
@@ -156,7 +163,7 @@ class Commands(unittest.TestCase):
         self.out = os.path.join(self.tmp.name, "out")
 
     def run_tool(self, *args):
-        return subprocess.run([sys.executable, os.path.join(HERE, "recompute_marks.py"), *args], capture_output=True, text=True)
+        return subprocess.run([sys.executable, os.path.join(HERE, "recompute_marks.py"), "--allow-unmeasured", *args], capture_output=True, text=True)
 
     def test_dry_run_writes_bodies_and_a_passing_report(self):
         r = self.run_tool("--lang", "yi", "--bodies", self.bodies, "--out-dir", self.out)
@@ -173,6 +180,24 @@ class Commands(unittest.TestCase):
         out2 = os.path.join(self.tmp.name, "out2")
         self.assertEqual(self.run_tool("--lang", "yi", "--dump", dump, "--out-dir", out2).returncode, 0)
         self.assertEqual(json.load(open(os.path.join(out2, "yi", "report.json")))["input_sha256"], rep["input_sha256"])
+
+    def test_whole_number_floats_in_offline_bodies_match_what_the_site_stores(self):
+        # build_tasks.py writes 1.0 and 0.0 in `box`; the site stores 1 and 0
+        t = mark_task()
+        t["box"] = [0.0, 0.2, 1.0, 0.4]
+        site_form = dict(t, box=[0, 0.2, 1, 0.4])
+        self.assertEqual(rm.canonical(t), rm.canonical(site_form))
+        self.assertEqual(rm.input_hash([t]), rm.input_hash([site_form]))
+        (new,), _ = rm.recompute_language("yi", [t], context(), True)
+        self.assertEqual(rm.check_only_fields_differ(site_form, new), "")
+        self.assertIn('"box":[0,0.2,1,0.4]', rm.canonical(new))
+
+    def test_a_refusal_before_the_dry_run_also_removes_an_older_passing_report(self):
+        self.assertEqual(self.run_tool("--lang", "yi", "--bodies", self.bodies, "--out-dir", self.out).returncode, 0)
+        open(self.bodies, "w", encoding="utf-8").write(json.dumps({"id": "yi/s/1~0", "lang": "yi"}) + "\n")  # no `set`
+        self.assertEqual(self.run_tool("--lang", "yi", "--bodies", self.bodies, "--out-dir", self.out).returncode, 1)
+        self.assertFalse(os.path.exists(os.path.join(self.out, "yi", "tasks.jsonl")))
+        self.assertFalse(json.load(open(os.path.join(self.out, "yi", "report.json")))["passed"])
 
     def test_cherokee_font_override_and_missing_source_are_refused(self):
         self.assertEqual(self.run_tool("--lang", "yi", "--bodies", self.bodies, "--out-dir", self.out, "--font", "Cherokee=x.ttf").returncode, 1)
@@ -206,15 +231,20 @@ class FakeSite(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         assert self.path == "/admin/tasks" and self.headers["authorization"] == "Bearer tok"
         lines = self.rfile.read(int(self.headers["content-length"])).decode().splitlines()
-        for l in lines:  # what /admin/tasks does: the body is replaced, the rest of the row stays
+        stale = []
+        for l in lines:  # what /admin/tasks does with if_body: the body is replaced only while it is the text the sender read
             t = json.loads(l)
+            expected = t.pop("if_body")
             for i, r in enumerate(FakeSite.records):
                 if r["id"] == t["id"]:
-                    FakeSite.records[i] = t
+                    if body_text(r) == expected:
+                        FakeSite.records[i] = t
+                    else:
+                        stale.append(t["id"])
         FakeSite.posted.append(len(lines))
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(json.dumps({"ok": True, "tasks": len(lines)}).encode())
+        self.wfile.write(json.dumps({"ok": True, "tasks": len(lines) - len(stale), "stale": stale}).encode())
 
 
 @unittest.skipUnless(HAVE_RAQM, "Pillow with Raqm not installed")
@@ -240,6 +270,17 @@ class Load(unittest.TestCase):
         self.assertEqual(FakeSite.posted, [1])
         self.assertIn("mark_only", FakeSite.records[0])
         self.assertEqual(rm.canonical(FakeSite.records[1]), rm.canonical(plain_task("yi/s/2~0")))
+
+    def test_a_task_changed_after_the_read_is_not_overwritten(self):
+        real = self.site.dump_records
+        def read_then_edit(texts=None):
+            out = real(texts)
+            FakeSite.records[0] = dict(FakeSite.records[0], page="edited by another loader")  # after the dump, before the post
+            return out
+        with mock.patch.object(self.site, "dump_records", read_then_edit):
+            self.assertEqual(rm.load(self.args, self.site), 1)
+        self.assertEqual(FakeSite.records[0]["page"], "edited by another loader")
+        self.assertNotIn("mark_only", FakeSite.records[0])
 
     def test_load_refuses_without_a_report_or_with_a_failed_one(self):
         os.remove(os.path.join(self.args.out_dir, "yi", "report.json"))
