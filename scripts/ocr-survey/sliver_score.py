@@ -110,10 +110,14 @@ def cmd_cherokee(a) -> dict:
 def cmd_crops(a) -> dict:
     """Writes the crops and the before and after texts in `usnm-ocr-survey score`'s form to --work
     and scores them with it (Myers' bit-parallel edit distance in Rust)."""
-    lines, _, _ = measured(a.measured, a.alto_root)
-    os.makedirs(a.work, exist_ok=True)
     crops_path = os.path.join(a.work, "crops.jsonl")
     hyp_paths = {side: os.path.join(a.work, f"{side}.jsonl") for side in ("before", "after")}
+    inputs = {os.path.realpath(x) for x in (a.crops, a.measured)}
+    clash = [x for x in (crops_path, *hyp_paths.values()) if os.path.realpath(x) in inputs]
+    if clash:
+        sys.exit(f"--work {a.work} would overwrite an input ({', '.join(clash)}); give another directory")
+    lines, _, _ = measured(a.measured, a.alto_root)
+    os.makedirs(a.work, exist_ok=True)
     tot = collections.Counter()
     changed = []
     with open(crops_path, "w", encoding="utf-8") as cf, open(hyp_paths["before"], "w", encoding="utf-8") as bf, \

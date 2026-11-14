@@ -64,11 +64,13 @@ pub fn is_sliver_below(width: f64, text: &str, height: f64, min_letter: f64) -> 
     n > 0 && height.is_finite() && height > 0.0 && width < min_letter * height * n as f64
 }
 
-/// The height a line's letters are measured against: the median height of
-/// its word boxes. An engine's line box can run to twice the type's height
-/// (LoC's often do, over a crooked line), and the median isn't moved by a
-/// tall rule or a speck in the line. A line without word boxes of positive
-/// height falls back to its own box.
+/// The height a line's letters are measured against: the lower median
+/// height of its word boxes. An engine's line box can run to twice the
+/// type's height (LoC's often do, over a crooked line), and the median
+/// isn't moved by a tall rule or a speck in the line. Of an even count the
+/// lower middle value is taken, so on a two-word line a tall rule beside a
+/// word can't raise the measure above the word. A line without word boxes
+/// of positive height falls back to its own box.
 pub fn line_height(line: &Line) -> f64 {
     let mut hs: Vec<f64> = line
         .words
@@ -80,12 +82,7 @@ pub fn line_height(line: &Line) -> f64 {
         return line.rect.height();
     }
     hs.sort_by(f64::total_cmp);
-    let n = hs.len();
-    if n % 2 == 1 {
-        hs[n / 2]
-    } else {
-        (hs[n / 2 - 1] + hs[n / 2]) / 2.0
-    }
+    hs[(hs.len() - 1) / 2]
 }
 
 /// What a line keeps at `min_letter`: which of its words, and whether its
@@ -270,6 +267,14 @@ mod tests {
         let mut p = page(vec![l], Granularity::Word);
         assert_eq!(drop_slivers(&mut p), Slivers { words: 1, lines: 0 });
         assert_eq!(texts(&p), [vec!["it", "was"]]);
+
+        // A two-word line: the rule beside `it` doesn't raise the measure.
+        let mut l = line(&[(100.0, 125.0, "it"), (140.0, 141.5, "|")]);
+        l.words[1].rect = Rect::new(140.0, 60.0, 141.5, 200.0);
+        assert_eq!(line_height(&l), 40.0);
+        let mut p = page(vec![l], Granularity::Word);
+        assert_eq!(drop_slivers(&mut p), Slivers { words: 1, lines: 0 });
+        assert_eq!(texts(&p), [vec!["it"]]);
     }
 
     /// A hyphenated word that is dropped takes its hyphen with it, so the
