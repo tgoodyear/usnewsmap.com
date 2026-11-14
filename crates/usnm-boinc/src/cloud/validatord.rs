@@ -9,6 +9,10 @@
 //! function behind `usnm-boinc gold check --file <result> --expected-dir <gold dir>`. Exit 0 of
 //! that command is `valid`; any other exit is the validate error (`invalid`). The apps have no
 //! compare script, so every valid result matches every other: one constant fingerprint.
+//!
+//! `usnm_ndlocr` and `usnm_quality` have an init and a compare script and answer in the server's
+//! pairwise `matches` form instead; see `pairwise`.
+mod pairwise;
 use super::pull::{self, OutFile};
 use crate::gold::{job::MAX_RESULT, validate};
 use anyhow::{bail, ensure, Context};
@@ -20,6 +24,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use pairwise::PAIRWISE_APPS;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -103,7 +108,7 @@ async fn validate_route(
     if !bearer(&headers).is_some_and(|t| token_matches(t, &s.cfg.secret)) {
         return reply(StatusCode::UNAUTHORIZED, "missing or wrong bearer token");
     }
-    if !GOLD_APPS.contains(&app.as_str()) {
+    if !GOLD_APPS.contains(&app.as_str()) && !PAIRWISE_APPS.contains(&app.as_str()) {
         return reply(StatusCode::NOT_FOUND, "no validator for this app");
     }
     let req: Request = match serde_json::from_slice(&body) {
@@ -156,6 +161,11 @@ impl std::error::Error for Conflict {}
 #[derive(Deserialize)]
 struct Request {
     call_id: String,
+    /// `check_set` or `check_pair`; only the pairwise apps read it.
+    #[serde(default)]
+    mode: String,
+    #[serde(default)]
+    canonical_result_id: Option<i64>,
     workunit: Wu,
     results: Vec<Res>,
 }
@@ -163,6 +173,8 @@ struct Request {
 #[derive(Deserialize)]
 struct Wu {
     app: String,
+    #[serde(default)]
+    min_quorum: i64,
 }
 
 #[derive(Deserialize)]
@@ -208,6 +220,9 @@ impl Request {
                 r.files.len() <= MAX_FILES,
                 "at most {MAX_FILES} files a result"
             );
+        }
+        if PAIRWISE_APPS.contains(&app) {
+            pairwise::check_request(self)?;
         }
         Ok(())
     }
@@ -260,6 +275,9 @@ async fn once(cfg: &Config, req: &Request, digest: &str) -> anyhow::Result<Value
 
 /// A verdict per result. The bool says whether every result has a final verdict.
 async fn evaluate(cfg: &Config, req: &Request) -> anyhow::Result<(Value, bool)> {
+    if PAIRWISE_APPS.contains(&req.workunit.app.as_str()) {
+        return pairwise::evaluate(cfg, req).await;
+    }
     let work = tempfile::tempdir_in(cfg.state_dir.join("work"))?;
     let mut out = Vec::new();
     let mut all_final = true;
@@ -326,6 +344,8 @@ mod tests {
         sync::atomic::{AtomicUsize, Ordering},
     };
     use usnm_ocr_survey::bundle;
+
+    mod pairwise;
 
     #[derive(Default)]
     struct Mock {

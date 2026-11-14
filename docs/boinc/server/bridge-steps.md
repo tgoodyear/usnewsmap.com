@@ -304,8 +304,9 @@ WantedBy=timers.target
 ## Validate gold results for the cloud server (dev only)
 
 `usnm-boinc cloud validatord` is the validation webhook the cloud BOINC server calls for an app whose `validator_url`
-points at it. This change serves the gold apps (`usnm_gold`, `usnm_gold_native`) only. It is for the dev cloud server
-only: nothing in the running bridge or the stock validators calls it, nothing is installed, and no tunnel is configured.
+points at it. It serves the gold apps (`usnm_gold`, `usnm_gold_native`) with a fingerprint reply, and `usnm_ndlocr` and
+`usnm_quality` with the server's pairwise `matches` reply (below). `usnm_qwen` is not served yet. It is for the dev cloud
+server only: nothing in the running bridge or the stock validators calls it, nothing is installed, and no tunnel is configured.
 
 It is not in any default build: no worker image, native app or bridge image build passes the feature, so their `usnm-boinc`
 binary does not have the subcommand. Build it where you run it, with
@@ -341,6 +342,59 @@ usnm-boinc cloud validatord --secret-file <webhook token> --state-dir <dir> --go
 - Limits: the request body is at most `--max-body-bytes` (1 MiB; 413 above), 64 results of at most 16 files, and a call
   is cut off after `--timeout-secs` (15, covering the wait behind a duplicate as well as the work; the server's `<webhook_timeout_secs>` is 20 by default) with a 503 the server
   counts as a failed call.
+
+### The pairwise apps: `usnm_ndlocr` and `usnm_quality`
+
+These two apps run an init script and a compare script under stock `script_validator`. The service answers a call with a
+verdict per result (`invalid`, `retry`, or only the `id` for a readable result) and a top-level `matches` list of
+`[id, id]` pairs, never a fingerprint (the server rejects both together).
+
+- Init, per result, with no change to the library: `ndlocr::load` (what `usnm-boinc ndlocr check` runs) and
+  `quality::validate::check` (`usnm-boinc quality check`, plus the result-name rule its `--keep` applies). A result
+  that does not list exactly three files, has a file over that position's read limit, or fails the check is `invalid`
+  (the init scripts exit 2 on a wrong count). A fetch that fails is `retry`.
+- Compare, with no change to the library: `ndlocr::compare` and `quality::validate::compare`, called as stock
+  `check_set` and `check_pair` (`sched/validate_util2.cpp`) call them. `check_set`: the usable results in request
+  order, each as the candidate (first argument) against every other usable result, stopping at the first candidate with
+  at least `min_quorum / 2` matches; nothing is compared when fewer than `min_quorum` results are usable. `check_pair`:
+  each late result (first argument) against the canonical result, and no other pair. A compare that errors is no match.
+  The server decides valid and invalid from the pairs, as stock does (D39 and D41 in cloud-boinc
+  `cloud/docs/compatibility.md`).
+- A request for these apps needs `mode`, `workunit.min_quorum` and, for `check_pair`, a `canonical_result_id` among the
+  results; otherwise it is a 400.
+- Any `retry` in a `check_set` call means no comparison is run and no side effect is recorded: the server ignores
+  comparisons of such a call, and the next call (a new call id) runs them. In `check_pair` each late result stands on
+  its own (D41): the late results that could be fetched are compared and recorded, and the one that could not is
+  `retry`. If the canonical result is not usable nothing is compared.
+
+Side effects of the stock scripts, and what this service does with each. State lives under `--state-dir/quality/`.
+
+| Stock side effect                                                                                                                                             | Where stock keeps it            | In this service                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `usnm_quality_check` copies every result that passes into `quality/seen/<result name>/` (`result.json`, `confusions.json`, `diag.txt`)                        | `<project>/quality/seen`        | Reproduced under `--state-dir/quality/seen/<result name>/` by the same library call (`check` with `keep`). Written only when the call has no transient failure (`check_set`) or the canonical result is usable (`check_pair`). A repeat overwrites the same bytes, so a replay or a retry adds nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `usnm_quality_compare` appends one JSON line per compare call to `quality/pairs.jsonl` (both orders appear when a `check_set` compares a pair from each side) | `<project>/quality/pairs.jsonl` | Reproduced in `--state-dir/quality/pairs.jsonl`: the line is the library's own, one per compare call as stock makes them. Each line is journaled under `quality/pairs-journal/` by call id and the two result ids: its text and the file length it goes at are saved, then it is appended and fsynced, then marked done. Before any new line is written, every unfinished intent is finished first, lowest offset first, under the log lock, so a torn tail left by a crash is truncated and its line appended whole before another call writes behind it. An intent whose offset is not where the file ends is rewritten durably with the real offset before the append. A repeated call id, a retried call and a restart add the line once. One validatord per state directory: the lock is in-process. A different call id for the same results (a later revision) appends again, as stock would on a new validation pass. |
+| The stock daemons write these as the validator's own user, where the bridge's collect and analysis read them                                                  | `<project>` tree                | Not moved there: the files are under `--state-dir`. Pointing the analysis at them, or copying them into the project tree, belongs to the install step (B4).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `usnm_ndlocr_check` and `usnm_ndlocr_compare` leave no file; `ndlocr compare` prints its Dice score to stderr                                                 | stderr of the daemon            | Nothing to reproduce. The library still prints the score, which lands in the service's own stderr.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `usnm_qwen_*`: `seen/`, `pairs.jsonl`, `pages/`, `crop-states`, the operator files `validator-rule` and `bundle-verdict`                                      | `<project>/qwen/`               | Later step (B3). `usnm_quality` and `usnm_ndlocr` read no operator rule file.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `script_validator`'s own work: credit, suspicious-result handling (`VAL_RESULT_SUSPICIOUS`), the transient exit code 3 of an init script                      | the validator daemon            | Credit is computed by the server. Suspicious-result handling has no webhook form (D39). Neither init script ever exits 3 (they read local files); a failed fetch is the `retry` case instead.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+
+The loops, the threshold and the exit-code mapping were checked against `check_set` and `check_pair` in
+`sched/validate_util2.cpp` and `init_result` and `compare_results` in `sched/script_validator.cpp` (the BOINC fork the
+cloud server tracks). The same: results that failed init are never compared; nothing is compared when fewer than
+`min_quorum` results passed init; each candidate is compared (candidate first) with every other usable result before its
+count is read, so a candidate's whole row is run even when the first comparison already reaches the threshold; the loop
+stops at the first candidate with `min_quorum / 2 + 1` matches, itself counted; `check_pair` compares the new result
+first and the canonical result second; a compare that exits non-zero but not 3 is "no match". The server needs no pair
+this service did not compute: it counts, per candidate, the listed pairs naming it, in result order, and every pair
+naming a candidate at or before the canonical one was compared (candidates after it are never needed). The pairs are
+read as unordered, which only matters for a compare that is not symmetric.
+
+Where this differs from the stock validators: a `check_set` with a `retry` result compares nothing, where stock goes on
+comparing the others and aborts only on a transient compare (D41: the server defers the call either way); a file
+system failure while keeping a `seen/` copy or writing the pair log is a 500 the server retries, where stock's script
+would exit 1 and the result would be invalid or the pair "no match"; neither wrapper ever exits 3 (the transient code),
+so a failed fetch is the only `retry` case; the `at` time of a log line is the validator's clock when it was first
+computed; and fetching the outputs is new (stock reads local files).
 
 A unit file, as text only:
 
