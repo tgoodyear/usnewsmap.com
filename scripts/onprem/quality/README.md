@@ -31,6 +31,7 @@ psql -v ON_ERROR_STOP=1 -d usnm_quality -f setup.sql
 | `staging`            | page staged in a campaign      | the feeder's page lists, with the image and ALTO each unit was staged from                                        |
 | `loc_alto`           | page and source batch          | LoC's own word confidence (ALTO `WC`) from the bulk OCR archives: mean, median, share under 0.5 (`load.py locwc`) |
 | `loc_software`       | batch version                  | the software that made LoC's OCR, from each bulk OCR archive's first ALTO header (`load.py locsw`)                |
+| `boinc_page_provenance` | published BOINC OCR page    | which BOINC host, workunit and app version read it, from the BOINC database (`provenance.sql`, #1956)            |
 
 Unit results carry the page hat's version (#1078): `hat_version` 2 is solved on the
 passage-matched disagreement, and `est_cer_v1` and the other `_v1` columns keep the unit's
