@@ -5,7 +5,7 @@ Reads the JSON lines `cargo run -p usnm-alto --example slivers` writes, matches 
 lines and reports character and word error before and after the filter.
 
     sliver_score.py cherokee --measured out.jsonl --lines crops/lines.jsonl --alto-root DIR [--tier silver]
-    sliver_score.py crops --measured out.jsonl --crops crops.jsonl --alto-root DIR
+    sliver_score.py crops --measured out.jsonl --crops crops.jsonl --alto-root DIR --work DIR [--scorer PATH]
 
 `cherokee` takes test set v2's lines.jsonl: a row per LoC TextLine with `page`, `loc_text` and
 `reference`. A measured line matches the row on its page whose `loc_text` is its text before the
@@ -14,8 +14,8 @@ error on the syllabary words.
 
 `crops` takes gold crops (`page_id` as `<lccn>/<date>/ed-<n>/seq-<m>`, `box` in the page image's
 pixels, `text` the transcription): a crop's hypothesis is the measured lines whose centre is in its
-box, in order. Character error is on all characters with whitespace runs as one space, word error
-on whitespace tokens.
+box, in order. They are scored by `usnm-ocr-survey score` (the gold set's CER and WER: NFC, line-end
+hyphens rejoined, whitespace runs as one space).
 
 The measured `file` must end in `<alto-root>/<lccn>/<yyyy>/<mm>/<dd>/ed-<n>/seq-<m>/ocr.xml`.
 """
@@ -23,8 +23,11 @@ from __future__ import annotations
 
 import argparse
 import collections
+import csv
 import json
+import os
 import re
+import subprocess
 import sys
 
 SYLLABARY = re.compile("[Ꭰ-Ᏽ]+")
@@ -97,32 +100,46 @@ def cmd_cherokee(a) -> dict:
 
 
 def cmd_crops(a) -> dict:
+    """Writes the crops and the before and after texts in `usnm-ocr-survey score`'s form to --work
+    and scores them with it (Myers' bit-parallel edit distance in Rust)."""
     lines, _, _ = measured(a.measured, a.alto_root)
+    os.makedirs(a.work, exist_ok=True)
+    crops_path = os.path.join(a.work, "crops.jsonl")
+    hyp_paths = {side: os.path.join(a.work, f"{side}.jsonl") for side in ("before", "after")}
     tot = collections.Counter()
     changed = []
-    for c in map(json.loads, open(a.crops, encoding="utf-8")):
-        page = c["page_id"]
-        if page not in lines:
-            tot["unmatched"] += 1
-            continue
-        x0, y0, x1, y1 = c["box"]
-        inside = [l for l in lines[page]
-                  if x0 <= (l["box"][0] + l["box"][2]) / 2 <= x1 and y0 <= (l["box"][1] + l["box"][3]) / 2 <= y1]
-        gold = " ".join(c["text"].split())
-        tot["lines"] += 1
-        hyps = {}
-        for side in ("before", "after"):
-            hyp = " ".join(" ".join(l[side] for l in inside).split())
-            hyps[side] = hyp
-            tot[f"{side}_cerr"] += edit(gold, hyp)
-            tot[f"{side}_werr"] += edit(gold.split(), hyp.split())
-        tot["letters"] += len(gold)
-        tot["words"] += len(gold.split())
-        if hyps["before"] != hyps["after"]:
-            tot["lines_changed"] += 1
-            changed.append({"crop": c.get("crop_id"), "dropped": [
-                (l["before"], l["after"]) for l in inside if l["before"] != l["after"]]})
-    return summarize(tot, changed, "crops")
+    with open(crops_path, "w", encoding="utf-8") as cf, open(hyp_paths["before"], "w", encoding="utf-8") as bf, \
+            open(hyp_paths["after"], "w", encoding="utf-8") as af:
+        for c in map(json.loads, open(a.crops, encoding="utf-8")):
+            page = c["page_id"]
+            if page not in lines:
+                tot["unmatched"] += 1
+                continue
+            x0, y0, x1, y1 = c["box"]
+            inside = [l for l in lines[page]
+                      if x0 <= (l["box"][0] + l["box"][2]) / 2 <= x1 and y0 <= (l["box"][1] + l["box"][3]) / 2 <= y1]
+            tot["lines"] += 1
+            cf.write(json.dumps({"crop_id": c["crop_id"], "group": page, "transcription": c["text"],
+                                 "transcriber": "published ground truth", "reviewer": "not applicable"},
+                                ensure_ascii=False) + "\n")
+            texts = {side: "\n".join(l[side] for l in inside) for side in ("before", "after")}
+            bf.write(json.dumps({"crop_id": c["crop_id"], "text": texts["before"]}, ensure_ascii=False) + "\n")
+            af.write(json.dumps({"crop_id": c["crop_id"], "text": texts["after"]}, ensure_ascii=False) + "\n")
+            if texts["before"] != texts["after"]:
+                tot["lines_changed"] += 1
+                changed.append({"crop": c["crop_id"], "dropped": [
+                    (l["before"], l["after"]) for l in inside if l["before"] != l["after"]]})
+    out_dir = os.path.join(a.work, "scores")
+    subprocess.run([a.scorer, "score", "--crops", crops_path, "--hyp", f"before={hyp_paths['before']}",
+                    "--hyp", f"after={hyp_paths['after']}", "--out", out_dir], check=True, stdout=subprocess.DEVNULL)
+    out = {"set": "crops", "lines": tot["lines"], "unmatched": tot["unmatched"], "lines_changed": tot["lines_changed"]}
+    for r in csv.DictReader(open(os.path.join(out_dir, "cer-summary.csv"), encoding="utf-8")):
+        if r["group"] == "all":
+            out["letters"] = int(r["ref_chars"])
+            out[f"cer_{r['engine']}"] = float(r["cer"])
+            out[f"wer_{r['engine']}"] = float(r["wer"])
+    out["changed"] = changed
+    return out
 
 
 def summarize(tot, changed, label) -> dict:
@@ -148,6 +165,8 @@ def main(argv=None) -> int:
     cr.add_argument("--measured", required=True)
     cr.add_argument("--crops", required=True)
     cr.add_argument("--alto-root", required=True)
+    cr.add_argument("--work", required=True, help="where the scorer's inputs and its CSV files go")
+    cr.add_argument("--scorer", default="usnm-ocr-survey", help="the usnm-ocr-survey binary")
     a = p.parse_args(argv)
     out = cmd_cherokee(a) if a.cmd == "cherokee" else cmd_crops(a)
     json.dump(out, sys.stdout, ensure_ascii=False)
