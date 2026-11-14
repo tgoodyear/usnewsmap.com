@@ -122,7 +122,10 @@ BOINC_LINE_PSM, BOINC_MAX_LINES, BOINC_MAX_LINE_ID, BOINC_MAX_COORD = 13, 2000, 
 BOINC_LINE_LANGUAGES = ("chr",)
 BOINC_MAX_SCAN = 128 * 1024 * 1024
 BOINC_RETRY_FIELDS = {"previous_job", "previous_attempt", "previous_workunit", "previous_ledger",
-                      "terminal", "previous_error", "app_version_num", "reviewed_reason"}
+                      "terminal", "previous_error", "app_version_num", "reviewed_reason", "native"}
+# `native` is only on a retry of a usnm_ocr_native page (#1919): the parent's build and deadline
+# and the one host the child is for.
+BOINC_NATIVE_RETRY_FIELDS = {"previous_image", "previous_timeout_secs", "target_host"}
 BOINC_PAGE = re.compile(r"([A-Za-z0-9-]+)/(\d{4}-\d\d-\d\d)/(ed-[1-9]\d*)/(seq-[1-9]\d*)\Z")
 BOINC_JOB_ID = re.compile(r"[0-9a-f]{64}\Z")
 BOINC_RECORD_BYTES = 1024 * 1024  # The bridge reads record.json up to twice its 512 KiB request limit.
@@ -1030,7 +1033,13 @@ def check_boinc_job(job, record):
     retry = record.get("retry")
     require((retry is None) == (not is_retry), "retry job lacks its reservation journal, or the reverse")
     if is_retry:
-        require(isinstance(retry, dict) and set(retry) == BOINC_RETRY_FIELDS and
+        native = retry.get("native") if isinstance(retry, dict) else None
+        require(native is None or (isinstance(native, dict) and set(native) == BOINC_NATIVE_RETRY_FIELDS and
+                                   isinstance(native["previous_image"], str) and
+                                   type(native["previous_timeout_secs"]) is int and
+                                   type(native["target_host"]) is int and native["target_host"] > 0),
+                "invalid native retry journal")
+        require(isinstance(retry, dict) and set(retry) - {"native"} == BOINC_RETRY_FIELDS - {"native"} and
                 retry["previous_job"] == retry_of and
                 type(retry["previous_attempt"]) is int and retry["previous_attempt"] + 1 == attempt and
                 retry["previous_workunit"] == "usnm_" + retry_of and record.get("bundle") is None,
