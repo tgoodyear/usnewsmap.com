@@ -15,8 +15,8 @@
 #                  When set, each run first brings PAGES_DIR up to date from the lake's
 #                  ocr-local/pages/ with sync_curated_pages.py: read-only, as the host's Arc
 #                  identity (needs IDENTITY_ENDPOINT and root or himds; the service sets them)
-#   BOINC_EXPORT   a command that writes the BOINC database export into the directory given as
-#                  its first argument: wu.tsv (the workunit query of boinc_provenance.py), av.tsv
+#   BOINC_EXPORT   a command that writes the BOINC database export into the directory given by
+#                  --out-dir: wu.tsv (the workunit query of boinc_provenance.py), av.tsv
 #                  and bundles/ (the bundle request files). It reads BOINC read-only, host to
 #                  host; nothing passes through a workstation.
 #   QUALITY_DSN    the quality_loader DSN file (default /etc/usnm/quality-db/dsn)
@@ -52,7 +52,7 @@ work=$(mktemp -d /var/tmp/usnm-provenance.XXXXXX)
 trap 'rm -rf "$work"' EXIT
 psql "$(cat "$QUALITY_DSN")" -v ON_ERROR_STOP=1 -At -F "$(printf '\t')" \
   -c "SELECT doc_id, node FROM quality.boinc_page_provenance WHERE status = 'resolved' OR candidate_host_ids IS NOT NULL" > "$work/skip.tsv"
-"$BOINC_EXPORT" "$work"
+"$BOINC_EXPORT" --out-dir "$work"
 [ -s "$work/wu.tsv" ] && [ -s "$work/av.tsv" ] || die "the BOINC export wrote no wu.tsv or av.tsv"
 /opt/usnm-quality-feed/venv/bin/python "$HERE/boinc_provenance.py" --pages "$PAGES_DIR" --wu-tsv "$work/wu.tsv" --av-tsv "$work/av.tsv" \
   --bundles "$work/bundles" --skip "$work/skip.tsv" --out "$work/provenance.tsv"

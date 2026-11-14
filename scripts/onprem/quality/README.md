@@ -55,7 +55,7 @@ unresolved pages (`boinc_provenance.py --skip`) and upserts them (`provenance_lo
   05:00 UTC and keeps the file in the container's outbox mount,
   `/var/lib/usnm-quality-feed/outbox/provenance/`. The walk of the download tree takes about
   six minutes. Pve to pve-laptop, nothing through a workstation.
-- **BOINC_EXPORT.** `provenance-export-unpack.sh DIR` unpacks that file; it fails if the file is
+- **BOINC_EXPORT.** `provenance-export-unpack.sh --out-dir DIR` unpacks that file; it fails if the file is
   older than 36 hours, so a stopped fetch shows as a failed unit.
 - **Current pages.** `/srv/curated/ocr-local/pages` on the container is a mirror that stopped
   updating on 23 October. With `CURATED_URL` set, `sync_curated_pages.py` first copies the lake's
