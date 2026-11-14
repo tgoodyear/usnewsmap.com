@@ -117,6 +117,7 @@ impl Fx {
             bundle: None,
             unbundled: None,
             held: None,
+            origin: None,
         };
         let previous = parent.queued().unwrap();
         if queue_fed {
@@ -814,6 +815,112 @@ async fn requests_are_checked_before_anything_is_read() {
         assert!(check_request(&request).is_err());
     }
     assert!(check_request(&base).is_ok());
+}
+
+#[tokio::test]
+async fn every_import_carries_its_image_job_host_and_platform_and_a_retry_keeps_its_note() {
+    use crate::{host_trust::Family, Origin};
+    let fx = Fx::new().await;
+    let tag = |location: &str, value: &str| {
+        format!(r#"<fileIdentifier fileIdentifierLocation="{location}">{value}</fileIdentifier>"#)
+    };
+    // An ordinary page, with a host and its family.
+    let mut page = fx.parent.clone();
+    page.origin = Some(Origin {
+        host: Some(77),
+        platform_family: Some(Family::Arm64.as_str().to_owned()),
+    });
+    let published = crate::published_alto(&page, ALTO.as_bytes()).unwrap();
+    for needle in [
+        tag("usnm_engine_image", &page.job.engine.image),
+        tag("usnm_job_id", &page.job.id),
+        tag("usnm_boinc_host", "77"),
+        tag("usnm_platform_family", "arm64"),
+    ] {
+        assert!(published.contains(&needle), "{needle} in {published}");
+    }
+    assert!(!published.contains("usnm_retry_of"));
+    usnm_ocr_local::checks::check_alto(published.as_bytes()).unwrap();
+    // The same record publishes the same bytes.
+    assert_eq!(
+        published,
+        crate::published_alto(&page, ALTO.as_bytes()).unwrap()
+    );
+    // No host: still published, with the image and job id and no host or family entry.
+    page.origin = None;
+    let published = crate::published_alto(&page, ALTO.as_bytes()).unwrap();
+    assert!(published.contains(&tag("usnm_engine_image", &page.job.engine.image)));
+    assert!(published.contains(&tag("usnm_job_id", &page.job.id)));
+    assert!(!published.contains("usnm_boinc_host"));
+    assert!(!published.contains("usnm_platform_family"));
+    usnm_ocr_local::checks::check_alto(published.as_bytes()).unwrap();
+    // A retry keeps its own note beside the origin.
+    let archive = fx.archive();
+    let request = Request {
+        target_hosts: &[1],
+        ..fx.request(Some(&archive))
+    };
+    let Outcome::Prepared { child, .. } = fx.run(&request).await.unwrap() else {
+        panic!("expected a prepared child");
+    };
+    let mut record: Record = serde_json::from_slice(
+        &fx.handoff
+            .get(&format!("dispatch/jobs/{child}/record.json"))
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    record.origin = Some(Origin {
+        host: Some(5),
+        platform_family: None,
+    });
+    let published = crate::published_alto(&record, ALTO.as_bytes()).unwrap();
+    for needle in [
+        tag("usnm_retry_of", fx.id()),
+        tag("usnm_parent_image", &fx.parent.job.engine.image),
+        tag("usnm_retry_reason", "slow-class"),
+        tag("usnm_engine_image", &record.job.engine.image),
+        tag("usnm_job_id", &record.job.id),
+        tag("usnm_boinc_host", "5"),
+    ] {
+        assert!(published.contains(&needle), "{needle} in {published}");
+    }
+    usnm_ocr_local::checks::check_alto(published.as_bytes()).unwrap();
+}
+
+#[test]
+fn set_origin_saves_the_host_before_the_put_and_keeps_what_it_is_not_given() {
+    use crate::host_trust::Family;
+    let temp = tempfile::tempdir().unwrap();
+    let job = crate::bundle::work::tests::job(1);
+    let mut record = Record {
+        job: job.clone(),
+        plan: String::new(),
+        stage: crate::Stage::Prepared,
+        stamp: "s".into(),
+        error: None,
+        terminal: None,
+        retry: None,
+        ledger: None,
+        bundle: None,
+        unbundled: None,
+        held: None,
+        origin: None,
+    };
+    std::fs::create_dir_all(crate::dir(temp.path(), &job.id).unwrap()).unwrap();
+    crate::save(temp.path(), &record).unwrap();
+    crate::set_origin(temp.path(), &job.id, Some(9), Some(Family::Amd64)).unwrap();
+    crate::set_origin(temp.path(), &job.id, None, None).unwrap();
+    crate::set_origin(temp.path(), &job.id, Some(0), None).unwrap();
+    let saved = crate::load(temp.path(), &job.id).unwrap().origin.unwrap();
+    assert_eq!(saved.host, Some(9));
+    assert_eq!(saved.platform_family.as_deref(), Some("amd64"));
+    // A published record is left alone.
+    record.stage = crate::Stage::Published;
+    crate::save(temp.path(), &record).unwrap();
+    crate::set_origin(temp.path(), &job.id, Some(10), None).unwrap();
+    assert!(crate::load(temp.path(), &job.id).unwrap().origin.is_none());
 }
 
 #[tokio::test]

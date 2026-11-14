@@ -46,6 +46,16 @@ pub enum Family {
     Arm64,
 }
 
+impl Family {
+    /// The name published in an ALTO (`usnm_platform_family`, #1956).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Family::Amd64 => "amd64",
+            Family::Arm64 => "arm64",
+        }
+    }
+}
+
 /// The family of a host from its `os_name` and `p_vendor`, or None when they don't say. An
 /// unknown host is neither replayed nor used as a peer.
 pub fn family(os_name: &str, p_vendor: &str) -> Option<Family> {
@@ -775,6 +785,7 @@ mod tests {
             bundle: None,
             unbundled: None,
             held: None,
+            origin: None,
         };
         crate::save(&jobs, &record).unwrap();
         let trust = serde_json::json!({

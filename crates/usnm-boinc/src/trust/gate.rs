@@ -360,6 +360,7 @@ pub async fn collect(
             bail!("held back, not published: {reason}");
         }
     }
+    crate::set_origin(root, id, host_id, None)?;
     crate::collect(root, spool, id, curated, out).await?;
     Ok(Collected::Published)
 }

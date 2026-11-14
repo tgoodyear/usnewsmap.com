@@ -323,6 +323,7 @@ pub(crate) mod tests {
                         bundle: None,
                         unbundled: None,
                         held: None,
+                        origin: None,
                     },
                 )
                 .unwrap();

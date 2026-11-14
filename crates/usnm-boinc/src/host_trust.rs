@@ -20,7 +20,7 @@ mod onboard;
 mod promote;
 mod spot;
 
-pub use container_spot::{container_spot, parse_check, parse_submit, Platforms};
+pub use container_spot::{container_spot, family, parse_check, parse_submit, Family, Platforms};
 pub use native_spot::{native_spot, Canonical, Outcome, Paths, Replay, Report, Status};
 pub use onboard::onboard;
 pub use promote::{promote, HostFailure, Promotion};

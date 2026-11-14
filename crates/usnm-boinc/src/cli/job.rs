@@ -497,8 +497,15 @@ pub struct CollectArgs {
     #[arg(long)]
     trust: Option<PathBuf>,
     /// The BOINC host id of the canonical result (the result table's hostid).
-    #[arg(long, requires = "trust")]
+    /// Also published in the ALTO as `usnm_boinc_host` (#1956); without --trust it is only that.
+    #[arg(long)]
     host_id: Option<u64>,
+    /// The host row's `os_name` and `p_vendor`, which give the platform family published as
+    /// `usnm_platform_family` (#1956). Both or neither.
+    #[arg(long, requires = "host_p_vendor")]
+    host_os_name: Option<String>,
+    #[arg(long, requires = "host_os_name")]
+    host_p_vendor: Option<String>,
 }
 
 pub async fn collect(args: CollectArgs) -> anyhow::Result<()> {
@@ -510,9 +517,24 @@ pub async fn collect(args: CollectArgs) -> anyhow::Result<()> {
         out_url,
         trust,
         host_id,
+        host_os_name,
+        host_p_vendor,
     } = args;
     let curated = usnm_store::open(&curated_url)?;
     let out = usnm_store::open(&out_url)?;
+    let family = match (host_os_name, host_p_vendor) {
+        (Some(os), Some(vendor)) => {
+            let family = crate::host_trust::family(&os, &vendor);
+            if family.is_none() {
+                eprintln!(
+                    "host platform family not known from os_name {os:?}, p_vendor {vendor:?}"
+                );
+            }
+            family
+        }
+        _ => None,
+    };
+    crate::set_origin(&root, &job, host_id, family)?;
     if let Some(trust) = trust {
         let t = crate::trust::Trust::load(&trust)?;
         if let crate::trust::Collected::Held(reason) = crate::trust::collect(

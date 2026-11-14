@@ -381,6 +381,27 @@ A rebuild counts re-reads by these three. The published file's name already carr
 journal consumer (controller, server, bridge, native sync and seeder) needs a build that reads
 `retry.provenance` before the first child exists.
 
+**Origin of every import (#1956).** Each page `collect` publishes, retry or not, also carries where
+it was read, as `fileIdentifier`s after the retry's own, in the same element:
+
+```xml
+<fileIdentifier fileIdentifierLocation="usnm_engine_image">sha256:FULL IMAGE DIGEST</fileIdentifier>
+<fileIdentifier fileIdentifierLocation="usnm_job_id">FULL JOB ID</fileIdentifier>
+<fileIdentifier fileIdentifierLocation="usnm_boinc_host">HOST ID</fileIdentifier>
+<fileIdentifier fileIdentifierLocation="usnm_platform_family">amd64</fileIdentifier>
+```
+
+The image is the job's `engine.image` (the build the unit was sent), not a digest the worker
+reports. The host id is `collect --host-id` (also what `--trust` gates on), or the spool's
+`<wu>__host_id` when none is given; it is saved on the job's record before the put, so a re-run
+publishes the same bytes. The platform family is `host_trust::family` of the host row's `os_name`
+and `p_vendor` (the platform actually run, not the app version's), given as `collect
+--host-os-name` and `--host-p-vendor`; the spool has no copy of them, so a caller that does not
+pass them publishes no `usnm_platform_family`. An import with no host id still publishes, with the
+image and job id, and logs `boinc_import_no_host`. No worker release or parquet change is
+involved. Pages published before this carry none of it; the BOINC database has the host for them
+(workunit `usnm_<job id>`, canonical result's `hostid`).
+
 ## What runs on the host
 
 | Unit                               | What                                                                                                                                                                | Notes                                                                                                                     |
