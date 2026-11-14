@@ -25,6 +25,10 @@ pub struct Retry {
     /// Set for a retry of a `usnm_ocr_native` page (#1919): what the child must keep.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native: Option<NativeRetry>,
+    /// Why a controller-side retry (#1938) was made, which build it replaces and the hosts it
+    /// may go to. Published with the page (`Provenance::alto_note`), so a rebuild counts re-reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Provenance>,
 }
 
 /// What a native retry keeps of its parent, so submission can check it without the parent's
@@ -36,6 +40,138 @@ pub struct NativeRetry {
     pub previous_timeout_secs: u32,
     /// The host the child is for: the spot-check draw reads it, and `submit` refuses another.
     pub target_host: u64,
+}
+
+/// Why a page was read again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Reason {
+    /// It ran out of time on every host that tried it (SIGXCPU or the page deadline).
+    SlowClass,
+    /// The worker crashed (SIGSEGV) and the page gets one more read, same settings.
+    SegfaultOnce,
+}
+
+impl Reason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Reason::SlowClass => "slow-class",
+            Reason::SegfaultOnce => "segfault-once",
+        }
+    }
+}
+
+impl std::str::FromStr for Reason {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "slow-class" => Ok(Reason::SlowClass),
+            "segfault-once" => Ok(Reason::SegfaultOnce),
+            _ => anyhow::bail!("a retry reason is slow-class or segfault-once"),
+        }
+    }
+}
+
+/// The note a controller-side retry (#1938) carries from its journal to the published ALTO:
+/// `retry_of` (the parent's job id), `parent_image` (the worker it ran on) and `reason`. The
+/// request the worker reads is unchanged, so no worker release is needed for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Provenance {
+    pub retry_of: String,
+    pub parent_image: String,
+    pub reason: Reason,
+    /// The hosts the child may go to, each one golded for the child's image. Empty: the pool.
+    /// With hosts, `submit` creates the unit for one of them (`--target-host`) and never
+    /// without one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub target_hosts: Vec<u64>,
+}
+
+/// The `fileIdentifierLocation` values of a retry's note in the published ALTO.
+pub const ALTO_RETRY_OF: &str = "usnm_retry_of";
+pub const ALTO_PARENT_IMAGE: &str = "usnm_parent_image";
+pub const ALTO_RETRY_REASON: &str = "usnm_retry_reason";
+
+impl Provenance {
+    /// The ALTO with the note as `fileIdentifier`s after the others in `sourceImageInformation`
+    /// (where the scan's sha256 is, ADR-0015), so it is there on every published retry. They go
+    /// before the element's real closing tag, in its namespace prefix if it has one: a closing
+    /// tag inside a comment or CDATA section, or an element of another namespace, is not it. An
+    /// ALTO without that element, or with it empty, is refused: a retry is never published
+    /// without its note.
+    pub fn alto_note(&self, alto: &str) -> anyhow::Result<String> {
+        let (end, prefix) = source_image_information_end(alto)
+            .context("the ALTO has no sourceImageInformation to carry the retry's note")?;
+        // The parent's id and image are hex, and the reason one of two words: nothing to escape.
+        let ids: String = [
+            (ALTO_RETRY_OF, self.retry_of.as_str()),
+            (ALTO_PARENT_IMAGE, self.parent_image.as_str()),
+            (ALTO_RETRY_REASON, self.reason.as_str()),
+        ]
+        .iter()
+        .map(|(location, value)| {
+            format!(
+                "<{prefix}fileIdentifier fileIdentifierLocation=\"{location}\">{value}</{prefix}fileIdentifier>"
+            )
+        })
+        .collect();
+        Ok(format!("{}{ids}{}", &alto[..end], &alto[end..]))
+    }
+
+    fn valid(&self, record: &Record, retry_of: &str) -> bool {
+        self.retry_of == retry_of
+            && self
+                .parent_image
+                .strip_prefix("sha256:")
+                .is_some_and(boinc::is_sha256)
+            && self.target_hosts.windows(2).all(|w| w[0] < w[1])
+            && self.target_hosts.iter().all(|h| *h > 0)
+            && self.target_hosts.len() <= 64
+            && record.job.lines.is_none()
+    }
+}
+
+/// Where the closing tag of ALTO's own `sourceImageInformation` starts (`alto/Description/
+/// sourceImageInformation`, all in an ALTO namespace), and its namespace prefix (`"alto:"` or
+/// empty). Comments, CDATA sections and foreign elements of the same name are not it, and an
+/// empty element has no closing tag to put the note before. `None` when there is no such element.
+fn source_image_information_end(alto: &str) -> Option<(usize, String)> {
+    use quick_xml::{events::Event, name::ResolveResult, NsReader};
+    let mut reader = NsReader::from_str(alto);
+    // The open elements: whether each is in an ALTO namespace, and its local name.
+    let mut open: Vec<(bool, String)> = Vec::new();
+    loop {
+        let start = usize::try_from(reader.buffer_position()).ok()?;
+        let (ns, event) = reader.read_resolved_event().ok()?;
+        let in_alto = matches!(
+            ns,
+            ResolveResult::Bound(ns) if ns.as_ref().starts_with("http://www.loc.gov/standards/alto/ns-v")
+        );
+        match event {
+            Event::Start(e) => open.push((in_alto, e.local_name().as_ref().to_owned())),
+            Event::End(e) => {
+                let local = e.local_name().as_ref().to_owned();
+                let (closed_in_alto, _) = open.pop()?;
+                let within = |depth: usize, name: &str| {
+                    open.get(depth).is_some_and(|(alto, n)| *alto && n == name)
+                };
+                if closed_in_alto
+                    && local == "sourceImageInformation"
+                    && open.len() == 2
+                    && within(0, "alto")
+                    && within(1, "Description")
+                {
+                    let qname = e.name();
+                    let raw = qname.as_ref();
+                    let prefix = raw.get(..raw.len() - local.len())?;
+                    return Some((start, prefix.to_owned()));
+                }
+            }
+            Event::Eof => return None,
+            _ => {}
+        }
+    }
 }
 
 pub fn validate(record: &Record) -> anyhow::Result<()> {
@@ -65,6 +201,9 @@ pub fn validate(record: &Record) -> anyhow::Result<()> {
                             && record.job.engine.image == native.previous_image
                             && record.job.engine.timeout_secs >= native.previous_timeout_secs
                             && record.job.engine.timeout_secs <= crate::claim::MAX_TIMEOUT_SECS
+                    })
+                    && retry.provenance.as_ref().is_none_or(|p| {
+                        retry.native.is_none() && p.valid(record, &retry.previous_job)
                     }),
                 "invalid retry journal"
             );
@@ -116,6 +255,12 @@ pub struct Options<'a> {
     /// same one, once ([`native_retry_timeout`]). `app_version_num` is the native version that
     /// packages that build, and the child is submitted as a native unit.
     pub native_host: Option<u64>,
+    /// A controller-side retry's reason and hosts (#1938); the parent's id and image are filled
+    /// in from its journal.
+    pub note: Option<(Reason, Vec<u64>)>,
+    /// The time the child is made at, when it is fixed beforehand so an interrupted retry made
+    /// again in a fresh scratch root makes the same child (#1938). Default: now.
+    pub now: Option<chrono::DateTime<Utc>>,
     pub handoff: &'a dyn ObjectStore,
 }
 
@@ -263,7 +408,7 @@ pub async fn prepare(
     );
     let previous_row = previous.queued()?;
     let snapshot = Snapshot::load(state, reference).await?;
-    let now = Utc::now();
+    let now = opts.now.unwrap_or_else(Utc::now);
     let mut job = previous.job.clone();
     job.v = boinc::Job::version_for(true, job.lines.is_some());
     job.attempt = job.attempt.checked_add(1).context("attempt overflow")?;
@@ -289,6 +434,12 @@ pub async fn prepare(
             previous_image: previous.job.engine.image.clone(),
             previous_timeout_secs: previous.job.engine.timeout_secs,
             target_host,
+        }),
+        provenance: opts.note.as_ref().map(|(reason, hosts)| Provenance {
+            retry_of: previous.job.id.clone(),
+            parent_image: previous.job.engine.image.clone(),
+            reason: *reason,
+            target_hosts: hosts.clone(),
         }),
     };
     let child_dir = dir(opts.root, &id)?;
@@ -591,6 +742,8 @@ mod tests {
             image: &image,
             reviewed_reason: "reviewed terminal marker and settled native row",
             timeout_secs: None,
+            note: None,
+            now: None,
             native_host: None,
             handoff: curated.as_ref(),
         };
@@ -985,6 +1138,8 @@ mod tests {
             image: &image,
             reviewed_reason: "reviewed terminal marker and settled native row",
             timeout_secs: None,
+            note: None,
+            now: None,
             native_host: None,
             handoff: curated.as_ref(),
         };

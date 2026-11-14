@@ -2129,6 +2129,85 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("usnm_ocr_native", self.calls()[0])
 
+    def test_bridge_retry_child_submits_to_its_host_with_the_trust_list(self):
+        # #1938: RETRY_TARGET_HOST gives usnm-boinc the host and the trust list, beside the retry
+        # stores, and never goes with a line pin or a native unit.
+        text = open(BRIDGE_JOB_SCRIPT).read()
+        function = "submit_ocr_job() {" + text.split("submit_ocr_job() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        bindir = os.path.join(self.tmp, "retry-bin")
+        os.makedirs(bindir)
+        with open(os.path.join(bindir, "usnm-boinc"), "w") as f:
+            f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_LOG"\n')
+        os.chmod(os.path.join(bindir, "usnm-boinc"), 0o755)
+        share = os.path.join(self.tmp, "retry-share")
+        os.makedirs(os.path.join(share, "gold"))
+        script = 'fail() { echo "error: $*" >&2; exit 1; }\n' + function + "submit_ocr_job\n"
+        env = {**self.env, "PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log,
+               "HANDOFF_DIR": "/h", "PROJ": "/p", "JOB_ID": "1" * 64, "SHARE_DIR": share,
+               "COSMOS_ENDPOINT": "https://c.documents.azure.com:443/", "CURATED_URL": "https://d/curated"}
+
+        def run(**extra):
+            if os.path.exists(self.log):
+                os.remove(self.log)
+            return subprocess.run(["bash", "-euo", "pipefail", "-c", script], env={**env, **extra},
+                                  capture_output=True, text=True)
+
+        r = run(RETRY_TARGET_HOST="9")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("needs the trust list", r.stderr)
+        self.assertEqual(self.calls(), [])
+        open(os.path.join(share, "gold/trust.json"), "w").close()
+        r = run(RETRY_TARGET_HOST="9")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.calls(), [
+            f"submit --root /h --project /p --job {'1' * 64} --cosmos https://c.documents.azure.com:443/ "
+            f"--curated-url https://d/curated --target-host 9 --trust {share}/gold/trust.json"])
+        for extra in ({"RETRY_TARGET_HOST": "0"}, {"RETRY_TARGET_HOST": "x"},
+                      {"RETRY_TARGET_HOST": "9", "LINE_APP_VERSION": "108"},
+                      {"RETRY_TARGET_HOST": "9", "NATIVE_TARGET_HOST": "13"}):
+            with self.subTest(extra=extra):
+                self.assertEqual(run(**extra).returncode, 1)
+                self.assertEqual(self.calls(), [])
+
+    def test_bridge_wu_terminal_reads_the_database_and_writes_one_proof(self):
+        # #1938: the step names its workunits and nonce, reads only, and puts one file.
+        text = open(BRIDGE_JOB_SCRIPT).read()
+        self.assertIn('if [ "$step" = work-volume ] || [ "$step" = batch-inventory ] || [ "$step" = wu-terminal ]; then', text)
+        block = text.split('if [ "$step" = wu-terminal ]; then', 1)[1].split("  elif [ \"$step\" = batch-inventory ]", 1)[0]
+        self.assertIn("SELECT name, id, error_mask, canonical_resultid, assimilate_state FROM workunit", block)
+        for write in ("INSERT", "UPDATE", "DELETE"):
+            self.assertNotIn(write, block)
+        self.assertIn("handoff put --from \"$proof_dir\" --to-url \"$HANDOFF_URL\" --prefix scheduler", block)
+        bindir = os.path.join(self.tmp, "wu-bin")
+        os.makedirs(bindir)
+        with open(os.path.join(bindir, "usnm-boinc"), "w") as f:
+            f.write('#!/bin/sh\ncp "$4/wu-terminal.json" "$STUB_LOG.proof"\n')
+        with open(os.path.join(bindir, "mysql"), "w") as f:
+            f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_LOG.sql"\nprintf "%s\\t20337\\t2\\t0\\t2\\n" "$STUB_WU"\n')
+        for name in ("usnm-boinc", "mysql"):
+            os.chmod(os.path.join(bindir, name), 0o755)
+        wu = "usnm_" + "a" * 64
+        # The block runs on its own, with the step's helpers stubbed.
+        script = ('fail() { echo "error: $*" >&2; exit 1; }\nvalidate_handoff_location() { :; }\n'
+                  'step=wu-terminal\nmycnf=/dev/null\nDB_NAME=usnmocr\n' + block.rsplit("\n", 1)[0] + "\n")
+        env = {**self.env, "PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log,
+               "STUB_WU": wu, "HANDOFF_URL": "/handoff-state", "BATCH_NONCE": "c" * 32, "WU_NAMES": wu}
+        r = subprocess.run(["bash", "-euo", "pipefail", "-c", script], env=env, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(self.log + ".proof") as f:
+            proof = json.load(f)
+        self.assertEqual(proof["nonce"], "c" * 32)
+        self.assertEqual(proof["workunits"], [{"name": wu, "id": 20337, "error_mask": 2,
+                                               "canonical_resultid": 0, "assimilate_state": 2}])
+        with open(self.log + ".sql") as f:
+            self.assertIn(f"IN ('{wu}')", f.read())
+        for extra in ({"WU_NAMES": "usnm_x"}, {"WU_NAMES": wu + ",bad"}, {"BATCH_NONCE": "zz"},
+                      {"WU_NAMES": "x' OR '1'='1"}):
+            with self.subTest(extra=extra):
+                r = subprocess.run(["bash", "-euo", "pipefail", "-c", script], env={**env, **extra},
+                                   capture_output=True, text=True)
+                self.assertEqual(r.returncode, 1)
+
     def test_bridge_spool_out_batch_goes_on_past_a_failed_job(self):
         j1, j2, j3 = "1" * 64, "2" * 64, "3" * 64
         spools = {j: f"/project/usnmocr/results/{i}" for i, j in enumerate((j1, j2, j3))}

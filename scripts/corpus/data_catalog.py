@@ -122,10 +122,15 @@ BOINC_LINE_PSM, BOINC_MAX_LINES, BOINC_MAX_LINE_ID, BOINC_MAX_COORD = 13, 2000, 
 BOINC_LINE_LANGUAGES = ("chr",)
 BOINC_MAX_SCAN = 128 * 1024 * 1024
 BOINC_RETRY_FIELDS = {"previous_job", "previous_attempt", "previous_workunit", "previous_ledger",
-                      "terminal", "previous_error", "app_version_num", "reviewed_reason", "native"}
+                      "terminal", "previous_error", "app_version_num", "reviewed_reason", "native",
+                      "provenance"}
 # `native` is only on a retry of a usnm_ocr_native page (#1919): the parent's build and deadline
 # and the one host the child is for.
 BOINC_NATIVE_RETRY_FIELDS = {"previous_image", "previous_timeout_secs", "target_host"}
+# `provenance` is only on a controller-side retry of a container page (#1938): the parent, the
+# image it ran on, why it is read again and the hosts the child may go to (none: the pool).
+BOINC_PROVENANCE_FIELDS = {"retry_of", "parent_image", "reason", "target_hosts"}
+BOINC_RETRY_REASONS = ("slow-class", "segfault-once")
 BOINC_PAGE = re.compile(r"([A-Za-z0-9-]+)/(\d{4}-\d\d-\d\d)/(ed-[1-9]\d*)/(seq-[1-9]\d*)\Z")
 BOINC_JOB_ID = re.compile(r"[0-9a-f]{64}\Z")
 BOINC_RECORD_BYTES = 1024 * 1024  # The bridge reads record.json up to twice its 512 KiB request limit.
@@ -1039,7 +1044,20 @@ def check_boinc_job(job, record):
                                    type(native["previous_timeout_secs"]) is int and
                                    type(native["target_host"]) is int and native["target_host"] > 0),
                 "invalid native retry journal")
-        require(isinstance(retry, dict) and set(retry) - {"native"} == BOINC_RETRY_FIELDS - {"native"} and
+        provenance = retry.get("provenance") if isinstance(retry, dict) else None
+        hosts = provenance.get("target_hosts", []) if isinstance(provenance, dict) else []
+        require(provenance is None or (
+                    isinstance(provenance, dict) and set(provenance) <= BOINC_PROVENANCE_FIELDS and
+                    {"retry_of", "parent_image", "reason"} <= set(provenance) and
+                    provenance["retry_of"] == retry_of and lines is None and
+                    isinstance(provenance["parent_image"], str) and
+                    re.fullmatch(r"sha256:[0-9a-f]{64}", provenance["parent_image"]) and
+                    provenance["reason"] in BOINC_RETRY_REASONS and isinstance(hosts, list) and
+                    all(type(h) is int and h > 0 for h in hosts) and hosts == sorted(set(hosts))),
+                "invalid retry provenance")
+        require(native is None or provenance is None, "a retry is native or controller-side, not both")
+        optional = {"native", "provenance"}
+        require(isinstance(retry, dict) and set(retry) - optional == BOINC_RETRY_FIELDS - optional and
                 retry["previous_job"] == retry_of and
                 type(retry["previous_attempt"]) is int and retry["previous_attempt"] + 1 == attempt and
                 retry["previous_workunit"] == "usnm_" + retry_of and record.get("bundle") is None,

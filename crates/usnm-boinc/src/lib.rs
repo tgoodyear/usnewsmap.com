@@ -32,6 +32,7 @@ pub mod bundle;
 pub mod claim;
 pub mod cli;
 pub mod cloud;
+pub mod controller_retry;
 pub mod gold;
 pub mod handoff;
 pub mod host_trust;
@@ -1122,13 +1123,7 @@ pub async fn import(
     } else {
         (normalized_text(&record.job, &text)?, alto)
     };
-    let alto = engine::set_alto_source(
-        std::str::from_utf8(&alto)?,
-        &record.job.scan.url,
-        &record.job.scan.sha256,
-        record.job.scan.md5.as_deref(),
-    );
-    checks::check_alto(alto.as_bytes()).map_err(|r| anyhow::anyhow!("{}", r.code()))?;
+    let alto = published_alto(&record, &alto)?;
     let row = usnm_overlay::OverlayRow {
         key: key.clone(),
         batch: record.job.message.batch.clone(),
@@ -1195,6 +1190,23 @@ pub async fn import(
     record.held = None;
     save(root, &record)?;
     Ok(())
+}
+/// The ALTO `import` publishes for `record`: the worker's, naming the scan it read and, for a
+/// controller-side retry (#1938), the page it re-reads, the build it replaces and why, so a
+/// rebuild counts re-reads. Checked as published.
+pub fn published_alto(record: &Record, alto: &[u8]) -> anyhow::Result<String> {
+    let alto = engine::set_alto_source(
+        std::str::from_utf8(alto)?,
+        &record.job.scan.url,
+        &record.job.scan.sha256,
+        record.job.scan.md5.as_deref(),
+    );
+    let alto = match record.retry.as_ref().and_then(|r| r.provenance.as_ref()) {
+        Some(provenance) => provenance.alto_note(&alto)?,
+        None => alto,
+    };
+    checks::check_alto(alto.as_bytes()).map_err(|r| anyhow::anyhow!("{}", r.code()))?;
+    Ok(alto)
 }
 async fn put_same(
     store: &dyn ObjectStore,

@@ -131,8 +131,11 @@ pub const NATIVE_APP: &str = "usnm_ocr_native";
 /// Which app a single-page unit goes to.
 #[derive(Clone, Copy)]
 enum Build<'a> {
-    /// `usnm_ocr`, the worker image.
-    Container,
+    /// `usnm_ocr`, the worker image. `trust` is given for a controller-side retry's child
+    /// (#1938) that goes to one host.
+    Container {
+        trust: Option<&'a crate::trust::Trust>,
+    },
     /// [`NATIVE_APP`]: always for one host (`--target_host`), and only one `trust` already
     /// admits for the job's exact scope and native digest, on a build `builds` records a
     /// passing challenge for.
@@ -164,9 +167,77 @@ pub async fn submit_placed(
         native,
         pin,
         target_host,
-        Build::Container,
+        Build::Container { trust: None },
     )
     .await
+}
+
+/// [`submit_placed`] for a controller-side retry's child (#1938), which may be for the hosts its
+/// journal names (`retry.provenance.target_hosts`, each golded for its image when it was
+/// prepared). `trust` is checked again here, for the host and the child's image, before anything
+/// is staged: a host that is not golded for the image is never sent the page, and a child whose
+/// journal names hosts is never submitted without one of them.
+pub async fn submit_retry_targeted(
+    root: &Path,
+    project: &Path,
+    id: &str,
+    download: Option<&Download>,
+    native: Option<&RetryNative<'_>>,
+    target_host: Option<u64>,
+    trust: &crate::trust::Trust,
+) -> anyhow::Result<()> {
+    submit_unit(
+        root,
+        project,
+        id,
+        download,
+        native,
+        None,
+        target_host,
+        Build::Container { trust: Some(trust) },
+    )
+    .await
+}
+
+/// Whether the unit is a controller-side retry's child (#1938) for one host: assigned work, which
+/// BOINC never reissues, so its first error fails the workunit for good.
+fn targeted_retry(record: &crate::Record, target_host: Option<u64>) -> bool {
+    target_host.is_some()
+        && record
+            .retry
+            .as_ref()
+            .is_some_and(|retry| retry.provenance.is_some())
+}
+
+/// Why a retry's child may not go to `target_host` (#1938): its journal names the hosts it may
+/// go to, and the trust list must still admit the host for the child's image. None when the
+/// child has no note, or names no host and is not targeted.
+fn refuse_retry_target(
+    record: &crate::Record,
+    target_host: Option<u64>,
+    trust: Option<&crate::trust::Trust>,
+) -> Option<String> {
+    let provenance = record.retry.as_ref()?.provenance.as_ref()?;
+    let Some(host) = target_host else {
+        return (!provenance.target_hosts.is_empty()).then(|| {
+            format!(
+                "the retry is for hosts {:?} and needs --target-host: it is never submitted to the pool",
+                provenance.target_hosts
+            )
+        });
+    };
+    if !provenance.target_hosts.contains(&host) {
+        return Some(format!(
+            "host {host} is not one the retry was prepared for ({:?})",
+            provenance.target_hosts
+        ));
+    }
+    let Some(trust) = trust else {
+        return Some("a targeted retry needs --trust, the host trust list".into());
+    };
+    trust
+        .refuse_job(&record.job, Some(host))
+        .map(|reason| format!("trust refuses host {host} for this retry: {reason}"))
 }
 
 /// Submits job `id` as a [`NATIVE_APP`] unit for `target_host` (#1780). A native unit is always
@@ -363,7 +434,7 @@ async fn submit_unit(
         pin.filter(|v| *v > 0)
     };
     let app = match build {
-        Build::Container => "usnm_ocr",
+        Build::Container { .. } => "usnm_ocr",
         Build::Native {
             host,
             trust,
@@ -395,7 +466,7 @@ async fn submit_unit(
             &record.job.engine.image,
             registered,
         )?),
-        Build::Container => pin,
+        Build::Container { .. } => pin,
     };
     if let Some(retry) = &record.retry {
         check_retry_app(retry, native_unit, target_host, pin)?;
@@ -404,11 +475,26 @@ async fn submit_unit(
         record.job.lines.is_none() || is_retry || pin.is_some(),
         "a line job needs --app-version-num, the usnm_ocr version whose worker reads line jobs"
     );
+    // A controller-side retry's child that goes to one host never gets a replacement result
+    // either, so its first error must fail the workunit for good (#1919, #1938).
+    let retry_targeted = targeted_retry(&record, target_host);
+    let retry_trust = match build {
+        Build::Container { trust } => trust,
+        Build::Native { .. } => None,
+    };
+    if let Some(reason) = refuse_retry_target(&record, target_host, retry_trust) {
+        anyhow::bail!("{reason}");
+    }
     if let Some(host) = target_host {
         ensure!(host > 0, "--target-host must be positive");
         ensure!(
-            native_unit || record.job.lines.is_some(),
-            "only a line job or a {NATIVE_APP} unit can be targeted at a host"
+            native_unit
+                || record.job.lines.is_some()
+                || record
+                    .retry
+                    .as_ref()
+                    .is_some_and(|retry| retry.provenance.is_some()),
+            "only a line job, a controller-side retry or a {NATIVE_APP} unit can be targeted at a host"
         );
         let config = std::fs::read_to_string(project.join("config.xml"))?;
         ensure!(
@@ -506,7 +592,7 @@ async fn submit_unit(
                 "--target_nresults",
                 "1",
                 "--max_error_results",
-                max_error_results(native_unit),
+                max_error_results(native_unit || retry_targeted),
                 "--max_total_results",
                 "5",
                 "--max_success_results",
@@ -683,6 +769,93 @@ mod native_tests {
 
     fn stage(s: &Server, id: &str) -> Stage {
         load(&s.root, id).unwrap().stage
+    }
+
+    /// A retry's child (#1938) for `hosts`, as its journal records it.
+    fn retry_child(hosts: &[u64]) -> crate::Record {
+        let job = job(1);
+        let parent = "c".repeat(64);
+        let retry = serde_json::json!({
+            "previous_job": parent, "previous_attempt": 0,
+            "previous_workunit": format!("usnm_{parent}"),
+            "previous_ledger": {"batch_version": 1, "reason": "bulk", "language": "eng",
+                "plan": "p", "attempt": 1, "request_day": null,
+                "queued_at": "2026-10-24T12:00:00.000000Z"},
+            "terminal": {"error_mask": 2, "no_output_files": false, "marker_sha256": "d".repeat(64)},
+            "previous_error": "failed", "app_version_num": 106, "reviewed_reason": "r",
+            "provenance": {"retry_of": parent, "parent_image": format!("sha256:{}", "e".repeat(64)),
+                "reason": "slow-class", "target_hosts": hosts},
+        });
+        crate::Record {
+            job,
+            plan: "p".into(),
+            stage: Stage::Reserved,
+            stamp: "s".into(),
+            error: None,
+            terminal: None,
+            retry: Some(serde_json::from_value(retry).unwrap()),
+            ledger: None,
+            bundle: None,
+            unbundled: None,
+            held: None,
+        }
+    }
+
+    fn retry_child_without_note() -> crate::Record {
+        let mut plain = retry_child(&[]);
+        plain.retry.as_mut().unwrap().provenance = None;
+        plain
+    }
+
+    #[test]
+    fn a_retrys_child_goes_only_to_its_golded_hosts_and_never_to_the_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = job(1).engine.image;
+        let golded = trust_for(dir.path(), &image, &[1, 2]);
+        let one_host = trust_for(dir.path(), &image, &[2]);
+        let child = retry_child(&[1, 2]);
+        // For hosts, so never the pool.
+        let why = refuse_retry_target(&child, None, None).unwrap();
+        assert!(why.contains("never submitted to the pool"), "{why}");
+        // A host the child was not prepared for, even one the trust list admits.
+        let why = refuse_retry_target(&child, Some(9), Some(&trust_for(dir.path(), &image, &[9])));
+        assert!(why.unwrap().contains("not one the retry was prepared for"));
+        // A prepared host needs the trust list, which must still admit it for the child's image.
+        let why = refuse_retry_target(&child, Some(1), None).unwrap();
+        assert!(why.contains("needs --trust"), "{why}");
+        let why = refuse_retry_target(&child, Some(1), Some(&one_host)).unwrap();
+        assert!(why.contains("trust refuses host 1"), "{why}");
+        let other = trust_for(dir.path(), &format!("sha256:{}", "f".repeat(64)), &[1, 2]);
+        assert!(refuse_retry_target(&child, Some(1), Some(&other)).is_some());
+        assert_eq!(refuse_retry_target(&child, Some(1), Some(&golded)), None);
+        // Only a child that goes to a host fails for good on its first error.
+        assert!(targeted_retry(&child, Some(1)));
+        assert!(!targeted_retry(&child, None));
+        assert!(!targeted_retry(&retry_child_without_note(), Some(1)));
+        // A child with no hosts is for the pool and is not targeted.
+        let pooled = retry_child(&[]);
+        assert_eq!(refuse_retry_target(&pooled, None, None), None);
+        assert!(refuse_retry_target(&pooled, Some(1), Some(&golded)).is_some());
+        // A page with no note is not this check's.
+        let mut plain = retry_child(&[]);
+        plain.retry.as_mut().unwrap().provenance = None;
+        assert_eq!(refuse_retry_target(&plain, Some(1), None), None);
+    }
+
+    #[tokio::test]
+    async fn a_page_that_is_not_a_retry_is_never_targeted_by_the_retry_route() {
+        let (s, ids) = Server::new(&[1]);
+        std::fs::write(s.project.join("config.xml"), ASSIGNMENT).unwrap();
+        let trust = trust(&s.root, &[13]);
+        let error =
+            submit_retry_targeted(&s.root, &s.project, &ids[0], None, None, Some(13), &trust)
+                .await
+                .unwrap_err();
+        assert!(
+            error.to_string().contains("can be targeted at a host"),
+            "{error:#}"
+        );
+        assert!(s.calls().is_empty());
     }
 
     #[tokio::test]
@@ -871,6 +1044,7 @@ mod native_tests {
                 previous_timeout_secs: 1800,
                 target_host,
             }),
+            provenance: None,
         }
     }
 
