@@ -251,13 +251,17 @@ def scheduler_profile(project, manifest):
     return profile
 
 
-def registered_version(db, release):
+def registered_version(db, release, per_platform=False):
     versions = query(db, 'SELECT av.id FROM app_version av JOIN app a ON a.id=av.appid '
                      'JOIN platform p ON p.id=av.platformid WHERE a.name=%s AND av.version_num=%s '
                      'AND p.name=%s AND av.plan_class=%s AND av.deprecated=0',
                      (release['app'], release['version_num'], release['platform'], release['plan_class']))
     if len(versions) != 1:
         raise ValueError('expected exactly one active registered app version')
+    if per_platform:
+        # A retry's version has one row per platform, all built from one worker image;
+        # the caller checks that they agree.
+        return versions[0]['id']
     alternatives = query(db, 'SELECT av.id FROM app_version av JOIN app a ON a.id=av.appid '
                          'WHERE a.name=%s AND av.version_num=%s AND av.deprecated=0',
                          (release['app'], release['version_num']))
@@ -304,24 +308,31 @@ RETRY_PLAN_CLASSES = ('docker', 'docker_lines')
 
 
 def verify_retry_worker(project, version_num, engine, plan_class='docker'):
-    """A retry's pinned usnm_ocr version: one active row, in `plan_class` (`docker`, or
-    `docker_lines` for a line job, #1621), whose signed worker is `engine`."""
+    """A retry's pinned usnm_ocr version: one active version_num in `plan_class` (`docker`, or
+    `docker_lines` for a line job, #1621), whose active rows (one per platform) all name the same
+    signed worker, and that worker is `engine`."""
     if plan_class not in RETRY_PLAN_CLASSES:
         raise ValueError('retry plan class must be docker or docker_lines')
     db = db_connect(project)
     try:
-        versions = query(db, 'SELECT av.id, av.xml_doc, av.plan_class, p.name AS platform '
-                        'FROM app_version av JOIN app a ON a.id=av.appid '
-                        'JOIN platform p ON p.id=av.platformid '
-                        'WHERE a.name=%s AND av.version_num=%s AND av.deprecated=0',
-                        ('usnm_ocr', version_num))
-        if len(versions) != 1 or versions[0]['plan_class'] != plan_class:
+        rows = query(db, 'SELECT av.id, av.version_num, av.xml_doc, av.plan_class, p.name AS platform '
+                     'FROM app_version av JOIN app a ON a.id=av.appid '
+                     'JOIN platform p ON p.id=av.platformid '
+                     'WHERE a.name=%s AND av.plan_class=%s AND av.deprecated=0',
+                     ('usnm_ocr', plan_class))
+        rows = [row for row in rows if row['plan_class'] == plan_class]
+        if (not rows or {row['version_num'] for row in rows} != {version_num}
+                or len({row['platform'] for row in rows}) != len(rows)):
             raise ValueError('retry requires one unambiguous active usnm_ocr container version')
-        version = versions[0]
-        registered_version(db, dict(app='usnm_ocr', version_num=version_num,
-                                   platform=version['platform'], plan_class=version['plan_class']))
-        worker = verify_version_files(project, None, version['xml_doc'])
-        if worker.split('@')[-1] != engine:
+        workers = set()
+        for row in rows:
+            registered_version(db, dict(app='usnm_ocr', version_num=version_num,
+                                        platform=row['platform'], plan_class=row['plan_class']),
+                               per_platform=True)
+            workers.add(verify_version_files(project, None, row['xml_doc']))
+        if len(workers) != 1:
+            raise ValueError('active usnm_ocr rows of one version name different signed workers')
+        if workers.pop().split('@')[-1] != engine:
             raise ValueError('signed worker digest differs from the requested retry image')
     finally:
         db.close()
