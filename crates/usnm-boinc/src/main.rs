@@ -6,8 +6,8 @@
 //! routes each to its module.
 use clap::{Parser, Subcommand};
 use usnm_boinc::{
-    assess, claim, cli::job, cli::migrate, cloud, gold, handoff, host_trust, ndlocr, quality, qwen,
-    surya,
+    assess, claim, cli::job, cli::migrate, cloud, controller_retry, gold, handoff, host_trust,
+    ndlocr, quality, qwen, surya,
 };
 
 #[derive(Parser)]
@@ -25,6 +25,9 @@ enum Commands {
     Export(job::ExportArgs),
     /// Prepare exactly one fresh attempt of a reviewed, permanently failed single-page job.
     Retry(job::RetryArgs),
+    /// Prepare the retry of a failed container usnm_ocr page from the controller (#1938): live
+    /// hand-off and Cosmos state, an archived journal, no local root or spool.
+    ControllerRetry(controller_retry::ControllerRetryArgs),
     /// BOINC as a consumer of the OCR work queues (#296).
     #[command(subcommand)]
     Claim(claim::cli::ClaimCommands),
@@ -109,6 +112,7 @@ async fn main() -> anyhow::Result<()> {
         command,
         Commands::Export(_)
             | Commands::Retry(_)
+            | Commands::ControllerRetry(_)
             | Commands::Claim(_)
             | Commands::DocsMigrate(_)
             | Commands::QueueMove(_)
@@ -119,6 +123,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::HostTrust(command) => host_trust::cli::run(command).await,
         Commands::Export(args) => job::export(args).await,
         Commands::Retry(args) => job::retry(args).await,
+        Commands::ControllerRetry(args) => controller_retry::controller_retry(args).await,
         Commands::Claim(command) => claim::cli::run(command).await,
         Commands::Work(args) => job::work(args).await,
         Commands::PrepareDownload(args) => job::prepare_download(args),

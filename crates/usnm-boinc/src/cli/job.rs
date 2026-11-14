@@ -182,6 +182,7 @@ pub async fn retry(args: RetryArgs) -> anyhow::Result<()> {
             image: &args.image,
             reviewed_reason: &args.reviewed_reason,
             timeout_secs: args.timeout_secs,
+            note: None,
             handoff: handoff.as_ref(),
         },
         &State::new(docs),
@@ -250,9 +251,9 @@ pub struct SubmitArgs {
     /// to it, so an older worker never gets one. Required for a line job, unused otherwise.
     #[arg(long)]
     app_version_num: Option<u32>,
-    /// A line job, or a `usnm_ocr_native` unit (required there): send it to this one host
-    /// (`--target_host`), one calibrated on that worker. Needs
-    /// `<enable_assignment>1</enable_assignment>`.
+    /// A line job, a controller-side retry's child (#1938, with --trust) or a `usnm_ocr_native`
+    /// unit (required there): send it to this one host (`--target_host`), one calibrated on that
+    /// worker. Needs `<enable_assignment>1</enable_assignment>`.
     #[arg(long)]
     target_host: Option<u64>,
     /// The BOINC app: `usnm_ocr` (the worker image) or `usnm_ocr_native` (the native build,
@@ -260,7 +261,8 @@ pub struct SubmitArgs {
     #[arg(long, value_enum, default_value_t = SubmitApp::UsnmOcr)]
     app: SubmitApp,
     /// The host trust list (`gold/trust.json`): a native unit is created only when it admits
-    /// the target host for the job's exact scope and native digest.
+    /// the target host for the job's exact scope and native digest, and a targeted retry's child
+    /// only when it admits the host for the child's image.
     #[arg(long)]
     trust: Option<PathBuf>,
     /// The live `usnm_ocr_native` version numbers, from the database (registered, not
@@ -305,13 +307,21 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
         app == SubmitApp::UsnmOcrNative || native_versions.is_empty(),
         "--native-versions is for usnm_ocr_native units"
     );
-    let trust = match (app, trust) {
-        (SubmitApp::UsnmOcrNative, Some(path)) => Some(crate::trust::Trust::load(&path)?),
+    // A usnm_ocr unit takes the list only for a controller-side retry's child (#1938) that goes
+    // to one host, which is checked against it again before anything is created.
+    let (trust, retry_trust) = match (app, trust) {
+        (SubmitApp::UsnmOcrNative, Some(path)) => (Some(crate::trust::Trust::load(&path)?), None),
         (SubmitApp::UsnmOcrNative, None) => {
             anyhow::bail!("a usnm_ocr_native unit needs --trust, the host trust list")
         }
-        (SubmitApp::UsnmOcr, Some(_)) => anyhow::bail!("--trust is for usnm_ocr_native units"),
-        (SubmitApp::UsnmOcr, None) => None,
+        (SubmitApp::UsnmOcr, Some(path)) => {
+            anyhow::ensure!(
+                target_host.is_some(),
+                "--trust is for usnm_ocr_native units and targeted retries (--target-host)"
+            );
+            (None, Some(crate::trust::Trust::load(&path)?))
+        }
+        (SubmitApp::UsnmOcr, None) => (None, None),
     };
     let download = match (download_base_url, download_root) {
         (Some(base), Some(root)) => Some(crate::submit::Download::new(&base, &root)?),
@@ -347,6 +357,18 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
             trust,
             crate::trust::BuildTrust::embedded()?,
             &native_versions,
+        )
+        .await?;
+        return Ok(());
+    }
+    if let Some(trust) = &retry_trust {
+        crate::submit::submit_retry_targeted(
+            &root,
+            &project,
+            &job,
+            sources.as_ref(),
+            target_host,
+            trust,
         )
         .await?;
         return Ok(());

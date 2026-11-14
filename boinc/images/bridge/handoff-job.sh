@@ -64,6 +64,18 @@
 #                         newer message with another page deadline; prints the message's sha256
 #                         and changes nothing, or with its sha256 confirmed records the retry,
 #                         which the controller then exports (same section of the doc)
+#   HANDOFF_STEP=retry    RETRY_JOB=<failed job id> RETRY_IMAGE=sha256:<released worker> RETRY_APP_VERSION=<n>
+#                         RETRY_REASON=slow-class|segfault-once RETRY_REVIEWED=<text> RETRY_NONCE=<32 hex>
+#                         [RETRY_TIMEOUT_SECS=<1 to 3600>] (required for slow-class, longer than the
+#                         parent's; not for segfault-once) [RETRY_TARGET_HOSTS=<id>[,<id>...]] each
+#                         golded for RETRY_IMAGE in gold/trust.json [RETRY_JOURNAL_DIR=/retry-journal]
+#                         [RETRY_DRY_RUN=1]. An operator's only (#1938): prepares the retry of a
+#                         container usnm_ocr page that failed for good, from the live hand-off and
+#                         Cosmos state, with the parent's journal from the hand-off or an archive
+#                         or evidence copy (onprem-step.sh mounts it read-only at /retry-journal).
+#                         The BOINC database's proof is scheduler/wu-terminal.json, which the
+#                         server's wu-terminal step wrote under the same nonce. Prints the child's
+#                         id; nothing is submitted (docs/boinc/server/onprem.md#controller-side-retry-of-a-failed-container-page-1938)
 #   HANDOFF_STEP=line-report JOB_IDS=<id>[,<id>...] (up to 100 line jobs, #1621) copies each job's
 #                         record, accepted result and line-read/ sidecars down and prints
 #                         usnm-boinc line-report on them: a JSON line per collected line job (its
@@ -455,6 +467,35 @@ case "${HANDOFF_STEP:-}" in
     fi
     usnm-boinc claim deadline-retry --handoff-url "$HANDOFF_URL" --curated-url "$CURATED_URL" \
       --supersedes-failed-job "$SUPERSEDES_FAILED_JOB" --timeout-secs "$TIMEOUT_SECS" ${confirm[@]+"${confirm[@]}"} ;;
+  retry)
+    # The operator's controller-side retry of a failed container page (#1938).
+    [[ ${RETRY_JOB:-} =~ ^[0-9a-f]{64}$ ]] || fail "RETRY_JOB is a job id (64 hex)"
+    [[ ${RETRY_IMAGE:-} =~ ^sha256:[0-9a-f]{64}$ ]] || fail "RETRY_IMAGE is the released worker's digest, sha256:<64 hex>"
+    [[ ${RETRY_APP_VERSION:-} =~ ^[1-9][0-9]{0,8}$ ]] || fail "RETRY_APP_VERSION is the released usnm_ocr version_num"
+    [[ ${RETRY_REASON:-} =~ ^(slow-class|segfault-once)$ ]] || fail "RETRY_REASON is slow-class or segfault-once"
+    [ -n "${RETRY_REVIEWED:-}" ] || fail "RETRY_REVIEWED says what was reviewed"
+    [[ ${RETRY_NONCE:-} =~ ^[0-9a-f]{32}$ ]] || fail "RETRY_NONCE is the 32 hex the wu-terminal step ran with"
+    retry_args=(--job "$RETRY_JOB" --image "$RETRY_IMAGE" --app-version-num "$RETRY_APP_VERSION"
+      --reason "$RETRY_REASON" --reviewed-reason "$RETRY_REVIEWED" --nonce "$RETRY_NONCE")
+    if [ -n "${RETRY_TIMEOUT_SECS:-}" ]; then
+      [[ $RETRY_TIMEOUT_SECS =~ ^[1-9][0-9]{0,3}$ ]] && [ "$RETRY_TIMEOUT_SECS" -le 3600 ] ||
+        fail "RETRY_TIMEOUT_SECS is 1 to 3600 seconds"
+      retry_args+=(--timeout-secs "$RETRY_TIMEOUT_SECS")
+    fi
+    if [ -n "${RETRY_TARGET_HOSTS:-}" ]; then
+      [[ $RETRY_TARGET_HOSTS =~ ^[1-9][0-9]{0,9}(,[1-9][0-9]{0,9}){0,63}$ ]] ||
+        fail "RETRY_TARGET_HOSTS is 1 to 64 comma-separated host ids"
+      IFS=, read -r -a retry_hosts <<< "$RETRY_TARGET_HOSTS"
+      for h in "${retry_hosts[@]}"; do retry_args+=(--target-host "$h"); done
+    fi
+    if [ -n "${RETRY_JOURNAL_DIR:-}" ]; then
+      [ "$RETRY_JOURNAL_DIR" = /retry-journal ] && [ -d /retry-journal ] ||
+        fail "RETRY_JOURNAL_DIR is the archive mounted at /retry-journal (onprem-step.sh does it)"
+      retry_args+=(--journal-dir /retry-journal)
+    fi
+    [ "${RETRY_DRY_RUN:-}" != 1 ] || retry_args+=(--dry-run)
+    usnm-boinc controller-retry --handoff-url "$HANDOFF_URL" --curated-url "$CURATED_URL" \
+      --reference-url "$REFERENCE_URL" --out-url "$OUT_URL" --cosmos "$COSMOS_ENDPOINT" "${retry_args[@]}" ;;
   line-report)
     [[ ${JOB_IDS:-} =~ ^[0-9a-f]{64}(,[0-9a-f]{64}){0,99}$ ]] || fail "JOB_IDS is 1 to 100 comma-separated job ids"
     IFS=, read -r -a ids <<< "$JOB_IDS"
@@ -540,5 +581,5 @@ case "${HANDOFF_STEP:-}" in
     fi
     usnm-boinc quality texts-export --curated-url "$CURATED_URL" --out-dir "$work/texts" "${doc_args[@]}"
     usnm-boinc handoff put --from "$work/texts" --to-url "$HANDOFF_URL" --prefix texts ;;
-  *) fail "HANDOFF_STEP must be export, claim, release, dead-letter, deadline-retry, collect, line-report or texts-export" ;;
+  *) fail "HANDOFF_STEP must be export, claim, release, dead-letter, deadline-retry, retry, collect, line-report or texts-export" ;;
 esac

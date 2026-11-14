@@ -22,6 +22,98 @@ pub struct Retry {
     pub previous_error: String,
     pub app_version_num: u32,
     pub reviewed_reason: String,
+    /// Why a controller-side retry (#1938) was made, which build it replaces and the hosts it
+    /// may go to. Published with the page (`Provenance::alto_note`), so a rebuild counts re-reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<Provenance>,
+}
+
+/// Why a page was read again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Reason {
+    /// It ran out of time on every host that tried it (SIGXCPU or the page deadline).
+    SlowClass,
+    /// The worker crashed (SIGSEGV) and the page gets one more read, same settings.
+    SegfaultOnce,
+}
+
+impl Reason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Reason::SlowClass => "slow-class",
+            Reason::SegfaultOnce => "segfault-once",
+        }
+    }
+}
+
+impl std::str::FromStr for Reason {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s {
+            "slow-class" => Ok(Reason::SlowClass),
+            "segfault-once" => Ok(Reason::SegfaultOnce),
+            _ => anyhow::bail!("a retry reason is slow-class or segfault-once"),
+        }
+    }
+}
+
+/// The note a controller-side retry (#1938) carries from its journal to the published ALTO:
+/// `retry_of` (the parent's job id), `parent_image` (the worker it ran on) and `reason`. The
+/// request the worker reads is unchanged, so no worker release is needed for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Provenance {
+    pub retry_of: String,
+    pub parent_image: String,
+    pub reason: Reason,
+    /// The hosts the child may go to, each one golded for the child's image. Empty: the pool.
+    /// With hosts, `submit` creates the unit for one of them (`--target-host`) and never
+    /// without one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub target_hosts: Vec<u64>,
+}
+
+/// The `fileIdentifierLocation` values of a retry's note in the published ALTO.
+pub const ALTO_RETRY_OF: &str = "usnm_retry_of";
+pub const ALTO_PARENT_IMAGE: &str = "usnm_parent_image";
+pub const ALTO_RETRY_REASON: &str = "usnm_retry_reason";
+
+impl Provenance {
+    /// The ALTO with the note as `fileIdentifier`s after the others in `sourceImageInformation`
+    /// (where the scan's sha256 is, ADR-0015), so it is there on every published retry. An ALTO
+    /// without that element is refused: a retry is never published without its note.
+    pub fn alto_note(&self, alto: &str) -> anyhow::Result<String> {
+        let end = alto
+            .find("</sourceImageInformation>")
+            .context("the ALTO has no sourceImageInformation to carry the retry's note")?;
+        // The parent's id and image are hex, and the reason one of two words: nothing to escape.
+        let ids: String = [
+            (ALTO_RETRY_OF, self.retry_of.as_str()),
+            (ALTO_PARENT_IMAGE, self.parent_image.as_str()),
+            (ALTO_RETRY_REASON, self.reason.as_str()),
+        ]
+        .iter()
+        .map(|(location, value)| {
+            format!(
+                "<fileIdentifier fileIdentifierLocation=\"{location}\">{value}</fileIdentifier>"
+            )
+        })
+        .collect();
+        Ok(format!("{}{ids}{}", &alto[..end], &alto[end..]))
+    }
+
+    fn valid(&self, record: &Record, retry_of: &str) -> bool {
+        self.retry_of == retry_of
+            && self
+                .parent_image
+                .strip_prefix("sha256:")
+                .is_some_and(boinc::is_sha256)
+            && self.target_hosts.windows(2).all(|w| w[0] < w[1])
+            && self.target_hosts.iter().all(|h| *h > 0)
+            && self.target_hosts.len() <= 64
+            && record.job.lines.is_none()
+    }
 }
 
 pub fn validate(record: &Record) -> anyhow::Result<()> {
@@ -45,7 +137,11 @@ pub fn validate(record: &Record) -> anyhow::Result<()> {
                     && retry.reviewed_reason.len() <= 512
                     && !retry.reviewed_reason.chars().any(char::is_control)
                     && record.ledger.is_some()
-                    && record.bundle.is_none(),
+                    && record.bundle.is_none()
+                    && retry
+                        .provenance
+                        .as_ref()
+                        .is_none_or(|p| p.valid(record, &retry.previous_job)),
                 "invalid retry journal"
             );
             let key = record.job.message.key()?;
@@ -90,6 +186,9 @@ pub struct Options<'a> {
     /// The child's page deadline, when it isn't the parent's: a page that ran out of time on
     /// every host runs out again with the same one (#1159).
     pub timeout_secs: Option<u32>,
+    /// A controller-side retry's reason and hosts (#1938); the parent's id and image are filled
+    /// in from its journal.
+    pub note: Option<(Reason, Vec<u64>)>,
     pub handoff: &'a dyn ObjectStore,
 }
 
@@ -193,6 +292,12 @@ pub async fn prepare(
         previous_error: crate::terminal_reason(marker.as_deref(), previous.job.engine.timeout_secs),
         app_version_num: opts.app_version_num,
         reviewed_reason: opts.reviewed_reason.into(),
+        provenance: opts.note.as_ref().map(|(reason, hosts)| Provenance {
+            retry_of: previous.job.id.clone(),
+            parent_image: previous.job.engine.image.clone(),
+            reason: *reason,
+            target_hosts: hosts.clone(),
+        }),
     };
     let child_dir = dir(opts.root, &id)?;
     let mut record = if child_dir.join("record.json").try_exists()? {
@@ -462,6 +567,7 @@ mod tests {
             image: &image,
             reviewed_reason: "reviewed terminal marker and settled native row",
             timeout_secs: None,
+            note: None,
             handoff: curated.as_ref(),
         };
         for stage in [Stage::Submitted, Stage::Submitting] {
@@ -833,6 +939,7 @@ mod tests {
             image: &image,
             reviewed_reason: "reviewed terminal marker and settled native row",
             timeout_secs: None,
+            note: None,
             handoff: curated.as_ref(),
         };
         // A tampered LoC ALTO is refused before anything is reserved.

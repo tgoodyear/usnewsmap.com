@@ -147,6 +147,9 @@
 #                               A line job (#1621) needs LINE_APP_VERSION=<version_num>, the
 #                               docker_lines usnm_ocr version, and takes LINE_TARGET_HOST=<id>
 #                               to send it to one calibrated host; it goes in batch 1621.
+#                               A controller-side retry's child (#1938) takes RETRY_TARGET_HOST=<id>,
+#                               one of the hosts its journal names; usnm-boinc checks it against
+#                               $SHARE_DIR/gold/trust.json for the child's image.
 #                               NATIVE_UNITS=<id>=<host>[,...] (up to 100) submits each job as a
 #                               usnm_ocr_native unit (#1780) assigned to that host, only if
 #                               $SHARE_DIR/gold/trust.json admits the host for the job's scope and
@@ -173,6 +176,12 @@
 #                               and leaves the others (safe to repeat)
 #   BRIDGE_STEP=work-volume     writes one JSON line of aggregate workunit, result, active-user
 #                               and active-host counts to stdout; safe to repeat
+#   BRIDGE_STEP=wu-terminal     WU_NAMES=usnm_<id>[,...] (up to 100) BATCH_NONCE=<32 hex> HANDOFF_URL;
+#                               reads the BOINC database, never writes it: each workunit's id,
+#                               error_mask, canonical_resultid and assimilate_state, written with the
+#                               nonce and the time to scheduler/wu-terminal.json in the hand-off
+#                               container, which `usnm-boinc controller-retry` (#1938) takes as proof
+#                               that a page failed for good and has no canonical result
 #   BRIDGE_STEP=batch-inventory BATCH_NONCE=<32 hex> HANDOFF_URL=<container URL>; writes the
 #                               read-only queue/host/journal/spool inventory to scheduler/
 #   BRIDGE_STEP=native-spot     BATCH_NONCE HANDOFF_URL, NATIVE_SPOT_SUBMIT and/or NATIVE_SPOT_CHECK
@@ -594,6 +603,7 @@ esac
 if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != surya-submit ] &&
   [ "$step" != quality-submit ] && [ "$step" != qwen-submit ] && [ "$step" != train-submit ] &&
   [ "$step" != register-apps ] && [ "$step" != work-volume ] && [ "$step" != batch-inventory ] &&
+  [ "$step" != wu-terminal ] &&
   [ "$step" != gold-onboard ] && [ "$step" != gold-promote ] && [ "$step" != gold-collect ] && [ "$step" != iris-bundle-submit ] && [ "$step" != iris-bundle-cancel ] &&
   [ "$step" != native-spot ]; then
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
@@ -666,9 +676,40 @@ Path(sys.argv[1]).write_text("[client]\n" + "".join(f"{key}={quote(value)}\n" fo
 PY
   )
 }
-if [ "$step" = work-volume ] || [ "$step" = batch-inventory ]; then
+if [ "$step" = work-volume ] || [ "$step" = batch-inventory ] || [ "$step" = wu-terminal ]; then
   write_mycnf
-  if [ "$step" = batch-inventory ]; then
+  if [ "$step" = wu-terminal ]; then
+    validate_handoff_location
+    [[ "${BATCH_NONCE:-}" =~ ^[0-9a-f]{32}$ ]] || fail "BATCH_NONCE must be 32 hex"
+    [[ "${WU_NAMES:-}" =~ ^usnm_[0-9a-f]{64}(,usnm_[0-9a-f]{64}){0,99}$ ]] ||
+      fail "WU_NAMES is 1 to 100 comma-separated usnm_<job id> workunit names"
+    # The names are checked just above: only hex, underscores and commas reach the query.
+    in_list=$(printf "'%s'," ${WU_NAMES//,/ })
+    in_list=${in_list%,}
+    rows=$(mysql --defaults-extra-file="$mycnf" --ssl --ssl-verify-server-cert \
+      --ssl-ca=/usr/local/share/usnm/mysql-ca.pem --batch --skip-column-names "$DB_NAME" \
+      -e "SELECT name, id, error_mask, canonical_resultid, assimilate_state FROM workunit WHERE name IN ($in_list) ORDER BY name") ||
+      fail "could not read the workunits"
+    proof_dir=$(mktemp -d)
+    ROWS="$rows" python3 - "$proof_dir/wu-terminal.json" "$BATCH_NONCE" <<'PY'
+import json, os, re, sys, time
+
+row = re.compile(r"(usnm_[0-9a-f]{64})\t([0-9]+)\t([0-9]+)\t([0-9]+)\t([0-9]+)")
+units = []
+for line in os.environ["ROWS"].splitlines():
+    m = row.fullmatch(line)
+    if not m:
+        sys.exit("unexpected workunit row")
+    units.append({"name": m[1], "id": int(m[2]), "error_mask": int(m[3]),
+                  "canonical_resultid": int(m[4]), "assimilate_state": int(m[5])})
+doc = {"v": 1, "nonce": sys.argv[2], "workunits": units,
+       "checked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+with open(sys.argv[1], "w") as out:
+    json.dump(doc, out)
+PY
+    usnm-boinc handoff put --from "$proof_dir" --to-url "$HANDOFF_URL" --prefix scheduler
+    rm -rf "$proof_dir"
+  elif [ "$step" = batch-inventory ]; then
     validate_handoff_location
     [[ "${BATCH_NONCE:-}" =~ ^[0-9a-f]{32}$ ]] || fail "BATCH_NONCE must be 32 hex"
     mkdir -p "$HANDOFF_DIR/scheduler"
@@ -704,6 +745,16 @@ submit_ocr_job() {
     [ -n "${LINE_APP_VERSION:-}" ] || fail "LINE_TARGET_HOST goes with LINE_APP_VERSION"
     [[ $LINE_TARGET_HOST =~ ^[1-9][0-9]*$ ]] || fail "LINE_TARGET_HOST must be positive"
     native_args+=(--target-host "$LINE_TARGET_HOST")
+  fi
+  # A controller-side retry's child (#1938) may be for one host its journal names. usnm-boinc
+  # creates it targeted only when the trust list admits that host for the child's image, and
+  # refuses a child whose journal names hosts when none is given.
+  if [ -n "${RETRY_TARGET_HOST:-}" ]; then
+    [ -z "${LINE_APP_VERSION:-}${LINE_TARGET_HOST:-}${NATIVE_TARGET_HOST:-}" ] ||
+      fail "RETRY_TARGET_HOST takes no LINE_APP_VERSION, LINE_TARGET_HOST or NATIVE_TARGET_HOST"
+    [[ $RETRY_TARGET_HOST =~ ^[1-9][0-9]{0,9}$ ]] || fail "RETRY_TARGET_HOST must be positive"
+    [ -f "$SHARE_DIR/gold/trust.json" ] || fail "a targeted retry needs the trust list $SHARE_DIR/gold/trust.json"
+    native_args+=(--target-host "$RETRY_TARGET_HOST" --trust "$SHARE_DIR/gold/trust.json")
   fi
   # A native unit (#1780) is always assigned to one host, and usnm-boinc creates it only when the
   # trust list admits that host for the job's scope and native digest.

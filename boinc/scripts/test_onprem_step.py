@@ -571,6 +571,45 @@ class OnpremStep(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("takes only", done.stderr)
 
+    def test_handoff_retry_is_the_operators_only_and_mounts_an_archive_read_only(self):
+        # #1938: root on the host prepares a failed container page's retry; the controller's key
+        # may not. An archive copy goes in read-only, from a directory under a configured root.
+        self.write_handoff_env()
+        job = "a" * 64
+        base = ["--env", "prod", "--target", "handoff", "--step", "retry", "--wait-mins", "10", "--what-if",
+                "--var", "RETRY_JOB=" + job, "--var", "RETRY_NONCE=" + "0" * 32,
+                "--var", "RETRY_IMAGE=sha256:" + "b" * 64, "--var", "RETRY_APP_VERSION=106",
+                "--var", "RETRY_REASON=slow-class", "--var", "RETRY_REVIEWED=reviewed"]
+        done = self.run_step(*base)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("HANDOFF_STEP=retry", done.stdout)
+        done = self.run_step(ssh="usnm-boinc-step " + " ".join(base[:6]) + " --var RETRY_JOB=" + job)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("isn't allowed over ssh", done.stderr)
+        for var in ("JOB_IDS=" + job, "SUPERSEDES_FAILED_JOB=" + job):
+            with self.subTest(var=var):
+                done = self.run_step(*base, "--var", var)
+                self.assertNotEqual(done.returncode, 0)
+                self.assertIn("takes only", done.stderr)
+        evidence = Path(self.conf.name) / "evidence"
+        archive = evidence / "queue-feed-old"
+        archive.mkdir(parents=True)
+        env = {**os.environ, "USNM_BOINC_CONF": self.conf.name,
+               "USNM_BOINC_RETRY_JOURNAL_ROOTS": str(evidence.resolve())}
+        argv = ["bash", str(SCRIPT), *base, "--var", f"RETRY_JOURNAL_DIR={archive}"]
+        done = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(f"{archive.resolve()} mounted read-only at /retry-journal", done.stdout)
+        self.assertIn("RETRY_JOURNAL_DIR=/retry-journal", done.stdout)
+        self.assertNotIn(f"RETRY_JOURNAL_DIR={archive}", done.stdout)
+        outside = Path(self.conf.name) / "elsewhere"
+        outside.mkdir()
+        for path in (outside, archive / "missing", "relative/dir"):
+            with self.subTest(path=str(path)):
+                argv = ["bash", str(SCRIPT), *base, "--var", f"RETRY_JOURNAL_DIR={path}"]
+                done = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=30)
+                self.assertNotEqual(done.returncode, 0)
+
     def test_handoff_deadline_retry_is_the_operators_only(self):
         # #1417: root on the host may retry a dead-lettered page with another deadline; the
         # controller's key may not, though it may export what that recorded.

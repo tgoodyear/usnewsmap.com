@@ -101,6 +101,9 @@ HANDOFF_DEAD_LETTER_VARS=" JOB_IDS SOURCE_TRUNCATED_DOCS "
 HANDOFF_DEAD_LETTER_OPERATOR_VARS="SUPERSEDES_FAILED_JOB CONFIRM_MESSAGE_SHA256 "
 # Its other choice, retrying that page with another page deadline (#1417): root on the host only.
 HANDOFF_DEADLINE_RETRY_VARS=" SUPERSEDES_FAILED_JOB TIMEOUT_SECS CONFIRM_MESSAGE_SHA256 "
+# A controller-side retry of a failed container page (#1938): root on the host only. The
+# journal copy is a host directory, mounted read-only; the container sees /retry-journal.
+HANDOFF_RETRY_VARS=" RETRY_JOB RETRY_IMAGE RETRY_APP_VERSION RETRY_REASON RETRY_REVIEWED RETRY_NONCE RETRY_TIMEOUT_SECS RETRY_TARGET_HOSTS RETRY_JOURNAL_DIR RETRY_DRY_RUN "
 HANDOFF_COLLECT_VARS=" JOB_ID JOB_IDS HOST_ID COLLECT_PARALLEL "
 # The line jobs' check (#1621), as root on the host: it only reads.
 HANDOFF_LINE_REPORT_VARS=" JOB_IDS "
@@ -167,9 +170,11 @@ case $TARGET in
       die "--target publish needs --image <appver image>" ;;
   handoff)
     [ -z "$APPVER_IMAGE" ] || die "--image is for --target publish"
-    case $STEP in claim | release | dead-letter | deadline-retry | collect | export | line-report | lock-acquire | lock-renew | lock-release | lock-status | read-object | read-journals | write-held-pages) ;; *) die "--target handoff runs claim, release, dead-letter, deadline-retry, collect, export, line-report, lock-acquire|renew|release|status read-object|read-journals or write-held-pages on-prem; $STEP stays in Azure" ;; esac
+    case $STEP in claim | release | dead-letter | deadline-retry | retry | collect | export | line-report | lock-acquire | lock-renew | lock-release | lock-status | read-object | read-journals | write-held-pages) ;; *) die "--target handoff runs claim, release, dead-letter, deadline-retry, retry, collect, export, line-report, lock-acquire|renew|release|status read-object|read-journals or write-held-pages on-prem; $STEP stays in Azure" ;; esac
     [ "$STEP" != deadline-retry ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
       die "--step deadline-retry is an operator's, as root on the host; it isn't allowed over ssh"
+    [ "$STEP" != retry ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
+      die "--step retry is an operator's, as root on the host; it isn't allowed over ssh"
     [ "$STEP" != line-report ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
       die "--step line-report is an operator's, as root on the host; it isn't allowed over ssh" ;;
   *) die "--target $TARGET does not run on-prem; only bridge, publish, handoff, scans and archive steps do" ;;
@@ -560,6 +565,7 @@ if [ "$TARGET" = handoff ]; then
       SSH_ALLOWED=$HANDOFF_DEAD_LETTER_VARS
       [ "${USNM_BOINC_STEP_FROM_SSH:-}" = 1 ] || SSH_ALLOWED+=$HANDOFF_DEAD_LETTER_OPERATOR_VARS ;;
     deadline-retry) SSH_ALLOWED=$HANDOFF_DEADLINE_RETRY_VARS ;;
+    retry) SSH_ALLOWED=$HANDOFF_RETRY_VARS ;;
     collect) SSH_ALLOWED=$HANDOFF_COLLECT_VARS ;;
     export) SSH_ALLOWED=$HANDOFF_EXPORT_VARS ;;
     line-report) SSH_ALLOWED=$HANDOFF_LINE_REPORT_VARS ;;
@@ -596,6 +602,33 @@ if [ "$TARGET" = handoff ]; then
   fi
 fi
 
+# An archive or evidence copy of a failed page's journal (#1938): a real directory under one
+# of the roots below (colon-separated, USNM_BOINC_RETRY_JOURNAL_ROOTS), mounted read-only.
+RETRY_JOURNAL_HOST=""
+if [ "$TARGET:$STEP" = handoff:retry ]; then
+  retry_vars=()
+  for v in ${VARS[@]+"${VARS[@]}"}; do
+    if [[ $v == RETRY_JOURNAL_DIR=* ]]; then
+      RETRY_JOURNAL_HOST=${v#*=}
+      retry_vars+=("RETRY_JOURNAL_DIR=/retry-journal")
+    else
+      retry_vars+=("$v")
+    fi
+  done
+  VARS=(${retry_vars[@]+"${retry_vars[@]}"})
+  if [ -n "$RETRY_JOURNAL_HOST" ]; then
+    [[ $RETRY_JOURNAL_HOST == /* && $RETRY_JOURNAL_HOST != *..* ]] || die "RETRY_JOURNAL_DIR is an absolute path with no .."
+    [ -d "$RETRY_JOURNAL_HOST" ] && [ ! -L "$RETRY_JOURNAL_HOST" ] || die "RETRY_JOURNAL_DIR $RETRY_JOURNAL_HOST is not a directory"
+    RETRY_JOURNAL_HOST=$(readlink -f "$RETRY_JOURNAL_HOST")
+    allowed=false
+    IFS=: read -r -a journal_roots <<< "${USNM_BOINC_RETRY_JOURNAL_ROOTS:-/var/lib/usnm-priority-controller-evidence:/srv/usnm-boinc/handoff-state}"
+    for r in "${journal_roots[@]}"; do
+      case $RETRY_JOURNAL_HOST in "$r"/*) allowed=true ;; esac
+    done
+    $allowed || die "RETRY_JOURNAL_DIR must be under one of: ${USNM_BOINC_RETRY_JOURNAL_ROOTS:-/var/lib/usnm-priority-controller-evidence:/srv/usnm-boinc/handoff-state}"
+  fi
+fi
+
 name="usnm-boinc-step-$(date -u +%Y%m%dT%H%M%SZ)-$STEP"
 if $WHAT_IF; then
   if [ "$TARGET" = publish ]; then
@@ -607,6 +640,7 @@ if $WHAT_IF; then
     if [ ${#QUEUE_MOUNTS[@]} -gt 0 ]; then
       echo "  pgmq certificates mounted read-only at /etc/usnm/queue"
     fi
+    [ -z "$RETRY_JOURNAL_HOST" ] || echo "  $RETRY_JOURNAL_HOST mounted read-only at /retry-journal"
     for v in ${VARS[@]+"${VARS[@]}"}; do echo "  $v"; done
   else
     echo "would run $IMAGE as $name with $CONF/bridge.env and:"
@@ -701,6 +735,7 @@ if [ "$TARGET" = handoff ]; then
     echo "HANDOFF_LOCAL_SCANS=1" >> "$envfile"
     run+=(-v "$STAGE:/scans:ro")
   fi
+  [ -z "$RETRY_JOURNAL_HOST" ] || run+=(-v "$RETRY_JOURNAL_HOST:/retry-journal:ro")
   "${run[@]}" --timeout "$step_timeout" --entrypoint /usr/local/lib/usnm-boinc/handoff-job.sh "$IMAGE" || rc=$?
 elif [ "$TARGET" = publish ]; then
   "${run[@]}" --timeout "$step_timeout" --entrypoint /usr/local/lib/usnm-boinc/publish-appver.sh "$APPVER_IMAGE" || rc=$?

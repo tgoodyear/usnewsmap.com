@@ -209,6 +209,114 @@ mask through collect/journal/dead letter, verify the one new workunit and suppor
 app version, collect/import via ordinary validation, verify native settlement,
 and record all identities. Code tests or a merged PR do not prove this live gate.
 
+## Controller-side retry of a failed container page (#1938)
+
+`usnm-boinc retry` needs the BOINC host's own `--root` of journals and `--spool` of markers. A
+page that failed for good under the controller (a slow-class timeout, a SIGSEGV) often has
+neither: its journal is gone from the live hand-off and survives only in an archive or an
+evidence copy, and its live state is the hand-off container, the lake and Cosmos. The hand-off
+step `retry` prepares the child from there, with managed identity only (no SAS, no keys, no
+local `--root` or spool). It is an operator's, as root on the host, never over ssh, and it
+submits nothing: it reserves the child's native row and writes the child under
+`dispatch/jobs/<child>/` for the server to pull.
+
+Run the two steps under one nonce (32 hex):
+
+```sh
+# 1. What the BOINC database says: error_mask, canonical_resultid, assimilate_state. Read-only.
+usnm-boinc-step --env prod --target bridge --step wu-terminal --wait-mins 5 \
+  --var BATCH_NONCE=<nonce> --var HANDOFF_URL=<hand-off container> \
+  --var WU_NAMES=usnm_<parent job id>[,usnm_<parent job id>...]
+
+# 2. The retry. RETRY_DRY_RUN=1 runs every check and reserves nothing.
+usnm-boinc-step --env prod --target handoff --step retry --wait-mins 15 \
+  --var RETRY_JOB=<parent job id> --var RETRY_NONCE=<nonce> \
+  --var RETRY_IMAGE=sha256:<current released worker> --var RETRY_APP_VERSION=<its usnm_ocr version> \
+  --var RETRY_REASON=slow-class --var RETRY_TIMEOUT_SECS=3600 \
+  --var RETRY_TARGET_HOSTS=1,2,9 \
+  --var RETRY_REVIEWED='WU error mask 0x2, no canonical result, claim not finished' \
+  --var RETRY_JOURNAL_DIR=/var/lib/usnm-priority-controller-evidence/<run> \
+  [--var EXPECTED_HANDOFF_URL=<the host's handoff location>] [--var RETRY_DRY_RUN=1]
+```
+
+The same code runs as `usnm-boinc controller-retry` (named flags: `--job`, `--nonce`, `--image`,
+`--app-version-num`, `--reason`, `--reviewed-reason`, `--timeout-secs`, `--target-host`,
+`--journal-dir`, `--dry-run`, and the store URLs, with `--cosmos` for Cosmos). It prints the
+child's job id.
+
+**The parent's journal** is the live hand-off's `dispatch/jobs/<id>/record.json`, or, with
+`RETRY_JOURNAL_DIR` (`--journal-dir`), an archive or evidence copy: a directory holding
+`jobs/<id>/`, `dispatch/jobs/<id>/`, `<id>/` or `record.json` itself, with the page beside the
+record (the live hand-off's page is used when it is not). The step mounts that directory
+read-only; it must be under `/var/lib/usnm-priority-controller-evidence` or the local hand-off root
+(`USNM_BOINC_RETRY_JOURNAL_ROOTS` changes the list). A copy that lives on another host, such as a
+hand-off archive, is copied to one of those first. Nothing is ever written to it.
+
+**Terminal proof** is the BOINC database's, not the journal's. `wu-terminal` writes
+`scheduler/wu-terminal.json` (each workunit's id, `error_mask`, `canonical_resultid` and
+`assimilate_state`, with the nonce and the time), and `retry` accepts it only for its own nonce, no
+more than an hour old, with an `error_mask` other than 0 and `canonical_resultid` 0. A journal that
+predates terminal fields (stage `failed` or `submitted`, no `terminal`) is given the database's mask
+in scratch, as the marker the assimilator would have written; if the assimilator's `_error` marker
+is in the hand-off container's `spool/<id>/`, it must carry the same mask. A parent whose marker is
+`_no_output_files` is retried with `usnm-boinc retry --expected-no-output-files`, not here.
+
+**Refused before anything is reserved:** a claim for the page that ended `finished`; a canonical
+result anywhere, which is a database `canonical_resultid`, output in the parent's `spool/<id>/`,
+an `accepted/` directory in its `dispatch/jobs/<id>/`, an import in the native ledger or a published
+ALTO for the page in `ocr-out`; a bundle or line job; a journal that is not `failed` (or `submitted`
+with the database's proof); a page that differs from its request's scan. After these, the same
+checks as `usnm-boinc retry` apply: the native ledger must hold the parent's exact permanent
+failure as its latest outcome, and a queue-fed parent's claim must be conclusively `dead_lettered`.
+A parent is retried once from here: a second run finds the child named in
+`dispatch/retries/<parent>.json`; a failed child is retried from its own journal, with a fresh
+review naming it.
+
+**Reason and deadline.** `RETRY_REASON` is `slow-class` or `segfault-once`. A slow-class retry needs
+`RETRY_TIMEOUT_SECS` (`--timeout-secs`, up to 3600), longer than the parent's, since the same deadline
+runs out again. A segfault-once retry keeps the parent's settings, takes no deadline, and is for a
+first attempt only. The child uses the image and app version given (the current released worker's
+digest and its `usnm_ocr` version, as for `usnm-boinc retry`) and goes through normal validation: no
+trust shortcut, and the usual gold, spot-check and import checks apply to its result.
+
+**Target hosts.** `RETRY_TARGET_HOSTS` (`--target-host`, repeated) restricts the child to hosts that
+have a gold report for the child's image in the page's scope, from the hand-off container's
+`gold/trust.json`. One host that is not golded for it, or whose trust is held, refuses the whole
+list. It uses the same assignment route that native, gold, line and Surya units use. The child's
+journal names the hosts; submit it with `RETRY_TARGET_HOST=<one of them>`:
+
+```sh
+usnm-boinc-step --env prod --target bridge --step submit-remote --wait-mins 15 \
+  --var JOB_ID=<child job id> --var HANDOFF_URL=<hand-off container> --var RETRY_TARGET_HOST=<host>
+```
+
+`usnm-boinc submit --target-host` then checks that host against the trust list again, for the child's
+image, and refuses a host the journal does not name, a host with no trust list, and (for a child
+whose journal names hosts) a submission with no host at all, so the restriction is never dropped
+on the way to the pool. It needs `<enable_assignment>1</enable_assignment>`, as every targeted unit does.
+**A targeted unit is never reissued.** Stock `create_work` sets the transitioner's
+`TRANSITION_NO_NEW_RESULTS` flag on assigned work, so if its host goes offline or its result fails
+the transitioner makes no replacement result, and with `--max_error_results 3` a unit whose first
+result failed gets no error mask for good. Watch a targeted child's workunit and result rows
+directly; the stale-assignment fallback is the separate #1919 work. A child with no target hosts is
+ordinary pool work.
+
+**Provenance.** The child's journal carries `retry_of` (the parent's job id), `parent_image` (the
+image the parent ran on), the `reason` and the target hosts (`retry.provenance`). The request the
+worker reads is unchanged, so no worker release is involved. `collect` publishes the page with the
+note in the ALTO's `sourceImageInformation`, after the scan's own identifiers:
+
+```xml
+<fileIdentifier fileIdentifierLocation="usnm_retry_of">PARENT JOB ID</fileIdentifier>
+<fileIdentifier fileIdentifierLocation="usnm_parent_image">sha256:PARENT IMAGE</fileIdentifier>
+<fileIdentifier fileIdentifierLocation="usnm_retry_reason">slow-class</fileIdentifier>
+```
+
+A rebuild counts re-reads by these three. The published file's name already carries the child's
+12-hex job prefix. `export` copies the journal as it is. As with #1159's retry, every strict
+journal consumer (controller, server, bridge, native sync and seeder) needs a build that reads
+`retry.provenance` before the first child exists.
+
 ## What runs on the host
 
 | Unit                               | What                                                                                                                                                                | Notes                                                                                                                     |
