@@ -77,7 +77,7 @@ one with `released_at` null, and a unit or crop has one live row at most.
   exclusions never touch, so it still reads `reader_scores`.
 - Readers of `crops.parquet` and `pages.parquet` files made before a unit was excluded
   (`build-quality-assessment-db.py --excluded-qwen`) clear the excluded readings from an export of
-  the live rows' `doc_id` and `crop_id`.
+  the live rows' `job_id`, `doc_id` and `crop_id`.
 - To release, as `postgres`: `UPDATE quality.excluded_qwen_readings SET released_at = now() WHERE
 job_id = '<64 hex>' AND crop_id IS NULL AND released_at IS NULL;`, then collect again.
 

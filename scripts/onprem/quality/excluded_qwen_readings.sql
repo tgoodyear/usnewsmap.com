@@ -68,15 +68,15 @@ DROP TRIGGER IF EXISTS excluded_qwen_readings_guard ON quality.excluded_qwen_rea
 CREATE TRIGGER excluded_qwen_readings_guard BEFORE UPDATE OR DELETE ON quality.excluded_qwen_readings
   FOR EACH ROW EXECUTE FUNCTION quality.excluded_qwen_readings_guard();
 
--- reader_scores without the vlm readers' rows of a page whose Qwen readings are excluded.
+-- reader_scores without the Qwen readers' rows (`vlm` and `qwen`) of a page whose Qwen readings are excluded.
 -- Every other reader's row, and every row of any other page, is as stored. The analysis
 -- (quality_gain.py, per-cell statistics) reads this view, not the table.
 CREATE OR REPLACE VIEW quality.reader_scores_effective AS
 SELECT r.*
 FROM quality.reader_scores r
 WHERE NOT EXISTS (
-  SELECT FROM quality.readers rd, quality.excluded_qwen_readings x
-  WHERE rd.reader = r.reader AND rd.kind = 'vlm'
+  SELECT FROM quality.excluded_qwen_readings x
+  WHERE r.reader IN ('vlm', 'qwen')
     AND x.doc_id = r.doc_id AND x.released_at IS NULL
 );
 
