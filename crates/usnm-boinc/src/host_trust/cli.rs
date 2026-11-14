@@ -232,6 +232,11 @@ pub async fn run(command: HostTrustCommands) -> anyhow::Result<()> {
                 trust,
                 spool,
                 canonical: x::Canonical::Db {
+                    mysql_defaults: mysql_defaults.clone(),
+                    mysql_ca: mysql_ca.clone(),
+                    database: database.clone(),
+                },
+                cpus: x::Cpus::Db {
                     mysql_defaults,
                     mysql_ca,
                     database,
@@ -288,6 +293,11 @@ pub async fn run(command: HostTrustCommands) -> anyhow::Result<()> {
                 trust,
                 spool,
                 canonical: x::Canonical::Db {
+                    mysql_defaults: mysql_defaults.clone(),
+                    mysql_ca: mysql_ca.clone(),
+                    database: database.clone(),
+                },
+                cpus: x::Cpus::Db {
                     mysql_defaults: mysql_defaults.clone(),
                     mysql_ca: mysql_ca.clone(),
                     database: database.clone(),
