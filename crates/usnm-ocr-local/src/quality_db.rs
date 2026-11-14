@@ -120,6 +120,88 @@ pub struct PageHold {
     pub reason: String,
     pub created_at: DateTime<Utc>,
     pub created_by: String,
+    /// Set for a hold meant for a reading that isn't stored yet: the release
+    /// doesn't stop because it matches no stored page. Every other hold that
+    /// matches none stops the release (`replace::check_holds`).
+    pub allow_zero_match: bool,
+}
+
+/// The environment variable naming the DSN file of the role that writes
+/// `quality.boinc_page_holds` (`usnm-ingest holds add`): `postgres`, or a role
+/// with INSERT on the table. The readers have SELECT only.
+pub const WRITER_DSN_FILE_ENV: &str = "USNM_QUALITY_HOLDS_WRITER_DSN_FILE";
+
+/// A hold to add. See [`HoldsWriter::add`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewHold {
+    pub doc_id: String,
+    pub node: Option<String>,
+    pub engine: Option<String>,
+    pub reason: String,
+    pub created_by: String,
+    pub allow_zero_match: bool,
+}
+
+/// The primary, reached with the writer's DSN file. Holds are written only
+/// through this (`usnm-ingest holds add`), after the caller has checked that
+/// the row matches a stored page.
+pub struct HoldsWriter {
+    config: tokio_postgres::Config,
+    tls: tokio_postgres_rustls::MakeRustlsConnect,
+    label: String,
+}
+
+impl HoldsWriter {
+    pub fn from_env() -> anyhow::Result<Self> {
+        match std::env::var(WRITER_DSN_FILE_ENV) {
+            Ok(path) if !path.trim().is_empty() => Self::from_file(path.trim()),
+            _ => {
+                bail!("{WRITER_DSN_FILE_ENV} is not set: adding a hold needs the writer's DSN file")
+            }
+        }
+    }
+
+    pub fn from_file(path: &str) -> anyhow::Result<Self> {
+        let dsn = std::fs::read_to_string(path)
+            .with_context(|| format!("reading the holds writer DSN file `{path}`"))?;
+        let (mut config, tls, label) = usnm_store::pgmq::connection_options(dsn.trim())
+            .with_context(|| format!("the holds writer DSN file `{path}`"))?;
+        config
+            .application_name("usnm-holds-add")
+            .connect_timeout(Duration::from_secs(15));
+        Ok(Self { config, tls, label })
+    }
+
+    /// Inserts the hold. Returns false when the same page and reading are
+    /// already held (the table keeps one row for each).
+    pub async fn add(&self, h: &NewHold) -> anyhow::Result<bool> {
+        let (client, connection) = self
+            .config
+            .connect(self.tls.clone())
+            .await
+            .with_context(|| format!("connecting to {}", self.label))?;
+        let task = tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let n = client
+            .execute(
+                "INSERT INTO quality.boinc_page_holds \
+                 (doc_id, node, engine, reason, created_by, allow_zero_match) \
+                 VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
+                &[
+                    &h.doc_id,
+                    &h.node,
+                    &h.engine,
+                    &h.reason,
+                    &h.created_by,
+                    &h.allow_zero_match,
+                ],
+            )
+            .await
+            .context("inserting into quality.boinc_page_holds");
+        task.abort();
+        Ok(n? == 1)
+    }
 }
 
 /// One live row of `quality.excluded_qwen_readings`: a `usnm_qwen` unit (its
@@ -263,7 +345,7 @@ impl QualityHolds for QualityDb {
         let (client, task) = self.connect().await?;
         let rows = client
             .query(
-                "SELECT doc_id, node, engine, reason, created_by, \
+                "SELECT doc_id, node, engine, reason, created_by, allow_zero_match, \
                         to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS created_at \
                  FROM quality.boinc_page_holds ORDER BY hold_id",
                 &[],
@@ -281,6 +363,7 @@ impl QualityHolds for QualityDb {
                     engine: row.get("engine"),
                     reason: row.get("reason"),
                     created_by: row.get("created_by"),
+                    allow_zero_match: row.get("allow_zero_match"),
                     created_at: DateTime::parse_from_rfc3339(&at)
                         .with_context(|| format!("a hold's created_at `{at}`"))?
                         .with_timezone(&Utc),

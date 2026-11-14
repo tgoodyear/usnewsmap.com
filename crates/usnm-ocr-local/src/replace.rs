@@ -36,7 +36,7 @@ use sha2::{Digest, Sha256};
 use usnm_store::ObjectStore;
 
 use super::pages::{self, Scores, StoredRow};
-use super::quality_db::{DbHolds, PageHold, QualityHolds};
+use super::quality_db::{DbHolds, NewHold, PageHold, QualityHolds};
 use super::report::{engine_key, Tally as Count};
 use super::rule::{self, Keep};
 use super::ROOT;
@@ -536,7 +536,7 @@ pub async fn revocations(
     curated: &dyn ObjectStore,
     db: Option<&dyn QualityHolds>,
 ) -> anyhow::Result<Vec<Revocation>> {
-    revocations_with(curated, db, false).await
+    Ok(revocations_with(curated, db, false).await?.0)
 }
 
 /// As [`revocations`], for a release by its [`DbHolds`] setting: `db` is `None` only when the
@@ -547,6 +547,16 @@ pub async fn release_revocations(
     db: Option<&dyn QualityHolds>,
     holds: DbHolds,
 ) -> anyhow::Result<Vec<Revocation>> {
+    Ok(release_revocations_and_holds(curated, db, holds).await?.0)
+}
+
+/// As [`release_revocations`], with the hold rows the database revocations were made from, for
+/// [`check_holds`].
+pub async fn release_revocations_and_holds(
+    curated: &dyn ObjectStore,
+    db: Option<&dyn QualityHolds>,
+    holds: DbHolds,
+) -> anyhow::Result<(Vec<Revocation>, Vec<PageHold>)> {
     if db.is_none() && holds.requires_rows() {
         bail!("the database holds are required but there is no quality database");
     }
@@ -557,7 +567,7 @@ async fn revocations_with(
     curated: &dyn ObjectStore,
     db: Option<&dyn QualityHolds>,
     require_rows: bool,
-) -> anyhow::Result<Vec<Revocation>> {
+) -> anyhow::Result<(Vec<Revocation>, Vec<PageHold>)> {
     let prefix = revoked_prefix();
     let mut out = Vec::new();
     let mut paths = curated.list(&prefix).await?;
@@ -573,13 +583,15 @@ async fn revocations_with(
         r.path = path;
         out.push(r);
     }
+    let mut rows = Vec::new();
     match db {
         Some(db) => {
             let holds = db.page_holds().await.context("page holds")?;
             if require_rows && holds.is_empty() {
                 bail!("quality.boinc_page_holds has no rows, but the release expects holds");
             }
-            out.extend(holds_as_revocations(holds)?);
+            out.extend(holds_as_revocations(holds.clone())?);
+            rows = holds;
         }
         None => tracing::warn!(
             "no quality database ({}): quality.boinc_page_holds is not applied",
@@ -602,7 +614,7 @@ async fn revocations_with(
             r.bind(&provenance);
         }
     }
-    Ok(out)
+    Ok((out, rows))
 }
 
 /// A digest of what a set of revocations effectively withdraws: each one's selectors, its
@@ -685,6 +697,214 @@ pub fn holds_as_revocations(holds: Vec<PageHold>) -> anyhow::Result<Vec<Revocati
             Ok(r)
         })
         .collect()
+}
+
+/// The revocation one hold row makes alone.
+fn hold_revocation(h: &PageHold) -> anyhow::Result<Revocation> {
+    holds_as_revocations(vec![h.clone()])?
+        .pop()
+        .context("a hold made no revocation")
+}
+
+impl Listing {
+    /// For each hold, how many stored rows (readings) it matches by [`Revocation::matches`]:
+    /// the same test the release applies, on the scores of the parts of the held pages' titles.
+    /// A hold on a page `ocr-local` has no part for matches 0.
+    pub async fn hold_matches(
+        &self,
+        curated: &dyn ObjectStore,
+        holds: &[PageHold],
+    ) -> anyhow::Result<Vec<u64>> {
+        let mut counts = vec![0u64; holds.len()];
+        // By title, then page: the holds on it with their revocations.
+        type Pages<'a> = HashMap<&'a str, Vec<(usize, Revocation)>>;
+        let mut by_title: BTreeMap<&str, Pages> = BTreeMap::new();
+        for (i, h) in holds.iter().enumerate() {
+            let lccn = h.doc_id.split('_').next().unwrap_or_default();
+            by_title
+                .entry(lccn)
+                .or_default()
+                .entry(h.doc_id.as_str())
+                .or_default()
+                .push((i, hold_revocation(h)?));
+        }
+        for (lccn, pages) in by_title {
+            for path in self.by_title.get(lccn).into_iter().flatten() {
+                let bytes = curated
+                    .get(path)
+                    .await?
+                    .with_context(|| format!("`{path}` vanished"))?;
+                let run = run_of(path);
+                let rows = pages::read_scores(Bytes::from(bytes)).with_context(|| path.clone())?;
+                for row in rows {
+                    for (i, rev) in pages.get(row.doc_id.as_str()).into_iter().flatten() {
+                        if rev.matches(&row, run) {
+                            counts[*i] += 1;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(counts)
+    }
+
+    /// The readings stored for a page: each one's `ocr_engine` tag and `node`, in part order.
+    pub async fn readings_of(
+        &self,
+        curated: &dyn ObjectStore,
+        doc_id: &str,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let lccn = doc_id.split('_').next().unwrap_or_default();
+        let mut out = Vec::new();
+        for path in self.by_title.get(lccn).into_iter().flatten() {
+            let bytes = curated
+                .get(path)
+                .await?
+                .with_context(|| format!("`{path}` vanished"))?;
+            for row in pages::read_scores(Bytes::from(bytes)).with_context(|| path.clone())? {
+                if row.doc_id == doc_id {
+                    out.push((row.ocr_engine, row.node));
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Checks a hold about to be written (`usnm-ingest holds add`) against the stored pages, with
+/// the test the release applies. Returns the stored rows it matches. Refuses one that matches
+/// none unless `allow_zero_match`, and says which readings the page does have.
+pub async fn vet_new_hold(
+    curated: &dyn ObjectStore,
+    listing: &Listing,
+    h: &NewHold,
+) -> anyhow::Result<u64> {
+    let hold = PageHold {
+        doc_id: h.doc_id.clone(),
+        node: h.node.clone(),
+        engine: h.engine.clone(),
+        reason: h.reason.clone(),
+        created_at: Utc::now(),
+        created_by: h.created_by.clone(),
+        allow_zero_match: h.allow_zero_match,
+    };
+    let n = listing
+        .hold_matches(curated, std::slice::from_ref(&hold))
+        .await?[0];
+    if n == 0 && !h.allow_zero_match {
+        let stored = listing.readings_of(curated, &h.doc_id).await?;
+        let seen = if stored.is_empty() {
+            "the page has no stored reading".to_owned()
+        } else {
+            stored
+                .iter()
+                .map(|(e, n)| format!("engine `{e}` node `{n}`"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        bail!(
+            "the hold on `{}` matches no stored row, so it would revoke nothing ({seen}); give \
+             the stored `ocr_engine` tag or its engine key, or pass --allow-zero-match for a \
+             reading that isn't stored yet",
+            h.doc_id
+        );
+    }
+    Ok(n)
+}
+
+/// What the hold rows matched, grouped as [`holds_as_revocations`] groups them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoldGroupCount {
+    pub reason: String,
+    pub engine: Option<String>,
+    pub node: Option<String>,
+    pub created_by: String,
+    /// Source rows.
+    pub holds: u64,
+    /// Stored rows the group matched, summed over its holds.
+    pub rows_matched: u64,
+    /// Holds that matched nothing and aren't marked `allow_zero_match`.
+    pub unmatched: Vec<String>,
+    /// Holds that matched nothing and are marked `allow_zero_match`.
+    pub allowed_zero: u64,
+}
+
+/// Groups `holds` with their match `counts` (one per hold, from [`Listing::hold_matches`]).
+pub fn hold_group_counts(holds: &[PageHold], counts: &[u64]) -> Vec<HoldGroupCount> {
+    type Key = (String, Option<String>, Option<String>, String);
+    let mut groups: BTreeMap<Key, HoldGroupCount> = BTreeMap::new();
+    for (h, n) in holds.iter().zip(counts) {
+        let g = groups
+            .entry((
+                h.reason.clone(),
+                h.engine.clone(),
+                h.node.clone(),
+                h.created_by.clone(),
+            ))
+            .or_insert_with(|| HoldGroupCount {
+                reason: h.reason.clone(),
+                engine: h.engine.clone(),
+                node: h.node.clone(),
+                created_by: h.created_by.clone(),
+                holds: 0,
+                rows_matched: 0,
+                unmatched: Vec::new(),
+                allowed_zero: 0,
+            });
+        g.holds += 1;
+        g.rows_matched += n;
+        if *n == 0 {
+            if h.allow_zero_match {
+                g.allowed_zero += 1;
+            } else {
+                g.unmatched.push(h.doc_id.clone());
+            }
+        }
+    }
+    groups.into_values().collect()
+}
+
+/// Fails closed on holds that name nothing stored (#1956): a hold whose engine tag or node
+/// matches no stored row of its page revokes nothing, and nothing would say so. Logs the
+/// matches per group of holds, and stops the release, before it publishes, if any hold that
+/// isn't marked `allow_zero_match` matched no stored row.
+pub async fn check_holds(
+    curated: &dyn ObjectStore,
+    listing: &Listing,
+    holds: &[PageHold],
+) -> anyhow::Result<()> {
+    let counts = listing.hold_matches(curated, holds).await?;
+    report_holds(holds, &counts)
+}
+
+/// The logging and the verdict of [`check_holds`], on counts already made.
+pub fn report_holds(holds: &[PageHold], counts: &[u64]) -> anyhow::Result<()> {
+    let groups = hold_group_counts(holds, counts);
+    for g in &groups {
+        tracing::info!(
+            reason = %g.reason,
+            engine = g.engine.as_deref().unwrap_or("-"),
+            node = g.node.as_deref().unwrap_or("-"),
+            created_by = %g.created_by,
+            holds = g.holds,
+            rows_matched = g.rows_matched,
+            unmatched = g.unmatched.len(),
+            allowed_zero_match = g.allowed_zero,
+            "{HOLDS_TABLE}: stored rows matched by a group of holds"
+        );
+    }
+    let unmatched: Vec<&String> = groups.iter().flat_map(|g| &g.unmatched).collect();
+    if !unmatched.is_empty() {
+        let shown: Vec<&str> = unmatched.iter().take(20).map(|d| d.as_str()).collect();
+        bail!(
+            "{HOLDS_TABLE}: {} active hold(s) match no stored page, so they revoke nothing \
+             (first: {}); fix the engine or node with `usnm-ingest holds add`, or mark a hold \
+             for a reading not yet stored `allow_zero_match`; nothing is published",
+            unmatched.len(),
+            shown.join(", ")
+        );
+    }
+    Ok(())
 }
 
 /// A page the completeness gate kept LoC's text on (`short` or `cover`).
@@ -1268,6 +1488,7 @@ mod tests {
             reason: "test".into(),
             created_at: "2026-11-14T20:00:00Z".parse().unwrap(),
             created_by: "tester".into(),
+            allow_zero_match: false,
         };
         let found = release_revocations(curated.as_ref(), Some(&db(vec![held], false)), required)
             .await
@@ -1534,6 +1755,7 @@ mod tests {
             reason: "image dropped from gold trust 17 Oct (#1956)".into(),
             created_at: "2026-11-14T20:00:00Z".parse().unwrap(),
             created_by: "tester".into(),
+            allow_zero_match: false,
         };
         let db = |holds: Vec<PageHold>, down: bool| FakeDb {
             provenance: vec![],
@@ -1592,6 +1814,176 @@ mod tests {
         .unwrap();
         assert_eq!(grouped.len(), 1);
         assert_eq!(grouped[0].page_count(), 2);
+    }
+
+    /// The stored tag of the 9c8e rows: no ` contract=0`, unlike the tag a job reports.
+    const STORED: &str = "tesseract/5.5.0 profile=frak2021 image=sha256:9c8eac0485d5 \
+        models=sha256:153518ad562f route=boinc@r1";
+
+    fn hold_on(doc: &str, engine: &str, allow: bool) -> PageHold {
+        PageHold {
+            doc_id: doc.into(),
+            node: None,
+            engine: Some(engine.into()),
+            reason: "9c8e image (#1956)".into(),
+            created_at: "2026-11-14T20:00:00Z".parse().unwrap(),
+            created_by: "tester".into(),
+            allow_zero_match: allow,
+        }
+    }
+
+    fn new_hold(doc: &str, engine: &str, allow: bool) -> NewHold {
+        NewHold {
+            doc_id: doc.into(),
+            node: None,
+            engine: Some(engine.into()),
+            reason: "9c8e image (#1956)".into(),
+            created_by: "tester".into(),
+            allow_zero_match: allow,
+        }
+    }
+
+    async fn store_with(
+        engine: &str,
+        pages_n: u16,
+    ) -> (tempfile::TempDir, std::sync::Arc<dyn ObjectStore>) {
+        let dir = tempfile::tempdir().unwrap();
+        let curated = usnm_store::open(dir.path().to_str().unwrap()).unwrap();
+        let text = "durch den engen Hausgang schritt, weiter und Drahtzaun";
+        let ours = Scores::of(text, &["deu"]);
+        let rows: Vec<_> = (1..=pages_n)
+            .map(|n| imported_scored(n, engine, text, ours.clone()))
+            .collect();
+        curated
+            .put_new(
+                &format!("{ROOT}/pages/sn1/20261011T000000Z-ab.parquet"),
+                pages::encode(&rows).unwrap(),
+                "x",
+            )
+            .await
+            .unwrap();
+        (dir, curated)
+    }
+
+    /// The writer refuses a hold that matches no stored row, unless told the reading isn't
+    /// stored yet; the full stored tag and the engine key both match.
+    #[tokio::test]
+    async fn the_writer_refuses_a_hold_that_matches_nothing() {
+        let (_dir, curated) = store_with(STORED, 2).await;
+        let listing = Listing::list(curated.as_ref()).await.unwrap();
+        let doc = "sn1_1900-01-01_ed-1_seq-1";
+        let job_tag = format!("{STORED} contract=0");
+        let err = vet_new_hold(curated.as_ref(), &listing, &new_hold(doc, &job_tag, false))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("matches no stored row") && err.contains(STORED),
+            "{err}"
+        );
+        // A page with no stored reading at all.
+        let none = new_hold("sn9_1900-01-01_ed-1_seq-1", STORED, false);
+        let err = vet_new_hold(curated.as_ref(), &listing, &none)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no stored reading"), "{err}");
+        // For a reading that isn't stored yet, the opt-out lets it through.
+        let n = vet_new_hold(curated.as_ref(), &listing, &new_hold(doc, &job_tag, true))
+            .await
+            .unwrap();
+        assert_eq!(n, 0);
+        for engine in [STORED, "tesseract/5.5.0 frak2021"] {
+            let n = vet_new_hold(curated.as_ref(), &listing, &new_hold(doc, engine, false))
+                .await
+                .unwrap();
+            assert_eq!(n, 1, "{engine}");
+        }
+    }
+
+    /// The release stops before publishing on an active hold that matches nothing, unless the
+    /// row is marked; the counts are by group, with the source rows.
+    #[tokio::test]
+    async fn the_release_stops_on_an_active_hold_that_matches_nothing() {
+        let (_dir, curated) = store_with(STORED, 3).await;
+        let listing = Listing::list(curated.as_ref()).await.unwrap();
+        let job_tag = format!("{STORED} contract=0");
+        let seq = |n: u16| format!("sn1_1900-01-01_ed-1_seq-{n}");
+        let holds = vec![
+            hold_on(&seq(1), "tesseract/5.5.0 frak2021", false),
+            hold_on(&seq(2), &job_tag, false),
+        ];
+        let counts = listing
+            .hold_matches(curated.as_ref(), &holds)
+            .await
+            .unwrap();
+        assert_eq!(counts, vec![1, 0]);
+        let groups = hold_group_counts(&holds, &counts);
+        assert_eq!(groups.len(), 2);
+        let g = groups
+            .iter()
+            .find(|g| g.engine.as_deref() == Some(&*job_tag))
+            .unwrap();
+        assert_eq!(
+            (g.holds, g.rows_matched, g.unmatched.clone()),
+            (1, 0, vec![seq(2)])
+        );
+        let err = check_holds(curated.as_ref(), &listing, &holds)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains(&seq(2)), "{err}");
+        assert!(err.to_string().contains("nothing is published"), "{err}");
+        // Marked for a reading not stored yet: the release goes on.
+        let marked = vec![holds[0].clone(), hold_on(&seq(2), &job_tag, true)];
+        check_holds(curated.as_ref(), &listing, &marked)
+            .await
+            .unwrap();
+        let counts = listing
+            .hold_matches(curated.as_ref(), &marked)
+            .await
+            .unwrap();
+        let groups = hold_group_counts(&marked, &counts);
+        assert_eq!(groups.iter().map(|g| g.allowed_zero).sum::<u64>(), 1);
+        // The same through the release's loader: the rows come back with the revocations.
+        let db = FakeDb {
+            provenance: vec![],
+            holds: holds.clone(),
+            down: false,
+        };
+        let (revoked, rows) =
+            release_revocations_and_holds(curated.as_ref(), Some(&db), DbHolds::default())
+                .await
+                .unwrap();
+        assert_eq!((revoked.len(), rows.len()), (2, 2));
+    }
+
+    /// The 31,786 rows of the 9c8e engine key, held by key, all match.
+    #[tokio::test]
+    async fn the_frak2021_holds_by_engine_key_all_match() {
+        const N: u16 = 31_786;
+        let (_dir, curated) = store_with(STORED, N).await;
+        let listing = Listing::list(curated.as_ref()).await.unwrap();
+        let holds: Vec<PageHold> = (1..=N)
+            .map(|n| {
+                hold_on(
+                    &format!("sn1_1900-01-01_ed-1_seq-{n}"),
+                    "tesseract/5.5.0 frak2021",
+                    false,
+                )
+            })
+            .collect();
+        let counts = listing
+            .hold_matches(curated.as_ref(), &holds)
+            .await
+            .unwrap();
+        assert!(counts.iter().all(|&n| n == 1));
+        check_holds(curated.as_ref(), &listing, &holds)
+            .await
+            .unwrap();
+        let groups = hold_group_counts(&holds, &counts);
+        assert_eq!(
+            (groups.len(), groups[0].holds, groups[0].rows_matched),
+            (1, 31_786, 31_786)
+        );
     }
 
     /// An engine tag for `profile`, as a worker writes it.

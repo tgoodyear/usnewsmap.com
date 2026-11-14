@@ -1003,7 +1003,7 @@ impl Release {
             // unusable DSN file, an unreachable database or an empty table stops
             // the release here, before anything is written.
             let quality = self.db_holds.open()?;
-            let revoked = ocr_local::replace::release_revocations(
+            let (revoked, hold_rows) = ocr_local::replace::release_revocations_and_holds(
                 self.curated.as_ref(),
                 quality
                     .as_ref()
@@ -1011,6 +1011,10 @@ impl Release {
                 self.db_holds,
             )
             .await?;
+            // A hold that matches no stored row revokes nothing and says nothing: log what each
+            // group of holds matched, and stop before publishing if any (not marked
+            // `allow_zero_match`) matched none (#1956).
+            ocr_local::replace::check_holds(self.curated.as_ref(), &listing, &hold_rows).await?;
             // Pages of published batches only take ours at a full rebuild:
             // how many would, by the scores `ocr-sync` stored.
             let estimate = if indexed.is_empty() || listing.parts() == 0 {
