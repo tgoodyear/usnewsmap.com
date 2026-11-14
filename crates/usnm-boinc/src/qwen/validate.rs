@@ -163,11 +163,18 @@ pub fn project_job_file(project: &Path, job_id: &str) -> Option<PathBuf> {
         .current_dir(project)
         .output()
         .ok()?;
+    if !out.status.success() {
+        return None;
+    }
     let path = PathBuf::from(String::from_utf8(out.stdout).ok()?.trim());
     // `dir_hier_path` may print a path relative to the project, and the
     // validator runs in `<project>/tmp_<host>`.
-    let path = project.join(path);
-    (out.status.success() && path.is_file()).then_some(path)
+    let path = if path.is_absolute() {
+        path
+    } else {
+        project.join(path)
+    };
+    path.is_file().then_some(path)
 }
 
 /// Where the guard looks for LoC's text per crop.
@@ -932,6 +939,32 @@ pub(crate) mod tests {
         // Another job's file is not used: the guard counts every empty reading.
         assert!(loc_blank_crops(&path, &"0".repeat(64)).is_none());
         assert!(loc_blank_crops(&tmp.path().join("missing"), &job_id).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_job_file_resolves_relative_paths_from_outside_the_project() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let bin = project.join("bin");
+        let download = project.join("download");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&download).unwrap();
+        let job_id = "a".repeat(64);
+        let job_file = download.join(format!("{job_id}_qwen_json"));
+        std::fs::write(&job_file, "{}").unwrap();
+
+        let dir_hier_path = bin.join("dir_hier_path");
+        std::fs::write(
+            &dir_hier_path,
+            format!("#!/bin/sh\nprintf '%s\\n' 'download/{job_id}_qwen_json'\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&dir_hier_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(project_job_file(&project, &job_id), Some(job_file));
     }
 
     #[test]
