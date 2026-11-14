@@ -130,7 +130,11 @@ function check(code, text, diff) {
     if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > 0.5) found.push({ code, text, diff, overlap: "mark on mark" });
   }
 }
-document.fonts.ready.then(() => {
+// the stage is empty until a case is built, so ask for the Cherokee face first: the cases must be measured in it
+document.fonts.load('32px "Noto Sans Cherokee"', "ᎠᎡᏒ").then((faces) => {
+  if (!faces.length || faces.some((f) => f.status !== "loaded")) found.push({ code: "chr", text: "", diff: [], overlap: "the Cherokee font did not load" });
+  return document.fonts.ready;
+}).then(() => {
   let checked = 0;
   for (const c of cases) {
     cfg = c.cfg; lang = c.code;
@@ -219,7 +223,10 @@ ${examplesSource()}
 const cases = ${JSON.stringify(cases)};
 const stage = document.getElementById("stage");
 const found = [], seen = [];
-document.fonts.ready.then(() => {
+document.fonts.load('32px "Noto Sans Cherokee"', "ᎠᎡᏒ").then((faces) => {
+  if (!faces.length || faces.some((f) => f.status !== "loaded")) found.push({ code: "chr", side: "", problem: "the Cherokee font did not load" });
+  return document.fonts.ready;
+}).then(() => {
   for (const c of cases) {
     lang = c.code; cfg = c.cfg;
     for (const side of ["a", "b"]) {

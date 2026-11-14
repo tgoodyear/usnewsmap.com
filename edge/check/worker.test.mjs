@@ -239,7 +239,7 @@ async function sqliteD1() {
   return { db, DB };
 }
 
-const adminCall = (DB, path, body) => worker.fetch(new Request("https://check.usnewsmap.com" + path, { method: "POST", headers: { authorization: "Bearer secret-admin" }, body: JSON.stringify(body) }), { ...env, DB }, {});
+const adminCall = (DB, path, body, raw) => worker.fetch(new Request("https://check.usnewsmap.com" + path, { method: "POST", headers: { authorization: "Bearer secret-admin" }, body: raw ?? JSON.stringify(body) }), { ...env, DB }, {});
 
 test("marking a task confusable_display sets its answers aside, keeps them, and holds it until reopened", async () => {
   const { db, DB } = await sqliteD1();
@@ -313,6 +313,19 @@ test("marking a task confusable_display sets its answers aside, keeps them, and 
   assert.deepEqual((await (await adminCall(DB, "/admin/confusable", { action: "reopen", tasks: ["chr/s/1"] })).json()).unchanged, ["chr/s/1"]);
   assert.deepEqual((await (await adminCall(DB, "/admin/confusable", { action: "mark", tasks: ["chr/s/1"] })).json()).unchanged, ["chr/s/1"]);
   assert.equal(row("chr/s/1").outcome, "b");
+  // an answer request from a page without the display revision that read the task before it was marked, reopened: refused
+  const { ANSWER_SQL } = await import("./worker.mjs");
+  db.prepare("DELETE FROM answers WHERE task_id = 'chr/s/1' AND contributor = 'c3'").run();
+  assert.equal(db.prepare(ANSWER_SQL).run("chr/s/1", "c3", "a", 0, DISPLAY_REVISION - 1).changes, 0);
+  assert.equal(db.prepare(ANSWER_SQL).run("chr/s/2", "c3", "a", 0, 0).changes, 1, "a task never marked takes it");
+  assert.equal(db.prepare(ANSWER_SQL).run("chr/s/1", "c3", "b", 0, DISPLAY_REVISION).changes, 1);
+  // loading a seed file again doesn't bring a set-aside seed answer back, and a new one still counts
+  const seedPost = async (rows) => (await adminCall(DB, "/admin/answers", null, rows.map((r) => JSON.stringify(r)).join("\n"))).json();
+  db.prepare("INSERT INTO answers_excluded (task_id, contributor, choice, at) VALUES ('chr/s/1', 'seed:old', 'a', 111)").run();
+  const seeded = await seedPost([{ task: "chr/s/1", contributor: "seed:old", choice: "a", at: 111 }, { task: "chr/s/1", contributor: "seed:new", choice: "b", at: 222 }]);
+  assert.deepEqual([seeded.answers, seeded.skipped], [1, 1]);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers WHERE contributor = 'seed:old'").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers WHERE contributor = 'seed:new'").get().n, 1);
 });
 
 test("the page and the Worker agree on the display revision", () => {

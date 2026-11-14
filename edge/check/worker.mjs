@@ -220,7 +220,7 @@ async function api(request, env, url) {
     if (t.settled && t.blind) throw new HttpError(409, "this word is already checked");
     if (t.held) throw new HttpError(409, "this word is not open for answers");
     if (t.confusable_display && !(Number(b.display) >= DISPLAY_REVISION)) throw new HttpError(426, "this page is out of date: reload it, then answer again");
-    await record(env, b.task, c, b.choice);
+    await record(env, b.task, c, b.choice, Date.now(), Number(b.display) || 0);
     return json({ ok: true });
   }
   if (p === "/api/stats" && request.method === "GET") {
@@ -318,20 +318,23 @@ WHERE id = ?1`;
 
 // A settled blind task (its body has `private`) takes no more answers, so a revision can't reopen it after its
 // readings were exported, and a held task (marked confusable_display, not yet reopened) takes none either. The
-// conditions are in the statement, so they hold against a racing request too.
+// conditions are in the statement, so they hold against a racing request too. ?5 is the display revision the answer came
+// from: a marked task refuses an older one even if it was reopened after the request read the task.
 export const ANSWER_SQL = `
 INSERT INTO answers (task_id, contributor, choice, at)
 SELECT ?1, ?2, ?3, ?4
-WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND ((settled = 1 AND json_type(body, '$.private') IS NOT NULL) OR held = 1))
+WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND ((settled = 1 AND json_type(body, '$.private') IS NOT NULL) OR held = 1
+  OR (confusable_display = 1 AND ?5 < ${DISPLAY_REVISION})))
 ON CONFLICT (task_id, contributor) DO UPDATE SET choice = excluded.choice, at = excluded.at`;
 
-export async function record(env, task, contributor, choice, at = Date.now()) {
+export async function record(env, task, contributor, choice, at = Date.now(), display = DISPLAY_REVISION) {
   const res = await env.DB.batch([
-    env.DB.prepare(ANSWER_SQL).bind(task, contributor, choice, at),
+    env.DB.prepare(ANSWER_SQL).bind(task, contributor, choice, at, display),
     env.DB.prepare(SETTLE_SQL).bind(task),
   ]);
-  // Zero rows written: the task settled (blind) or was held between the check in /api/answers and this statement.
-  if (res && res[0] && res[0].meta && res[0].meta.changes === 0) throw new HttpError(409, "this word is already checked");
+  // Zero rows written: the task settled (blind), was held, or was marked and the page is out of date, between the check in
+  // /api/answers and this statement.
+  if (res && res[0] && res[0].meta && res[0].meta.changes === 0) throw new HttpError(409, "this word can't take that answer now; reload the page");
 }
 
 // ---------- words whose readings look alike (README.md, "Words whose readings look alike") ----------
@@ -480,15 +483,19 @@ async function admin(request, env, url) {
   if (p === "/admin/answers" && request.method === "POST") {
     // JSON lines: {task, contributor ("seed:<name>"), choice, at}. Imported answers count like any other.
     const text = await request.text();
-    let k = 0;
+    let k = 0, skipped = 0;
     for (const line of text.split("\n")) {
       if (!line.trim()) continue;
       const a = JSON.parse(line);
       if (typeof a.contributor !== "string" || !a.contributor.startsWith("seed:") || !CHOICES.has(a.choice)) throw new HttpError(400, "seed answers only");
-      await record(env, a.task, a.contributor, a.choice, Number(a.at) || Date.parse(a.at) || Date.now());
+      const at = Number(a.at) || Date.parse(a.at) || 0;
+      // An answer set aside for a marked task stays set aside when its file is loaded again (same contributor and time).
+      const old = await env.DB.prepare("SELECT 1 AS x FROM answers_excluded WHERE task_id = ? AND contributor = ? AND (at = ? OR ? = 0)").bind(a.task, a.contributor, at, at).first();
+      if (old) { skipped++; continue; }
+      await record(env, a.task, a.contributor, a.choice, at || Date.now());
       k++;
     }
-    return json({ ok: true, answers: k });
+    return json({ ok: true, answers: k, skipped });
   }
   throw new HttpError(404, "not found");
 }
