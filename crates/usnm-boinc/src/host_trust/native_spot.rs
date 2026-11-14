@@ -10,7 +10,8 @@
 //! ([`crate::trust::Trust::hold_host`]): the comparison can't say which of the two is wrong.
 //! Each replay is journaled under `<root>/native-spots/<job>/<target host>/`, and a compared
 //! one is never compared again, so a mismatch stays on record and is never retried away.
-use super::spot::{agree, fetch, job_inputs, judge, stage};
+use super::container_spot::{outside, Limits};
+use super::spot::{agree, differing_words, fetch, job_inputs, judge, stage, WordDiff};
 use crate::trust::{BuildTrust, Hold, Trust};
 use crate::{atomic, load, read, Lock};
 use anyhow::{bail, ensure, Context};
@@ -152,6 +153,170 @@ pub struct Paths {
     pub spool: PathBuf,
     /// Where each workunit's canonical result's host is read from.
     pub canonical: Canonical,
+    /// Where each host's CPU is read from, to pair results by SIMD level.
+    pub cpus: Cpus,
+}
+
+/// What a same-build pair on different SIMD levels may differ by (page CER and word F1), set by
+/// the Science Coordinator on 14 Nov 2026 after one junk-glyph segmentation change in a noise
+/// line between an AVX2 and an AVX-512 host on build 4d6e2a3b (#1919). There is no length-ratio
+/// bound of its own: a CER of 0.002 already bounds the lengths to within 0.2%. Same build and
+/// same SIMD level stays byte-exact; two builds stay as they were. These are a first estimate:
+/// revisit them after about 200 cross-SIMD pairs have been compared.
+pub const CROSS_SIMD_SAME_BUILD: Limits = Limits {
+    max_cer: 0.002,
+    min_f1: 0.995,
+    min_ratio: 0.998,
+    max_ratio: 1.002,
+};
+
+/// How much of the CPU's SIMD the Tesseract build can use on a host, as far as it changes the
+/// output of the same build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Simd {
+    Avx512,
+    Avx2,
+    /// A CPU with neither.
+    Baseline,
+}
+
+impl Simd {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Avx512 => "avx512",
+            Self::Avx2 => "avx2",
+            Self::Baseline => "baseline",
+        }
+    }
+}
+
+/// A host's SIMD level from its `p_features` (what the client reported: authoritative when
+/// there) or, with none, from its `p_model` by a small table of the families this project's
+/// hosts run. None when neither says.
+pub fn simd_level(p_model: &str, p_features: &str) -> Option<Simd> {
+    let features: Vec<&str> = p_features.split_whitespace().collect();
+    if !features.is_empty() {
+        let has = |f: &str| features.iter().any(|x| x.eq_ignore_ascii_case(f));
+        return Some(if has("avx512f") {
+            Simd::Avx512
+        } else if has("avx2") {
+            Simd::Avx2
+        } else {
+            Simd::Baseline
+        });
+    }
+    let model = p_model.to_ascii_lowercase();
+    if model.contains("xeon") {
+        let scalable = ["bronze", "silver", "gold", "platinum"];
+        return scalable
+            .iter()
+            .any(|tier| model.contains(tier))
+            .then_some(Simd::Avx512);
+    }
+    if let Some(at) = ["i3-", "i5-", "i7-", "i9-"]
+        .iter()
+        .find_map(|prefix| model.find(prefix).map(|i| i + prefix.len()))
+    {
+        let digits: String = model[at..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        // Ice Lake and Tiger Lake mobile (10xx, 11xx) and Rocket Lake desktop (11xxx) have
+        // AVX-512; every other Core generation here has AVX2 only.
+        return match (digits.len(), digits.get(..2)) {
+            (4, Some("10" | "11")) | (5, Some("11")) => Some(Simd::Avx512),
+            (4 | 5, _) => Some(Simd::Avx2),
+            _ => None,
+        };
+    }
+    if model.contains("ryzen") {
+        // Zen 1 to Zen 3 (1000 to 5000 series) have AVX2 and no AVX-512; later series are mixed
+        // between desktop and mobile parts, so they are not guessed.
+        let digits: String = model
+            .split(' ')
+            .find(|word| word.starts_with(|c: char| c.is_ascii_digit()) && word.len() >= 4)
+            .unwrap_or("")
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        return (digits.len() == 4 && digits.starts_with(['1', '2', '3', '4', '5']))
+            .then_some(Simd::Avx2);
+    }
+    None
+}
+
+/// Where each host's `p_model` and `p_features` are read from.
+pub enum Cpus {
+    Db {
+        mysql_defaults: PathBuf,
+        mysql_ca: PathBuf,
+        database: String,
+    },
+    #[cfg(test)]
+    Fixed(std::collections::BTreeMap<u64, (String, String)>),
+}
+
+impl Cpus {
+    /// The SIMD level of host `id`; None when the row doesn't say or can't be read. A host
+    /// whose level is not known is compared byte for byte, as before.
+    async fn simd(&self, id: u64) -> Option<Simd> {
+        match self {
+            Self::Db {
+                mysql_defaults,
+                mysql_ca,
+                database,
+            } => {
+                let rows = super::query_db(
+                    mysql_defaults,
+                    mysql_ca,
+                    database,
+                    &format!(
+                        "SELECT LEFT(p_model, 120), LEFT(p_features, 2000) FROM host WHERE id={id}"
+                    ),
+                )
+                .await
+                .ok()?;
+                let mut fields = rows.lines().next()?.split('\t');
+                simd_level(fields.next()?, fields.next().unwrap_or(""))
+            }
+            #[cfg(test)]
+            Self::Fixed(hosts) => {
+                let (model, features) = hosts.get(&id)?;
+                simd_level(model, features)
+            }
+        }
+    }
+}
+
+/// How the two hosts of a check line up by SIMD level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pairing {
+    Same(Simd),
+    Cross(Simd, Simd),
+    Unknown,
+}
+
+impl Pairing {
+    fn of(source: Option<Simd>, target: Option<Simd>) -> Self {
+        match (source, target) {
+            (Some(a), Some(b)) if a == b => Self::Same(a),
+            (Some(a), Some(b)) => Self::Cross(a, b),
+            _ => Self::Unknown,
+        }
+    }
+
+    /// For the verdict's detail and the log.
+    fn label(self) -> String {
+        match self {
+            Self::Same(level) => format!("same SIMD level ({})", level.label()),
+            Self::Cross(a, b) => format!(
+                "different SIMD levels (original {}, replay {})",
+                a.label(),
+                b.label()
+            ),
+            Self::Unknown => "SIMD level of a host unknown".into(),
+        }
+    }
 }
 
 /// The host BOINC recorded for a workunit's canonical result. The two hosts of a check are
@@ -590,6 +755,10 @@ async fn check_one(
             )
         }
     };
+    let pairing = Pairing::of(
+        p.cpus.simd(r.source_host).await,
+        p.cpus.simd(r.target_host).await,
+    );
     if agree(builds, &original, &replay, true)? {
         return finish(
             p,
@@ -598,19 +767,58 @@ async fn check_one(
             outcome(
                 r,
                 Status::Match,
-                "text bytes and ALTO (without confidences) identical",
+                format!(
+                    "text bytes and ALTO (without confidences) identical; pairing: {}",
+                    pairing.label()
+                ),
             ),
             execute,
         );
     }
-    let detail = format!(
+    let mut detail = format!(
         "text {} against {}, ALTO without confidences {} against {}",
         original.text_sha256,
         replay.text_sha256,
         original.alto_exact_sha256,
         replay.alto_exact_sha256
     );
+    // The same build on two SIMD levels may read a noise line differently (#1919): a small
+    // difference is allowed there and nowhere else. Two builds, or one SIMD level, stay exact.
+    if matches!(pairing, Pairing::Cross(..)) && original.image == replay.image {
+        let words = differing_words(&original.lines, &replay.lines);
+        let counts = words_detail(words);
+        match outside(&CROSS_SIMD_SAME_BUILD, &original.text, &replay.text) {
+            None => {
+                return finish(
+                    p,
+                    &path,
+                    &mut journal,
+                    outcome(
+                        r,
+                        Status::Match,
+                        format!(
+                            "within the cross-SIMD tier (CER at most {}, F1 at least {}) of one build; {counts}; pairing: {}; {detail}",
+                            CROSS_SIMD_SAME_BUILD.max_cer,
+                            CROSS_SIMD_SAME_BUILD.min_f1,
+                            pairing.label()
+                        ),
+                    ),
+                    execute,
+                );
+            }
+            Some(reason) => detail = format!("{reason}; {counts}; {detail}"),
+        }
+    }
+    detail = format!("{detail}; pairing: {}", pairing.label());
     mismatch(p, &path, &mut journal, r, &job, detail, execute)
+}
+
+/// The differing words by the confidence of their line, for a verdict's detail.
+fn words_detail(w: WordDiff) -> String {
+    format!(
+        "differing words in lines under 50 word confidence: {}, at 50 or over: {}, unscored: {}",
+        w.low, w.high, w.unscored
+    )
 }
 
 /// Records the mismatch, then holds both hosts: the verdict is journaled first, so a run that
@@ -853,6 +1061,7 @@ mod tests {
             trust: root.join("trust.json"),
             spool: root.join("results/0"),
             canonical: Canonical::Fixed(Default::default()),
+            cpus: Cpus::Fixed(Default::default()),
         };
         if let Canonical::Fixed(hosts) = &paths.canonical {
             hosts.lock().unwrap().insert(job.workunit(), 13);
@@ -1089,6 +1298,136 @@ mod tests {
             .unwrap();
         assert_eq!(o.status, Status::Refused);
         assert!(o.detail.starts_with("source:"), "{o:?}");
+    }
+
+    const RYZEN_3900X: &str = "AMD Ryzen 9 3900X 12-Core Processor";
+    const I7_7700K: &str = "Intel(R) Core(TM) i7-7700K CPU @ 4.20GHz";
+    const I7_1185G7: &str = "11th Gen Intel(R) Core(TM) i7-1185G7 @ 3.00GHz";
+
+    /// A page of 400 distinct words, so one word is 0.25% of them and one glyph 0.04% of the
+    /// characters.
+    fn page() -> String {
+        let mut text: String = (0..400).map(|i| format!("w{i:03}x ")).collect();
+        text.push('\n');
+        text
+    }
+
+    /// Checks a replay of `original` on host 240 against host 13's, with the hosts' CPU models.
+    fn compared(original: &str, replay_text: &str, cpus: [&str; 2]) -> (Outcome, Trust) {
+        let mut f = fixture();
+        f.paths.cpus = Cpus::Fixed(
+            [(13, cpus[0]), (240, cpus[1])]
+                .into_iter()
+                .map(|(host, model)| (host, (model.to_owned(), String::new())))
+                .collect(),
+        );
+        let r = replay(&f, 240, LINUX, true);
+        submitted(&f, &r);
+        returned(
+            &f.job,
+            r.original_spool.as_deref().unwrap(),
+            &f.job.workunit(),
+            original,
+        );
+        returned(&f.job, &f.paths.spool, &r.workunit(), replay_text);
+        let o = block(check_one(&f.paths, &trust(&f), &f.builds, &r, true)).unwrap();
+        let t = trust(&f);
+        (o, t)
+    }
+
+    #[test]
+    fn a_single_glyph_between_simd_levels_of_one_build_is_a_match() {
+        // The b6c69c21 case (#1919): one glyph of a noise line, an AVX2 host against an AVX-512
+        // one, on both sides of the pair.
+        let original = page();
+        let replay = original.replacen("w100x", "w1O0x", 1);
+        for cpus in [[RYZEN_3900X, I7_1185G7], [I7_1185G7, RYZEN_3900X]] {
+            let (o, t) = compared(&original, &replay, cpus);
+            assert_eq!(o.status, Status::Match, "{o:?}");
+            assert!(o.detail.contains("cross-SIMD tier"), "{}", o.detail);
+            assert!(o.detail.contains("different SIMD levels"), "{}", o.detail);
+            assert!(
+                o.detail.contains("lines under 50 word confidence"),
+                "{}",
+                o.detail
+            );
+            assert!(t.holds.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_difference_at_one_simd_level_still_holds_both_hosts() {
+        let original = page();
+        let replay = original.replacen("w100x", "w1O0x", 1);
+        // Two AVX2 hosts, and two whose level is unknown.
+        for cpus in [[RYZEN_3900X, I7_7700K], ["", ""]] {
+            let (o, t) = compared(&original, &replay, cpus);
+            assert_eq!(o.status, Status::Mismatch, "{o:?}");
+            assert_eq!(t.holds[LINUX].len(), 2);
+        }
+        let (o, _) = compared(&original, &replay, [RYZEN_3900X, I7_7700K]);
+        assert!(o.detail.contains("same SIMD level (avx2)"), "{}", o.detail);
+    }
+
+    #[test]
+    fn a_one_percent_difference_between_simd_levels_holds() {
+        let original = page();
+        let replay: String = original
+            .chars()
+            .enumerate()
+            .map(|(i, c)| if i % 100 == 50 && c != ' ' { 'Z' } else { c })
+            .collect();
+        let (o, t) = compared(&original, &replay, [RYZEN_3900X, I7_1185G7]);
+        assert_eq!(o.status, Status::Mismatch, "{o:?}");
+        assert!(o.detail.contains("CER"), "{}", o.detail);
+        assert!(o.detail.contains("avx512"), "{}", o.detail);
+        assert_eq!(t.holds[LINUX].len(), 2);
+        // Gross: a different page.
+        let (o, _) = compared(
+            &original,
+            "completely different words here\n",
+            [RYZEN_3900X, I7_1185G7],
+        );
+        assert_eq!(o.status, Status::Mismatch, "{o:?}");
+    }
+
+    #[test]
+    fn simd_levels_come_from_the_features_or_the_model_table() {
+        let level = simd_level;
+        // Features win, whatever the model says.
+        assert_eq!(level(I7_7700K, "fpu avx avx2 avx512f"), Some(Simd::Avx512));
+        assert_eq!(level("", "fpu sse2 avx avx2 fma"), Some(Simd::Avx2));
+        assert_eq!(level(I7_1185G7, "fpu sse2 avx"), Some(Simd::Baseline));
+        // The model table, for the hosts of this project.
+        assert_eq!(level(RYZEN_3900X, ""), Some(Simd::Avx2));
+        assert_eq!(level(I7_7700K, ""), Some(Simd::Avx2));
+        assert_eq!(level(I7_1185G7, ""), Some(Simd::Avx512));
+        assert_eq!(
+            level("Intel(R) Core(TM) i9-10900K CPU", ""),
+            Some(Simd::Avx2)
+        );
+        assert_eq!(
+            level("11th Gen Intel(R) Core(TM) i7-11700K", ""),
+            Some(Simd::Avx512)
+        );
+        assert_eq!(
+            level("12th Gen Intel(R) Core(TM) i7-12700K", ""),
+            Some(Simd::Avx2)
+        );
+        assert_eq!(
+            level("Intel(R) Xeon(R) Gold 6130 CPU", ""),
+            Some(Simd::Avx512)
+        );
+        assert_eq!(level("Intel(R) Xeon(R) CPU E5-2680 v4", ""), None);
+        // Not guessed: a Ryzen 7000 series part, an unknown model, nothing.
+        assert_eq!(level("AMD Ryzen 9 7950X 16-Core Processor", ""), None);
+        assert_eq!(level("", ""), None);
+    }
+
+    #[test]
+    fn limits_of_the_cross_simd_tier_are_the_coordinators() {
+        assert_eq!(CROSS_SIMD_SAME_BUILD.max_cer, 0.002);
+        assert_eq!(CROSS_SIMD_SAME_BUILD.min_f1, 0.995);
     }
 
     #[test]

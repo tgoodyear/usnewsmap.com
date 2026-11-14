@@ -237,12 +237,123 @@ pub(super) async fn stage(
 /// A spot-check member's result: its build (the `engine.image` its manifest names), its text as
 /// `import` stores it, the sha256 of the text bytes it returned, and the sha256 of its ALTO
 /// with the confidence attributes removed (see [`alto_without_confidence`]).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub(super) struct Returned {
     pub image: String,
     pub text: String,
     pub text_sha256: String,
     pub alto_exact_sha256: String,
+    /// The ALTO's text lines, for weighing a difference by the confidence of the line it is in.
+    pub lines: Vec<Line>,
+}
+
+/// One ALTO `TextLine`: its words, and the mean of their `WC` on a 0 to 100 scale (None when no
+/// word of the line has one).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(super) struct Line {
+    pub confidence: Option<f64>,
+    pub words: Vec<String>,
+}
+
+/// The ALTO's lines. `alto` has passed `check_alto`: UTF-8 and well-formed. Tesseract's `WC` is
+/// 0 to 1; a line's confidence is the mean over its words that have one, times 100.
+pub(super) fn alto_lines(alto: &[u8]) -> anyhow::Result<Vec<Line>> {
+    use quick_xml::events::{BytesStart, Event};
+    let text = std::str::from_utf8(alto)?;
+    let mut reader = quick_xml::Reader::from_str(text);
+    let mut lines = Vec::new();
+    let mut open: Option<(Vec<String>, Vec<f64>)> = None;
+    let word = |e: &BytesStart| -> anyhow::Result<Option<(String, Option<f64>)>> {
+        let (mut content, mut wc) = (None, None);
+        for attribute in e.attributes() {
+            let attribute = attribute?;
+            match attribute.key.local_name().into_inner() {
+                "CONTENT" => {
+                    content = Some(
+                        attribute
+                            .normalized_value(quick_xml::XmlVersion::Implicit1_0)?
+                            .into_owned(),
+                    )
+                }
+                "WC" => {
+                    wc = attribute
+                        .normalized_value(quick_xml::XmlVersion::Implicit1_0)?
+                        .trim()
+                        .parse::<f64>()
+                        .ok()
+                }
+                _ => {}
+            }
+        }
+        Ok(content.map(|c| (c, wc)))
+    };
+    loop {
+        match reader.read_event()? {
+            Event::Eof => break,
+            Event::Start(e) if e.local_name().into_inner() == "TextLine" => {
+                open = Some((Vec::new(), Vec::new()));
+            }
+            Event::Start(e) | Event::Empty(e) if e.local_name().into_inner() == "String" => {
+                if let (Some((words, scores)), Some((content, wc))) = (open.as_mut(), word(&e)?) {
+                    words.push(content);
+                    scores.extend(wc);
+                }
+            }
+            Event::End(e) if e.local_name().into_inner() == "TextLine" => {
+                if let Some((words, scores)) = open.take() {
+                    let confidence = (!scores.is_empty())
+                        .then(|| scores.iter().sum::<f64>() / scores.len() as f64 * 100.0);
+                    lines.push(Line { confidence, words });
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(lines)
+}
+
+/// Words that differ between two readings, by the confidence of the line each is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) struct WordDiff {
+    /// In lines whose mean word confidence is under 50.
+    pub low: usize,
+    /// In lines at 50 or over.
+    pub high: usize,
+    /// In lines with no word confidence at all.
+    pub unscored: usize,
+}
+
+/// The words of `a` and `b` that have no partner in the other (as bags of words), each counted
+/// under its own line's confidence.
+pub(super) fn differing_words(a: &[Line], b: &[Line]) -> WordDiff {
+    use std::collections::BTreeMap;
+    fn bag(lines: &[Line]) -> BTreeMap<&str, Vec<Option<f64>>> {
+        let mut bag: BTreeMap<&str, Vec<Option<f64>>> = BTreeMap::new();
+        for line in lines {
+            for word in &line.words {
+                bag.entry(word).or_default().push(line.confidence);
+            }
+        }
+        bag
+    }
+    let (mut a, mut b) = (bag(a), bag(b));
+    let mut diff = WordDiff::default();
+    let words: Vec<&str> = a.keys().chain(b.keys()).copied().collect();
+    for word in words {
+        let (x, y) = (
+            a.remove(word).unwrap_or_default(),
+            b.remove(word).unwrap_or_default(),
+        );
+        let paired = x.len().min(y.len());
+        for confidence in x.iter().skip(paired).chain(y.iter().skip(paired)) {
+            match confidence {
+                None => diff.unscored += 1,
+                Some(c) if *c < 50.0 => diff.low += 1,
+                Some(_) => diff.high += 1,
+            }
+        }
+    }
+    diff
 }
 
 pub(super) fn result(job: &boinc::Job, spool: &Path, workunit: &str) -> anyhow::Result<Returned> {
@@ -305,6 +416,7 @@ pub(super) fn judge(job: &boinc::Job, files: Files) -> anyhow::Result<Returned> 
         text: crate::normalized_text(job, &text)?,
         text_sha256: boinc::sha256(&text),
         alto_exact_sha256: boinc::sha256(&alto_without_confidence(&alto)?),
+        lines: alto_lines(&alto)?,
     })
 }
 
@@ -499,6 +611,7 @@ pub(super) mod tests {
             text: text.to_owned(),
             text_sha256: boinc::sha256(text.as_bytes()),
             alto_exact_sha256: "a".repeat(64),
+            ..Default::default()
         };
         assert!(agree(builds, &r(macos, "a"), &r(macos, "a"), false).unwrap());
         assert!(!agree(builds, &r(macos, "a"), &r(macos, "b"), false).unwrap());
@@ -537,12 +650,43 @@ pub(super) mod tests {
         )
     }
 
+    #[test]
+    fn differing_words_are_weighed_by_the_confidence_of_their_line() {
+        let alto = |a: &str, b: &str, c: &str| {
+            format!(
+                r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Layout><Page><PrintSpace><TextBlock>
+<TextLine><String CONTENT="clean" WC="0.90"/><String CONTENT="{a}" WC="0.80"/></TextLine>
+<TextLine><String CONTENT="noise" WC="0.10"/><String CONTENT="{b}" WC="0.30"/></TextLine>
+<TextLine><String CONTENT="{c}"/></TextLine>
+</TextBlock></PrintSpace></Page></Layout></alto>"#
+            )
+        };
+        let lines = |a: &str, b: &str, c: &str| alto_lines(alto(a, b, c).as_bytes()).unwrap();
+        let base = lines("fine", "x1", "bare");
+        assert_eq!(base.len(), 3);
+        assert_eq!(base[0].confidence.map(|c| c.round()), Some(85.0));
+        assert_eq!(base[1].confidence.map(|c| c.round()), Some(20.0));
+        assert_eq!(base[2].confidence, None);
+        assert_eq!(differing_words(&base, &base), WordDiff::default());
+        // One word in a low line (counted for both readings), one in a high line, one unscored.
+        let other = lines("fyne", "xl", "bore");
+        assert_eq!(
+            differing_words(&base, &other),
+            WordDiff {
+                low: 2,
+                high: 2,
+                unscored: 2
+            }
+        );
+    }
+
     fn returned_alto(alto: &str) -> Returned {
         Returned {
             image: "sha256:4d6e2a3be41b3b9c9cf50e6404c6f056177cef547e9d9675298ee1fec94cc5d1".into(),
             text: "text".into(),
             text_sha256: boinc::sha256(b"text"),
             alto_exact_sha256: boinc::sha256(&alto_without_confidence(alto.as_bytes()).unwrap()),
+            ..Default::default()
         }
     }
 

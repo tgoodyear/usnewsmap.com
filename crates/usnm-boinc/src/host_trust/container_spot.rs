@@ -805,6 +805,7 @@ mod tests {
             trust: root.join("trust.json"),
             spool: root.join("results/0"),
             canonical: Canonical::Fixed(Default::default()),
+            cpus: crate::host_trust::Cpus::Fixed(Default::default()),
         };
         let rows = [
             (1, "Darwin", "Apple"),
