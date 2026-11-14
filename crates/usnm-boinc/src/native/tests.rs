@@ -607,3 +607,11 @@ fn a_process_past_the_cpu_limit_is_ended_by_the_job() {
         started.elapsed()
     );
 }
+
+#[test]
+fn only_client_requested_stops_exit_zero() {
+    assert!(stopped_result("quit").is_ok());
+    assert!(stopped_result("abort").is_ok());
+    let error = stopped_result("heartbeat_lost").unwrap_err();
+    assert!(error.to_string().contains("heartbeat_lost"));
+}
