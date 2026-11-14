@@ -143,9 +143,11 @@ impl Provenance {
             && record.job.lines.is_none()
             && self.parent_platform.as_ref().is_none_or(|platform| {
                 (1..=32).contains(&platform.len())
-                    && platform
-                        .bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-' | b'.'))
+                    && platform.bytes().all(|b| {
+                        b.is_ascii_lowercase()
+                            || b.is_ascii_digit()
+                            || matches!(b, b'_' | b'-' | b'.')
+                    })
             })
     }
 }
