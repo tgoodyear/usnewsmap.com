@@ -101,6 +101,7 @@ h2 { font-size: 1rem; margin: 8px 0 0; }
 footer { color: var(--muted); font-size: .85rem; border-top: 1px solid var(--line); margin-top: 12px; }
 /* The "Show letter names" option. A real checkbox with its label, reachable by keyboard; the label is the click target too. */
 .toggle { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; cursor: pointer; min-height: 32px; }
+.toggle[hidden] { display: none; } /* the display rule above would otherwise show the control for a language with no names */
 .toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
 .toggle:has(input:focus-visible) { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 /* Letter names (option on): each named letter is a cell, the letter with its name centred under it. The cell is as wide as the

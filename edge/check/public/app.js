@@ -152,9 +152,10 @@ function scriptText(text, diff, named = false) {
 //  - the letter's entry in the language's `labels`, e.g. the Latin equivalent of a Serbian Cyrillic letter;
 //  - "Latin <letter>" for a Latin letter in a language that has `labels` (a Latin look-alike in a Cyrillic reading);
 //  - the name the task stored: the syllable for Cherokee, else the Unicode character name.
-// When one reading of the pair is a Latin letter and the other is not, the labelled letter also says its script
-// ("Cyrillic ć" against "Latin h"), so two labels never read as the same letter.
+// When one reading of the pair is a Latin letter and the other is Cyrillic, the labelled letter also says its script
+// ("Cyrillic ć" against "Latin h"); a Cherokee letter keeps its plain name, so two labels never read as the same letter.
 const LATIN = /^\p{Script=Latin}/u;
+const CYRILLIC = /^\p{Script=Cyrillic}/u;
 function lookalikeLabels(t, side) {
   const labels = new Map(), mine = letters(t[side] || ""), other = side === "a" ? "b" : "a", theirs = letters(t[other] || ""), names = cfg.labels;
   for (const p of t.lookalikes || []) {
@@ -162,7 +163,7 @@ function lookalikeLabels(t, side) {
     let label = p[side + "_label"];
     if (names) {
       const ch = mine[p[side]], named = names[ch], their = theirs[p[other]];
-      if (named !== undefined) label = (their !== undefined && LATIN.test(their) && !LATIN.test(ch) ? "Cyrillic " : "") + named;
+      if (named !== undefined) label = (their !== undefined && LATIN.test(their) && CYRILLIC.test(ch) ? "Cyrillic " : "") + named;
       else if (LATIN.test(ch)) label = "Latin " + ch;
     }
     labels.set(p[side], label);

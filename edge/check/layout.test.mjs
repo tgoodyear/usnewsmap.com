@@ -218,6 +218,12 @@ test("lookalikeLabels takes a letter's label from the language's labels, and kee
   assert.deepEqual([...sr(pair("ё", "н"), "a")], [[0, "cyrillic small letter a"]]);
   assert.deepEqual([...make(undefined)(pn, "a")], [[0, "cyrillic small letter a"]]);
   assert.deepEqual([...make(undefined)(pair("П", "H"), "b")], [[0, "cyrillic small letter b"]]);
+  // a Cherokee letter against a Latin look-alike keeps its plain name: only a Cyrillic letter says "Cyrillic"
+  const chr = make(languages.chr.labels);
+  const cherokee = (a, b) => ({ a, b, lookalikes: [{ a: 0, a_label: "x", b: 0, b_label: "y" }] });
+  assert.deepEqual([...chr(cherokee("Ꭰ", "D"), "a")], [[0, "a"]]);
+  assert.deepEqual([...chr(cherokee("Ꭰ", "D"), "b")], [[0, "Latin D"]]);
+  assert.deepEqual([...chr(cherokee("Ꭺ", "Ꭰ"), "a")], [[0, "go"]]);
   // a transposition flags both positions, each labelled from its own letter
   const swap = { a: "пн", b: "нп", lookalikes: [{ a: 0, a_label: "x", b: 0, b_label: "y" }, { a: 1, a_label: "y", b: 1, b_label: "x" }] };
   assert.deepEqual([...sr(swap, "a")], [[0, "p"], [1, "n"]]);
@@ -546,6 +552,8 @@ test("a look-alike label the same as the name under the letter is not printed tw
 });
 
 test("the option is offered only for a language that has letter names", () => {
+  // the control's own display rule must not override the hidden attribute
+  assert.match(css, /\.toggle\[hidden\]\s*\{\s*display:\s*none;/);
   // the control starts hidden, is shown by work() only when the language has labels, and its state is read and written inside try/catch (store())
   assert.match(readFileSync(join(publicDir, "index.html"), "utf8"), /<label class="toggle" id="names-wrap" hidden><input type="checkbox" id="names"> Show letter names<\/label>/);
   assert.match(appJs, /if \(hasNames\(\)\) \{[\s\S]*?\$\("names-wrap"\)\.hidden = false;/);
