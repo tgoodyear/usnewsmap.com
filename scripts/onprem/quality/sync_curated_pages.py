@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -72,7 +73,38 @@ def arc_token():
     with open(path) as fh:
         key = fh.read().strip()
     req = urllib.request.Request(url, headers={"Metadata": "true", "Authorization": "Basic " + key})
-    return json.load(opener.open(req, timeout=15))["access_token"]
+    body = json.load(opener.open(req, timeout=15))
+    return body["access_token"], float(body.get("expires_on", 0))
+
+
+class Token:
+    """The bearer token, fetched again when less than five minutes of it remain."""
+
+    def __init__(self):
+        self.value, self.expires = arc_token()
+
+    def get(self):
+        if self.expires - time.time() < 300:
+            self.value, self.expires = arc_token()
+        return self.value
+
+
+def check_url(url):
+    """The container URL, as BlobStore::new checks it: https on an Azure Blob host, one container
+    segment, no query, fragment or credentials."""
+    u = urllib.parse.urlsplit(url)
+    host = (u.hostname or "").lower()
+    if u.scheme != "https" or not host.endswith(".blob.core.windows.net") or len(host) <= len(".blob.core.windows.net"):
+        raise SystemExit("--url must be https on an Azure Blob host (*.blob.core.windows.net)")
+    if u.query or u.fragment or u.username or u.password:
+        raise SystemExit("--url must carry no query, fragment or credentials")
+    seg = u.path.strip("/")
+    if not seg or "/" in seg or seg in (".", ".."):
+        raise SystemExit("--url must name one container")
+    return f"https://{u.netloc}/{seg}"
+
+
+STORAGE = urllib.request.build_opener(NoRedirect)  # the token goes to the configured host only
 
 
 def safe_rel(rel):
@@ -89,14 +121,15 @@ def inside(root, path):
 
 
 def list_blobs(url, token, prefix):
+    """`token` is a Token."""
     marker = ""
     while True:
         q = {"restype": "container", "comp": "list", "prefix": prefix, "maxresults": "5000"}
         if marker:
             q["marker"] = marker
         req = urllib.request.Request(url + "?" + urllib.parse.urlencode(q),
-                                     headers={"Authorization": "Bearer " + token, "x-ms-version": API})
-        root = ET.fromstring(urllib.request.urlopen(req).read())
+                                     headers={"Authorization": "Bearer " + token.get(), "x-ms-version": API})
+        root = ET.fromstring(STORAGE.open(req, timeout=120).read())
         for b in root.iter("Blob"):
             p = b.find("Properties")
             yield dict(name=b.findtext("Name"), size=int(p.findtext("Content-Length")), md5=p.findtext("Content-MD5") or "")
@@ -121,9 +154,10 @@ def main():
     a = ap.parse_args()
     if not a.prefix.endswith("/"):
         sys.exit("--prefix must end with /")
-    token = arc_token()
+    url = check_url(a.url)
+    token = Token()
     want = {}
-    for b in list_blobs(a.url.rstrip("/"), token, a.prefix):
+    for b in list_blobs(url, token, a.prefix):
         if b["name"].endswith(".parquet"):
             rel = b["name"][len(a.prefix):]
             if not safe_rel(rel):
@@ -142,11 +176,11 @@ def main():
             kept += 1
             continue
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        req = urllib.request.Request(a.url.rstrip("/") + "/" + urllib.parse.quote(b["name"]),
-                                     headers={"Authorization": "Bearer " + token, "x-ms-version": API})
+        req = urllib.request.Request(url + "/" + urllib.parse.quote(b["name"]),
+                                     headers={"Authorization": "Bearer " + token.get(), "x-ms-version": API})
         tmp = dst + ".partial"
         h = hashlib.md5()
-        with urllib.request.urlopen(req) as r, os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644), "wb") as out:
+        with STORAGE.open(req, timeout=120) as r, os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644), "wb") as out:
             for chunk in iter(lambda: r.read(1 << 20), b""):
                 h.update(chunk)
                 out.write(chunk)

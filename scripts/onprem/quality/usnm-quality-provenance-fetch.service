@@ -2,6 +2,7 @@
 Description=usnewsmap BOINC page provenance: fetch the read-only BOINC export from CT 230 (#1956)
 Wants=network-online.target
 After=network-online.target
+RequiresMountsFor=/var/lib/usnm-quality-feed/outbox
 
 [Service]
 Type=oneshot
