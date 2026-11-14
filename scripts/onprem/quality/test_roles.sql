@@ -40,7 +40,14 @@ BEGIN
       ('quality_reader', 'quality.text_compare', 'INSERT', false),
       ('quality_reader', 'quality.campaigns', 'INSERT', false),
       ('quality_reader', 'quality.reader_scores', 'UPDATE', false),
-      ('quality_reader', 'quality.page_signals', 'SELECT', true)
+      ('quality_reader', 'quality.page_signals', 'SELECT', true),
+      ('quality_reader', 'quality.boinc_page_provenance', 'SELECT', true),
+      ('quality_reader', 'quality.boinc_page_provenance', 'INSERT', false),
+      ('quality_reader', 'quality.boinc_page_holds', 'SELECT', true),
+      ('quality_reader', 'quality.boinc_page_holds', 'INSERT', false),
+      ('quality_reader', 'quality.boinc_page_holds', 'DELETE', false),
+      ('quality_loader', 'quality.boinc_page_provenance', 'INSERT', true),
+      ('quality_loader', 'quality.boinc_page_holds', 'INSERT', false)
     ) AS t(role, tbl, priv, expected)
   LOOP
     got := has_table_privilege(want.role, want.tbl, want.priv);

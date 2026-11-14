@@ -15,8 +15,10 @@
 //!   ([`Revocation`]). Rows they match are left out
 //!   before a page's row is chosen.
 //! - **Host holds.** A revocation can name BOINC hosts (`hosts`). The pages
-//!   a host read come from the provenance files under `ocr-local/provenance/`
-//!   ([`Provenance`], built from the BOINC database, #1956).
+//!   a host read come from `quality.boinc_page_provenance`, read at release
+//!   time ([`Provenance`], [`super::quality_db`], #1956).
+//! - **Page holds.** Rows of `quality.boinc_page_holds` hold single readings
+//!   of single pages, beside the revocation files ([`holds_as_revocations`]).
 //! - **Rule.** [`super::rule`] on both texts scored again.
 //! - **Records.** [`Tally`] for the version's `ocr_local.json`; the pages
 //!   replaced for its `ocr_local_pages.bin` (`usnm_state::ocr_local`).
@@ -34,6 +36,7 @@ use sha2::{Digest, Sha256};
 use usnm_store::ObjectStore;
 
 use super::pages::{self, Scores, StoredRow};
+use super::quality_db::{PageHold, QualityHolds};
 use super::report::{engine_key, Tally as Count};
 use super::rule::{self, Keep};
 use super::ROOT;
@@ -46,26 +49,19 @@ pub fn revoked_prefix() -> String {
     format!("{ROOT}/revoked")
 }
 
-/// Where the BOINC host provenance files are.
-pub fn provenance_prefix() -> String {
-    format!("{ROOT}/provenance")
-}
-
-/// Which BOINC host read which published reading: the union of the
-/// `ocr-local/provenance/<stamp>.jsonl` files, create-only, one JSON object
-/// a line with at least `doc_id`, `node`, `status` and (for `resolved`)
-/// `hostid`; `candidate_host_ids` lists the hosts behind a reading whose job
-/// ran in two workunits (`ambiguous_duplicate_wu`). They are exports of the
-/// quality database's `quality.boinc_page_provenance` table. A reading is
-/// identified as the stored row is: its page and its `node`
-/// (`boinc-<first 12 hex of the job id>`), so another reading of the same
-/// page, from a local worker or another BOINC job, is never matched. Of two
-/// lines for one reading the later file wins, unless it resolved less than
-/// the earlier one.
+/// Which BOINC host read which published reading: the rows of the quality
+/// database's `quality.boinc_page_provenance`, read at release time. A row
+/// has at least `doc_id`, `node`, `status` and (for `resolved`) `hostid`;
+/// `candidate_host_ids` lists the hosts behind a reading whose job ran in two
+/// workunits (`ambiguous_duplicate_wu`). A reading is identified as the
+/// stored row is: its page and its `node` (`boinc-<first 12 hex of the job
+/// id>`), so another reading of the same page, from a local worker or
+/// another BOINC job, is never matched. The table keeps one row for each
+/// reading, and never replaces a `resolved` row with a less complete one.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Provenance {
-    /// How many files were read.
-    files: usize,
+    /// How many rows were read.
+    rows: usize,
     /// A reading (`doc_hash` of its page, its `node`) to the host that read it.
     host: HashMap<(u64, String), u64>,
     /// A reading to the hosts one of which read it.
@@ -75,84 +71,62 @@ pub struct Provenance {
 /// The readings of hosts: each reading as `(doc_hash, node)`.
 pub type Readings = HashSet<(u64, String)>;
 
-#[derive(Deserialize)]
-struct ProvenanceLine {
-    doc_id: String,
-    status: String,
-    node: String,
+/// One row of `quality.boinc_page_provenance`, as far as the release uses it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProvenanceLine {
+    pub doc_id: String,
+    pub status: String,
+    pub node: String,
     #[serde(default)]
-    hostid: Option<u64>,
+    pub hostid: Option<u64>,
     #[serde(default)]
-    candidate_host_ids: Option<Vec<u64>>,
+    pub candidate_host_ids: Option<Vec<u64>>,
 }
 
 impl Provenance {
-    /// Reads every provenance file in the store.
-    pub async fn load(curated: &dyn ObjectStore) -> anyhow::Result<Self> {
-        let mut paths = curated.list(&provenance_prefix()).await?;
-        paths.sort();
-        let mut out = Self::default();
-        for path in paths.into_iter().filter(|p| p.ends_with(".jsonl")) {
-            let bytes = curated
-                .get(&path)
-                .await?
-                .with_context(|| format!("`{path}` vanished"))?;
-            out.add(&bytes)
-                .with_context(|| format!("provenance `{path}`"))?;
-        }
-        Ok(out)
-    }
-
-    /// Adds one file's lines.
-    pub fn add(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
-        self.files += 1;
-        for (n, line) in bytes.split(|b| *b == b'\n').enumerate() {
-            if line.iter().all(u8::is_ascii_whitespace) {
-                continue;
+    /// Adds one row.
+    pub fn add_row(&mut self, l: ProvenanceLine) -> anyhow::Result<()> {
+        self.rows += 1;
+        let key = (doc_hash(&l.doc_id), l.node);
+        match (l.status.as_str(), l.hostid) {
+            ("resolved", Some(h)) => {
+                self.candidates.remove(&key);
+                self.host.insert(key, h);
             }
-            let l: ProvenanceLine =
-                serde_json::from_slice(line).with_context(|| format!("line {}", n + 1))?;
-            let key = (doc_hash(&l.doc_id), l.node);
-            match (l.status.as_str(), l.hostid) {
-                ("resolved", Some(h)) => {
-                    self.candidates.remove(&key);
-                    self.host.insert(key, h);
-                }
-                ("resolved", None) => bail!("line {}: `resolved` without a `hostid`", n + 1),
-                _ if self.host.contains_key(&key) => {}
-                _ => {
-                    if let Some(c) = l.candidate_host_ids.filter(|c| !c.is_empty()) {
-                        self.candidates.insert(key, c);
-                    }
+            ("resolved", None) => bail!("`{}`: `resolved` without a `hostid`", l.doc_id),
+            _ if self.host.contains_key(&key) => {}
+            _ => {
+                if let Some(c) = l.candidate_host_ids.filter(|c| !c.is_empty()) {
+                    self.candidates.insert(key, c);
                 }
             }
         }
         Ok(())
     }
 
-    /// Whether no provenance file was read. A file with only unresolved
-    /// readings is a valid snapshot, and matches nothing.
+    /// Whether the table held no row. A table with only unresolved
+    /// readings is valid, and matches nothing; an empty one is a table that
+    /// was never filled, so a host hold stops the release.
     pub fn is_empty(&self) -> bool {
-        self.files == 0
+        self.rows == 0
     }
 
-    /// The readings of `hosts`: those resolved to one of them, and with
-    /// `ambiguous` also those one of whose candidate hosts is one of them.
-    pub fn readings_of(&self, hosts: &[u64], ambiguous: bool) -> Readings {
+    /// The readings of `hosts`: those resolved to one of them, and those whose job ran in
+    /// two workunits on different hosts when any of those hosts is one of them (the
+    /// reading may be the held host's, so it is held).
+    pub fn readings_of(&self, hosts: &[u64]) -> Readings {
         let mut out: Readings = self
             .host
             .iter()
             .filter(|(_, h)| hosts.contains(h))
             .map(|(k, _)| k.clone())
             .collect();
-        if ambiguous {
-            out.extend(
-                self.candidates
-                    .iter()
-                    .filter(|(_, c)| c.iter().any(|h| hosts.contains(h)))
-                    .map(|(k, _)| k.clone()),
-            );
-        }
+        out.extend(
+            self.candidates
+                .iter()
+                .filter(|(_, c)| c.iter().any(|h| hosts.contains(h)))
+                .map(|(k, _)| k.clone()),
+        );
         out
     }
 }
@@ -423,16 +397,12 @@ pub struct Revocation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc_ids: Option<Vec<String>>,
     /// BOINC host ids (`quality.boinc_page_provenance.hostid`): only the
-    /// rows those hosts read (a page's other readings stay in the race). Needs the provenance files: with none the
-    /// release stops. Readings the provenance doesn't resolve to a host
-    /// (workunit already purged, or ambiguous) don't match unless
-    /// `ambiguous_hosts`.
+    /// rows those hosts read (a page's other readings stay in the race). Needs the quality database:
+    /// without it the release stops. A reading whose job ran in two workunits on different
+    /// hosts matches when any of them is listed. A reading the provenance can't give a host
+    /// (`host_unknown`: its workunit is already purged) doesn't match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hosts: Option<Vec<u64>>,
-    /// With `hosts`: also the pages whose job ran in two workunits on
-    /// different hosts, one of which is listed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ambiguous_hosts: Option<bool>,
     /// The same by `usnm_state::ocr_local::doc_hash`, 16 lowercase hex
     /// digits each, the keys `ocr_local_pages.bin` holds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -476,7 +446,7 @@ impl Revocation {
     /// nothing until this is called.
     pub fn bind(&mut self, provenance: &Provenance) {
         if let Some(h) = &self.hosts {
-            self.host_readings = provenance.readings_of(h, self.ambiguous_hosts == Some(true));
+            self.host_readings = provenance.readings_of(h);
         }
     }
 
@@ -512,9 +482,6 @@ impl Revocation {
         }
         if self.hosts.as_ref().is_some_and(|h| h.is_empty()) {
             bail!("has an empty host list, which would match every row instead of none");
-        }
-        if self.ambiguous_hosts.is_some() && self.hosts.is_none() {
-            bail!("gives `ambiguous_hosts` without `hosts`");
         }
         self.listed.clear();
         for id in self.doc_ids.iter().flatten() {
@@ -560,9 +527,15 @@ impl Revocation {
     }
 }
 
-/// Every revocation. One that can't be read stops the release: a
-/// withdrawn node's text mustn't go live because its file has a typo.
-pub async fn revocations(curated: &dyn ObjectStore) -> anyhow::Result<Vec<Revocation>> {
+/// Every revocation: the files under `ocr-local/revoked/`, then the rows of
+/// `quality.boinc_page_holds`. One that can't be read stops the release: a
+/// withdrawn node's text mustn't go live because its file has a typo, or
+/// because the database was out of reach. Without `db` only the files are
+/// read, and a revocation that names `hosts` stops the release.
+pub async fn revocations(
+    curated: &dyn ObjectStore,
+    db: Option<&dyn QualityHolds>,
+) -> anyhow::Result<Vec<Revocation>> {
     let prefix = revoked_prefix();
     let mut out = Vec::new();
     let mut paths = curated.list(&prefix).await?;
@@ -578,19 +551,115 @@ pub async fn revocations(curated: &dyn ObjectStore) -> anyhow::Result<Vec<Revoca
         r.path = path;
         out.push(r);
     }
+    match db {
+        Some(db) => {
+            let holds = db.page_holds().await.context("page holds")?;
+            out.extend(holds_as_revocations(holds)?);
+        }
+        None => tracing::warn!(
+            "no quality database ({}): quality.boinc_page_holds is not applied",
+            crate::quality_db::DSN_FILE_ENV
+        ),
+    }
     if out.iter().any(|r| r.hosts.is_some()) {
-        let provenance = Provenance::load(curated).await?;
-        if provenance.is_empty() {
+        let Some(db) = db else {
             bail!(
-                "a revocation names hosts but `{}` has no provenance file",
-                provenance_prefix()
+                "a revocation names hosts but there is no quality database to resolve them \
+                 (set {})",
+                crate::quality_db::DSN_FILE_ENV
             );
+        };
+        let provenance = db.provenance().await.context("host provenance")?;
+        if provenance.is_empty() {
+            bail!("a revocation names hosts but quality.boinc_page_provenance has no rows");
         }
         for r in out.iter_mut() {
             r.bind(&provenance);
         }
     }
     Ok(out)
+}
+
+/// A digest of what a set of revocations effectively withdraws: each one's selectors, its
+/// page list as hashes and, for host holds, the readings its hosts resolved to, in a fixed
+/// order. A release logs it so a finish that reads the database again can tell that a hold
+/// moved since the run began.
+pub fn revocations_digest(revoked: &[Revocation]) -> String {
+    let mut parts: Vec<Value> = revoked
+        .iter()
+        .map(|r| {
+            let mut pages: Vec<u64> = r.listed.iter().copied().collect();
+            pages.sort_unstable();
+            let mut readings: Vec<(u64, &String)> =
+                r.host_readings.iter().map(|(p, n)| (*p, n)).collect();
+            readings.sort();
+            json!([
+                r.path,
+                r.reason,
+                r.reference,
+                r.node,
+                r.engine,
+                r.run,
+                r.from,
+                r.to,
+                r.hosts,
+                pages,
+                readings
+            ])
+        })
+        .collect();
+    parts.sort_by_key(Value::to_string);
+    hex(&Sha256::digest(Value::Array(parts).to_string().as_bytes()))
+}
+
+/// The path the revocations built from holds carry in `ocr_local.json`.
+pub const HOLDS_TABLE: &str = "quality.boinc_page_holds";
+
+/// Holds as revocations: one per reason, engine, node and author, listing
+/// their pages, so the release weighs a few selectors however many holds there
+/// are. A hold names a reading by its page and its `node` or engine tag.
+pub fn holds_as_revocations(holds: Vec<PageHold>) -> anyhow::Result<Vec<Revocation>> {
+    type Key = (String, Option<String>, Option<String>, String);
+    let mut groups: BTreeMap<Key, (Vec<String>, DateTime<Utc>)> = BTreeMap::new();
+    for h in holds {
+        if h.node.is_none() && h.engine.is_none() {
+            bail!(
+                "{HOLDS_TABLE}: the hold on `{}` names neither a node nor an engine",
+                h.doc_id
+            );
+        }
+        let e = groups
+            .entry((h.reason, h.engine, h.node, h.created_by))
+            .or_insert_with(|| (Vec::new(), h.created_at));
+        e.0.push(h.doc_id);
+        e.1 = e.1.max(h.created_at);
+    }
+    groups
+        .into_iter()
+        .map(|((reason, engine, node, by), (mut docs, at))| {
+            docs.sort();
+            docs.dedup();
+            let mut r = Revocation {
+                reason,
+                reference: HOLDS_TABLE.to_owned(),
+                node,
+                engine,
+                run: None,
+                from: None,
+                to: None,
+                doc_ids: Some(docs),
+                hosts: None,
+                doc_hashes: None,
+                at: Some(at),
+                source: Some(format!("{HOLDS_TABLE}, created by {by}")),
+                path: HOLDS_TABLE.to_owned(),
+                listed: HashSet::new(),
+                host_readings: Readings::new(),
+            };
+            r.check().with_context(|| HOLDS_TABLE.to_owned())?;
+            Ok(r)
+        })
+        .collect()
 }
 
 /// A page the completeness gate kept LoC's text on (`short` or `cover`).
@@ -1110,32 +1179,62 @@ mod tests {
     const NODE_A: &str = "boinc-aaaaaaaaaaaa";
     const NODE_B: &str = "boinc-bbbbbbbbbbbb";
 
-    fn provenance_lines(lines: &[Value]) -> Vec<u8> {
-        let mut out = Vec::new();
-        for l in lines {
-            out.extend(serde_json::to_vec(l).unwrap());
-            out.push(b'\n');
+    /// Adds rows as `quality.boinc_page_provenance` holds them.
+    fn add_rows(p: &mut Provenance, rows: &[Value]) -> anyhow::Result<()> {
+        for r in rows {
+            p.add_row(serde_json::from_value(r.clone())?)?;
         }
-        out
+        Ok(())
+    }
+
+    /// A database that answers from memory, or is out of reach.
+    struct FakeDb {
+        provenance: Vec<Value>,
+        holds: Vec<PageHold>,
+        down: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl QualityHolds for FakeDb {
+        async fn provenance(&self) -> anyhow::Result<Provenance> {
+            if self.down {
+                bail!("connection refused");
+            }
+            let mut p = Provenance::default();
+            add_rows(&mut p, &self.provenance)?;
+            Ok(p)
+        }
+        async fn page_holds(&self) -> anyhow::Result<Vec<PageHold>> {
+            if self.down {
+                bail!("connection refused");
+            }
+            Ok(self.holds.clone())
+        }
     }
 
     #[test]
     fn provenance_resolves_readings_to_hosts_and_a_resolved_row_is_never_degraded() {
         let mut p = Provenance::default();
         assert!(p.is_empty());
-        p.add(&provenance_lines(&[
-            json!({"doc_id": "a", "node": NODE_A, "status": "resolved", "hostid": 2}),
-            json!({"doc_id": "b", "node": NODE_A, "status": "resolved", "hostid": 9}),
-            json!({"doc_id": "c", "node": NODE_A, "status": "ambiguous_duplicate_wu",
-                   "candidate_host_ids": [2, 4]}),
-            json!({"doc_id": "d", "node": NODE_A, "status": "no_wu"}),
-        ]))
+        add_rows(
+            &mut p,
+            &[
+                json!({"doc_id": "a", "node": NODE_A, "status": "resolved", "hostid": 2}),
+                json!({"doc_id": "b", "node": NODE_A, "status": "resolved", "hostid": 9}),
+                json!({"doc_id": "c", "node": NODE_A, "status": "ambiguous_duplicate_wu",
+                       "candidate_host_ids": [2, 4]}),
+                json!({"doc_id": "d", "node": NODE_A, "status": "host_unknown"}),
+            ],
+        )
         .unwrap();
-        // A later file with less on a reading doesn't undo what an earlier one resolved.
-        p.add(&provenance_lines(&[
-            json!({"doc_id": "a", "node": NODE_A, "status": "no_canonical"}),
-            json!({"doc_id": "c", "node": NODE_A, "status": "resolved", "hostid": 4}),
-        ]))
+        // A row with less on a reading doesn't undo what an earlier one resolved.
+        add_rows(
+            &mut p,
+            &[
+                json!({"doc_id": "a", "node": NODE_A, "status": "no_canonical"}),
+                json!({"doc_id": "c", "node": NODE_A, "status": "resolved", "hostid": 4}),
+            ],
+        )
         .unwrap();
         assert!(!p.is_empty());
         let h = |ids: &[(&str, &str)]| -> Readings {
@@ -1143,39 +1242,39 @@ mod tests {
                 .map(|(d, n)| (doc_hash(d), n.to_string()))
                 .collect()
         };
-        assert_eq!(p.readings_of(&[2], false), h(&[("a", NODE_A)]));
-        assert_eq!(
-            p.readings_of(&[2, 9], false),
-            h(&[("a", NODE_A), ("b", NODE_A)])
-        );
+        assert_eq!(p.readings_of(&[2]), h(&[("a", NODE_A)]));
+        assert_eq!(p.readings_of(&[2, 9]), h(&[("a", NODE_A), ("b", NODE_A)]));
         // `c` resolved later, so it is no longer ambiguous.
-        assert_eq!(p.readings_of(&[4], true), h(&[("c", NODE_A)]));
-        assert!(p.readings_of(&[77], true).is_empty());
+        assert_eq!(p.readings_of(&[4]), h(&[("c", NODE_A)]));
+        assert!(p.readings_of(&[77]).is_empty());
         let mut q = Provenance::default();
-        q.add(&provenance_lines(&[
-            json!({"doc_id": "c", "node": NODE_B, "status": "ambiguous_duplicate_wu",
-                   "candidate_host_ids": [2, 4]}),
-        ]))
+        add_rows(
+            &mut q,
+            &[
+                json!({"doc_id": "c", "node": NODE_B, "status": "ambiguous_duplicate_wu",
+                     "candidate_host_ids": [2, 4]}),
+            ],
+        )
         .unwrap();
-        assert!(q.readings_of(&[2], false).is_empty());
-        assert_eq!(q.readings_of(&[2], true), h(&[("c", NODE_B)]));
-        // A snapshot of only unresolved rows is a snapshot: it matches nothing.
+        // A page holds when any candidate host is held, whichever one it is.
+        assert_eq!(q.readings_of(&[2]), h(&[("c", NODE_B)]));
+        assert_eq!(q.readings_of(&[4, 77]), h(&[("c", NODE_B)]));
+        assert!(q.readings_of(&[9]).is_empty());
+        // A table of only unresolved rows is filled: it matches nothing.
         let mut only_unresolved = Provenance::default();
-        only_unresolved
-            .add(&provenance_lines(&[
-                json!({"doc_id": "d", "node": NODE_A, "status": "no_wu"}),
-            ]))
-            .unwrap();
+        add_rows(
+            &mut only_unresolved,
+            &[json!({"doc_id": "d", "node": NODE_A, "status": "host_unknown"})],
+        )
+        .unwrap();
         assert!(!only_unresolved.is_empty());
-        assert!(only_unresolved.readings_of(&[2], true).is_empty());
-        // A resolved line without a host or a node, or a line that isn't JSON, is refused.
-        assert!(Provenance::default()
-            .add(br#"{"doc_id": "a", "node": "boinc-aaaaaaaaaaaa", "status": "resolved"}"#)
-            .is_err());
-        assert!(Provenance::default()
-            .add(br#"{"doc_id": "a", "status": "resolved", "hostid": 2}"#)
-            .is_err());
-        assert!(Provenance::default().add(b"not json\n").is_err());
+        assert!(only_unresolved.readings_of(&[2]).is_empty());
+        // A resolved row without a host is refused.
+        assert!(add_rows(
+            &mut Provenance::default(),
+            &[json!({"doc_id": "a", "node": NODE_A, "status": "resolved"})]
+        )
+        .is_err());
     }
 
     #[test]
@@ -1209,16 +1308,27 @@ mod tests {
             ..x.clone()
         };
         let mut p = Provenance::default();
-        p.add(&provenance_lines(&[
-            json!({"doc_id": x.doc_id, "node": NODE_A, "status": "resolved", "hostid": 2}),
-            json!({"doc_id": x.doc_id, "node": NODE_B, "status": "resolved", "hostid": 9}),
-            json!({"doc_id": other.doc_id, "node": NODE_A, "status": "resolved", "hostid": 9}),
-        ]))
+        add_rows(
+            &mut p,
+            &[
+                json!({"doc_id": x.doc_id, "node": NODE_A, "status": "resolved", "hostid": 2}),
+                json!({"doc_id": x.doc_id, "node": NODE_B, "status": "resolved", "hostid": 9}),
+                json!({"doc_id": other.doc_id, "node": NODE_A, "status": "resolved", "hostid": 9}),
+                json!({"doc_id": x.doc_id, "node": "boinc-cccccccccccc",
+                       "status": "ambiguous_duplicate_wu", "candidate_host_ids": [9, 2]}),
+            ],
+        )
         .unwrap();
+        // The job of this reading ran on hosts 9 and 2: holding either holds it.
+        let ambiguous = StoredRow {
+            node: "boinc-cccccccccccc".to_string(),
+            ..x.clone()
+        };
         let mut by_host = checked(with("hosts", json!([2]))).unwrap();
         assert!(!by_host.matches(&x, "r"), "unbound, it matches nothing");
         by_host.bind(&p);
         assert!(by_host.matches(&x, "r"));
+        assert!(by_host.matches(&ambiguous, "r"));
         assert!(
             !by_host.matches(&retry, "r") && !by_host.matches(&local, "r"),
             "the page's other readings stay in the race"
@@ -1238,9 +1348,8 @@ mod tests {
         listed.bind(&p);
         assert!(!listed.matches(&x, "r") && listed.matches(&other, "r"));
         assert_eq!(listed.page_count(), 1);
-        // An empty list must not widen the revocation, and `ambiguous_hosts` needs hosts.
+        // An empty list must not widen the revocation,.
         assert!(checked(with("hosts", json!([]))).is_err());
-        assert!(checked(with("ambiguous_hosts", json!(true))).is_err());
         assert!(checked(base.clone()).is_err());
     }
 
@@ -1283,22 +1392,30 @@ mod tests {
             )
             .await
             .unwrap();
-        // Without provenance the release stops rather than revoking nothing.
-        assert!(revocations(curated.as_ref()).await.is_err());
-        curated
-            .put_new(
-                &format!("{ROOT}/provenance/20261114T000000Z.jsonl"),
-                provenance_lines(&[
-                    json!({"doc_id": held, "node": NODE_A, "status": "resolved", "hostid": 2}),
-                    json!({"doc_id": kept, "node": NODE_B, "status": "resolved", "hostid": 9}),
-                    json!({"doc_id": two_readers, "node": NODE_A, "status": "resolved", "hostid": 2}),
-                    json!({"doc_id": two_readers, "node": NODE_B, "status": "resolved", "hostid": 9}),
-                ]),
-                "application/x-ndjson",
-            )
+        // With the database out of reach, or no database, or an empty table, the
+        // release stops rather than revoking nothing.
+        let db = |provenance: Vec<Value>, down: bool| FakeDb {
+            provenance,
+            holds: vec![],
+            down,
+        };
+        assert!(revocations(curated.as_ref(), None).await.is_err());
+        assert!(revocations(curated.as_ref(), Some(&db(vec![], false)))
             .await
-            .unwrap();
-        let revoked = revocations(curated.as_ref()).await.unwrap();
+            .is_err());
+        assert!(revocations(curated.as_ref(), Some(&db(vec![], true)))
+            .await
+            .is_err());
+        let up = db(
+            vec![
+                json!({"doc_id": held, "node": NODE_A, "status": "resolved", "hostid": 2}),
+                json!({"doc_id": kept, "node": NODE_B, "status": "resolved", "hostid": 9}),
+                json!({"doc_id": two_readers, "node": NODE_A, "status": "resolved", "hostid": 2}),
+                json!({"doc_id": two_readers, "node": NODE_B, "status": "resolved", "hostid": 9}),
+            ],
+            false,
+        );
+        let revoked = revocations(curated.as_ref(), Some(&up)).await.unwrap();
         let listing = Listing::list(curated.as_ref()).await.unwrap();
         let loaded = listing
             .load(curated.as_ref(), ["sn1"].into_iter(), &revoked)
@@ -1312,6 +1429,102 @@ mod tests {
         assert!(loaded.pages.contains_key(kept));
         // The other host's reading of a page the held host also read still wins it.
         assert_eq!(loaded.pages[two_readers].row.node, NODE_B.to_string());
+    }
+
+    /// A hold row on one page and one engine tag withdraws that reading only; another
+    /// engine's reading of the page, and other pages of the engine, keep ours.
+    #[tokio::test]
+    async fn a_page_hold_in_the_database_withdraws_one_engines_reading_of_one_page() {
+        const HELD_ENGINE: &str = "tesseract/5.5.0 profile=frak2021 image=sha256:9c8eac0485d5 \
+            models=sha256:153518ad562f route=boinc@r1 contract=0";
+        const NEWER_ENGINE: &str = "tesseract/5.5.0 profile=frak2021 image=sha256:247c131a5994 \
+            models=sha256:153518ad562f route=boinc@r1 contract=0";
+        let text = "durch den engen Hausgang schritt, weiter und Drahtzaun";
+        let dir = tempfile::tempdir().unwrap();
+        let curated = usnm_store::open(dir.path().to_str().unwrap()).unwrap();
+        let mut rows = [
+            imported(1, HELD_ENGINE, text),
+            imported(2, HELD_ENGINE, text),
+            imported(3, HELD_ENGINE, text),
+            imported(3, NEWER_ENGINE, text),
+        ];
+        rows[0].node = NODE_A.to_string();
+        rows[1].node = NODE_A.to_string();
+        rows[2].node = NODE_A.to_string();
+        rows[3].node = NODE_B.to_string();
+        curated
+            .put_new(
+                &format!("{ROOT}/pages/sn1/20261011T000000Z-ab.parquet"),
+                pages::encode(&rows).unwrap(),
+                "x",
+            )
+            .await
+            .unwrap();
+        let hold = |doc: &str, engine: Option<&str>, node: Option<&str>| PageHold {
+            doc_id: doc.into(),
+            node: node.map(str::to_owned),
+            engine: engine.map(str::to_owned),
+            reason: "image dropped from gold trust 17 Oct (#1956)".into(),
+            created_at: "2026-11-14T20:00:00Z".parse().unwrap(),
+            created_by: "tester".into(),
+        };
+        let db = |holds: Vec<PageHold>, down: bool| FakeDb {
+            provenance: vec![],
+            holds,
+            down,
+        };
+        // Held: page 1 by its engine tag, page 3 by the node of the first reading.
+        let up = db(
+            vec![
+                hold("sn1_1900-01-01_ed-1_seq-1", Some(HELD_ENGINE), None),
+                hold("sn1_1900-01-01_ed-1_seq-3", None, Some(NODE_A)),
+            ],
+            false,
+        );
+        let revoked = revocations(curated.as_ref(), Some(&up)).await.unwrap();
+        assert_eq!(revoked.len(), 2);
+        assert!(revoked.iter().all(|r| r.path == HOLDS_TABLE));
+        let loaded = Listing::list(curated.as_ref())
+            .await
+            .unwrap()
+            .load(curated.as_ref(), ["sn1"].into_iter(), &revoked)
+            .await
+            .unwrap();
+        assert!(!loaded.pages.contains_key("sn1_1900-01-01_ed-1_seq-1"));
+        assert!(loaded.pages.contains_key("sn1_1900-01-01_ed-1_seq-2"));
+        // Page 3: the held node's reading goes, the other engine's reading wins it.
+        assert_eq!(
+            loaded.pages["sn1_1900-01-01_ed-1_seq-3"].row.node,
+            NODE_B.to_string()
+        );
+        // The digest follows what is held, not the order it was read in.
+        let moved = db(
+            vec![
+                hold("sn1_1900-01-01_ed-1_seq-3", None, Some(NODE_A)),
+                hold("sn1_1900-01-01_ed-1_seq-2", Some(HELD_ENGINE), None),
+            ],
+            false,
+        );
+        let moved = revocations(curated.as_ref(), Some(&moved)).await.unwrap();
+        assert_ne!(revocations_digest(&revoked), revocations_digest(&moved));
+        let mut reversed = revoked.clone();
+        reversed.reverse();
+        assert_eq!(revocations_digest(&revoked), revocations_digest(&reversed));
+        // A database that can't be read stops the release.
+        assert!(revocations(curated.as_ref(), Some(&db(vec![], true)))
+            .await
+            .is_err());
+        // A hold must name a node or an engine, or it would match every reading of the page.
+        assert!(holds_as_revocations(vec![hold("a", None, None)]).is_err());
+        // Holds with one reason, engine and node share a selector.
+        let grouped = holds_as_revocations(vec![
+            hold("b", Some(HELD_ENGINE), None),
+            hold("a", Some(HELD_ENGINE), None),
+            hold("a", Some(HELD_ENGINE), None),
+        ])
+        .unwrap();
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(grouped[0].page_count(), 2);
     }
 
     /// An engine tag for `profile`, as a worker writes it.

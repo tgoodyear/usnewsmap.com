@@ -110,31 +110,60 @@ full (`models`, `route` and `contract` included): it is matched exactly, or by i
 }
 ```
 
-The release finds a host's pages in the provenance files under
-`ocr-local/provenance/<stamp>.jsonl`, create-only. They are exports of
-`quality.boinc_page_provenance` in the quality database (`scripts/onprem/quality/provenance.sql`),
-which is built from the BOINC database while a page's workunit and result rows still exist;
-`db_purge` removes them 30 days after the workunit is done. The release stops if a revocation
-names hosts and there are no provenance files.
+The release finds a host's pages in `quality.boinc_page_provenance` in the quality database
+(`scripts/onprem/quality/provenance.sql`), which is built from the BOINC database while a page's
+workunit and result rows still exist; `db_purge` removes them 30 days after the workunit is
+done. It reads the table when it loads the revocations, on the replica (CT 236), as the
+read-only `quality_reader` role, from the DSN file named by `USNM_QUALITY_DSN_FILE`
+(`/etc/usnm/quality-reader/dsn` on the host that has the role's certificate). Nothing is
+exported to the lake. The release stops if a revocation names hosts and the variable is
+unset, the database can't be reached, or the table has no rows.
 
 - A reading counts for a host only when its status is `resolved`. Readings whose workunit is
-  gone (`no_wu`) have no host and never match; a snapshot holding only such rows is valid and
-  matches nothing.
-- A job that ran in two workunits on different hosts is `ambiguous_duplicate_wu`. It matches
-  only with `"ambiguous_hosts": true`, then for either candidate host. Use that when
-  withdrawing a failing host's work and over-matching a few pages is acceptable.
-- `ocr_local.json` records `hosts`, `ambiguous_hosts` and `host_pages` for the revocation.
+  gone are `host_unknown`: they have no host to hold, so they are accepted unless their
+  engine image is held (an `engine` or page hold). A table holding only such rows is valid and
+  matches nothing. A host whose CPU vendor is empty or unknown stays `resolved` with a null
+  `family`.
+- A job that ran in two workunits on different hosts is `ambiguous_duplicate_wu`, and
+  `candidate_host_ids` keeps every host behind it. Such a reading is held when any candidate
+  host is listed, since it may be that host's.
+- `ocr_local.json` records `hosts` and `host_pages` for the revocation.
 
-Export the table and publish it. Each file is a full snapshot; of two lines for one page a
-resolved one is never replaced by a less complete one, so older files stay valid.
+## Holding a single page's reading
+
+For the odd page, add a row to `quality.boinc_page_holds` (`scripts/onprem/quality/holds.sql`)
+instead of writing a file. The release reads the table with the provenance, so the hold needs
+no upload. A row names the page (`doc_id`) and the reading to give back: the stored
+`ocr_engine` tag in full (or its short key), the `node`, or both; `reason`, `created_at` (now)
+and `created_by` are recorded. A row naming neither would take every reading of the page, so
+the table refuses it. Another reading of the page keeps its place.
+
+Add and remove rows as `postgres` on the primary (CT 231); the replica has them a second later.
+The roles that read have `SELECT` only. Adding a row twice leaves one.
 
 ```sh
-stamp=$(date -u +%Y%m%dT%H%M%SZ)
-psql -d usnm_quality -At -c "SELECT row_to_json(t) FROM (
-  SELECT doc_id, node, job_id, wu_id, canonical_result_id, hostid, app_version_id, platform,
-         family, resolved_via, resolved_at, status, image12, image_digest, candidate_host_ids
-  FROM quality.boinc_page_provenance ORDER BY doc_id) t" > provenance.jsonl
-az storage blob upload --auth-mode login --account-name "$CURATED_ACCOUNT" \
-  --container-name curated --name "ocr-local/provenance/$stamp.jsonl" \
-  --file provenance.jsonl --overwrite false
+psql -v ON_ERROR_STOP=1 -d usnm_quality <<'SQL'
+INSERT INTO quality.boinc_page_holds (doc_id, engine, reason, created_by)
+VALUES ('sn88084068_1917-11-01_ed-1_seq-1',
+        'tesseract/5.5.0 profile=frak2021 image=sha256:9c8eac0485d5 models=sha256:153518ad562f route=boinc@r1 contract=0',
+        'image dropped from gold trust 17 Oct (#1956)', 'tgoodyear')
+ON CONFLICT DO NOTHING;
+SQL
 ```
+
+`ocr_local.json` lists the holds as revocations whose path is `quality.boinc_page_holds`, one
+for each reason, engine, node and author, with their pages and the latest `created_at` as `at`.
+To give a reading back, `DELETE` its row; published indexes keep ours until the next full
+rebuild. The other selectors (node, run, time window, a page list from a comparison) stay
+files, as above.
+
+## Where the release reads it
+
+Releases run in the `usnm-release` container on pve-big, on the same LAN as the replica. The
+replica admits a role only over TLS with its client certificate (`hostssl usnm_quality all
+samenet cert`), so the container needs the `quality_reader` certificate, key and CA and a DSN
+file naming them, then `USNM_QUALITY_DSN_FILE` set in the release environment. The DSN file
+is one line (`host=… dbname=usnm_quality user=quality_reader sslmode=verify-full sslcert=…
+sslkey=… sslrootcert=…`) or a `postgres://` URL as the queue uses. Without the variable the
+release applies no database holds (it logs a warning) and stops at a revocation that names
+hosts. `usnm-boinc quality texts-export` (the quality hand-off job) reads the same variable.

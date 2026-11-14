@@ -3,7 +3,7 @@
 # fixture's pinned image), usnm_quality with setup.sql applied twice, the role checks in
 # test_roles.sql, load.py's upserts run as quality_loader and quality_text_writer (LoC's
 # software among them), the summary's refresh, and rank.sql and the campaign builder's
-# export as quality_reader.
+# export as quality_reader; the provenance and holds tables (#1956).
 #
 #   ci-check.sh [--name usnm-quality-ci]
 #
@@ -31,7 +31,44 @@ psql_admin() { docker exec -i "$NAME" psql -q -v ON_ERROR_STOP=1 -U postgres "$@
 psql_admin -c 'CREATE DATABASE usnm_quality'
 psql_admin -d usnm_quality < "$here/setup.sql" > /dev/null
 psql_admin -d usnm_quality < "$here/setup.sql" > /dev/null 2>&1 # safe to run again
+# The BOINC provenance and holds tables (#1956), each applied twice; the provenance constraint
+# of the first version (a family on every resolved row) is put back first, to see it replaced.
+psql_admin -d usnm_quality < "$here/provenance.sql" > /dev/null
+psql_admin -d usnm_quality -c "ALTER TABLE quality.boinc_page_provenance DROP CONSTRAINT resolved_has_host" \
+  -c "ALTER TABLE quality.boinc_page_provenance ADD CONSTRAINT boinc_page_provenance_check CHECK (status <> 'resolved' OR (hostid IS NOT NULL AND wu_id IS NOT NULL AND family IS NOT NULL))"
+psql_admin -d usnm_quality < "$here/provenance.sql" > /dev/null
+psql_admin -d usnm_quality < "$here/holds.sql" > /dev/null
+psql_admin -d usnm_quality < "$here/holds.sql" > /dev/null
 psql_admin -d usnm_quality < "$here/test_roles.sql" >&2
+# provenance_load.sql as the loader: a host with no known CPU family stays resolved, a rerun
+# changes nothing, and a later less complete row never degrades a resolved one.
+docker cp "$here/provenance_load.sql" "$NAME:/tmp/provenance_load.sql"
+prov() { printf 'sn1_1900-01-01_ed-1_seq-1\tboinc-aaaaaaaaaaaa\tj\t7\t9\t12\t3\tx86_64-pc-linux-gnu\t\\N\twu_name\t2026-11-14T00:00:00Z\t%s\tabcdefabcdef\t\\N\t\\N\n' "$1"; }
+prov result_missing | psql_admin -d usnm_quality -f /tmp/provenance_load.sql > /dev/null
+prov resolved | psql_admin -d usnm_quality -f /tmp/provenance_load.sql > /dev/null
+prov resolved | psql_admin -d usnm_quality -f /tmp/provenance_load.sql > /dev/null
+got=$(psql_admin -d usnm_quality -tA -c "SELECT status, hostid, family IS NULL FROM quality.boinc_page_provenance")
+[ "$got" = "resolved|12|t" ] || die "a host without a family: $got"
+prov result_missing | psql_admin -d usnm_quality -f /tmp/provenance_load.sql > /dev/null
+got=$(psql_admin -d usnm_quality -tA -c "SELECT status FROM quality.boinc_page_provenance")
+[ "$got" = "resolved" ] || die "a resolved row was degraded: $got"
+# An ambiguous job's candidate hosts survive a later row with no host.
+psql_admin -d usnm_quality -c "INSERT INTO quality.boinc_page_provenance (doc_id, node, resolved_at, status, image12, candidate_host_ids) VALUES ('amb', 'boinc-dddddddddddd', now(), 'ambiguous_duplicate_wu', 'abcdefabcdef', '{2,4}')" > /dev/null
+printf 'amb\tboinc-dddddddddddd\t\\N\t\\N\t\\N\t\\N\t\\N\t\\N\t\\N\t\\N\t2026-11-14T00:00:00Z\thost_unknown\tabcdefabcdef\t\\N\t\\N\n' |
+  psql_admin -d usnm_quality -f /tmp/provenance_load.sql > /dev/null
+got=$(psql_admin -d usnm_quality -tA -c "SELECT status, candidate_host_ids FROM quality.boinc_page_provenance WHERE doc_id = 'amb'")
+[ "$got" = "ambiguous_duplicate_wu|{2,4}" ] || die "candidate hosts were erased: $got"
+# Holds: one row added twice is one hold, one naming neither a node nor an engine is refused,
+# and the reader sees the row but cannot change it.
+hold="INSERT INTO quality.boinc_page_holds (doc_id, engine, reason, created_by) VALUES ('sn1_1900-01-01_ed-1_seq-1', 'tesseract/5.5.0 profile=eng image=sha256:9c8eac0485d5', 'ci', 'ci') ON CONFLICT DO NOTHING"
+psql_admin -d usnm_quality -c "$hold" -c "$hold" > /dev/null
+psql_admin -d usnm_quality -c "INSERT INTO quality.boinc_page_holds (doc_id, reason, created_by) VALUES ('x', 'r', 'c')" > /dev/null 2>&1 \
+  && die "a hold naming neither node nor engine was accepted"
+got=$(psql_admin -d usnm_quality -tA -c "SET ROLE quality_reader" -c "SELECT count(*) FROM quality.boinc_page_holds" | tail -1)
+[ "$got" = "1" ] || die "holds as the reader: $got"
+psql_admin -d usnm_quality -c "SET ROLE quality_reader" -c "DELETE FROM quality.boinc_page_holds" > /dev/null 2>&1 \
+  && die "the reader deleted a hold"
+psql_admin -d usnm_quality -c "DELETE FROM quality.boinc_page_holds" -c "DELETE FROM quality.boinc_page_provenance" > /dev/null
 # load.py's SQL, as the loader: a campaign, a page, its damage and a unit result.
 {
   echo "SET ROLE quality_loader;"

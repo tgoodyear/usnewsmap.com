@@ -294,7 +294,14 @@ pub async fn texts_export(opts: &TextsExportOptions) -> anyhow::Result<TextsExpo
         }
     }
 
-    let revoked = usnm_ocr_local::replace::revocations(&curated).await?;
+    let quality = usnm_ocr_local::quality_db::QualityDb::from_env()?;
+    let revoked = usnm_ocr_local::replace::revocations(
+        &curated,
+        quality
+            .as_ref()
+            .map(|q| q as &dyn usnm_ocr_local::quality_db::QualityHolds),
+    )
+    .await?;
     let listing = usnm_ocr_local::replace::Listing::list(&curated).await?;
     let loaded = listing
         .load(&curated, by_lccn_year.keys().map(String::as_str), &revoked)

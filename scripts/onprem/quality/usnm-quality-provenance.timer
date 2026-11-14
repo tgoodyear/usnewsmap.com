@@ -1,0 +1,10 @@
+[Unit]
+Description=usnewsmap BOINC page provenance, daily (weekly is enough once #1959 is verified)
+
+[Timer]
+OnCalendar=*-*-* 05:23:00 UTC
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

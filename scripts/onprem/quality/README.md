@@ -32,12 +32,31 @@ psql -v ON_ERROR_STOP=1 -d usnm_quality -f setup.sql
 | `loc_alto`              | page and source batch          | LoC's own word confidence (ALTO `WC`) from the bulk OCR archives: mean, median, share under 0.5 (`load.py locwc`) |
 | `loc_software`          | batch version                  | the software that made LoC's OCR, from each bulk OCR archive's first ALTO header (`load.py locsw`)                |
 | `boinc_page_provenance` | published BOINC OCR page       | which BOINC host, workunit and app version read it, from the BOINC database (`provenance.sql`, #1956)             |
+| `boinc_page_holds`      | held reading of a page         | a reading the release leaves out, by engine tag or node, added by hand as postgres (`holds.sql`, #1956)           |
 
 `boinc_page_provenance` is filled from the BOINC database, not by `load.py`: run
 `boinc_provenance.py` on exports of the workunit, result, host and app version rows, then
 `provenance_load.sql` as `postgres` or `quality_loader`. It has to run before `db_purge` removes
-those rows; the docstring of `boinc_provenance.py` has the queries. The release reads exports
-of the table from `curated/ocr-local/provenance/` (docs/ocr/revoke-page-list.md).
+those rows; the docstring of `boinc_provenance.py` has the queries. A host with an empty or
+unknown CPU vendor keeps its host id and gets a NULL `family`. The release reads the table at
+release time, on the replica, as `quality_reader` (`USNM_QUALITY_DSN_FILE`;
+docs/ocr/revoke-page-list.md); nothing is exported to the lake.
+
+`provenance-daily.sh` (with `usnm-quality-provenance.{service,timer}`) is the daily run in the batch
+container: it skips the readings already `resolved`, resolves the new and unresolved pages
+(`boinc_provenance.py --skip`) from a read-only BOINC export that `BOINC_EXPORT` in
+`/etc/usnm/quality-provenance.env` produces, and upserts them. Install it with the files in
+`/opt/usnm-quality-feed/`, the units in `/etc/systemd/system/`, then
+`systemctl enable --now usnm-quality-provenance.timer`. It must run before `db_purge` starts
+removing the OCR workunits (about 24 November 2026); once #1959 is deployed and verified the
+timer's `OnCalendar` can become weekly. Pages with no workunit row left are `host_unknown`: they
+have no host to hold and are accepted unless their engine image is held.
+
+`boinc_page_holds` (`holds.sql`) holds single readings of single pages out of the index: a
+`doc_id` with the stored engine tag or the `node`, a `reason`, `created_at` and `created_by`.
+Rows are added and removed as `postgres` on the primary; the release reads them with the
+provenance. The odd page goes here; node, run, time and page-list revocations stay files in
+`curated/ocr-local/revoked/`.
 
 Unit results carry the page hat's version (#1078): `hat_version` 2 is solved on the
 passage-matched disagreement, and `est_cer_v1` and the other `_v1` columns keep the unit's
