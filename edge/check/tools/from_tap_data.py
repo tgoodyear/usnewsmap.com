@@ -12,6 +12,7 @@ import collections
 import datetime
 import json
 import os
+import sys
 
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 
@@ -90,6 +91,8 @@ def main() -> None:
     language["examples"] = examples
     json.dump(language, open(os.path.join(a.out_dir, "language.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(f"{n} tasks, {len(examples)} letters with examples, {flagged} with look-alike letters")
+    if fonts is not None and lookalike.unshaped_warning(fonts):
+        print(lookalike.unshaped_warning(fonts), file=sys.stderr)
 
 
 if __name__ == "__main__":

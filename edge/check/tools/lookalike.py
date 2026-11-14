@@ -160,6 +160,15 @@ def iou(a, b, shift: int = MAX_SHIFT) -> float:
     return best
 
 
+def unshaped_warning(fonts: Fonts) -> str:
+    """A warning for the task builders when pairs with combining marks were skipped for want of Raqm (else "")."""
+    if not fonts.unshaped:
+        return ""
+    return ("WARNING: " + ", ".join(f"{s or 'other'} {n}" for s, n in sorted(fonts.unshaped.items()))
+            + " letter pairs with combining marks were NOT checked for look-alikes: this Pillow has no Raqm to shape them, so the"
+            " tasks carry no `lookalikes` for them. Rebuild with a Pillow built with Raqm (Pillow's pip wheels have it).")
+
+
 def has_mark(letter: str) -> bool:
     return any(unicodedata.category(ch).startswith("M") for ch in letter)
 
