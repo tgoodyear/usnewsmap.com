@@ -23,6 +23,8 @@
 //! - [`crops`]: the seeded, stratified crop selection the vision-language
 //!   app reads.
 //! - [`report`]: the per-page record, its JSON schema and rounding.
+//! - [`qe`]: the reference-free quality measure of each reader's text
+//!   (`usnm_core::qe`), when the unit carries its language's resource file.
 //! - [`qwen_pages`]: the page images a vision-language unit's crops are cut
 //!   from, decoded one page at a time.
 
@@ -36,6 +38,7 @@ pub mod features;
 pub mod findability;
 pub mod hat;
 pub mod page_hat;
+pub mod qe;
 pub mod qwen_pages;
 pub mod report;
 pub mod router;

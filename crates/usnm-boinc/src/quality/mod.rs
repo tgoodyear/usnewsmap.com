@@ -25,8 +25,8 @@
 //!   image (#1743).
 use std::path::{Path, PathBuf};
 pub use usnm_ocr_quality::slot::{
-    inputs, outputs, parse_alto, ALTO_FILE, CONFUSIONS_FILE, DIAG_FILE, JOB_FILE, PAGE_FILE,
-    PLACES_FILE, RESULT_FILE, TEXTS_FILE,
+    inputs, inputs_with_qe, outputs, parse_alto, ALTO_FILE, CONFUSIONS_FILE, DIAG_FILE, JOB_FILE,
+    PAGE_FILE, PLACES_FILE, QE_FILE, RESULT_FILE, TEXTS_FILE,
 };
 
 pub mod calibrate;
@@ -35,6 +35,7 @@ pub mod collect;
 mod collect_cache;
 pub mod estimate;
 pub mod page_dims;
+pub mod qe;
 pub mod rehat;
 pub mod rescore;
 pub mod sample;

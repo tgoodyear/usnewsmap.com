@@ -234,6 +234,7 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
                 alto: &l.alto,
                 texts: &l.texts,
                 places: &l.places,
+                qe: l.qe.as_deref(),
             })?;
             let crops_out = if let Some(rp) = &files.readings {
                 let readings: Readings = serde_json::from_slice(&read(rp, MAX_READINGS)?)
@@ -302,6 +303,7 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
                     readings: Some(&readings),
                     vouch: None,
                     surya: None,
+                    qe: None,
                 });
                 let mut text = String::new();
                 for row in &rows {

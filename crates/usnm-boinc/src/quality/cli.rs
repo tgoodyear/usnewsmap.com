@@ -103,6 +103,11 @@ pub enum QualityCommands {
         /// Where batch manifests and METS are kept between runs.
         #[arg(long)]
         batch_cache: Option<PathBuf>,
+        /// The quality measure's resource files (<lang>.qe, pinned by ocr/qe/resources.lock.json):
+        /// a unit of a language with one carries it and measures its readers' texts. Only for
+        /// app versions that read qe.bin.
+        #[arg(long)]
+        qe_dir: Option<PathBuf>,
     },
     /// Hand staged units to create_work, two results each.
     Submit {
@@ -200,6 +205,11 @@ pub enum QualityCommands {
         /// Emit bounded canonical dependency fingerprints only; no row computation or publication.
         #[arg(long, requires = "cache")]
         inventory_only: bool,
+        /// The quality measure's resource files (<lang>.qe, pinned by ocr/qe/resources.lock.json):
+        /// measure every crop text of a page of a language with one into crops.parquet's qe_*
+        /// columns. Pages carry the unit's own measure without it.
+        #[arg(long)]
+        qe_dir: Option<PathBuf>,
         /// Recheck just this unit's dependency key after a scoped collection.
         #[arg(long, requires = "inventory_only")]
         inventory_unit: Option<String>,
@@ -389,6 +399,7 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             bundle_size,
             scan_archive,
             batch_cache,
+            qe_dir,
         } => {
             let s = x::stage::run(&x::stage::Options {
                 pages,
@@ -411,6 +422,7 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
                 bundle_size,
                 scan_archive,
                 batch_cache,
+                qe_dir,
             })
             .await?;
             eprintln!("{s:?}");
@@ -480,6 +492,7 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             max_compute_secs,
             warm_only,
             inventory_only,
+            qe_dir,
             inventory_unit,
             surya_root,
             surya_spool,
@@ -499,6 +512,7 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
                 max_dirty_units,
                 max_compute: max_compute_secs.map(std::time::Duration::from_secs),
                 warm_only,
+                qe_dir,
                 surya_root,
                 surya_spool,
                 out_dir,

@@ -309,6 +309,7 @@ mod tests {
             function_words: j.function_words.clone(),
             crop_seed: j.crop_seed,
             k_crops: j.k_crops,
+            qe: None,
         })
         .unwrap();
         work::run(dir).await.unwrap();

@@ -7,6 +7,7 @@
 //! files and `<soft_link>` XML pointers, collects diagnostics, runs the job's
 //! checks and computation, writes `result.json`, `confusions.json`, `diag.txt`
 //! and `fraction_done`, and finishes by writing `boinc_finish_called` (`"0\n"`).
+use crate::qe::Measure;
 use crate::{
     features,
     findability::Places,
@@ -26,7 +27,7 @@ use usnm_ocr_contract::{
     quality::{
         ConfusionPair, Engine, Host, Job, Outcome, PageResult, ReaderSpec, ResultManifest, Texts,
         Timings, MAX_ALTO, MAX_BUNDLE_ALTO, MAX_BUNDLE_SCAN, MAX_BUNDLE_TEXTS, MAX_ERROR,
-        MAX_JOB_JSON, MAX_PLACES, MAX_SCAN, MAX_TEXTS,
+        MAX_JOB_JSON, MAX_PLACES, MAX_QE, MAX_SCAN, MAX_TEXTS,
     },
 };
 
@@ -55,6 +56,8 @@ pub const PAGE_FILE: &str = "page.jpg";
 pub const ALTO_FILE: &str = "loc.xml";
 pub const TEXTS_FILE: &str = "texts.json";
 pub const PLACES_FILE: &str = "places.txt";
+/// The quality measure's resource file, in units whose job names one.
+pub const QE_FILE: &str = "qe.bin";
 pub const RESULT_FILE: &str = "result.json";
 pub const CONFUSIONS_FILE: &str = "confusions.json";
 pub const DIAG_FILE: &str = "diag.txt";
@@ -78,6 +81,19 @@ pub fn outputs() -> [&'static str; 3] {
 /// The input files in input template order, with the job last.
 pub fn inputs() -> [&'static str; 5] {
     [PAGE_FILE, ALTO_FILE, TEXTS_FILE, PLACES_FILE, JOB_FILE]
+}
+
+/// The input files of a unit whose job carries the quality measure's
+/// resource file (`usnm_quality_qe_in`), with the job last.
+pub fn inputs_with_qe() -> [&'static str; 6] {
+    [
+        PAGE_FILE,
+        ALTO_FILE,
+        TEXTS_FILE,
+        PLACES_FILE,
+        QE_FILE,
+        JOB_FILE,
+    ]
 }
 
 /// Resolves a logical file name in a BOINC slot directory, supporting both
@@ -210,6 +226,27 @@ pub struct Inputs<'a> {
     pub texts: &'a Texts,
     /// `places.txt`.
     pub places: &'a str,
+    /// `qe.bin`, when the job names one.
+    pub qe: Option<&'a [u8]>,
+}
+
+/// The job's quality-measure resources, loaded and checked against it.
+fn load_measure(job: &Job, bytes: Option<&[u8]>) -> anyhow::Result<Option<Measure>> {
+    match (&job.qe, bytes) {
+        (None, _) => Ok(None),
+        (Some(_), None) => anyhow::bail!("the job names qe.bin and it is missing"),
+        (Some(q), Some(b)) => {
+            ensure!(q.input.matches(b), "input qe checksum mismatch");
+            let m = Measure::load(b).context("qe.bin")?;
+            ensure!(
+                m.language() == q.language,
+                "qe.bin is for {}, the job says {}",
+                m.language(),
+                q.language
+            );
+            Ok(Some(m))
+        }
+    }
 }
 
 /// What [`compute`] gives: the result (host and time of completion left
@@ -352,14 +389,17 @@ pub fn text_analysis(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compute_page_record(
     doc_id: &str,
+    language: &str,
     readers_spec: &[ReaderSpec],
     function_words_list: &[String],
     page_bytes: &[u8],
     alto_bytes: &[u8],
     texts: &Texts,
     places: &Places,
+    qe: Option<&Measure>,
 ) -> anyhow::Result<(PageResult, BTreeMap<String, Vec<ConfusionPair>>)> {
     let started = Instant::now();
     texts.validate_readers(readers_spec)?;
@@ -382,8 +422,15 @@ fn compute_page_record(
         Some(usnm_alto::text(&alto))
     })
     .context("the ALTO text is always available here")?;
+    let mut r = analysis.report;
+    // The measure scores the texts the unit read: LoC's ALTO text stands in
+    // for an empty LoC text, as in the comparison.
+    if let Some(m) = qe.filter(|m| m.language() == language) {
+        let read = reader_inputs(readers_spec, texts, || Some(usnm_alto::text(&alto)))
+            .context("the ALTO text is always available here")?;
+        m.add(&mut r.readers, &read);
+    }
     let text_ms = ms(t);
-    let r = analysis.report;
     Ok((
         PageResult {
             doc_id: doc_id.to_owned(),
@@ -412,15 +459,18 @@ pub fn compute(inputs: &Inputs) -> anyhow::Result<Computed> {
     let job = inputs.job;
     job.validate()?;
     let places = Places::parse(inputs.places);
+    let qe = load_measure(job, inputs.qe)?;
     if job.pages.is_empty() {
         let (pr, conf_map) = compute_page_record(
             &job.doc_id,
+            &job.language,
             &job.readers,
             &job.function_words,
             inputs.page,
             inputs.alto,
             inputs.texts,
             &places,
+            qe.as_ref(),
         )?;
         let confusions = serde_json::to_vec_pretty(&conf_map)?;
         Ok(Computed {
@@ -468,12 +518,14 @@ pub fn compute(inputs: &Inputs) -> anyhow::Result<Computed> {
             };
             let (pr, conf_map) = compute_page_record(
                 &p.doc_id,
+                &p.language,
                 &p.readers,
                 fw,
                 page_bytes,
                 alto_bytes,
                 &page_texts,
                 &places,
+                qe.as_ref(),
             )?;
             timings.decode_ms += pr.timings.decode_ms;
             timings.features_ms += pr.timings.features_ms;
@@ -518,6 +570,8 @@ pub struct Loaded {
     pub texts: Texts,
     pub bundle_texts: Vec<Texts>,
     pub places: String,
+    /// `qe.bin`, checked against the job, when it names one.
+    pub qe: Option<Vec<u8>>,
 }
 
 /// Checks the unit before anything runs: the job and every input's checksum.
@@ -572,6 +626,14 @@ pub fn prepare(work: &Path) -> anyhow::Result<Loaded> {
         "input places checksum mismatch"
     );
     let places = String::from_utf8(places_bytes).context("places.txt is not UTF-8")?;
+    let qe = match &job.qe {
+        None => None,
+        Some(q) => {
+            let b = read_bounded(&resolve_slot_file(work, QE_FILE), MAX_QE)?;
+            ensure!(q.input.matches(&b), "input qe checksum mismatch");
+            Some(b)
+        }
+    };
     Ok(Loaded {
         job,
         page,
@@ -579,6 +641,7 @@ pub fn prepare(work: &Path) -> anyhow::Result<Loaded> {
         texts,
         bundle_texts,
         places,
+        qe,
     })
 }
 
@@ -697,6 +760,7 @@ fn compute_with_deadline(
                 alto: &l.alto,
                 texts: &l.texts,
                 places: &l.places,
+                qe: l.qe.as_deref(),
             })
         });
     }
@@ -705,6 +769,10 @@ fn compute_with_deadline(
     let job = l.job.clone();
     let total_pages = job.pages.len();
     let places = Places::parse(&l.places);
+    let qe = match load_measure(&job, l.qe.as_deref()) {
+        Ok(m) => m.map(std::sync::Arc::new),
+        Err(e) => return Err(Box::new((job, e))),
+    };
     let mut cp = match QualityCheckpoint::load_valid(work, &job) {
         Some(existing) => {
             if !existing.pages.is_empty() {
@@ -762,16 +830,20 @@ fn compute_with_deadline(
         };
         let places_clone = places.clone();
         let doc_id = bp.doc_id.clone();
+        let language = bp.language.clone();
         let readers_spec = bp.readers.clone();
+        let qe = qe.clone();
         let (pr, conf_map) = run_on_worker_thread(&job, remaining, control, move || {
             compute_page_record(
                 &doc_id,
+                &language,
                 &readers_spec,
                 &fw,
                 &page_bytes,
                 &alto_bytes,
                 &page_texts,
                 &places_clone,
+                qe.as_deref(),
             )
         })?;
         for (k, v) in conf_map {
@@ -1308,6 +1380,7 @@ mod tests {
                     readers: readers_spec,
                 },
             ],
+            qe: None,
             readers: vec![],
         };
         job.id = job.identity().unwrap();

@@ -27,8 +27,9 @@ TEMPLATES = {
     "usnm_ndlocr": ["usnm_ndlocr_in", "usnm_ndlocr_out"],
     "usnm_surya": ["usnm_surya_in", "usnm_surya_out"],
     # The OCR quality estimate (#522): the CPU app runs in the worker image under the docker
-    # class; the Qwen app has its own image, a CPU and a GPU version.
-    "usnm_quality": ["usnm_quality_in", "usnm_quality_out"],
+    # class; the Qwen app has its own image, a CPU and a GPU version. usnm_quality_qe_in adds
+    # the quality measure's per-language resource file (qe.bin, sticky) for units that carry it.
+    "usnm_quality": ["usnm_quality_in", "usnm_quality_qe_in", "usnm_quality_out"],
     "usnm_qwen": ["usnm_qwen_in", "usnm_qwen_2b_in", "usnm_qwen_8b_in", "usnm_qwen_out"],
     "usnm_qwen_train": ["usnm_qwen_train_in", "usnm_qwen_train_out"],
     "usnm_iris": ["usnm_iris_in", "usnm_iris_out", "usnm_iris_bundle_in", "usnm_iris_bundle_out"],

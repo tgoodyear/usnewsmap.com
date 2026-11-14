@@ -1,6 +1,6 @@
 //! Writing and packing staged quality units.
 
-use super::{ALTO_FILE, JOB_FILE, OURS_ALTO_FILE, PAGE_FILE, PLACES_FILE, TEXTS_FILE};
+use super::{ALTO_FILE, JOB_FILE, OURS_ALTO_FILE, PAGE_FILE, PLACES_FILE, QE_FILE, TEXTS_FILE};
 use crate::{atomic, read};
 use anyhow::{ensure, Context};
 use std::{
@@ -8,9 +8,9 @@ use std::{
     path::{Path, PathBuf},
 };
 use usnm_ocr_contract::quality::{
-    BundlePage, BundlePageInputs, BundleSlice, Engine, Input, Inputs, Job, ReaderSpec, Texts,
-    MAX_ALTO, MAX_BUNDLE_ALTO, MAX_BUNDLE_PAGES, MAX_BUNDLE_SCAN, MAX_BUNDLE_TEXTS, MAX_JOB_JSON,
-    MAX_PLACES, MAX_SCAN, MAX_TEXTS, VERSION,
+    BundlePage, BundlePageInputs, BundleSlice, Engine, Input, Inputs, Job, QeInput, ReaderSpec,
+    Texts, MAX_ALTO, MAX_BUNDLE_ALTO, MAX_BUNDLE_PAGES, MAX_BUNDLE_SCAN, MAX_BUNDLE_TEXTS,
+    MAX_JOB_JSON, MAX_PLACES, MAX_QE, MAX_SCAN, MAX_TEXTS, VERSION,
 };
 
 /// The names of the bundle directories under `units_dir`. Only the names:
@@ -138,6 +138,13 @@ pub(super) fn damage(dir: &Path, job: Option<&Job>) -> Option<String> {
             Err(e) => return Some(format!("{file}: {e:#}")),
         }
     }
+    if let Some(qe) = &job.qe {
+        match read(&dir.join(QE_FILE), MAX_QE) {
+            Ok(bytes) if qe.input.matches(&bytes) => {}
+            Ok(_) => return Some(format!("{QE_FILE} differs from its hash")),
+            Err(e) => return Some(format!("{QE_FILE}: {e:#}")),
+        }
+    }
     None
 }
 
@@ -233,10 +240,13 @@ pub struct WriteUnit<'a> {
     pub function_words: Vec<String>,
     pub crop_seed: u64,
     pub k_crops: u32,
+    /// The quality measure's resource file for the unit's language and its
+    /// job input (`quality::qe::Dir::input`), when the unit carries it.
+    pub qe: Option<(&'a Path, QeInput)>,
 }
 
-/// Writes the five input files of a unit into `dir`, the job last, and
-/// returns the job.
+/// Writes the input files of a unit into `dir` (five, or six with the
+/// quality measure's `qe.bin`), the job last, and returns the job.
 pub fn write_unit(u: &WriteUnit) -> anyhow::Result<Job> {
     ensure!(u.page.len() <= MAX_SCAN, "page over size limit");
     ensure!(u.alto.len() <= MAX_ALTO, "ALTO over size limit");
@@ -274,6 +284,7 @@ pub fn write_unit(u: &WriteUnit) -> anyhow::Result<Job> {
         k_crops: u.k_crops,
         language: u.language.to_owned(),
         pages: vec![],
+        qe: u.qe.as_ref().map(|(_, q)| q.clone()),
         readers,
     };
     job.id = job.identity()?;
@@ -283,6 +294,9 @@ pub fn write_unit(u: &WriteUnit) -> anyhow::Result<Job> {
     atomic(&u.dir.join(ALTO_FILE), u.alto)?;
     atomic(&u.dir.join(TEXTS_FILE), &texts_bytes)?;
     atomic(&u.dir.join(PLACES_FILE), u.places.as_bytes())?;
+    if let Some((src, _)) = &u.qe {
+        crate::quality::qe::place(src, u.dir)?;
+    }
     atomic(&u.dir.join(JOB_FILE), &serde_json::to_vec_pretty(&job)?)?;
     Ok(job)
 }
@@ -398,6 +412,17 @@ pub fn write_bundle(dir: &Path, page_units: &[PathBuf]) -> anyhow::Result<Job> {
     );
     let fj = first_job.expect("non-empty page_units");
     let places_bytes = places_bytes.expect("non-empty page_units");
+    // The bundle carries the quality measure's file when its first page's
+    // unit did and every page's unit carried the same one or none (a page of
+    // another language is not measured).
+    let qe = fj.qe.clone().filter(|q| {
+        page_units.iter().all(|u| {
+            read(&u.join(JOB_FILE), MAX_JOB_JSON)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Job>(&b).ok())
+                .is_some_and(|j| j.qe.as_ref().is_none_or(|x| x == q))
+        })
+    });
 
     let mut job = Job {
         v: VERSION,
@@ -416,6 +441,7 @@ pub fn write_bundle(dir: &Path, page_units: &[PathBuf]) -> anyhow::Result<Job> {
         k_crops: fj.k_crops,
         language: fj.language,
         pages: bundle_pages,
+        qe,
         readers: fj.readers,
     };
     job.id = job.identity()?;
@@ -426,6 +452,15 @@ pub fn write_bundle(dir: &Path, page_units: &[PathBuf]) -> anyhow::Result<Job> {
     atomic(&dir.join(ALTO_FILE), &alto_blob)?;
     atomic(&dir.join(TEXTS_FILE), &texts_blob)?;
     atomic(&dir.join(PLACES_FILE), &places_bytes)?;
+    if let Some(q) = &job.qe {
+        let src = page_units[0].join(QE_FILE);
+        ensure!(
+            q.input.matches(&read(&src, MAX_QE)?),
+            "{}: qe.bin checksum mismatch",
+            src.display()
+        );
+        crate::quality::qe::place(&src, dir)?;
+    }
     dims.write(dir)?;
     atomic(&dir.join(JOB_FILE), &serde_json::to_vec_pretty(&job)?)?;
     Ok(job)
@@ -467,6 +502,70 @@ pub fn local_unit(u: &LocalUnit) -> anyhow::Result<Job> {
         function_words: u.function_words.clone(),
         crop_seed: u.crop_seed,
         k_crops: u.k_crops,
+        qe: None,
     })
     .context("local unit")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn units_and_bundles_carry_the_quality_measure_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let base = crate::quality::work::tests::unit(&src);
+        let file = |f: &str| std::fs::read(src.join(f)).unwrap();
+        let texts: Texts = serde_json::from_slice(&file(TEXTS_FILE)).unwrap();
+        let (page, alto) = (file(PAGE_FILE), file(ALTO_FILE));
+        let places = String::from_utf8(file(PLACES_FILE)).unwrap();
+        let qe_path = tmp.path().join("eng.qe");
+        std::fs::write(&qe_path, b"resource bytes").unwrap();
+        let qe = QeInput {
+            input: Input::of(b"resource bytes", "lake:qe-resources/qe-v1/eng.qe"),
+            language: base.language.clone(),
+        };
+        let mut dirs = vec![];
+        let mut jobs = vec![];
+        for doc in ["sn1_1900-01-01_ed-1_seq-1", "sn1_1900-01-01_ed-1_seq-2"] {
+            let dir = tmp.path().join("pages").join(doc);
+            let job = write_unit(&WriteUnit {
+                dir: &dir,
+                doc_id: doc,
+                group: &base.group,
+                language: &base.language,
+                page: &page,
+                page_source: "local:page.jpg",
+                alto: &alto,
+                alto_source: "local:loc.xml",
+                texts: &texts,
+                texts_source: "local:texts.json",
+                places: &places,
+                places_source: "campaign:places.txt",
+                engine: base.engine.clone(),
+                function_words: base.function_words.clone(),
+                crop_seed: base.crop_seed,
+                k_crops: base.k_crops,
+                qe: Some((&qe_path, qe.clone())),
+            })
+            .unwrap();
+            assert_eq!(job.qe.as_ref(), Some(&qe));
+            assert!(damage(&dir, Some(&job)).is_none());
+            dirs.push(dir);
+            jobs.push(job);
+        }
+        let bundle_dir = tmp.path().join("bundle");
+        let bundle = write_bundle(&bundle_dir, &dirs).unwrap();
+        assert_eq!(bundle.qe.as_ref(), Some(&qe));
+        assert!(damage(&bundle_dir, Some(&bundle)).is_none());
+        assert_eq!(
+            std::fs::read(bundle_dir.join(QE_FILE)).unwrap(),
+            b"resource bytes"
+        );
+        // A unit whose qe.bin is not the job's is damaged and staged again.
+        std::fs::remove_file(dirs[0].join(QE_FILE)).unwrap();
+        std::fs::write(dirs[0].join(QE_FILE), b"other bytes").unwrap();
+        assert!(damage(&dirs[0], Some(&jobs[0])).is_some());
+    }
 }

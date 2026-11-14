@@ -13,6 +13,7 @@ Data, locks, templates and image definitions for the OCR pipeline: the engine ca
 | [`fraktur-pilot/`](fraktur-pilot/) | The Fraktur pilot's frozen page sample (#325): its declared design, page IDs, audit membership and image hashes, no OCR text                                                                   | frozen; the paired `deu_latf`/`deu` run is a dry run until its compute is authorized; see its [README](fraktur-pilot/README.md) |
 | [`script-detect/`](script-detect/) | Per-word script detection for mixed-script lines (#1666): the tools, the hand labels and the results of the _Cherokee Phoenix_ classifier that sends each word to the syllabary model or `eng` | experimental; not wired into the worker; see its [README](script-detect/README.md)                                              |
 | [`models/`](models/)               | Trained OCR models published as GitHub release assets: each one's model card, notice, provenance and `SHA256SUMS`                                                                              | opt-in; [`yidj2`](models/yidj2/README.md) isn't deployed                                                                        |
+| [`qe/`](qe/README.md)              | The reference-free OCR quality measure `qe-v1`: the lock of its per-language resource files, their sizes, licences and parity with the study                                                   | live; staged only with `--qe-dir`                                                                                               |
 
 ## `engines/`
 
