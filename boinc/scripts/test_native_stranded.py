@@ -16,26 +16,35 @@ JOB = ["%064x" % n for n in range(1, 6)]
 
 
 class Cursor:
-    def __init__(self, rows):
+    def __init__(self, rows, silent=()):
         self.rows = rows
+        self.silent = silent
         self.sql = []
+        self.params = []
+        self.last = rows
 
     def execute(self, sql, params=None):
         self.sql.append(sql)
+        self.params.append(params)
+        self.last = self.silent if "MAX(h.rpc_time)" in sql else self.rows
 
     def fetchall(self):
-        return self.rows
+        return self.last
 
     def fetchone(self):
         return (NOW,)
 
 
 class Db:
-    def __init__(self, rows):
-        self.cur = Cursor(rows)
+    def __init__(self, rows, silent=()):
+        self.cur = Cursor(rows, silent)
 
     def cursor(self):
         return self.cur
+
+
+def silent_row(n, host=15, last_rpc=NOW - 20 * 3600):
+    return (n, "usnm_" + JOB[n - 1], NOW - 200000, host, last_rpc)
 
 
 def row(n, results, exit_status, sigxcpu, age=100000, host=13):
@@ -55,7 +64,7 @@ class StrandedTests(unittest.TestCase):
                         "engine": {"image": "sha256:" + "4" * 64, "timeout_secs": 1800}}}))
 
     def args(self, command, rows_db, **extra):
-        values = dict(command=command, out=str(self.dir / "list.json"), stale_hours=6.0,
+        values = dict(command=command, out=str(self.dir / "list.json"), stale_hours=6.0, silent_hours=18.0,
                       handoff=str(self.dir), project="/p", config="", db_ca="", db_defaults="",
                       apply=False, max_units=None, confirm_count=None, journal=None)
         values.update(extra)
@@ -195,6 +204,72 @@ class StrandedTests(unittest.TestCase):
         db.cur.rowcount = 1
         self.assertEqual(S.cancel(db, "usnm_x")[0], True)
         self.assertTrue(any("UPDATE result" in sql for sql in db.cur.sql))
+
+    def test_a_unit_in_progress_on_a_silent_host_is_listed_with_the_host_and_its_last_rpc(self):
+        db = Db([row(1, 1, 1, 1)], [silent_row(2), silent_row(3, host=16)])
+        args, connect = self.args("plan", db)
+        out = io.StringIO()
+        self.assertEqual(S.run(args, out, connect), 0)
+        by_reason = json.loads(out.getvalue())["candidates"]["by_reason"]
+        self.assertEqual((by_reason["host_silent"], by_reason["too_slow_sigxcpu"]), (2, 1))
+        entry = S.load_list(args.out)["usnm_" + JOB[1]]
+        self.assertEqual((entry["reason"], entry["host"], entry["exit_status"]), ("host_silent", 15, None))
+        self.assertTrue(entry["last_rpc_at"].startswith("2027-"))
+        cutoff = [p for p in db.cur.params if p and "cutoff" in p][0]["cutoff"]
+        self.assertEqual(cutoff, NOW - 18 * 3600)
+
+    def test_the_silent_query_never_takes_a_unit_with_a_success_unsent_or_recent_host(self):
+        self.assertIn("HAVING MAX(h.rpc_time) < %(cutoff)s", S.SILENT)
+        self.assertIn("x.outcome = %(success)s", S.SILENT)
+        self.assertIn("IN (%(inactive)s, %(unsent)s)", S.SILENT)
+
+    def test_a_silent_unit_is_cancelled_with_the_cutoff_and_the_others_without_it(self):
+        db = Db([row(1, 1, 1, 1)], [silent_row(2)])
+        seen = []
+
+        def canceller(conn, name, **kw):
+            seen.append((name, kw))
+            return True, "ok"
+
+        args, connect = self.args("settle", db, apply=True, max_units=5, confirm_count=2,
+                                  journal=str(self.dir / "j.jsonl"))
+        self.assertEqual(S.run(args, io.StringIO(), connect, canceller), 0)
+        self.assertEqual(seen, [("usnm_" + JOB[0], {}),
+                                ("usnm_" + JOB[1], {"silent_before": NOW - 18 * 3600})])
+
+    def test_the_silent_cancel_rechecks_the_host_and_ends_the_in_progress_results(self):
+        class Cur:
+            rowcount = 1
+
+            def __init__(self):
+                self.sql, self.params = [], []
+
+            def execute(self, sql, params=None):
+                self.sql.append(sql)
+                self.params.append(params)
+
+            def fetchall(self):
+                return ()
+
+        class Conn:
+            def __init__(self):
+                self.cur = Cur()
+
+            def cursor(self):
+                return self.cur
+
+            begin = commit = rollback = lambda self: None
+
+        db = Conn()
+        self.assertEqual(S.cancel(db, "usnm_x", silent_before=123)[0], True)
+        guard = [q for q in db.cur.sql if q.startswith("UPDATE workunit")][0]
+        self.assertIn("h.rpc_time >= %(cutoff)s", guard)
+        self.assertEqual(db.cur.params[2]["cutoff"], 123)
+        self.assertTrue(any("r.outcome = %(no_reply)s" in q for q in db.cur.sql))
+
+    def test_the_silent_threshold_cannot_be_below_18_hours(self):
+        with self.assertRaises(SystemExit):
+            S.main(["plan", "--silent-hours", "6"])
 
     def test_a_preview_changes_no_unit(self):
         args, connect = self.args("settle", Db([row(1, 1, 1, 1)]))

@@ -16,6 +16,13 @@ result, nothing in progress, unsent or successful, and is one of:
 - `client_error`: any other failed result;
 - `assigned_no_result`: no result at all, `--stale-hours` after it was created.
 
+A unit with a result still in progress is stranded as `host_silent` when every host holding
+one last contacted the scheduler (`host.rpc_time`) more than `--silent-hours` ago (default and
+minimum 18). The entry records the host and its last RPC. `settle --apply` cancels such a unit
+as above, and also ends its in-progress results as `NO_REPLY`, as the transitioner does at a
+deadline, so the unit can be assimilated; the guard re-checks the host's last RPC in the same
+transaction and leaves the unit alone if the host has come back.
+
 `plan` (read-only) and `settle` (a preview without `--apply`) print the count by reason. Both
 write nothing but `--out`, the durable list. Each entry holds the page, the workunit, the
 parent job sha, its image and `engine.timeout_secs` (from the job's journal, kept from an
@@ -54,7 +61,8 @@ SUCCESS = 1
 TRANSITION_NO_NEW_RESULTS = 2
 EXIT_CPU_LIMIT = 117
 EXIT_TOO_MANY_EXIT0 = -226
-REASONS = ("too_slow_sigxcpu", "exit0_loop", "client_error", "assigned_no_result")
+REASONS = ("too_slow_sigxcpu", "exit0_loop", "client_error", "assigned_no_result", "host_silent")
+MIN_SILENT_HOURS = 18
 DEFAULT_OUT = "/project/maintenance/native-stranded.json"
 DEFAULT_HANDOFF = "/project/handoff"
 DEFAULT_PROJECT = "/project/usnmocr"
@@ -71,6 +79,20 @@ LEFT JOIN assignment a ON a.workunitid = w.id
 WHERE w.transitioner_flags = %(flag)s AND w.error_mask = 0 AND w.canonical_resultid = 0
   AND NOT EXISTS (SELECT 1 FROM result x WHERE x.workunitid = w.id
                   AND (x.server_state IN (%(inactive)s, %(unsent)s, %(in_progress)s) OR x.outcome = %(success)s))
+ORDER BY w.id
+"""
+
+SILENT = """
+SELECT w.id, w.name, w.create_time, MIN(r.hostid), MAX(h.rpc_time)
+FROM workunit w
+JOIN app p ON p.id = w.appid AND p.name = 'usnm_ocr_native'
+JOIN result r ON r.workunitid = w.id AND r.server_state = %(in_progress)s
+JOIN host h ON h.id = r.hostid
+WHERE w.transitioner_flags = %(flag)s AND w.error_mask = 0 AND w.canonical_resultid = 0
+  AND NOT EXISTS (SELECT 1 FROM result x WHERE x.workunitid = w.id
+                  AND (x.server_state IN (%(inactive)s, %(unsent)s) OR x.outcome = %(success)s))
+GROUP BY w.id, w.name, w.create_time
+HAVING MAX(h.rpc_time) < %(cutoff)s
 ORDER BY w.id
 """
 
@@ -107,7 +129,7 @@ def read_journal(handoff, job):
                 "timeout_secs": None}
 
 
-def find(cur, handoff, now, stale_secs):
+def find(cur, handoff, now, stale_secs, silent_secs=MIN_SILENT_HOURS * 3600):
     """Every stranded unit, as the list file keeps it, oldest first."""
     cur.execute(CANDIDATES, {"flag": TRANSITION_NO_NEW_RESULTS, "inactive": INACTIVE,
                              "unsent": UNSENT, "in_progress": IN_PROGRESS, "success": SUCCESS})
@@ -122,6 +144,18 @@ def find(cur, handoff, now, stale_secs):
                       "reason": reason, "exit_status": None if exit_status is None else int(exit_status),
                       "created_at": dt.datetime.fromtimestamp(int(created), dt.timezone.utc).isoformat(),
                       **read_journal(handoff, job)})
+    cur.execute(SILENT, {"flag": TRANSITION_NO_NEW_RESULTS, "inactive": INACTIVE, "unsent": UNSENT,
+                         "in_progress": IN_PROGRESS, "success": SUCCESS, "cutoff": now - silent_secs})
+    for wid, name, created, host, rpc_time in cur.fetchall():
+        job = job_of(name)
+        if job is None:
+            continue
+        found.append({"workunit": name, "workunit_id": int(wid), "job": job, "host": host,
+                      "reason": "host_silent", "exit_status": None,
+                      "last_rpc_at": dt.datetime.fromtimestamp(int(rpc_time), dt.timezone.utc).isoformat(),
+                      "created_at": dt.datetime.fromtimestamp(int(created), dt.timezone.utc).isoformat(),
+                      **read_journal(handoff, job)})
+    found.sort(key=lambda e: e["workunit_id"])
     return found
 
 
@@ -187,24 +221,44 @@ UNSENT_SQL = (
     "r.outcome = %(didnt_need)s WHERE w.name = %(name)s AND r.server_state = %(unsent)s "
     "AND w.error_mask & %(cancelled)s <> 0"
 )
-WU_ERROR_CANCELLED, OVER, DIDNT_NEED = 16, 5, 5
+WU_ERROR_CANCELLED, OVER, DIDNT_NEED, NO_REPLY = 16, 5, 5, 3
+# For a host_silent unit: cancelled only while every in-progress result's host is still silent
+# (and none succeeded), then those results end as the transitioner ends them at a deadline.
+CANCEL_SILENT_SQL = (
+    CANCEL_SQL[0], CANCEL_SQL[1],
+    "UPDATE workunit w SET w.error_mask = w.error_mask | %(cancelled)s, w.transition_time = UNIX_TIMESTAMP() "
+    "WHERE w.name = %(name)s AND w.error_mask = 0 AND w.canonical_resultid = 0 AND NOT EXISTS "
+    "(SELECT 1 FROM result q LEFT JOIN host h ON h.id = q.hostid WHERE q.workunitid = w.id AND "
+    "((q.server_state = %(in_progress)s AND (h.id IS NULL OR h.rpc_time >= %(cutoff)s)) "
+    "OR (q.server_state = %(over)s AND q.outcome = %(success)s)))",
+)
+SILENT_RESULTS_SQL = (
+    "UPDATE result r JOIN workunit w ON w.id = r.workunitid SET r.server_state = %(over)s, "
+    "r.outcome = %(no_reply)s WHERE w.name = %(name)s AND r.server_state = %(in_progress)s "
+    "AND w.error_mask & %(cancelled)s <> 0"
+)
 
 
-def cancel(db, name):
+def cancel(db, name, silent_before=None):
     """Cancel one unit in one transaction. (True, detail) when it was cancelled, (False, detail)
-    when a result got in first and it was left as it is."""
+    when a result got in first and it was left as it is. `silent_before` (a unix time) is for a
+    host_silent unit: its in-progress results are allowed if their hosts' last RPC is before it."""
     params = {"name": name, "cancelled": WU_ERROR_CANCELLED, "in_progress": IN_PROGRESS, "over": OVER,
-              "success": SUCCESS, "didnt_need": DIDNT_NEED, "unsent": UNSENT}
+              "success": SUCCESS, "didnt_need": DIDNT_NEED, "unsent": UNSENT, "no_reply": NO_REPLY,
+              "cutoff": silent_before}
+    statements = CANCEL_SQL if silent_before is None else CANCEL_SILENT_SQL
     cur = db.cursor()
     try:
         db.begin()
-        for sql in CANCEL_SQL[:2]:
+        for sql in statements[:2]:
             cur.execute(sql, params)
             cur.fetchall()
-        cur.execute(CANCEL_SQL[2], params)
+        cur.execute(statements[2], params)
         changed = cur.rowcount
         if changed:
             cur.execute(UNSENT_SQL, params)
+            if silent_before is not None:
+                cur.execute(SILENT_RESULTS_SQL, params)
         db.commit()
     except Exception:
         db.rollback()
@@ -244,7 +298,8 @@ def run(args, out=sys.stdout, connect_db=connect, canceller=cancel):
     cur = db.cursor()
     cur.execute("SET SESSION TRANSACTION READ ONLY")
     now = now_of(cur)
-    found = find(cur, args.handoff, now, int(args.stale_hours * 3600))
+    silent_secs = int(args.silent_hours * 3600)
+    found = find(cur, args.handoff, now, int(args.stale_hours * 3600), silent_secs)
     pages = load_list(args.out)
     now_iso = dt.datetime.fromtimestamp(now, dt.timezone.utc).isoformat()
     merge(pages, found, now_iso)
@@ -268,7 +323,10 @@ def run(args, out=sys.stdout, connect_db=connect, canceller=cancel):
     done = skipped = 0
     with journal:
         for entry in found[: args.max_units]:
-            ok, detail = canceller(writer, entry["workunit"])
+            if entry["reason"] == "host_silent":
+                ok, detail = canceller(writer, entry["workunit"], silent_before=now - silent_secs)
+            else:
+                ok, detail = canceller(writer, entry["workunit"])
             journal.write(json.dumps({"at": now_iso, "workunit": entry["workunit"], "job": entry["job"],
                                       "reason": entry["reason"], "cancelled": ok, "detail": detail},
                                      sort_keys=True) + "\n")
@@ -296,6 +354,9 @@ def main(argv=None):
             continue
         p.add_argument("--stale-hours", type=float, default=6.0,
                        help="age at which a unit with no result is stranded (default 6)")
+        p.add_argument("--silent-hours", type=float, default=float(MIN_SILENT_HOURS),
+                       help=f"hours since a host's last RPC at which its in-progress units are "
+                            f"stranded (default and minimum {MIN_SILENT_HOURS})")
         p.add_argument("--handoff", default=DEFAULT_HANDOFF, help="the bridge's journals")
         p.add_argument("--project", default=DEFAULT_PROJECT)
         p.add_argument("--config", default=f"{DEFAULT_PROJECT}/config.xml")
@@ -309,6 +370,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command != "count" and args.stale_hours < 0:
         parser.error("--stale-hours is not negative")
+    if args.command != "count" and args.silent_hours < MIN_SILENT_HOURS:
+        parser.error(f"--silent-hours is at least {MIN_SILENT_HOURS}")
     return run(args)
 
 
