@@ -225,6 +225,33 @@ class Run(unittest.TestCase):
         res = mll.measure(tasks, {}, mll.Clips(clips, None, 0), 1.6, 5)
         self.assertFalse(any(r["flagged"] for r in res.values()), "two lines in two sets are not five lines")
 
+    def test_fallback_median_is_per_set_and_counts_lines_the_alto_measured(self):
+        clips = os.path.join(self.d, "c4")
+        page = "p/1900-01-01/ed-1/seq-1"
+        stem = "p_1900-01-01_ed-1_seq-1_"
+        rows = []
+        for st, scale in (("small", 100), ("big", 200)):  # the same five lines scanned at two scales
+            os.makedirs(os.path.join(clips, st))
+            for i in range(5):
+                with open(os.path.join(clips, st, f"{i}.png"), "wb") as f:
+                    f.write(png(20, scale))
+                rows.append((f"sr/{st}/{stem}l{i}~0", page, f"{st}/{i}.png", {}))
+        tasks, _, _ = mll.read_dump(dump(rows), ("sr",))
+        res = mll.measure(tasks, {}, mll.Clips(clips, None, 0), 1.6, 5)
+        self.assertFalse(any(r["flagged"] for r in res.values()), "a median over both scales would flag all of the big set")
+        # one tall line the ALTO does not have, among five normal lines the ALTO does measure: the clips of all six make the median
+        os.makedirs(os.path.join(clips, "one"))
+        rows = []
+        for i, h in enumerate([100, 100, 100, 100, 100, 300]):
+            with open(os.path.join(clips, "one", f"{i}.png"), "wb") as f:
+                f.write(png(20, h))
+            rows.append((f"sr/one/{stem}P1_TL0000{i + 1}~0", page, f"one/{i}.png", {}))
+        tasks, _, _ = mll.read_dump(dump(rows), ("sr",))
+        alto = {mll.archive_member(page): {"all": [(f"P1_TL0000{i + 1}", 50) for i in range(5)], "indexed": []}}  # TL00006 is not in the ALTO
+        res = mll.measure(tasks, alto, mll.Clips(clips, None, 0), 1.6, 5)
+        self.assertEqual([t for t, r in res.items() if r["flagged"]], [rows[5][0]])
+        self.assertEqual([r["how"] for r in res.values()], ["alto"] * 5 + ["clip"])
+
     def test_clips_url_fetches_gently_and_keeps_the_clip(self):
         served = []
 

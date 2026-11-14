@@ -24,8 +24,8 @@ falls back to its line clip's pixel height: --clips DIR holds the clips at their
 fetches the missing ones from the check site's public /clips/<key>, one at a time, --delay seconds apart. A clip is cut with padding
 proportional to the box height (phoenix_lines.py, yiddish_lines.py, serbian_lines.py: 15% each side, a 4-pixel minimum on Cherokee
 lines) and build_tasks.py saves it unscaled, so clip heights keep the ratio of box heights, except where a line sits at the
-page edge and the padding was cut short. The median for a clip is over the clips of the page's tasks, not the page's lines, so
-it needs MIN_PAGE_LINES distinct lines of that page. Tasks measured this way are counted apart in the report. A task with
+page edge and the padding was cut short. The median for a clip is over the clips of the page's distinct lines in the same set (scan scales differ between
+sets), not the page's lines, so it needs MIN_PAGE_LINES distinct lines of that page in the set. Tasks measured this way are counted apart in the report. A task with
 neither measure is listed as unmeasured.
 
 Writes, in --out-dir: affected-task-ids.txt (one id per line, `#` header lines; the file confusable.sh --tasks reads),
@@ -289,17 +289,28 @@ def measure(tasks: dict, alto: dict, clips: Clips, factor: float, min_lines: int
                 res.update(how="alto", height=height, median=median, line_ref=ref[1])
                 continue
         by_page[page].append((tid, ref))
-    # the fallback: line clips, median over the page's clips (distinct lines)
+    # The fallback: line clips. A scan's scale differs between sets, so the median is over one page of one set, and over every
+    # distinct source line of it that has a clip, whether or not the ALTO measured it. Only the tasks that need the fallback take
+    # their result from it.
+    groups = collections.defaultdict(list)
     for page, items in by_page.items():
-        got = {}
         for tid, ref in items:
+            groups[(page, results[tid]["set"])].append((tid, ref))
+    everyone = collections.defaultdict(list)
+    for tid, res in results.items():
+        if (res["page"], res["set"]) in groups:
+            everyone[(res["page"], res["set"])].append(tid)
+    for (page, set_name), items in groups.items():
+        got = {}
+        for tid in everyone[(page, set_name)]:
             key = tasks[tid]["body"].get("line")
             if key not in got:
                 got[key] = clips.height(key)
-        lines = {}  # by the source line, not the clip key: a clip key names its set, and one line can be loaded in several
-        for tid, ref in items:
+        lines = {}  # by the source line, not the clip key: one line is several tasks
+        for tid in everyone[(page, set_name)]:
+            ref = line_ref(page, split_task_id(tid)[2])
             h = got.get(tasks[tid]["body"].get("line"))
-            if h:
+            if h and ref is not None:
                 lines.setdefault(ref, h)
         median = ml.page_median(list(lines.values()), min_lines)
         for tid, ref in items:
