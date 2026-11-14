@@ -1,0 +1,15 @@
+[package]
+name = "s11"
+version = "0.1.0"
+edition = "2021"
+description = "Study 11 helpers: region selection and crops, line crops, word-bag page score, four-reader vote."
+
+[workspace]
+
+[dependencies]
+usnm-ocr-survey = { path = "../../../../../../crates/usnm-ocr-survey" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "pnm"] }
+serde_json = "1"
+sha2 = "0.11"

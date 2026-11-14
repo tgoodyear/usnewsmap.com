@@ -8,7 +8,7 @@ date: "November 2026"
 
 ## What we learned
 
-1. **Xiaomi-OCR-0 is the best reader we have tested.** On 612 human-transcribed newspaper crops it has 4.0% CER against Tesseract's 9.0% and ties guarded Qwen 8B (4.5%) at a tenth of its size. On a rented 3090 it reads crops for about $0.02 per 1,000 pages of reading time, against $3.40 for Qwen with boot and idle time included. It also invents less: 7 flagged readings to Qwen's 32. It is being confirmed on held-out pages (Study 11). [Study 9](#study-9-xiaomi-ocr-0-3-november-2026)
+1. **Xiaomi-OCR-0 is the best reader on the 612 crops, but held-out pages didn't confirm it.** On 612 human-transcribed newspaper crops it has 4.0% CER against Tesseract's 9.0% and ties guarded Qwen 8B (4.5%) at a tenth of its size. On a rented 3090 it reads crops for about $0.02 per 1,000 pages of reading time, against $3.40 for Qwen with boot and idle time included. It also invents less: 7 flagged readings to Qwen's 32. On 81 new Reichsanzeiger pages it lost to Tesseract (10.4% against 6.5%), all of the loss on 84 tall columns shrunk to 2,048 px. At native size it comes within 1.3 points of Tesseract and beats guarded Qwen (post-hoc). [Studies 9](#study-9-xiaomi-ocr-0-3-november-2026) and [11](#study-11-held-out-pages-3-and-4-november-2026)
 2. **Repetition loops were Qwen's main problem.** Unguarded, Qwen 8B lost to Tesseract on German (49.6% against 17.9%); with the `stop` loop guard it wins (11.1%). The guard is live in `usnm_qwen` 1.17. [Studies 1](#study-1-german-fraktur-926-835) and [5](#study-5-loop-guard-8b-training-and-the-deployed-path)
 3. **Fine-tuning isn't worth it yet.** The 2B adapter's headline gain was the loop guard in disguise. With the guard on both, adapters add a few points on Reichsanzeiger Fraktur and nothing shown on English. They stay untrusted. [Studies 2](#study-2-lora-training-583) and [5](#study-5-loop-guard-8b-training-and-the-deployed-path)
 4. **BOINC's llama.cpp must be upgraded before any new reader ships.** The app's b8799 Vulkan build returns empty text on 72 of 612 crops, 71 of them one-line NZZ crops. The current release fixes it (4.6%, no empty readings). [Study 9](#deployed-runtime)
@@ -25,8 +25,9 @@ date: "November 2026"
 | --- | --- | --- |
 | Upgrade `usnm_qwen`'s native llama.cpp from b8799 | Its Vulkan build drops one-line crops | In progress |
 | Ship `crop-consensus-v2` | Fair validation across cards and runtimes | In progress (#1434) |
-| Confirm Xiaomi-OCR-0 on held-out pages | The 612 crops have now been read by every reader | Study 11 running |
-| Package Xiaomi-OCR-0 for BOINC | Best accuracy for the cost | After the three above |
+| Confirm Xiaomi-OCR-0 on held-out pages | The 612 crops have now been read by every reader | Not confirmed (Study 11) |
+| Test Xiaomi-OCR-0 on production-shaped crops of held-out pages | Study 11's loss is in tall columns production doesn't cut | Open |
+| Package Xiaomi-OCR-0 for BOINC | Best accuracy for the cost | Code merged, classes closed; hold until the test above |
 | Move the word-box aligner into `usnm-alto` | Search highlighting for vision-language text | After #1488 and #1489 |
 | Keep adapters untrusted | Small gains, Fraktur only | Open (#583) |
 | Build a transcribed Yiddish newspaper set | No reader is shown to work there | Open |
@@ -418,7 +419,7 @@ The book result doesn't establish which reader is best on newspapers. A human-tr
 
 # Study 9: Xiaomi-OCR-0 (3 November 2026)
 
-**Bottom line.** Xiaomi-OCR-0, a 0.8B reader, is the best we have tested: 4.0% CER on the 612 crops against Tesseract's 9.0%, level with guarded Qwen 8B, with fewer inventions, at about $0.02 per 1,000 pages of reading time on a rented 3090. It needs a current llama.cpp on BOINC (b8799's Vulkan build drops one-line crops), crops rather than whole pages, and word boxes from another reader, which the aligner below supplies. Study 11 is confirming it on held-out pages.
+**Bottom line.** Xiaomi-OCR-0, a 0.8B reader, is the best we have tested: 4.0% CER on the 612 crops against Tesseract's 9.0%, level with guarded Qwen 8B, with fewer inventions, at about $0.02 per 1,000 pages of reading time on a rented 3090. It needs a current llama.cpp on BOINC (b8799's Vulkan build drops one-line crops), crops rather than whole pages, and word boxes from another reader, which the aligner below supplies. Study 11 didn't confirm it on held-out pages.
 
 ## Crop accuracy
 
@@ -584,6 +585,85 @@ The models as read, by SHA-256:
 
 The hash list of the training split's 554 page images and ALTO files has SHA-256 `962f675d253219f67facbcec8d4c43f0197ebb499a6defa34d1654a30d688da9`. The models, readings and hash lists are kept with the runs.
 
+# Study 11: held-out pages (3 and 4 November 2026)
+
+**Bottom line.** Study 9's result is not confirmed. On the 81 held-out Reichsanzeiger pages, Xiaomi-OCR-0 reads regions worse than Tesseract, 10.4% CER against 6.5%, a difference of +3.9 points (limits 0.9 to 7.8). It is level with guarded Qwen 8B (12.4%). Post-hoc, the whole loss sits in 84 tall column regions: on the other 1,916 regions it ties Tesseract (7.0% against 6.8%). Post-hoc again, reading those columns at native size, as request version 5 sends them, cuts the gap to +1.3 (limits -0.7 to 3.3). It also loses on the other two sets. Xiaomi-OCR-0 shouldn't replace Tesseract on German until a production-shaped test says otherwise.
+
+The readings were made on 3 and 4 November on the local RTX 2060 SUPER with BOINC work paused, following the protocol amendment of 4 November. They were scored then and not reported until now. On 12 November the tables were checked with a separate scorer (rapidfuzz Levenshtein, NFC, whitespace collapsed, the same page resampling and seed). For `de-rz` it agreed within 0.2 points on every pooled CER and difference.
+
+## Setup
+
+- **Sets.** The three frozen sets (`SHA256SUMS` `24a42c99`): `de-rz`, 2,000 regions on 81 pages (2,565,525 reference characters on the pages, 421,697 in the regions); `de-cg`, 2,086 regions on 100 pages; `en-asgold`, 507 regions on 10 pages. Regions were cut at their boxes. 304 regions over 2,048 px were fitted to 2,048 for the vision-language readers (84 in `de-rz`).
+- **Xiaomi-OCR-0.** Study 9's Q8_0 GGUF on llama.cpp b12084 Vulkan (`f9448cddc`), Study 9's region prompt, at most 2,048 output tokens, 16,384-token context, one crop at a time. The `stop` guard cut 35 of 4,593 readings.
+- **Qwen 8B.** `usnm_qwen`'s pinned Q4_K_M GGUF and projector, request version 3, the same b12084 build, with the guard (2 of 4,593 readings cut). A crop that didn't fit a 4,096-token context was retried at 8,192.
+- **Tesseract** `frak2021` for German and `eng` for English, PSM 6 on regions, PSM 3 on whole pages, from the pinned worker image. **RapidOCR** PP-OCRv6 small on CPU.
+- CHURRO read its unseen subset on rented cards but isn't scored here.
+
+## Regions
+
+Pooled CER, limits in brackets, and the difference from Tesseract:
+
+| Set (regions, pages) | Xiaomi-OCR-0 | Qwen 8B, guard | Tesseract | RapidOCR | Vote | Xiaomi minus Tesseract |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `de-rz` (2,000, 81) | 10.4 (7.4 to 13.7) | 12.4 (7.9 to 18.1) | 6.5 (5.2 to 8.2) | 17.0 | 7.3 | +3.9 (0.9 to 7.8) |
+| `de-rz`, not in CHURRO's training (849, 32) | 7.8 | 10.3 | 6.0 | 15.4 | 6.3 | +1.8 (0.0 to 2.9) |
+| `de-cg` (2,086, 100) | 26.6 (21.5 to 31.8) | 27.7 | 12.7 (10.2 to 15.4) | 18.9 | 18.4 | +14.0 (9.3 to 18.8) |
+| `en-asgold` (507, 10), descriptive | 8.2 | 13.3 | 3.7 | 2.2 | 1.2 | +4.5 (-2.4 to 13.3) |
+
+- **Primary.** On `de-rz`, Xiaomi-OCR-0 minus Tesseract is +3.9 (0.9 to 7.8). The rule needed a difference below zero with limits excluding zero, so Study 9's result is not confirmed.
+- **Against guarded Qwen 8B.** On `de-rz`, Xiaomi-OCR-0 minus Qwen is -2.0 (-5.9 to 1.2). That's a tie. On `de-cg` the difference is -1.0 (-3.1 to 0.8).
+- **The vote** beats Xiaomi-OCR-0 on both German sets: -3.1 (-5.7 to -0.9) on `de-rz` and -8.2 (-10.8 to -5.7) on `de-cg`. It still trails Tesseract on both. By the protocol's rule it is worth building over Xiaomi-OCR-0, but not over Tesseract.
+- `de-cg`'s references keep some recognition errors, which set a floor on every reader there. Folding long s and similar characters (post-hoc) cuts Xiaomi-OCR-0's `de-rz` CER to 7.7%, against Tesseract's 6.5%: +1.2 (-1.8 to 5.2).
+
+Invented text and failures on `de-rz`, counted over the 1,846 regions with reference words:
+
+| Reader | Major hallucinations | Over-length | Empty readings | Output cap hit |
+| --- | ---: | ---: | ---: | ---: |
+| Xiaomi-OCR-0 | 52 | 108 | 0 | 7 |
+| Qwen 8B, guard | 46 | 135 | 0 | 4 |
+| Tesseract | 104 | 151 | 155 | n/a |
+| RapidOCR | 85 | 30 | 719 | n/a |
+
+Xiaomi-OCR-0 still invents about half as often as Tesseract. It has no empty readings on b12084.
+
+## Where Xiaomi-OCR-0 loses (post-hoc)
+
+`de-rz` regions are TextRegions, from table cells of a few characters up to full columns. The 84 regions over 2,048 px are columns about 1,500 by 6,000 px, with up to 8,200 characters each. They hold 202,043 of the 421,697 reference characters. Each was shrunk about three times to fit 2,048 px, and its text often needs more than 2,048 output tokens.
+
+| `de-rz` regions | Regions | Xiaomi-OCR-0 | Qwen 8B, guard | Tesseract |
+| --- | ---: | ---: | ---: | ---: |
+| Over 2,048 px | 84 | 14.2 | 18.4 | 6.0 |
+| The rest | 1,916 | 7.0 | 6.5 | 6.8 |
+
+On the columns, Xiaomi-OCR-0 drops text: its five worst readings keep 66 to 88% of the reference's length. Its seven worst columns account for more than all of its excess edits over Tesseract. Tesseract reads the columns at full resolution. Production cuts 12 crops a page (Study 4), so it shouldn't see many regions like these, though this study didn't measure production crop sizes.
+
+**At v5's settings (post-hoc).** `usnm_qwen` request version 5 sends crops at native size, without the guard. On 12 November the 84 tall regions were read again that way with the 1.20 bundle's `llama-server` (b12084), keeping the other 1,916 readings, which version 5 wouldn't change. Six of the 84 still hit the 2,048-token output cap.
+
+| `de-rz`, all 2,000 regions | Xiaomi-OCR-0 | Minus Tesseract | Minus Qwen 8B, guard |
+| --- | ---: | ---: | ---: |
+| Fitted to 2,048 px, guard (the protocol's arm) | 10.4% | +3.9 (0.8 to 7.8) | -2.0 (-5.8 to 1.2) |
+| Native size, no guard (v5) | 7.7% | +1.3 (-0.7 to 3.3) | -4.7 (-9.5 to -0.9) |
+
+At native size the tall regions score 8.6% against Tesseract's 6.1%. Version 5 doesn't lose to Tesseract on `de-rz` with limits excluding zero, but it doesn't beat it either, and it beats guarded Qwen 8B. This arm was chosen after seeing the results, so it doesn't change the protocol's verdict.
+
+## Pages
+
+Word-bag F1 on 20 pages per German set and 10 English pages, folded:
+
+| Set | RapidOCR lines read by Xiaomi-OCR-0 | Tesseract PSM 3 | Difference |
+| --- | ---: | ---: | ---: |
+| `de-rz` | 61.7 | 77.6 | -15.9 (-20.1 to -10.9) |
+| `de-cg` | 60.2 | 72.8 | -12.6 (-17.0 to -6.9) |
+| `en-asgold` | 91.0 | 93.1 | -2.2 (-6.8 to 2.6) |
+
+The line pipeline loses on German pages, with low precision (60.8% on `de-rz`). This study doesn't say why.
+
+## What this changes
+
+- Don't open the `_x08` plan classes for German. Xiaomi-OCR-0 is a candidate for crops no taller than 2,048 px, where it ties Tesseract and Qwen on `de-rz`. That's a post-hoc subgroup, so a production-shaped test should confirm it before any release: production crops, the v5 settings, and the same held-out pages.
+- b12084 stays necessary for every reader. On it, the two models returned 1 empty reading between them in 9,186. The `usnm_qwen` 1.20 bundle built from main on 12 November (b12084 with its pinned `libgomp`) read the 612 Study 9 crops with no empty readings: 4.4% CER, with 577 readings identical to Study 9's b12084 run (#1783).
+- The vote helps over either vision-language reader, but not over Tesseract on German regions.
+
 # Spend
 
 Credit went from $49.88 to $37.97, so $11.91 of the $40 limit. The ledger's estimate, hourly price times time from instance creation to destruction, comes to $11.40. That estimate differs from what was paid because it counts loading time and leaves out bandwidth and storage, and it hasn't been checked against Vast's billing records.
@@ -701,6 +781,7 @@ Run the [synthetic regression tests](../../../scripts/ci/test_gpu_study_yiddish.
 - Study 9's first window read nothing: it ended at the 10-minute readiness limit while vLLM was still compiling. Its kill and resume check only covered a finished run, as the crop run ended before the planned kill.
 - Study 9 step 2 added, after seeing the 1.17 Vulkan result, a Vulkan arm with `--image-min-tokens 64` (post-hoc) and an arm on llama.cpp b12084 (on the maintainer's approval). A planned arm with the vision encoder on CPU was cancelled once b12084 had placed the fault in b8799's Vulkan backend.
 - Study 9 step 3 found no Vulkan device on the rented cards, so its Vulkan arms didn't run. Two of its six instances read nothing because of runner faults, fixed and rerun.
+- Study 11 was read and scored on 4 November and reported on 12 November. The split by region size, the native-size rereading of the 84 tall regions and the second scorer are post-hoc. CHURRO's readings aren't scored. Its scripts are in [`scripts/s11/`](scripts/s11/); its readings and tables aren't in a data release yet.
 
 # Findings about the rental
 
