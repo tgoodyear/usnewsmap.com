@@ -159,6 +159,24 @@ pub fn native_retry_timeout(job: &boinc::Job, requested: Option<u32>) -> anyhow:
     }
 }
 
+/// A native retry keeps the parent's build, and only a page job has one: a line job is container
+/// work, and neither submission route would accept its child.
+fn check_native_parent(
+    parent_image: &str,
+    parent_is_line_job: bool,
+    image: &str,
+) -> anyhow::Result<()> {
+    ensure!(
+        !parent_is_line_job,
+        "a line job is container work: it has no native retry"
+    );
+    ensure!(
+        image == parent_image,
+        "a native retry keeps the parent's build: --image must be its engine.image"
+    );
+    Ok(())
+}
+
 pub async fn prepare(
     opts: &Options<'_>,
     state: &State,
@@ -187,10 +205,11 @@ pub async fn prepare(
         );
     }
     if opts.native_host.is_some() {
-        ensure!(
-            opts.image == previous.job.engine.image,
-            "a native retry keeps the parent's build: --image must be its engine.image"
-        );
+        check_native_parent(
+            &previous.job.engine.image,
+            previous.job.lines.is_some(),
+            opts.image,
+        )?;
         native_retry_timeout(&previous.job, opts.timeout_secs)?;
     }
     let previous_dir = dir(opts.root, opts.previous_job)?;
@@ -426,6 +445,14 @@ mod tests {
     use usnm_ocr_contract::boinc::Job;
     use usnm_ocr_local::ledger;
     use usnm_state::docs::MemoryDocs;
+
+    #[test]
+    fn a_native_retry_keeps_the_build_and_is_never_for_a_line_job() {
+        let image = format!("sha256:{}", "b".repeat(64));
+        assert!(check_native_parent(&image, false, &image).is_ok());
+        assert!(check_native_parent(&image, false, "sha256:other").is_err());
+        assert!(check_native_parent(&image, true, &image).is_err());
+    }
 
     #[test]
     fn a_native_retry_lengthens_the_deadline_of_a_cpu_limit_failure_and_repeats_any_other_once() {

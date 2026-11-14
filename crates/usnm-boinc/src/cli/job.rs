@@ -147,7 +147,7 @@ pub struct RetryArgs {
     /// A page of the native build (`usnm_ocr_native`, #1919): the child keeps the parent's build
     /// (`--image` is its `engine.image`) and `--app-version-num` is the native version that
     /// packages it. `--timeout-secs` is longer than the parent's for a CPU-limit failure (exit
-    /// status 197); any other failure is retried once at the same deadline, so none. Submit it
+    /// status 117); any other failure is retried once at the same deadline, so none. Submit it
     /// with `submit --app usnm_ocr_native`.
     ///
     /// `--native-host` is the host the child is for (it must be trusted for the build): the
