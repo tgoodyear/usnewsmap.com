@@ -158,7 +158,7 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
         ..Summary::default()
     };
     hosts.sort();
-    let client = Client::new(&opts.out, &hosts, opts.pace, stop)?;
+    let client = Client::new(&opts.out, &opts.state_dir, &hosts, opts.pace, stop)?;
     *client.terms_url.lock().expect("terms") = plan.terms_url.clone();
     let first = plan
         .issues

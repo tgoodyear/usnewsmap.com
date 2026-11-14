@@ -329,6 +329,7 @@ fn opts(base: &str, out: &std::path::Path, action: Action) -> Options {
         action,
         collection: Some(format!("{base}/top")),
         out: out.to_owned(),
+        state_dir: out.join("_hoststate"),
         plan: None,
         pace: Pace::for_test(GAP),
         allow_hosts: Vec::new(),
@@ -834,4 +835,33 @@ async fn a_replan_at_another_size_does_not_pass_old_files_for_new() {
         0,
         "kept, not fetched over"
     );
+}
+
+#[test]
+fn robots_match_percent_encoded_paths() {
+    let r = Robots::parse("User-agent: *\nDisallow: /private/\nDisallow: /a%2Fb\n");
+    let me = "usnewsmap-ocr-worker";
+    assert!(!r.allows(me, "/%70rivate/x.jpg"));
+    assert!(!r.allows(me, "/a%2fb"));
+    assert!(r.allows(me, "/a/b"), "an encoded slash is not a slash");
+    assert!(r.allows(me, "/public/%C3%A9"));
+}
+
+#[tokio::test]
+async fn runs_against_one_host_share_one_lock_across_output_directories() {
+    let shared = tempfile::tempdir().unwrap();
+    let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (_tx, rx) = stop();
+    let hosts = ["127.0.0.1".to_owned()];
+    let first = super::Client::new(
+        a.path(),
+        shared.path(),
+        &hosts,
+        Pace::for_test(GAP),
+        rx.clone(),
+    )
+    .unwrap();
+    let second = super::Client::new(b.path(), shared.path(), &hosts, Pace::for_test(GAP), rx);
+    assert!(second.is_err(), "a second run on the same host is refused");
+    drop(first);
 }

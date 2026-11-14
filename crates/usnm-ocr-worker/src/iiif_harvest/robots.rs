@@ -97,8 +97,10 @@ impl Robots {
 
     fn verdict(groups: &[&Group], path: &str) -> bool {
         let mut best: Option<(usize, bool)> = None;
+        let path = normalize(path);
         for (allow, pat) in groups.iter().flat_map(|g| g.rules.iter()) {
-            if matches(pat, path) {
+            let pat = normalize(pat);
+            if matches(&pat, &path) {
                 let len = pat.len();
                 best = match best {
                     Some((l, a)) if l > len || (l == len && a) => Some((l, a)),
@@ -125,6 +127,31 @@ impl Robots {
             .filter_map(|g| g.delay)
             .fold(0.0, f64::max)
     }
+}
+
+/// A path or rule in one spelling, so `/%70rivate/` and `/private/` are the same: encoded
+/// unreserved ASCII is decoded, other escapes get upper-case hex, and non-ASCII bytes are
+/// escaped. Reserved characters (and `*` and `$`) are left as written.
+fn normalize(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |k: usize| b.get(k).and_then(|c| (*c as char).to_digit(16));
+        let byte = if b[i] == b'%' {
+            hex(i + 1).zip(hex(i + 2)).map(|(h, l)| (h * 16 + l) as u8)
+        } else {
+            None
+        };
+        match byte {
+            Some(v) if v.is_ascii_alphanumeric() || b"-._~".contains(&v) => out.push(v as char),
+            Some(v) => out.push_str(&format!("%{v:02X}")),
+            None if b[i] >= 0x80 => out.push_str(&format!("%{:02X}", b[i])),
+            None => out.push(b[i] as char),
+        }
+        i += if byte.is_some() { 3 } else { 1 };
+    }
+    out
 }
 
 /// `robots.txt` pattern matching: a prefix, `*` for any run, `$` for the end.

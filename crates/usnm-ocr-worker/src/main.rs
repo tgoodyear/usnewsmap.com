@@ -622,6 +622,10 @@ enum Command {
         /// The plan fetch reads (default `<out>/plan.json`) or plan writes.
         #[arg(long)]
         plan: Option<PathBuf>,
+        /// Where the host's pacer and run lock go, shared by every run against that host
+        /// (default `$HOME/.local/state/usnm-iiif-harvest`).
+        #[arg(long)]
+        state_dir: Option<PathBuf>,
         /// Seconds between requests; 3 is the least, and a flag can only raise it.
         #[arg(long, default_value_t = 3)]
         min_gap_secs: u64,
@@ -1695,6 +1699,7 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             collection,
             out,
             plan,
+            state_dir,
             min_gap_secs,
             allow_host,
             info_json,
@@ -1711,6 +1716,13 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
                         h::Action::Fetch
                     },
                     collection,
+                    state_dir: match state_dir {
+                        Some(d) => d,
+                        None => PathBuf::from(
+                            std::env::var_os("HOME").context("no HOME; give --state-dir")?,
+                        )
+                        .join(".local/state/usnm-iiif-harvest"),
+                    },
                     out,
                     plan,
                     pace: h::pace::Pace::new(min_gap_secs)?,

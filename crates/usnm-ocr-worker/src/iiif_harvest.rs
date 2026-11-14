@@ -62,6 +62,8 @@ pub struct Options {
     /// The collection's top document, for `plan`.
     pub collection: Option<String>,
     pub out: PathBuf,
+    /// Where the host's pacer and run lock live, shared by every run against that host.
+    pub state_dir: PathBuf,
     /// The plan `fetch` reads; `<out>/plan.json` by default.
     pub plan: Option<PathBuf>,
     pub pace: Pace,
@@ -194,6 +196,7 @@ pub struct Client {
     log: Mutex<()>,
     pub terms_url: Mutex<Option<String>>,
     _lock: std::fs::File,
+    _host_lock: std::fs::File,
 }
 
 pub(crate) fn why(f: Fail) -> anyhow::Error {
@@ -220,6 +223,7 @@ impl Client {
     /// `hosts` are every host the run may ask; one policy and one budget file cover them.
     pub fn new(
         out: &Path,
+        state_dir: &Path,
         hosts: &[String],
         pace: Pace,
         stop: watch::Receiver<bool>,
@@ -227,12 +231,16 @@ impl Client {
         std::fs::create_dir_all(out.join("_state"))?;
         let lock = crate::bulk::hold_lock(&out.join("_state").join("run.lock"))
             .context("one run at a time per output directory")?;
+        // The pacer and its lock belong to the host, not the output directory: two runs
+        // against one host, into different directories, share one pace and one push-back
+        // hold, and take turns.
+        std::fs::create_dir_all(state_dir)?;
+        let host = hosts.first().map_or("host", String::as_str);
+        let host_lock = crate::bulk::hold_lock(&state_dir.join(format!("{host}.run.lock")))
+            .context("one run at a time per host")?;
+        let pacer_file = state_dir.join(format!("{host}.pacer.json"));
         let policy: Policy = pace::policy(hosts, pace)?;
-        let budgets = FileBudgets::new(None).with_file(
-            pace::POLICY,
-            out.join("_state").join("pacer.json"),
-            None,
-        );
+        let budgets = FileBudgets::new(None).with_file(pace::POLICY, pacer_file, None);
         let engine = Engine::new(
             Policies::new(vec![policy])?,
             Box::new(budgets),
@@ -251,6 +259,7 @@ impl Client {
             log: Mutex::new(()),
             terms_url: Mutex::new(None),
             _lock: lock,
+            _host_lock: host_lock,
         })
     }
 

@@ -186,7 +186,7 @@ pub async fn run(opts: Options, stop: watch::Receiver<bool>) -> anyhow::Result<S
         .context("--collection is required for plan")?;
     let hosts = super::hosts_of(&top, &opts.allow_hosts)?;
     std::fs::create_dir_all(&opts.out)?;
-    let client = Client::new(&opts.out, &hosts, opts.pace, stop)?;
+    let client = Client::new(&opts.out, &opts.state_dir, &hosts, opts.pace, stop)?;
     client.check_not_slowed(&top).await?;
     let gap = opts.pace.gap().as_secs_f64();
 
