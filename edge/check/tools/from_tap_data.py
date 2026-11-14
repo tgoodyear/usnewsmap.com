@@ -50,7 +50,7 @@ def main() -> None:
     if not a.no_lookalikes:
         import lookalike
         fonts = lookalike.Fonts(lookalike.parse_fonts(a.font))
-    flagged = 0
+    flagged = marked = 0
 
     data = json.load(open(a.data, encoding="utf-8"))
     os.makedirs(a.out_dir, exist_ok=True)
@@ -66,8 +66,9 @@ def main() -> None:
             line_key = rel(save(line["line"], os.path.join(root, prefix, "lines", stem)))
             for d in line["decisions"]:
                 word_key = rel(save(d["word"], os.path.join(root, prefix, "words", d["id"].replace("~", "_w"))))
-                alike = [] if fonts is None else lookalike.flags(d["a"], d["b"], {}, fonts)
+                alike, marks = ([], []) if fonts is None else lookalike.analyse(d["a"], d["b"], {}, fonts)
                 flagged += bool(alike)
+                marked += bool(marks)
                 out.write(json.dumps({
                     "id": f"{prefix}/{d['id']}", "lang": a.lang, "set": a.set,
                     "page": line["page"], "source": f"https://chroniclingamerica.loc.gov/lccn/{line['page']}/",
@@ -76,6 +77,7 @@ def main() -> None:
                     "a": d["a"], "b": d["b"], "a_diff": d["a_diff"], "b_diff": d["b_diff"],
                     "a_is": "reference", "b_is": "loc",
                     **({"lookalikes": alike} if alike else {}),
+                    **({"mark_only": marks} if marks else {}),
                 }, ensure_ascii=False) + "\n")
                 n += 1
 
@@ -90,7 +92,7 @@ def main() -> None:
     language = {k: v for k, v in cfg.items() if k not in ("drop_examples", "min_examples")}
     language["examples"] = examples
     json.dump(language, open(os.path.join(a.out_dir, "language.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
-    print(f"{n} tasks, {len(examples)} letters with examples, {flagged} with look-alike letters")
+    print(f"{n} tasks, {len(examples)} letters with examples, {flagged} with look-alike letters, {marked} differing only in marks")
     if fonts is not None and lookalike.unshaped_warning(fonts):
         print(lookalike.unshaped_warning(fonts), file=sys.stderr)
 

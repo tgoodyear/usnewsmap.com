@@ -20,6 +20,11 @@ mark (פּ, אַ) needs shaping: the basic engine sets the mark beside the lette
 way says nothing about what the browser draws. Such a pair is drawn with the Raqm layout engine (HarfBuzz, what a browser
 uses), and counted in `unshaped`, not measured, when this Pillow was built without Raqm.
 
+Letters of the same base that differ only in combining marks (פּ and פֿ, אַ and א) are not measured: a mark is a few
+percent of the ink, so the overlap flags them in every font (README.md, "Words whose readings look alike"). `analyse`
+returns them apart from the overlap-flagged pairs, as `mark_only`, and the page names the marks (`mark_report.py`
+compares how people answered them).
+
 Command line: measure the letter pairs of an export (`GET /api/export?lang=...`) or a tasks.jsonl, with no rebuild.
 
   python3 lookalike.py --export check-chr.jsonl [--export ...] [--font SCRIPT=PATH ...] [--threshold 0.82] [--ids]
@@ -210,15 +215,85 @@ def differing_pairs(a: str, b: str, equivalents: dict) -> list:
     return out
 
 
-def flags(a: str, b: str, equivalents: dict, fonts: Fonts, threshold: float = THRESHOLD) -> list:
-    """The letter pairs of the two readings the page draws almost alike: dicts with `a` and `b` (letter indexes, as
-    a_diff and b_diff), `a_label`, `b_label` and `iou`. Keys are in ascending order."""
+def split_letter(letter: str) -> tuple:
+    """(base character, its combining marks as a string) of a letter as `build_tasks.graphemes` counts it."""
+    marks = "".join(ch for ch in letter if unicodedata.category(ch).startswith("M"))
+    base = "".join(ch for ch in letter if not unicodedata.category(ch).startswith("M"))
+    return base, marks
+
+
+def mark_only(x: str, y: str):
+    """(base, marks of x, marks of y) when two different letters have the same single base character and differ only in
+    their combining marks (one may have none): פּ and פֿ, אַ and א, ש with a shin dot and a sin dot. Else None. The overlap
+    measure does not suit these: a mark is a few percent of the ink, so any font scores the pair high (#1939)."""
+    (bx, mx), (by, my) = split_letter(x), split_letter(y)
+    if len(bx) != 1 or bx != by or sorted(mx) == sorted(my):
+        return None
+    return bx, mx, my
+
+
+def cluster_pairs(a: str, b: str) -> list:
+    """(index in a, index in b, cluster of a, cluster of b) for the letters as the page displays them (no equivalents
+    applied), paired as `differing_pairs` pairs them: position by position when the readings have as many letters, else the
+    equal-length differing stretches an alignment finds."""
+    ga, gb = bt.graphemes(a), bt.graphemes(b)
+    if len(ga) == len(gb):
+        return [(k, k, ga[k], gb[k]) for k in range(len(ga)) if ga[k] != gb[k]]
     out = []
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, ga, gb, autojunk=False).get_opcodes():
+        if op == "replace" and i2 - i1 == j2 - j1:
+            out.extend((i1 + k, j1 + k, ga[i1 + k], gb[j1 + k]) for k in range(i2 - i1))
+    return out
+
+
+def analyse(a: str, b: str, equivalents: dict, fonts: Fonts, threshold: float = THRESHOLD) -> tuple:
+    """(lookalikes, mark_only) for two readings. `lookalikes` are the letter pairs the page draws almost alike: dicts with
+    `a` and `b` (letter indexes, as a_diff and b_diff), `a_label`, `b_label` and `iou`. `mark_only` are the pairs of the
+    same base letter that differ only in combining marks, which are not measured: dicts with `a`, `a_marks`, `b`, `b_marks`,
+    `base` and `differ`. `a_marks` and `b_marks` are the mark characters of the letter the page displays at that index, so
+    a label can describe what is on screen ("" for none); `differ` is the marks that tell the two apart. Keys are in
+    ascending order.
+
+    A spelling a language lists as equivalent is expanded for the comparison (ײַ is ייַ), but a pair is judged on the
+    letters as displayed first: ײַ against ײָ is one pair of one base letter, though the expanded readings have different
+    lengths. A pair found on expanded letters (ײַ against יַ, whose yud carries the point) takes its marks from the displayed
+    letters it came from."""
+    alike, marks = [], []
+    ga, gb = bt.graphemes(a), bt.graphemes(b)
+    taken_a, taken_b = set(), set()
+    for ia, ib, x, y in cluster_pairs(a, b):
+        m = mark_only(x, y)
+        if m and bt.fold(x, equivalents) != bt.fold(y, equivalents):
+            marks.append({"a": ia, "a_marks": m[1], "b": ib, "b_marks": m[2], "base": m[0], "differ": "".join(differing_marks({"a_marks": m[1], "b_marks": m[2]}))})
+            taken_a.add(ia)
+            taken_b.add(ib)
     for ia, ib, x, y in differing_pairs(a, b, equivalents):
+        if ia in taken_a or ib in taken_b:
+            continue
+        m = mark_only(x, y)
+        if m:
+            marks.append({"a": ia, "a_marks": split_letter(ga[ia])[1], "b": ib, "b_marks": split_letter(gb[ib])[1], "base": m[0],
+                          "differ": "".join(differing_marks({"a_marks": m[1], "b_marks": m[2]}))})
+            continue
         score = measure(fonts, x, y)
         if score is not None and score >= threshold:
-            out.append({"a": ia, "a_label": label(x), "b": ib, "b_label": label(y), "iou": round(score, 3)})
-    return out
+            alike.append({"a": ia, "a_label": label(x), "b": ib, "b_label": label(y), "iou": round(score, 3)})
+    return alike, sorted(marks, key=lambda p: (p["a"], p["b"]))
+
+
+def flags(a: str, b: str, equivalents: dict, fonts: Fonts, threshold: float = THRESHOLD) -> list:
+    """The overlap-flagged pairs of `analyse`, without the mark-only pairs."""
+    return analyse(a, b, equivalents, fonts, threshold)[0]
+
+
+def differing_marks(pair: dict) -> list:
+    """The marks that tell the two letters of a `mark_only` pair apart: those one has more of than the other, each once
+    (a mark both letters carry is not what differs)."""
+    if "differ" in pair:  # set when the build saw the pair through an equivalent spelling (the marks a letter shows may be equal)
+        return sorted(set(pair["differ"]))
+    diff = collections.Counter(pair["a_marks"]) - collections.Counter(pair["b_marks"])
+    diff += collections.Counter(pair["b_marks"]) - collections.Counter(pair["a_marks"])
+    return sorted(set(diff))
 
 
 def parse_fonts(items: list) -> dict:
@@ -260,9 +335,16 @@ def main() -> None:
             t = json.loads(raw)
             lang = t["id"].split("/")[0]
             eq = cache.setdefault(lang, language_equivalents(lang, a.languages_dir))
-            r = result.setdefault(lang, {"tasks": 0, "tasks_flagged": 0, "pairs": collections.Counter(), "ids": []})
+            r = result.setdefault(lang, {"tasks": 0, "tasks_flagged": 0, "pairs": collections.Counter(), "ids": [],
+                                         "mark_tasks": 0, "mark_pairs": 0, "marks": collections.Counter()})
             r["tasks"] += 1
-            found = flags(t["a"], t["b"], eq, fonts, a.threshold)
+            found, marked = analyse(t["a"], t["b"], eq, fonts, a.threshold)
+            if marked:
+                r["mark_tasks"] += 1
+                r["mark_pairs"] += len(marked)
+                for m in marked:
+                    for ch in differing_marks(m):
+                        r["marks"][ch] += 1
             if found:
                 r["tasks_flagged"] += 1
                 r["ids"].append(t["id"])
@@ -276,7 +358,10 @@ def main() -> None:
         "unmeasured_pairs": dict(fonts.unmeasured),
         "unshaped_pairs": dict(fonts.unshaped),
         "languages": {l: {"tasks": r["tasks"], "tasks_flagged": r["tasks_flagged"], "flagged_pairs": sum(r["pairs"].values()),
-                          "pairs": dict(r["pairs"].most_common()), **({"ids": r["ids"]} if a.ids else {})}
+                          "pairs": dict(r["pairs"].most_common()),
+                          "mark_only_tasks": r["mark_tasks"], "mark_only_pairs": r["mark_pairs"],
+                          "mark_only_by_mark": {f"U+{ord(k):04X}": n for k, n in sorted(r["marks"].items())},
+                          **({"ids": r["ids"]} if a.ids else {})}
                       for l, r in sorted(result.items())},
     }
     if a.json:
@@ -291,6 +376,8 @@ def main() -> None:
         print(f"{lang}: {r['tasks_flagged']} of {r['tasks']} tasks flagged, {r['flagged_pairs']} letter pairs")
         for pair, n in r["pairs"].items():
             print(f"  {pair} {n}")
+        print(f"  mark only (not measured): {r['mark_only_tasks']} tasks, {r['mark_only_pairs']} pairs"
+              + "".join(f"; {k} {n}" for k, n in r["mark_only_by_mark"].items()))
         for i in r.get("ids", []):
             print(f"  {i}")
 

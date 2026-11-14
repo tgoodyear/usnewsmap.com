@@ -22,7 +22,7 @@ test("no negative margins or offsets on script text", () => {
   const bad = [];
   for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const selector = m[1].trim();
-    if (!/\.script|\bmark\b|\.tight|\.letter|\.gap/.test(selector)) continue;
+    if (!/\.script|\bmark\b|\.tight|\.letter|\.gap|\.inset/.test(selector)) continue;
     for (const d of m[2].split(";")) {
       const [prop, value = ""] = d.split(":").map((s) => s.trim());
       if (/^(margin|padding|text-indent|left|right|inset|word-spacing)/.test(prop) && /(^|[\s(])-\d|-\.\d/.test(value)) bad.push(`${selector} { ${d.trim()} }`);
@@ -195,6 +195,27 @@ test("lookalikeLabels maps flagged letter positions to names, and ignores tasks 
   assert.deepEqual([...lookalikeLabels({ a: "אַל", lookalikes: [{ a: 0, a_label: "alef patah" }] }, "a")], [[0, "alef patah"]]);
 });
 
+test("markLabels names the marks each reading has on the differing letter", () => {
+  const make = (cfg) => new Function(`const cfg = ${JSON.stringify(cfg)};\n${scriptTextSource()}\nreturn { markLabels };`)().markLabels;
+  const yi = make({ marks: { "\u05b7": "pasekh", "\u05b8": "komets", "\u05bc": "dagesh", "\u05bf": "rafe" } });
+  const t = { a: "\u05d0\u05b7\u05dc", b: "\u05d0\u05b8\u05dc", mark_only: [{ a: 0, a_marks: "\u05b7", b: 0, b_marks: "\u05b8", base: "\u05d0" }] };
+  assert.deepEqual([...yi(t, "a")], [[0, "pasekh"]]);
+  assert.deepEqual([...yi(t, "b")], [[0, "komets"]]);
+  // a reading with no mark says so; a letter with two marks names both; a repeated mark is named once
+  const u = { a: "\u05e4\u05bc\u05bf", b: "\u05e4", mark_only: [{ a: 0, a_marks: "\u05bc\u05bf\u05bf", b: 0, b_marks: "", base: "\u05e4" }] };
+  assert.deepEqual([...yi(u, "a")], [[0, "dagesh + rafe"]]);
+  assert.deepEqual([...yi(u, "b")], [[0, "no mark"]]);
+  // a mark the language has no name for gets a short generic name, never the Unicode name
+  const other = make({}), v = { a: "\u05d0\u05b4", b: "\u05d0", mark_only: [{ a: 0, a_marks: "\u05b4", b: 0, b_marks: "", base: "\u05d0" }] };
+  assert.deepEqual([...other(v, "a")], [[0, "another mark"]]);
+  // tasks built before the field existed, an index past the word and a malformed entry show nothing
+  assert.equal(yi({ a: "\u05d0\u05b7", b: "\u05d0" }, "a").size, 0);
+  assert.equal(yi({ a: "\u05d0", mark_only: [{ a: 3, a_marks: "\u05b7" }] }, "a").size, 0);
+  assert.equal(yi({ a: "\u05d0", mark_only: [{ a: 0, a_marks: 5 }] }, "a").size, 0);
+  // the same pair in another script: a Latin letter with and without an acute accent
+  assert.deepEqual([...make({ marks: { "\u0301": "acute" } })({ a: "e\u0301", mark_only: [{ a: 0, a_marks: "\u0301", base: "e" }] }, "a")], [[0, "acute"]]);
+});
+
 test("labels render under each reading, in left-to-right and right-to-left languages, without overlap or overflow", (t) => {
   const chrome = findChrome();
   if (!chrome) {
@@ -211,6 +232,18 @@ test("labels render under each reading, in left-to-right and right-to-left langu
       expect: { a: ["hebrew letter alef + hebrew point patah"], b: ["hebrew letter alef + hebrew point qamats"] } },
     { code: "sr", cfg: { dir: null, notes: {} }, task: flagged("пс", "нс", "cyrillic small letter pe", "cyrillic small letter en"), expect: { a: ["cyrillic small letter pe"], b: ["cyrillic small letter en"] } },
     { code: "chr", cfg: { dir: null, notes: {} }, task: { a: "ᏒᎯ", b: "ᎡᎯ", a_diff: [0], b_diff: [0] }, expect: { a: [], b: [] } },
+    // a mark-only pair in right-to-left text: the name of each reading's mark, and the letter enlarged beside it
+    { code: "yi", cfg: { dir: "rtl", notes: {}, marks: { "\u05b7": "pasekh", "\u05b8": "komets", "\u05bc": "dagesh" } },
+      task: { a: "\u05e4\u05bc\u05d0\u05b7\u05dc", b: "\u05e4\u05d0\u05b8\u05dc", a_diff: [0, 1], b_diff: [0, 1], mark_only: [
+        { a: 0, a_marks: "\u05bc", b: 0, b_marks: "", base: "\u05e4" }, { a: 1, a_marks: "\u05b7", b: 1, b_marks: "\u05b8", base: "\u05d0" }] },
+      expect: { a: ["dagesh", "pasekh"], b: ["no mark", "komets"] }, insets: { a: 2, b: 2 } },
+    { code: "yi", cfg: { dir: "rtl", notes: { "\u05d0\u05b7": "a note" }, marks: { "\u05b7": "pasekh" } },
+      task: { a: "\u05d0\u05b7", b: "\u05d0", a_diff: [0], b_diff: [0], mark_only: [{ a: 0, a_marks: "\u05b7", b: 0, b_marks: "", base: "\u05d0" }] },
+      expect: { a: ["pasekh"], b: ["no mark"] }, insets: { a: 1, b: 1 } },
+    // a double yod with a point (U+05F2 U+05B7) is one displayed letter: its label names its mark, and the inset shows the whole cluster
+    { code: "yi", cfg: { dir: "rtl", notes: {}, marks: { "\u05b7": "pasekh", "\u05b8": "komets" } },
+      task: { a: "\u05d0\u05f2\u05b7\u05d1", b: "\u05d0\u05f2\u05b8\u05d1", a_diff: [1], b_diff: [1], mark_only: [{ a: 1, a_marks: "\u05b7", b: 1, b_marks: "\u05b8", base: "\u05f2", differ: "\u05b7\u05b8" }] },
+      expect: { a: ["pasekh"], b: ["komets"] }, insets: { a: 1, b: 1 }, insetText: { a: "\u05f2\u05b7", b: "\u05f2\u05b8" } },
   ];
   const dir = mkdtempSync(join(tmpdir(), "check-labels-"));
   try {
@@ -230,12 +263,30 @@ document.fonts.load('32px "Noto Sans Cherokee"', "ᎠᎡᏒ").then((faces) => {
   for (const c of cases) {
     lang = c.code; cfg = c.cfg;
     for (const side of ["a", "b"]) {
-      const box = examples(c.task[side], c.task[side + "_diff"], lookalikeLabels(c.task, side));
+      const box = examples(c.task[side], c.task[side + "_diff"], lookalikeLabels(c.task, side), markLabels(c.task, side));
       stage.replaceChildren(box);
       const names = [...box.querySelectorAll(".name")];
       seen.push({ code: c.code, side, names: names.map((n) => n.textContent) });
       const want = c.expect[side];
       if (JSON.stringify(names.map((n) => n.textContent)) !== JSON.stringify(want)) found.push({ code: c.code, side, problem: "label", names: names.map((n) => n.textContent) });
+      const insets = [...box.querySelectorAll(".inset")];
+      if (insets.length !== ((c.insets || {})[side] || 0)) found.push({ code: c.code, side, problem: "insets", count: insets.length });
+      for (const e of box.querySelectorAll(".ex")) {
+        // every box in a label row sits apart from the others: no two of letter, label, inset and notes overlap
+        const parts = [...e.children].map((x) => x.getBoundingClientRect());
+        for (let i = 0; i < parts.length; i++) for (let j = i + 1; j < parts.length; j++) {
+          const p = parts[i], q = parts[j];
+          if (Math.min(p.right, q.right) - Math.max(p.left, q.left) > 0.5 && Math.min(p.bottom, q.bottom) - Math.max(p.top, q.top) > 0.5) found.push({ code: c.code, side, problem: "parts overlap" });
+        }
+      }
+      const wantText = (c.insetText || {})[side];
+      if (wantText !== undefined && (insets.length !== 1 || insets[0].textContent !== wantText)) found.push({ code: c.code, side, problem: "inset is not the displayed cluster", got: insets.map((n) => n.textContent) });
+      for (const n of insets) {
+        if (n.getAttribute("aria-hidden") !== "true") found.push({ code: c.code, side, problem: "inset is not hidden from screen readers" });
+        const r = n.getBoundingClientRect(), l = n.parentElement.querySelector(".letter").getBoundingClientRect(), s = stage.getBoundingClientRect();
+        if (r.height < 1.8 * l.height - 1) found.push({ code: c.code, side, problem: "inset is not about twice the letter" });
+        if (r.left < s.left - 0.5 || r.right > s.right + 0.5) found.push({ code: c.code, side, problem: "inset outside the column" });
+      }
       for (const n of names) {
         if (n.dir !== "ltr") found.push({ code: c.code, side, problem: "label is not left to right" });
         const r = n.getBoundingClientRect(), l = n.parentElement.querySelector(".letter").getBoundingClientRect();
@@ -254,7 +305,7 @@ document.fonts.load('32px "Noto Sans Cherokee"', "ᎠᎡᏒ").then((faces) => {
     const m = dom.match(/<pre id="out">([\s\S]*?)<\/pre>/);
     assert.ok(m && m[1].trim(), "the harness page produced no result");
     const result = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"));
-    assert.equal(result.seen.length, 10);
+    assert.equal(result.seen.length, 16);
     assert.deepEqual(result.found, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });

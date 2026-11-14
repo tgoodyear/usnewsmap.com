@@ -20,6 +20,8 @@ Look-alike letters (lookalike.py): for each pair of letters that differ at the s
 the page asks for first and the pair is recorded in the task's `lookalikes` when the pictures nearly coincide. Cherokee
 uses the font the site serves; for a script the site serves no font for, the installed reference font is used, or one given
 with --font SCRIPT=PATH, and pairs with no font or glyph are counted, not guessed. The page labels the letters of a flagged pair.
+A pair of the same base letter that differs only in combining marks is not measured: it is recorded in `mark_only`, and the page
+names the marks (the language configuration's `marks`).
 
 Writes OUT_DIR/clips/<lang>/<set>/{lines,words}/..., OUT_DIR/tasks.jsonl and OUT_DIR/language.json (the
 --language-config without its build-only fields; example letters only from --examples). Needs Pillow.
@@ -198,7 +200,7 @@ def main() -> None:
 
     fonts = lookalike.Fonts(lookalike.parse_fonts(a.font))
     threshold = lookalike.THRESHOLD if a.lookalike_threshold is None else a.lookalike_threshold
-    flagged = 0
+    flagged = marked = 0
 
     cfg = json.load(open(a.language_config, encoding="utf-8"))
     equivalents = parse_equivalents([f"{k}={v}" for k, v in cfg.get("equivalents", {}).items()] + (a.equivalent or []))
@@ -245,8 +247,9 @@ def main() -> None:
                 word_key = f"{prefix}/words/{ln['id']}_w{k}.jpg"
                 img.crop(crop_box(wa["box"], max(4, h // 4), img.size)).save(os.path.join(root, word_key), quality=a.quality)
                 ad, bd = letter_diff(ta, wb, equivalents)
-                alike = lookalike.flags(ta, wb, equivalents, fonts, threshold)
+                alike, marks = lookalike.analyse(ta, wb, equivalents, fonts, threshold)
                 flagged += bool(alike)
+                marked += bool(marks)
                 out.write(json.dumps({
                     "id": f"{prefix}/{word_id}", "lang": a.lang, "set": a.set,
                     "page": ln.get("page"), "source": ln.get("source"), "label": ln.get("label"),
@@ -255,6 +258,7 @@ def main() -> None:
                     "a": ta, "b": wb,
                     "a_diff": ad, "b_diff": bd, "a_is": ln.get("a_is", a.a_is), "b_is": ln.get("b_is", a.b_is),
                     **({"lookalikes": alike} if alike else {}),
+                    **({"mark_only": marks} if marks else {}),
                 }, ensure_ascii=False) + "\n")
                 tasks += 1
 
@@ -268,7 +272,7 @@ def main() -> None:
     with open(os.path.join(a.out_dir, "language.json"), "w", encoding="utf-8") as f:
         json.dump(language, f, ensure_ascii=False, indent=1)
     print(f"{lines} lines, {tasks} tasks, {unpaired} words of reading a left out (no partner alike enough, or no letters)")
-    print(f"{flagged} tasks with look-alike letters (overlap at least {threshold}); reference fonts: "
+    print(f"{flagged} tasks with look-alike letters (overlap at least {threshold}), {marked} differing only in marks; reference fonts: "
           + ", ".join(f"{s or 'other'}={os.path.basename(p) if p else 'none found'}" for s, p in sorted(fonts.paths.items())))
     if fonts.unmeasured:
         print("letter pairs not checked (no font or no glyph): " + ", ".join(f"{s or 'other'} {n}" for s, n in sorted(fonts.unmeasured.items())))

@@ -8,7 +8,7 @@ import { readFileSync, readdirSync } from "node:fs";
 
 const dir = new URL("./languages/", import.meta.url);
 const files = readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
-const KNOWN = new Set(["dir", "drop_examples", "equivalents", "intro", "min_examples", "name", "notes", "title"]);
+const KNOWN = new Set(["dir", "drop_examples", "equivalents", "intro", "marks", "min_examples", "name", "notes", "title"]);
 const strings = (obj) => obj && typeof obj === "object" && !Array.isArray(obj) && Object.values(obj).every((v) => typeof v === "string" && v);
 
 test("there are language configurations", () => assert.ok(files.length > 0));
@@ -24,14 +24,21 @@ for (const file of files) {
     assert.ok(!("examples" in cfg), "examples are built by from_tap_data.py, not written here");
     for (const key of ["name", "title", "intro"]) assert.ok(typeof cfg[key] === "string" && cfg[key].trim(), `${key} is required`);
     if ("dir" in cfg) assert.equal(cfg.dir, "rtl");
-    for (const key of ["notes", "equivalents"]) if (key in cfg) assert.ok(strings(cfg[key]), `${key} maps letters to text`);
+    for (const key of ["notes", "equivalents", "marks"]) if (key in cfg) assert.ok(strings(cfg[key]), `${key} maps letters to text`);
+    // a mark is one combining character, named by a short plain word or two
+    for (const [mark, name] of Object.entries(cfg.marks || {})) {
+      assert.equal(mark.length, 1, `marks key ${JSON.stringify(mark)} is one character`);
+      assert.match(mark, /^\p{M}$/u, `marks key ${JSON.stringify(mark)} is a combining mark`);
+      assert.match(name, /^[\p{L} ]{1,20}$/u, `the name of ${JSON.stringify(mark)} is short, plain words`);
+      assert.ok(!/\bhebrew\b|\bpoint\b|\bletter\b|\bpoint\b/i.test(name), "not the Unicode character name");
+    }
     if ("drop_examples" in cfg) assert.equal(typeof cfg.drop_examples, "string");
     if ("min_examples" in cfg) assert.ok(Number.isInteger(cfg.min_examples) && cfg.min_examples > 0);
     // Keys in ascending order at every level, as written by json.dumps(sort_keys=True).
     const sorted = (v) => (v && typeof v === "object" && !Array.isArray(v)
       ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sorted(v[k])])) : v);
     assert.deepEqual(Object.keys(cfg), Object.keys(sorted(cfg)), "top-level keys are sorted");
-    for (const key of ["notes", "equivalents"]) if (key in cfg) assert.deepEqual(Object.keys(cfg[key]), Object.keys(cfg[key]).slice().sort(), `${key} keys are sorted`);
+    for (const key of ["notes", "equivalents", "marks"]) if (key in cfg) assert.deepEqual(Object.keys(cfg[key]), Object.keys(cfg[key]).slice().sort(), `${key} keys are sorted`);
   });
 }
 

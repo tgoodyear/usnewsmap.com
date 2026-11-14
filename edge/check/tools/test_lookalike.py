@@ -168,6 +168,100 @@ class Flags(unittest.TestCase):
         self.assertEqual(la.PAGE_PX, 32)
 
 
+class MarkOnly(unittest.TestCase):
+    PATAH, QAMATS, DAGESH, RAFE, SHIN_DOT, SIN_DOT = "\u05b7", "\u05b8", "\u05bc", "\u05bf", "\u05c1", "\u05c2"
+
+    @unittest.skipUnless(HAVE_PIL, "Pillow not installed")
+    def test_same_base_differing_only_in_marks(self):
+        al, pe = "\u05d0", "\u05e4"
+        self.assertEqual(la.mark_only(al + self.PATAH, al + self.QAMATS), (al, self.PATAH, self.QAMATS))
+        self.assertEqual(la.mark_only(al, al + self.PATAH), (al, "", self.PATAH))  # one may have none
+        self.assertEqual(la.mark_only(pe + self.DAGESH, pe + self.RAFE), (pe, self.DAGESH, self.RAFE))
+        # every script, not only Hebrew: a Latin letter with and without a dot above (q has no precomposed form)
+        self.assertEqual(la.mark_only("q\u0307", "q"), ("q", "\u0307", ""))
+        # a different base letter keeps the overlap check; identical letters are no pair
+        self.assertIsNone(la.mark_only(al + self.PATAH, pe + self.PATAH))
+        self.assertIsNone(la.mark_only("\u05e8", "\u05d3"))
+        self.assertIsNone(la.mark_only(al + self.PATAH, al + self.PATAH))
+
+    @unittest.skipUnless(HAVE_PIL, "Pillow not installed")
+    def test_which_marks_differ(self):
+        pair = {"a_marks": self.SHIN_DOT + self.DAGESH, "b_marks": self.SIN_DOT + self.DAGESH}
+        self.assertEqual(la.differing_marks(pair), [self.SHIN_DOT, self.SIN_DOT])
+        self.assertEqual(la.differing_marks({"a_marks": "", "b_marks": self.PATAH}), [self.PATAH])
+
+    @unittest.skipUnless(HAVE_PIL, "Pillow not installed")
+    def test_analyse_records_mark_pairs_apart_from_overlap_flags(self):
+        F = la.Fonts({"HEBREW": la.BUNDLED["CHEROKEE"]})  # no Hebrew glyphs: a mark pair must not need a font
+        alike, marks = la.analyse("\u05e4\u05bc\u05d0\u05b7\u05dc", "\u05e4\u05bf\u05d0\u05b8\u05dc", {}, F)
+        self.assertEqual(alike, [])
+        self.assertEqual(marks, [{"a": 0, "a_marks": self.DAGESH, "b": 0, "b_marks": self.RAFE, "base": "\u05e4", "differ": self.DAGESH + self.RAFE},
+                                 {"a": 1, "a_marks": self.PATAH, "b": 1, "b_marks": self.QAMATS, "base": "\u05d0", "differ": self.PATAH + self.QAMATS}])
+        self.assertEqual(list(marks[0]), sorted(marks[0]), "keys in ascending order")
+        self.assertEqual(sum(F.unmeasured.values()) + sum(F.unshaped.values()), 0, "mark pairs are not measured")
+        # the old call sees only the overlap-flagged pairs
+        self.assertEqual(la.flags("\u05e4\u05bc", "\u05e4\u05bf", {}, F), [])
+
+    YI = {"\u05f2\u05b7": "\u05d9\u05d9\u05b7", "\u05f2": "\u05d9\u05d9", "\u05f1": "\u05d5\u05d9", "\u05f0": "\u05d5\u05d5"}
+
+    def yi_analyse(self, a, b):
+        eq = bt.parse_equivalents([f"{k}={v}" for k, v in self.YI.items()])
+        return la.analyse(a, b, eq, la.Fonts({"HEBREW": la.BUNDLED["CHEROKEE"]}))
+
+    @unittest.skipUnless(HAVE_PIL, "Pillow not installed")
+    def test_a_pointed_double_yod_is_labelled_with_its_point(self):
+        """ײַ is ייַ, so שײַן against שיַיַן differs in a yud that has a point on one side; the displayed ײַ has a point, so its
+        label must not be "no mark" (#1951)."""
+        a, b = "\u05e9\u05f2\u05b7\u05df", "\u05e9\u05d9\u05b7\u05d9\u05b7\u05df"
+        alike, marks = self.yi_analyse(a, b)
+        self.assertEqual(alike, [])
+        self.assertEqual(marks, [{"a": 1, "a_marks": self.PATAH, "b": 1, "b_marks": self.PATAH, "base": "\u05d9", "differ": self.PATAH}])
+
+    @unittest.skipUnless(HAVE_PIL, "Pillow not installed")
+    def test_a_pair_on_the_displayed_letters_survives_expansion_that_changes_the_length(self):
+        """ײַ is two letters expanded but ײָ is not listed, so אײַב against אײָב has readings of different lengths once
+        expanded; the displayed letters are one pair of one base letter that differs in its point."""
+        a, b = "\u05d0\u05f2\u05b7\u05d1", "\u05d0\u05f2\u05b8\u05d1"
+        alike, marks = self.yi_analyse(a, b)
+        self.assertEqual(alike, [])
+        self.assertEqual(marks, [{"a": 1, "a_marks": self.PATAH, "b": 1, "b_marks": self.QAMATS, "base": "\u05f2", "differ": self.PATAH + self.QAMATS}])
+        self.assertEqual(la.differing_pairs(a, b, bt.parse_equivalents([f"{k}={v}" for k, v in self.YI.items()])), [], "the expanded readings pair nothing")
+
+    @unittest.skipUnless(HAVE_PIL, "Pillow not installed")
+    def test_other_configured_equivalents_keep_the_displayed_marks(self):
+        # a ligature with and without a point (only ײַ is listed as an equivalent, so the others stay whole letters when
+        # pointed and expand when not): one pair of one base letter, whichever way the expansion goes
+        for lig in ("\u05f0", "\u05f1", "\u05f2"):
+            for plain, pointed, want in ((lig, lig + self.PATAH, ("", self.PATAH)), (lig + self.QAMATS, lig, (self.QAMATS, ""))):
+                alike, marks = self.yi_analyse("\u05d0" + plain + "\u05d1", "\u05d0" + pointed + "\u05d1")
+                self.assertEqual(alike, [], lig)
+                self.assertEqual([(m["a"], m["a_marks"], m["b"], m["b_marks"]) for m in marks], [(1, want[0], 1, want[1])], lig)
+        # no equivalent in play: plain pairs, as before
+        self.assertEqual(self.yi_analyse("\u05d0\u05b7", "\u05d0")[1], [{"a": 0, "a_marks": self.PATAH, "b": 0, "b_marks": "", "base": "\u05d0", "differ": self.PATAH}])
+        # Serbian's equivalents are one letter for one letter and have no marks: unchanged
+        sr = bt.parse_equivalents(["C=\u0421"])
+        self.assertEqual(la.analyse("C\u0435", "\u0421\u0435", sr, la.Fonts())[1], [])
+
+    @unittest.skipUnless(HAVE_PIL, "Pillow not installed")
+    def test_marks_that_survive_nfc_in_any_script_and_precomposed_letters_stay_apart(self):
+        F = la.Fonts({"LATIN": la.BUNDLED["CHEROKEE"]})
+        _, marks = la.analyse("q\u0307a", "qa", {}, F)
+        self.assertEqual([(m["a"], m["a_marks"], m["b_marks"], m["base"]) for m in marks], [(0, "\u0307", "", "q")])
+        # a letter the build keeps precomposed (the readings are NFC) is its own base letter, as Serbian's и and й are:
+        # it keeps the overlap check, so Serbian and the other precomposed scripts behave as before
+        self.assertEqual(la.analyse("\u0439", "\u0438", {}, F)[1], [])
+        self.assertEqual(la.analyse("\u00e9", "e", {}, F)[1], [])
+
+    @need_font
+    def test_cherokee_and_cyrillic_are_unchanged(self):
+        F = la.Fonts()
+        self.assertEqual(la.analyse("ᏒᎯ", "ᎡᎯ", {}, F, threshold=0.7)[1], [])
+        (flag,) = la.analyse("ᏒᎯ", "ᎡᎯ", {}, F, threshold=0.7)[0]
+        self.assertEqual((flag["a"], flag["a_label"], flag["b"], flag["b_label"]), (0, "sv", 0, "e"))
+        self.assertEqual(la.analyse("пс", "нс", {}, la.Fonts({"CYRILLIC": la.BUNDLED["CHEROKEE"]}))[1], [])
+        self.assertEqual(la.analyse("ᏒᎯ", "ᎡᎯ", {}, F, threshold=0.7)[0], la.flags("ᏒᎯ", "ᎡᎯ", {}, F, threshold=0.7))
+
+
 class Commands(unittest.TestCase):
     @need_font
     def test_build_records_flags_and_the_command_counts_them(self):
@@ -198,6 +292,21 @@ class Commands(unittest.TestCase):
             self.assertEqual(run()["languages"]["chr"]["tasks_flagged"], 0)
             r = run("--threshold", "0.7")["languages"]["chr"]
             self.assertEqual((r["tasks"], r["tasks_flagged"], r["flagged_pairs"], r["pairs"], r["ids"]), (2, 1, 1, {"Ꮢ/Ꭱ": 1}, ["chr/t1/p1_l1~0"]))
+            self.assertEqual((r["mark_only_tasks"], r["mark_only_pairs"], r["mark_only_by_mark"]), (0, 0, {}))
+
+    @unittest.skipUnless(HAVE_PIL, "Pillow not installed")
+    def test_the_command_counts_mark_only_pairs_and_tasks_per_language(self):
+        with tempfile.TemporaryDirectory() as d:
+            export = os.path.join(d, "export.jsonl")
+            rows = [{"id": "yi/t/1", "a": "\u05e4\u05bc\u05d0\u05b7", "b": "\u05e4\u05bf\u05d0\u05b8"},  # two mark pairs
+                    {"id": "yi/t/2", "a": "\u05d0\u05b7", "b": "\u05d0"},
+                    {"id": "yi/t/3", "a": "\u05e8", "b": "\u05d3"}]
+            with open(export, "w", encoding="utf-8") as f:
+                f.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+            out = json.loads(subprocess.run([sys.executable, os.path.join(HERE, "lookalike.py"), "--export", export, "--json"],
+                                            check=True, capture_output=True, text=True).stdout)["languages"]["yi"]
+            self.assertEqual((out["tasks"], out["mark_only_tasks"], out["mark_only_pairs"]), (3, 2, 3))
+            self.assertEqual(out["mark_only_by_mark"], {"U+05B7": 2, "U+05B8": 1, "U+05BC": 1, "U+05BF": 1})
 
 
 if __name__ == "__main__":
