@@ -3,6 +3,7 @@
   "env": "prod",
   "host": "pve.tjg.fyi",
   "images": {
+    "appver": "sha256:ea787e43d6c04e0787d166301cedbc42b8a79cf0bd5c1d3e56688f16363c506e",
     "base": "sha256:dc49f2267d8bfec9d7fdf503260b34897b4aad7edc1a4e5a5641d8a6e5da8f17",
     "bin": "sha256:21a560ad2c2f6ca77146d96826d58ea22f6c2be8b38c6ead4ce5de176f0e82a2",
     "bridge": "sha256:e1f01978ad2ddfda919d09530074affb5b6de5a07bc4bead8c4060d312671fa5",
@@ -17,6 +18,7 @@
     "version": "1.4"
   },
   "schema": 1,
+  "signing_source": "8c5bc703fe56d5f3777d984ab0f92d041e9c143c",
   "source_commit": "bb8bc397b34608ebffc97f3d2bd27351313e48b1",
   "worker": {
     "extra_files": {},
