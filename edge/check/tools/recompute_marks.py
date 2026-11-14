@@ -360,6 +360,18 @@ def invalidate(out_dir: str, lang: str, reason: str) -> None:
     write_json(os.path.join(d, "report.json"), {"tool": "recompute_marks.py", "lang": lang, "passed": False, "reason": reason})
 
 
+def safe_invalidate(out_dir: str, lang: str, reason: str) -> None:
+    """invalidate(), but a failure to clean up is a warning: the other languages still run and the command still fails."""
+    try:
+        invalidate(out_dir, lang, reason)
+    except OSError as e:
+        print(f"WARNING could not invalidate the output of {lang} in {out_dir} ({e}): delete it before loading", file=sys.stderr)
+
+
+def reason_of(e: BaseException) -> str:
+    return str(e) if isinstance(e, Refused) else f"{type(e).__name__}: {e}"
+
+
 def dry_run(a, ctx: Context, records: list, full: bool) -> int:
     failed = False
     by_lang = collections.defaultdict(list)
@@ -371,13 +383,14 @@ def dry_run(a, ctx: Context, records: list, full: bool) -> int:
             if not recs:
                 raise Refused(f"{lang}: no tasks in the input")
             changed, rep = recompute_language(lang, recs, ctx, full)
-        except Exception as e:  # Refused, or anything unexpected: either way no older output of this language may stay loadable
-            print(f"REFUSED {e}" if isinstance(e, Refused) else f"FAILED {type(e).__name__}: {e}", file=sys.stderr)
-            invalidate(a.out_dir, lang, str(e) if isinstance(e, Refused) else f"{type(e).__name__}: {e}")
+            write_language(a.out_dir, lang, changed, rep)
+            print(report_text(rep), end="")
+        # A refusal, an unexpected error, a malformed option (the parsers exit with SystemExit) or a failure to write: whichever it
+        # was, no older output of this language may stay loadable, and the other languages still run.
+        except (Exception, SystemExit) as e:
+            print(f"REFUSED {e}" if isinstance(e, Refused) else f"FAILED {reason_of(e)}", file=sys.stderr)
+            safe_invalidate(a.out_dir, lang, reason_of(e))
             failed = True
-            continue
-        write_language(a.out_dir, lang, changed, rep)
-        print(report_text(rep), end="")
     return 1 if failed else 0
 
 
@@ -474,12 +487,12 @@ def main() -> int:
             records = Site(a.site, vault_token(a.vault)).dump_records()
         ctx = Context(la.Fonts(overrides), a.languages_dir, a.lookalike_threshold, a.equivalent, a.allow_unmeasured)
         return dry_run(a, ctx, records, full)
-    except Exception as e:  # a refusal, or an input that can't be read (malformed JSON, a missing file...): nothing was written yet
-        reason = str(e) if isinstance(e, Refused) else f"{type(e).__name__}: {e}"
+    except (Exception, SystemExit) as e:  # a refusal, a malformed option or an input that can't be read (malformed JSON, a missing file...): nothing was written yet
+        reason = reason_of(e)
         print(f"REFUSED {reason}" if isinstance(e, Refused) else f"FAILED {reason}", file=sys.stderr)
         if a.action == "dry-run":
             for lang in a.lang:
-                invalidate(a.out_dir, lang, reason)
+                safe_invalidate(a.out_dir, lang, reason)
         return 1
 
 

@@ -266,6 +266,33 @@ class Commands(unittest.TestCase):
         self.assertFalse(json.load(open(os.path.join(self.out, "yi", "report.json")))["passed"])
         self.assertTrue(json.load(open(os.path.join(self.out, "sr", "report.json")))["passed"])
 
+    def test_malformed_font_and_equivalent_options_remove_an_older_passing_report(self):
+        for args in (["--font", "nonsense"], ["--equivalent", "nonsense"]):
+            with self.subTest(args):
+                self.assertEqual(self.run_tool("--lang", "yi", "--bodies", self.bodies, "--out-dir", self.out).returncode, 0)
+                self.assert_stale_output_is_gone(self.run_tool("--lang", "yi", "--bodies", self.bodies, "--out-dir", self.out, *args))
+
+    def test_a_failure_while_writing_one_language_does_not_skip_the_others_or_invalidate_finished_ones(self):
+        real = rm.write_language
+        def failing(out_dir, lang, changed, rep):
+            if lang == "sr":
+                raise OSError("disk full")
+            return real(out_dir, lang, changed, rep)
+        args = mock.Mock(lang=["yi", "sr", "chr"], out_dir=self.out)
+        recs = [plain_task(), dict(plain_task("sr/s/1~0"), lang="sr"), dict(plain_task("chr/s/1~0"), lang="chr", a="Ꭰ", b="Ꭱ")]
+        with mock.patch.object(rm, "write_language", failing), mock.patch("sys.stderr"), mock.patch("sys.stdout"):
+            self.assertEqual(rm.dry_run(args, context(), recs, True), 1)
+        self.assertTrue(json.load(open(os.path.join(self.out, "yi", "report.json")))["passed"])
+        self.assertFalse(json.load(open(os.path.join(self.out, "sr", "report.json")))["passed"])
+        self.assertTrue(json.load(open(os.path.join(self.out, "chr", "report.json")))["passed"])
+
+    def test_a_failed_cleanup_is_a_warning_and_the_other_languages_still_run(self):
+        args = mock.Mock(lang=["sr", "yi"], out_dir=self.out)
+        with mock.patch.object(rm, "invalidate", side_effect=OSError("read-only")), mock.patch("sys.stderr") as err, mock.patch("sys.stdout"):
+            self.assertEqual(rm.dry_run(args, context(), [plain_task()], True), 1)  # sr has no tasks
+        self.assertIn("could not invalidate", "".join(c.args[0] for c in err.write.call_args_list))
+        self.assertTrue(json.load(open(os.path.join(self.out, "yi", "report.json")))["passed"])
+
 
 class FakeSite(http.server.BaseHTTPRequestHandler):
     records = []
