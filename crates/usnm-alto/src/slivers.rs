@@ -88,19 +88,28 @@ pub fn line_height(line: &Line) -> f64 {
     }
 }
 
-fn drop_in(line: &mut Line) -> usize {
+/// What a line keeps at `min_letter`: which of its words, and whether its
+/// hyphen. A line's hyphen belongs to its last word, so it goes when that
+/// word goes; otherwise the next word would be joined to the next line. A
+/// sliver at the start of the next line (a rule in the margin) doesn't
+/// clear it: dropping that joins the hyphen to the word it was printed for.
+pub fn kept(line: &Line, min_letter: f64) -> (Vec<bool>, bool) {
     let h = line_height(line);
-    let before = line.words.len();
-    line.words
-        .retain(|w| !is_sliver(w.rect.width(), w.text.trim(), h));
-    before - line.words.len()
+    let words: Vec<bool> = line
+        .words
+        .iter()
+        .map(|w| !is_sliver_below(w.rect.width(), w.text.trim(), h, min_letter))
+        .collect();
+    let hyphen = line.hyphen.is_some() && words.last().copied().unwrap_or(true);
+    (words, hyphen)
 }
 
 /// Removes sliver words from `page`, and lines left with no word.
 ///
 /// Only a page with word boxes is changed: a page read by line, block or
 /// page has no word widths to measure. Blocks keep their boxes, and lines
-/// that keep a word keep theirs and their hyphen.
+/// that keep a word keep theirs. A line keeps its hyphen unless its last
+/// word was dropped ([`kept`]).
 pub fn drop_slivers(page: &mut Page) -> Slivers {
     let mut out = Slivers::default();
     if page.granularity != Granularity::Word {
@@ -109,8 +118,17 @@ pub fn drop_slivers(page: &mut Page) -> Slivers {
     for b in page.blocks.iter_mut().filter(|b| b.kind.is_text()) {
         b.lines.retain_mut(|l| {
             let had = !l.words.is_empty();
-            let n = drop_in(l);
+            let (keep, hyphen) = kept(l, MIN_LETTER);
+            let mut i = 0;
+            l.words.retain(|_| {
+                i += 1;
+                keep[i - 1]
+            });
+            let n = keep.iter().filter(|k| !**k).count();
             out.words += n;
+            if !hyphen {
+                l.hyphen = None;
+            }
             if had && n > 0 && l.words.is_empty() {
                 out.lines += 1;
                 return false;
@@ -173,7 +191,11 @@ mod tests {
         let mut p = page(
             vec![
                 line(&[(100.0, 102.0, "Ꭵ"), (120.0, 230.0, "ᎠᏆᏤᎵ")]),
-                line(&[(100.0, 180.0, "the"), (190.0, 192.0, "|"), (200.0, 300.0, "news")]),
+                line(&[
+                    (100.0, 180.0, "the"),
+                    (190.0, 192.0, "|"),
+                    (200.0, 300.0, "news"),
+                ]),
             ],
             Granularity::Word,
         );
@@ -194,8 +216,16 @@ mod tests {
         let mut p = page(
             vec![
                 line(&[(100.0, 111.0, "I"), (130.0, 220.0, "said")]),
-                line(&[(100.0, 112.0, "l"), (118.0, 129.0, "i"), (140.0, 152.0, "1.")]),
-                line(&[(100.0, 104.0, "."), (110.0, 114.0, ","), (120.0, 123.0, "'")]),
+                line(&[
+                    (100.0, 112.0, "l"),
+                    (118.0, 129.0, "i"),
+                    (140.0, 152.0, "1."),
+                ]),
+                line(&[
+                    (100.0, 104.0, "."),
+                    (110.0, 114.0, ","),
+                    (120.0, 123.0, "'"),
+                ]),
             ],
             Granularity::Word,
         );
@@ -240,6 +270,28 @@ mod tests {
         let mut p = page(vec![l], Granularity::Word);
         assert_eq!(drop_slivers(&mut p), Slivers { words: 1, lines: 0 });
         assert_eq!(texts(&p), [vec!["it", "was"]]);
+    }
+
+    /// A hyphenated word that is dropped takes its hyphen with it, so the
+    /// word before it isn't joined to the next line; a rule at the start of
+    /// the next line leaves the hyphen for the word it was printed for.
+    #[test]
+    fn a_dropped_hyphenated_word_takes_its_hyphen() {
+        let mut first = line(&[(100.0, 180.0, "the"), (200.0, 215.0, "ill")]);
+        first.hyphen = Some("-".into());
+        let second = line(&[(100.0, 200.0, "ness")]);
+        let mut p = page(vec![first, second], Granularity::Word);
+        assert_eq!(drop_slivers(&mut p), Slivers { words: 1, lines: 0 });
+        assert_eq!(p.blocks[0].lines[0].hyphen, None);
+        assert_eq!(crate::text(&p), "the\nness");
+
+        let mut first = line(&[(100.0, 180.0, "con")]);
+        first.hyphen = Some("-".into());
+        let second = line(&[(90.0, 91.5, "|"), (100.0, 200.0, "tinued")]);
+        let mut p = page(vec![first, second], Granularity::Word);
+        assert_eq!(drop_slivers(&mut p), Slivers { words: 1, lines: 0 });
+        assert_eq!(p.blocks[0].lines[0].hyphen.as_deref(), Some("-"));
+        assert_eq!(crate::text(&p), "con-\ntinued");
     }
 
     /// Only word boxes are measured: a page read by line has words whose

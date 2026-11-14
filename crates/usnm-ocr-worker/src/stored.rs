@@ -450,7 +450,10 @@ mod tests {
             damage_before: None,
         };
         let letters = |t: &str| {
-            let mut c: Vec<char> = t.chars().filter(|c| !c.is_whitespace() && *c != '-').collect();
+            let mut c: Vec<char> = t
+                .chars()
+                .filter(|c| !c.is_whitespace() && *c != '-')
+                .collect();
             c.sort_unstable();
             c
         };

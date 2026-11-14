@@ -9,34 +9,53 @@
 //! Writes JSON lines: a `page` row per file (words, words dropped, lines
 //! dropped), a `line` row per text line with words (its box in pixels, its
 //! text before and after, the filter at `--min-letter`, by default
-//! [`MIN_LETTER`]), and a `word` row per word narrower than
-//! `--below` line heights a letter (its text, letters, box and ratio), so
-//! the threshold can be read off the distribution. A file that doesn't parse
-//! gets an `error` row.
+//! [`MIN_LETTER`]), and a `word` row per word narrower than `--below` line
+//! heights a letter (its text, letters, box and ratio), so the threshold can
+//! be read off the distribution. A file that doesn't parse gets an `error`
+//! row. The text after is the worker's: [`kept`] decides it, and a page
+//! without word boxes is left as it was.
 
 use std::io::{BufRead, Write};
+use std::path::PathBuf;
 
-use usnm_alto::slivers::{is_sliver_below, letters, line_height, MIN_LETTER};
-use usnm_alto::{drop_slivers, parse_with_languages, Line, Page, ParseOptions};
+use clap::Parser;
+use usnm_alto::slivers::{kept, letters, line_height, MIN_LETTER};
+use usnm_alto::{drop_slivers, parse_with_languages, Granularity, Line, Page, ParseOptions};
 
-fn arg(args: &[String], name: &str) -> Option<String> {
-    args.iter()
-        .position(|a| a == name)
-        .and_then(|i| args.get(i + 1).cloned())
+#[derive(Parser)]
+#[command(about = "Measures the sliver filter on ALTO files")]
+struct Args {
+    /// A file listing ALTO paths, one a line.
+    #[arg(long)]
+    files: PathBuf,
+    /// Where the JSON lines go.
+    #[arg(long)]
+    out: PathBuf,
+    /// The dpi for `inch1200` and `mm10` ALTO.
+    #[arg(long, default_value_t = 300.0)]
+    dpi: f64,
+    /// Word rows are written for words narrower than this, in line heights a letter.
+    #[arg(long, default_value_t = 0.6)]
+    below: f64,
+    /// The threshold the text after is filtered at.
+    #[arg(long, default_value_t = MIN_LETTER)]
+    min_letter: f64,
 }
 
-/// A line's text as `usnm_alto::text` joins it, without cleaning.
-fn line_text(l: &Line, h: f64, drop: Option<f64>) -> String {
+/// A line's text as `usnm_alto::text` joins it, without cleaning: the words
+/// `keep` marks, and the hyphen if it says so.
+fn line_text(l: &Line, keep: &(Vec<bool>, bool)) -> String {
     let mut s = l
         .words
         .iter()
-        .filter(|w| !drop.is_some_and(|k| is_sliver_below(w.rect.width(), w.text.trim(), h, k)))
-        .map(|w| w.text.trim())
+        .zip(&keep.0)
+        .filter(|(_, k)| **k)
+        .map(|(w, _)| w.text.trim())
         .filter(|t| !t.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
     if let Some(hy) = &l.hyphen {
-        if !s.is_empty() {
+        if !s.is_empty() && keep.1 {
             s.push_str(hy);
         }
     }
@@ -45,32 +64,23 @@ fn line_text(l: &Line, h: f64, drop: Option<f64>) -> String {
 
 /// Early NDNP files name ALTO 1.x's CCS namespace; read them as v2.
 fn normalize(xml: Vec<u8>) -> Vec<u8> {
-    let s = String::from_utf8_lossy(&xml);
-    if s[..s.len().min(4096)].contains("http://schema.ccs-gmbh.com/ALTO") {
-        s.replacen(
-            "http://schema.ccs-gmbh.com/ALTO",
-            "http://www.loc.gov/standards/alto/ns-v2#",
-            1,
-        )
-        .into_bytes()
-    } else {
-        xml
+    const CCS: &[u8] = b"http://schema.ccs-gmbh.com/ALTO";
+    const V2: &[u8] = b"http://www.loc.gov/standards/alto/ns-v2#";
+    let head = &xml[..xml.len().min(4096)];
+    match head.windows(CCS.len()).position(|w| w == CCS) {
+        Some(i) => [&xml[..i], V2, &xml[i + CCS.len()..]].concat(),
+        None => xml,
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
-    let files = arg(&args, "--files").ok_or("--files is required")?;
-    let out = arg(&args, "--out").ok_or("--out is required")?;
-    let dpi: f64 = arg(&args, "--dpi").map_or(Ok(300.0), |s| s.parse())?;
-    let below: f64 = arg(&args, "--below").map_or(Ok(0.6), |s| s.parse())?;
-    let min_letter: f64 = arg(&args, "--min-letter").map_or(Ok(MIN_LETTER), |s| s.parse())?;
+    let a = Args::parse();
     let opts = ParseOptions {
-        dpi: Some(dpi),
+        dpi: Some(a.dpi),
         ..ParseOptions::default()
     };
-    let mut w = std::io::BufWriter::new(std::fs::File::create(out)?);
-    let list = std::io::BufReader::new(std::fs::File::open(files)?);
+    let mut w = std::io::BufWriter::new(std::fs::File::create(&a.out)?);
+    let list = std::io::BufReader::new(std::fs::File::open(&a.files)?);
     for path in list.lines() {
         let path = path?;
         let path = path.trim();
@@ -83,34 +93,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             Ok(p) => p,
             Err(e) => {
-                writeln!(w, "{}", serde_json::json!({"kind": "error", "file": path, "error": e}))?;
+                writeln!(
+                    w,
+                    "{}",
+                    serde_json::json!({"kind": "error", "file": path, "error": e})
+                )?;
                 continue;
             }
         };
+        // As `drop_slivers`: only a page with word boxes is filtered.
+        let filtered = page.granularity == Granularity::Word;
         let words = page.counts().2;
+        let mut dropped = 0;
         for b in page.blocks.iter().filter(|b| b.kind.is_text()) {
             for l in &b.lines {
                 if l.words.is_empty() {
                     continue;
                 }
-                let h = line_height(l);
+                let all = (vec![true; l.words.len()], true);
+                let keep = if filtered {
+                    kept(l, a.min_letter)
+                } else {
+                    all.clone()
+                };
+                dropped += keep.0.iter().filter(|k| !**k).count();
                 writeln!(
                     w,
                     "{}",
                     serde_json::json!({
                         "kind": "line", "file": path,
                         "box": [l.rect.x0, l.rect.y0, l.rect.x1, l.rect.y1],
-                        "before": line_text(l, h, None),
-                        "after": line_text(l, h, Some(min_letter)),
+                        "before": line_text(l, &all),
+                        "after": line_text(l, &keep),
                     })
                 )?;
+                let h = line_height(l);
+                if !filtered || h.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
+                    continue;
+                }
                 for wd in &l.words {
                     let n = letters(wd.text.trim());
-                    if n == 0 || h.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
+                    if n == 0 {
                         continue;
                     }
                     let ratio = wd.rect.width() / (h * n as f64);
-                    if ratio < below {
+                    if ratio < a.below {
                         writeln!(
                             w,
                             "{}",
@@ -127,26 +154,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let mut cut = page.clone();
         let s = drop_slivers(&mut cut);
-        let below_k: usize = page
-            .blocks
-            .iter()
-            .filter(|b| b.kind.is_text())
-            .flat_map(|b| &b.lines)
-            .map(|l| {
-                let h = line_height(l);
-                l.words
-                    .iter()
-                    .filter(|w| is_sliver_below(w.rect.width(), w.text.trim(), h, min_letter))
-                    .count()
-            })
-            .sum();
         writeln!(
             w,
             "{}",
             serde_json::json!({
                 "kind": "page", "file": path, "width": page.width, "height": page.height,
                 "granularity": page.granularity.as_str(), "words": words,
-                "dropped": s.words, "lines_dropped": s.lines, "dropped_at_min_letter": below_k,
+                "dropped": s.words, "lines_dropped": s.lines, "dropped_at_min_letter": dropped,
             })
         )?;
     }

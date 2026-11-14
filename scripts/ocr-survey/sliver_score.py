@@ -8,8 +8,8 @@ lines and reports character and word error before and after the filter.
     sliver_score.py crops --measured out.jsonl --crops crops.jsonl --alto-root DIR --work DIR [--scorer PATH]
 
 `cherokee` takes test set v2's lines.jsonl: a row per LoC TextLine with `page`, `loc_text` and
-`reference`. A measured line matches the row on its page whose `loc_text` is its text before the
-filter. Error is counted on syllabary letters only, as `cherokee_testset.py score` counts it; word
+`reference` and `pixel_box`. A measured line matches the row on its page whose `loc_text` is its text
+before the filter; of several lines with that text, the one whose box is nearest `pixel_box`. Error is counted on syllabary letters only, as `cherokee_testset.py score` counts it; word
 error on the syllabary words.
 
 `crops` takes gold crops (`page_id` as `<lccn>/<date>/ed-<n>/seq-<m>`, `box` in the page image's
@@ -62,6 +62,11 @@ def measured(path: str, root: str):
     return lines, words, pages
 
 
+def distance(a, b) -> float:
+    """Between the centres of boxes [x0, y0, x1, y1]."""
+    return ((a[0] + a[2]) / 2 - (b[0] + b[2]) / 2) ** 2 + ((a[1] + a[3]) / 2 - (b[1] + b[3]) / 2) ** 2
+
+
 def strip_hyphen(s: str) -> str:
     return s[:-1] if s.endswith(("-", "¬", "⸗")) else s
 
@@ -71,18 +76,21 @@ def cmd_cherokee(a) -> dict:
     rows = [json.loads(x) for x in open(a.lines, encoding="utf-8")]
     if a.tier:
         rows = [r for r in rows if r["tier"] == a.tier]
-    by_text = {}
+    by_text = collections.defaultdict(list)
     for page, ls in lines.items():
         for l in ls:
-            by_text.setdefault((page, strip_hyphen(l["before"])), l)
-            by_text.setdefault((page, l["before"]), l)
+            by_text[(page, l["before"])].append(l)
+            if strip_hyphen(l["before"]) != l["before"]:
+                by_text[(page, strip_hyphen(l["before"]))].append(l)
     tot = collections.Counter()
     changed = []
     for r in rows:
-        l = by_text.get((r["page"], r["loc_text"])) or by_text.get((r["page"], strip_hyphen(r["loc_text"])))
-        if l is None:
+        cands = by_text.get((r["page"], r["loc_text"])) or by_text.get((r["page"], strip_hyphen(r["loc_text"])))
+        if not cands:
             tot["unmatched"] += 1
             continue
+        # Lines with the same text on a page: the one whose box is nearest the reference crop's.
+        l = min(cands, key=lambda c: distance(c["box"], r["pixel_box"]))
         tot["lines"] += 1
         gold = "".join(SYLLABARY.findall(r["reference"]))
         gw = SYLLABARY.findall(r["reference"])
