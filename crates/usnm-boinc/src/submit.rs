@@ -346,15 +346,20 @@ fn check_retry_app(
     }
 }
 
-/// The `max_error_results` of a unit. A native unit is assigned to one host, so BOINC's
-/// transitioner never makes a replacement result for it (`TRANSITION_NO_NEW_RESULTS`); with the
-/// stock 3, its first failed result left the workunit with no error mask and no result for
-/// ever, and the page was lost (#1919). With 0 the first error makes the workunit fail for
-/// good (error mask 0x2) and the assimilator writes the terminal marker `collect` reads, so the
-/// page is dead-lettered and retried by hand like any other failed page.
-const fn max_error_results(native_unit: bool) -> &'static str {
-    if native_unit {
-        "0"
+/// The `--max_error_results` passed to stock `create_work`. Stock `create_work` reads 0 as "not
+/// given" and refuses the unit ("no max_error_results given; can't create job"), so a unit that
+/// must fail for good cannot be created with 0. A native unit, or a controller-side retry's
+/// child, is assigned to one host, so BOINC's transitioner never makes a replacement result for it
+/// (`TRANSITION_NO_NEW_RESULTS`); with the stock 3, its first failed result left the workunit
+/// with no error mask and no result for ever, and the page was lost (#1919). Such a unit is
+/// created with 1 and its `workunit.max_error_results` is then set to 0 by the bridge step that
+/// ran this command (`set_fail_for_good` in boinc/images/server/bridge-job.sh): with 0 the first
+/// error makes the workunit fail for good (error mask 0x2) and the assimilator writes the terminal
+/// marker `collect` reads, so the page is dead-lettered and retried by hand like any other failed
+/// page. Never returns "0".
+const fn max_error_results(fails_for_good: bool) -> &'static str {
+    if fails_for_good {
+        "1"
     } else {
         "3"
     }
@@ -1007,15 +1012,16 @@ mod native_tests {
         assert!(calls[0].contains(&format!("--wu_name usnm_{}", ids[0])));
         assert!(calls[0].contains("--target_host 13"));
         assert!(calls[0].contains("--app_version_num 100 "), "{}", calls[0]);
-        // #1919: the first failed result makes the unit fail for good, since BOINC never makes
-        // another result for an assigned one.
-        assert!(calls[0].contains("--max_error_results 0 "), "{}", calls[0]);
+        // #1919: stock create_work refuses 0 (the fake tool does too), so the unit is created with
+        // 1 and the bridge step sets the workunit row to 0 afterwards.
+        assert!(calls[0].contains("--max_error_results 1 "), "{}", calls[0]);
         assert_eq!(stage(&s, &ids[0]), Stage::Submitted);
     }
 
     #[test]
-    fn only_a_native_unit_fails_for_good_on_its_first_error() {
-        assert_eq!(max_error_results(true), "0");
+    fn create_work_is_never_given_zero_max_error_results() {
+        // Stock create_work treats 0 as "not given" and refuses the unit (#1919).
+        assert_eq!(max_error_results(true), "1");
         assert_eq!(max_error_results(false), "3");
     }
 

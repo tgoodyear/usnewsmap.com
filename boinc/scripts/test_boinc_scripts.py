@@ -2073,6 +2073,7 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         # revalidates its reservation under the lease, and a first attempt ignores them.
         text = open(BRIDGE_JOB_SCRIPT).read()
         function = "submit_ocr_job() {" + text.split("submit_ocr_job() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        function += "set_fail_for_good() {" + text.split("set_fail_for_good() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
         bindir = os.path.join(self.tmp, "native-bin")
         os.makedirs(bindir)
         with open(os.path.join(bindir, "usnm-boinc"), "w") as f:
@@ -2081,7 +2082,9 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         # The database's loaded usnm_ocr_native versions; the query keeps only what the feeder
         # loads (sched_shmem.cpp): not deprecated, at or above min_version, else the highest.
         with open(os.path.join(bindir, "mysql"), "w") as f:
-            f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_LOG.sql"\nprintf "%s\\n" "$STUB_VERSIONS"\n')
+            f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_LOG.sql"\n'
+                    'case "$*" in *"UPDATE workunit SET max_error_results=0"*) printf "%s\\n" "${STUB_UPDATED:-1}";; '
+                    '*) printf "%s\\n" "$STUB_VERSIONS";; esac\n')
         os.chmod(os.path.join(bindir, "mysql"), 0o755)
         share = os.path.join(self.tmp, "native-share")
         os.makedirs(os.path.join(share, "gold"))
@@ -2111,6 +2114,12 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "native.cnf")))
         with open(self.log + ".sql") as f:
             query = f.read()
+        # #1919: stock create_work refuses --max_error_results 0, so the row is set to 0 after it,
+        # for exactly this unit's workunit.
+        self.assertIn(f"UPDATE workunit SET max_error_results=0 WHERE name='usnm_{'1' * 64}'", query)
+        r = run(NATIVE_TARGET_HOST="13", STUB_UPDATED="0")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("does not have max_error_results 0", r.stderr)
         for clause in ("v.deprecated = 0", "a.min_version > 0 AND v.version_num >= a.min_version",
                        "SELECT MAX(w.version_num)", "w.plan_class = v.plan_class"):
             self.assertIn(clause, query)

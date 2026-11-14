@@ -789,7 +789,29 @@ submit_ocr_job() {
     native_args=(--app usnm_ocr_native --target-host "$NATIVE_TARGET_HOST" --trust "$SHARE_DIR/gold/trust.json"
       --native-versions "$versions" ${store_args[@]+"${store_args[@]}"})
   fi
+  # A native unit and a targeted retry's child are never reissued, so their first error must fail
+  # the workunit for good. Stock create_work refuses --max_error_results 0, so usnm-boinc creates
+  # them with 1 and this sets the row to 0 (#1919); the unit is still unsent or just sent, so no
+  # result has failed yet.
+  if [ -n "${NATIVE_TARGET_HOST:-}${RETRY_TARGET_HOST:-}" ]; then
+    usnm-boinc submit --root "$HANDOFF_DIR" --project "$PROJ" --job "$JOB_ID" ${native_args[@]+"${native_args[@]}"} || return $?
+    set_fail_for_good "usnm_$JOB_ID"
+    return $?
+  fi
   exec usnm-boinc submit --root "$HANDOFF_DIR" --project "$PROJ" --job "$JOB_ID" ${native_args[@]+"${native_args[@]}"}
+}
+# Sets max_error_results to 0 on workunit $1 so its first failed result fails it for good, and
+# checks that one row now has it. Stock create_work cannot create a unit with 0 (#1919).
+set_fail_for_good() {
+  local wu=$1 rows
+  [[ $wu =~ ^usnm_[0-9a-f]{64}$ ]] || fail "not a workunit name: $wu"
+  write_mycnf
+  rows=$(mysql --defaults-extra-file="$mycnf" --ssl --ssl-verify-server-cert \
+    --ssl-ca=/usr/local/share/usnm/mysql-ca.pem --batch --skip-column-names "$DB_NAME" \
+    -e "UPDATE workunit SET max_error_results=0 WHERE name='$wu'; SELECT COUNT(*) FROM workunit WHERE name='$wu' AND max_error_results=0") ||
+    fail "workunit $wu was created but its max_error_results could not be set to 0; set it by hand before it can fail"
+  rm -f "$mycnf"
+  [ "$rows" = 1 ] || fail "workunit $wu was created but does not have max_error_results 0 (found $rows rows)"
 }
 case "$step" in
   iris-bundle-cancel)

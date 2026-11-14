@@ -339,7 +339,9 @@ pub(crate) mod tests {
             executable(
                 &self.project.join("bin/create_work"),
                 &format!(
-                    "#!/bin/sh\nprintf '%s\\n' \"$*\" >> calls\n{}",
+                    "#!/bin/sh\nprintf '%s\\n' \"$*\" >> calls\n{}{}",
+                    // Stock create_work reads --max_error_results 0 as "not given" (#1919).
+                    "case \" $* \" in *\" --max_error_results 0 \"*) echo \"no max_error_results given; can't create job\" >&2; exit 1;; esac\n",
                     if fail { "exit 1\n" } else { "" }
                 ),
             );
