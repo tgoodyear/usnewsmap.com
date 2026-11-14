@@ -37,7 +37,7 @@ import urllib.request
 HERE = Path(__file__).resolve().parent
 USER_AGENT = "usnewsmap-ocr-worker/stage-loc-texts (+https://usnewsmap.com)"
 LOC_GAP = 5.0  # www.loc.gov Crawl-Delay
-PAGE_RE = re.compile(r"^(sn\d+)/(\d{4})-(\d{2})-(\d{2})/ed-(\d+)/seq-(\d+)$")
+PAGE_RE = re.compile(r"^([a-z0-9]{1,16})/(\d{4})-(\d{2})-(\d{2})/ed-(\d+)/seq-(\d+)$")
 MAX_BYTES = 16 * 1024 * 1024
 SOURCES = ("have", "local", "archive", "loc.gov", "missing")
 
@@ -108,6 +108,27 @@ class Pushback(Exception):
     pass
 
 
+def pacer_blocked(path, now_ms=None):
+    """Why the host's shared LoC budget (the fetcher's `USNM_LOC_GLOBAL_PACER` state file) says not to send
+    LoC requests now, or None. A hold (`hold_until_ms`) or a slow-down after a push-back blocks this tier,
+    and so does a file that can't be read. This step only reads the file: it never takes a slot or records
+    a hold (the file belongs to the fetcher's user), and at most ~20 requests a day are not worth a slot.
+    No path means no shared budget on this host."""
+    if not path:
+        return None
+    now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    try:
+        state = json.loads(Path(path).read_text() or "{}")
+    except (OSError, ValueError) as e:
+        return f"the shared LoC pacer file can't be read ({type(e).__name__})"
+    if int(state.get("hold_until_ms") or 0) > now_ms:
+        return "the shared LoC pacer holds all requests"
+    slowed = state.get("slowed")
+    if slowed:
+        return f"the shared LoC pacer is slowed after a push-back ({slowed.get('why', '?')})"
+    return None
+
+
 def fetch(url, timeout, sleep):
     """One GET with the project's User-Agent. 403, 429 and 503 end the tier."""
     sleep(LOC_GAP)
@@ -137,24 +158,38 @@ def from_loc_gov(page, out_dir, sleep=time.sleep):
 
 
 def stage(a, check=None, sleep=time.sleep, now=None):
+    """Stage the sample, then pick it again at the current time and stage what is new: reading archives can
+    take a while, and the check's 24 h window moves with the clock. At most 3 rounds; the check starts
+    seconds after the last one."""
     check = check or load_check(a.check_script)
-    now = now or time.time()
+    counts, done = dict.fromkeys(SOURCES, 0), set()
+    for _ in range(3):
+        if not stage_round(a, check, sleep, now or time.time(), counts, done):
+            break
+        now = None
+    return counts
+
+
+def stage_round(a, check, sleep, now, counts, done):
+    """One selection and staging pass; the number of pages newly picked."""
     date = time.strftime("%Y-%m-%d", time.gmtime(now))
-    counts = dict.fromkeys(SOURCES, 0)
     for needed in ("spool", "dispatch/jobs"):
         if not (a.handoff / needed).is_dir():
             log(f"{a.handoff / needed} is not readable: nothing staged")
-            return counts
+            return 0
     state_file = a.state_dir / "state.json"
     state = json.loads(state_file.read_text()) if state_file.exists() else {}
     images = check.selected_images(a.trust_file, a.image)
+    a.hosts = a.hosts or []
     pages = check.returned_pages(a.handoff, images, now, seen=set(state.get("checked_jobs", [])),
                                  hosts=set(a.hosts or ()))
     picked = [p for p in check.sample(pages, date, a.count)
-              if "invalid" not in p and PAGE_RE.match(p.get("page", ""))]
+              if "invalid" not in p and PAGE_RE.match(p.get("page", "")) and p["page"] not in done]
     if not picked:
-        log(f"{date}: empty sample, nothing to stage")
-        return counts
+        if not done:
+            log(f"{date}: empty sample, nothing to stage")
+        return 0
+    done.update(p["page"] for p in picked)
     todo = []
     for p in picked:
         dest = a.out / f"{p['page']}.txt"
@@ -185,11 +220,15 @@ def stage(a, check=None, sleep=time.sleep, now=None):
             else:
                 keep(a.out / f"{p['page']}.txt", data)
                 counts["archive"] += 1
-    pushed = False
+    pushed = a.no_loc_gov or bool(rest and pacer_blocked(getattr(a, "loc_pacer", None)))
+    if rest and not a.no_loc_gov and pushed:
+        log(f"loc.gov skipped: {pacer_blocked(getattr(a, 'loc_pacer', None))}")
+    attempts = 0
     for p in rest:
-        if pushed or counts["loc.gov"] >= a.loc_max or a.no_loc_gov:
+        if pushed or attempts >= a.loc_max:
             counts["missing"] += 1
             continue
+        attempts += 1
         try:
             text = from_loc_gov(p, a.out, sleep)
         except Pushback as e:
@@ -204,7 +243,7 @@ def stage(a, check=None, sleep=time.sleep, now=None):
         else:
             keep(a.out / f"{p['page']}.txt", text)
             counts["loc.gov"] += 1
-    return counts
+    return len(picked)
 
 
 def main(argv=None):
@@ -216,13 +255,21 @@ def main(argv=None):
     p.add_argument("--archives", type=Path, required=True, help="directory of LoC bulk OCR <batch>.tar.bz2")
     p.add_argument("--trust-file", type=Path, required=True)
     p.add_argument("--check-script", type=Path, default=HERE / "native_crossbuild_check.py")
-    p.add_argument("--image", default=None, help="digest prefix, as for the check (default: Windows builds)")
-    p.add_argument("--host", dest="hosts", action="append", default=None, help="only this host id; repeatable")
+    env = os.environ.get
+    p.add_argument("--image", default=env("XB_IMAGE") or None,
+                   help="digest prefix, as for the check (default: Windows builds; env XB_IMAGE)")
+    p.add_argument("--host", dest="hosts", action="append", default=None,
+                   help="only this host id; repeatable (env XB_HOSTS, comma separated, used only when no --host is given)")
+    p.add_argument("--loc-pacer", type=Path, default=None,
+                   help="the fetcher's shared LoC pacer file (USNM_LOC_GLOBAL_PACER): read-only; loc.gov is "
+                        "skipped while it holds or is slowed")
     p.add_argument("--count", type=int, default=10, help="the check's --count")
     p.add_argument("--archive-budget-secs", type=float, default=1800, help="stop reading archives after this long")
     p.add_argument("--loc-max", type=int, default=10, help="most pages fetched from loc.gov in a run")
     p.add_argument("--no-loc-gov", action="store_true", help="never ask loc.gov")
     a = p.parse_args(argv)
+    if a.hosts is None:
+        a.hosts = [h for h in (env("XB_HOSTS") or "").split(",") if h]
     try:
         counts = stage(a)
     except Exception as e:  # fail soft: the check runs as before

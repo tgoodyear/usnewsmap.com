@@ -153,6 +153,57 @@ class StageTest(unittest.TestCase):
         counts, _ = self.run_stage([page(1)], no_loc_gov=True)
         self.assertEqual(counts["missing"], 1)
 
+    def test_numeric_lccn_is_staged(self):
+        self.make_archive("nn_carson_ver02", {"2010270504/1876/10/17/ed-1/seq-4/ocr.txt": "numeric"})
+        counts, _ = self.run_stage([page(1, sn="2010270504")])
+        self.assertEqual(counts["archive"], 1)
+        self.assertEqual((self.out / "2010270504/1876-10-17/ed-1/seq-4.txt").read_text(), "numeric")
+
+    def test_loc_max_counts_attempts_not_successes(self):
+        calls = []
+
+        def fake_open(req, timeout):
+            calls.append(req.full_url)
+            raise urllib.error.HTTPError(req.full_url, 404, "no", {}, None)
+
+        with mock.patch.object(S.urllib.request, "urlopen", fake_open):
+            counts, _ = self.run_stage([page(1), page(2, seq=5), page(3, seq=6)], loc_max=1)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(counts["missing"], 3)
+
+    def test_shared_pacer_hold_or_slowdown_skips_loc_gov(self):
+        f = Path(self.tmp.name) / "pacer.json"
+        now_ms = int(time.time() * 1000)
+        with mock.patch.object(S.urllib.request, "urlopen", side_effect=AssertionError("network")):
+            for state in ({"hold_until_ms": now_ms + 60000},
+                          {"hold_until_ms": 0, "slowed": {"why": "HTTP 503"}}, "not json"):
+                f.write_text(state if isinstance(state, str) else json.dumps(state))
+                counts, _ = self.run_stage([page(1)], loc_pacer=f)
+                self.assertEqual(counts["missing"], 1)
+        self.assertIsNone(S.pacer_blocked(None))
+        f.write_text(json.dumps({"next_ms": 1, "hold_until_ms": 0}))
+        self.assertIsNone(S.pacer_blocked(f))
+
+    def test_a_page_that_enters_the_window_while_staging_is_staged_too(self):
+        self.make_archive("nn_carson_ver02", {"sn83030272/1876/10/17/ed-1/seq-4/ocr.txt": "four",
+                                              "sn83030272/1876/10/17/ed-1/seq-5/ocr.txt": "five"})
+        rounds = [[page(1)], [page(1), page(2, seq=5)], [page(1), page(2, seq=5)]]
+        check = SimpleNamespace(selected_images=lambda t, i: ["x"], returned_pages=lambda *a, **k: rounds.pop(0),
+                                sample=lambda pgs, date, count: pgs)
+        counts = S.stage(self.args(), check=check, sleep=lambda s: None, now=NOW)
+        self.assertEqual(counts["archive"], 2)
+        self.assertTrue((self.out / "sn83030272/1876-10-17/ed-1/seq-5.txt").is_file())
+
+    def test_xb_environment_fallbacks(self):
+        argv = ["--handoff", "h", "--scans", "s", "--state-dir", "d", "--out", "o", "--archives", "a",
+                "--trust-file", "t"]
+        seen = []
+        with mock.patch.dict(S.os.environ, {"XB_IMAGE": "ab12", "XB_HOSTS": "3,4"}), \
+                mock.patch.object(S, "stage", lambda a: seen.append((a.image, a.hosts)) or {}):
+            S.main(argv)
+            S.main(argv + ["--host", "9"])
+        self.assertEqual(seen, [("ab12", ["3", "4"]), ("ab12", ["9"])])
+
     def test_main_fails_soft(self):
         with mock.patch.object(S, "stage", side_effect=RuntimeError("boom")):
             self.assertEqual(S.main(["--handoff", "h", "--scans", "s", "--state-dir", "d", "--out", "o",
