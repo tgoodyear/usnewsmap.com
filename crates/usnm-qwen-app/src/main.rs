@@ -630,6 +630,7 @@ fn run_crops(
                     deadline.saturating_sub(started.elapsed()),
                 )
             },
+            |(text, tokens, _)| text.trim().is_empty() && *tokens == 0,
             |srv| srv.has_exited(),
             |srv| {
                 srv.restart(

@@ -7,7 +7,7 @@
 //! loop forever.
 use crate::{
     boinc::TEMPORARY_EXIT_FILE,
-    server::{classify, FailureClass},
+    server::{classify, transport, FailureClass},
 };
 use std::path::Path;
 use usnm_ocr_quality::slot::write_atomic;
@@ -40,11 +40,12 @@ pub(crate) fn retriable(err: &anyhow::Error, server_exited: bool) -> bool {
 }
 
 /// Runs `attempt`, restarting the server and trying again after a retriable failure, at most
-/// [`MAX_CROP_RETRIES`] times. `stop` says the deadline passed or BOINC asked the task to exit,
+/// [`MAX_CROP_RETRIES`] times. `is_blank` says a reading carries no text and no tokens. `stop` says the deadline passed or BOINC asked the task to exit,
 /// in which case nothing is retried. `note` hears about each restart.
 pub(crate) fn run_crop<S, T>(
     state: &mut S,
     mut attempt: impl FnMut(&mut S) -> anyhow::Result<T>,
+    is_blank: impl Fn(&T) -> bool,
     mut exited: impl FnMut(&mut S) -> bool,
     mut restart: impl FnMut(&mut S) -> anyhow::Result<()>,
     mut stop: impl FnMut() -> bool,
@@ -54,6 +55,12 @@ pub(crate) fn run_crop<S, T>(
     let mut result = attempt(state);
     loop {
         let err = match result {
+            // A blank, 0-token reply is real when the server was healthy throughout. From a
+            // server that died, or one just restarted after dying, it is the damage of the
+            // crash (a reset GPU answers nothing), so it is a failed attempt, never a reading.
+            Ok(v) if is_blank(&v) && (retries > 0 || exited(state)) => {
+                transport("blank 0-token reply from a llama-server that had died or restarted")
+            }
             Ok(v) => return CropEnd::Done(v),
             Err(e) => e,
         };
@@ -100,7 +107,7 @@ pub(crate) fn write_temporary_exit(work: &Path, attempt: u32, reason: &str) -> a
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server::{transport, Deadline, HttpStatus};
+    use crate::server::{Deadline, HttpStatus};
     use std::io::{Error, ErrorKind};
 
     fn status() -> anyhow::Error {
@@ -165,6 +172,7 @@ mod tests {
                     None => Ok("reading"),
                 }
             },
+            |_| false,
             |m| m.exited,
             |m| {
                 m.restarts += 1;
@@ -247,6 +255,7 @@ mod tests {
                 m.attempts += 1;
                 Err::<(), _>(broken())
             },
+            |_| false,
             |m| m.exited,
             |m| {
                 m.restarts += 1;
@@ -277,6 +286,7 @@ mod tests {
                     Ok(())
                 }
             },
+            |_| false,
             |m| m.exited,
             |m| {
                 m.restarts += 1;
@@ -288,6 +298,92 @@ mod tests {
         );
         assert!(matches!(end, CropEnd::Done(())));
         assert_eq!((m.attempts, m.restarts), (2, 1));
+    }
+
+    /// Runs a crop whose replies come from `replies` (`None` is a broken connection), where a
+    /// reply of `""` is blank.
+    fn run_blank(replies: Vec<Option<&'static str>>) -> (CropEnd<&'static str>, Mock) {
+        let mut m = Mock::default();
+        let end = run_crop(
+            &mut m,
+            |m| {
+                m.attempts += 1;
+                match replies.get(m.attempts as usize - 1) {
+                    Some(Some(text)) => Ok(*text),
+                    Some(None) => Err(broken()),
+                    None => Ok("late reading"),
+                }
+            },
+            |t| t.is_empty(),
+            |m| m.exited,
+            |m| {
+                m.restarts += 1;
+                Ok(())
+            },
+            || false,
+            |_| {},
+        );
+        (end, m)
+    }
+
+    #[test]
+    fn a_server_that_dies_mid_crop_and_answers_on_retry_keeps_the_retry() {
+        let (end, m) = run_blank(vec![None, Some("text")]);
+        assert!(matches!(end, CropEnd::Done("text")));
+        assert_eq!((m.attempts, m.restarts), (2, 1));
+    }
+
+    #[test]
+    fn a_blank_reply_after_a_restart_is_a_failed_attempt_not_a_reading() {
+        // Dies, then the restarted server answers nothing: that retry fails and is retried.
+        let (end, m) = run_blank(vec![None, Some(""), Some("text")]);
+        assert!(matches!(end, CropEnd::Done("text")));
+        assert_eq!((m.attempts, m.restarts), (3, 2));
+        // Dies, and every retry is blank: the cap ends it, with no empty reading emitted.
+        let (end, m) = run_blank(vec![None, Some(""), Some("")]);
+        let CropEnd::GiveUp(e) = end else {
+            panic!("expected GiveUp, got {end:?}")
+        };
+        assert!(format!("{e:#}").contains("blank 0-token reply"), "{e:#}");
+        assert_eq!((m.attempts, m.restarts), (3, 2));
+    }
+
+    #[test]
+    fn a_server_that_dies_twice_and_keeps_failing_exceeds_the_cap() {
+        let (end, m) = run_blank(vec![None, None, None]);
+        assert!(matches!(end, CropEnd::GiveUp(_)));
+        assert_eq!((m.attempts, m.restarts), (3, 2));
+    }
+
+    #[test]
+    fn a_blank_reply_from_a_healthy_server_stays_an_empty_reading() {
+        let (end, m) = run_blank(vec![Some("")]);
+        assert!(matches!(end, CropEnd::Done("")));
+        assert_eq!((m.attempts, m.restarts), (1, 0));
+        // A server found dead when the blank reply came is not healthy.
+        let mut m = Mock {
+            exited: true,
+            ..Mock::default()
+        };
+        let end = run_crop(
+            &mut m,
+            |m| {
+                m.attempts += 1;
+                Ok("")
+            },
+            |t| t.is_empty(),
+            |m| m.exited,
+            |m| {
+                m.restarts += 1;
+                m.exited = false;
+                Ok(())
+            },
+            || false,
+            |_| {},
+        );
+        // Blank again after the restart, so the cap ends it.
+        assert!(matches!(end, CropEnd::GiveUp(_)));
+        assert_eq!((m.attempts, m.restarts), (3, 2));
     }
 
     #[test]
