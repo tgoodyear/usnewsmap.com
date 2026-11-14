@@ -228,10 +228,13 @@ pub fn simd_level(p_model: &str, p_features: &str) -> Option<Simd> {
             .collect();
         // Ice Lake and Tiger Lake mobile (10xx, 11xx) and Rocket Lake desktop (11xxx) have
         // AVX-512; Haswell (4th generation) and later otherwise have AVX2 only.
-        // The X and XE parts (Skylake-X and Cascade Lake-X) have AVX-512, except the two Kaby
-        // Lake-X parts, which do not.
+        // The X and XE parts of Skylake-X (78xx, 79xx, 98xx, 99xx) and Cascade Lake-X (10xxx)
+        // have AVX-512. Older X parts (Haswell-E, Broadwell-E) and Kaby Lake-X do not, and go on
+        // to the generation rules below.
         let rest = model[at + digits.len()..].trim_start();
-        if rest.starts_with('x') && !["7640", "7740"].contains(&digits.as_str()) {
+        let skylake_x = digits.len() == 4 && ["78", "79", "98", "99"].contains(&&digits[..2]);
+        let cascade_x = digits.len() == 5 && digits.starts_with("10");
+        if rest.starts_with('x') && (skylake_x || cascade_x) {
             return Some(Simd::Avx512);
         }
         return match (digits.len(), digits.get(..2)) {

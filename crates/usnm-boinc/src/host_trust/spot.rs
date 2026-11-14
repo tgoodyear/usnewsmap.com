@@ -268,7 +268,8 @@ pub(super) fn alto_lines(alto: &[u8]) -> anyhow::Result<Vec<Line>> {
         let (mut content, mut wc) = (None, None);
         for attribute in e.attributes() {
             let attribute = attribute?;
-            match attribute.key.local_name().into_inner() {
+            // Only the unqualified names: a prefixed `x:CONTENT` is some other namespace's.
+            match attribute.key.into_inner() {
                 "CONTENT" => {
                     content = Some(
                         attribute
@@ -666,7 +667,7 @@ pub(super) mod tests {
         let alto = |a: &str, b: &str, c: &str| {
             format!(
                 r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Layout><Page><PrintSpace><TextBlock>
-<TextLine><String CONTENT="clean" WC="0.90"/><String CONTENT="{a}" WC="0.80"/></TextLine>
+<TextLine><String xmlns:x="urn:other" x:CONTENT="evil" x:WC="0.0" CONTENT="clean" WC="0.90"/><String CONTENT="{a}" WC="0.80"/></TextLine>
 <TextLine><String CONTENT="noise" WC="0.10"/><String CONTENT="{b}" WC="0.30"/></TextLine>
 <TextLine><String CONTENT="{c}"/><x:String xmlns:x="urn:other" CONTENT="foreign"/></TextLine>
 <x:TextLine xmlns:x="urn:other"><String CONTENT="inside foreign"/></x:TextLine>
