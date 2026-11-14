@@ -299,7 +299,7 @@ documented Linux multi-CPU and GPU pilot requirements or task resource limits.
    (SIGKILL)`. The VM's kernel log (`Out of memory: Killed process`) confirms it. Pages finished before
    the kill stay checkpointed, and the task resumes at the next page. Observed on
    two Macs: an 8-CPU Mac ran up to 4 tasks at once with no kills, and a 14-CPU
-   Mac ran up to 21 at once on a 4 GiB VM and hit SIGKILLs, probably for that reason. If you see the
+   Mac ran up to 21 at once and hit SIGKILLs, probably for that reason. If you see the
    SIGKILL lines, lower the task count or raise the VM's RAM.
 
    This small OCR profile is **not** a Surya profile: the current Surya CPU job
