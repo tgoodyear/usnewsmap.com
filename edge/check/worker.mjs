@@ -463,20 +463,33 @@ async function admin(request, env, url) {
   }
   if (p === "/admin/tasks" && request.method === "POST") {
     // JSON lines: {id, lang, set, ...shown fields}. Existing tasks keep their answers; their body is replaced.
+    // A line with `if_body` (the body text the sender read, as stored) is a conditional replacement: it updates an
+    // existing task only while its stored body is still exactly that text, never inserts, and is listed in `stale`
+    // when the body had changed (tools/recompute_marks.py, so a load can't overwrite another loader's edit).
     const text = await request.text();
-    const stmts = [];
+    const stmts = [], conditional = [];
     for (const line of text.split("\n")) {
       if (!line.trim()) continue;
       const t = JSON.parse(line);
       if (typeof t.id !== "string" || typeof t.lang !== "string" || typeof t.set !== "string") throw new HttpError(400, "id, lang and set required");
-      const { id, lang: l, set, ...shown } = t;
+      const { id, lang: l, set, if_body: expected, ...shown } = t;
+      if (expected !== undefined) {
+        if (typeof expected !== "string") throw new HttpError(400, "if_body must be the stored body text");
+        stmts.push(env.DB.prepare("UPDATE tasks SET body = ? WHERE id = ? AND lang = ? AND set_name = ? AND body = ?").bind(JSON.stringify(shown), id, l, set, expected));
+        conditional.push([stmts.length - 1, id]);
+        continue;
+      }
       stmts.push(
         env.DB.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES (?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET body = excluded.body")
           .bind(id, l, set, JSON.stringify(shown)),
       );
     }
-    for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
-    return json({ ok: true, tasks: stmts.length });
+    const stale = [];
+    for (let i = 0; i < stmts.length; i += 50) {
+      const res = await env.DB.batch(stmts.slice(i, i + 50));
+      for (const [k, id] of conditional) if (k >= i && k < i + 50 && !res[k - i].meta?.changes) stale.push(id);
+    }
+    return json({ ok: true, tasks: stmts.length - stale.length, ...(conditional.length ? { stale } : {}) });
   }
   if (p === "/admin/confusable" && request.method === "POST") {
     const b = await body(request, 200000);

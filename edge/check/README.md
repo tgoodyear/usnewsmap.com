@@ -21,6 +21,7 @@ Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language, Yiddish (Ne
 | `tools/phoenix_lines.py`      | Picks Cherokee lines from LoC's ALTO and our production re-read for `build_tasks.py`.                                       |
 | `tools/lookalike.py`          | Finds letters of two readings the page draws almost alike, and pairs that differ only in a mark; also a command on exports. |
 | `tools/mark_report.py`        | Compares answers on words that differ only in a mark with other words, from exports.                                        |
+| `tools/recompute_marks.py`    | Recomputes `mark_only` and `lookalikes` on task bodies already loaded, with a report; loads them only when told to.         |
 | `languages/<code>.json`       | A language's name, intro, writing direction and letter notes, plus build options.                                           |
 | `confusable.sh`               | Marks tasks `confusable_display`, or reopens them, run by hand.                                                             |
 | `load.sh`, `set-secrets.sh`   | Loading data and setting secrets, run by hand.                                                                              |
@@ -114,7 +115,7 @@ Whether a mark can be told apart in print is for the answers to say. `tools/mark
 python3 edge/check/tools/mark_report.py --export check-yi.jsonl [--min-answers 20] [--json]
 ```
 
-_Tasks already loaded_ were built before this field. They keep working: the page shows no mark label for a task without `mark_only`, and the old behaviour for them stays (a long Unicode-name label for any pair in their `lookalikes`). To add `mark_only` to the loaded Yiddish tasks, an operator rebuilds them as in [Making tasks](#making-tasks-from-two-readings) (the same `build_tasks.py` command, same inputs, so the task ids are the same) and loads the new `tasks.jsonl` with `load.sh --lang yi --no-clips` (see [Loading a language](#loading-a-language)). `/admin/tasks` replaces a task's body and leaves its answers, counts and outcome alone, so answers are kept. The Worker needs no migration: `mark_only` lives in the task's JSON body. The `marks` names reach the site with the deploy (`sync-languages.mjs`), so load the tasks after the deploy. The rebuild runs with a Pillow that has Raqm only so that the rest of the overlap check is complete; the mark pairs themselves need no font.
+_Tasks already loaded_ were built before this field. They keep working: the page shows no mark label for a task without `mark_only`, and the old behaviour for them stays (a long Unicode-name label for any pair in their `lookalikes`). To add `mark_only` and recompute `lookalikes` on the loaded tasks, run `tools/recompute_marks.py` ([Updating loaded tasks](#updating-loaded-tasks)): it needs no build inputs, because each stored task has both readings. The `marks` names reach the site with the deploy (`sync-languages.mjs`), so update the tasks after the deploy. The run needs a Pillow with Raqm wherever readings carry combining marks, as every Yiddish run does.
 
 **A label.** Under each reading of a task with `lookalikes`, the page names the flagged letter next to its highlight: the syllable for Cherokee (`CHEROKEE LETTER SV` gives `sv`), else the Unicode character name (`hebrew letter alef + hebrew point patah`). A flagged letter is shown even where the highlight doesn't mark it (a transposition). The label is set left to right inside right-to-left readings. The page also keeps the answer buttons off, and offers a reload, when a Cherokee word's font fails to load, so a visitor's installed font can't stand in for it. `layout.test.mjs` renders it in Chrome for Cherokee, Hebrew letters and Cyrillic. For pairs that differ only in a mark, see above: they are not in `lookalikes`.
 
@@ -260,6 +261,82 @@ For Yiddish and Serbian, `--dir` is `build_tasks.py`'s `--out-dir` ([above](#mak
 
 The files go from the build host straight to the Worker; only the admin token passes through the operator's machine, on ssh's stdin.
 
+## Updating loaded tasks
+
+The original build inputs for the Yiddish tasks (the lines file and the line images) are not kept, and they must not be rebuilt by fetching the pages from the Library of Congress again. The Yiddish tasks are therefore updated in place, with `tools/recompute_marks.py`. It works for any loaded language, and it is how the loaded tasks of `yi` (`mark_only`) and `sr` (`lookalikes`) are brought up to the rules of #1939.
+
+Each task body stored in D1 carries both readings. `recompute_marks.py` runs `lookalike.analyse`, the call `build_tasks.py` makes for the two fields, on every body of a language with that language's `equivalents` from `languages/<lang>.json`, and writes new bodies that differ from the old ones only in `mark_only` and `lookalikes` (a field added, changed or removed). It does not touch images, clips or the language configuration, so it does not use `load.sh`, which would also send `language.json` and replace the stored letter pictures.
+
+**Where the bodies come from.** `GET /admin/dump` (what the nightly backup reads) returns every task row, with the whole body. The public `/api/export` leaves out most body fields (the clip keys, `box`, the letter indexes, the labels), so it can only preview. The dump also holds the answers; the tool keeps only the task rows and writes nothing else to disk. `--vault NAME` reads the dump with the admin token from Key Vault (`usnm-prod-check-admin-token`); the token is held in memory and never on a command line. `--dump FILE` takes a saved dump and `--bodies FILE` a JSON-lines file of `{"id", "lang", "set", ...body}` (such as `build_tasks.py`'s `tasks.jsonl`; whole-number floats such as `1.0` are read as `1`, the way the site stores them), so the tool can be run and tested offline.
+
+**Key order.** The stored bodies are in the order `build_tasks.py` writes them (not sorted), and the new bodies keep it. A field the body already has is replaced where it is. A field it gains goes after the last key, `lookalikes` before `mark_only`, where `build_tasks.py` puts them. A field that no longer applies is dropped. The inner keys come from `lookalike.analyse`, in ascending order.
+
+**What the run checks.** For each task the new body must equal the old one in every key but the two, with the same keys in the same order and the same values, and the same `id`, `lang` and `set`. One difference fails the run, and no bodies are written. The run also fails, with no bodies, when:
+
+- this Pillow has no Raqm and the language's readings contain combining marks (those letter pairs can't be drawn the way a browser draws them, so they are refused, not skipped);
+- some letter pairs have no reference font or glyph, unless `--allow-unmeasured`;
+- a task has no `a` or `b`, or the language has no `languages/<lang>.json`.
+
+Cherokee is measured in the font the site serves (`public/fonts/`); `--font CHEROKEE=PATH` is refused. Other scripts use the reference font that `lookalike.py` finds, or `--font SCRIPT=PATH`. A warning lists tasks whose stored `a_diff` or `b_diff` differ from what the language configuration gives, which points at a set built with other `--equivalent` letters (pass the same `--equivalent` to the tool).
+
+**What `/admin/tasks` keeps.** `POST /admin/tasks` (the `admin` function in `worker.mjs`) inserts each line with `ON CONFLICT (id) DO UPDATE SET body = excluded.body`. For a task that exists it replaces `body` and nothing else: `set_name`, `n`, `outcome`, `settled`, `confusable_display` and `held` are not in the statement, and it does not touch the `answers` or `answers_excluded` tables. So answers, counts, outcomes, settled state, the confusable marks and the set-aside answers stay as they are. A line with `if_body` is a conditional replacement (`UPDATE ... WHERE body = <if_body>`): it never inserts, and a task whose stored body is no longer that text is left alone and returned in `stale`. The tests "/admin/tasks replaces a task's body and leaves its answers..." and "/admin/tasks with if_body..." in `worker.test.mjs` runs it on SQLite with the real schema against a settled task and a marked, held task, and compares every column and both answer tables before and after.
+
+### Steps
+
+1. Dry run. It reads, writes nothing to the site, and writes `OUT/<lang>/tasks.jsonl` (the changed tasks' new bodies), `report.json` and `report.txt`. Use a Pillow with Raqm (`python3 -c "from PIL import features; print(features.check('raqm'))"` prints True; Pillow's pip wheels have it).
+
+   ```sh
+   python3 edge/check/tools/recompute_marks.py --lang yi --lang sr --vault usnmtlskvprodffapzy --out-dir OUT
+   ```
+
+   To preview from the public exports only (no bodies, no load): `--export check-yi.jsonl --export check-sr.jsonl` in place of `--vault`.
+
+2. Read `OUT/<lang>/report.txt`: tasks read, unchanged and changed, by field, by kind (added, changed, removed) and by mark, and the hashes. `report.json` also lists the changed task ids. Check that the counts are the ones you expect before going on.
+3. Load. It reads `report.json` and `tasks.jsonl` and refuses unless the report passed, was made from full bodies, and its hash matches the `tasks.jsonl` on disk. It then reads the site's bodies again and refuses if they are not the ones the dry run read, checks each new body against its current one again, sends the changed tasks to `/admin/tasks` in chunks of 200, reads the bodies back and fails if any differs from what was sent or if any other task changed. Each line carries `if_body`, the stored body text it read, so a task that another loader changed after the read is not overwritten: the reply lists it in `stale` and the run fails.
+
+   ```sh
+   python3 edge/check/tools/recompute_marks.py --action load --lang yi --lang sr --vault usnmtlskvprodffapzy --out-dir OUT
+   ```
+
+4. Verify with the export. `curl -s 'https://check.usnewsmap.com/api/export?lang=yi' > check-yi.jsonl` has `mark_only` and `lookalikes` on the changed tasks, with the same `counts` and `settled` as before the load; `python3 edge/check/tools/lookalike.py --export check-yi.jsonl` should now report the same totals as the dry run, and a second dry run should report 0 changed. The public export is cached for five minutes.
+
+Run it again after a change to `lookalike.py` or to a language's `equivalents`: the report says what that change did to the loaded tasks before anything is sent.
+
+## Keeping build inputs
+
+From now on, when a language's tasks are built, the inputs are archived before the tasks are loaded, under the lake path `check-site/<lang>/<set>/` on the project's storage host (the host that holds the lake and the scan archive; the build host copies to it). The directory holds:
+
+- `lines.jsonl` and the line images it names (`--images`), exactly as `build_tasks.py` read them;
+- `command.txt`, the exact `build_tasks.py` command line (and the `yiddish_lines.py`, `serbian_lines.py` or `phoenix_lines.py` command before it);
+- `tool-commit.txt`, the output of `git rev-parse HEAD` for the checkout that ran them, plus `git status --porcelain` (empty for a clean build);
+- `SHA256SUMS` for all of the above.
+
+On the build host, after the build and before loading:
+
+```sh
+LAKE=<lake root on the storage host>     # where the lake is mounted or reachable from the build host
+SET=$LAKE/check-site/yi/loc-yidj2-v1     # check-site/<lang>/<set>
+mkdir -p "$SET"
+cp yi/lines.jsonl "$SET/"
+(cd yi && find . -type f \( -name '*.jpg' -o -name '*.png' \) -print0 | tar --null -T - -cf "$SET/images.tar")
+printf '%s\n' 'python3 tools/build_tasks.py --lines yi/lines.jsonl ...' > "$SET/command.txt"   # the real command, in full
+{ git rev-parse HEAD; git status --porcelain; } > "$SET/tool-commit.txt"
+(cd "$SET" && sha256sum * > SHA256SUMS)
+```
+
+Nothing in an archive is deleted. A build whose inputs are not archived is not loaded. The Library of Congress files in it were fetched once, by the build, and are not fetched again.
+
+Where the inputs of the sets already loaded should be, and what the repository shows about them:
+
+| Set                                                          | Should be at                                                                                       | What the repository says                                                                                                                                                                                                                                                |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `yi` `loc-yidj2-v1`                                          | `check-site/yi/loc-yidj2-v1/`                                                                      | Not kept: the lines file and images are gone. `ocr/bench/yiddish-newspaper/manifest.json` lists the pages, which is not the lines or the images.                                                                                                                        |
+| `sr` `loc-boinc-tess-v1`                                     | `check-site/sr/loc-boinc-tess-v1/`                                                                 | Unknown. The build read a pages list, the held jobs' ALTO files and the scans under `/tank/ocr/scans/keep` (see [above](#making-tasks-from-two-readings)); the repository holds none of them and says nowhere that they were archived.                                  |
+| `chr` `phoenix-nt-v1`                                        | `check-site/chr/phoenix-nt-v1/`                                                                    | Unknown. The build read `data.json` and wrote `seed.jsonl` on the build host; the repository holds neither.                                                                                                                                                             |
+| `chr-lines` `disputes-v1`, `chr-rare` `rare-v1` and `nah-v1` | `check-site/chr-lines/disputes-v1/`, `check-site/chr-rare/rare-v1/`, `check-site/chr-rare/nah-v1/` | Partly. `docs/reports/2026-11-cherokee/` holds `check-lines-manifest.jsonl` and `check-glyph-index.jsonl` (the words and boxes), not the line images or the build's `lines.jsonl`; `phoenix_lines.py` reads the 190 re-read ALTO files and the scans on the build host. |
+
+If a set's inputs turn up, copy them to its path with the command above. Loaded tasks do not depend on them: `recompute_marks.py` needs only the stored bodies.
+
 ## Deploying
 
 CI deploys the site: after `ci` passes on main, `.github/workflows/check-site-deploy.yml` runs `edge/check/deploy.sh`, which deploys when `edge/check` differs from what is live. The site serves `/build.txt`, the git tree hash of `edge/check` it was built from, so `curl https://check.usnewsmap.com/build.txt` against `git rev-parse origin/main:edge/check` shows whether main is live. To deploy again without a change, run the workflow by hand with "force". The script also runs from a clean checkout with `az` signed in to the vault (`edge/check/deploy.sh --force`).
@@ -285,6 +362,6 @@ Changing `SESSION_KEY` (`--rotate`) signs everyone out; their earlier answers st
 node --test edge/check/worker.test.mjs edge/check/layout.test.mjs edge/check/languages.test.mjs edge/check/fonts.test.mjs
 ```
 
-The `check site` job in `ci.yml` runs these, a Wrangler dry-run build (`npx wrangler@4.154.0 deploy --dry-run`), shellcheck of the scripts and the tools' unit tests whenever anything under `edge/check/` but its Markdown changes. `languages.test.mjs` checks each language configuration's fields and that its keys are sorted. `fonts.test.mjs` checks the served font against the hash in `public/fonts/README.md`. `worker.test.mjs` runs the marking and reopening on SQLite with the real schema. `tools/test_mark_report.py` runs the mark report on a small synthetic export. `tools/test_lookalike.py` holds the table of letter pairs the threshold comes from and needs Pillow with a FreeType that reads woff2 (it skips otherwise).
+The `check site` job in `ci.yml` runs these, a Wrangler dry-run build (`npx wrangler@4.154.0 deploy --dry-run`), shellcheck of the scripts and the tools' unit tests whenever anything under `edge/check/` but its Markdown changes. `languages.test.mjs` checks each language configuration's fields and that its keys are sorted. `fonts.test.mjs` checks the served font against the hash in `public/fonts/README.md`. `worker.test.mjs` runs the marking and reopening on SQLite with the real schema. `tools/test_mark_report.py` runs the mark report on a small synthetic export. `tools/test_recompute_marks.py` runs `recompute_marks.py` on small synthetic bodies and against a local stand-in for the two admin routes (it needs Pillow with Raqm, and skips otherwise). `tools/test_lookalike.py` holds the table of letter pairs the threshold comes from and needs Pillow with a FreeType that reads woff2 (it skips otherwise).
 
 `layout.test.mjs` renders every language's sample words in headless Chrome, one highlighted letter at a time, and fails if a highlight box overlaps another character. It skips when no Chrome is found (set `CHROME=/path/to/chrome`) unless `CI` is set.
