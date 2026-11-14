@@ -294,11 +294,12 @@ documented Linux multi-CPU and GPU pilot requirements or task resource limits.
    scheduler cannot do this for you, because it sees the Mac's host RAM, not the
    VM's.
 
-   When the VM runs out of memory, the VM's kernel kills Tesseract and the task
-   log shows `tesseract exited with signal: 9 (SIGKILL)`. Pages finished before
+   If the VM runs out of memory, its kernel is the likely cause of Tesseract being
+   killed, and the task log then shows `tesseract exited with signal: 9
+   (SIGKILL)`. The VM's kernel log (`Out of memory: Killed process`) confirms it. Pages finished before
    the kill stay checkpointed, and the task resumes at the next page. Observed on
    two Macs: an 8-CPU Mac ran up to 4 tasks at once with no kills, and a 14-CPU
-   Mac ran up to 21 at once on a 4 GiB VM and hit SIGKILLs. If you see the
+   Mac ran up to 21 at once on a 4 GiB VM and hit SIGKILLs, probably for that reason. If you see the
    SIGKILL lines, lower the task count or raise the VM's RAM.
 
    This small OCR profile is **not** a Surya profile: the current Surya CPU job
