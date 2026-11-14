@@ -194,6 +194,34 @@ class StageTest(unittest.TestCase):
         self.assertEqual(counts["archive"], 2)
         self.assertTrue((self.out / "sn83030272/1876-10-17/ed-1/seq-5.txt").is_file())
 
+    def test_other_archive_layouts(self):
+        self.make_archive("nn_carson_ver02", {
+            "./nn_carson_ver02/sn83030272/1876-10-17/ed-1/seq-4/ocr.txt": "dash date",
+            "sn83030272/1876/10/17/ed-1/seq-5/ocr.txt": "slashes"})
+        counts, _ = self.run_stage([page(1, seq=4), page(2, seq=5)], no_loc_gov=True)
+        self.assertEqual((counts["archive"], counts["missing"]), (2, 0))
+        self.assertEqual((self.out / "sn83030272/1876-10-17/ed-1/seq-4.txt").read_text(), "dash date")
+
+    def test_pushback_and_cap_hold_across_rounds(self):
+        calls = []
+
+        def fake_open(req, timeout):
+            calls.append(req.full_url)
+            raise urllib.error.HTTPError(req.full_url, 429, "slow", {}, None)
+
+        rounds = [[page(1)], [page(1), page(2, seq=5)], [page(1), page(2, seq=5), page(3, seq=6)]]
+        check = SimpleNamespace(selected_images=lambda t, i: ["x"], returned_pages=lambda *a, **k: rounds.pop(0),
+                                sample=lambda pgs, date, count: pgs)
+        with mock.patch.object(S.urllib.request, "urlopen", fake_open):
+            counts = S.stage(self.args(), check=check, sleep=lambda s: None, now=NOW)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(counts["missing"], 3)
+        calls.clear()
+        rounds[:] = [[page(4)], [page(4), page(5, seq=5)], [page(4), page(5, seq=5)]]
+        with mock.patch.object(S.urllib.request, "urlopen", fake_open):
+            S.stage(self.args(loc_max=1, out=self.out / "x"), check=check, sleep=lambda s: None, now=NOW)
+        self.assertEqual(len(calls), 1)
+
     def test_xb_environment_fallbacks(self):
         argv = ["--handoff", "h", "--scans", "s", "--state-dir", "d", "--out", "o", "--archives", "a",
                 "--trust-file", "t"]

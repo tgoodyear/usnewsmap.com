@@ -9,7 +9,7 @@ first source that has it:
 
 1. local: a sidecar next to the scan in the keep store (`<seq>.txt` or `<seq>/ocr.txt`);
 2. archive: LoC's bulk OCR archive for the page's batch (`<archives>/<batch>.tar.bz2`, member
-   `<sn>/<yyyy>/<mm>/<dd>/ed-<n>/seq-<m>/ocr.txt`). One streaming pass per archive pulls every page the run
+   `<sn>/<yyyy>/<mm>/<dd>/ed-<n>/seq-<m>/ocr.txt`, or the `<yyyy-mm-dd>` and `./` or batch-prefixed layouts the ingest reader takes). One streaming pass per archive pulls every page the run
    needs from it, then stops reading it. No index: the sampled page's batch names the archive;
 3. loc.gov, last resort: the item JSON (`/item/<sn>/<date>/ed-<n>/?fo=json`) names the page's
    `fulltext_service`, whose answer holds `full_text`. Two requests a page, at least 5 s apart
@@ -63,9 +63,27 @@ def keep(path, data):
     os.replace(tmp, path)
 
 
-def member_name(page):
-    sn, y, m, d, ed, seq = PAGE_RE.match(page).groups()
-    return f"{sn}/{y}/{m}/{d}/ed-{ed}/seq-{seq}/ocr.txt"
+def page_of_member(name):
+    """`<sn>/<date>/ed-<n>/seq-<m>` for an archive member path, or None. Takes the layouts the ingest reader
+    does: `<sn>/<yyyy>/<mm>/<dd>/...` or `<sn>/<yyyy-mm-dd>/...`, with any leading `./` or batch directory."""
+    m = MEMBER_RE.match(name)
+    if not m:
+        return None
+    sn, y, mo, d, ed, seq = m.groups()
+    return f"{sn}/{y}-{mo}-{d}/ed-{ed}/seq-{seq}"
+
+
+MEMBER_RE = re.compile(r"^(?:.*/)?([a-z0-9]{1,16})/(\d{4})[-/](\d{2})[-/](\d{2})/ed-(\d+)/seq-(\d+)/ocr\.txt$")
+
+
+def page_of_member(name):
+    """`<sn>/<date>/ed-<n>/seq-<m>` for an archive member path, or None. Takes the layouts the ingest reader
+    does: `<sn>/<yyyy>/<mm>/<dd>/...` or `<sn>/<yyyy-mm-dd>/...`, with any leading `./` or batch directory."""
+    m = MEMBER_RE.match(name)
+    if not m:
+        return None
+    sn, y, mo, d, ed, seq = m.groups()
+    return f"{sn}/{y}-{mo}-{d}/ed-{ed}/seq-{seq}"
 
 
 def local_text(scans, page):
@@ -90,15 +108,17 @@ def archive_for(archives, batch):
 
 
 def from_archive(archive, wanted, deadline):
-    """Stream `archive` once; return {member name: bytes} for the wanted names, stopping when all are found."""
+    """Stream `archive` once; return {page: bytes} for the wanted pages (`<sn>/<date>/ed-<n>/seq-<m>`),
+    stopping when all are found."""
     got = {}
     with tarfile.open(archive, mode="r|bz2") as tar:
         for info in tar:
             if time.monotonic() > deadline:
                 log(f"{archive.name}: time budget spent, {len(wanted) - len(got)} page(s) not read")
                 break
-            if info.name in wanted and info.isfile() and info.size <= MAX_BYTES:
-                got[info.name] = tar.extractfile(info).read()
+            key = page_of_member(info.name.removeprefix("./"))
+            if key in wanted and key not in got and info.isfile() and info.size <= MAX_BYTES:
+                got[key] = tar.extractfile(info).read()
                 if len(got) == len(wanted):
                     break
     return got
@@ -163,14 +183,15 @@ def stage(a, check=None, sleep=time.sleep, now=None):
     seconds after the last one."""
     check = check or load_check(a.check_script)
     counts, done = dict.fromkeys(SOURCES, 0), set()
+    loc = {"attempts": 0, "stopped": False}  # one budget and one push-back flag for every round
     for _ in range(3):
-        if not stage_round(a, check, sleep, now or time.time(), counts, done):
+        if not stage_round(a, check, sleep, now or time.time(), counts, done, loc):
             break
         now = None
     return counts
 
 
-def stage_round(a, check, sleep, now, counts, done):
+def stage_round(a, check, sleep, now, counts, done, loc):
     """One selection and staging pass; the number of pages newly picked."""
     date = time.strftime("%Y-%m-%d", time.gmtime(now))
     for needed in ("spool", "dispatch/jobs"):
@@ -209,31 +230,32 @@ def stage_round(a, check, sleep, now, counts, done):
     deadline = time.monotonic() + a.archive_budget_secs
     for arc, group in by_archive.items():
         try:
-            got = from_archive(arc, {member_name(p["page"]) for p in group}, deadline)
+            got = from_archive(arc, {p["page"] for p in group}, deadline)
         except (OSError, EOFError, tarfile.TarError) as e:
             log(f"{arc.name}: {e}")
             got = {}
         for p in group:
-            data = got.get(member_name(p["page"]))
+            data = got.get(p["page"])
             if data is None:
                 rest.append(p)
             else:
                 keep(a.out / f"{p['page']}.txt", data)
                 counts["archive"] += 1
-    pushed = a.no_loc_gov or bool(rest and pacer_blocked(getattr(a, "loc_pacer", None)))
-    if rest and not a.no_loc_gov and pushed:
-        log(f"loc.gov skipped: {pacer_blocked(getattr(a, 'loc_pacer', None))}")
-    attempts = 0
+    if rest and not a.no_loc_gov and not loc["stopped"]:
+        why = pacer_blocked(getattr(a, "loc_pacer", None))
+        if why:
+            log(f"loc.gov skipped: {why}")
+            loc["stopped"] = True
     for p in rest:
-        if pushed or attempts >= a.loc_max:
+        if a.no_loc_gov or loc["stopped"] or loc["attempts"] >= a.loc_max:
             counts["missing"] += 1
             continue
-        attempts += 1
+        loc["attempts"] += 1
         try:
             text = from_loc_gov(p, a.out, sleep)
         except Pushback as e:
             log(f"loc.gov ended for this run: {e}")
-            pushed = True
+            loc["stopped"] = True
             text = None
         except (OSError, ValueError, KeyError, IndexError, StopIteration, urllib.error.URLError) as e:
             log(f"loc.gov {p['page']}: {type(e).__name__}: {str(e)[:100]}")
