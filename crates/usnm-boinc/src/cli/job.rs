@@ -183,6 +183,7 @@ pub async fn retry(args: RetryArgs) -> anyhow::Result<()> {
             reviewed_reason: &args.reviewed_reason,
             timeout_secs: args.timeout_secs,
             note: None,
+            now: None,
             handoff: handoff.as_ref(),
         },
         &State::new(docs),

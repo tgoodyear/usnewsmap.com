@@ -50,7 +50,9 @@ struct Fx {
     handoff: Arc<dyn ObjectStore>,
     curated: Arc<dyn ObjectStore>,
     reference: Arc<dyn ObjectStore>,
+    /// The published outputs as a local store keeps them, and as Blob Storage lists them.
     out: Arc<dyn ObjectStore>,
+    out_named: ByPrefix,
     state: State,
     parent: Record,
     page: Vec<u8>,
@@ -59,14 +61,25 @@ struct Fx {
 
 impl Fx {
     async fn new() -> Self {
+        Self::build(false, true).await
+    }
+
+    /// A queue-fed parent: its journal holds the ledger row its claim carries.
+    async fn queue_fed() -> Self {
+        Self::build(true, true).await
+    }
+
+    /// `dead_lettered` is whether the ledger holds the parent's permanent failure.
+    async fn build(queue_fed: bool, dead_lettered: bool) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let open = |name: &str| usnm_store::open(temp.path().join(name).to_str().unwrap()).unwrap();
         let (handoff, curated, reference, out) = (
             open("handoff"),
             open("curated"),
             open("reference"),
-            Arc::new(ByPrefix(open("out"))) as Arc<dyn ObjectStore>,
+            open("out"),
         );
+        let out_named = ByPrefix(open("out"));
         let state = State::new(Arc::new(MemoryDocs::default()));
         state.set_current_version("v1").await.unwrap();
         reference.put_new("v1/batches.json", br#"[{"batch":"test_batch","curated":{"version":1,"parts":[],"counts":"","pages":1,"ok_pages":1,"lccns":["sn00000001"],"source_sha256":"","first":"","last":""}}]"#.to_vec(), "application/json").await.unwrap();
@@ -87,7 +100,7 @@ impl Fx {
         job.scan.sha256 = boinc::sha256(&page);
         job.id = job.identity().unwrap();
         // Failed for good, but the journal predates terminal fields.
-        let parent = Record {
+        let mut parent = Record {
             job,
             plan: "slow-class".into(),
             stage: Stage::Failed,
@@ -101,6 +114,9 @@ impl Fx {
             held: None,
         };
         let previous = parent.queued().unwrap();
+        if queue_fed {
+            parent.ledger = Some(crate::LedgerRow::from_queued(&previous));
+        }
         ledger::write_queued(
             curated.as_ref(),
             std::slice::from_ref(&previous),
@@ -110,31 +126,34 @@ impl Fx {
         .await
         .unwrap();
         let at = previous.queued_at + chrono::Duration::minutes(1);
-        ledger::write_outcomes(
-            curated.as_ref(),
-            &[ledger::Outcome {
-                doc_id: previous.doc_id.clone(),
-                outcome: ledger::DEAD_LETTERED.into(),
-                cause: Some("permanent".into()),
-                kind: None,
-                source: "prior-dead-letter".into(),
+        if dead_lettered {
+            ledger::write_outcomes(
+                curated.as_ref(),
+                &[ledger::Outcome {
+                    doc_id: previous.doc_id.clone(),
+                    outcome: ledger::DEAD_LETTERED.into(),
+                    cause: Some("permanent".into()),
+                    kind: None,
+                    source: "prior-dead-letter".into(),
+                    at,
+                    run: "prior".into(),
+                    message_sha256: Some(boinc::sha256(
+                        &serde_json::to_vec(&parent.job.message).unwrap(),
+                    )),
+                }],
                 at,
-                run: "prior".into(),
-                message_sha256: Some(boinc::sha256(
-                    &serde_json::to_vec(&parent.job.message).unwrap(),
-                )),
-            }],
-            at,
-            "prior",
-        )
-        .await
-        .unwrap();
+                "prior",
+            )
+            .await
+            .unwrap();
+        }
         let fx = Self {
             temp,
             handoff,
             curated,
             reference,
             out,
+            out_named,
             state,
             parent,
             page,
@@ -240,13 +259,28 @@ impl Fx {
     }
 
     async fn run(&self, request: &Request<'_>) -> anyhow::Result<Outcome> {
+        self.run_with(request, true).await
+    }
+
+    async fn run_with(
+        &self,
+        request: &Request<'_>,
+        by_name_prefix: bool,
+    ) -> anyhow::Result<Outcome> {
         run(
             request,
             &Stores {
                 handoff: self.handoff.as_ref(),
                 curated: self.curated.as_ref(),
                 reference: self.reference.as_ref(),
-                out: Some(self.out.as_ref()),
+                out: Out {
+                    store: if by_name_prefix {
+                        &self.out_named
+                    } else {
+                        self.out.as_ref()
+                    },
+                    by_name_prefix,
+                },
                 state: &self.state,
             },
         )
@@ -494,8 +528,16 @@ async fn a_page_with_a_canonical_result_anywhere_is_refused() {
         )
         .await
         .unwrap();
-    fx.refused(&fx.request(Some(&fx.archive())), "published ALTO")
+    let archive = fx.archive();
+    fx.refused(&fx.request(Some(&archive)), "published ALTO")
         .await;
+    // A local output store lists a directory, not a name prefix: the check lists the directory.
+    let error = fx
+        .run_with(&fx.request(Some(&archive)), false)
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("published ALTO"), "{error:#}");
+    fx.assert_untouched().await;
 }
 
 #[tokio::test]
@@ -871,6 +913,8 @@ fn the_command_takes_named_flags_and_bounds_its_numbers() {
         "c",
         "--reference-url",
         "f",
+        "--out-url",
+        "o",
         "--cosmos",
         "https://c/",
     ];
@@ -900,4 +944,271 @@ fn the_command_takes_named_flags_and_bounds_its_numbers() {
     assert!(Cli::try_parse_from(other).is_err());
     // No positional arguments.
     assert!(parse(&["positional"]).is_err());
+}
+
+#[tokio::test]
+async fn a_dry_run_makes_the_checks_a_real_run_would() {
+    // A queue-fed parent's claim must be conclusively dead-lettered.
+    let fx = Fx::queue_fed().await;
+    let archive = fx.archive();
+    let request = Request {
+        dry_run: true,
+        ..fx.request(Some(&archive))
+    };
+    fx.refused(&request, "missing parent claim").await;
+    let queued = fx.parent.queued().unwrap();
+    for (ended, ok) in [
+        (None, false),
+        (Some("lease_lost"), false),
+        (Some("dead_letter_lease_lost"), false),
+        (Some("dead_lettered"), true),
+    ] {
+        let claim = crate::claim::Claim {
+            v: crate::claim::VERSION,
+            queue: usnm_store::queue::BULK.into(),
+            message_id: "m".into(),
+            pop_receipt: "r".into(),
+            dequeue_count: 2,
+            text: fx.parent.job.message.encode(),
+            claimed_at: Utc::now().to_rfc3339(),
+            lease_until: Utc::now().to_rfc3339(),
+            ledger: crate::LedgerRow::from_queued(&queued),
+            ended: ended.map(str::to_owned),
+        };
+        fx.handoff
+            .put(
+                &crate::claim::path(&queued.doc_id),
+                serde_json::to_vec(&claim).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        if ok {
+            assert_eq!(fx.run(&request).await.unwrap(), Outcome::Checked);
+        } else {
+            fx.refused(&request, "not conclusively deleted").await;
+        }
+    }
+    // The ledger must hold the parent's permanent failure as the page's latest outcome.
+    let fx = Fx::build(false, false).await;
+    let archive = fx.archive();
+    let request = Request {
+        dry_run: true,
+        ..fx.request(Some(&archive))
+    };
+    // (The page is outstanding there, so only the hand-off is checked for what a retry writes.)
+    let error = format!("{:#}", fx.run(&request).await.unwrap_err());
+    assert!(error.contains("no settled outcome"), "{error}");
+    assert!(fx.handoff.list("dispatch").await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn an_interrupted_retry_is_made_again_as_it_was() {
+    let fx = Fx::new().await;
+    let archive = fx.archive();
+    let request = Request {
+        target_hosts: &[2],
+        ..fx.request(Some(&archive))
+    };
+    let Outcome::Prepared { child, .. } = fx.run(&request).await.unwrap() else {
+        panic!("expected a prepared child");
+    };
+    // The run stopped after the reservation: no child in the hand-off, no index. The scratch
+    // root went with it, so only the intent and the ledger row remain.
+    for path in [
+        format!("dispatch/jobs/{child}/record.json"),
+        format!("dispatch/jobs/{child}/page"),
+        format!("dispatch/jobs/{child}/request.json"),
+        format!("dispatch/retries/{}.json", fx.id()),
+    ] {
+        fx.remove(&path);
+    }
+    // Other settings would be another child on the same reservation: refused.
+    let other = Request {
+        target_hosts: &[1],
+        ..fx.request(Some(&archive))
+    };
+    let error = format!("{:#}", fx.run(&other).await.unwrap_err());
+    assert!(error.contains("other settings"), "{error}");
+    assert!(!fx
+        .handoff
+        .exists(&format!("dispatch/jobs/{child}/record.json"))
+        .await
+        .unwrap());
+    // The same settings make the same child, with all its files.
+    assert_eq!(
+        fx.run(&request).await.unwrap(),
+        Outcome::Prepared {
+            child: child.clone(),
+            exported: true
+        }
+    );
+    for file in ["record.json", "page", "request.json"] {
+        assert!(
+            fx.handoff
+                .exists(&format!("dispatch/jobs/{child}/{file}"))
+                .await
+                .unwrap(),
+            "{file}"
+        );
+    }
+    let request_json: Job = serde_json::from_slice(
+        &fx.handoff
+            .get(&format!("dispatch/jobs/{child}/request.json"))
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(request_json.id, child);
+    // The index is back, so a third run finds the child.
+    assert_eq!(
+        fx.run(&request).await.unwrap(),
+        Outcome::Prepared {
+            child,
+            exported: false
+        }
+    );
+}
+
+#[tokio::test]
+async fn an_intent_that_reserved_nothing_is_replaced() {
+    let fx = Fx::new().await;
+    let archive = fx.archive();
+    fx.handoff
+        .put(
+            &format!("dispatch/retries/{}.intent.json", fx.id()),
+            serde_json::to_vec(&serde_json::json!({
+                "queued_at": "2026-11-13T00:00:00.000000Z", "request": "0".repeat(64)
+            }))
+            .unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        fx.run(&fx.request(Some(&archive))).await.unwrap(),
+        Outcome::Prepared { .. }
+    ));
+}
+
+#[tokio::test]
+async fn the_live_parent_is_made_failed_for_the_controller_and_never_overwritten() {
+    let record = |fx: &Fx| {
+        let path = fx
+            .temp
+            .path()
+            .join("handoff")
+            .join(format!("dispatch/jobs/{}/record.json", fx.id()));
+        serde_json::from_slice::<Record>(&std::fs::read(path).unwrap()).unwrap()
+    };
+    // An archive-only parent is written to the live hand-off, failed, with its proof.
+    let fx = Fx::new().await;
+    let archive = fx.archive();
+    fx.run(&fx.request(Some(&archive))).await.unwrap();
+    let live = record(&fx);
+    assert_eq!(live.stage, Stage::Failed);
+    assert_eq!(live.terminal.as_ref().unwrap().error_mask, Some(2));
+    assert!(live.error.as_ref().unwrap().contains("error mask 0x2"));
+    // A live parent still marked submitted is made failed, and nothing else of it changes.
+    let mut fx = Fx::new().await;
+    fx.parent.stage = Stage::Submitted;
+    fx.put_live().await;
+    fx.run(&fx.request(None)).await.unwrap();
+    let live = record(&fx);
+    assert_eq!(live.stage, Stage::Failed);
+    assert_eq!(live.job, fx.parent.job);
+    assert_eq!(live.plan, fx.parent.plan);
+    // Any other live state is refused before a child is reserved.
+    for stage in [Stage::Published, Stage::Reserved, Stage::Submitting] {
+        let fx = Fx::new().await;
+        let archive = fx.archive();
+        let mut live = fx.parent.clone();
+        live.stage = stage.clone();
+        fx.handoff
+            .put(
+                &format!("dispatch/jobs/{}/record.json", fx.id()),
+                serde_json::to_vec_pretty(&live).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        let error = format!(
+            "{:#}",
+            fx.run(&fx.request(Some(&archive))).await.unwrap_err()
+        );
+        assert!(error.contains("does not overwrite"), "{stage:?}: {error}");
+        assert!(fx
+            .handoff
+            .list("dispatch/retries")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+    // Another terminal proof is refused too.
+    let fx = Fx::new().await;
+    let archive = fx.archive();
+    let mut live = fx.parent.clone();
+    live.terminal = Some(TerminalFailure::from_marker(Some(b"0x4\n")));
+    live.error = Some("failed".into());
+    fx.handoff
+        .put(
+            &format!("dispatch/jobs/{}/record.json", fx.id()),
+            serde_json::to_vec_pretty(&live).unwrap(),
+            "application/json",
+        )
+        .await
+        .unwrap();
+    let error = format!(
+        "{:#}",
+        fx.run(&fx.request(Some(&archive))).await.unwrap_err()
+    );
+    assert!(error.contains("other terminal proof"), "{error}");
+}
+
+#[test]
+fn the_note_goes_in_the_real_source_image_information_element() {
+    let provenance = Provenance {
+        retry_of: "a".repeat(64),
+        parent_image: format!("sha256:{}", "b".repeat(64)),
+        reason: Reason::SegfaultOnce,
+        target_hosts: vec![],
+    };
+    let note = |location: &str, prefix: &str| {
+        format!("<{prefix}fileIdentifier fileIdentifierLocation=\"{location}\">")
+    };
+    // A closing tag in a comment or a CDATA section is not the element's.
+    let tricked = r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><!-- </sourceImageInformation> --><Description><sourceImageInformation><fileName>x</fileName></sourceImageInformation></Description></alto>"#;
+    let noted = provenance.alto_note(tricked).unwrap();
+    let real = noted.rfind("</sourceImageInformation>").unwrap();
+    let first = noted.find(&note("usnm_retry_of", "")).unwrap();
+    assert!(noted.find("<!--").unwrap() < noted.find("-->").unwrap());
+    assert!(
+        first > noted.find("-->").unwrap() && first < real,
+        "{noted}"
+    );
+    assert_eq!(noted.matches("usnm_retry_reason").count(), 1);
+    let cdata = tricked.replace(
+        "<!-- </sourceImageInformation> -->",
+        "<![CDATA[</sourceImageInformation>]]>",
+    );
+    let noted = provenance.alto_note(&cdata).unwrap();
+    assert!(noted.find(&note("usnm_retry_of", "")).unwrap() > noted.find("]]>").unwrap());
+    // A namespace prefix is kept.
+    let prefixed = r#"<alto:alto xmlns:alto="http://www.loc.gov/standards/alto/ns-v3#"><alto:Description><alto:sourceImageInformation><alto:fileName>x</alto:fileName></alto:sourceImageInformation></alto:Description></alto:alto>"#;
+    let noted = provenance.alto_note(prefixed).unwrap();
+    assert!(
+        noted.contains(&note("usnm_parent_image", "alto:")),
+        "{noted}"
+    );
+    assert!(noted.contains("</alto:fileIdentifier></alto:sourceImageInformation>"));
+    // No element, only one in a comment, or an empty one: refused.
+    for alto in [
+        "<alto/>",
+        "<alto><!-- </sourceImageInformation> --></alto>",
+        "<alto><sourceImageInformation/></alto>",
+        "<alto><sourceImageInformation>",
+    ] {
+        assert!(provenance.alto_note(alto).is_err(), "{alto}");
+    }
 }

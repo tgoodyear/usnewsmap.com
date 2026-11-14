@@ -115,8 +115,28 @@ pub struct Stores<'a> {
     pub curated: &'a dyn ObjectStore,
     pub reference: &'a dyn ObjectStore,
     /// The published outputs (`ocr-out`): a page with an ALTO there has a result.
-    pub out: Option<&'a dyn ObjectStore>,
+    pub out: Out<'a>,
     pub state: &'a State,
+}
+
+/// The published outputs store, and how its `list` takes a prefix: Blob Storage matches names
+/// that start with it, and a local store treats it as a directory.
+pub struct Out<'a> {
+    pub store: &'a dyn ObjectStore,
+    pub by_name_prefix: bool,
+}
+
+impl Out<'_> {
+    /// Whether an ALTO is published for the page (`alto/<doc id>.boinc-<job>.<stamp>.xml`).
+    async fn has_alto(&self, doc_id: &str) -> anyhow::Result<bool> {
+        let prefix = format!("alto/{doc_id}.");
+        let names = if self.by_name_prefix {
+            self.store.list(&prefix).await?
+        } else {
+            self.store.list("alto").await?
+        };
+        Ok(names.iter().any(|name| name.starts_with(&prefix)))
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -377,12 +397,10 @@ pub async fn run(request: &Request<'_>, stores: &Stores<'_>) -> anyhow::Result<O
             .imported(&doc_id),
         "{doc_id} was imported: it has a result"
     );
-    if let Some(out) = stores.out {
-        ensure!(
-            out.list(&format!("alto/{doc_id}.")).await?.is_empty(),
-            "{doc_id} has a published ALTO: it has a result"
-        );
-    }
+    ensure!(
+        !stores.out.has_alto(&doc_id).await?,
+        "{doc_id} has a published ALTO: it has a result"
+    );
 
     // Terminal proof: the BOINC database's error mask and no canonical result. When the
     // assimilator's marker is in the hand-off it must say the same; otherwise the marker is the
@@ -437,9 +455,55 @@ pub async fn run(request: &Request<'_>, stores: &Stores<'_>) -> anyhow::Result<O
         let trust: crate::trust::Trust = serde_json::from_slice(&trust)?;
         check_targets(&trust, &parent.job, request.image, request.target_hosts)?;
     }
+    // An earlier run that was interrupted after it reserved the child left the time it made it
+    // at, so this one makes the same child (its ledger row is no longer the parent's, so the
+    // checks of the parent's row are for a first run only). An intent whose time is in no ledger
+    // row is a run that stopped before it reserved; this one replaces it.
+    let intent_path = format!("dispatch/retries/{id}.intent.json");
+    let saved = match stores.handoff.get(&intent_path).await? {
+        Some(bytes) => Some(serde_json::from_slice::<Intent>(&bytes)?),
+        None => None,
+    };
+    let want = Intent {
+        queued_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+        request: fingerprint(request, timeout),
+    };
+    let mut resumed = None;
+    if let Some(saved) = saved {
+        let at = DateTime::parse_from_rfc3339(&saved.queued_at)?.with_timezone(&Utc);
+        let attempt = parent.queued()?.attempt;
+        let reserved = usnm_ocr_local::ledger::load(stores.curated)
+            .await?
+            .queued
+            .get(&doc_id)
+            .is_some_and(|row| row.queued_at == at && row.attempt > attempt);
+        if reserved {
+            ensure!(
+                saved.request == want.request,
+                "an interrupted retry of {id} was begun with other settings; repeat it with those, or reconcile it"
+            );
+            resumed = Some(at);
+        }
+    }
+    if resumed.is_none() {
+        preflight(&parent, stores).await?;
+    }
+    // The controller reads a retry's lineage from the live journals: the parent is there, failed.
+    // Checked before anything is reserved, written after the child is.
+    let parent_write = plan_parent(stores.handoff, &parent).await?;
     if request.dry_run {
         return Ok(Outcome::Checked);
     }
+    let queued_at = match resumed {
+        Some(at) => at,
+        None => {
+            stores
+                .handoff
+                .put(&intent_path, serde_json::to_vec(&want)?, "application/json")
+                .await?;
+            DateTime::parse_from_rfc3339(&want.queued_at)?.with_timezone(&Utc)
+        }
+    };
 
     let child = retry::prepare(
         &retry::Options {
@@ -452,6 +516,7 @@ pub async fn run(request: &Request<'_>, stores: &Stores<'_>) -> anyhow::Result<O
             reviewed_reason: request.reviewed_reason,
             timeout_secs: timeout,
             note: Some((request.reason, request.target_hosts.to_vec())),
+            now: Some(queued_at),
             handoff: stores.handoff,
         },
         stores.state,
@@ -459,6 +524,16 @@ pub async fn run(request: &Request<'_>, stores: &Stores<'_>) -> anyhow::Result<O
         stores.reference,
     )
     .await?;
+    // A resumed reservation does not rewrite the child's files; they are the parent's page and
+    // the request the child's journal holds.
+    let child_dir = dir(&root, &child)?;
+    atomic(&child_dir.join("page"), &page)?;
+    let child_record = load(&root, &child)?;
+    atomic(
+        &child_dir.join("request.json"),
+        &serde_json::to_vec_pretty(&child_record.job)?,
+    )?;
+    write_parent(stores.handoff, id, parent_write).await?;
     // The server pulls the child from here. A child already there is the server's to move on:
     // its later journal is never put back to reserved.
     let prefix = format!("dispatch/jobs/{child}");
@@ -480,6 +555,151 @@ pub async fn run(request: &Request<'_>, stores: &Stores<'_>) -> anyhow::Result<O
         )
         .await?;
     Ok(Outcome::Prepared { child, exported })
+}
+
+/// What an interrupted retry needs to be made again as it was: the time its child was made at,
+/// and what was asked (`dispatch/retries/<parent>.intent.json`, written before the reservation).
+#[derive(serde::Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Intent {
+    queued_at: String,
+    request: String,
+}
+
+fn fingerprint(request: &Request<'_>, timeout: Option<u32>) -> String {
+    boinc::sha256(
+        serde_json::json!({
+            "image": request.image,
+            "app_version_num": request.app_version_num,
+            "timeout_secs": timeout,
+            "reason": request.reason.as_str(),
+            "reviewed_reason": request.reviewed_reason,
+            "target_hosts": request.target_hosts,
+        })
+        .to_string()
+        .as_bytes(),
+    )
+}
+
+/// The checks `retry::prepare` makes under the native lease, made without reserving, so a dry
+/// run says what a real one would: a queue-fed parent's claim is conclusively dead-lettered, the
+/// page's batch and title are still published, and the parent's row is the latest in the ledger
+/// with a message-bound permanent failure. The reservation checks them again under the lease.
+async fn preflight(parent: &Record, stores: &Stores<'_>) -> anyhow::Result<()> {
+    let key = parent.job.message.key()?;
+    let doc_id = key.doc_id();
+    let previous = parent.queued()?;
+    if parent.retry.is_none() && parent.ledger.is_some() {
+        let bytes = stores
+            .handoff
+            .get(&crate::claim::path(&doc_id))
+            .await?
+            .context("missing parent claim; reconcile its queue delivery")?;
+        let claim = crate::claim::Claim::load(&bytes)?;
+        ensure!(
+            claim.message()? == parent.job.message
+                && claim.ledger == crate::LedgerRow::from_queued(&previous)
+                && claim.ended.as_deref() == Some("dead_lettered"),
+            "parent delivery is not conclusively deleted; reconcile its claim"
+        );
+    }
+    let snapshot = usnm_ocr_local::boinc::Snapshot::load(stores.state, stores.reference).await?;
+    ensure!(
+        snapshot.batch_version(&previous.batch) == Some(previous.batch_version),
+        "the page's batch version is not published"
+    );
+    ensure!(
+        snapshot.titles.contains_key(&key.lccn) && !snapshot.is_japanese(&key.lccn),
+        "the page's title is unavailable or uses the Japanese OCR pipeline"
+    );
+    let ledger = usnm_ocr_local::ledger::load(stores.curated).await?;
+    ensure!(
+        !ledger.imported(&doc_id),
+        "{doc_id} was imported: it has a result"
+    );
+    ensure!(
+        ledger.queued.get(&doc_id) == Some(&previous),
+        "the parent's attempt is not the page's latest ledger row; reconcile"
+    );
+    let outcome = ledger
+        .outcomes
+        .get(&doc_id)
+        .context("the parent's attempt has no settled outcome in the ledger")?;
+    ensure!(
+        outcome.outcome == usnm_ocr_local::ledger::DEAD_LETTERED
+            && outcome.cause.as_deref() == Some("permanent")
+            && outcome.at >= previous.queued_at
+            && outcome.message_sha256.as_deref()
+                == Some(boinc::sha256(&serde_json::to_vec(&parent.job.message)?).as_str()),
+        "only a message-bound settled permanent failure may be retried"
+    );
+    Ok(())
+}
+
+/// What the live hand-off needs for the parent's journal to be failed, with the proof the retry
+/// stands on, so the controller finds a failed parent for the child.
+enum ParentWrite {
+    /// Already so.
+    Nothing,
+    /// There is no live journal: write this one.
+    Create(Vec<u8>),
+    /// The live journal is `submitted`, or a legacy `failed` with no terminal fields: this one is
+    /// it with those, and nothing else of it changed.
+    Replace(Vec<u8>),
+}
+
+/// Decides [`ParentWrite`], refusing any other live state: it is never overwritten. The hand-off
+/// steps hold one lock, so nothing else writes the journal between this and [`write_parent`].
+async fn plan_parent(handoff: &dyn ObjectStore, parent: &Record) -> anyhow::Result<ParentWrite> {
+    let path = format!("dispatch/jobs/{}/record.json", parent.job.id);
+    let Some(bytes) = handoff.get(&path).await? else {
+        return Ok(ParentWrite::Create(serde_json::to_vec_pretty(parent)?));
+    };
+    let live: Record = serde_json::from_slice(&bytes)?;
+    ensure!(
+        live.job == parent.job && live.plan == parent.plan && live.bundle.is_none(),
+        "the live journal for {} is another job's or a bundle's; reconcile it",
+        parent.job.id
+    );
+    match (&live.stage, &live.terminal) {
+        (Stage::Failed, Some(terminal)) => {
+            ensure!(
+                Some(terminal) == parent.terminal.as_ref(),
+                "the live journal for {} has other terminal proof; reconcile it",
+                parent.job.id
+            );
+            Ok(ParentWrite::Nothing)
+        }
+        (Stage::Failed | Stage::Submitted, None) => {
+            let mut updated = live.clone();
+            updated.stage = Stage::Failed;
+            updated.terminal = parent.terminal.clone();
+            updated.error = parent.error.clone();
+            Ok(ParentWrite::Replace(serde_json::to_vec_pretty(&updated)?))
+        }
+        (stage, _) => anyhow::bail!(
+            "the live journal for {} is {stage:?}; reconcile it, a retry does not overwrite it",
+            parent.job.id
+        ),
+    }
+}
+
+async fn write_parent(
+    handoff: &dyn ObjectStore,
+    id: &str,
+    write: ParentWrite,
+) -> anyhow::Result<()> {
+    let path = format!("dispatch/jobs/{id}/record.json");
+    match write {
+        ParentWrite::Nothing => {}
+        ParentWrite::Create(bytes) => {
+            if !handoff.put_new(&path, bytes, "application/json").await? {
+                anyhow::bail!("the live journal for {id} appeared meanwhile; reconcile it");
+            }
+        }
+        ParentWrite::Replace(bytes) => handoff.put(&path, bytes, "application/json").await?,
+    }
+    Ok(())
 }
 
 /// The child a parent's retry made, at `dispatch/retries/<parent>.json`.
@@ -560,7 +780,7 @@ pub struct ControllerRetryArgs {
     reference_url: String,
     /// The published outputs; a page with an ALTO there is refused.
     #[arg(long)]
-    out_url: Option<String>,
+    out_url: String,
     #[arg(long, required_unless_present = "cosmos", conflicts_with = "cosmos")]
     state_file: Option<PathBuf>,
     #[arg(long)]
@@ -579,7 +799,9 @@ pub async fn controller_retry(args: ControllerRetryArgs) -> anyhow::Result<()> {
     let handoff = usnm_store::open(&args.handoff_url)?;
     let curated = usnm_store::open(&args.curated_url)?;
     let reference = usnm_store::open(&args.reference_url)?;
-    let out = args.out_url.as_deref().map(usnm_store::open).transpose()?;
+    let out = usnm_store::open(&args.out_url)?;
+    let by_name_prefix =
+        args.out_url.starts_with("https://") || args.out_url.starts_with("http://");
     let mut hosts = args.target_hosts;
     hosts.sort_unstable();
     hosts.dedup();
@@ -600,7 +822,10 @@ pub async fn controller_retry(args: ControllerRetryArgs) -> anyhow::Result<()> {
             handoff: handoff.as_ref(),
             curated: curated.as_ref(),
             reference: reference.as_ref(),
-            out: out.as_deref(),
+            out: Out {
+                store: out.as_ref(),
+                by_name_prefix,
+            },
             state: &state,
         },
     )

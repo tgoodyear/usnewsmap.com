@@ -81,11 +81,12 @@ pub const ALTO_RETRY_REASON: &str = "usnm_retry_reason";
 
 impl Provenance {
     /// The ALTO with the note as `fileIdentifier`s after the others in `sourceImageInformation`
-    /// (where the scan's sha256 is, ADR-0015), so it is there on every published retry. An ALTO
-    /// without that element is refused: a retry is never published without its note.
+    /// (where the scan's sha256 is, ADR-0015), so it is there on every published retry. They go
+    /// before the element's real closing tag, in its namespace prefix if it has one: a closing
+    /// tag inside a comment or CDATA section is not it. An ALTO without that element is refused:
+    /// a retry is never published without its note.
     pub fn alto_note(&self, alto: &str) -> anyhow::Result<String> {
-        let end = alto
-            .find("</sourceImageInformation>")
+        let (end, prefix) = source_image_information_end(alto)
             .context("the ALTO has no sourceImageInformation to carry the retry's note")?;
         // The parent's id and image are hex, and the reason one of two words: nothing to escape.
         let ids: String = [
@@ -96,7 +97,7 @@ impl Provenance {
         .iter()
         .map(|(location, value)| {
             format!(
-                "<fileIdentifier fileIdentifierLocation=\"{location}\">{value}</fileIdentifier>"
+                "<{prefix}fileIdentifier fileIdentifierLocation=\"{location}\">{value}</{prefix}fileIdentifier>"
             )
         })
         .collect();
@@ -114,6 +115,35 @@ impl Provenance {
             && self.target_hosts.len() <= 64
             && record.job.lines.is_none()
     }
+}
+
+/// Where the closing tag of ALTO's `sourceImageInformation` starts, and its namespace prefix
+/// (`"alto:"` or empty), skipping comments and CDATA sections. `None` when there is no such
+/// closing tag.
+fn source_image_information_end(alto: &str) -> Option<(usize, String)> {
+    let mut at = 0;
+    while let Some(found) = alto[at..].find('<') {
+        let start = at + found;
+        let rest = &alto[start..];
+        if rest.starts_with("<!--") {
+            at = start + rest.find("-->")? + 3;
+        } else if rest.starts_with("<![CDATA[") {
+            at = start + rest.find("]]>")? + 3;
+        } else if let Some(closing) = rest.strip_prefix("</") {
+            let name = &closing[..closing.find('>')?];
+            let name = name.trim_end();
+            if name == "sourceImageInformation" {
+                return Some((start, String::new()));
+            }
+            if let Some(prefix) = name.strip_suffix(":sourceImageInformation") {
+                return Some((start, format!("{prefix}:")));
+            }
+            at = start + 2;
+        } else {
+            at = start + 1;
+        }
+    }
+    None
 }
 
 pub fn validate(record: &Record) -> anyhow::Result<()> {
@@ -189,6 +219,9 @@ pub struct Options<'a> {
     /// A controller-side retry's reason and hosts (#1938); the parent's id and image are filled
     /// in from its journal.
     pub note: Option<(Reason, Vec<u64>)>,
+    /// The time the child is made at, when it is fixed beforehand so an interrupted retry made
+    /// again in a fresh scratch root makes the same child (#1938). Default: now.
+    pub now: Option<chrono::DateTime<Utc>>,
     pub handoff: &'a dyn ObjectStore,
 }
 
@@ -270,7 +303,7 @@ pub async fn prepare(
     );
     let previous_row = previous.queued()?;
     let snapshot = Snapshot::load(state, reference).await?;
-    let now = Utc::now();
+    let now = opts.now.unwrap_or_else(Utc::now);
     let mut job = previous.job.clone();
     job.v = boinc::Job::version_for(true, job.lines.is_some());
     job.attempt = job.attempt.checked_add(1).context("attempt overflow")?;
@@ -568,6 +601,7 @@ mod tests {
             reviewed_reason: "reviewed terminal marker and settled native row",
             timeout_secs: None,
             note: None,
+            now: None,
             handoff: curated.as_ref(),
         };
         for stage in [Stage::Submitted, Stage::Submitting] {
@@ -940,6 +974,7 @@ mod tests {
             reviewed_reason: "reviewed terminal marker and settled native row",
             timeout_secs: None,
             note: None,
+            now: None,
             handoff: curated.as_ref(),
         };
         // A tampered LoC ALTO is refused before anything is reserved.

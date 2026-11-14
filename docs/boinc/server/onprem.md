@@ -270,7 +270,30 @@ checks as `usnm-boinc retry` apply: the native ledger must hold the parent's exa
 failure as its latest outcome, and a queue-fed parent's claim must be conclusively `dead_lettered`.
 A parent is retried once from here: a second run finds the child named in
 `dispatch/retries/<parent>.json`; a failed child is retried from its own journal, with a fresh
-review naming it.
+review naming it. `--out-url` is required (the published-ALTO check is never skipped). On Blob
+Storage the check lists the names that start `alto/<doc id>.`; a local store lists a directory,
+so there it lists `alto/` and filters.
+
+**Dry run.** `RETRY_DRY_RUN=1` (`--dry-run`) runs everything above and the checks
+`retry::prepare` makes under the native lease, without reserving: a queue-fed parent's claim is
+conclusively `dead_lettered`, the page's batch and title are still published, and the parent's
+row is the page's latest ledger row with a message-bound permanent failure. It also refuses a
+live journal that cannot be reconciled (below). The reservation checks them again.
+
+**Resuming.** Before it reserves, the step writes `dispatch/retries/<parent>.intent.json`: the time
+the child is made at and a digest of what was asked (image, app version, deadline, reason, review
+text, hosts). If the step stops after the reservation, a repeat with the same settings makes the
+same child in fresh scratch, writes its files and index, and finishes; other settings are refused,
+since they would be a different child on the same reservation. An intent whose time is in no ledger
+row is a run that stopped first, and is replaced.
+
+**The live parent.** The controller reads a retry's lineage from the live journals and needs the
+parent there, failed. After the reservation, and before the child is written, the step writes the
+parent's journal to `dispatch/jobs/<parent>/record.json` when it is absent (failed, with the
+database's proof); when it is there as `submitted`, or as `failed` with no terminal fields, the step
+sets those and changes nothing else; any other live state, another job's journal, or other terminal
+proof is refused before anything is reserved, never overwritten. The hand-off steps share one lock,
+so nothing writes the journal in between. The archive is never touched.
 
 **Reason and deadline.** `RETRY_REASON` is `slow-class` or `segfault-once`. A slow-class retry needs
 `RETRY_TIMEOUT_SECS` (`--timeout-secs`, up to 3600), longer than the parent's, since the same deadline
@@ -304,7 +327,9 @@ ordinary pool work.
 **Provenance.** The child's journal carries `retry_of` (the parent's job id), `parent_image` (the
 image the parent ran on), the `reason` and the target hosts (`retry.provenance`). The request the
 worker reads is unchanged, so no worker release is involved. `collect` publishes the page with the
-note in the ALTO's `sourceImageInformation`, after the scan's own identifiers:
+note in the ALTO's `sourceImageInformation`, after the scan's own identifiers (inserted before the
+element's real closing tag, in its namespace prefix if it has one, so a closing tag in a comment or
+CDATA section does not take it; an ALTO with no such element is not published):
 
 ```xml
 <fileIdentifier fileIdentifierLocation="usnm_retry_of">PARENT JOB ID</fileIdentifier>
