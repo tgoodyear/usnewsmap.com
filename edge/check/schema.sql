@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS answers (
   choice TEXT NOT NULL CHECK (choice IN ('a', 'b', 'neither', 'unsure', 'notext')),
   at INTEGER NOT NULL,            -- unix milliseconds
   font TEXT NOT NULL DEFAULT 'unknown' CHECK (font IN ('loaded', 'not_loaded', 'none', 'unknown')),  -- the bundled font as the page reported it when the answer was given; unknown for answers from before (migrations/0003-answer-font.sql)
+  names_shown TEXT NOT NULL DEFAULT 'unknown' CHECK (names_shown IN ('shown', 'not_shown', 'unknown')),  -- whether letter names were showing, as the page reported it; unknown for answers from before (migrations/0004-answer-names.sql)
   PRIMARY KEY (task_id, contributor)
 );
 CREATE INDEX IF NOT EXISTS answers_by_contributor ON answers (contributor);
@@ -36,5 +37,6 @@ CREATE TABLE IF NOT EXISTS answers_excluded (
   choice TEXT NOT NULL CHECK (choice IN ('a', 'b', 'neither', 'unsure', 'notext')),
   at INTEGER NOT NULL,
   font TEXT NOT NULL DEFAULT 'unknown' CHECK (font IN ('loaded', 'not_loaded', 'none', 'unknown')),
+  names_shown TEXT NOT NULL DEFAULT 'unknown' CHECK (names_shown IN ('shown', 'not_shown', 'unknown')),
   PRIMARY KEY (task_id, contributor)
 );

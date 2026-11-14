@@ -240,7 +240,7 @@ test("a settled blind task takes no more answers, and other tasks still take rev
   const db = new DatabaseSync(":memory:");
   db.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
   db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('blind', 'en', 's', ?), ('plain', 'chr', 's', '{}')").run(JSON.stringify({ private: { a_is: "loc" } }));
-  const answer = (task, who, choice) => { db.prepare(ANSWER_SQL).run(task, who, choice, 0, 0, "unknown"); db.prepare(SETTLE_SQL).run(task); };
+  const answer = (task, who, choice) => { db.prepare(ANSWER_SQL).run(task, who, choice, 0, 0, "unknown", "unknown"); db.prepare(SETTLE_SQL).run(task); };
   const row = (id) => ({ ...db.prepare("SELECT n, settled, outcome FROM tasks WHERE id = ?").get(id) });
   for (const id of ["blind", "plain"]) { answer(id, "c1", "a"); answer(id, "c2", "a"); answer(id, "c3", "b"); }
   assert.deepEqual(row("blind"), { n: 3, settled: 1, outcome: "a" });
@@ -369,9 +369,9 @@ test("marking a task confusable_display sets its answers aside, keeps them, and 
   // an answer request from a page without the display revision that read the task before it was marked, reopened: refused
   const { ANSWER_SQL } = await import("./worker.mjs");
   db.prepare("DELETE FROM answers WHERE task_id = 'chr/s/1' AND contributor = 'c3'").run();
-  assert.equal(db.prepare(ANSWER_SQL).run("chr/s/1", "c3", "a", 0, DISPLAY_REVISION - 1, "unknown").changes, 0);
-  assert.equal(db.prepare(ANSWER_SQL).run("chr/s/2", "c3", "a", 0, 0, "unknown").changes, 1, "a task never marked takes it");
-  assert.equal(db.prepare(ANSWER_SQL).run("chr/s/1", "c3", "b", 0, DISPLAY_REVISION, "unknown").changes, 1);
+  assert.equal(db.prepare(ANSWER_SQL).run("chr/s/1", "c3", "a", 0, DISPLAY_REVISION - 1, "unknown", "unknown").changes, 0);
+  assert.equal(db.prepare(ANSWER_SQL).run("chr/s/2", "c3", "a", 0, 0, "unknown", "unknown").changes, 1, "a task never marked takes it");
+  assert.equal(db.prepare(ANSWER_SQL).run("chr/s/1", "c3", "b", 0, DISPLAY_REVISION, "unknown", "unknown").changes, 1);
   // loading a seed file again doesn't bring a set-aside seed answer back, and a new one still counts
   const seedPost = async (rows) => (await adminCall(DB, "/admin/answers", null, rows.map((r) => JSON.stringify(r)).join("\n"))).json();
   db.prepare("INSERT INTO answers_excluded (task_id, contributor, choice, at) VALUES ('chr/s/1', 'seed:old', 'a', 111)").run();
@@ -384,7 +384,7 @@ test("marking a task confusable_display sets its answers aside, keeps them, and 
 test("the page and the Worker agree on the display revision", () => {
   const app = readFileSync(new URL("./public/app.js", import.meta.url), "utf8");
   assert.equal(Number(app.match(/const DISPLAY = (\d+);/)[1]), DISPLAY_REVISION);
-  assert.match(app, /JSON\.stringify\(\{ task: task\.id, choice, display: DISPLAY, font: fontState\(task\) \}\)/);
+  assert.match(app, /JSON\.stringify\(\{ task: task\.id, choice, display: DISPLAY, font: fontState\(task\), names_shown: namesState\(task\) \}\)/);
 });
 
 test("marking is atomic: a copy that misses a row fails the batch and leaves the answers where they were", async () => {
@@ -420,8 +420,8 @@ test("migration 0002 only adds, so the Worker from before it still runs on the m
   // and the schema.sql a new database gets has the same tables and columns as the migrated one
   const fresh = new DatabaseSync(":memory:");
   fresh.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
-  // (without the font column, which migration 0003 adds)
-  const shape = (d) => ["tasks", "answers_excluded"].map((t) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('${t}') WHERE name <> 'font' ORDER BY name`).all().map((r) => ({ ...r })));
+  // (without the font and names_shown columns, which migrations 0003 and 0004 add)
+  const shape = (d) => ["tasks", "answers_excluded"].map((t) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('${t}') WHERE name NOT IN ('font', 'names_shown') ORDER BY name`).all().map((r) => ({ ...r })));
   assert.deepEqual(shape(db), shape(fresh));
 });
 
@@ -488,10 +488,106 @@ test("migration 0003 only adds, so the Worker from before it still runs on the m
   // the schema.sql a new database gets has the same columns as the migrated one
   const fresh = new DatabaseSync(":memory:");
   fresh.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
+  const shape = (d) => ["tasks", "answers", "answers_excluded"].map((t) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('${t}') WHERE name <> 'names_shown' ORDER BY name`).all().map((r) => ({ ...r })));
+  assert.deepEqual(shape(db), shape(fresh));
+  // and the new Worker's statements run on the migrated database once migration 0004 has added its column
+  db.exec(readFileSync(new URL("./migrations/0004-answer-names.sql", import.meta.url), "utf8"));
+  const { ANSWER_SQL } = await import("./worker.mjs");
+  assert.equal(db.prepare(ANSWER_SQL).run("t", "c3", "a", 2, 1, "loaded", "unknown").changes, 1);
+  assert.equal(db.prepare("SELECT font FROM answers WHERE contributor = 'c3'").get().font, "loaded");
+});
+
+// ---------- whether letter names were showing when each answer was given ----------
+
+test("an answer stores whether letter names were showing, and an old page's answer is unknown", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('chr/s/1', 'chr', 's', '{\"a\":\"x\",\"b\":\"y\"}'), ('chr/s/2', 'chr', 's', '{}')").run();
+  const post = async (name, body) => worker.fetch(new Request("https://check.usnewsmap.com/api/answers", { method: "POST", headers: { authorization: "Bearer " + (await signSession(env.SESSION_KEY, name)) }, body: JSON.stringify(body) }), E, {});
+  const namesOfAnswer = (c) => db.prepare("SELECT names_shown FROM answers WHERE task_id = 'chr/s/1' AND contributor = ?").get(c)?.names_shown;
+  for (const [c, names_shown] of [["c1", "shown"], ["c2", "not_shown"], ["c3", "unknown"]]) assert.equal((await post(c, { task: "chr/s/1", choice: "a", font: "loaded", names_shown })).status, 200);
+  // a cached page from before the value existed sends none; so does a value the Worker doesn't know
+  assert.equal((await post("c4", { task: "chr/s/1", choice: "a" })).status, 200);
+  assert.equal((await post("c5", { task: "chr/s/1", choice: "a", names_shown: "yes" })).status, 200);
+  assert.equal((await post("c6", { task: "chr/s/1", choice: "a", names_shown: ["shown"] })).status, 200);
+  assert.equal((await post("c7", { task: "chr/s/1", choice: "a", names_shown: true })).status, 200);
+  assert.deepEqual(["c1", "c2", "c3", "c4", "c5", "c6", "c7"].map(namesOfAnswer), ["shown", "not_shown", "unknown", "unknown", "unknown", "unknown", "unknown"]);
+  // changing an answer takes the new answer's value, and the font value is stored independently
+  await post("c1", { task: "chr/s/1", choice: "b", names_shown: "not_shown" });
+  assert.deepEqual([db.prepare("SELECT choice, font, names_shown FROM answers WHERE contributor = 'c1'").get()].map((r) => ({ ...r })), [{ choice: "b", font: "unknown", names_shown: "not_shown" }]);
+  // seed answers are unknown, and the database itself refuses a value outside the list
+  const seeded = await (await adminCall(DB, "/admin/answers", null, JSON.stringify({ task: "chr/s/2", contributor: "seed:x", choice: "a", at: 5 }))).json();
+  assert.equal(seeded.answers, 1);
+  assert.equal(db.prepare("SELECT names_shown FROM answers WHERE contributor = 'seed:x'").get().names_shown, "unknown");
+  assert.throws(() => db.prepare("UPDATE answers SET names_shown = 'Arial' WHERE contributor = 'c1'").run());
+  // the export has the counts per task, adding up to the answers; the other counts are as before
+  await post("c8", { task: "chr/s/1", choice: "a", names_shown: "shown" });
+  const read = async () => (await (await worker.fetch(new Request("https://check.usnewsmap.com/api/export?lang=chr"), E, {})).text()).trim().split("\n").map((l) => JSON.parse(l));
+  const lines = await read();
+  assert.deepEqual(lines[0].names_counts, { shown: 1, not_shown: 2, unknown: 5 });
+  assert.equal(Object.values(lines[0].names_counts).reduce((x, y) => x + y, 0), Object.values(lines[0].counts).reduce((x, y) => x + y, 0));
+  assert.deepEqual(lines[1].names_counts, { shown: 0, not_shown: 0, unknown: 1 });
+  assert.equal("excluded_names_counts" in lines[0], false);
+  assert.deepEqual(Object.keys(lines[0].counts), ["a", "b", "neither", "unsure", "notext"]);
+  assert.deepEqual(lines[0].font_counts, { loaded: 2, not_loaded: 0, none: 0, unknown: 6 });
+  // an answer set aside later keeps its value, and the export counts it apart
+  await adminCall(DB, "/admin/confusable", { action: "mark", tasks: ["chr/s/1"] });
+  assert.deepEqual(db.prepare("SELECT contributor, names_shown FROM answers_excluded ORDER BY contributor").all().map((r) => ({ ...r })).slice(0, 3),
+    [{ contributor: "c1", names_shown: "not_shown" }, { contributor: "c2", names_shown: "not_shown" }, { contributor: "c3", names_shown: "unknown" }]);
+  const [marked] = await read();
+  assert.deepEqual(marked.names_counts, { shown: 0, not_shown: 0, unknown: 0 });
+  assert.deepEqual(marked.excluded_names_counts, { shown: 1, not_shown: 2, unknown: 5 });
+  assert.deepEqual(Object.keys(marked.excluded_counts), ["a", "b", "neither", "unsure", "notext"]);
+});
+
+test("migration 0004 only adds, so the Worker from before it still runs on the migrated database", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(":memory:");
+  // the schema and the statements as they were after migration 0003
+  db.exec(`CREATE TABLE tasks (id TEXT PRIMARY KEY, lang TEXT NOT NULL, set_name TEXT NOT NULL, body TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, outcome TEXT, settled INTEGER NOT NULL DEFAULT 0, confusable_display INTEGER NOT NULL DEFAULT 0, held INTEGER NOT NULL DEFAULT 0);
+    CREATE TABLE answers (task_id TEXT NOT NULL, contributor TEXT NOT NULL, choice TEXT NOT NULL CHECK (choice IN ('a', 'b', 'neither', 'unsure', 'notext')), at INTEGER NOT NULL, font TEXT NOT NULL DEFAULT 'unknown' CHECK (font IN ('loaded', 'not_loaded', 'none', 'unknown')), PRIMARY KEY (task_id, contributor));
+    CREATE TABLE answers_excluded (task_id TEXT NOT NULL, contributor TEXT NOT NULL, choice TEXT NOT NULL CHECK (choice IN ('a', 'b', 'neither', 'unsure', 'notext')), at INTEGER NOT NULL, font TEXT NOT NULL DEFAULT 'unknown' CHECK (font IN ('loaded', 'not_loaded', 'none', 'unknown')), PRIMARY KEY (task_id, contributor));`);
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('t', 'chr', 's', '{}')").run();
+  db.prepare("INSERT INTO answers VALUES ('t', 'c1', 'a', 0, 'loaded')").run();
+  db.prepare("INSERT INTO answers_excluded VALUES ('t', 'c0', 'b', 0, 'none')").run();
+  db.exec(readFileSync(new URL("./migrations/0004-answer-names.sql", import.meta.url), "utf8"));
+  assert.deepEqual({ ...db.prepare("SELECT contributor, font, names_shown FROM answers").get() }, { contributor: "c1", font: "loaded", names_shown: "unknown" });
+  assert.equal(db.prepare("SELECT names_shown FROM answers_excluded").get().names_shown, "unknown", "existing answers are unknown");
+  // the statements the Worker of the 0003 revision ran
+  db.prepare(`INSERT INTO answers (task_id, contributor, choice, at, font)
+    SELECT ?1, ?2, ?3, ?4, ?6 WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND (held = 1 OR (confusable_display = 1 AND ?5 < 1)))
+    ON CONFLICT (task_id, contributor) DO UPDATE SET choice = excluded.choice, at = excluded.at, font = excluded.font`).run("t", "c2", "b", 1, 1, "none");
+  db.prepare("INSERT INTO answers_excluded (task_id, contributor, choice, at, font) SELECT task_id, contributor, choice, at, font FROM answers WHERE task_id = 't'").run();
+  assert.deepEqual(db.prepare("SELECT names_shown FROM answers ORDER BY contributor").all().map((r) => r.names_shown), ["unknown", "unknown"]);
+  // the schema.sql a new database gets has the same columns as the migrated one
+  const fresh = new DatabaseSync(":memory:");
+  fresh.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
   const shape = (d) => ["tasks", "answers", "answers_excluded"].map((t) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('${t}') ORDER BY name`).all().map((r) => ({ ...r })));
   assert.deepEqual(shape(db), shape(fresh));
   // and the new Worker's statements run on the migrated database
   const { ANSWER_SQL } = await import("./worker.mjs");
-  assert.equal(db.prepare(ANSWER_SQL).run("t", "c3", "a", 2, 1, "loaded").changes, 1);
-  assert.equal(db.prepare("SELECT font FROM answers WHERE contributor = 'c3'").get().font, "loaded");
+  assert.equal(db.prepare(ANSWER_SQL).run("t", "c3", "a", 2, 1, "loaded", "shown").changes, 1);
+  assert.equal(db.prepare("SELECT names_shown FROM answers WHERE contributor = 'c3'").get().names_shown, "shown");
+});
+
+test("the page sends a value the Worker stores, and a language with no letter names always says not_shown", async () => {
+  const app = readFileSync(new URL("./public/app.js", import.meta.url), "utf8");
+  const { NAMES_STATES } = await import("./worker.mjs");
+  const sent = ["shown", "not_shown"];
+  for (const v of sent) assert.ok(NAMES_STATES.includes(v), v);
+  for (const v of sent) assert.match(app, new RegExp(`"${v}"`));
+  assert.match(app, /if \(!namesOn\(\) \|\| !t\) return "not_shown";/);
+  assert.match(readFileSync(new URL("./migrations/0004-answer-names.sql", import.meta.url), "utf8"), /IN \('shown', 'not_shown', 'unknown'\)/);
+});
+
+test("namesState looks at each reading on its own, so a leading combining mark in one cannot hide the other's names", () => {
+  const app = readFileSync(new URL("./public/app.js", import.meta.url), "utf8");
+  const start = app.indexOf("const segmenter"), end = app.indexOf("function examples(");
+  const make = (cfg, on) => new Function(`const cfg = ${JSON.stringify(cfg)}, showNames = ${on};\n${app.slice(start, end)}\nconst namesOn = () => showNames && hasNames();\n${app.slice(app.indexOf("function namesState"), app.indexOf("// What the page reports with an answer about the bundled font"))}\nreturn namesState;`)();
+  const labels = { labels: { "Ꭰ": "a" } };
+  assert.equal(make(labels, true)({ a: "Ꭰ", b: "\u0301x" }), "shown", "b starts with a combining mark");
+  assert.equal(make(labels, true)({ a: "\u0301x", b: "Ꭰ" }), "shown");
+  assert.equal(make(labels, true)({ a: "x", b: "y" }), "not_shown", "no named letter");
+  assert.equal(make(labels, false)({ a: "Ꭰ", b: "Ꭰ" }), "not_shown", "option off");
+  assert.equal(make({}, true)({ a: "Ꭰ", b: "Ꭰ" }), "not_shown", "a language with no letter names");
 });

@@ -72,3 +72,16 @@ test("Serbian labels give the Latin equivalent of every Cyrillic letter, both ca
   assert.equal(Object.keys(want).length, 60);
   assert.deepEqual(sr.labels, Object.fromEntries(Object.keys(want).sort().map((k) => [k, want[k]])));
 });
+
+test("the three Cherokee files carry the same letter names, one for each syllabary letter U+13A0 to U+13F5", () => {
+  const read = (f) => JSON.parse(readFileSync(new URL(f, dir), "utf8")).labels;
+  const chr = read("chr.json");
+  assert.deepEqual(read("chr-lines.json"), chr);
+  assert.deepEqual(read("chr-rare.json"), chr);
+  const letters = Array.from({ length: 0x13f6 - 0x13a0 }, (_, i) => String.fromCodePoint(0x13a0 + i));
+  assert.equal(letters.length, 86);
+  assert.deepEqual(Object.keys(chr), letters, "every syllabary letter, in code point order (which is the sorted order)");
+  for (const [letter, name] of Object.entries(chr)) assert.match(name, /^[a-z]{1,3}$/, `the name of ${letter} is a syllable`);
+  assert.equal(new Set(Object.values(chr)).size, 86, "no two letters share a name");
+  // tools/test_cherokee_labels.py checks the names against the Unicode character names
+});

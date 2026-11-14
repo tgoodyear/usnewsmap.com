@@ -218,6 +218,12 @@ test("lookalikeLabels takes a letter's label from the language's labels, and kee
   assert.deepEqual([...sr(pair("ё", "н"), "a")], [[0, "cyrillic small letter a"]]);
   assert.deepEqual([...make(undefined)(pn, "a")], [[0, "cyrillic small letter a"]]);
   assert.deepEqual([...make(undefined)(pair("П", "H"), "b")], [[0, "cyrillic small letter b"]]);
+  // a Cherokee letter against a Latin look-alike keeps its plain name: only a Cyrillic letter says "Cyrillic"
+  const chr = make(languages.chr.labels);
+  const cherokee = (a, b) => ({ a, b, lookalikes: [{ a: 0, a_label: "x", b: 0, b_label: "y" }] });
+  assert.deepEqual([...chr(cherokee("Ꭰ", "D"), "a")], [[0, "a"]]);
+  assert.deepEqual([...chr(cherokee("Ꭰ", "D"), "b")], [[0, "Latin D"]]);
+  assert.deepEqual([...chr(cherokee("Ꭺ", "Ꭰ"), "a")], [[0, "go"]]);
   // a transposition flags both positions, each labelled from its own letter
   const swap = { a: "пн", b: "нп", lookalikes: [{ a: 0, a_label: "x", b: 0, b_label: "y" }, { a: 1, a_label: "y", b: 1, b_label: "x" }] };
   assert.deepEqual([...sr(swap, "a")], [[0, "p"], [1, "n"]]);
@@ -266,6 +272,12 @@ test("labels render under each reading, in left-to-right and right-to-left langu
     { code: "sr", cfg: { dir: null, notes: { "ћ": "a note" }, labels: languages.sr.labels }, task: flagged("ћс", "hс", "x", "y"), expect: { a: ["Cyrillic ć"], b: ["Latin h"] } },
     { code: "sr", cfg: { dir: null, notes: {}, labels: languages.sr.labels }, task: flagged("Пс", "Hс", "x", "y"), expect: { a: ["Cyrillic P"], b: ["Latin H"] } },
     { code: "chr", cfg: { dir: null, notes: {} }, task: { a: "ᏒᎯ", b: "ᎡᎯ", a_diff: [0], b_diff: [0] }, expect: { a: [], b: [] } },
+    // letter names showing: the label that is the same text as the name under the letter is not printed again, a label that adds
+    // the script is kept, and the picture row keeps the letter either way
+    { code: "chr", cfg: { dir: null, notes: {}, labels: languages.chr.labels }, named: true, task: flagged("ᏒᎯ", "ᎡᎯ", "sv", "e"), expect: { a: [], b: [] } },
+    { code: "chr", cfg: { dir: null, notes: {}, labels: languages.chr.labels }, task: flagged("ᏒᎯ", "ᎡᎯ", "sv", "e"), expect: { a: ["sv"], b: ["e"] } },
+    { code: "sr", cfg: { dir: null, notes: {}, labels: languages.sr.labels }, named: true, task: flagged("Пс", "Hс", "x", "y"), expect: { a: ["Cyrillic P"], b: ["Latin H"] } },
+    { code: "sr", cfg: { dir: null, notes: {}, labels: languages.sr.labels }, named: true, task: flagged("пс", "нс", "x", "y"), expect: { a: [], b: [] } },
     // a mark-only pair in right-to-left text: the name of each reading's mark, and the letter enlarged beside it
     { code: "yi", cfg: { dir: "rtl", notes: {}, marks: { "\u05b7": "pasekh", "\u05b8": "komets", "\u05bc": "dagesh" } },
       task: { a: "\u05e4\u05bc\u05d0\u05b7\u05dc", b: "\u05e4\u05d0\u05b8\u05dc", a_diff: [0, 1], b_diff: [0, 1], mark_only: [
@@ -297,7 +309,7 @@ document.fonts.load('32px "Noto Sans Cherokee"', "ᎠᎡᏒ").then((faces) => {
   for (const c of cases) {
     lang = c.code; cfg = c.cfg;
     for (const side of ["a", "b"]) {
-      const box = examples(c.task[side], c.task[side + "_diff"], lookalikeLabels(c.task, side), markLabels(c.task, side));
+      const box = examples(c.task[side], c.task[side + "_diff"], lookalikeLabels(c.task, side), markLabels(c.task, side), !!c.named);
       stage.replaceChildren(box);
       const names = [...box.querySelectorAll(".name")];
       seen.push({ code: c.code, side, names: names.map((n) => n.textContent) });
@@ -401,4 +413,150 @@ test("each answer carries what the page knows about the bundled font", () => {
   // the page sends only that value, and the family it names is the one @font-face declares
   assert.match(css, /font-family:\s*"Noto Sans Cherokee"/);
   assert.doesNotMatch(appJs, /queryLocalFonts|navigator\.userAgent|document\.fonts\.forEach|document\.fonts\.values/);
+});
+
+// ---------- letter names under the letters (the "Show letter names" option) ----------
+
+const NAMED_WIDTH = 287; // the reading's text box at a 375px viewport: page gutters, card, button padding and borders taken off
+const chrLabels = languages.chr.labels;
+const longChr = Object.keys(chrLabels).join(""); // all 86 letters in one word: wraps over several lines
+const widest = Object.entries(chrLabels).sort((x, y) => y[1].length - x[1].length).slice(0, 6).map(([ch]) => ch).join("");
+const namedCases = [
+  { code: "chr", cfg: { dir: null, labels: chrLabels }, words: [...samples.chr, ...Object.keys(languages.chr.notes), widest, longChr, "Ꭰ", "ᏣᎳᎩ 1929 (3)", "ᎠᏂ-ᏴᏫ"] },
+  { code: "sr", cfg: { dir: null, labels: languages.sr.labels }, words: [...samples.sr, "Џорђе Његош", "Hа"] },
+  // right-to-left text with names (a language of the future; the names here only exercise the layout)
+  { code: "yi", cfg: { dir: "rtl", labels: { "ש": "shin", "ל": "lamed", "ו": "vav", "ם": "final mem", "ד": "dalet" } }, words: ["שלום", "דער שלום (3)", "שלום ".repeat(12)] },
+];
+
+function runNamedHarness(chrome, body) {
+  const dir = mkdtempSync(join(tmpdir(), "check-named-"));
+  try {
+    const page = join(dir, "harness.html");
+    writeFileSync(page, `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=375"><link rel="stylesheet" href="file://${join(publicDir, "style.css")}">
+<body><div id="stage" style="width:${NAMED_WIDTH}px"></div><pre id="out"></pre>
+<script>
+let lang = null, cfg = null;
+${examplesSource()}
+const cases = ${JSON.stringify(namedCases)};
+const stage = document.getElementById("stage");
+const found = [];
+const hit = (p, q) => Math.min(p.right, q.right) - Math.max(p.left, q.left) > 0.5 && Math.min(p.bottom, q.bottom) - Math.max(p.top, q.top) > 0.5;
+${body}
+</script>`);
+    const dom = execFileSync(chrome, ["--headless=new", "--no-sandbox", "--disable-gpu", "--allow-file-access-from-files",
+      "--virtual-time-budget=20000", "--dump-dom", `file://${page}`], { encoding: "utf8", timeout: 120000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+    const m = dom.match(/<pre id="out">([\s\S]*?)<\/pre>/);
+    assert.ok(m && m[1].trim(), "the harness page produced no result");
+    return JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("with letter names on, no name overlaps a letter or another name, at phone width, left to right and right to left", (t) => {
+  const chrome = findChrome();
+  if (!chrome) {
+    if (process.env.CI) assert.fail("CI is set but no Chrome was found");
+    t.skip("no Chrome or Chromium found; set CHROME=/path/to/chrome");
+    return;
+  }
+  const result = runNamedHarness(chrome, `
+document.fonts.load('32px "Noto Sans Cherokee"', "ᎠᎡᏒ").then((faces) => {
+  if (!faces.length || faces.some((f) => f.status !== "loaded")) found.push({ problem: "the Cherokee font did not load" });
+  return document.fonts.ready;
+}).then(() => {
+  let checked = 0;
+  for (const c of cases) {
+    cfg = c.cfg; lang = c.code;
+    for (const text of c.words) {
+      const n = letters(text).length;
+      for (const diff of [[], [0], [n - 1], [...Array(n).keys()]]) {
+        checked++;
+        const el = scriptText(text, diff, true);
+        stage.replaceChildren(el);
+        const where = { code: c.code, text: text.slice(0, 12), diff: diff.length };
+        const s = stage.getBoundingClientRect();
+        const cells = [...el.querySelectorAll(".cell")];
+        const want = letters(text).filter((ch) => cfg.labels[ch] !== undefined);
+        if (cells.length !== want.length) found.push({ ...where, problem: "cell count", got: cells.length, want: want.length });
+        const parts = [];
+        cells.forEach((cell, k) => {
+          const g = cell.querySelector(".glyph"), nm = cell.querySelector(".n");
+          if (!g || !nm || nm.textContent !== cfg.labels[g.textContent] || g.textContent !== want[k]) { found.push({ ...where, problem: "cell content", at: k }); return; }
+          const gr = g.getBoundingClientRect(), nr = nm.getBoundingClientRect(), cr = cell.getBoundingClientRect();
+          if (nr.top < gr.bottom - 0.5) found.push({ ...where, problem: "name not under its letter", at: k });
+          if (Math.abs((nr.left + nr.right) / 2 - (gr.left + gr.right) / 2) > 1) found.push({ ...where, problem: "name not centred", at: k });
+          if (nr.left < cr.left - 0.5 || nr.right > cr.right + 0.5) found.push({ ...where, problem: "name outside its cell", at: k });
+          if (cr.left < s.left - 0.5 || cr.right > s.right + 0.5) found.push({ ...where, problem: "outside the column", at: k });
+          parts.push(gr, nr);
+        });
+        for (let i = 0; i < parts.length; i++) for (let j = i + 1; j < parts.length; j++) if (hit(parts[i], parts[j])) found.push({ ...where, problem: "boxes overlap" });
+        // (not scrollWidth: a space that hangs at the end of a wrapped line counts in it, though nothing is drawn there; the cell boxes above are the check)
+        // text order: each letter, then its name; the name is real text
+        const spoken = cells.map((cell) => cell.textContent).join("|");
+        if (spoken !== want.map((ch) => ch + cfg.labels[ch]).join("|")) found.push({ ...where, problem: "text order" });
+        if (cells.length && getComputedStyle(cells[0].querySelector(".n")).userSelect !== "none") found.push({ ...where, problem: "name is copied with the text" });
+        // highlighted letters: the mark is the letter's own box, on the letter and nowhere else
+        const marks = [...el.querySelectorAll("mark")];
+        const named = new Set(); letters(text).forEach((ch, i) => { if (diff.includes(i) && cfg.labels[ch] !== undefined) named.add(i); });
+        if (marks.filter((m) => m.classList.contains("glyph")).length !== named.size) found.push({ ...where, problem: "marks" });
+        for (const m of marks) for (const q of parts) { const mr = m.getBoundingClientRect(); if (hit(mr, q) && !(Math.abs(mr.left - q.left) < 0.5 && Math.abs(mr.right - q.right) < 0.5)) found.push({ ...where, problem: "mark over another box" }); }
+      }
+    }
+  }
+  document.getElementById("out").textContent = JSON.stringify({ checked, found });
+});`);
+  assert.ok(result.checked > 60, `only ${result.checked} cases ran`);
+  assert.deepEqual(result.found.slice(0, 10), [], `${result.found.length} problems in ${result.checked} renderings`);
+});
+
+test("with letter names off, the reading is laid out exactly as before: no cells, same widths", (t) => {
+  const chrome = findChrome();
+  if (!chrome) {
+    if (process.env.CI) assert.fail("CI is set but no Chrome was found");
+    t.skip("no Chrome or Chromium found; set CHROME=/path/to/chrome");
+    return;
+  }
+  const result = runNamedHarness(chrome, `
+document.fonts.load('32px "Noto Sans Cherokee"', "ᎠᎡᏒ").then(() => document.fonts.ready).then(() => {
+  let checked = 0;
+  for (const c of cases) {
+    for (const text of c.words) {
+      const n = letters(text).length;
+      for (const diff of [[], [0], [n - 1]]) {
+        checked++;
+        // a language without labels is the page as it was; the same language with its labels but the option off must match it
+        cfg = { dir: c.cfg.dir }; lang = c.code;
+        const before = scriptText(text, diff); stage.replaceChildren(before);
+        const w0 = before.getBoundingClientRect().width, h0 = before.getBoundingClientRect().height, html0 = before.outerHTML;
+        cfg = c.cfg;
+        const off = scriptText(text, diff); stage.replaceChildren(off);
+        const off2 = scriptText(text, diff, false);
+        const r = off.getBoundingClientRect();
+        if (off.outerHTML !== html0 || off2.outerHTML !== html0) found.push({ code: c.code, text: text.slice(0, 12), problem: "markup differs" });
+        if (Math.abs(r.width - w0) > 0.01 || Math.abs(r.height - h0) > 0.01) found.push({ code: c.code, text: text.slice(0, 12), problem: "size differs", w0, h0, w: r.width, h: r.height });
+        if (off.querySelector(".cell, .n") || off.classList.contains("named")) found.push({ code: c.code, text: text.slice(0, 12), problem: "names present" });
+      }
+    }
+  }
+  document.getElementById("out").textContent = JSON.stringify({ checked, found });
+});`);
+  assert.ok(result.checked > 50, `only ${result.checked} cases ran`);
+  assert.deepEqual(result.found.slice(0, 10), []);
+});
+
+test("a look-alike label the same as the name under the letter is not printed twice; one that adds something is kept", () => {
+  // the rule in the source: examples() skips a chip whose text is nameOf(ch) when names are on, and keeps everything else
+  assert.match(appJs, /if \(name !== undefined && !\(named && nameOf\(ch\) === name\)\) \{/);
+  assert.match(appJs, /examples\(t\[side\], t\[side \+ "_diff"\], lookalikeLabels\(t, side\), markLabels\(t, side\), named\)/);
+});
+
+test("the option is offered only for a language that has letter names", () => {
+  // the control's own display rule must not override the hidden attribute
+  assert.match(css, /\.toggle\[hidden\]\s*\{\s*display:\s*none;/);
+  // the control starts hidden, is shown by work() only when the language has labels, and its state is read and written inside try/catch (store())
+  assert.match(readFileSync(join(publicDir, "index.html"), "utf8"), /<label class="toggle" id="names-wrap" hidden><input type="checkbox" id="names"> Show letter names<\/label>/);
+  assert.match(appJs, /if \(hasNames\(\)\) \{[\s\S]*?\$\("names-wrap"\)\.hidden = false;/);
+  assert.match(appJs, /showNames = store\(NAMES\) === "1";/);
+  assert.equal(Object.entries(languages).filter(([, c]) => c.labels).map(([k]) => k).sort().join(), "chr,chr-lines,chr-rare,sr");
 });
