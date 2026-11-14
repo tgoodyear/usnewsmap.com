@@ -576,7 +576,8 @@ async fn restart_after_alto_publish_and_lost_journal_commit() {
     let files = fx.result(&id);
     let record = usnm_boinc::load(&fx.options.root, &id).unwrap();
     let (alto_path, part_path) = record.paths().unwrap();
-    let alto = engine::set_alto_source(ALTO, &record.job.scan.url, &record.job.scan.sha256, None);
+    // The ALTO an interrupted import had put: the worker's, with the scan and the origin (#1956).
+    let alto = usnm_boinc::published_alto(&record, ALTO.as_bytes()).unwrap();
     fx.stores
         .out
         .put_new(&alto_path, alto.into_bytes(), "x")

@@ -366,10 +366,15 @@ pub struct Origin {
     /// `amd64` or `arm64`, from the host row (`host_trust::family`), not the app version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform_family: Option<String>,
+    /// Set when the ALTO is put: from then on the origin is frozen, absent entries included, so
+    /// a re-run after a partial publication writes the same bytes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sealed: bool,
 }
 
 /// Saves where `id`'s result ran, before it is published. A value given replaces the one
-/// saved; one not given keeps it. A published record is left as it is. A host of 0 is none.
+/// saved; one not given keeps it, except that a new host drops the old host's family. Once the
+/// ALTO is put, the origin is sealed and this changes nothing. A published record is left as it is. A host of 0 is none.
 pub fn set_origin(
     root: &Path,
     id: &str,
@@ -386,7 +391,14 @@ pub fn set_origin(
         return Ok(());
     }
     let mut origin = record.origin.clone().unwrap_or_default();
+    if origin.sealed {
+        return Ok(());
+    }
     if host.is_some() {
+        // A different host is a different platform until its own family is given.
+        if origin.host.is_some() && origin.host != host {
+            origin.platform_family = None;
+        }
         origin.host = host;
     }
     if let Some(family) = family {
@@ -1236,6 +1248,12 @@ pub async fn import(
         atomic(&accepted.join("text.txt"), &raw_text)?;
         atomic(&accepted.join("layout.xml"), &raw_alto)?;
         atomic(&accepted.join("result.json"), &result_bytes)?;
+    }
+    // From the first put on, the origin is frozen: a re-run publishes the same bytes.
+    let origin = record.origin.get_or_insert_with(Origin::default);
+    if !origin.sealed {
+        origin.sealed = true;
+        save(root, &record)?;
     }
     put_same(out, &alto_name, alto.into_bytes(), "application/xml").await?;
     put_same(out, &part_name, part, "application/vnd.apache.parquet").await?;

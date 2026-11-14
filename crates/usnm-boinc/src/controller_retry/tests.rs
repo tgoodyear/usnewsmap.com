@@ -829,6 +829,7 @@ async fn every_import_carries_its_image_job_host_and_platform_and_a_retry_keeps_
     page.origin = Some(Origin {
         host: Some(77),
         platform_family: Some(Family::Arm64.as_str().to_owned()),
+        ..Origin::default()
     });
     let published = crate::published_alto(&page, ALTO.as_bytes()).unwrap();
     for needle in [
@@ -873,7 +874,7 @@ async fn every_import_carries_its_image_job_host_and_platform_and_a_retry_keeps_
     .unwrap();
     record.origin = Some(Origin {
         host: Some(5),
-        platform_family: None,
+        ..Origin::default()
     });
     let published = crate::published_alto(&record, ALTO.as_bytes()).unwrap();
     for needle in [
@@ -916,6 +917,26 @@ fn set_origin_saves_the_host_before_the_put_and_keeps_what_it_is_not_given() {
     let saved = crate::load(temp.path(), &job.id).unwrap().origin.unwrap();
     assert_eq!(saved.host, Some(9));
     assert_eq!(saved.platform_family.as_deref(), Some("amd64"));
+    // The same host keeps its family.
+    crate::set_origin(temp.path(), &job.id, Some(9), None).unwrap();
+    let saved = crate::load(temp.path(), &job.id).unwrap().origin.unwrap();
+    assert_eq!(saved.platform_family.as_deref(), Some("amd64"));
+    // A different host drops the old host's family until its own is given.
+    crate::set_origin(temp.path(), &job.id, Some(10), None).unwrap();
+    let saved = crate::load(temp.path(), &job.id).unwrap().origin.unwrap();
+    assert_eq!((saved.host, saved.platform_family), (Some(10), None));
+    crate::set_origin(temp.path(), &job.id, None, Some(Family::Arm64)).unwrap();
+    // Once the ALTO is put the origin is sealed, absent entries included, so a re-run after a
+    // partial publication writes the same bytes.
+    let mut sealed = crate::load(temp.path(), &job.id).unwrap();
+    sealed.origin.as_mut().unwrap().sealed = true;
+    crate::save(temp.path(), &sealed).unwrap();
+    crate::set_origin(temp.path(), &job.id, Some(11), Some(Family::Amd64)).unwrap();
+    let kept = crate::load(temp.path(), &job.id).unwrap().origin.unwrap();
+    assert_eq!(
+        (kept.host, kept.platform_family.as_deref()),
+        (Some(10), Some("arm64"))
+    );
     // A published record is left alone.
     record.stage = crate::Stage::Published;
     crate::save(temp.path(), &record).unwrap();
