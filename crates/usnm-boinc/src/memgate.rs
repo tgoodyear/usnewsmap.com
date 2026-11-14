@@ -225,14 +225,34 @@ pub fn check(
                 format!("{}\n", deferred + 1).as_bytes(),
             )
             .context("recording the deferral")?;
-            crate::atomic(
+            // Readable by the host client, which may run as another user than the container.
+            #[cfg(unix)]
+            let mode = {
+                use std::os::unix::fs::PermissionsExt;
+                Some(fs::Permissions::from_mode(0o644))
+            };
+            #[cfg(not(unix))]
+            let mode = None;
+            crate::atomic_with_permissions(
                 &work.join(TEMPORARY_EXIT_FILE),
                 format!("{secs}\nnot enough free memory to start Tesseract\n").as_bytes(),
+                mode,
             )
             .context("writing the temporary exit")?;
             Ok(false)
         }
     }
+}
+
+/// [`check`] for a job of `kind` against this system's memory: what a worker calls before it
+/// starts its engine. `false` means it has deferred and must return at once.
+pub fn gate(work: &Path, kind: usnm_ocr_worker::engine::EngineKind) -> anyhow::Result<bool> {
+    check(
+        work,
+        &Sources::system(),
+        required_bytes(kind),
+        jitter_from_clock(),
+    )
 }
 
 /// Spreads the retries of tasks that deferred together.
@@ -364,6 +384,15 @@ mod tests {
         assert_eq!(lines.next(), Some("230"));
         assert!(lines.next().is_some_and(|r| !r.is_empty()));
         assert_eq!(deferred_count(work.path()), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(work.path().join(TEMPORARY_EXIT_FILE))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o644);
+        }
         // Again: the count rises.
         assert!(!check(work.path(), &sources(t.path()), need, 0).unwrap());
         assert_eq!(deferred_count(work.path()), 2);

@@ -307,7 +307,8 @@ documented Linux multi-CPU and GPU pilot requirements or task resource limits.
    requires **12 GiB**, so the previous 8 GiB example was insufficient. Separate
    multi-CPU and GPU admission and publication requirements still apply.
 
-   **Memory check before each page.** Before it starts Tesseract, the container
+   **Memory check before each page.** Before it starts Tesseract (for a single page or a
+   bundle of pages), the container
    worker reads its free memory: the smaller of what is left under the
    container's own limit (cgroup v2, or v1) and the VM's `MemAvailable`. A page
    needs about 1.25 GiB free (an estimate of 1 GiB, plus a 256 MiB margin). If

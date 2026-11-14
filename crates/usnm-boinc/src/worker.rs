@@ -50,12 +50,7 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
     );
     // Before the scan is read and the engine started: if the VM can't hold the task, the client
     // retries it later (#1934).
-    if !crate::memgate::check(
-        &work,
-        &crate::memgate::Sources::system(),
-        crate::memgate::required_bytes(job.engine.kind),
-        crate::memgate::jitter_from_clock(),
-    )? {
+    if !crate::memgate::gate(&work, job.engine.kind)? {
         return Ok(());
     }
     let image = read(&work.join("page"), boinc::MAX_SCAN)?;
