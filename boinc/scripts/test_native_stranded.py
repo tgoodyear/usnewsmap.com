@@ -113,7 +113,7 @@ class StrandedTests(unittest.TestCase):
         rows = [row(1, 1, 1, 1), row(2, 1, -226, 0), row(3, 0, None, 0)]
         calls = []
 
-        def canceller(project, name):
+        def canceller(db, name):
             # The page is already on disk when its unit is cancelled.
             self.assertIn(name, S.load_list(str(self.dir / "list.json")))
             calls.append(name)
@@ -136,13 +136,69 @@ class StrandedTests(unittest.TestCase):
         rows = [row(1, 1, 1, 1), row(2, 1, -226, 0)]
         args, connect = self.args("settle", Db(rows), apply=True, max_units=2, confirm_count=2,
                                   journal=str(self.dir / "j.jsonl"))
-        self.assertEqual(S.run(args, io.StringIO(), connect, lambda p, n: (False, "boom")), 1)
+        self.assertEqual(S.run(args, io.StringIO(), connect, lambda d, n: (False, "a result got in")), 1)
         counts = S.counts(S.load_list(args.out))
         self.assertEqual((counts["total"], counts["settled"]), (2, 0))
+        self.assertEqual(len(Path(self.dir / "j.jsonl").read_text().splitlines()), 2)
+
+    def test_a_bad_journal_path_or_a_negative_cap_fails_before_anything_changes(self):
+        rows = [row(1, 1, 1, 1), row(2, 1, -226, 0)]
+        for extra in ({"max_units": -1, "journal": str(self.dir / "j")},
+                      {"max_units": 1, "journal": str(self.dir / "no-such-dir" / "j")}):
+            args, connect = self.args("settle", Db(rows), apply=True, confirm_count=2, **extra)
+            with self.assertRaises((SystemExit, OSError)):
+                S.run(args, io.StringIO(), connect, lambda d, n: self.fail("cancelled"))
+        with self.assertRaises(SystemExit):
+            S.main(["settle", "--max-units", "-1", "--apply"])
+
+    def test_what_an_earlier_run_knew_of_a_journal_is_kept_when_it_cannot_be_read(self):
+        args, connect = self.args("plan", Db([row(1, 1, 1, 1)]))
+        S.run(args, io.StringIO(), connect)
+        (self.dir / "jobs" / JOB[0] / "record.json").unlink()
+        S.run(args, io.StringIO(), connect)
+        entry = S.load_list(args.out)["usnm_" + JOB[0]]
+        self.assertEqual((entry["image"], entry["timeout_secs"], entry["page"] is not None),
+                         ("sha256:" + "4" * 64, 1800, True))
+
+    def test_the_cancel_transaction_leaves_a_unit_with_a_result_alone(self):
+        class Cur:
+            rowcount = 0
+            sql = []
+
+            def execute(self, sql, params=None):
+                self.sql.append(sql)
+
+            def fetchall(self):
+                return ()
+
+        class Conn:
+            def __init__(self):
+                self.cur, self.events = Cur(), []
+
+            def cursor(self):
+                return self.cur
+
+            def begin(self):
+                self.events.append("begin")
+
+            def commit(self):
+                self.events.append("commit")
+
+            def rollback(self):
+                self.events.append("rollback")
+
+        db = Conn()
+        self.assertEqual(S.cancel(db, "usnm_x"), (False, "left alone: a result is in progress or successful"))
+        self.assertEqual(db.events, ["begin", "commit"])
+        self.assertFalse(any("UPDATE result" in sql for sql in db.cur.sql))
+        db = Conn()
+        db.cur.rowcount = 1
+        self.assertEqual(S.cancel(db, "usnm_x")[0], True)
+        self.assertTrue(any("UPDATE result" in sql for sql in db.cur.sql))
 
     def test_a_preview_changes_no_unit(self):
         args, connect = self.args("settle", Db([row(1, 1, 1, 1)]))
-        S.run(args, io.StringIO(), connect, lambda p, n: self.fail("cancelled in a preview"))
+        S.run(args, io.StringIO(), connect, lambda d, n: self.fail("cancelled in a preview"))
 
     def test_a_list_file_that_is_not_ours_is_not_overwritten(self):
         path = self.dir / "list.json"

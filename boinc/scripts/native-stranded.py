@@ -18,13 +18,17 @@ result, nothing in progress, unsent or successful, and is one of:
 
 `plan` (read-only) and `settle` (a preview without `--apply`) print the count by reason. Both
 write nothing but `--out`, the durable list. Each entry holds the page, the workunit, the
-parent job sha, its image and `engine.timeout_secs` (from the job's journal), the assigned
-host, the reason and the result's exit status. `settle --apply` first writes the list, then
-cancels each unit with `bin/cancel_jobs --name`, as BOINC does for any cancelled job: the
-transitioner marks it `WU_ERROR_CANCELLED` (0x10), the assimilator writes the terminal marker
-`collect` reads, the journal fails and the plan's next tick drops the slot. A cancelled unit is
-the controller's failed page, which the retry route reads (`--expected-error-mask 16`). Nothing
-is deleted, and no error mask is set by hand. `count` reads the list file only.
+parent job sha, its image and `engine.timeout_secs` (from the job's journal, kept from an
+earlier run when it can't be read now), the assigned host, the reason and the result's exit
+status. `settle --apply` first writes the list, then cancels each unit as `bin/cancel_jobs
+--name` does for any cancelled job, in one transaction that locks the workunit and its results
+and changes nothing if a result is in progress or successful by then (the transaction
+`host_trust/onboard.rs` runs for its own units): the transitioner marks the unit
+`WU_ERROR_CANCELLED` (0x10), the assimilator writes the terminal marker `collect` reads, the
+journal fails and the plan's next tick drops the slot. A cancelled unit is the controller's
+failed page, which the retry route reads (`--expected-error-mask 16`). Nothing is deleted. A
+unit that gained a result is left alone and counted as `skipped`. `count` reads the list file
+only.
 
 Run `plan` and `settle` inside the BOINC server container, as root:
 
@@ -40,7 +44,6 @@ import argparse
 import datetime as dt
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
@@ -145,11 +148,16 @@ def write_list(path, pages):
     os.replace(tmp, path)
 
 
+KEPT = ("page", "plan", "stage", "attempt", "image", "timeout_secs")
+
+
 def merge(pages, found, now_iso):
-    """Add what was found to the durable list. An entry already there keeps its first-seen time
-    and any settlement; nothing is ever removed."""
+    """Add what was found to the durable list. An entry already there keeps its first-seen time,
+    any settlement, and whatever it knew of the journal that this run couldn't read; nothing is
+    ever removed."""
     for entry in found:
         old = pages.get(entry["workunit"], {})
+        entry = {**entry, **{k: old[k] for k in KEPT if entry.get(k) is None and old.get(k) is not None}}
         pages[entry["workunit"]] = {**entry, "first_seen": old.get("first_seen", now_iso),
                                     **({"settled_at": old["settled_at"]} if "settled_at" in old else {})}
     return pages
@@ -165,10 +173,43 @@ def counts(pages):
             "by_reason": by_reason}
 
 
-def cancel(project, name):
-    result = subprocess.run(["bin/cancel_jobs", "--name", name], cwd=project, capture_output=True,
-                            text=True, check=False)
-    return result.returncode == 0, (result.stdout + result.stderr).strip()[-500:]
+CANCEL_SQL = (
+    "SELECT id FROM workunit WHERE name = %(name)s FOR UPDATE",
+    "SELECT r.id FROM result r JOIN workunit w ON w.id = r.workunitid WHERE w.name = %(name)s FOR UPDATE",
+    # What bin/cancel_jobs --name does, only if no result is in progress or successful.
+    "UPDATE workunit w SET w.error_mask = w.error_mask | %(cancelled)s, w.transition_time = UNIX_TIMESTAMP() "
+    "WHERE w.name = %(name)s AND w.error_mask = 0 AND w.canonical_resultid = 0 AND NOT EXISTS "
+    "(SELECT 1 FROM result q WHERE q.workunitid = w.id AND (q.server_state = %(in_progress)s "
+    "OR (q.server_state = %(over)s AND q.outcome = %(success)s)))",
+)
+UNSENT_SQL = (
+    "UPDATE result r JOIN workunit w ON w.id = r.workunitid SET r.server_state = %(over)s, "
+    "r.outcome = %(didnt_need)s WHERE w.name = %(name)s AND r.server_state = %(unsent)s "
+    "AND w.error_mask & %(cancelled)s <> 0"
+)
+WU_ERROR_CANCELLED, OVER, DIDNT_NEED = 16, 5, 5
+
+
+def cancel(db, name):
+    """Cancel one unit in one transaction. (True, detail) when it was cancelled, (False, detail)
+    when a result got in first and it was left as it is."""
+    params = {"name": name, "cancelled": WU_ERROR_CANCELLED, "in_progress": IN_PROGRESS, "over": OVER,
+              "success": SUCCESS, "didnt_need": DIDNT_NEED, "unsent": UNSENT}
+    cur = db.cursor()
+    try:
+        db.begin()
+        for sql in CANCEL_SQL[:2]:
+            cur.execute(sql, params)
+            cur.fetchall()
+        cur.execute(CANCEL_SQL[2], params)
+        changed = cur.rowcount
+        if changed:
+            cur.execute(UNSENT_SQL, params)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return changed > 0, "cancelled" if changed else "left alone: a result is in progress or successful"
 
 
 def connect(args):
@@ -185,6 +226,13 @@ def connect(args):
 def now_of(cur):
     cur.execute("SELECT UNIX_TIMESTAMP()")
     return int(cur.fetchone()[0])
+
+
+def positive(text):
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return value
 
 
 def run(args, out=sys.stdout, connect_db=connect, canceller=cancel):
@@ -211,23 +259,29 @@ def run(args, out=sys.stdout, connect_db=connect, canceller=cancel):
     total = report["candidates"]["total"]
     if args.confirm_count != total:
         sys.exit(f"--confirm-count {args.confirm_count} is not the {total} the plan found")
-    write_list(args.out, pages)  # first: a page is on the list before anything about its unit changes
-    done = 0
-    for entry in found[: args.max_units]:
-        ok, detail = canceller(args.project, entry["workunit"])
-        with open(args.journal, "a", encoding="utf-8") as j:
-            j.write(json.dumps({"at": now_iso, "workunit": entry["workunit"], "job": entry["job"],
-                                "reason": entry["reason"], "cancelled": ok, "detail": detail},
-                               sort_keys=True) + "\n")
-        if not ok:
-            print(f"cancel failed for {entry['workunit']}: {detail}", file=sys.stderr)
-            break
-        pages[entry["workunit"]]["settled_at"] = now_iso
-        write_list(args.out, pages)
-        done += 1
-    report["cancelled"] = done
+    if args.max_units < 1:
+        sys.exit("--max-units is at least 1")
+    # The audit journal opens before anything changes: a bad path fails here, not after a cancel.
+    journal = open(args.journal, "a", encoding="utf-8")
+    write_list(args.out, pages)  # a page is on the list before anything about its unit changes
+    writer = connect_db(args)
+    done = skipped = 0
+    with journal:
+        for entry in found[: args.max_units]:
+            ok, detail = canceller(writer, entry["workunit"])
+            journal.write(json.dumps({"at": now_iso, "workunit": entry["workunit"], "job": entry["job"],
+                                      "reason": entry["reason"], "cancelled": ok, "detail": detail},
+                                     sort_keys=True) + "\n")
+            journal.flush()
+            if not ok:
+                skipped += 1
+                continue
+            pages[entry["workunit"]]["settled_at"] = now_iso
+            write_list(args.out, pages)
+            done += 1
+    report.update(cancelled=done, skipped=skipped)
     print(json.dumps(report, sort_keys=True), file=out)
-    return 0 if done == min(args.max_units, total) else 1
+    return 0 if skipped == 0 else 1
 
 
 def main(argv=None):
@@ -249,7 +303,7 @@ def main(argv=None):
         p.add_argument("--db-defaults", default="/usr/local/share/usnm/mysql-tls.cnf")
         if name == "settle":
             p.add_argument("--apply", action="store_true", help="cancel the units; without it only preview")
-            p.add_argument("--max-units", type=int, help="most units to cancel in this run")
+            p.add_argument("--max-units", type=positive, help="most units to cancel in this run")
             p.add_argument("--confirm-count", type=int, help="the plan's total")
             p.add_argument("--journal", help="append-only JSON-lines record of every cancel")
     args = parser.parse_args(argv)
