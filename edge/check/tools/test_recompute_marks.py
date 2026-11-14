@@ -281,6 +281,12 @@ class Commands(unittest.TestCase):
                 self.assertFalse(os.path.exists(os.path.join(self.out, "yi", "tasks.jsonl")))
                 self.assertFalse(json.load(open(os.path.join(self.out, "yi", "report.json")))["passed"])
         self.assertEqual(self.run_tool("--lang", "yi", "--bodies", self.bodies, "--out-dir", self.out).returncode, 0)
+        # Option abbreviations are not accepted, so recovery and the parser read the command line the same way: `--out` is not
+        # `--out-dir` (a usage error that names no output directory), and `--act load` is not misread as a dry run.
+        self.assertEqual(self.run_tool("--lang", "yi", "--out", self.out, "--bogus").returncode, 2)
+        self.assertEqual(self.run_tool("--act", "load", "--lang", "yi", "--out-dir", self.out, "--bogus").returncode, 2)
+        self.assertTrue(json.load(open(os.path.join(self.out, "yi", "report.json")))["passed"])
+        self.assertTrue(os.path.exists(os.path.join(self.out, "yi", "tasks.jsonl")))
         self.assertEqual(self.run_tool("--help").returncode, 0)
         self.run_tool("--action", "load", "--lang", "yi", "--out-dir", self.out, "--bogus")  # a load never touches the dry-run output
         self.assertTrue(json.load(open(os.path.join(self.out, "yi", "report.json")))["passed"])

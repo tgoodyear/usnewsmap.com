@@ -447,23 +447,25 @@ def load(a, site: Site) -> int:
     return 0
 
 
-def invalidate_from_argv(argv: list, reason: str) -> None:
-    """Best effort after a usage error: read only --action, --lang and --out-dir, and invalidate those dry-run outputs."""
+def invalidate_from_argv(reason: str) -> None:
+    """Best effort after a usage error: read only --action, --lang and --out-dir (full names, as the main parser accepts only those), and invalidate those dry-run outputs."""
     small = argparse.ArgumentParser(add_help=False, allow_abbrev=False, exit_on_error=False)
     small.add_argument("--action", default="dry-run")
     small.add_argument("--lang", action="append", default=[])
     small.add_argument("--out-dir")
     try:
-        found, _ = small.parse_known_args(argv)
+        found, rest = small.parse_known_args()
     except (argparse.ArgumentError, SystemExit):
         return
+    if any(tok.startswith("--a") and "--action".startswith(tok.split("=")[0]) for tok in rest):
+        return  # an abbreviated --action (`--act load`): what was asked is unknown, so leave the output alone
     if found.action == "dry-run" and found.out_dir:
         for lang in found.lang:
             safe_invalidate(found.out_dir, lang, "usage error: " + reason)
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], allow_abbrev=False)  # full option names only: usage-error recovery reads them the same way
     ap.add_argument("--action", choices=("dry-run", "load"), default="dry-run")
     ap.add_argument("--lang", action="append", required=True, help="a loaded language (yi, sr, chr, chr-lines, chr-rare); repeatable")
     ap.add_argument("--out-dir", required=True, help="where the dry run writes <lang>/tasks.jsonl and report.json, and a load reads them")
@@ -481,7 +483,7 @@ def main() -> int:
         a = ap.parse_args()
     except SystemExit as e:
         if e.code not in (0, None):  # a bad option value (--lookalike-threshold x): the dry run it was meant for must not leave older output loadable
-            invalidate_from_argv(sys.argv[1:], str(e.code))
+            invalidate_from_argv(str(e.code))
         raise
     try:
         if a.action == "load":
