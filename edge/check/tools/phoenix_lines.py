@@ -6,6 +6,9 @@ keeps LoC's line boxes in its own pixels, so each re-read line is paired with th
 nearest after scaling. Where a line has the same number of syllabary words in both readings the words pair one to one,
 and each word that differs is a candidate task.
 
+A TextLine of LoC's ALTO whose box is taller than --merged-line-factor (1.6) times its page's median line covers more than one
+printed line (#1978): no task is made from it, the report counts those lines per page, and OUT_DIR/<kind>/merged-lines.jsonl lists them.
+
 Writes OUT_DIR/<kind>/lines.jsonl for `build_tasks.py` (one printed line each, reading a = LoC's, reading b = the
 other, with a_is and b_is on the lines), OUT_DIR/<kind>/images/<line id>.jpg and OUT_DIR/<kind>/manifest.jsonl (what
 `scripts/chr_disputes_score.py` reads: every word of both readings and which differ). Pillow cuts the images; with
@@ -32,6 +35,8 @@ import os
 import re
 import sys
 import xml.etree.ElementTree as ET
+
+import merged_lines
 
 SYL = re.compile("[Ꭰ-Ᏽ]")
 NA, NAH = "Ꮎ", "Ꮐ"
@@ -293,6 +298,7 @@ def main() -> None:
     ap.add_argument("--per-letter", type=int, default=30)
     ap.add_argument("--per-page", type=int, default=2)
     ap.add_argument("--no-images", action="store_true")
+    merged_lines.add_arguments(ap)
     ap.add_argument("--out-dir", required=True)
     a = ap.parse_args()
 
@@ -301,6 +307,7 @@ def main() -> None:
     known = set(x.strip() for x in open(a.wordlist, encoding="utf-8")) if a.wordlist else set()
     held_out = a.mode == "disputes"
     all_lines, mismatched, missing = [], 0, []
+    merged = merged_lines.Report(a.merged_line_factor, a.min_page_lines)
     for pg in pages:
         # Disputes are scored on the test set's pages, which the model never trained on; the others feed
         # the glyph bank, which never takes a test-set page.
@@ -315,14 +322,18 @@ def main() -> None:
             continue
         lines, bad = paired_lines(loc, prod[-1])
         mismatched += bad
-        lw = alto_lines(loc)[0]
+        lw, _, loc_all = alto_lines(loc)
+        # A TextLine that covers two printed lines makes no task (merged_lines.py); the median is over every line of the page.
+        skip = merged.page(pg["page"], [{"id": x["id"], "box": x["box"], "text": " ".join(w["text"] for w in x["words"])} for x in loc_all])
+        lines = [ln for ln in lines if ln["id"] not in skip]
         for ln in lines:
             ln.update(page=pg["page"], loc_width=lw, kind="scripture" if (pg["page"], ln["id"]) in scripture else "news")
         all_lines.extend(lines)
 
     out = os.path.join(a.out_dir, a.mode)
     os.makedirs(os.path.join(out, "images"), exist_ok=True)
-    report = {"pages_missing": missing, "lines_mismatched": mismatched, "lines": len(all_lines)}
+    merged.write(os.path.join(out, "merged-lines.jsonl"))
+    report = {"pages_missing": missing, "lines_mismatched": mismatched, "lines": len(all_lines), "merged": merged.summary()}
     chosen = []  # [(line, {word index: (a, b, a_is, b_is)})]
     if a.mode == "disputes":
         keep, why = disputes(all_lines)
@@ -396,6 +407,7 @@ def main() -> None:
     report["words_out"] = n_tasks
     json.dump(report, open(os.path.join(out, "report.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1, sort_keys=True)
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    print(merged.lines_text(), file=sys.stderr)
 
 
 if __name__ == "__main__":

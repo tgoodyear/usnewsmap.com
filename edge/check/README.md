@@ -6,27 +6,29 @@ Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language, Yiddish (Ne
 
 ## Pieces
 
-| Piece                         | What it is                                                                                                                  |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `worker.mjs`                  | The Worker: `/api/*` for the page, `/clips/*` from R2, `/admin/*` for loading data.                                         |
-| `public/`                     | The page (static assets). `/` lists languages; `/<code>` (e.g. `/chr`) shows words.                                         |
-| `public/fonts/`               | The Cherokee font the page serves, with its licence and source (`fonts/README.md`).                                         |
-| D1 `usnm-check`               | `languages`, `tasks`, `answers` (`schema.sql`).                                                                             |
-| R2 `usnm-check-clips`         | Line and word images, and the example letters, at `<lang>/<set>/...`.                                                       |
-| Turnstile widget `usnm-check` | The browser check before a session is issued.                                                                               |
-| `tools/build_tasks.py`        | Turns line images with two readings per line into tasks, clips and a configuration.                                         |
-| `tools/yiddish_lines.py`      | Makes `build_tasks.py`'s input for Yiddish: LoC's ALTO against our `yidj2` model.                                           |
-| `tools/serbian_lines.py`      | Makes `build_tasks.py`'s input for Serbian: LoC's ALTO against our held BOINC ALTO.                                         |
-| `tools/from_tap_data.py`      | Turns a glyph-check data file (Cherokee) into tasks, clips and a configuration.                                             |
-| `tools/phoenix_lines.py`      | Picks Cherokee lines from LoC's ALTO and our production re-read for `build_tasks.py`.                                       |
-| `tools/lookalike.py`          | Finds letters of two readings the page draws almost alike, and pairs that differ only in a mark; also a command on exports. |
-| `tools/mark_report.py`        | Compares answers on words that differ only in a mark with other words, from exports.                                        |
-| `tools/cherokee_labels.py`    | Writes (or checks) the Cherokee letter names in `languages/chr*.json` from the Unicode character names.                     |
-| `tools/names_report.py`       | Compares answers given with letter names showing and without, from exports.                                                 |
-| `tools/recompute_marks.py`    | Recomputes `mark_only` and `lookalikes` on task bodies already loaded, with a report; loads them only when told to.         |
-| `languages/<code>.json`       | A language's name, intro, writing direction and letter notes, plus build options.                                           |
-| `confusable.sh`               | Marks tasks `confusable_display`, or reopens them, run by hand.                                                             |
-| `load.sh`, `set-secrets.sh`   | Loading data and setting secrets, run by hand.                                                                              |
+| Piece                          | What it is                                                                                                                  |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `worker.mjs`                   | The Worker: `/api/*` for the page, `/clips/*` from R2, `/admin/*` for loading data.                                         |
+| `public/`                      | The page (static assets). `/` lists languages; `/<code>` (e.g. `/chr`) shows words.                                         |
+| `public/fonts/`                | The Cherokee font the page serves, with its licence and source (`fonts/README.md`).                                         |
+| D1 `usnm-check`                | `languages`, `tasks`, `answers` (`schema.sql`).                                                                             |
+| R2 `usnm-check-clips`          | Line and word images, and the example letters, at `<lang>/<set>/...`.                                                       |
+| Turnstile widget `usnm-check`  | The browser check before a session is issued.                                                                               |
+| `tools/build_tasks.py`         | Turns line images with two readings per line into tasks, clips and a configuration.                                         |
+| `tools/yiddish_lines.py`       | Makes `build_tasks.py`'s input for Yiddish: LoC's ALTO against our `yidj2` model.                                           |
+| `tools/serbian_lines.py`       | Makes `build_tasks.py`'s input for Serbian: LoC's ALTO against our held BOINC ALTO.                                         |
+| `tools/from_tap_data.py`       | Turns a glyph-check data file (Cherokee) into tasks, clips and a configuration.                                             |
+| `tools/phoenix_lines.py`       | Picks Cherokee lines from LoC's ALTO and our production re-read for `build_tasks.py`.                                       |
+| `tools/lookalike.py`           | Finds letters of two readings the page draws almost alike, and pairs that differ only in a mark; also a command on exports. |
+| `tools/mark_report.py`         | Compares answers on words that differ only in a mark with other words, from exports.                                        |
+| `tools/cherokee_labels.py`     | Writes (or checks) the Cherokee letter names in `languages/chr*.json` from the Unicode character names.                     |
+| `tools/names_report.py`        | Compares answers given with letter names showing and without, from exports.                                                 |
+| `tools/recompute_marks.py`     | Recomputes `mark_only` and `lookalikes` on task bodies already loaded, with a report; loads them only when told to.         |
+| `tools/merged_lines.py`        | The merged-line rule (a TextLine box over 1.6 times its page's median) the three line tools share.                          |
+| `tools/merged_lines_loaded.py` | Lists loaded tasks cut from a merged line, measured from LoC's ALTO in the bulk OCR archives; read-only.                    |
+| `languages/<code>.json`        | A language's name, intro, writing direction and letter notes, plus build options.                                           |
+| `confusable.sh`                | Marks tasks (`confusable_display` or `merged_line`), or reopens `confusable_display` ones, run by hand.                     |
+| `load.sh`, `set-secrets.sh`    | Loading data and setting secrets, run by hand.                                                                              |
 
 ## Who answers, and how answers count
 
@@ -36,25 +38,25 @@ A word **settles** once at least 3 answers are in and one choice has two thirds 
 
 Seed answers (from `load.sh --seed`) are stored as contributor `seed:<name>` and count as one person.
 
-Answers are published under CC0. `GET /api/export?lang=chr` returns one JSON line per word, with its readings, which is which (`a_is`, `b_is`), the count of each answer and the outcome. Contributor ids are never exported. Each word also has `font_counts`, the same answers counted by what the visitor's page reported about the bundled font ([below](#which-font-each-answer-was-given-with)) and `names_counts`, the same answers counted by whether letter names were showing ([below](#letter-names)). A word with look-alike letters also has its `lookalikes`, and one whose readings differ only in a mark on the same letter has `mark_only`; a word marked `confusable_display` also has `confusable_display`, `held`, `excluded_counts`, `excluded_font_counts` and `excluded_names_counts` ([below](#words-whose-readings-look-alike)).
+Answers are published under CC0. `GET /api/export?lang=chr` returns one JSON line per word, with its readings, which is which (`a_is`, `b_is`), the count of each answer and the outcome. Contributor ids are never exported. Each word also has `font_counts`, the same answers counted by what the visitor's page reported about the bundled font ([below](#which-font-each-answer-was-given-with)) and `names_counts`, the same answers counted by whether letter names were showing ([below](#letter-names)). A word with look-alike letters also has its `lookalikes`, and one whose readings differ only in a mark on the same letter has `mark_only`; a marked word also has `mark_reason`, `held`, `excluded_counts`, `excluded_font_counts` and `excluded_names_counts` (and `confusable_display: true` when the reason is `confusable_display`; [below](#words-whose-readings-look-alike)), and one that was settled when it was marked has `outcome_withdrawn`, `withdrawn_reason` and `withdrawn_at` ([below](#words-cut-from-a-merged-line)).
 
 ## API
 
-| Method and path                           | Who         | What                                                                                                                                                                                                       |
-| ----------------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/config`                         | anyone      | The Turnstile site key.                                                                                                                                                                                    |
-| `GET /api/languages`                      | anyone      | Languages with task and settled counts.                                                                                                                                                                    |
-| `GET /api/languages/<code>`               | anyone      | A language's configuration.                                                                                                                                                                                |
-| `POST /api/session`                       | anyone      | `{turnstile}` → `{session}`.                                                                                                                                                                               |
-| `GET /api/next?lang=<code>[&skip=id,...]` | session     | `{task, answered}`; `task` is null when none is left for this person.                                                                                                                                      |
-| `POST /api/answers`                       | session     | `{task, choice[, display, font, names_shown]}`: `a`, `b`, `neither`, `unsure` or `notext`; `font` and `names_shown` are optional ([font](#which-font-each-answer-was-given-with), [names](#letter-names)). |
-| `GET /api/stats?lang=<code>`              | anyone      | Tasks, settled, answers, people.                                                                                                                                                                           |
-| `GET /api/export?lang=<code>`             | anyone      | CC0 JSON lines (above).                                                                                                                                                                                    |
-| `PUT /admin/clips/<key>`                  | admin token | An image (JPEG, PNG or WebP).                                                                                                                                                                              |
-| `PUT /admin/languages/<code>`             | admin token | A language's configuration. With `?keep=examples` (an existing language only), the stored `examples` stay.                                                                                                 |
-| `POST /admin/tasks`                       | admin token | JSON lines of tasks; a task already loaded keeps its answers.                                                                                                                                              |
-| `POST /admin/answers`                     | admin token | JSON lines of seed answers, `seed:` contributors only.                                                                                                                                                     |
-| `POST /admin/confusable`                  | admin token | `{action: "mark" or "reopen", tasks: [ids]}`, up to 500 ids ([below](#words-whose-readings-look-alike)).                                                                                                   |
+| Method and path                           | Who         | What                                                                                                                                                                                                                          |
+| ----------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/config`                         | anyone      | The Turnstile site key.                                                                                                                                                                                                       |
+| `GET /api/languages`                      | anyone      | Languages with task and settled counts.                                                                                                                                                                                       |
+| `GET /api/languages/<code>`               | anyone      | A language's configuration.                                                                                                                                                                                                   |
+| `POST /api/session`                       | anyone      | `{turnstile}` → `{session}`.                                                                                                                                                                                                  |
+| `GET /api/next?lang=<code>[&skip=id,...]` | session     | `{task, answered}`; `task` is null when none is left for this person.                                                                                                                                                         |
+| `POST /api/answers`                       | session     | `{task, choice[, display, font, names_shown]}`: `a`, `b`, `neither`, `unsure` or `notext`; `font` and `names_shown` are optional ([font](#which-font-each-answer-was-given-with), [names](#letter-names)).                    |
+| `GET /api/stats?lang=<code>`              | anyone      | Tasks, settled, answers, people.                                                                                                                                                                                              |
+| `GET /api/export?lang=<code>`             | anyone      | CC0 JSON lines (above).                                                                                                                                                                                                       |
+| `PUT /admin/clips/<key>`                  | admin token | An image (JPEG, PNG or WebP).                                                                                                                                                                                                 |
+| `PUT /admin/languages/<code>`             | admin token | A language's configuration. With `?keep=examples` (an existing language only), the stored `examples` stay.                                                                                                                    |
+| `POST /admin/tasks`                       | admin token | JSON lines of tasks; a task already loaded keeps its answers.                                                                                                                                                                 |
+| `POST /admin/answers`                     | admin token | JSON lines of seed answers, `seed:` contributors only.                                                                                                                                                                        |
+| `POST /admin/confusable`                  | admin token | `{action: "mark" or "reopen", tasks: [ids], reason?}`, up to 500 ids; `reason` is `confusable_display` (default) or `merged_line` ([below](#words-whose-readings-look-alike), [merged lines](#words-cut-from-a-merged-line)). |
 
 A task, as loaded: `id` (`<lang>/<set>/<word id>`), `lang`, `set`, then what the page shows: `page`, `source` (the page on Chronicling America), `label`, `line` and `word` (clip keys), `box` (the word in the line image, as fractions `[x, y, w, h]`), `a`, `b`, `a_diff`, `b_diff` (indexes of the letters that differ), `a_is`, `b_is` (what each reading is, e.g. `reference` and `loc`) and, when the build found letters the page draws almost alike, `lookalikes` and `mark_only` (see below). The page shows `a` and `b` in an order fixed by the task id, so neither side is always first.
 
@@ -94,11 +96,11 @@ python3 edge/check/tools/lookalike.py --export check-chr.jsonl --font Cherokee=P
 
 **Measured on 13 November 2026, no font added for Yiddish or Serbian.** On the exports of that day (720 Yiddish tasks, 939 Serbian), at the 0.82 threshold:
 
-| Yiddish reference font                        | Tasks flagged | Pairs flagged | What the flagged pairs are                                                                      |
-| --------------------------------------------- | ------------: | ------------: | ----------------------------------------------------------------------------------------------- |
+| Yiddish reference font                        | Tasks flagged | Pairs flagged | What the flagged pairs are                                                             |
+| --------------------------------------------- | ------------: | ------------: | -------------------------------------------------------------------------------------- |
 | Times New Roman (what the page uses on macOS) |           193 |            30 | Only a letter against the same letter with a point: אַ/אָ, א/אַ, א/אָ, פ/פּ, פֿ/פּ, ב/בּ, ך/ךּ… |
-| Noto Serif Hebrew 2.004 (notofonts, OFL)      |           194 |            32 | The same, plus יַ/יִ and ן/ןָ.                                                                  |
-| Noto Sans Hebrew 3.001 (notofonts, OFL)       |           213 |            34 | The same as Noto Serif Hebrew, plus ח/ה (both directions, 20 pairs).                            |
+| Noto Serif Hebrew 2.004 (notofonts, OFL)      |           194 |            32 | The same, plus יַ/יִ and ן/ןָ.                                                            |
+| Noto Sans Hebrew 3.001 (notofonts, OFL)       |           213 |            34 | The same as Noto Serif Hebrew, plus ח/ה (both directions, 20 pairs).                   |
 
 No candidate font reduces the set, so none is bundled. The flagged pairs are all a letter with a small point against the same letter without it or with another point: the point is a few percent of the ink, so any font scores them high. In Chrome at 32px, in all three fonts, the points are drawn on the letters and told apart: patah (a bar) and qamats (a bar with a stem), dagesh and rafe in פּ and פֿ, hiriq under י, holam over ו, and the shin and sin dots. The presentation forms (U+FB1D to U+FB4E: אַ, אָ, פּ, פֿ, בּ, וּ, יִ, ײַ) draw the same as the letter plus mark in all three fonts; the tasks hold only the decomposed form, since the build normalises to NFC. So the overlap measure flags these pairs for what they are, a small mark, and says nothing about whether it shows. Whether the mark is visible in the worn print itself is the person's judgment on the clip; no font changes that.
 
@@ -136,6 +138,59 @@ After merging, in this order:
 3. Check `curl https://check.usnewsmap.com/build.txt` against `git rev-parse origin/main:edge/check`, and that `/fonts/NotoSansCherokee-Regular.woff2` loads.
 4. Put the task ids in a file and run `edge/check/confusable.sh --vault usnmtlskvprodffapzy --action mark --tasks ids.txt`, then `--action reopen` with the same file. Marking and reopening can be one after the other: the point of the pause is only to look at the export (`excluded_counts`) first.
 5. Rebuild and reload a language's tasks, as [below](#loading-a-language), to add `lookalikes` and their labels to tasks already loaded. Nothing needs this to be right: without `lookalikes` a task shows no label.
+
+## Words cut from a merged line
+
+LoC's layout sometimes boxes two printed lines as one `TextLine`. A task cut from it has a line clip and a word crop that include the line below: the word box takes the line's height, so the enlarged word shows the target and the start of the next line. The readings are for the top line only ([#1978](https://github.com/tgoodyear/usnewsmap.com/issues/1978)). Example: `chr/phoenix-nt-v1/sn83020866_1828-05-28_ed-1_seq-3_P3_TL00018~0`. A count from clip heights (clip taller than 1.6 times the median clip of its page) before this change: `chr/phoenix-nt-v1` 2 clips and 7 words, `chr-lines/disputes-v1` 7 and 7, `chr-rare/rare-v1` 8 and 9, `chr-rare/nah-v1` 0, `sr` 3 and 8, `yi` 23 and 54. The exact counts come from the tool below.
+
+**The rule** (`tools/merged_lines.py`). A `TextLine` is a merged line when its box height is more than `--merged-line-factor` (default 1.6) times the median `TextLine` height of its page. The median is over every line of the page's ALTO, not only the lines a build picks. A page with fewer than `--min-page-lines` (default 5) lines of positive height is not checked: a median over so few lines can be a merged line itself, and one tall line against three short ones says nothing about the page. Exactly 1.6 times the median is not flagged. Heights are in the ALTO's own units, so no scale is needed. `tools/test_merged_lines.py` tests both edges.
+
+**At build.** No task is made from a merged line. The rule is in every path that reads ALTO line boxes:
+
+- `tools/phoenix_lines.py` (all three modes: `disputes`, `rare`, `nah`): the median is over all of LoC's lines on the page, and a flagged line is removed before candidates are chosen. Its report (`report.json` and stderr) counts them in `merged`, per page and in total.
+- `tools/yiddish_lines.py`: a flagged line is dropped from the lines the protocol picks (the anchor's line and the two after it); the run prints the count per page and in total.
+- `tools/serbian_lines.py`: a flagged line is not a candidate, so the random pick falls on the others. The box is LoC's, which is reading a's.
+- `tools/build_tasks.py` has no line boxes of its own, since it reads the tools' output. It leaves out and counts any input row with `"merged_line": true`, which guards a hand-made lines file.
+- `tools/from_tap_data.py` is not covered: its input (`data.json` of the tap page) holds line images and word boxes, not ALTO line boxes. `chr/phoenix-nt-v1` came from it and is measured by the loaded-task tool.
+
+Each tool writes `merged-lines.jsonl` (the flagged lines with page, line id, box, page median, ratio, factor and text) next to its `lines.jsonl`: `OUT_DIR/<kind>/merged-lines.jsonl` for `phoenix_lines.py`, `DIR/merged-lines.jsonl` for the other two. The archive step in [Keeping build inputs](#keeping-build-inputs) copies it, so the lines left out can be traced.
+
+**Loaded tasks: finding them.** The build inputs of the loaded sets were not kept, but a task id names its LoC line, and LoC's ALTO for every page is in the bulk OCR archives (`<batch>_verNN.tar.bz2`, members `<lccn>/<yyyy>/<mm>/<dd>/ed-<n>/seq-<m>/ocr.xml`, [#1907](https://github.com/tgoodyear/usnewsmap.com/issues/1907)). `tools/merged_lines_loaded.py` reads the task bodies from a dump, finds each task's `TextLine` and applies the rule to the line's box against its page's median. It uses the Python standard library only, takes named flags and never contacts loc.gov.
+
+- Which line: for `chr`, `chr-lines` and `chr-rare` the task id ends in the ALTO `TextLine` ID (`..._seq-3_P3_TL00018`). For `yi` and `sr` it ends in `_l<N>`, the line's index in `yiddish_lines.py`'s order (TextBlock by TextBlock); a test checks that order. For `sr`, reading a is LoC's ALTO and so is the box used here. Reading b's own layout (the held BOINC ALTO) is not read.
+- Which archive: `--pages docs/reports/2026-11-cherokee/phoenix-pages.jsonl` names the batch of each of the 324 Cherokee pages (two archives: `dlc_misctopsn83020874_ver02` for 240 pages and `dlc_misctopsn83020866_ver03` for 84). For Yiddish and Serbian the repository has no page-to-archive list, so `--archive-map` takes a TSV of `doc_id` and `archive` from `quality.loc_alto` (columns `doc_id`, `archive`). Only the archives that hold a wanted page are opened. Each is streamed once and the read stops when its wanted pages are found; `--workers` reads that many at once.
+- Fallback: a task whose page is not found in the archives (no archive listed, the archive absent from `--archives`, the page or line not in the ALTO) uses its line clip's pixel height instead (`--clips DIR` of clips at their keys, or `--clips-url` to fetch the missing ones from the public `/clips/<key>` one at a time, `--delay` seconds apart). The three line tools pad a clip in proportion to the box height (15% each side; Cherokee lines have a 4-pixel minimum, which only matters under 27 pixels) and `build_tasks.py` saves it unscaled, so clip heights keep the ratio of box heights except for a line cut short at the page edge. The median is then over the page's clips, so it needs 5 distinct lines of that page in the loaded set, and most pages will have fewer: those tasks are not flagged and are counted as `page_too_few_lines`. The report counts tasks measured from the ALTO, from clips and unmeasured separately.
+- Output, in `--out-dir`: `affected-task-ids.txt` (the file `confusable.sh --tasks` reads), `flagged-lines.jsonl`, `unmeasured-tasks.txt`, `report.json` and `report.txt`. Per set the report gives the tasks, how each was measured, the flagged lines and tasks, the answers on them (active and already set aside), the settled ones by outcome and how many were already marked.
+- Time: a page is found by reading its archive's stream, so one archive costs a pass through its bzip2 data. LoC's 3,011 archives hold 2.47 TB, about 0.8 GB each on average. Python's `bz2` decompresses roughly 30 to 50 MB of output a second per core (estimated, not measured on these archives), which is a few minutes for an archive read to its end. The two Cherokee archives take minutes. Yiddish and Serbian depend on how many archives their 52 and 134 pages are spread over; at about fifty archives and eight workers expect 20 to 40 minutes. Run one `--lang` at a time to see the pace (the tool prints each archive as it finishes). A Rust reader would not decompress faster, since it also goes through bzip2; it was not built.
+
+Run on the storage host (read-only on the site; the dump needs the admin token from Key Vault):
+
+```sh
+python3 edge/check/tools/merged_lines_loaded.py --vault usnmtlskvprodffapzy --lang chr --lang chr-lines --lang chr-rare \
+  --archives /path/to/bulk-ocr --pages docs/reports/2026-11-cherokee/phoenix-pages.jsonl --workers 4 --out-dir merged-lines-chr
+python3 edge/check/tools/merged_lines_loaded.py --dump dump.jsonl --lang yi --lang sr --archives /path/to/bulk-ocr \
+  --archive-map doc-archives.tsv --workers 8 --out-dir merged-lines-yi-sr
+```
+
+`doc-archives.tsv` comes from `quality.loc_alto`: `\copy (SELECT doc_id, archive FROM quality.loc_alto WHERE doc_id IN (...)) TO 'doc-archives.tsv'` for the task pages, or the whole table. With `--dump FILE` the tool needs no network. Nothing is marked by the tool.
+
+**Setting answers aside, with a reason.** `confusable.sh --action mark --reason merged_line --tasks affected-task-ids.txt` marks the tasks. A mark has a reason: `confusable_display` (the default, the existing meaning) or `merged_line`. For either, in one transaction per task: the task's answers move to `answers_excluded` (kept, in the backup dump), the copy is checked against the original, and the task is held out of the queue with `n = 0`, `settled = 0` and `outcome = NULL`, so it counts as no checked text. A task that was settled keeps the outcome it had in `outcome_withdrawn`, with `withdrawn_reason` and `withdrawn_at` (unix milliseconds); one that was not settled has none of the three. Nothing is deleted. The differences between the reasons:
+
+- `confusable_display` sets `confusable_display = 1`, can be reopened with `--action reopen`, and takes new answers only from a page at the current display revision.
+- `merged_line` leaves `confusable_display = 0` and sets only `mark_reason = 'merged_line'` and `held = 1`. It is not reopened: `reopen` on it does nothing, and a held task answers 409. A task already marked for either reason is not marked again, so a task keeps its first reason and a second run can't rewrite `withdrawn_at`.
+- A task marked before `mark_reason` existed (the four `confusable_display` ones) has `mark_reason` NULL and `confusable_display = 1`. The Worker and the export read it as `confusable_display`, and nothing is changed on it.
+
+The export gives a marked task `mark_reason`, `held`, `excluded_counts` (and the font and names counts), `settled: false`, `outcome: null`, and, if it had settled, `outcome_withdrawn`, `withdrawn_reason` and `withdrawn_at`. `/api/stats` and the language list count it in no settled or answer figure, since its `settled` and `n` are zero. Readers of `outcome` and `settled` in the repository: `docs/reports/2026-11-cherokee/scripts/chr_disputes_score.py` puts a line with a `merged_line` word in state `excluded`, in neither the resolved nor the waiting lines (tests in `test_chr_disputes_score.py`); `tools/en_pick_analysis.py` reads only settled rows; `crates/usnm-glyphs` (`add-checked`) uses only settled `a` or `b` words, so a marked word adds no glyphs, and a bank that already holds the glyphs of a word marked later fails `add-checked` with its "start again from a bank without it" message, as for any word that loses its consensus. That crate was not changed. `mark_report.py` and `names_report.py` read `counts`, which are zero for a marked word.
+
+**Migration 0005 is needed before the Worker that marks with a reason is deployed.** `migrations/0005-mark-reason.sql` adds four nullable columns to `tasks` (`mark_reason`, `outcome_withdrawn`, `withdrawn_reason`, `withdrawn_at`). It only adds, so the running Worker is unaffected, and **it must run before the merge**: the deploy does not run migrations, and the new Worker fails without the columns. After merging, in this order:
+
+1. Before the merge, run `migrations/0005-mark-reason.sql` on D1.
+2. Merge. CI deploys the Worker.
+3. Check `curl https://check.usnewsmap.com/build.txt` against `git rev-parse origin/main:edge/check`.
+4. Run `merged_lines_loaded.py` on the storage host (above) and look at `report.txt`.
+5. Mark the affected tasks: `edge/check/confusable.sh --vault usnmtlskvprodffapzy --action mark --reason merged_line --tasks affected-task-ids.txt` (500 ids a request; the script sends the file as one request, so split a longer one). With a Worker from before step 2 the script fails because the reply lacks the reason.
+
+No clip is recropped or regenerated. A later set that recrops the merged lines would need the scans. Where they may be: the Serbian scans are on the storage host (verified 14 November 2026, 134 of 134 pages). The Cherokee pages may be on the host that serves the Phoenix site's local page copies (not verified). The Yiddish pages may be under the kept-scans directory (not verified).
 
 ## Letter names
 
@@ -338,6 +393,7 @@ A dry run that fails for any reason, including an input file that is missing, un
 From now on, when a language's tasks are built, the inputs are archived before the tasks are loaded, under the lake path `check-site/<lang>/<set>/` on the project's storage host (the host that holds the lake and the scan archive; the build host copies to it). The directory holds:
 
 - `lines.jsonl` and the line images it names (`--images`), exactly as `build_tasks.py` read them;
+- `merged-lines.jsonl`, the lines the line tool left out because their ALTO box covers more than one printed line ([above](#words-cut-from-a-merged-line)); it is empty when none were;
 - `command.txt`, the exact `build_tasks.py` command line (and the `yiddish_lines.py`, `serbian_lines.py` or `phoenix_lines.py` command before it);
 - `tool-commit.txt`, the output of `git rev-parse HEAD` for the checkout that ran them, plus `git status --porcelain` (empty for a clean build);
 - `SHA256SUMS` for all of the above.
@@ -348,7 +404,7 @@ On the build host, after the build and before loading:
 LAKE=<lake root on the storage host>     # where the lake is mounted or reachable from the build host
 SET=$LAKE/check-site/yi/loc-yidj2-v1     # check-site/<lang>/<set>
 mkdir -p "$SET"
-cp yi/lines.jsonl "$SET/"
+cp yi/lines.jsonl yi/merged-lines.jsonl "$SET/"   # phoenix_lines.py writes merged-lines.jsonl beside its lines.jsonl, in OUT_DIR/<kind>/
 (cd yi && find . -type f \( -name '*.jpg' -o -name '*.png' \) -print0 | tar --null -T - -cf "$SET/images.tar")
 printf '%s\n' 'python3 tools/build_tasks.py --lines yi/lines.jsonl ...' > "$SET/command.txt"   # the real command, in full
 { git rev-parse HEAD; git status --porcelain; } > "$SET/tool-commit.txt"
@@ -374,7 +430,7 @@ CI deploys the site: after `ci` passes on main, `.github/workflows/check-site-de
 
 Every run, whether it deploys or not, also sends `languages/*.json` to the site with `sync-languages.mjs`, so a merged change to a name, intro or letter note goes live with it. The site's `examples` are kept and the build options are left out, as `from_tap_data.py` does; a language the site doesn't have yet is skipped, since it needs its tasks and clips through `load.sh`. The CI identity reads `usnm-prod-check-admin-token` for this through the grant in `infra/modules/edge-worker-ci.bicep`. To see what a sync would change without sending anything: `node edge/check/sync-languages.mjs --dry-run`.
 
-Changes to an existing database are in `migrations/`, run once in order (`0004-answer-names.sql` before the Worker that stores `names_shown` is): `0001-answers-notext.sql` must run before a page with "Not text" is deployed, `0002-confusable-display.sql` before the Worker that marks `confusable_display` is, and `0003-answer-font.sql` before the Worker that stores `font` is, and `0004-answer-names.sql` before the Worker that stores `names_shown` is. The D1 schema is applied with `wrangler d1 execute usnm-check --remote --file schema.sql`, or through the D1 API; every statement is idempotent.
+Changes to an existing database are in `migrations/`, run once in order (`0005-mark-reason.sql` before the Worker that marks with a reason is, and `0004-answer-names.sql` before the Worker that stores `names_shown` is): `0001-answers-notext.sql` must run before a page with "Not text" is deployed, `0002-confusable-display.sql` before the Worker that marks `confusable_display` is, and `0003-answer-font.sql` before the Worker that stores `font` is, `0004-answer-names.sql` before the Worker that stores `names_shown` is, and `0005-mark-reason.sql` before the Worker that stores `mark_reason` is. The D1 schema is applied with `wrangler d1 execute usnm-check --remote --file schema.sql`, or through the D1 API; every statement is idempotent.
 
 ### Secrets
 
@@ -393,6 +449,6 @@ Changing `SESSION_KEY` (`--rotate`) signs everyone out; their earlier answers st
 node --test edge/check/worker.test.mjs edge/check/layout.test.mjs edge/check/languages.test.mjs edge/check/fonts.test.mjs
 ```
 
-The `check site` job in `ci.yml` runs these, a Wrangler dry-run build (`npx wrangler@4.154.0 deploy --dry-run`), shellcheck of the scripts and the tools' unit tests whenever anything under `edge/check/` but its Markdown changes. `languages.test.mjs` checks each language configuration's fields and that its keys are sorted. `fonts.test.mjs` checks the served font against the hash in `public/fonts/README.md`. `worker.test.mjs` runs the marking and reopening on SQLite with the real schema. `tools/test_cherokee_labels.py` checks the Cherokee names against the Unicode names and that the three files agree. `tools/test_names_report.py` runs the names report on a synthetic export. `layout.test.mjs` renders names on and off in headless Chrome at 375px, left to right and right to left. `tools/test_mark_report.py` runs the mark report on a small synthetic export. `tools/test_recompute_marks.py` runs `recompute_marks.py` on small synthetic bodies and against a local stand-in for the two admin routes (it needs Pillow with Raqm, and skips otherwise). `tools/test_lookalike.py` holds the table of letter pairs the threshold comes from and needs Pillow with a FreeType that reads woff2 (it skips otherwise).
+The `check site` job in `ci.yml` runs these, a Wrangler dry-run build (`npx wrangler@4.154.0 deploy --dry-run`), shellcheck of the scripts and the tools' unit tests whenever anything under `edge/check/` but its Markdown changes. `languages.test.mjs` checks each language configuration's fields and that its keys are sorted. `fonts.test.mjs` checks the served font against the hash in `public/fonts/README.md`. `worker.test.mjs` runs the marking and reopening on SQLite with the real schema. `tools/test_cherokee_labels.py` checks the Cherokee names against the Unicode names and that the three files agree. `tools/test_names_report.py` runs the names report on a synthetic export. `layout.test.mjs` renders names on and off in headless Chrome at 375px, left to right and right to left. `tools/test_mark_report.py` runs the mark report on a small synthetic export. `tools/test_merged_lines.py` and `tools/test_merged_lines_loaded.py` test the rule, the line tools' use of it (they need Pillow) and the loaded-task tool on small `tar.bz2` archives built in the tests. `tools/test_recompute_marks.py` runs `recompute_marks.py` on small synthetic bodies and against a local stand-in for the two admin routes (it needs Pillow with Raqm, and skips otherwise). `tools/test_lookalike.py` holds the table of letter pairs the threshold comes from and needs Pillow with a FreeType that reads woff2 (it skips otherwise).
 
 `layout.test.mjs` renders every language's sample words in headless Chrome, one highlighted letter at a time, and fails if a highlight box overlaps another character. It skips when no Chrome is found (set `CHROME=/path/to/chrome`) unless `CI` is set.

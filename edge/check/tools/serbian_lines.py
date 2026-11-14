@@ -6,7 +6,10 @@ for each page in --pages, fetches LoC's ALTO and the page scan from loc.gov. It 
 --lines-per-page lines LoC's ALTO has as Cyrillic text (at least --min-words words), drawn at random
 with a seed per page, so a rerun picks the same lines. Reading a is LoC's words with their boxes;
 reading b is our words whose centres fall in the LoC line's box, left to right. A line where our text
-isn't mostly Cyrillic (English text on a bilingual page) is left out.
+isn't mostly Cyrillic (English text on a bilingual page) is left out. A LoC line whose ALTO box is taller than
+--merged-line-factor (1.6) times the page's median line covers more than one printed line (#1978): it makes no task,
+the run prints the count per page and in total, and DIR/merged-lines.jsonl lists them. The rule uses LoC's boxes, which
+are reading a's.
 
   python3 serbian_lines.py --pages pages.jsonl --ours DIR --work DIR [--lines-per-page 4] \
     [--min-words 3] [--seed 1] [--delay 1.0]
@@ -24,6 +27,7 @@ import os
 import random
 import re
 
+import merged_lines
 from yiddish_lines import alto_lines, fetch, iiif_full, label
 
 CYRILLIC = re.compile(r"[Ѐ-ӿ]")
@@ -35,10 +39,10 @@ def cyrillic_share(text: str) -> float:
     return sum(1 for ch in letters if CYRILLIC.match(ch)) / len(letters) if letters else 0.0
 
 
-def candidates(lines: list, min_words: int) -> list:
-    """Indexes of LoC lines worth checking: enough words, read as mostly Cyrillic letters."""
+def candidates(lines: list, min_words: int, skip: set = frozenset()) -> list:
+    """Indexes of LoC lines worth checking: enough words, read as mostly Cyrillic letters, not in `skip` (merged lines)."""
     return [i for i, ln in enumerate(lines)
-            if len(ln["words"]) >= min_words
+            if i not in skip and len(ln["words"]) >= min_words
             and cyrillic_share(" ".join(w["text"] for w in ln["words"])) >= 0.6]
 
 
@@ -70,6 +74,7 @@ def main() -> None:
     ap.add_argument("--min-words", type=int, default=3)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--delay", type=float, default=1.0, help="seconds to wait after each download")
+    merged_lines.add_arguments(ap)
     a = ap.parse_args()
 
     from PIL import Image
@@ -78,6 +83,7 @@ def main() -> None:
     Image.MAX_IMAGE_PIXELS = 200_000_000
     os.makedirs(os.path.join(a.work, "lines"), exist_ok=True)
     n = 0
+    merged = merged_lines.Report(a.merged_line_factor, a.min_page_lines)
     with open(a.pages, encoding="utf-8") as pages, open(os.path.join(a.work, "lines.jsonl"), "w", encoding="utf-8") as out:
         for raw in pages:
             p = json.loads(raw)
@@ -91,8 +97,12 @@ def main() -> None:
             aw, ah, lines = alto_lines(loc)
             ow, oh, our_lines = alto_lines(ours)
             our_words = scaled_words(our_lines, aw / ow, ah / oh)
+            skip = merged.page(page, [{"id": f"{doc}_l{i}", "box": ln["box"], "text": " ".join(w["text"] for w in ln["words"])} for i, ln in enumerate(lines)])
+            if skip:
+                print(f"{doc}: {len(skip)} merged lines left out", flush=True)
+            skip_index = {i for i in range(len(lines)) if f"{doc}_l{i}" in skip}
             chosen = []
-            for li in pick(candidates(lines, a.min_words), a.lines_per_page, doc, a.seed):
+            for li in pick(candidates(lines, a.min_words, skip_index), a.lines_per_page, doc, a.seed):
                 b_words = words_in(lines[li]["box"], our_words)
                 b = " ".join(wd["text"] for wd in b_words)
                 if b and cyrillic_share(b) >= 0.6:
@@ -128,6 +138,8 @@ def main() -> None:
                 }, ensure_ascii=False) + "\n")
                 n += 1
             print(f"{doc}: {len(chosen)} lines", flush=True)
+    merged.write(os.path.join(a.work, "merged-lines.jsonl"))
+    print(merged.lines_text())
     print(f"{n} lines")
 
 

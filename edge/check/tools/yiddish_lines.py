@@ -9,6 +9,9 @@ model, and written as one record: reading a is LoC's ALTO words with their boxes
   python3 yiddish_lines.py --manifest ocr/bench/yiddish-newspaper/manifest.json --work DIR \
     --tessdata DIR --model yidj2 [--roles selected] [--delay 1.0]
 
+A line whose ALTO box is taller than --merged-line-factor (1.6) times its page's median line covers more than one printed
+line (#1978): it makes no task, the run prints the count per page and in total, and DIR/merged-lines.jsonl lists them.
+
 Writes DIR/lines.jsonl and DIR/lines/<line id>.png, and caches downloads in DIR/loc/. Needs Pillow and
 the tesseract command.
 """
@@ -22,6 +25,8 @@ import subprocess
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
+
+import merged_lines
 
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 HEBREW = re.compile(r"[֐-׿יִ-ﭏ]")
@@ -146,6 +151,7 @@ def main() -> None:
     ap.add_argument("--model", required=True, help="Tesseract model name, e.g. yidj2")
     ap.add_argument("--roles", default="selected", help="comma-separated page roles to use: selected, reserve")
     ap.add_argument("--delay", type=float, default=1.0, help="seconds to wait after each download")
+    merged_lines.add_arguments(ap)
     a = ap.parse_args()
 
     from PIL import Image
@@ -156,6 +162,7 @@ def main() -> None:
     roles = set(a.roles.split(","))
     os.makedirs(os.path.join(a.work, "lines"), exist_ok=True)
     n = 0
+    merged = merged_lines.Report(a.merged_line_factor, a.min_page_lines)
     with open(os.path.join(a.work, "lines.jsonl"), "w", encoding="utf-8") as out:
         for p in man["pages"]:
             if p["role"] not in roles:
@@ -165,7 +172,11 @@ def main() -> None:
             tile = fetch(f"https://chroniclingamerica.loc.gov/lccn/{page}/ocr.xml", os.path.join(a.work, "loc", doc + ".xml"), a.delay)
             aw, ah, lines = alto_lines(os.path.join(a.work, "loc", doc + ".xml"))
             sx, sy = aw / p["width"], ah / p["height"]  # anchors are in pixels of the held (smaller) scan
-            picked = pick_blocks(lines, [(x * sx, y * sy) for x, y in p["anchors"]])
+            # a merged line (merged_lines.py) is left out of the picks; the median is over every line of the page
+            skip = merged.page(page, [{"id": f"{doc}_l{i}", "box": ln["box"], "text": " ".join(w["text"] for w in ln["words"])} for i, ln in enumerate(lines)])
+            if skip:
+                print(f"{doc}: {len(skip)} merged lines left out", flush=True)
+            picked = [i for i in pick_blocks(lines, [(x * sx, y * sy) for x, y in p["anchors"]]) if f"{doc}_l{i}" not in skip]
             not_text = [i for i in picked if not text_like(lines[i])]
             picked = [i for i in picked if i not in not_text]
             if not_text:
@@ -203,6 +214,8 @@ def main() -> None:
                 }, ensure_ascii=False) + "\n")
                 n += 1
             print(f"{doc}: {len(picked)} lines", flush=True)
+    merged.write(os.path.join(a.work, "merged-lines.jsonl"))
+    print(merged.lines_text())
     print(f"{n} lines")
 
 
