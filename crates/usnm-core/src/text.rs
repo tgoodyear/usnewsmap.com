@@ -138,11 +138,29 @@ pub fn stored_form(raw: &str, ocr_engine: &str, language: &str) -> String {
     normalize_ocr_for(raw, Hyphenation::for_page(ocr_engine, language))
 }
 
-/// Both texts of one page in [`stored_form`], ready to score against each other.
+/// [`stored_form`] applied until it changes nothing. Normalizing once is not
+/// always a fixpoint (`aﬁ` then a combining accent: the ligature expands, and
+/// only a second pass composes the accent), so a raw text and its published
+/// form, which is already one pass in, settle to the same text.
+fn settled(raw: &str, ocr_engine: &str, language: &str) -> String {
+    let mut text = stored_form(raw, ocr_engine, language);
+    for _ in 0..4 {
+        let next = stored_form(&text, ocr_engine, language);
+        if next == text {
+            break;
+        }
+        text = next;
+    }
+    text
+}
+
+/// Both texts of one page in the same form, ready to score against each
+/// other: [`stored_form`], settled, on each side. Either side may be raw or
+/// published.
 pub fn comparable(a: &str, b: &str, ocr_engine: &str, language: &str) -> (String, String) {
     (
-        stored_form(a, ocr_engine, language),
-        stored_form(b, ocr_engine, language),
+        settled(a, ocr_engine, language),
+        settled(b, ocr_engine, language),
     )
 }
 
@@ -958,6 +976,15 @@ mod tests {
                 f("name")
             );
         }
+    }
+
+    #[test]
+    fn a_raw_text_and_its_published_form_compare_equal() {
+        let engine = "tesseract-5.5.1/eng";
+        let raw = "a\u{FB01}\u{0301}n";
+        let published = stored_form(raw, engine, "eng");
+        let (a, b) = comparable(raw, &published, engine, "eng");
+        assert_eq!(a, b);
     }
 
     /// A line-end hyphen in a re-read is not OCR error: the raw re-read has

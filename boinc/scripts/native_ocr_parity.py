@@ -21,7 +21,7 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ocr_stored_form import stored_form  # noqa: E402
+from ocr_stored_form import comparable, settled  # noqa: E402
 
 CHROOT_ENV = {
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -166,14 +166,14 @@ def report(a):
         raw = [(out / arm / "text.txt").read_bytes() for arm in ("native", "container")]
         # Scored in the form the import stores (#1919), so a word broken at a line end is not an error
         # against LoC's text; byte identity stays on the raw files.
-        text = [stored_form(item.decode(), row["language"], row["language"]) for item in raw]
+        text = list(comparable(*(item.decode() for item in raw), row["language"], row["language"]))
         row["text_identical"] = raw[0] == raw[1]
         row["alto_identical"] = sha256(out / "native/layout.xml") == sha256(out / "container/layout.xml")
         between = 0 if row["text_identical"] else distance(text[0], text[1])
         row["cer_between_builds"] = between / max(len(text[1]), 1)
         reference = a.references / f"{row['page']}.txt" if a.references else None
         if reference and reference.exists():
-            ref = stored_form(reference.read_text(), row["language"], row["language"])
+            ref = settled(reference.read_text(), row["language"], row["language"])
             row["cer_vs_loc_native"] = distance(text[0], ref) / max(len(ref), 1)
             row["cer_vs_loc_container"] = (row["cer_vs_loc_native"] if row["text_identical"]
                                            else distance(text[1], ref) / max(len(ref), 1))

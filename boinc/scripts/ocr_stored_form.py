@@ -111,6 +111,18 @@ def stored_form(raw, ocr_engine, language):
     return _collapse(_rejoin("".join(kept), is_fraktur(ocr_engine, language)))
 
 
+def settled(raw, ocr_engine, language):
+    """`stored_form` applied until it changes nothing: one pass is not always a fixpoint (a ligature
+    expanded before a combining accent), so a raw text and its published form settle to the same text."""
+    text = stored_form(raw, ocr_engine, language)
+    for _ in range(4):
+        nxt = stored_form(text, ocr_engine, language)
+        if nxt == text:
+            break
+        text = nxt
+    return text
+
+
 def comparable(a, b, ocr_engine, language):
-    """Both texts of one page in stored form, ready to score against each other."""
-    return stored_form(a, ocr_engine, language), stored_form(b, ocr_engine, language)
+    """Both texts of one page in the same form, ready to score against each other; either may be raw or published."""
+    return settled(a, ocr_engine, language), settled(b, ocr_engine, language)

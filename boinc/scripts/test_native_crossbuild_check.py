@@ -192,12 +192,14 @@ cat "$1" > "$2.txt"
 class HyphenatedLineTest(unittest.TestCase):
     """A word broken at a line end is not an error between a worker's read and a re-read (#1919)."""
 
-    def check(self, windows, linux):
+    def check(self, windows, linux, profile="frak2021", message_language=None):
         with tempfile.TemporaryDirectory() as t:
             scan = Path(t) / "scan.jp2"
             scan.write_bytes(b"scan")
-            page = {"job": "j", "host": "1", "page": "sn1/1900-01-01/ed-1/seq-1", "language": "frak2021",
+            page = {"job": "j", "host": "1", "page": "sn1/1900-01-01/ed-1/seq-1", "language": profile,
                     "scan_sha256": hashlib.sha256(b"scan").hexdigest(), "windows_text": windows}
+            if message_language:
+                page["message_language"] = message_language
             a = SimpleNamespace(scans=t, tesseract="t", tessdata="d", work_dir=None, cer_limit=0.10, f1_limit=0.90)
             with mock.patch.object(X, "scan_path", lambda *_: scan), \
                     mock.patch.object(X, "read_linux", lambda *_args, **_kw: linux):
@@ -207,6 +209,17 @@ class HyphenatedLineTest(unittest.TestCase):
         row = self.check("Die Zeitung kam an.", "Die Zei\u2e17\ntung kam an.")
         self.assertFalse(row["flagged"])
         self.assertEqual(row["cer"], 0.0)
+
+    def test_the_jobs_language_is_kept_apart_from_the_profile(self):
+        # A German page read with the eng profile: the import rejoins an em dash there.
+        published, reread = "im Drathhaus", "im Drath\u2014\nhaus"
+        self.assertFalse(self.check(published, reread, "eng", "deu")["flagged"])
+        self.assertTrue(self.check(published, reread, "eng", "eng")["flagged"])
+
+    def test_matching_empty_reads_agree(self):
+        row = self.check(" \f", "")
+        self.assertFalse(row["flagged"])
+        self.assertEqual(row["ratio"], 1.0)
 
     def test_raw_against_published_would_be_flagged(self):
         self.assertTrue(X.judge("Zeitung", "Zei\u2e17\ntung")["flagged"])

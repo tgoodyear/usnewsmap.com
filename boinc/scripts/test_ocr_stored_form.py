@@ -41,6 +41,12 @@ class StoredForm(unittest.TestCase):
         self.assertEqual(a, b)
         self.assertEqual(distance(a, b), 0)
 
+    def test_a_raw_text_and_its_published_form_compare_equal(self):
+        raw = "a\ufb01\u0301n"
+        published = S.stored_form(raw, "tesseract-5.5.1/eng", "eng")
+        a, b = S.comparable(raw, published, "tesseract-5.5.1/eng", "eng")
+        self.assertEqual(a, b)
+
     def test_published_text_is_unchanged(self):
         published = "Die Zeitung kam an.\nZweite Zeile"
         self.assertEqual(S.stored_form(published, "tesseract-5.5.1/frak2021", "deu"), published)
