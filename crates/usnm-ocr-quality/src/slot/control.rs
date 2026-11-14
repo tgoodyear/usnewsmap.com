@@ -24,6 +24,13 @@ pub const HEARTBEAT_OFFSET: usize = MSG_CHANNEL_SIZE * 4;
 pub const APP_STATUS_OFFSET: usize = MSG_CHANNEL_SIZE * 7;
 /// Default BOINC heartbeat loss timeout when heartbeats are active.
 pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often the control thread polls the shared memory.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// A gap between two polls longer than the interval plus this means this process was
+/// stalled (suspended, or the machine paused), not that the client went quiet.
+const POLL_STALL_SLACK: Duration = Duration::from_secs(5);
+/// After a stall, the client needs time to send a heartbeat before loss can be declared.
+const RESUME_GRACE: Duration = Duration::from_secs(15);
 
 /// Lifecycle action applied to a registered child process group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -301,6 +308,10 @@ struct BoincControlState {
     heartbeat_lost: bool,
     heartbeat_enabled: bool,
     last_heartbeat: Instant,
+    /// When the poll loop last ran `check_heartbeat_timeout`.
+    last_poll: Instant,
+    /// After a stall of the poll loop, loss cannot be declared before this instant.
+    grace_until: Option<Instant>,
     child_pgid: Option<u32>,
     child_hook: Option<ChildHook>,
 }
@@ -356,6 +367,8 @@ impl BoincControl {
                     heartbeat_lost: false,
                     heartbeat_enabled: false,
                     last_heartbeat: Instant::now(),
+                    last_poll: Instant::now(),
+                    grace_until: None,
                     child_pgid: None,
                     child_hook: None,
                 }),
@@ -415,6 +428,8 @@ impl BoincControl {
                 heartbeat_lost: false,
                 heartbeat_enabled: false,
                 last_heartbeat: Instant::now(),
+                last_poll: Instant::now(),
+                grace_until: None,
                 child_pgid: None,
                 child_hook: None,
             }),
@@ -460,7 +475,7 @@ impl BoincControl {
                             break;
                         }
                         drop(shared);
-                        std::thread::sleep(Duration::from_millis(50));
+                        std::thread::sleep(POLL_INTERVAL);
                     }
                 });
         }
@@ -559,17 +574,40 @@ fn check_heartbeat_timeout(
     heartbeat_timeout: Duration,
     no_heartbeat_check: bool,
 ) {
-    if let Ok(mut s) = inner.state.lock() {
-        if !no_heartbeat_check
-            && s.heartbeat_enabled
-            && !s.suspended
-            && !s.heartbeat_lost
-            && s.last_heartbeat.elapsed() > heartbeat_timeout
-        {
-            s.heartbeat_lost = true;
-            s.dispatch_child(ChildAction::Terminate);
-            inner.cvar.notify_all();
-        }
+    check_heartbeat_timeout_at(inner, heartbeat_timeout, no_heartbeat_check, Instant::now());
+}
+
+/// `check_heartbeat_timeout` with the current time given, so tests can move the clock.
+fn check_heartbeat_timeout_at(
+    inner: &BoincControlInner,
+    heartbeat_timeout: Duration,
+    no_heartbeat_check: bool,
+    now: Instant,
+) {
+    let Ok(mut s) = inner.state.lock() else {
+        return;
+    };
+    let poll_gap = now.saturating_duration_since(s.last_poll);
+    s.last_poll = now;
+    if poll_gap > POLL_INTERVAL + POLL_STALL_SLACK {
+        // This process did not run for a while, so a missing heartbeat says nothing about
+        // the client. Start the count again and give it time to send one.
+        s.last_heartbeat = now;
+        s.grace_until = Some(now + RESUME_GRACE);
+        return;
+    }
+    if s.grace_until.is_some_and(|until| now < until) {
+        return;
+    }
+    if !no_heartbeat_check
+        && s.heartbeat_enabled
+        && !s.suspended
+        && !s.heartbeat_lost
+        && now.saturating_duration_since(s.last_heartbeat) > heartbeat_timeout
+    {
+        s.heartbeat_lost = true;
+        s.dispatch_child(ChildAction::Terminate);
+        inner.cvar.notify_all();
     }
 }
 
@@ -669,4 +707,71 @@ pub fn write_mmap_channel(mmap_path: &Path, offset: usize, xml: &str) -> anyhow:
     f.write_all(&[1u8])?;
     f.sync_data()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod heartbeat_tests {
+    use super::*;
+
+    fn inner(start: Instant) -> BoincControlInner {
+        BoincControlInner {
+            state: Mutex::new(BoincControlState {
+                suspended: false,
+                quit_requested: false,
+                abort_requested: false,
+                heartbeat_lost: false,
+                heartbeat_enabled: true,
+                last_heartbeat: start,
+                last_poll: start,
+                grace_until: None,
+                child_pgid: None,
+                child_hook: None,
+            }),
+            cvar: Condvar::new(),
+        }
+    }
+
+    fn lost(inner: &BoincControlInner) -> bool {
+        inner.state.lock().unwrap().heartbeat_lost
+    }
+
+    #[test]
+    fn a_stalled_poll_loop_does_not_lose_the_heartbeat() {
+        let t0 = Instant::now();
+        let c = inner(t0);
+        // The poll loop did not run for 40 s; no heartbeat could have been read meanwhile.
+        check_heartbeat_timeout_at(&c, HEARTBEAT_TIMEOUT, false, t0 + Duration::from_secs(40));
+        assert!(!lost(&c));
+        // Still inside the grace period, with polls running normally again.
+        let t1 = t0 + Duration::from_secs(45);
+        check_heartbeat_timeout_at(&c, HEARTBEAT_TIMEOUT, false, t1);
+        assert!(!lost(&c));
+    }
+
+    #[test]
+    fn a_genuine_gap_still_loses_the_heartbeat() {
+        let t0 = Instant::now();
+        let c = inner(t0);
+        // Polls keep running every 50 ms, but no heartbeat arrives for 31 s.
+        let mut t = t0;
+        while t < t0 + Duration::from_secs(31) {
+            t += POLL_INTERVAL;
+            check_heartbeat_timeout_at(&c, HEARTBEAT_TIMEOUT, false, t);
+        }
+        assert!(lost(&c));
+    }
+
+    #[test]
+    fn loss_returns_after_the_grace_period_without_heartbeats() {
+        let t0 = Instant::now();
+        let c = inner(t0);
+        let resume = t0 + Duration::from_secs(40);
+        check_heartbeat_timeout_at(&c, HEARTBEAT_TIMEOUT, false, resume);
+        let mut t = resume;
+        while t < resume + HEARTBEAT_TIMEOUT + Duration::from_secs(1) {
+            t += POLL_INTERVAL;
+            check_heartbeat_timeout_at(&c, HEARTBEAT_TIMEOUT, false, t);
+        }
+        assert!(lost(&c));
+    }
 }
