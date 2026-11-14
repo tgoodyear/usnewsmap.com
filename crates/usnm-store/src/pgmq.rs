@@ -80,6 +80,9 @@ pub struct Location {
 
 impl Location {
     pub fn parse(location: &str) -> anyhow::Result<Self> {
+        if !location.contains("://") {
+            return Self::parse_keywords(location);
+        }
         let url = reqwest::Url::parse(location).context("queue location")?;
         ensure!(
             matches!(url.scheme(), "postgres" | "postgresql"),
@@ -122,6 +125,53 @@ impl Location {
             host,
             port: url.port().unwrap_or(5432),
             database,
+            user: need(user, "user")?,
+            cert: need(cert, "sslcert")?,
+            key: need(key, "sslkey")?,
+            root: need(root, "sslrootcert")?,
+        })
+    }
+}
+
+impl Location {
+    /// The libpq keyword form (`host=… dbname=… user=… sslmode=verify-full
+    /// sslcert=… sslkey=… sslrootcert=…`) the role DSN files use. Values have
+    /// no spaces or quotes; anything else is refused, with the key named and
+    /// never the value.
+    fn parse_keywords(dsn: &str) -> anyhow::Result<Self> {
+        let (mut host, mut port, mut database, mut user) = (None, None, None, None);
+        let (mut cert, mut key, mut root) = (None, None, None);
+        for word in dsn.split_whitespace() {
+            let (k, v) = word
+                .split_once('=')
+                .with_context(|| "a DSN word without `=`")?;
+            ensure!(
+                !v.is_empty() && !v.contains(['\'', '"', '\\']),
+                "the DSN value of `{k}` is empty or quoted"
+            );
+            let slot = match k {
+                "host" => &mut host,
+                "port" => &mut port,
+                "dbname" => &mut database,
+                "user" => &mut user,
+                "sslcert" => &mut cert,
+                "sslkey" => &mut key,
+                "sslrootcert" => &mut root,
+                "sslmode" if v == "verify-full" => continue,
+                other => bail!("unsupported DSN keyword `{other}`"),
+            };
+            ensure!(slot.is_none(), "`{k}` is given twice");
+            *slot = Some(v.to_owned());
+        }
+        let need =
+            |v: Option<String>, name: &str| v.with_context(|| format!("the DSN needs `{name}=`"));
+        Ok(Self {
+            host: need(host, "host")?,
+            port: match port {
+                Some(p) => p.parse().context("the DSN port")?,
+                None => 5432,
+            },
+            database: need(database, "dbname")?,
             user: need(user, "user")?,
             cert: need(cert, "sslcert")?,
             key: need(key, "sslkey")?,
@@ -350,6 +400,27 @@ mod tests {
             ("/c/client.crt", "/c/client.key", "/c/ca.pem")
         );
         assert!(Location::parse(&format!("{GOOD}&sslmode=verify-full")).is_ok());
+    }
+
+    #[test]
+    fn parses_the_keyword_dsn_of_a_role_file() {
+        let dsn = "host=usnm-queue-replica-psql-prod.tjg.fyi dbname=usnm_quality user=quality_reader sslmode=verify-full sslcert=/c/client.crt sslkey=/c/client.key sslrootcert=/c/ca.pem\n";
+        let loc = Location::parse(dsn).unwrap();
+        assert_eq!(loc.host, "usnm-queue-replica-psql-prod.tjg.fyi");
+        assert_eq!(
+            (loc.port, loc.database.as_str(), loc.user.as_str()),
+            (5432, "usnm_quality", "quality_reader")
+        );
+        assert_eq!(loc.root, "/c/ca.pem");
+        for bad in [
+            "host=h dbname=d user=u sslcert=a sslkey=b",
+            "host=h dbname=d user=u sslcert=a sslkey=b sslrootcert=c password=x",
+            "host=h dbname=d user=u sslcert=a sslkey=b sslrootcert=c sslmode=disable",
+            "host=h dbname=d user=u user=v sslcert=a sslkey=b sslrootcert=c",
+            "host=h dbname=d user='u v' sslcert=a sslkey=b sslrootcert=c",
+        ] {
+            assert!(Location::parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

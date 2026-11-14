@@ -990,7 +990,17 @@ impl Release {
         // as the build reaches each.
         let local = if self.ocr_local && !overlay_only {
             let listing = ocr_local::replace::Listing::list(self.curated.as_ref()).await?;
-            let revoked = ocr_local::replace::revocations(self.curated.as_ref()).await?;
+            // Host holds and page holds are read from the quality database now
+            // (`USNM_QUALITY_DSN_FILE`), once, so a revoked page can't come back
+            // because the database was down: that stops the release.
+            let quality = ocr_local::quality_db::QualityDb::from_env()?;
+            let revoked = ocr_local::replace::revocations(
+                self.curated.as_ref(),
+                quality
+                    .as_ref()
+                    .map(|q| q as &dyn ocr_local::quality_db::QualityHolds),
+            )
+            .await?;
             // Pages of published batches only take ours at a full rebuild:
             // how many would, by the scores `ocr-sync` stored.
             let estimate = if indexed.is_empty() || listing.parts() == 0 {
@@ -2897,7 +2907,6 @@ impl Release {
                         json!({"path": r.path, "reason": r.reason, "reference": r.reference});
                     if r.hosts.is_some() {
                         v["hosts"] = json!(r.hosts);
-                        v["ambiguous_hosts"] = json!(r.ambiguous_hosts == Some(true));
                         v["host_pages"] = json!(r.page_count());
                     }
                     if r.has_pages() {

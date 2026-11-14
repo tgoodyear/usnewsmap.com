@@ -3,9 +3,9 @@
 
 Reads files only and writes a TSV for provenance_load.sql; it never touches a database. Run it
 before db_purge removes the workunit and result rows it depends on (30 days after a workunit is
-done). It needs pyarrow.
+done). It needs pyarrow (to read the page parquet parts).
 
-  boinc_provenance.py --pages DIR --wu-tsv FILE --av-tsv FILE --bundles DIR --out FILE
+  boinc_provenance.py --pages DIR --wu-tsv FILE --av-tsv FILE --bundles DIR --out FILE [--skip FILE]
 
 --pages    a copy of curated ocr-local/pages (the parquet parts); the rows with node
            `boinc-<job12>` are the BOINC pages. `ocr_engine` supplies image=sha256:<12 hex>.
@@ -28,7 +28,8 @@ done). It needs pyarrow.
 Job12 is matched by prefix against the job ids of single workunits (`usnm_<job id>`) and of the
 bundle members. A job that ran in two workunits on one host resolves (`+dup_wu_same_host`); on
 different hosts it is `ambiguous_duplicate_wu` with `candidate_host_ids`; two job ids sharing a
-prefix are `ambiguous_prefix`. The family is from the host row, as in the spot checks (#1954).
+prefix are `ambiguous_prefix`. The family is from the host row, as in the spot checks (#1954);
+a host with an empty or unknown CPU vendor keeps its host id and gets no family.
 """
 import argparse
 import collections
@@ -37,8 +38,6 @@ import glob
 import json
 import os
 import sys
-
-import pyarrow.parquet as pq
 
 X86_VENDORS = ("GenuineIntel", "AuthenticAMD", "HygonGenuine")
 
@@ -51,6 +50,28 @@ def family(os_name, vendor):
     return ""
 
 
+def resolve_host(w, av):
+    """The status of a job's canonical workunit `w` and the host fields it gives the row.
+
+    A host whose CPU vendor is empty or unknown stays resolved: it keeps its host id, with an
+    empty family (NULL in the table), because the host is what a hold matches on."""
+    if w["canon"] == 0:
+        return "no_canonical", {}
+    if w["hostid"] == "":
+        return "result_missing", {}
+    return "resolved", dict(canon=w["canon"], hostid=int(w["hostid"]), avid=int(w["avid"]),
+                            platform=av.get(w["avid"], ""), family=family(w["os"], w["vendor"]))
+
+
+def read_skip(path):
+    """The readings to leave out, one `doc_id<TAB>node` a line: those the table already
+    resolved (see provenance-daily.sh), so a daily run only looks at new and unresolved pages."""
+    if not path:
+        return set()
+    with open(path) as fh:
+        return {tuple(line.rstrip("\n").split("\t")[:2]) for line in fh if line.strip()}
+
+
 def read_tsv(files):
     for f in files:
         with open(f) as fh:
@@ -60,6 +81,8 @@ def read_tsv(files):
 
 
 def boinc_rows(pages_dir):
+    import pyarrow.parquet as pq
+
     for f in sorted(glob.glob(os.path.join(pages_dir, "**", "*.parquet"), recursive=True)):
         cols = ["doc_id", "node", "ocr_engine"]
         t = pq.read_table(f, columns=cols).to_pylist()
@@ -75,6 +98,8 @@ def main():
     ap.add_argument("--av-tsv", required=True)
     ap.add_argument("--bundles", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--skip", help="doc_id<TAB>node lines of readings already resolved: left out of --out "
+                    "(the upsert never lowers a resolved row, so they would only cost work)")
     a = ap.parse_args()
 
     wu = {}
@@ -94,12 +119,13 @@ def main():
         for bundle, _ in found:
             cand[job[:12]].append((job, bundle, "bundle_member"))
 
+    skip = read_skip(a.skip)
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     n = collections.Counter()
     seen = set()
     with open(a.out, "w") as out:
         for r in boinc_rows(a.pages):
-            if (r["doc_id"], r["node"]) in seen:
+            if (r["doc_id"], r["node"]) in seen or (r["doc_id"], r["node"]) in skip:
                 continue
             seen.add((r["doc_id"], r["node"]))
             job12 = r["node"][6:]
@@ -110,7 +136,7 @@ def main():
             rec = dict(job_id=None, wu_id=None, canon=None, hostid=None, avid=None, platform=None,
                        family=None, via=None, digest=None, cands=None)
             if not cs:
-                status = "no_wu"
+                status = "host_unknown"
                 # The bundle request may still name the job and its image.
                 known = {j for j in members if j.startswith(job12)}
                 if len(known) == 1:
@@ -132,18 +158,8 @@ def main():
                     how, name, w = (resolved or infos)[-1]
                     rec["wu_id"] = w["wu_id"]
                     rec["via"] = how if len(cs) == 1 else how + "+dup_wu_same_host"
-                    if w["canon"] == 0:
-                        status = "no_canonical"
-                    elif w["hostid"] == "":
-                        status = "result_missing"
-                    else:
-                        status = "resolved"
-                        rec.update(canon=w["canon"], hostid=int(w["hostid"]), avid=int(w["avid"]),
-                                   platform=av.get(w["avid"], ""), family=family(w["os"], w["vendor"]))
-                        if not rec["family"]:
-                            # No CPU family from the host row: keep the page, but unresolved.
-                            status = "result_missing"
-                            rec.update(canon=None, hostid=None, avid=None, platform=None, family=None)
+                    status, found = resolve_host(w, av)
+                    rec.update(found)
             n[status] += 1
             row = [r["doc_id"], r["node"], rec["job_id"], rec["wu_id"], rec["canon"], rec["hostid"], rec["avid"],
                    rec["platform"], rec["family"], rec["via"], now, status, image12, rec["digest"], rec["cands"]]

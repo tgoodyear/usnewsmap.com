@@ -60,6 +60,7 @@ pub mod ledger;
 pub mod ocr_damage;
 pub mod ocr_prefetch;
 pub mod pages;
+pub mod quality_db;
 pub mod quarantine;
 pub mod replace;
 pub mod report;

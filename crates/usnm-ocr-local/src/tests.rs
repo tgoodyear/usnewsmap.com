@@ -609,7 +609,7 @@ async fn loc_reuse_fixture_preserves_baseline_conflicts_missing_coverage_and_rol
         )
         .await
         .unwrap());
-    let revoked = super::replace::revocations(curated).await.unwrap();
+    let revoked = super::replace::revocations(curated, None).await.unwrap();
     let rollback = listing
         .load(curated, [LCCN].into_iter(), &revoked)
         .await

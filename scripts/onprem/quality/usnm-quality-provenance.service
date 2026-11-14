@@ -1,0 +1,11 @@
+[Unit]
+Description=usnewsmap BOINC page provenance: resolve new and unresolved pages (#1956)
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/usnm/quality-provenance.env
+
+[Service]
+Type=oneshot
+ExecStart=/opt/usnm-quality-feed/provenance-daily.sh
+Nice=10
+TimeoutStartSec=2h
