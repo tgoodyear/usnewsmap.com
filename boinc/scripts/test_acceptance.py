@@ -85,6 +85,18 @@ class RegisteredVersionRouting(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "worker digest differs"):
                 S.verify_retry_worker(Path("/unused"), 106, "sha256:" + "e" * 64)
 
+    def test_retry_refuses_another_plan_class_on_the_pinned_number(self):
+        image = "sha256:" + "d" * 64
+        worker = "ghcr.io/tgoodyear/usnm-boinc-worker@" + image
+        rows = [dict(id=1, version_num=106, xml_doc="x", plan_class="docker", platform="p1"),
+                dict(id=2, version_num=106, xml_doc="x", plan_class="docker_lines", platform="p1")]
+        with patch.object(S, "db_connect", return_value=MagicMock()), \
+                patch.object(S, "query", return_value=rows), \
+                patch.object(S, "registered_version"), \
+                patch.object(S, "verify_version_files", return_value=worker):
+            with self.assertRaisesRegex(ValueError, "unambiguous"):
+                S.verify_retry_worker(Path("/unused"), 106, image)
+
     def test_retry_refuses_two_active_versions(self):
         image = "sha256:" + "d" * 64
         worker = "ghcr.io/tgoodyear/usnm-boinc-worker@" + image

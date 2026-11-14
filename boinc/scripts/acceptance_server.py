@@ -318,8 +318,11 @@ def verify_retry_worker(project, version_num, engine, plan_class='docker'):
         rows = query(db, 'SELECT av.id, av.version_num, av.xml_doc, av.plan_class, p.name AS platform '
                      'FROM app_version av JOIN app a ON a.id=av.appid '
                      'JOIN platform p ON p.id=av.platformid '
-                     'WHERE a.name=%s AND av.plan_class=%s AND av.deprecated=0',
-                     ('usnm_ocr', plan_class))
+                     'WHERE a.name=%s AND av.deprecated=0', ('usnm_ocr',))
+        # BOINC picks among every active row of the pinned number, so another plan class
+        # sharing it would be an unchecked worker.
+        if any(row['version_num'] == version_num and row['plan_class'] != plan_class for row in rows):
+            raise ValueError('retry requires one unambiguous active usnm_ocr container version')
         rows = [row for row in rows if row['plan_class'] == plan_class]
         if (not rows or {row['version_num'] for row in rows} != {version_num}
                 or len({row['platform'] for row in rows}) != len(rows)):
