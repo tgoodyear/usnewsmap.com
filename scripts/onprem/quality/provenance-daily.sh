@@ -9,7 +9,12 @@
 #
 # Needs, in the env file:
 #   PAGES_DIR      the curated copy of ocr-local/pages (default /srv/curated/ocr-local/pages; not
-#                  /srv/curated/pages, which is LoC's text)
+#                  /srv/curated/pages, which is LoC's text). That mount is a stale mirror on the
+#                  batch container, so set CURATED_URL too.
+#   CURATED_URL    the lake's curated container (https://<account>.blob.core.windows.net/curated).
+#                  When set, each run first brings PAGES_DIR up to date from the lake's
+#                  ocr-local/pages/ with sync_curated_pages.py: read-only, as the host's Arc
+#                  identity (needs IDENTITY_ENDPOINT and root or himds; the service sets them)
 #   BOINC_EXPORT   a command that writes the BOINC database export into the directory given as
 #                  its first argument: wu.tsv (the workunit query of boinc_provenance.py), av.tsv
 #                  and bundles/ (the bundle request files). It reads BOINC read-only, host to
@@ -32,11 +37,16 @@ while [ $# -gt 0 ]; do
     *) die "unknown argument: $1" ;;
   esac
 done
-[ -r "$ENV" ] && . "$ENV"
+if [ -r "$ENV" ]; then set -a; . "$ENV"; set +a; fi
 PAGES_DIR=${PAGES_DIR:-/srv/curated/ocr-local/pages}
 QUALITY_DSN=${QUALITY_DSN:-/etc/usnm/quality-db/dsn}
 HERE=$(cd "$(dirname "$0")" && pwd)
+CURATED_URL=${CURATED_URL:-}
 [ -n "${BOINC_EXPORT:-}" ] || die "BOINC_EXPORT is not set in $ENV"
+if [ -n "$CURATED_URL" ]; then
+  mkdir -p "$PAGES_DIR"
+  /opt/usnm-quality-feed/venv/bin/python "$HERE/sync_curated_pages.py" --url "$CURATED_URL" --to "$PAGES_DIR"
+fi
 [ -d "$PAGES_DIR" ] || die "no curated pages at $PAGES_DIR"
 work=$(mktemp -d /var/tmp/usnm-provenance.XXXXXX)
 trap 'rm -rf "$work"' EXIT

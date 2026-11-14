@@ -198,7 +198,7 @@ R=/srv/usnm/runs/full-$(date -u +%Y%m%d)
 scripts/onprem/release.sh --run-dir "$R" --step mirror    # current.json, catalog/, the serving version's snapshot
 scripts/onprem/release.sh --run-dir "$R" --step seed      # batch records from the serving version's batches.json
 # as root in the container:
-systemd-run --unit usnm-release --uid usnm --gid usnm -p SupplementaryGroups=himds \
+systemd-run --unit usnm-release --uid usnm --gid usnm -p SupplementaryGroups=himds -p EnvironmentFile=/etc/usnm/release.env \
   -p StandardOutput=append:$R/release.log -p StandardError=append:$R/release.log \
   /srv/usnm/src/scripts/onprem/release.sh --run-dir "$R" --step release
 scripts/onprem/release.sh --run-dir "$R" --step publish --dry-run
@@ -206,6 +206,7 @@ scripts/onprem/release.sh --run-dir "$R" --step publish \
   --cosmos-endpoint "$(scripts/azure/settings.sh --env prod --key COSMOS_ENDPOINT)"
 ```
 
+- `/etc/usnm/release.env` holds `USNM_QUALITY_DSN_FILE=/etc/usnm/quality-reader/dsn` (the read-only `quality_reader` certificate, key and DSN, installed 14 November 2026; [Releases and the quality database](../ocr/revoke-page-list.md)). `systemd-run` does not read it by itself, hence `EnvironmentFile`; for a step run in a shell, `set -a; . /etc/usnm/release.env; set +a` first. Without it the release applies no database holds.
 - `seed` uses the serving version's batches, not Cosmos's list, so newer curated batches wait. `--sample 1pct` seeds 30 batches (every 100th by name from the 40th, 238,082 pages) for a rehearsal that stops before `publish`.
 - `release` refuses a directory that already holds a staged version; rerun a failed one in a new directory.
 - `publish` refuses unless the lake still serves the release's rollback (mirror and build again otherwise), every split is published, and no same-name object in Azure differs; reruns resume. Use [`restore`](#restoring-serving-to-azure) for a version the lake already serves.

@@ -43,14 +43,48 @@ release time, on the replica, as `quality_reader` (`USNM_QUALITY_DSN_FILE`;
 docs/ocr/revoke-page-list.md); nothing is exported to the lake.
 
 `provenance-daily.sh` (with `usnm-quality-provenance.{service,timer}`) is the daily run in the batch
-container: it skips the readings already `resolved`, resolves the new and unresolved pages
-(`boinc_provenance.py --skip`) from a read-only BOINC export that `BOINC_EXPORT` in
-`/etc/usnm/quality-provenance.env` produces, and upserts them. Install it with the files in
-`/opt/usnm-quality-feed/`, the units in `/etc/systemd/system/`, then
-`systemctl enable --now usnm-quality-provenance.timer`. It must run before `db_purge` starts
-removing the OCR workunits (about 24 November 2026); once #1959 is deployed and verified the
-timer's `OnCalendar` can become weekly. Pages with no workunit row left are `host_unknown`: they
-have no host to hold and are accepted unless their engine image is held.
+container (CT 215 on pve-laptop): it skips the readings already `resolved`, resolves the new and
+unresolved pages (`boinc_provenance.py --skip`) and upserts them (`provenance_load.sql`, as
+`quality_loader`; a resolved row is never lowered). Three pieces feed it, none with a new secret:
+
+- **BOINC export, read-only.** `boinc/scripts/provenance-export.py` runs inside the BOINC server
+  container on CT 230 with the server's own database login (`config.xml`), in a `READ ONLY`
+  transaction, and writes `export.tar.gz` (`wu.tsv`, `av.tsv`, the bundle request files; about
+  4 MB) to stdout. `provenance-export-fetch.sh` runs on the **pve-laptop host** (it has the key
+  for pve; the container has none) from `usnm-quality-provenance-fetch.{service,timer}` at
+  05:00 UTC and keeps the file in the container's outbox mount,
+  `/var/lib/usnm-quality-feed/outbox/provenance/`. The walk of the download tree takes about
+  six minutes. Pve to pve-laptop, nothing through a workstation.
+- **BOINC_EXPORT.** `provenance-export-unpack.sh DIR` unpacks that file; it fails if the file is
+  older than 36 hours, so a stopped fetch shows as a failed unit.
+- **Current pages.** `/srv/curated/ocr-local/pages` on the container is a mirror that stopped
+  updating on 23 October. With `CURATED_URL` set, `sync_curated_pages.py` first copies the lake's
+  `ocr-local/pages/` parts that the local copy lacks into `PAGES_DIR` (read-only, the host's Arc
+  identity; about 700 MB, kept on the outbox mount, not the container's disk).
+
+Install on the batch container (`/opt/usnm-quality-feed/`): `provenance-daily.sh`,
+`provenance-export-unpack.sh`, `sync_curated_pages.py`, `boinc_provenance.py`,
+`provenance_load.sql`; units `usnm-quality-provenance.{service,timer}` in `/etc/systemd/system/`.
+On the pve-laptop host: `provenance-export-fetch.sh` and `boinc/scripts/provenance-export.py` in
+`/opt/usnm-quality-feed/`, units `usnm-quality-provenance-fetch.{service,timer}`. Settings in
+`/etc/usnm/quality-provenance.env` on the container:
+
+```text
+PAGES_DIR=/var/lib/usnm-quality-feed/outbox/provenance/pages
+CURATED_URL=https://<data account>.blob.core.windows.net/curated
+BOINC_EXPORT=/opt/usnm-quality-feed/provenance-export-unpack.sh
+```
+
+Then `systemctl enable --now usnm-quality-provenance.timer` on the container and
+`usnm-quality-provenance-fetch.timer` on the host. It must run before `db_purge` starts removing
+the OCR workunits (about 24 November 2026).
+
+**Switching to weekly** once #1959 is deployed and verified: change `OnCalendar` in both timers
+(`systemctl edit --full`), for example `OnCalendar=Mon *-*-* 05:00:00 UTC` for the fetch and
+`Mon *-*-* 05:23:00 UTC` for the run, then `systemctl restart` them. Keep it under 20 days apart
+(`db_purge` removes a workunit's rows 30 days after it is done), and raise `MAX_AGE_HOURS` for
+`provenance-export-unpack.sh` in the env file to 200 or more. Pages with no workunit row left are
+`host_unknown`: they have no host to hold and are accepted unless their engine image is held.
 
 `boinc_page_holds` (`holds.sql`) holds single readings of single pages out of the index: a
 `doc_id` with the stored engine tag or the `node`, a `reason`, `created_at` and `created_by`.
