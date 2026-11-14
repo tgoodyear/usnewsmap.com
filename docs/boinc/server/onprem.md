@@ -229,6 +229,8 @@ usnm-boinc retry --native-host <host id> --root /private/jobs --spool /private/a
 
 A page that fails at 3600 s is also logged by `collect` as `boinc_page_at_deadline_cap`.
 
+A native page that failed on another platform's build (a Windows host that never produced a result, #1919) is read again on a trusted build with `--parent-platform <platform of the parent, e.g. windows_x86_64>` as well as `--native-host`: `--image` is then the trusted build (not the parent's), the deadline is the parent's (leave out `--timeout-secs`), and the child's journal carries `retry_of`, `parent_image` (the parent's build), `parent_platform` and the reason `platform-reroute`. `collect` publishes them with the page in the ALTO's `sourceImageInformation` as `usnm_retry_of`, `usnm_parent_image`, `usnm_parent_platform` and `usnm_retry_reason`. Submission and validation are those of any native retry: the host must be trusted for the child's build, and the same spot-check draw applies.
+
 Workunits created before this change have `max_error_results` 3 and no replacement result, so a failed one stays open with no error mask and the page has no result. List them (read-only), on the BOINC server:
 
 ```sql

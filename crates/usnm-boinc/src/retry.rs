@@ -50,6 +50,10 @@ pub enum Reason {
     SlowClass,
     /// The worker crashed (SIGSEGV) and the page gets one more read, same settings.
     SegfaultOnce,
+    /// The page failed on another platform's build and is read again by a trusted native build
+    /// on a host that is golded for it (`Provenance::parent_platform` names the original
+    /// platform). The deadline is the parent's.
+    PlatformReroute,
 }
 
 impl Reason {
@@ -57,6 +61,7 @@ impl Reason {
         match self {
             Reason::SlowClass => "slow-class",
             Reason::SegfaultOnce => "segfault-once",
+            Reason::PlatformReroute => "platform-reroute",
         }
     }
 }
@@ -67,7 +72,8 @@ impl std::str::FromStr for Reason {
         match s {
             "slow-class" => Ok(Reason::SlowClass),
             "segfault-once" => Ok(Reason::SegfaultOnce),
-            _ => anyhow::bail!("a retry reason is slow-class or segfault-once"),
+            "platform-reroute" => Ok(Reason::PlatformReroute),
+            _ => anyhow::bail!("a retry reason is slow-class, segfault-once or platform-reroute"),
         }
     }
 }
@@ -86,12 +92,18 @@ pub struct Provenance {
     /// without one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub target_hosts: Vec<u64>,
+    /// The BOINC platform the parent ran on, for a native page re-read by another platform's
+    /// build (`Reason::PlatformReroute`, #1919): the child's `engine.image` is then not the
+    /// parent's, and the parent's build stays in `parent_image`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_platform: Option<String>,
 }
 
 /// The `fileIdentifierLocation` values of a retry's note in the published ALTO.
 pub const ALTO_RETRY_OF: &str = "usnm_retry_of";
 pub const ALTO_PARENT_IMAGE: &str = "usnm_parent_image";
 pub const ALTO_RETRY_REASON: &str = "usnm_retry_reason";
+pub const ALTO_PARENT_PLATFORM: &str = "usnm_parent_platform";
 /// The `fileIdentifierLocation` values of a container import's origin (#1956).
 pub const ALTO_ENGINE_IMAGE: &str = "usnm_engine_image";
 pub const ALTO_BOINC_HOST: &str = "usnm_boinc_host";
@@ -106,14 +118,17 @@ impl Provenance {
     /// ALTO without that element, or with it empty, is refused: a retry is never published
     /// without its note.
     pub fn alto_note(&self, alto: &str) -> anyhow::Result<String> {
-        splice_notes(
-            alto,
-            &[
-                (ALTO_RETRY_OF, self.retry_of.as_str()),
-                (ALTO_PARENT_IMAGE, self.parent_image.as_str()),
-                (ALTO_RETRY_REASON, self.reason.as_str()),
-            ],
-        )
+        // The parent's id and image are hex, the reason one of a few words and the platform a
+        // checked identifier; `splice_notes` escapes them all the same.
+        let mut notes = vec![
+            (ALTO_RETRY_OF, self.retry_of.as_str()),
+            (ALTO_PARENT_IMAGE, self.parent_image.as_str()),
+            (ALTO_RETRY_REASON, self.reason.as_str()),
+        ];
+        if let Some(platform) = &self.parent_platform {
+            notes.push((ALTO_PARENT_PLATFORM, platform.as_str()));
+        }
+        splice_notes(alto, &notes)
     }
 
     fn valid(&self, record: &Record, retry_of: &str) -> bool {
@@ -126,6 +141,12 @@ impl Provenance {
             && self.target_hosts.iter().all(|h| *h > 0)
             && self.target_hosts.len() <= 64
             && record.job.lines.is_none()
+            && self.parent_platform.as_ref().is_none_or(|platform| {
+                (1..=32).contains(&platform.len())
+                    && platform
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-' | b'.'))
+            })
     }
 }
 
@@ -216,12 +237,18 @@ pub fn validate(record: &Record) -> anyhow::Result<()> {
                     && record.bundle.is_none()
                     && retry.native.as_ref().is_none_or(|native| {
                         native.target_host > 0
-                            && record.job.engine.image == native.previous_image
+                            && (record.job.engine.image == native.previous_image
+                                || retry
+                                    .provenance
+                                    .as_ref()
+                                    .is_some_and(|p| p.parent_platform.is_some()))
                             && record.job.engine.timeout_secs >= native.previous_timeout_secs
                             && record.job.engine.timeout_secs <= crate::claim::MAX_TIMEOUT_SECS
                     })
                     && retry.provenance.as_ref().is_none_or(|p| {
-                        retry.native.is_none() && p.valid(record, &retry.previous_job)
+                        // A native retry's note names the original platform, and only it does.
+                        retry.native.is_some() == p.parent_platform.is_some()
+                            && p.valid(record, &retry.previous_job)
                     }),
                 "invalid retry journal"
             );
@@ -276,6 +303,10 @@ pub struct Options<'a> {
     /// A controller-side retry's reason and hosts (#1938); the parent's id and image are filled
     /// in from its journal.
     pub note: Option<(Reason, Vec<u64>)>,
+    /// The platform the parent ran on, for a native page read again by another build
+    /// (`Reason::PlatformReroute`, with `native_host` and `note`): the child's `image` is then
+    /// any other than the parent's, and the note carries the original platform.
+    pub parent_platform: Option<String>,
     /// The time the child is made at, when it is fixed beforehand so an interrupted retry made
     /// again in a fresh scratch root makes the same child (#1938). Default: now.
     pub now: Option<chrono::DateTime<Utc>>,
@@ -367,12 +398,36 @@ pub async fn prepare(
             "parent delivery is not conclusively deleted; reconcile its claim"
         );
     }
+    if opts.parent_platform.is_some() {
+        ensure!(
+            opts.native_host.is_some()
+                && opts
+                    .note
+                    .as_ref()
+                    .is_some_and(|(reason, hosts)| *reason == Reason::PlatformReroute
+                        && hosts.as_slice() == opts.native_host.as_slice()),
+            "a platform re-route is a native retry (--native-host) with the platform-reroute note for that one host"
+        );
+        ensure!(
+            previous.job.lines.is_none() && opts.image != previous.job.engine.image,
+            "a platform re-route is for a page job, on a build other than the parent's"
+        );
+    } else {
+        ensure!(
+            opts.note
+                .as_ref()
+                .is_none_or(|(reason, _)| *reason != Reason::PlatformReroute),
+            "the platform-reroute reason needs the parent's platform"
+        );
+    }
     if opts.native_host.is_some() {
-        check_native_parent(
-            &previous.job.engine.image,
-            previous.job.lines.is_some(),
-            opts.image,
-        )?;
+        if opts.parent_platform.is_none() {
+            check_native_parent(
+                &previous.job.engine.image,
+                previous.job.lines.is_some(),
+                opts.image,
+            )?;
+        }
         native_retry_timeout(&previous.job, opts.timeout_secs)?;
     }
     let previous_dir = dir(opts.root, opts.previous_job)?;
@@ -458,6 +513,7 @@ pub async fn prepare(
             parent_image: previous.job.engine.image.clone(),
             reason: *reason,
             target_hosts: hosts.clone(),
+            parent_platform: opts.parent_platform.clone(),
         }),
     };
     let child_dir = dir(opts.root, &id)?;
@@ -765,6 +821,7 @@ mod tests {
             note: None,
             now: None,
             native_host: None,
+            parent_platform: None,
             handoff: curated.as_ref(),
         };
         for stage in [Stage::Submitted, Stage::Submitting] {
@@ -868,6 +925,35 @@ mod tests {
             "a shorter deadline"
         );
         assert_eq!(crate::records(&root).unwrap().len(), 1);
+        // #1919: a platform re-route is a native retry for one host with its note; the reason
+        // never goes without the platform, and the platform never without the reason.
+        opts.image = &image;
+        opts.timeout_secs = None;
+        opts.parent_platform = Some("windows_x86_64".into());
+        for note in [
+            None,
+            Some((Reason::SlowClass, vec![13])),
+            Some((Reason::PlatformReroute, vec![9])),
+        ] {
+            opts.note = note;
+            assert!(
+                prepare(&opts, &state, curated.as_ref(), reference.as_ref())
+                    .await
+                    .is_err(),
+                "{:?}",
+                opts.note
+            );
+        }
+        opts.parent_platform = None;
+        opts.note = Some((Reason::PlatformReroute, vec![13]));
+        assert!(
+            prepare(&opts, &state, curated.as_ref(), reference.as_ref())
+                .await
+                .is_err(),
+            "the reason without the platform"
+        );
+        opts.note = None;
+        assert_eq!(crate::records(&root).unwrap().len(), 1);
         opts.native_host = None;
         opts.image = &image;
         opts.timeout_secs = None;
@@ -923,6 +1009,58 @@ mod tests {
         changed = child.clone();
         changed.retry.as_mut().unwrap().previous_attempt += 1;
         assert!(validate(&changed).is_err());
+        // #1919: a native page read again on another build keeps where it came from.
+        let platform_image = format!("sha256:{}", "f".repeat(64));
+        let mut cross = child.clone();
+        {
+            let retry = cross.retry.as_mut().unwrap();
+            retry.native = Some(NativeRetry {
+                previous_image: platform_image.clone(),
+                previous_timeout_secs: 1200,
+                target_host: 13,
+            });
+            retry.provenance = Some(Provenance {
+                retry_of: parent.job.id.clone(),
+                parent_image: platform_image,
+                reason: Reason::PlatformReroute,
+                target_hosts: vec![13],
+                parent_platform: Some("windows_x86_64".into()),
+            });
+        }
+        validate(&cross).unwrap();
+        let noted = cross
+            .retry
+            .as_ref()
+            .unwrap()
+            .provenance
+            .as_ref()
+            .unwrap()
+            .alto_note(
+                r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Description><sourceImageInformation><fileName>x</fileName></sourceImageInformation></Description></alto>"#,
+            )
+            .unwrap();
+        assert!(noted.contains(
+            "<fileIdentifier fileIdentifierLocation=\"usnm_parent_platform\">windows_x86_64</fileIdentifier>"
+        ));
+        assert!(noted.contains("usnm_retry_reason\">platform-reroute<"));
+        for (name, mutate) in [
+            (
+                "no platform",
+                (|r: &mut Retry| r.provenance.as_mut().unwrap().parent_platform = None)
+                    as fn(&mut Retry),
+            ),
+            ("bad platform", |r| {
+                r.provenance.as_mut().unwrap().parent_platform = Some("Windows 64".into())
+            }),
+            ("a platform on a container retry", |r| r.native = None),
+            ("another build, no platform", |r| {
+                r.provenance = None;
+            }),
+        ] {
+            let mut bad = cross.clone();
+            mutate(bad.retry.as_mut().unwrap());
+            assert!(validate(&bad).is_err(), "{name}");
+        }
 
         let project = temp.path().join("project");
         std::fs::create_dir_all(project.join("bin")).unwrap();
@@ -1161,6 +1299,7 @@ mod tests {
             note: None,
             now: None,
             native_host: None,
+            parent_platform: None,
             handoff: curated.as_ref(),
         };
         // A tampered LoC ALTO is refused before anything is reserved.
