@@ -164,6 +164,9 @@ pub fn project_job_file(project: &Path, job_id: &str) -> Option<PathBuf> {
         .output()
         .ok()?;
     let path = PathBuf::from(String::from_utf8(out.stdout).ok()?.trim());
+    // `dir_hier_path` may print a path relative to the project, and the
+    // validator runs in `<project>/tmp_<host>`.
+    let path = project.join(path);
     (out.status.success() && path.is_file()).then_some(path)
 }
 
@@ -873,6 +876,25 @@ pub(crate) mod tests {
         assert!(
             format!("{err}").contains("39 of 100 counted crops"),
             "{err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_project_relative_job_path_is_found_from_another_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join("bin")).unwrap();
+        std::fs::create_dir_all(project.join("download/ab")).unwrap();
+        std::fs::write(project.join("download/ab/job_qwen_json"), b"{}").unwrap();
+        let tool = project.join("bin/dir_hier_path");
+        std::fs::write(&tool, "#!/bin/sh\necho download/ab/job_qwen_json\n").unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // The test's own working directory is not the project, as under the validator.
+        assert_eq!(
+            project_job_file(&project, &"0".repeat(64)),
+            Some(project.join("download/ab/job_qwen_json"))
         );
     }
 
