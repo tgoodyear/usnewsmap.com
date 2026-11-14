@@ -362,6 +362,14 @@ impl Cache {
             }
             None => field(&mut version, b"no-qwen-crop-states"),
         }
+        // Whether crop texts are measured, and with which files, changes every crop row.
+        match &opts.qe_dir {
+            Some(_) => {
+                field(&mut version, b"qe-dir");
+                field(&mut version, super::qe::LOCK.as_bytes());
+            }
+            None => field(&mut version, b"no-qe-dir"),
+        }
         let mut crop_states = Vec::new();
         let mut page_records = Vec::new();
         let mut qwen: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();

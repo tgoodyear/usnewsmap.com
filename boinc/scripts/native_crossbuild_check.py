@@ -19,6 +19,13 @@ Writes `crossbuild-<date>.json` and `state.json` to --out-dir and prints one sum
 no page is flagged, 3 when any is. `state.json` counts consecutive flagged days; at 2 the summary says
 `PAUSE-REVIEW`, which is the cue to ask the Compute Coordinator to pause the plan. Nothing here pauses
 anything. With --issue, a flagged day is also appended to that GitHub issue through `gh`.
+
+Hard pages (Windows-vs-Linux instance only): with --loc-texts (env `XB_LOC_TEXTS`, a directory of
+`<sn>/<date>/ed-<n>/seq-<m>.txt` holding LoC's text), each page's two texts are also compared with LoC's.
+A page that would be flagged but whose two builds are both over 0.5 CER from LoC and within 0.05 of each
+other is reported as `hard_page` and not flagged: it is a bad page, not a build difference. Its row keeps
+all three CERs and word F1s. More than 3 hard pages in a day is itself an alert (`HARD-PAGE-ALERT`, exit 3).
+Without --loc-texts (the Linux replication instance) nothing changes.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -40,6 +47,9 @@ F1_LIMIT = 0.90
 RATIO_RANGE = (0.9, 1.1)
 WINDOW_SECONDS = 24 * 3600
 ESCALATE_DAYS = 2
+HARD_PAGE_CER = 0.5  # both builds further than this from LoC's text ...
+HARD_PAGE_GAP = 0.05  # ... and within this of each other: the page is hard, not a build defect
+HARD_PAGE_MAX = 3  # more than this many hard pages in a day means the sample or the build has drifted
 REPO = Path(__file__).resolve().parents[2]
 
 
@@ -202,6 +212,28 @@ def judge(windows, linux, cer_limit=CER_LIMIT, f1_limit=F1_LIMIT, ratio_range=RA
             "windows_chars": len(windows), "linux_chars": len(linux), "flagged": flagged}
 
 
+def is_hard_page(windows_cer, linux_cer):
+    """Both builds far from LoC's text and about equally far: a hard page, not a build defect."""
+    return (windows_cer > HARD_PAGE_CER and linux_cer > HARD_PAGE_CER
+            and abs(windows_cer - linux_cer) <= HARD_PAGE_GAP + 1e-9)
+
+
+def judge_loc(row, windows, linux, loc):
+    """Add both builds' CER and word F1 against LoC's text to a judged row, and reclassify a flagged hard page.
+    The hard-page test uses the unrounded CERs; only the reported values are rounded."""
+    n = max(len(loc), 1)
+    win_cer, lin_cer = distance(windows, loc) / n, distance(linux, loc) / n
+    row["windows_vs_loc"] = {"cer": round(win_cer, 5), "word_f1": round(word_f1(windows, loc), 4)}
+    row["linux_vs_loc"] = {"cer": round(lin_cer, 5), "word_f1": round(word_f1(linux, loc), 4)}
+    if row["flagged"] and is_hard_page(win_cer, lin_cer):
+        row["flagged"], row["hard_page"] = False, True
+    return row
+
+
+def loc_text_path(loc_texts, page):
+    return Path(loc_texts) / f"{page['page']}.txt"
+
+
 def distribution(values):
     """Min, quartiles, mean and max, so limits can be tightened from the daily files."""
     if not values:
@@ -224,8 +256,17 @@ def check_page(page, a):
             linux = read_linux(a.tesseract, a.tessdata, scan, page["language"], work)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as e:
         return dict(row, error=str(e)[:300], flagged=True)
-    return dict(row, **judge(page["windows_text"], linux, a.cer_limit, a.f1_limit,
-                                (getattr(a, "ratio_min", RATIO_RANGE[0]), getattr(a, "ratio_max", RATIO_RANGE[1]))))
+    row = dict(row, **judge(page["windows_text"], linux, a.cer_limit, a.f1_limit,
+                            (getattr(a, "ratio_min", RATIO_RANGE[0]), getattr(a, "ratio_max", RATIO_RANGE[1]))))
+    if getattr(a, "loc_texts", None):
+        try:
+            loc = loc_text_path(a.loc_texts, page).read_text(errors="replace")
+        except OSError:
+            return dict(row, loc="missing")  # no LoC text: judged on the two builds alone
+        if not loc.strip():
+            return dict(row, loc="missing")  # an empty reference is no reference
+        row = judge_loc(row, page["windows_text"], linux, loc)
+    return row
 
 
 def lock_hashes(lock_file):
@@ -269,6 +310,10 @@ def summary_line(report):
     line = (f"crossbuild{report.get('label', '')} {report['date']}: {s['pages']} pages from {s['hosts']} hosts, "
             f"{s['flagged']} flagged, {s['invalid']} invalid, max CER {s['max_cer']}, ratio {s['min_ratio']}-{s['max_ratio']}, "
             f"min word F1 {s['min_word_f1']}")
+    if s.get("hard_pages"):
+        line += f", {s['hard_pages']} hard_page"
+    if report.get("hard_page_alert"):
+        line += f" HARD-PAGE-ALERT (more than {HARD_PAGE_MAX} hard pages)"
     if report["consecutive_flag_days"] >= ESCALATE_DAYS:
         line += f" PAUSE-REVIEW ({report['consecutive_flag_days']} days in a row)"
     return line
@@ -295,7 +340,9 @@ def run(a, now=None):
     rows = earlier + new_rows  # a rerun adds to the day's findings and never clears them
     measured = [r for r in rows if "cer" in r]
     flagged = [r for r in rows if r["flagged"]]
-    consecutive, days = consecutive_days(state, date, bool(flagged))
+    hard = [r for r in rows if r.get("hard_page")]
+    hard_alert = len(hard) > HARD_PAGE_MAX
+    consecutive, days = consecutive_days(state, date, bool(flagged) or hard_alert)
     report = {
         "date": date,
         "linux_tesseract_sha256": hashlib.sha256(Path(a.tesseract).read_bytes()).hexdigest(),
@@ -305,9 +352,11 @@ def run(a, now=None):
                    "ratio": [getattr(a, "ratio_min", RATIO_RANGE[0]), getattr(a, "ratio_max", RATIO_RANGE[1])]},
         "plan": getattr(a, "plan", None),
         "hosts": sorted(hosts),
+        "loc_texts": str(a.loc_texts) if getattr(a, "loc_texts", None) else None,
+        "hard_page_alert": hard_alert,
         "returned_in_window": len(pages),
         "summary": {
-            "pages": len(rows), "invalid": sum("invalid" in r for r in rows), "hosts": len({r["host"] for r in rows}), "flagged": len(flagged),
+            "pages": len(rows), "invalid": sum("invalid" in r for r in rows), "hosts": len({r["host"] for r in rows}), "flagged": len(flagged), "hard_pages": len(hard),
             "max_cer": max((r["cer"] for r in measured), default=None),
             "min_ratio": min((r["ratio"] for r in measured), default=None),
             "max_ratio": max((r["ratio"] for r in measured), default=None),
@@ -324,18 +373,19 @@ def run(a, now=None):
                                        "checked_jobs": (state.get("checked_jobs", []) + [r["job"] for r in new_rows])[-20000:]}, indent=1) + "\n")
     line = summary_line(report)
     print(line)
-    reportable = [r for r in rows if r["flagged"] or "invalid" in r]
+    reportable = [r for r in rows if r["flagged"] or "invalid" in r or (hard_alert and r.get("hard_page"))]
     if reportable and a.issue:
         body = line + "\n\n" + "\n".join(
             f"- {r['page']} (host {r['host']}, job {r['job']}): "
-            + (r["error"] if "error" in r else r["invalid"] if "invalid" in r else f"CER {r['cer']}, ratio {r['ratio']}, word F1 {r['word_f1']}")
+            + (r["error"] if "error" in r else r["invalid"] if "invalid" in r else f"CER {r['cer']}, ratio {r['ratio']}, word F1 {r['word_f1']}"
+               + (f" (hard_page; vs LoC: Windows CER {r['windows_vs_loc']['cer']}, Linux CER {r['linux_vs_loc']['cer']})" if r.get("hard_page") else ""))
             for r in reportable)
         try:
             subprocess.run(["gh", "issue", "comment", str(a.issue), "--repo", a.repo, "--body", body],
                            check=True, timeout=120)
         except (OSError, subprocess.SubprocessError) as e:
             print(f"could not comment on issue {a.issue}: {e}")
-    return 3 if flagged else 0
+    return 3 if flagged or hard_alert else 0
 
 
 def main(argv=None):
@@ -367,6 +417,9 @@ def main(argv=None):
                    help="the plan the handoff holds, recorded in the report (env XB_PLAN)")
     p.add_argument("--label", default=env("XB_LABEL") or None,
                    help="instance name shown in the summary line (env XB_LABEL)")
+    p.add_argument("--loc-texts", type=Path, default=Path(env("XB_LOC_TEXTS")) if env("XB_LOC_TEXTS") else None,
+                   help="directory of LoC text, <sn>/<date>/ed-<n>/seq-<m>.txt: turns on the hard_page rule "
+                        "(Windows-vs-Linux instance only; env XB_LOC_TEXTS)")
     p.add_argument("--count", type=int, default=10)
     p.add_argument("--threads", type=int, default=2, choices=(1, 2), help="pages read at once, one thread each")
     p.add_argument("--issue", type=int, help="tracking issue to append to on a flagged day")

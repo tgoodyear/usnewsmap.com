@@ -365,6 +365,7 @@ pub(crate) mod tests {
                 function_words: base.function_words.clone(),
                 crop_seed: base.crop_seed,
                 k_crops: base.k_crops,
+                qe: None,
             })
             .unwrap();
             dirs.push(dir);

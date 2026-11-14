@@ -19,7 +19,7 @@
 //! worker refuses any job that doesn't name exactly this build. Here the digest is the sha256
 //! of the build manifest, which lists every file of the build.
 use crate::{gold, worker::CPU_DEADLINE_ENV};
-use anyhow::{ensure, Context};
+use anyhow::{bail, ensure, Context};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -599,6 +599,18 @@ fn classify_unit_error(error: anyhow::Error, secs: Option<u64>) -> anyhow::Error
     }
 }
 
+/// The exit status for a stopped unit. `quit` and `abort` come from the client, which expects
+/// exit 0 for them. Any other reason (a lost heartbeat) is an error: exiting 0 without
+/// finishing makes the client restart the unit from scratch until it gives up with
+/// "too many exit(0)s", while a non-zero exit is reported as an ordinary failure the
+/// server can reissue.
+fn stopped_result(reason: &str) -> anyhow::Result<()> {
+    match reason {
+        "quit" | "abort" => Ok(()),
+        other => bail!("the unit was stopped: {other}"),
+    }
+}
+
 /// One task in the slot `work`: the process the BOINC client starts.
 pub fn run_slot(work: &Path) -> anyhow::Result<()> {
     let work = crate::plain_path(work.canonicalize()?);
@@ -672,7 +684,10 @@ pub fn run_slot(work: &Path) -> anyhow::Result<()> {
         unit.restart_after_suspend,
         unit.timeout_secs.into(),
     )? {
-        Ended::Stopped(reason) => eprintln!("stopped by the client: {reason}"),
+        Ended::Stopped(reason) => {
+            eprintln!("stopped: {reason}");
+            stopped_result(reason)?;
+        }
         Ended::Finished => {
             let _ = std::fs::remove_dir_all(work.join(ENGINE_DIR));
             let _ = std::fs::remove_dir_all(&tmp);

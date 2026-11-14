@@ -150,6 +150,33 @@ pub struct ReaderReport {
     pub source: String,
     /// Tokens of the text.
     pub words: usize,
+    /// The reference-free quality measure of the reader's text, when the
+    /// job carries the language's resource file (`usnm_core::qe`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qe: Option<QeReport>,
+}
+
+/// One reader's reference-free quality measures (`usnm_core::qe`), version
+/// `version`, from the resource file `resources` (its sha256). Every rate is
+/// oriented so that higher is worse.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QeReport {
+    pub version: String,
+    pub resources: String,
+    /// Words, and of them in the lexicon with three or more letters (the
+    /// omission guard's count).
+    pub words: u64,
+    pub known3: u64,
+    /// Characters the character model scored.
+    pub chars: u64,
+    pub no_words: bool,
+    /// Out-of-lexicon share of the words.
+    pub oov: Option<f64>,
+    /// The character 5-gram model's bits per character.
+    pub charlm_bpc: Option<f64>,
+    /// `charlm_bpc / 1.185 + oov / 0.117`, the decision measure.
+    pub lm_oov: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -228,6 +255,8 @@ pub const MAX_FUNCTION_WORDS: usize = 2000;
 /// One text in `texts.json`.
 pub const MAX_TEXT: usize = 512 * 1024;
 pub const MAX_CROPS: u32 = 64;
+/// The largest quality-measure resource file (`qe.bin`).
+pub const MAX_QE: usize = 64 * 1024 * 1024;
 
 /// One input file: its size, checksum and where it came from (a URL, or a
 /// short note such as `handoff:texts/<doc_id>.json`).
@@ -280,6 +309,17 @@ pub struct Inputs {
     pub places: Input,
     /// `texts.json`.
     pub texts: Input,
+}
+
+/// The reference-free quality measure's resource file (`qe.bin`): the
+/// pages of `language` are measured with it. Shared by every unit of the
+/// language, so its physical name is its checksum and hosts keep it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QeInput {
+    pub input: Input,
+    /// ISO 639-3.
+    pub language: String,
 }
 
 /// The worker image a unit was staged for; the host refuses another.
@@ -438,11 +478,32 @@ pub struct Job {
     /// Optional multi-page bundle entries; empty for single-page workunits.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<BundlePage>,
+    /// The quality measure's resource file, when the unit measures its
+    /// readers' texts with it (`qe.bin`, a sixth input).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qe: Option<QeInput>,
     /// The texts the unit compares, in the order they are reported.
     pub readers: Vec<ReaderSpec>,
 }
 impl Job {
     pub fn identity(&self) -> anyhow::Result<String> {
+        // A job without the measure keeps the identity it always had.
+        if let Some(qe) = &self.qe {
+            return Ok(sha256(&serde_json::to_vec(&(
+                self.v,
+                &self.doc_id,
+                &self.language,
+                &self.group,
+                &self.inputs,
+                &self.engine,
+                &self.readers,
+                &self.function_words,
+                self.crop_seed,
+                self.k_crops,
+                &self.pages,
+                qe,
+            ))?));
+        }
         if self.pages.is_empty() {
             Ok(sha256(&serde_json::to_vec(&(
                 self.v,
@@ -491,6 +552,10 @@ impl Job {
             self.inputs.texts.validate(MAX_BUNDLE_TEXTS, "texts")?;
         }
         self.inputs.places.validate(MAX_PLACES, "places")?;
+        if let Some(qe) = &self.qe {
+            qe.input.validate(MAX_QE, "qe")?;
+            check_name(&qe.language, "qe language")?;
+        }
         ensure!(
             self.engine
                 .image
@@ -793,6 +858,23 @@ fn check_readers_report(readers: &[ReaderReport]) -> anyhow::Result<()> {
                 .is_none_or(|e| e.is_finite() && (0.0..=10.0).contains(&e)),
             "estimate out of range"
         );
+        if let Some(q) = &r.qe {
+            ensure!(
+                is_sha256(&q.resources) && !q.version.is_empty() && q.version.len() <= 32,
+                "invalid quality measure version"
+            );
+            ensure!(
+                [q.oov, q.charlm_bpc, q.lm_oov]
+                    .iter()
+                    .flatten()
+                    .all(|x| x.is_finite() && *x >= 0.0),
+                "quality measure out of range"
+            );
+            ensure!(
+                q.no_words == (q.words == 0) && q.known3 <= q.words,
+                "inconsistent quality measure counts"
+            );
+        }
     }
     Ok(())
 }
@@ -1034,6 +1116,7 @@ pub(crate) mod tests {
             k_crops: 12,
             language: "srp".into(),
             pages: vec![],
+            qe: None,
             readers: vec![
                 ReaderSpec {
                     name: "loc".into(),
@@ -1047,6 +1130,54 @@ pub(crate) mod tests {
         };
         j.id = j.identity().unwrap();
         j
+    }
+
+    #[test]
+    fn the_quality_measure_input_is_optional_and_part_of_the_identity() {
+        let j = job();
+        let plain = serde_json::to_string(&j).unwrap();
+        assert!(!plain.contains("\"qe\""));
+        let mut q = j.clone();
+        q.qe = Some(QeInput {
+            input: Input::of(b"qe", "lake:qe-resources/qe-v1/srp.qe"),
+            language: "srp".into(),
+        });
+        assert_ne!(q.identity().unwrap(), j.identity().unwrap());
+        q.id = q.identity().unwrap();
+        q.validate().unwrap();
+        let back: Job = serde_json::from_str(&serde_json::to_string(&q).unwrap()).unwrap();
+        assert_eq!(back, q);
+        q.qe.as_mut().unwrap().language = "no such".into();
+        q.id = q.identity().unwrap();
+        assert!(q.validate().is_err());
+    }
+
+    #[test]
+    fn a_reader_report_checks_its_quality_measure() {
+        let (mut r, conf) = result(Outcome::Ok);
+        let good = QeReport {
+            version: "qe-v1".into(),
+            resources: "b".repeat(64),
+            words: 3,
+            known3: 2,
+            chars: 13,
+            no_words: false,
+            oov: Some(0.333333),
+            charlm_bpc: Some(2.5),
+            lm_oov: Some(4.958),
+        };
+        r.readers[0].qe = Some(good.clone());
+        r.check(&conf, b"").unwrap();
+        r.readers[0].qe = Some(QeReport {
+            no_words: true,
+            ..good.clone()
+        });
+        assert!(r.check(&conf, b"").is_err());
+        r.readers[0].qe = Some(QeReport {
+            oov: Some(f64::NAN),
+            ..good
+        });
+        assert!(r.check(&conf, b"").is_err());
     }
 
     pub(crate) fn result(outcome: Outcome) -> (ResultManifest, Vec<u8>) {
@@ -1086,6 +1217,7 @@ pub(crate) mod tests {
             precision: Some(1.0),
             source: name.into(),
             words: 3,
+            qe: None,
         };
         let unit = outcome == Outcome::UnitError;
         (

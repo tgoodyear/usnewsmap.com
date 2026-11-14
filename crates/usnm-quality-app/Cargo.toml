@@ -22,6 +22,7 @@ serde_json.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+usnm-core = { workspace = true, features = ["qe"] }
 tempfile.workspace = true
 
 [lints]

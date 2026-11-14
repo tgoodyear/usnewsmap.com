@@ -99,17 +99,25 @@ pub fn restage(mut texts: Texts, loc_text: &str) -> Option<Texts> {
 }
 
 /// One page's rows from its unit's result and the corrected texts: the
-/// result's scan features, the text part computed again.
+/// result's scan features, the text part computed again. With the job's
+/// quality-measure file (`qe.bin` in the unit), every reader's text is
+/// measured again too, as the unit would.
 pub fn page_rows(
     job: &Job,
     mut result: usnm_ocr_contract::quality::ResultManifest,
     texts: &Texts,
     places: &Places,
+    qe: Option<&usnm_ocr_quality::qe::Measure>,
 ) -> anyhow::Result<Vec<PageRow>> {
     stage::check_loc_texts(texts)?;
     let a = slot::text_analysis(&job.readers, &job.function_words, texts, places, || None)
         .context("a LoC text is empty and no ALTO is staged")?;
     result.readers = a.report.readers;
+    if let Some(m) = qe.filter(|m| m.serves(&job.language)) {
+        let read = slot::reader_inputs(&job.readers, texts, || None)
+            .context("a LoC text is empty and no ALTO is staged")?;
+        m.add(&mut result.readers, &read);
+    }
     result.hat = Some(a.report.hat);
     result.legibility = Some(a.report.legibility);
     let mut rows = collect::page_rows(job, &result, false);
@@ -168,7 +176,22 @@ fn unit(
     let Some(texts) = loc.get(&job.doc_id).and_then(|t| restage(texts, t)) else {
         return Ok(Outcome::NoLocText);
     };
-    let rows = page_rows(&job, got.result, &texts, places)
+    let qe = match &job.qe {
+        Some(q) => {
+            let b = read(
+                &unit.join(super::QE_FILE),
+                usnm_ocr_contract::quality::MAX_QE,
+            )?;
+            anyhow::ensure!(
+                q.input.matches(&b),
+                "{}: qe.bin is not the job's",
+                job.doc_id
+            );
+            Some(usnm_ocr_quality::qe::Measure::load(&b)?)
+        }
+        None => None,
+    };
+    let rows = page_rows(&job, got.result, &texts, places, qe.as_ref())
         .with_context(|| format!("rescoring {}", job.doc_id))?;
     let out = units(&opts.out_dir).join(&job.doc_id);
     std::fs::create_dir_all(&out)?;
@@ -309,6 +332,7 @@ mod tests {
             function_words: j.function_words.clone(),
             crop_seed: j.crop_seed,
             k_crops: j.k_crops,
+            qe: None,
         })
         .unwrap();
         work::run(dir).await.unwrap();
@@ -388,6 +412,7 @@ mod tests {
             bulk.clone(),
             &restaged,
             &Places::parse("Albany\nTroy\n"),
+            None,
         )
         .unwrap();
         let mut want = collect::page_rows(&right_job, &right, false);
@@ -418,9 +443,15 @@ mod tests {
         assert!(units(&opts.out_dir).join(DOC).join(JOB_FILE).exists());
         assert!(opts.out_dir.join("pages.parquet").exists());
         // The bulk texts themselves are refused, not scored.
-        let e = page_rows(&bulk_job, bulk, &wave6_texts("bulk"), &Places::parse(""))
-            .unwrap_err()
-            .to_string();
+        let e = page_rows(
+            &bulk_job,
+            bulk,
+            &wave6_texts("bulk"),
+            &Places::parse(""),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(e.contains("loc_text label"), "{e}");
         // A used --out-dir, or one inside --root: refused.
         let e = run(&opts).unwrap_err().to_string();

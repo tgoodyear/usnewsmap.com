@@ -18,14 +18,14 @@ mod tests {
     use usnm_ocr_contract::{
         boinc::sha256,
         quality::{
-            Engine, Input, Inputs as JobInputs, Job, Outcome, PageSize, ReaderSpec, ResultManifest,
-            TextReader, Texts, VERSION,
+            Engine, Input, Inputs as JobInputs, Job, Outcome, PageSize, QeInput, ReaderSpec,
+            ResultManifest, TextReader, Texts, VERSION,
         },
     };
     use usnm_ocr_quality::slot::{
         run_slot, write_mmap_channel, ALTO_FILE, CONFUSIONS_FILE, DIAG_FILE, FINISH_FILE,
         FRACTION_FILE, JOB_FILE, MMAP_FILE, PAGE_FILE, PLACES_FILE, PROCESS_CONTROL_REQUEST_OFFSET,
-        RESULT_FILE, TEXTS_FILE,
+        QE_FILE, RESULT_FILE, TEXTS_FILE,
     };
 
     const TRUTH: &str =
@@ -178,6 +178,7 @@ mod tests {
             k_crops: 4,
             language: "eng".into(),
             pages: vec![],
+            qe: None,
             readers: texts
                 .readers
                 .iter()
@@ -195,6 +196,79 @@ mod tests {
         std::fs::write(dir.join(JOB_FILE), serde_json::to_vec_pretty(&job).unwrap()).unwrap();
         job
     }
+
+    /// A small quality-measure resource file: a model of a few sentences and
+    /// their words, enough to measure the synthetic page's texts.
+    fn tiny_qe() -> Vec<u8> {
+        let train = format!("{} {}", TRUTH.to_lowercase(), TRUTH.to_lowercase()).repeat(3);
+        let (entries, vocab) = usnm_core::qe::counts(&train, 5);
+        usnm_core::qe::pack(
+            TRUTH.to_lowercase().split(' ').map(str::to_owned),
+            entries,
+            &usnm_core::qe::PackOptions {
+                language: "eng",
+                order: 5,
+                vocab,
+                prune_min_count: 1,
+                prune_from_order: 5,
+                hunspell: false,
+                licence: "CC-BY-SA-4.0",
+                notice: "test resources\n",
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_quality_measure_is_part_of_the_canonical_result() {
+        let tmp = tempfile::tempdir().unwrap();
+        let slot = tmp.path().join("slot");
+        let mut job = write_synthetic_unit(&slot);
+        let qe = tiny_qe();
+        job.qe = Some(QeInput {
+            input: Input::of(&qe, "local:qe.bin"),
+            language: "eng".into(),
+        });
+        job.id = job.identity().unwrap();
+        std::fs::write(slot.join(QE_FILE), &qe).unwrap();
+        std::fs::write(
+            slot.join(JOB_FILE),
+            serde_json::to_vec_pretty(&job).unwrap(),
+        )
+        .unwrap();
+        run_slot(&slot).unwrap();
+        let result: ResultManifest =
+            serde_json::from_slice(&std::fs::read(slot.join(RESULT_FILE)).unwrap()).unwrap();
+        assert_eq!(result.outcome, Outcome::Ok, "{:?}", result.unit_error);
+        let by = |n: &str| {
+            result
+                .readers
+                .iter()
+                .find(|r| r.name == n)
+                .and_then(|r| r.qe.clone())
+                .unwrap()
+        };
+        let (loc, ours) = (by("loc"), by("ours-tesseract"));
+        assert_eq!(loc.resources, sha256(&qe));
+        assert_eq!(loc.oov, Some(0.0));
+        assert!(ours.oov.unwrap() > 0.0 && ours.lm_oov.unwrap() > loc.lm_oov.unwrap());
+        // Every platform gives the same bits (libm's log2, six decimals).
+        assert_eq!(
+            sha256(&serde_json::to_vec(&result.canonical()).unwrap()),
+            QE_CANONICAL
+        );
+        // A resource file that isn't the job's is refused before anything runs.
+        let bad = tmp.path().join("bad");
+        write_synthetic_unit(&bad);
+        std::fs::write(bad.join(QE_FILE), b"other").unwrap();
+        std::fs::write(bad.join(JOB_FILE), serde_json::to_vec_pretty(&job).unwrap()).unwrap();
+        run_slot(&bad).unwrap();
+        let r: ResultManifest =
+            serde_json::from_slice(&std::fs::read(bad.join(RESULT_FILE)).unwrap()).unwrap();
+        assert_ne!(r.outcome, Outcome::Ok);
+    }
+
+    const QE_CANONICAL: &str = "131d3f655c49e52396e945d633cd85e87f0a1126c454a0423a6b6ab7b899b257";
 
     #[test]
     fn golden_determinism_and_boinc_finish_called() {

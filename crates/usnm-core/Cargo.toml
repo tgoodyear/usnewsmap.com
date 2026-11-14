@@ -13,10 +13,13 @@ license = "MIT AND CC-BY-SA-4.0 AND CC0-1.0"
 rust-version.workspace = true
 
 [dependencies]
+anyhow = { workspace = true, optional = true }
 caseless.workspace = true
 chrono.workspace = true
 form_urlencoded.workspace = true
+fst = { workspace = true, optional = true }
 httpdate.workspace = true
+libm = { workspace = true, optional = true }
 rustc-hash.workspace = true
 schemars.workspace = true
 serde.workspace = true
@@ -30,9 +33,17 @@ unicode-normalization.workspace = true
 # The damage metric and its word lists (12 §12.5 Steps 4 and 5): off by
 # default, so the API binary doesn't embed the lists.
 damage = ["dep:serde_json"]
+# The reference-free OCR quality measure, version 1 (`qe`): its resource
+# files are downloaded, not embedded.
+qe = ["dep:anyhow", "dep:fst", "dep:libm", "dep:serde_json"]
 
 [build-dependencies]
 zstd.workspace = true
+
+# Packs and applies the quality measure's resource files (docs in the example).
+[[example]]
+name = "qe"
+required-features = ["qe"]
 
 [dev-dependencies]
 serde_json.workspace = true
