@@ -37,6 +37,7 @@ pub mod gold;
 pub mod handoff;
 pub mod host_trust;
 pub mod lines;
+pub mod memgate;
 #[cfg(any(
     target_os = "linux",
     target_os = "macos",
