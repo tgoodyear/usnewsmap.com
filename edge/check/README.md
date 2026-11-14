@@ -88,11 +88,11 @@ python3 edge/check/tools/lookalike.py --export check-chr.jsonl --font Cherokee=P
 
 **Measured on 13 November 2026, no font added for Yiddish or Serbian.** On the exports of that day (720 Yiddish tasks, 939 Serbian), at the 0.82 threshold:
 
-| Yiddish reference font                          | Tasks flagged | Pairs flagged | What the flagged pairs are                                                                    |
-| ----------------------------------------------- | ------------: | ------------: | --------------------------------------------------------------------------------------------- |
-| Times New Roman (what the page uses on macOS)   |           193 |            30 | Only a letter against the same letter with a point: אַ/אָ, א/אַ, א/אָ, פ/פּ, פֿ/פּ, ב/בּ, ך/ךּ…        |
-| Noto Serif Hebrew 2.004 (notofonts, OFL)        |           194 |            32 | The same, plus יַ/יִ and ן/ןָ.                                                                  |
-| Noto Sans Hebrew 3.001 (notofonts, OFL)         |           213 |            34 | The same as Noto Serif Hebrew, plus ח/ה (both directions, 20 pairs).                            |
+| Yiddish reference font                        | Tasks flagged | Pairs flagged | What the flagged pairs are                                                                      |
+| --------------------------------------------- | ------------: | ------------: | ----------------------------------------------------------------------------------------------- |
+| Times New Roman (what the page uses on macOS) |           193 |            30 | Only a letter against the same letter with a point: אַ/אָ, א/אַ, א/אָ, פ/פּ, פֿ/פּ, ב/בּ, ך/ךּ… |
+| Noto Serif Hebrew 2.004 (notofonts, OFL)      |           194 |            32 | The same, plus יַ/יִ and ן/ןָ.                                                                  |
+| Noto Sans Hebrew 3.001 (notofonts, OFL)       |           213 |            34 | The same as Noto Serif Hebrew, plus ח/ה (both directions, 20 pairs).                            |
 
 No candidate font reduces the set, so none is bundled. The flagged pairs are all a letter with a small point against the same letter without it or with another point: the point is a few percent of the ink, so any font scores them high. In Chrome at 32px, in all three fonts, the points are drawn on the letters and told apart: patah (a bar) and qamats (a bar with a stem), dagesh and rafe in פּ and פֿ, hiriq under י, holam over ו, and the shin and sin dots. The presentation forms (U+FB1D to U+FB4E: אַ, אָ, פּ, פֿ, בּ, וּ, יִ, ײַ) draw the same as the letter plus mark in all three fonts; the tasks hold only the decomposed form, since the build normalises to NFC. So the overlap measure flags these pairs for what they are, a small mark, and says nothing about whether it shows. Whether the mark is visible in the worn print itself is the person's judgment on the clip; no font changes that.
 
