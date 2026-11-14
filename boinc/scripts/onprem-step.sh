@@ -91,6 +91,9 @@ SSH_GOLD_ONBOARD_VARS=" GOLD_CAMPAIGN GOLD_LANGUAGE GOLD_PROFILE GOLD_ENGINE_IMA
 # Native spot checks (#1863): the controller names the pages and peers; usnm-boinc checks them
 # against the trust list and the build list. Never a trust hold's release, which is an operator's.
 SSH_NATIVE_SPOT_VARS=" BATCH_NONCE HANDOFF_URL NATIVE_SPOT_SUBMIT NATIVE_SPOT_CHECK "
+# Container spot checks (#1934): the same, for usnm_ocr pages, with the hosts that may be peers
+# and the step's time budget.
+SSH_CONTAINER_SPOT_VARS=" BATCH_NONCE HANDOFF_URL CONTAINER_SPOT_SUBMIT CONTAINER_SPOT_CHECK CONTAINER_SPOT_ACTIVE CONTAINER_SPOT_BUDGET_SECS "
 # The hand-off steps take the inputs the controller gives them (batch_scheduler.py's claim,
 # release, collect and export), over ssh or not.
 HANDOFF_CLAIM_VARS=" HANDOFF_MANIFEST CLAIM_NONCE CLAIM_MAX CLAIM_QUEUES CLAIM_LEASE_HOURS CLAIM_LANGUAGES "
@@ -550,6 +553,7 @@ case $STEP in
   surya-submit) SSH_ALLOWED=$SSH_SURYA_SUBMIT_VARS ;;
   gold-onboard | gold-promote) SSH_ALLOWED=$SSH_GOLD_ONBOARD_VARS ;;
   native-spot) SSH_ALLOWED=$SSH_NATIVE_SPOT_VARS ;;
+  container-spot) SSH_ALLOWED=$SSH_CONTAINER_SPOT_VARS ;;
   *) SSH_ALLOWED=$SSH_VARS ;;
 esac
 if [ "$TARGET" = handoff ]; then

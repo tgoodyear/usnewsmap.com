@@ -96,6 +96,52 @@ pub enum HostTrustCommands {
         #[arg(long)]
         execute: bool,
     },
+    /// Container OCR spot checks (#1934): replay published `usnm_ocr` pages on a second host
+    /// with a gold report for the same image, and compare the results against limits that depend
+    /// on the two hosts' platforms. A result outside them holds both hosts. Stops starting
+    /// items once --budget-secs has passed. Writes the report to --out.
+    ContainerSpot {
+        /// This step's journal root.
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        project: PathBuf,
+        /// The bridge's job journals: each original's request and scan.
+        #[arg(long)]
+        jobs_root: PathBuf,
+        #[arg(long)]
+        trust: PathBuf,
+        /// The replays' assimilator results directory (batch 0).
+        #[arg(long)]
+        spool: PathBuf,
+        /// The BOINC database, read for each workunit's canonical host and each host's platform.
+        #[arg(long)]
+        mysql_defaults: PathBuf,
+        #[arg(long)]
+        mysql_ca: PathBuf,
+        #[arg(long)]
+        database: String,
+        /// Pages to replay: job ids, comma-separated.
+        #[arg(long, default_value = "")]
+        submit: String,
+        /// Replays to compare: <job>=<source>:<target>:<original spool>, comma-separated.
+        #[arg(long)]
+        check: Option<String>,
+        /// Hosts BOINC has lately seen ask for work, comma-separated: the only peers. Without it
+        /// any trusted host may be one.
+        #[arg(long)]
+        active: Option<String>,
+        /// Seconds after which no further item is started.
+        #[arg(long, default_value_t = 60)]
+        budget_secs: u64,
+        /// The report, as JSON with `nonce`.
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        nonce: String,
+        #[arg(long)]
+        execute: bool,
+    },
     /// Release a host's trust hold for one build (#1863) after an operator has looked. The hold
     /// and the note go to holds-released.jsonl beside the trust list.
     ReleaseHold {
@@ -197,6 +243,68 @@ pub async fn run(command: HostTrustCommands) -> anyhow::Result<()> {
                 &versions,
                 &x::Replay::parse_list(&submit, false)?,
                 &x::Replay::parse_list(&check, true)?,
+                execute,
+            )
+            .await?;
+            let mut value = serde_json::to_value(&report)?;
+            value["nonce"] = nonce.into();
+            value["schema_version"] = 1.into();
+            crate::atomic(&out, &serde_json::to_vec_pretty(&value)?)?;
+            println!("{}", serde_json::to_string(&report)?);
+        }
+        HostTrustCommands::ContainerSpot {
+            root,
+            project,
+            jobs_root,
+            trust,
+            spool,
+            mysql_defaults,
+            mysql_ca,
+            database,
+            submit,
+            check,
+            active,
+            budget_secs,
+            out,
+            nonce,
+            execute,
+        } => {
+            anyhow::ensure!(
+                nonce.len() == 32 && nonce.bytes().all(|b| b.is_ascii_hexdigit()),
+                "--nonce is 32 hex"
+            );
+            let active = active
+                .map(|list| {
+                    list.split(',')
+                        .filter(|h| !h.is_empty())
+                        .map(str::parse)
+                        .collect::<Result<std::collections::BTreeSet<u64>, _>>()
+                })
+                .transpose()?;
+            let paths = x::Paths {
+                root,
+                project,
+                jobs_root,
+                trust,
+                spool,
+                canonical: x::Canonical::Db {
+                    mysql_defaults: mysql_defaults.clone(),
+                    mysql_ca: mysql_ca.clone(),
+                    database: database.clone(),
+                },
+            };
+            let platforms = x::Platforms::Db {
+                mysql_defaults,
+                mysql_ca,
+                database,
+            };
+            let report = x::container_spot(
+                &paths,
+                &platforms,
+                active.as_ref(),
+                &x::parse_submit(&submit)?,
+                &x::parse_check(check.as_deref().unwrap_or(""))?,
+                std::time::Duration::from_secs(budget_secs),
                 execute,
             )
             .await?;

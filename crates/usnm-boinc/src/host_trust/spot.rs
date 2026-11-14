@@ -70,11 +70,17 @@ fn plan_job(id: &str, job: &boinc::Job, host: u64, trust: &Trust) -> anyhow::Res
 }
 
 fn spot_args(s: &Spot) -> Vec<String> {
+    replay_args(&s.workunit, s.target_host)
+}
+
+/// `create_work`'s arguments for a one-result `usnm_ocr` unit named `workunit`, assigned to
+/// `target_host`: the unit of a container spot check, replayed from the original's inputs.
+pub(super) fn replay_args(workunit: &str, target_host: u64) -> Vec<String> {
     [
         "--appname".into(),
         "usnm_ocr".into(),
         "--wu_name".into(),
-        s.workunit.clone(),
+        workunit.to_owned(),
         "--wu_template".into(),
         "templates/usnm_ocr_in".into(),
         "--result_template".into(),
@@ -90,7 +96,7 @@ fn spot_args(s: &Spot) -> Vec<String> {
         "--max_success_results".into(),
         "1".into(),
         "--target_host".into(),
-        s.target_host.to_string(),
+        target_host.to_string(),
         "--rsc_fpops_est".into(),
         "1e12".into(),
         "--rsc_fpops_bound".into(),
@@ -101,8 +107,8 @@ fn spot_args(s: &Spot) -> Vec<String> {
         "1073741824".into(),
         "--delay_bound".into(),
         "259200".into(),
-        format!("{}_page", s.workunit),
-        format!("{}_request_json", s.workunit),
+        format!("{workunit}_page"),
+        format!("{workunit}_request_json"),
     ]
     .into()
 }
