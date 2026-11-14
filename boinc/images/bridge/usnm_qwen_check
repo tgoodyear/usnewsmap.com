@@ -5,6 +5,11 @@
 # <project>/qwen/seen/<result>/, so each host's readings, timings and diagnostics are kept, not
 # only the canonical result's. BOINC's start runs daemons in <project>/tmp_<host>, so ../qwen is
 # the project's qwen/. Linked into bin/.
+#
+# Empty-return guard: a finished result with more than 10% of its crops read empty is invalid
+# (exit 1), whatever the other replica says. --project names the project (the parent of this
+# daemon's directory) so the check finds the unit's qwen.json and leaves out crops LoC's text
+# also has blank; without it, every empty reading counts. The result is kept before it is judged.
 [ "$#" -eq 3 ] || { echo "usnm_qwen_check: expected 3 files, got $#" >&2; exit 2; }
 exec /usr/local/bin/usnm-boinc qwen check --files "$1" "$2" "$3" \
-  --keep "${USNM_QWEN_DIR:-$(cd .. && pwd)/qwen}/seen"
+  --keep "${USNM_QWEN_DIR:-$(cd .. && pwd)/qwen}/seen" --project "$(cd .. && pwd)"

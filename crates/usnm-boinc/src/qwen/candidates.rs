@@ -237,7 +237,11 @@ mod tests {
             std::fs::write(&files[1], serde_json::to_vec(&manifest).unwrap()).unwrap();
         }
         let seen = root.join("seen");
-        validate::check(&files, Some(&seen)).unwrap();
+        // An empty-heavy result is kept before the guard rejects it, so the
+        // evidence is there either way.
+        if let Err(e) = validate::check(&files, Some(&seen)) {
+            assert!(format!("{e}").contains("empty-return guard"), "{e}");
+        }
         seen.join(files[1].file_name().unwrap())
     }
 
