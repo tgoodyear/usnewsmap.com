@@ -362,6 +362,11 @@ impl Cache {
             }
             None => field(&mut version, b"no-qwen-crop-states"),
         }
+        // Which units and crops are excluded changes every row that carries their readings.
+        if let Some(print) = opts.qwen_exclusions.fingerprint() {
+            field(&mut version, b"qwen-exclusions");
+            field(&mut version, print.as_bytes());
+        }
         // Whether crop texts are measured, and with which files, changes every crop row.
         match &opts.qe_dir {
             Some(_) => {

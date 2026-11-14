@@ -94,6 +94,58 @@ class BuildQualityAssessmentDbTest(unittest.TestCase):
             "tables without hat_version must read as version 1",
         )
 
+    def test_excluded_qwen_readings_are_cleared_from_crops_and_dropped_from_pages(self):
+        mod = load_module()
+        executed: list[str] = []
+
+        class FakeConn:
+            def execute(self, sql: str):
+                executed.append(" ".join(sql.split()))
+                return self
+
+        mod.apply_qwen_exclusions(FakeConn(), Path("/tmp/excluded.tsv"))
+        self.assertIn("read_csv('/tmp/excluded.tsv'", executed[0])
+        update = next(s for s in executed if s.startswith("UPDATE raw_boinc_crops"))
+        for col in ("vlm_text", "cer_vs_vlm", "dice_vs_vlm", "vlm_reading_present", "vlm_crop_state"):
+            self.assertIn(f"{col} = NULL", update)
+        # A whole unit (no crop id) or the named crop, with or without the bundle's page prefix.
+        self.assertIn("x.crop_id IS NULL", update)
+        self.assertIn("x.doc_id || ':'", update.replace("raw_boinc_crops.doc_id", "x.doc_id"))
+        delete = next(s for s in executed if s.startswith("DELETE FROM raw_boinc_pages"))
+        self.assertIn("reader IN ('vlm', 'qwen')", delete)
+
+    def test_without_an_exclusion_file_nothing_is_applied(self):
+        mod = load_module()
+        executed: list[str] = []
+
+        class FakeConn:
+            def execute(self, sql: str):
+                executed.append(" ".join(sql.split()))
+                return self
+
+            def fetchall(self):
+                return []
+
+            def fetchone(self):
+                return (0,)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cdir = root / "quality" / "v1-wave2"
+            cdir.mkdir(parents=True)
+            (cdir / "pages.parquet").write_bytes(b"x" * 256)
+            manifest = root / "manifest.parquet"
+            manifest.write_bytes(b"x" * 256)
+            orig = mod.duckdb.connect
+            mod.duckdb.connect = lambda: FakeConn()
+            try:
+                mod.build_database(root / "quality", manifest, root / "out", None)
+                self.assertFalse(any("excluded_qwen" in s for s in executed))
+                mod.build_database(root / "quality", manifest, root / "out", None, root / "x.tsv")
+                self.assertTrue(any("excluded_qwen" in s for s in executed))
+            finally:
+                mod.duckdb.connect = orig
+
     @unittest.skipIf(duckdb is None, "duckdb not installed in this Python environment")
     def test_a_page_in_several_campaigns_keeps_its_hat_v2_row(self):
         """The v1 row wins every later sort key (LoC words, a determined hat, campaign

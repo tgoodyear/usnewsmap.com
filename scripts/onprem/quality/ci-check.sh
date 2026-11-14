@@ -39,6 +39,8 @@ psql_admin -d usnm_quality -c "ALTER TABLE quality.boinc_page_provenance DROP CO
 psql_admin -d usnm_quality < "$here/provenance.sql" > /dev/null
 psql_admin -d usnm_quality < "$here/holds.sql" > /dev/null
 psql_admin -d usnm_quality < "$here/holds.sql" > /dev/null
+psql_admin -d usnm_quality < "$here/excluded_qwen_readings.sql" > /dev/null
+psql_admin -d usnm_quality < "$here/excluded_qwen_readings.sql" > /dev/null
 psql_admin -d usnm_quality < "$here/test_roles.sql" >&2
 # provenance_load.sql as the loader: a host with no known CPU family stays resolved, a rerun
 # changes nothing, and a later less complete row never degrades a resolved one.
@@ -179,6 +181,34 @@ if not got == sql == want:
     sys.exit(f"bands: the builder's on the export {got}, the report's SQL {sql},"
              f" the builder's on the rates loaded {want}")
 PY
+# Excluded Qwen readings (#1919): the view drops the vlm reader's row of a page with a live
+# exclusion and nothing else, a release gives it back, a row is never deleted, and the reader
+# can read the table but not change it.
+d1=sn1_1900-01-01_ed-1_seq-1
+job=$(printf 'a%.0s' $(seq 64))
+psql_admin -d usnm_quality -c "INSERT INTO quality.campaigns (campaign, source) VALUES ('ci-excl', 'boinc-quality')" \
+  -c "INSERT INTO quality.unit_pages (campaign, doc_id, job_id, outcome) VALUES ('ci-excl', '$d1', 'k', 'ok'), ('ci-excl', 'other', 'k', 'ok')" \
+  -c "INSERT INTO quality.reader_scores (campaign, doc_id, reader, est_cer) VALUES ('ci-excl', '$d1', 'qwen', 0.1), ('ci-excl', '$d1', 'ours-tesseract', 0.2), ('ci-excl', 'other', 'qwen', 0.3)" > /dev/null
+effective() { psql_admin -d usnm_quality -tA -c "SET ROLE quality_reader" -c "SELECT string_agg(doc_id || ':' || reader, ',' ORDER BY doc_id, reader) FROM quality.reader_scores_effective WHERE campaign = 'ci-excl'" | tail -1; }
+all="$d1:ours-tesseract,$d1:qwen,other:qwen"
+[ "$(effective)" = "$all" ] || die "the effective view with no exclusion: $(effective)"
+excl="INSERT INTO quality.excluded_qwen_readings (job_id, wu_id, doc_id, reason, created_by) VALUES ('$job', 1, '$d1', 'ci', 'ci') ON CONFLICT DO NOTHING"
+psql_admin -d usnm_quality -c "$excl" -c "$excl" > /dev/null
+[ "$(psql_admin -d usnm_quality -tA -c 'SELECT count(*) FROM quality.excluded_qwen_readings')" = "1" ] || die "an exclusion added twice"
+[ "$(effective)" = "$d1:ours-tesseract,other:qwen" ] || die "the effective view with an exclusion: $(effective)"
+psql_admin -d usnm_quality -c "SET ROLE quality_reader" -c "SELECT count(*) FROM quality.excluded_qwen_readings" > /dev/null || die "the reader can't read exclusions"
+psql_admin -d usnm_quality -c "SET ROLE quality_reader" -c "UPDATE quality.excluded_qwen_readings SET released_at = now()" > /dev/null 2>&1 \
+  && die "the reader released an exclusion"
+psql_admin -d usnm_quality -c "DELETE FROM quality.excluded_qwen_readings" > /dev/null 2>&1 && die "an exclusion was deleted"
+psql_admin -d usnm_quality -c "UPDATE quality.excluded_qwen_readings SET reason = 'other'" > /dev/null 2>&1 \
+  && die "an exclusion's reason was changed"
+psql_admin -d usnm_quality -c "UPDATE quality.excluded_qwen_readings SET released_at = now() WHERE released_at IS NULL" > /dev/null
+[ "$(effective)" = "$all" ] || die "the effective view after the release: $(effective)"
+[ "$(psql_admin -d usnm_quality -tA -c 'SELECT count(*) FROM quality.excluded_qwen_readings')" = "1" ] || die "a release removed the row"
+# A crop of the unit may be excluded again after the release; a second live one for it is refused.
+crop="INSERT INTO quality.excluded_qwen_readings (job_id, wu_id, doc_id, crop_id, reason, created_by) VALUES ('$job', 1, '$d1', 'c1', 'ci', 'ci')"
+psql_admin -d usnm_quality -c "$crop" > /dev/null
+psql_admin -d usnm_quality -c "$crop" > /dev/null 2>&1 && die "two live exclusions of one crop"
 # The gain measure's export runs as the reader too: its columns and grants (#1415).
 qg="$here/../../../boinc/scripts/onprem/quality-feed/quality_gain.py"
 gain_csv=$({
