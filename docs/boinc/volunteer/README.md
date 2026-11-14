@@ -273,6 +273,34 @@ documented Linux multi-CPU and GPU pilot requirements or task resource limits.
    existing `app_config.xml` `<app_config>` element, followed by Manager's
    **Read config files** command. Preserve any existing app configuration.
    Higher concurrency requires proportionately more guest RAM and host headroom.
+
+   **Sizing the VM for concurrent tasks.** BOINC starts one task per CPU
+   it may use, so a Mac that allows all 14 of its CPUs runs 14 at once, and the
+   VM must hold them. The 4 GiB profile above holds 2 (4 GiB minus about 1 GiB of
+   VM overhead, divided by 1.5 GiB). Use this rule, rounding down:
+
+   `tasks at once = (VM RAM in GiB - 1) / 1.5`
+
+   | VM RAM | Tasks at once |
+   | --- | --- |
+   | 4 GiB | 2 |
+   | 8 GiB | 4 |
+   | 16 GiB | 10 |
+   | 24 GiB | 15 |
+
+   Pick one of two ways to make the numbers agree: raise the VM's RAM with
+   `machine set --memory` as described above, or lower the task count with
+   `<project_max_concurrent>` (or BOINC's "Use at most N% of the CPUs"). The
+   scheduler cannot do this for you, because it sees the Mac's host RAM, not the
+   VM's.
+
+   When the VM runs out of memory, the VM's kernel kills Tesseract and the task
+   log shows `tesseract exited with signal: 9 (SIGKILL)`. Pages finished before
+   the kill stay checkpointed, and the task resumes at the next page. Observed on
+   two Macs: an 8-CPU Mac ran up to 4 tasks at once with no kills, and a 14-CPU
+   Mac ran up to 21 at once on a 4 GiB VM and hit SIGKILLs. If you see the
+   SIGKILL lines, lower the task count or raise the VM's RAM.
+
    This small OCR profile is **not** a Surya profile: the current Surya CPU job
    requires **12 GiB**, so the previous 8 GiB example was insufficient. Separate
    multi-CPU and GPU admission and publication requirements still apply.
