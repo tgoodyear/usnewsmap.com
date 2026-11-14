@@ -195,12 +195,52 @@ class MarkOnly(unittest.TestCase):
         F = la.Fonts({"HEBREW": la.BUNDLED["CHEROKEE"]})  # no Hebrew glyphs: a mark pair must not need a font
         alike, marks = la.analyse("\u05e4\u05bc\u05d0\u05b7\u05dc", "\u05e4\u05bf\u05d0\u05b8\u05dc", {}, F)
         self.assertEqual(alike, [])
-        self.assertEqual(marks, [{"a": 0, "a_marks": self.DAGESH, "b": 0, "b_marks": self.RAFE, "base": "\u05e4"},
-                                 {"a": 1, "a_marks": self.PATAH, "b": 1, "b_marks": self.QAMATS, "base": "\u05d0"}])
+        self.assertEqual(marks, [{"a": 0, "a_marks": self.DAGESH, "b": 0, "b_marks": self.RAFE, "base": "\u05e4", "differ": self.DAGESH + self.RAFE},
+                                 {"a": 1, "a_marks": self.PATAH, "b": 1, "b_marks": self.QAMATS, "base": "\u05d0", "differ": self.PATAH + self.QAMATS}])
         self.assertEqual(list(marks[0]), sorted(marks[0]), "keys in ascending order")
         self.assertEqual(sum(F.unmeasured.values()) + sum(F.unshaped.values()), 0, "mark pairs are not measured")
         # the old call sees only the overlap-flagged pairs
         self.assertEqual(la.flags("\u05e4\u05bc", "\u05e4\u05bf", {}, F), [])
+
+    YI = {"\u05f2\u05b7": "\u05d9\u05d9\u05b7", "\u05f2": "\u05d9\u05d9", "\u05f1": "\u05d5\u05d9", "\u05f0": "\u05d5\u05d5"}
+
+    def yi_analyse(self, a, b):
+        eq = bt.parse_equivalents([f"{k}={v}" for k, v in self.YI.items()])
+        return la.analyse(a, b, eq, la.Fonts({"HEBREW": la.BUNDLED["CHEROKEE"]}))
+
+    @unittest.skipUnless(HAVE_PIL, "Pillow not installed")
+    def test_a_pointed_double_yod_is_labelled_with_its_point(self):
+        """ײַ is ייַ, so שײַן against שיַיַן differs in a yud that has a point on one side; the displayed ײַ has a point, so its
+        label must not be "no mark" (#1951)."""
+        a, b = "\u05e9\u05f2\u05b7\u05df", "\u05e9\u05d9\u05b7\u05d9\u05b7\u05df"
+        alike, marks = self.yi_analyse(a, b)
+        self.assertEqual(alike, [])
+        self.assertEqual(marks, [{"a": 1, "a_marks": self.PATAH, "b": 1, "b_marks": self.PATAH, "base": "\u05d9", "differ": self.PATAH}])
+
+    @unittest.skipUnless(HAVE_PIL, "Pillow not installed")
+    def test_a_pair_on_the_displayed_letters_survives_expansion_that_changes_the_length(self):
+        """ײַ is two letters expanded but ײָ is not listed, so אײַב against אײָב has readings of different lengths once
+        expanded; the displayed letters are one pair of one base letter that differs in its point."""
+        a, b = "\u05d0\u05f2\u05b7\u05d1", "\u05d0\u05f2\u05b8\u05d1"
+        alike, marks = self.yi_analyse(a, b)
+        self.assertEqual(alike, [])
+        self.assertEqual(marks, [{"a": 1, "a_marks": self.PATAH, "b": 1, "b_marks": self.QAMATS, "base": "\u05f2", "differ": self.PATAH + self.QAMATS}])
+        self.assertEqual(la.differing_pairs(a, b, bt.parse_equivalents([f"{k}={v}" for k, v in self.YI.items()])), [], "the expanded readings pair nothing")
+
+    @unittest.skipUnless(HAVE_PIL, "Pillow not installed")
+    def test_other_configured_equivalents_keep_the_displayed_marks(self):
+        # a ligature with and without a point (only ײַ is listed as an equivalent, so the others stay whole letters when
+        # pointed and expand when not): one pair of one base letter, whichever way the expansion goes
+        for lig in ("\u05f0", "\u05f1", "\u05f2"):
+            for plain, pointed, want in ((lig, lig + self.PATAH, ("", self.PATAH)), (lig + self.QAMATS, lig, (self.QAMATS, ""))):
+                alike, marks = self.yi_analyse("\u05d0" + plain + "\u05d1", "\u05d0" + pointed + "\u05d1")
+                self.assertEqual(alike, [], lig)
+                self.assertEqual([(m["a"], m["a_marks"], m["b"], m["b_marks"]) for m in marks], [(1, want[0], 1, want[1])], lig)
+        # no equivalent in play: plain pairs, as before
+        self.assertEqual(self.yi_analyse("\u05d0\u05b7", "\u05d0")[1], [{"a": 0, "a_marks": self.PATAH, "b": 0, "b_marks": "", "base": "\u05d0", "differ": self.PATAH}])
+        # Serbian's equivalents are one letter for one letter and have no marks: unchanged
+        sr = bt.parse_equivalents(["C=\u0421"])
+        self.assertEqual(la.analyse("C\u0435", "\u0421\u0435", sr, la.Fonts())[1], [])
 
     @unittest.skipUnless(HAVE_PIL, "Pillow not installed")
     def test_marks_that_survive_nfc_in_any_script_and_precomposed_letters_stay_apart(self):

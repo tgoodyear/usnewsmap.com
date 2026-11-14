@@ -232,21 +232,53 @@ def mark_only(x: str, y: str):
     return bx, mx, my
 
 
+def cluster_pairs(a: str, b: str) -> list:
+    """(index in a, index in b, cluster of a, cluster of b) for the letters as the page displays them (no equivalents
+    applied), paired as `differing_pairs` pairs them: position by position when the readings have as many letters, else the
+    equal-length differing stretches an alignment finds."""
+    ga, gb = bt.graphemes(a), bt.graphemes(b)
+    if len(ga) == len(gb):
+        return [(k, k, ga[k], gb[k]) for k in range(len(ga)) if ga[k] != gb[k]]
+    out = []
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, ga, gb, autojunk=False).get_opcodes():
+        if op == "replace" and i2 - i1 == j2 - j1:
+            out.extend((i1 + k, j1 + k, ga[i1 + k], gb[j1 + k]) for k in range(i2 - i1))
+    return out
+
+
 def analyse(a: str, b: str, equivalents: dict, fonts: Fonts, threshold: float = THRESHOLD) -> tuple:
     """(lookalikes, mark_only) for two readings. `lookalikes` are the letter pairs the page draws almost alike: dicts with
     `a` and `b` (letter indexes, as a_diff and b_diff), `a_label`, `b_label` and `iou`. `mark_only` are the pairs of the
-    same base letter that differ only in marks, which are not measured: dicts with `a`, `a_marks`, `b`, `b_marks` (the
-    mark characters that reading has on that letter, "" for none) and `base`. Keys are in ascending order."""
+    same base letter that differ only in combining marks, which are not measured: dicts with `a`, `a_marks`, `b`, `b_marks`,
+    `base` and `differ`. `a_marks` and `b_marks` are the mark characters of the letter the page displays at that index, so
+    a label can describe what is on screen ("" for none); `differ` is the marks that tell the two apart. Keys are in
+    ascending order.
+
+    A spelling a language lists as equivalent is expanded for the comparison (ײַ is ייַ), but a pair is judged on the
+    letters as displayed first: ײַ against ײָ is one pair of one base letter, though the expanded readings have different
+    lengths. A pair found on expanded letters (ײַ against יַ, whose yud carries the point) takes its marks from the displayed
+    letters it came from."""
     alike, marks = [], []
+    ga, gb = bt.graphemes(a), bt.graphemes(b)
+    taken_a, taken_b = set(), set()
+    for ia, ib, x, y in cluster_pairs(a, b):
+        m = mark_only(x, y)
+        if m and bt.fold(x, equivalents) != bt.fold(y, equivalents):
+            marks.append({"a": ia, "a_marks": m[1], "b": ib, "b_marks": m[2], "base": m[0], "differ": "".join(differing_marks({"a_marks": m[1], "b_marks": m[2]}))})
+            taken_a.add(ia)
+            taken_b.add(ib)
     for ia, ib, x, y in differing_pairs(a, b, equivalents):
+        if ia in taken_a or ib in taken_b:
+            continue
         m = mark_only(x, y)
         if m:
-            marks.append({"a": ia, "a_marks": m[1], "b": ib, "b_marks": m[2], "base": m[0]})
+            marks.append({"a": ia, "a_marks": split_letter(ga[ia])[1], "b": ib, "b_marks": split_letter(gb[ib])[1], "base": m[0],
+                          "differ": "".join(differing_marks({"a_marks": m[1], "b_marks": m[2]}))})
             continue
         score = measure(fonts, x, y)
         if score is not None and score >= threshold:
             alike.append({"a": ia, "a_label": label(x), "b": ib, "b_label": label(y), "iou": round(score, 3)})
-    return alike, marks
+    return alike, sorted(marks, key=lambda p: (p["a"], p["b"]))
 
 
 def flags(a: str, b: str, equivalents: dict, fonts: Fonts, threshold: float = THRESHOLD) -> list:
@@ -257,6 +289,8 @@ def flags(a: str, b: str, equivalents: dict, fonts: Fonts, threshold: float = TH
 def differing_marks(pair: dict) -> list:
     """The marks that tell the two letters of a `mark_only` pair apart: those one has more of than the other, each once
     (a mark both letters carry is not what differs)."""
+    if "differ" in pair:  # set when the build saw the pair through an equivalent spelling (the marks a letter shows may be equal)
+        return sorted(set(pair["differ"]))
     diff = collections.Counter(pair["a_marks"]) - collections.Counter(pair["b_marks"])
     diff += collections.Counter(pair["b_marks"]) - collections.Counter(pair["a_marks"])
     return sorted(set(diff))

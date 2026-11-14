@@ -240,6 +240,10 @@ test("labels render under each reading, in left-to-right and right-to-left langu
     { code: "yi", cfg: { dir: "rtl", notes: { "\u05d0\u05b7": "a note" }, marks: { "\u05b7": "pasekh" } },
       task: { a: "\u05d0\u05b7", b: "\u05d0", a_diff: [0], b_diff: [0], mark_only: [{ a: 0, a_marks: "\u05b7", b: 0, b_marks: "", base: "\u05d0" }] },
       expect: { a: ["pasekh"], b: ["no mark"] }, insets: { a: 1, b: 1 } },
+    // a double yod with a point (U+05F2 U+05B7) is one displayed letter: its label names its mark, and the inset shows the whole cluster
+    { code: "yi", cfg: { dir: "rtl", notes: {}, marks: { "\u05b7": "pasekh", "\u05b8": "komets" } },
+      task: { a: "\u05d0\u05f2\u05b7\u05d1", b: "\u05d0\u05f2\u05b8\u05d1", a_diff: [1], b_diff: [1], mark_only: [{ a: 1, a_marks: "\u05b7", b: 1, b_marks: "\u05b8", base: "\u05f2", differ: "\u05b7\u05b8" }] },
+      expect: { a: ["pasekh"], b: ["komets"] }, insets: { a: 1, b: 1 }, insetText: { a: "\u05f2\u05b7", b: "\u05f2\u05b8" } },
   ];
   const dir = mkdtempSync(join(tmpdir(), "check-labels-"));
   try {
@@ -275,6 +279,8 @@ document.fonts.load('32px "Noto Sans Cherokee"', "ᎠᎡᏒ").then((faces) => {
           if (Math.min(p.right, q.right) - Math.max(p.left, q.left) > 0.5 && Math.min(p.bottom, q.bottom) - Math.max(p.top, q.top) > 0.5) found.push({ code: c.code, side, problem: "parts overlap" });
         }
       }
+      const wantText = (c.insetText || {})[side];
+      if (wantText !== undefined && (insets.length !== 1 || insets[0].textContent !== wantText)) found.push({ code: c.code, side, problem: "inset is not the displayed cluster", got: insets.map((n) => n.textContent) });
       for (const n of insets) {
         if (n.getAttribute("aria-hidden") !== "true") found.push({ code: c.code, side, problem: "inset is not hidden from screen readers" });
         const r = n.getBoundingClientRect(), l = n.parentElement.querySelector(".letter").getBoundingClientRect(), s = stage.getBoundingClientRect();
@@ -299,7 +305,7 @@ document.fonts.load('32px "Noto Sans Cherokee"', "ᎠᎡᏒ").then((faces) => {
     const m = dom.match(/<pre id="out">([\s\S]*?)<\/pre>/);
     assert.ok(m && m[1].trim(), "the harness page produced no result");
     const result = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"));
-    assert.equal(result.seen.length, 14);
+    assert.equal(result.seen.length, 16);
     assert.deepEqual(result.found, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
