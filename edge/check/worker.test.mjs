@@ -1,7 +1,8 @@
 // node --test edge/check/*.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import worker, { settle, signSession, verifySession } from "./worker.mjs";
+import { readFileSync } from "node:fs";
+import worker, { DISPLAY_REVISION, settle, signSession, verifySession } from "./worker.mjs";
 
 test("a word settles at three answers with two thirds agreeing", () => {
   assert.deepEqual(settle({ a: 2, b: 0, neither: 0, unsure: 0 }), { n: 2, settled: 0, outcome: null });
@@ -289,7 +290,14 @@ test("marking a task confusable_display sets its answers aside, keeps them, and 
   assert.equal(row("chr/s/1").held, 0);
   const next = await (await get("/api/next?lang=chr&skip=chr/s/2", t1)).json();
   assert.equal(next.task.id, "chr/s/1", "a person who answered before is asked again");
-  for (const [tok, choice] of [[t1, "b"], [t2, "b"], [t3, "b"]]) assert.equal((await post("/api/answers", tok, { task: "chr/s/1", choice })).status, 200);
+  // a page from before the fix (no display revision) can't answer a marked word; a current one can
+  const stale = await post("/api/answers", t1, { task: "chr/s/1", choice: "a" });
+  assert.equal(stale.status, 426);
+  assert.equal((await post("/api/answers", t1, { task: "chr/s/1", choice: "a", display: DISPLAY_REVISION - 1 })).status, 426);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers WHERE task_id = 'chr/s/1'").get().n, 0, "a refused answer is not stored");
+  for (const [tok, choice] of [[t1, "b"], [t2, "b"], [t3, "b"]]) assert.equal((await post("/api/answers", tok, { task: "chr/s/1", choice, display: DISPLAY_REVISION })).status, 200);
+  // tasks never marked take answers from any page, as before
+  assert.equal((await post("/api/answers", t2, { task: "chr/s/2", choice: "a" })).status, 200);
   assert.deepEqual(row("chr/s/1"), { n: 3, settled: 1, outcome: "b", confusable_display: 1, held: 0 }, "only the new answers settle it");
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers_excluded WHERE task_id = 'chr/s/1'").get().n, 3, "the old answers stay set aside");
   const [y1] = await exported();
@@ -305,6 +313,12 @@ test("marking a task confusable_display sets its answers aside, keeps them, and 
   assert.deepEqual((await (await adminCall(DB, "/admin/confusable", { action: "reopen", tasks: ["chr/s/1"] })).json()).unchanged, ["chr/s/1"]);
   assert.deepEqual((await (await adminCall(DB, "/admin/confusable", { action: "mark", tasks: ["chr/s/1"] })).json()).unchanged, ["chr/s/1"]);
   assert.equal(row("chr/s/1").outcome, "b");
+});
+
+test("the page and the Worker agree on the display revision", () => {
+  const app = readFileSync(new URL("./public/app.js", import.meta.url), "utf8");
+  assert.equal(Number(app.match(/const DISPLAY = (\d+);/)[1]), DISPLAY_REVISION);
+  assert.match(app, /JSON\.stringify\(\{ task: task\.id, choice, display: DISPLAY \}\)/);
 });
 
 test("marking is atomic: a copy that misses a row fails the batch and leaves the answers where they were", async () => {

@@ -177,15 +177,18 @@ function examplesSource() {
   return appJs.slice(start, end);
 }
 
-test("lookalikeLabels names a flagged letter by the letter it sits on, and ignores tasks with no flags", () => {
+test("lookalikeLabels maps flagged letter positions to names, and ignores tasks with no flags", () => {
   const { lookalikeLabels } = new Function(`${scriptTextSource()}\nreturn { lookalikeLabels };`)();
   const t = { a: "ᏒᎯ", b: "ᎡᎯ", lookalikes: [{ a: 0, a_label: "sv", b: 0, b_label: "e" }] };
-  assert.deepEqual([...lookalikeLabels(t, "a")], [["Ꮢ", "sv"]]);
-  assert.deepEqual([...lookalikeLabels(t, "b")], [["Ꭱ", "e"]]);
+  assert.deepEqual([...lookalikeLabels(t, "a")], [[0, "sv"]]);
+  assert.deepEqual([...lookalikeLabels(t, "b")], [[0, "e"]]);
+  // a transposition flags both positions
+  const swap = { a: "ᎡᏒ", b: "ᏒᎡ", lookalikes: [{ a: 0, a_label: "e", b: 0, b_label: "sv" }, { a: 1, a_label: "sv", b: 1, b_label: "e" }] };
+  assert.deepEqual([...lookalikeLabels(swap, "a")], [[0, "e"], [1, "sv"]]);
   assert.equal(lookalikeLabels({ a: "ᏒᎯ", b: "ᎡᎯ" }, "a").size, 0);
   assert.equal(lookalikeLabels({ a: "ᏒᎯ", lookalikes: [{ a: 7, a_label: "x" }] }, "a").size, 0, "an index past the word is ignored");
   // a letter with marks is one letter, as in a_diff
-  assert.deepEqual([...lookalikeLabels({ a: "אַל", lookalikes: [{ a: 0, a_label: "alef patah" }] }, "a")], [["אַ", "alef patah"]]);
+  assert.deepEqual([...lookalikeLabels({ a: "אַל", lookalikes: [{ a: 0, a_label: "alef patah" }] }, "a")], [[0, "alef patah"]]);
 });
 
 test("labels render under each reading, in left-to-right and right-to-left languages, without overlap or overflow", (t) => {
@@ -197,11 +200,13 @@ test("labels render under each reading, in left-to-right and right-to-left langu
   }
   const flagged = (a, b, a_label, b_label) => ({ a, b, a_diff: [0], b_diff: [0], lookalikes: [{ a: 0, a_label, b: 0, b_label }] });
   const cases = [
-    { code: "chr", cfg: { dir: null, notes: { "Ꮢ": "a note" } }, task: flagged("ᏒᎯ", "ᎡᎯ", "sv", "e"), expect: { a: "sv", b: "e" } },
+    { code: "chr", cfg: { dir: null, notes: { "Ꮢ": "a note" } }, task: flagged("ᏒᎯ", "ᎡᎯ", "sv", "e"), expect: { a: ["sv"], b: ["e"] } },
+    { code: "chr", cfg: { dir: null, notes: {} }, task: { a: "ᎡᏒ", b: "ᏒᎡ", a_diff: [0], b_diff: [1], lookalikes: [{ a: 0, a_label: "e", b: 0, b_label: "sv" }, { a: 1, a_label: "sv", b: 1, b_label: "e" }] },
+      expect: { a: ["e", "sv"], b: ["sv", "e"] } },
     { code: "yi", cfg: { dir: "rtl", notes: {} }, task: flagged("אַל", "אָל", "hebrew letter alef + hebrew point patah", "hebrew letter alef + hebrew point qamats"),
-      expect: { a: "hebrew letter alef + hebrew point patah", b: "hebrew letter alef + hebrew point qamats" } },
-    { code: "sr", cfg: { dir: null, notes: {} }, task: flagged("пс", "нс", "cyrillic small letter pe", "cyrillic small letter en"), expect: { a: "cyrillic small letter pe", b: "cyrillic small letter en" } },
-    { code: "chr", cfg: { dir: null, notes: {} }, task: { a: "ᏒᎯ", b: "ᎡᎯ", a_diff: [0], b_diff: [0] }, expect: { a: null, b: null } },
+      expect: { a: ["hebrew letter alef + hebrew point patah"], b: ["hebrew letter alef + hebrew point qamats"] } },
+    { code: "sr", cfg: { dir: null, notes: {} }, task: flagged("пс", "нс", "cyrillic small letter pe", "cyrillic small letter en"), expect: { a: ["cyrillic small letter pe"], b: ["cyrillic small letter en"] } },
+    { code: "chr", cfg: { dir: null, notes: {} }, task: { a: "ᏒᎯ", b: "ᎡᎯ", a_diff: [0], b_diff: [0] }, expect: { a: [], b: [] } },
   ];
   const dir = mkdtempSync(join(tmpdir(), "check-labels-"));
   try {
@@ -223,7 +228,7 @@ document.fonts.ready.then(() => {
       const names = [...box.querySelectorAll(".name")];
       seen.push({ code: c.code, side, names: names.map((n) => n.textContent) });
       const want = c.expect[side];
-      if (want === null ? names.length !== 0 : names.length !== 1 || names[0].textContent !== want) found.push({ code: c.code, side, problem: "label", names: names.map((n) => n.textContent) });
+      if (JSON.stringify(names.map((n) => n.textContent)) !== JSON.stringify(want)) found.push({ code: c.code, side, problem: "label", names: names.map((n) => n.textContent) });
       for (const n of names) {
         if (n.dir !== "ltr") found.push({ code: c.code, side, problem: "label is not left to right" });
         const r = n.getBoundingClientRect(), l = n.parentElement.querySelector(".letter").getBoundingClientRect();
@@ -242,7 +247,7 @@ document.fonts.ready.then(() => {
     const m = dom.match(/<pre id="out">([\s\S]*?)<\/pre>/);
     assert.ok(m && m[1].trim(), "the harness page produced no result");
     const result = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"));
-    assert.equal(result.seen.length, 8);
+    assert.equal(result.seen.length, 10);
     assert.deepEqual(result.found, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -257,4 +262,28 @@ test("the page serves a Cherokee font first in the stack, for the Cherokee block
   assert.match(face[1], /unicode-range:\s*U\+13A0-13FF,\s*U\+AB70-ABBF/);
   assert.match(css, /--font-script:\s*"Noto Sans Cherokee",/);
   assert.ok(existsSync(join(publicDir, "fonts", "NotoSansCherokee-Regular.woff2")));
+});
+
+test("a Cherokee word is answerable only once the served font has loaded", async () => {
+  const start = appJs.indexOf("const CHEROKEE");
+  const end = appJs.indexOf("function render(");
+  assert.ok(start > 0 && end > start, "app.js no longer has the markers this test slices between");
+  const ready = (document) => new Function("document", `${appJs.slice(start, end)}\nreturn fontReady;`)(document);
+  const word = { a: "ᏒᎯ", b: "ᎡᎯ" };
+  const loads = [];
+  const fonts = (result) => ({ fonts: { load: async (spec, text) => { loads.push([spec, text]); if (result instanceof Error) throw result; return result; } } });
+  assert.equal(await ready(fonts([{ status: "loaded" }]))(word), true);
+  assert.deepEqual(loads, [['32px "Noto Sans Cherokee"', "ᏒᎯᎡᎯ"]]);
+  assert.equal(await ready(fonts([{ status: "error" }]))(word), false, "a font that failed to load");
+  assert.equal(await ready(fonts([]))(word), false, "no face matched");
+  assert.equal(await ready(fonts(new Error("network")))(word), false, "the load threw");
+  // nothing to wait for without Cherokee letters, or in a browser with no font loading API
+  loads.length = 0;
+  assert.equal(await ready(fonts([]))({ a: "אל", b: "בל" }), true);
+  assert.deepEqual(loads, []);
+  assert.equal(await ready({})(word), true);
+  assert.equal(await ready(fonts([]))(null), true);
+  // and the page keeps its answer controls off, and refuses the keyboard shortcuts, while the font has failed
+  assert.match(appJs, /const live = !!task && !busy && !fontFailed;/);
+  assert.match(appJs, /if \(!task \|\| busy \|\| fontFailed\) return;/);
 });

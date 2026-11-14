@@ -6,6 +6,10 @@ const CHOICES = new Set(["a", "b", "neither", "unsure", "notext"]);
 const SESSION_DAYS = 30;
 const SETTLE_MIN = 3; // answers before a word can settle
 const DISPUTE_AT = 7; // answers after which a word that never agreed is closed as disputed
+// The page's display revision (public/app.js, DISPLAY). An answer to a word marked confusable_display must come from a page
+// at this revision or later: an open tab from before the served font keeps drawing the letters alike, and its answer would
+// otherwise count as a new one once the word is reopened. Raise both together when a display change needs the same.
+export const DISPLAY_REVISION = 1;
 const enc = new TextEncoder();
 
 export default {
@@ -211,10 +215,11 @@ async function api(request, env, url) {
     const c = await contributorOf(request, env, { limited: true });
     const b = await body(request);
     if (typeof b.task !== "string" || b.task.length > 300 || !CHOICES.has(b.choice)) throw new HttpError(400, "task and choice required");
-    const t = await env.DB.prepare("SELECT id, settled, held, json_type(body, '$.private') AS blind FROM tasks WHERE id = ?").bind(b.task).first();
+    const t = await env.DB.prepare("SELECT id, settled, held, confusable_display, json_type(body, '$.private') AS blind FROM tasks WHERE id = ?").bind(b.task).first();
     if (!t) throw new HttpError(404, "no such task");
     if (t.settled && t.blind) throw new HttpError(409, "this word is already checked");
     if (t.held) throw new HttpError(409, "this word is not open for answers");
+    if (t.confusable_display && !(Number(b.display) >= DISPLAY_REVISION)) throw new HttpError(426, "this page is out of date: reload it, then answer again");
     await record(env, b.task, c, b.choice);
     return json({ ok: true });
   }

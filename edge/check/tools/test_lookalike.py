@@ -56,6 +56,8 @@ class Pairs(unittest.TestCase):
     def test_letters_that_differ_at_the_same_position(self):
         self.assertEqual(la.differing_pairs("ᏒᎯ", "ᎡᎯ", {}), [(0, 0, "Ꮢ", "Ꭱ")])
         self.assertEqual(la.differing_pairs("ᎠᏒᎯ", "ᎠᎡᎯ", {}), [(1, 1, "Ꮢ", "Ꭱ")])
+        # a transposition differs at both positions, though an alignment sees one letter moved
+        self.assertEqual(la.differing_pairs("ᎡᏒ", "ᏒᎡ", {}), [(0, 0, "Ꭱ", "Ꮢ"), (1, 1, "Ꮢ", "Ꭱ")])
         # a letter one reading has and the other lacks is not a pair, and neither are stretches of unequal length
         self.assertEqual(la.differing_pairs("ᎠᏒ", "ᎠᏒᎯ", {}), [])
         self.assertEqual(la.differing_pairs("ᎠᏒᎯ", "ᎠᎡ", {}), [])
@@ -121,6 +123,12 @@ class Flags(unittest.TestCase):
         self.assertEqual(list(flag), ["a", "a_label", "b", "b_label", "iou"])  # keys in ascending order
         self.assertEqual((flag["a"], flag["a_label"], flag["b"], flag["b_label"]), (0, "sv", 0, "e"))
         self.assertTrue(0.7 <= flag["iou"] < la.THRESHOLD)
+
+    @need_font
+    def test_a_transposition_is_flagged_at_both_positions(self):
+        F = la.Fonts()
+        flagged = la.flags("ᎡᏒ", "ᏒᎡ", {}, F, threshold=0.7)
+        self.assertEqual([(f["a"], f["a_label"], f["b"], f["b_label"]) for f in flagged], [(0, "e", 0, "sv"), (1, "sv", 1, "e")])
 
     @need_font
     def test_a_letter_the_font_lacks_is_counted_not_guessed(self):

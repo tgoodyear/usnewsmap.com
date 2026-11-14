@@ -167,10 +167,14 @@ def measure(fonts: Fonts, x: str, y: str):
 
 
 def differing_pairs(a: str, b: str, equivalents: dict) -> list:
-    """(index in a, index in b, letter of a, letter of b) for letters that differ at the same position: the readings'
-    differing stretches of equal length, paired in order. A letter is as `build_tasks.graphemes` counts it; spellings
-    the language lists as equivalents are folded first, as the task diff does."""
+    """(index in a, index in b, letter of a, letter of b) for letters that differ at the same position. Readings of the
+    same length (after folding) are compared position by position, so a transposition (ᎡᏒ and ᏒᎡ) gives two pairs. Otherwise
+    the differing stretches of equal length that an alignment finds are paired in order; a letter one reading has and the
+    other lacks is not a pair. A letter is as `build_tasks.graphemes` counts it; spellings the language lists as
+    equivalents are folded first, as the task diff does."""
     ua, ub = bt.units(a, equivalents), bt.units(b, equivalents)
+    if len(ua) == len(ub):
+        return [(ua[k][1], ub[k][1], ua[k][0], ub[k][0]) for k in range(len(ua)) if ua[k][0] != ub[k][0]]
     sm = difflib.SequenceMatcher(None, [u for u, _ in ua], [u for u, _ in ub], autojunk=False)
     out = []
     for op, i1, i2, j1, j2 in sm.get_opcodes():
