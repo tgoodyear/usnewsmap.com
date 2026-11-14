@@ -274,7 +274,9 @@ pub fn validate(record: &Record) -> anyhow::Result<()> {
                     next.queued_at,
                     &format!("boinc-{}", &record.job.id[..12])
                 )? == next
-                    && next.plan == record.plan
+                    // The ledger row's plan is the batch's (fetched-eng-...), not the controller plan that
+                    // exported the job (native-feed-4); the child's row is the parent's with a new time.
+                    && next.plan == previous.plan
                     && next.batch_version == record.job.batch_version
                     && next.language == record.job.message.language
                     && next.reason == record.job.message.reason.as_str()
@@ -1034,6 +1036,10 @@ mod tests {
         changed = child.clone();
         changed.retry.as_mut().unwrap().previous_attempt += 1;
         assert!(validate(&changed).is_err());
+        // #1919: a queue-fed page's journal names the controller plan, its ledger row the batch's.
+        let mut queue_fed = child.clone();
+        queue_fed.plan = "native-feed-4".into();
+        validate(&queue_fed).unwrap();
         // #1919: a native page read again on another build keeps where it came from.
         let platform_image = format!("sha256:{}", "f".repeat(64));
         let mut cross = child.clone();
