@@ -1,0 +1,26 @@
+{
+  "ct": "230",
+  "env": "prod",
+  "host": "pve.tjg.fyi",
+  "images": {
+    "base": "sha256:dc49f2267d8bfec9d7fdf503260b34897b4aad7edc1a4e5a5641d8a6e5da8f17",
+    "bin": "sha256:21a560ad2c2f6ca77146d96826d58ea22f6c2be8b38c6ead4ce5de176f0e82a2",
+    "bridge": "sha256:e1f01978ad2ddfda919d09530074affb5b6de5a07bc4bead8c4060d312671fa5",
+    "server": "sha256:65f1cf17d5a61499d1cee8ce7d7410d581043208c9dcb9ec2c081cc77f0a8ef3",
+    "worker": null
+  },
+  "release": {
+    "app": "usnm_quality",
+    "kind": "native",
+    "plan_class": "",
+    "platform": "x86_64-apple-darwin",
+    "version": "1.4"
+  },
+  "schema": 1,
+  "source_commit": "bb8bc397b34608ebffc97f3d2bd27351313e48b1",
+  "worker": {
+    "extra_files": {},
+    "sha256": "96f258a3899dd6112c7ce123a1dcabca6845f35973e711d191e715ad6db08d9c",
+    "source_commit": "247519ea5d167bff7156d804f80b701a76ead512"
+  }
+}
