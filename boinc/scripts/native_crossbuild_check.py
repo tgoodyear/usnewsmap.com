@@ -215,7 +215,7 @@ def judge(windows, linux, cer_limit=CER_LIMIT, f1_limit=F1_LIMIT, ratio_range=RA
 def is_hard_page(windows_cer, linux_cer):
     """Both builds far from LoC's text and about equally far: a hard page, not a build defect."""
     return (windows_cer > HARD_PAGE_CER and linux_cer > HARD_PAGE_CER
-            and abs(windows_cer - linux_cer) <= HARD_PAGE_GAP)
+            and abs(windows_cer - linux_cer) <= HARD_PAGE_GAP + 1e-9)
 
 
 def judge_loc(row, windows, linux, loc):
