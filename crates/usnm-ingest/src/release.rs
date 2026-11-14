@@ -2895,6 +2895,11 @@ impl Release {
                 .map(|r| {
                     let mut v =
                         json!({"path": r.path, "reason": r.reason, "reference": r.reference});
+                    if r.hosts.is_some() {
+                        v["hosts"] = json!(r.hosts);
+                        v["ambiguous_hosts"] = json!(r.ambiguous_hosts == Some(true));
+                        v["host_pages"] = json!(r.page_count());
+                    }
                     if r.has_pages() {
                         v["pages"] = json!(r.page_count());
                         v["at"] = json!(r.at);
