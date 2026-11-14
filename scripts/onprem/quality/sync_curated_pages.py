@@ -120,6 +120,19 @@ def inside(root, path):
     return os.path.commonpath([root, os.path.realpath(path)]) == root
 
 
+def with_retries(fn, what, tries=5):
+    """Run fn(); a timeout or connection error is tried again, with a growing pause."""
+    for i in range(tries):
+        try:
+            return fn()
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+            if isinstance(e, urllib.error.HTTPError) and e.code < 500 and e.code != 429:
+                raise
+            if i == tries - 1:
+                raise SystemExit(f"{what}: {e} after {tries} tries")
+            time.sleep(5 * 2 ** i)
+
+
 def list_blobs(url, token, prefix):
     """`token` is a Token."""
     marker = ""
@@ -129,7 +142,7 @@ def list_blobs(url, token, prefix):
             q["marker"] = marker
         req = urllib.request.Request(url + "?" + urllib.parse.urlencode(q),
                                      headers={"Authorization": "Bearer " + token.get(), "x-ms-version": API})
-        root = ET.fromstring(STORAGE.open(req, timeout=120).read())
+        root = ET.fromstring(with_retries(lambda: STORAGE.open(req, timeout=120).read(), "listing"))
         for b in root.iter("Blob"):
             p = b.find("Properties")
             yield dict(name=b.findtext("Name"), size=int(p.findtext("Content-Length")), md5=p.findtext("Content-MD5") or "")
@@ -176,14 +189,19 @@ def main():
             kept += 1
             continue
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        req = urllib.request.Request(url + "/" + urllib.parse.quote(b["name"]),
-                                     headers={"Authorization": "Bearer " + token.get(), "x-ms-version": API})
         tmp = dst + ".partial"
-        h = hashlib.md5()
-        with STORAGE.open(req, timeout=120) as r, os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644), "wb") as out:
-            for chunk in iter(lambda: r.read(1 << 20), b""):
-                h.update(chunk)
-                out.write(chunk)
+
+        def download():
+            h = hashlib.md5()
+            req = urllib.request.Request(url + "/" + urllib.parse.quote(b["name"]),
+                                         headers={"Authorization": "Bearer " + token.get(), "x-ms-version": API})
+            with STORAGE.open(req, timeout=120) as r, os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644), "wb") as out:
+                for chunk in iter(lambda: r.read(1 << 20), b""):
+                    h.update(chunk)
+                    out.write(chunk)
+            return h
+
+        h = with_retries(download, b["name"])
         if os.path.getsize(tmp) != b["size"] or (b["md5"] and base64.b64encode(h.digest()).decode() != b["md5"]):
             os.unlink(tmp)
             sys.exit(f"{b['name']}: the download does not match the listing")
