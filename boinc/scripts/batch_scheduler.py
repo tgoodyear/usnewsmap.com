@@ -2911,7 +2911,8 @@ def native_spot_peers(config, state, slots, host, active=None):
     peers = [(other, config["image"]) for other in config["native_hosts"]
              if other != host and slots.get(other, 0) > 0 and str(other) not in held]
     peers += [(peer["host"], peer["image"]) for peer in spec.get("peers", [])
-              if str(peer["host"]) not in held and (active is None or peer["host"] in active)]
+              if peer["host"] != host and str(peer["host"]) not in held
+              and (active is None or peer["host"] in active)]
     return peers
 
 

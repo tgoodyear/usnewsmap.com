@@ -391,6 +391,14 @@ class NativeSpotTests(unittest.TestCase):
         # The page with no journal host and no target is skipped; the retry is drawn once.
         self.assertEqual(drawn, [(job, 13, "page-1", "/spool/c")])
 
+    def test_a_page_is_never_read_again_on_its_own_host_even_when_it_is_a_configured_peer(self):
+        # #1919: a manual retry may go to a configured peer, whose own pages need another peer.
+        config = {"native_hosts": [13], "image": "a" * 64,
+                  batch.NATIVE_SPOT_KEY: {"peers": [{"host": 20, "image": "b" * 64},
+                                                    {"host": 21, "image": "b" * 64}]}}
+        peers = batch.native_spot_peers(config, {}, {13: 1}, 20)
+        self.assertEqual(sorted(host for host, _ in peers), [13, 21])
+
     def test_no_replay_is_made_while_draining_or_past_the_global_cap(self):
         self.tick()
         self.results_in()

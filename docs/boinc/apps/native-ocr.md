@@ -215,7 +215,7 @@ So on a loaded host a native task gets more clock time than a container task for
 
 ### A page that is too slow (#1919)
 
-A page that needs more CPU than `engine.timeout_secs` fails in both builds ([above](#clock-and-cpu-deadlines)). In the native build the engine is killed with `SIGXCPU`, or on Windows by the job object's CPU limit. The unit then exits with status 197 (`CPU_LIMIT_EXIT` in `crates/usnm-boinc/src/native.rs`) and writes `too slow: SIGXCPU at timeout_secs <N>` to stderr, so BOINC's `result.exit_status` is 197 where any other failure is 1, and the cause is not left to be read from a traceback. On Windows only a kill reported as the Unix signal is classified; a job-object kill of the engine fails like any other error, with status 1, until its exit code is verified on a Windows host.
+A page that needs more CPU than `engine.timeout_secs` fails in both builds ([above](#clock-and-cpu-deadlines)). In the native build the engine is killed with `SIGXCPU`, or on Windows by the job object's CPU limit. The unit then exits with status 117 (`CPU_LIMIT_EXIT` in `crates/usnm-boinc/src/native.rs`) and writes `too slow: SIGXCPU at timeout_secs <N>` to stderr, so BOINC's `result.exit_status` is 117 where any other failure is 1, and the cause is not left to be read from a traceback. On Windows only a kill reported as the Unix signal is classified; a job-object kill of the engine fails like any other error, with status 1, until its exit code is verified on a Windows host.
 
 The failed workunit is terminal (see `--max_error_results` above), so the page is handled like any failed native page:
 

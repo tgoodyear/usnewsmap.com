@@ -121,7 +121,7 @@ pub struct Options<'a> {
 
 /// The page deadline of a native page's retry. `requested` is `--timeout-secs`: longer than the
 /// parent's, up to the largest a job may have, for a page that hit its CPU limit (exit status
-/// 197); none for any other failure, which is retried at the same deadline, once (a first
+/// 117); none for any other failure, which is retried at the same deadline, once (a first
 /// attempt's failure only). A page the policy leaves is logged as `boinc_page_retries_exhausted`
 /// and stays dead-lettered, never dropped without a trace.
 pub fn native_retry_timeout(job: &boinc::Job, requested: Option<u32>) -> anyhow::Result<u32> {

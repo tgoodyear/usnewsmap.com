@@ -211,7 +211,7 @@ and record all identities. Code tests or a merged PR do not prove this live gate
 
 ### A native page that is too slow (#1919)
 
-A `usnm_ocr_native` page whose workunit failed is retried as a native unit on the same build. Any client error fails the workunit for good (`max_error_results` 0). Only a CPU-limit failure (`exit_status` 197, `too slow: SIGXCPU at timeout_secs N` in the task's stderr) gets a larger deadline; read the cause from the result before choosing. Any other failure (for example -226 or an exit 1) is retried at the same deadline, once. The steps are those above, with these differences:
+A `usnm_ocr_native` page whose workunit failed is retried as a native unit on the same build. Any client error fails the workunit for good (`max_error_results` 0). Only a CPU-limit failure (`exit_status` 117, `too slow: SIGXCPU at timeout_secs N` in the task's stderr) gets a larger deadline; read the cause from the result before choosing. Any other failure (for example -226 or an exit 1) is retried at the same deadline, once. The steps are those above, with these differences:
 
 ```sh
 usnm-boinc retry --native-host <host id> --root /private/jobs --spool /private/assimilated \

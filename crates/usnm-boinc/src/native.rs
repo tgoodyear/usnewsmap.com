@@ -566,8 +566,9 @@ fn supervise(
 /// The exit status of a native unit whose engine hit its CPU limit (`SIGXCPU`) and of the task
 /// that reports it, so BOINC's `result.exit_status` tells a page that is too slow for its
 /// `engine.timeout_secs` from any other failure (#1919). Not a status Tesseract, the unit or
-/// the client uses for anything else.
-pub const CPU_LIMIT_EXIT: u8 = 197;
+/// the BOINC client uses for anything else (the client's own are 192 to 211, such as 197 for
+/// its elapsed-time abort).
+pub const CPU_LIMIT_EXIT: u8 = 117;
 
 /// A page's read hit the CPU limit `engine.timeout_secs` sets: too slow, not broken. The page
 /// is retried with a larger limit (docs/boinc/apps/native-ocr.md, "A page that is too slow").
