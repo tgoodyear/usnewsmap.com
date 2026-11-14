@@ -93,16 +93,19 @@ show the effect: `pages.kept.revoked` counts the pages given back.
 
 ## Holding a BOINC host's pages
 
-A revocation can name BOINC host ids with `hosts`, so the pages one host read can be
-given back to LoC (or checked) without a page list. It combines with the other
+A revocation can name BOINC host ids with `hosts`, so the readings one host made can be
+given back to LoC (or checked) without a page list. Only that host's reading goes: another
+reading of the same page (a retry on another host, a local worker) stays in the race,
+because a reading is matched by its page and its `node` (`boinc-<12 hex of the job id>`). It combines with the other
 selectors: with `engine`, only that host's readings by that engine; with `doc_ids`,
-only the listed pages that host read.
+only the listed pages that host read. Copy `engine` as the stored `ocr_engine` value in
+full (`models`, `route` and `contract` included): it is matched exactly, or by its short key.
 
 ```json
 {
   "reason": "host 12 failed its spot check on image 247c131a5994 (#1863)",
   "reference": "#1855",
-  "engine": "tesseract/5.5.0 profile=eng image=sha256:247c131a5994",
+  "engine": "tesseract/5.5.0 profile=eng image=sha256:247c131a5994 models=sha256:75ba1066e1a4 route=boinc@r1 contract=0",
   "hosts": [12]
 }
 ```
@@ -114,8 +117,9 @@ which is built from the BOINC database while a page's workunit and result rows s
 `db_purge` removes them 30 days after the workunit is done. The release stops if a revocation
 names hosts and there are no provenance files.
 
-- A page counts for a host only when its status is `resolved`. Pages whose workunit is gone
-  (`no_wu`) have no host and never match.
+- A reading counts for a host only when its status is `resolved`. Readings whose workunit is
+  gone (`no_wu`) have no host and never match; a snapshot holding only such rows is valid and
+  matches nothing.
 - A job that ran in two workunits on different hosts is `ambiguous_duplicate_wu`. It matches
   only with `"ambiguous_hosts": true`, then for either candidate host. Use that when
   withdrawing a failing host's work and over-matching a few pages is acceptable.

@@ -51,25 +51,36 @@ pub fn provenance_prefix() -> String {
     format!("{ROOT}/provenance")
 }
 
-/// Which BOINC host read which published page: the union of the
+/// Which BOINC host read which published reading: the union of the
 /// `ocr-local/provenance/<stamp>.jsonl` files, create-only, one JSON object
-/// a line with at least `doc_id`, `status` and (for `resolved`) `hostid`;
-/// `candidate_host_ids` lists the hosts behind a page whose job ran in two
-/// workunits (`ambiguous_duplicate_wu`). They are exports of the quality
-/// database's `quality.boinc_page_provenance` table. Of two lines for one
-/// page the later file wins, unless it resolved less than the earlier one.
+/// a line with at least `doc_id`, `job_id`, `status` and (for `resolved`)
+/// `hostid`; `candidate_host_ids` lists the hosts behind a reading whose job
+/// ran in two workunits (`ambiguous_duplicate_wu`). They are exports of the
+/// quality database's `quality.boinc_page_provenance` table. A reading is
+/// identified as the stored row is: its page and its `node`
+/// (`boinc-<first 12 hex of the job id>`), so another reading of the same
+/// page, from a local worker or another BOINC job, is never matched. Of two
+/// lines for one reading the later file wins, unless it resolved less than
+/// the earlier one.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Provenance {
-    /// `doc_hash` of a page to the host that read it.
-    host: HashMap<u64, u64>,
-    /// `doc_hash` of a page to the hosts one of which read it.
-    candidates: HashMap<u64, Vec<u64>>,
+    /// How many files were read.
+    files: usize,
+    /// A reading (`doc_hash` of its page, its `node`) to the host that read it.
+    host: HashMap<(u64, String), u64>,
+    /// A reading to the hosts one of which read it.
+    candidates: HashMap<(u64, String), Vec<u64>>,
 }
+
+/// The readings of hosts: each reading as `(doc_hash, node)`.
+pub type Readings = HashSet<(u64, String)>;
 
 #[derive(Deserialize)]
 struct ProvenanceLine {
     doc_id: String,
     status: String,
+    #[serde(default)]
+    job_id: Option<String>,
     #[serde(default)]
     hostid: Option<u64>,
     #[serde(default)]
@@ -95,17 +106,24 @@ impl Provenance {
 
     /// Adds one file's lines.
     pub fn add(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
+        self.files += 1;
         for (n, line) in bytes.split(|b| *b == b'\n').enumerate() {
             if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
             let l: ProvenanceLine =
                 serde_json::from_slice(line).with_context(|| format!("line {}", n + 1))?;
-            let key = doc_hash(&l.doc_id);
+            let Some(job) = l.job_id.as_deref().and_then(|j| j.get(..12)) else {
+                if l.status == "resolved" {
+                    bail!("line {}: `resolved` without a `job_id`", n + 1);
+                }
+                continue;
+            };
+            let key = (doc_hash(&l.doc_id), format!("boinc-{job}"));
             match (l.status.as_str(), l.hostid) {
                 ("resolved", Some(h)) => {
-                    self.host.insert(key, h);
                     self.candidates.remove(&key);
+                    self.host.insert(key, h);
                 }
                 ("resolved", None) => bail!("line {}: `resolved` without a `hostid`", n + 1),
                 _ if self.host.contains_key(&key) => {}
@@ -119,26 +137,27 @@ impl Provenance {
         Ok(())
     }
 
-    /// Whether no page is known.
+    /// Whether no provenance file was read. A file with only unresolved
+    /// readings is a valid snapshot, and matches nothing.
     pub fn is_empty(&self) -> bool {
-        self.host.is_empty() && self.candidates.is_empty()
+        self.files == 0
     }
 
-    /// The pages `hosts` read: those resolved to one of them, and with
+    /// The readings of `hosts`: those resolved to one of them, and with
     /// `ambiguous` also those one of whose candidate hosts is one of them.
-    pub fn pages_of(&self, hosts: &[u64], ambiguous: bool) -> HashSet<u64> {
-        let mut out: HashSet<u64> = self
+    pub fn readings_of(&self, hosts: &[u64], ambiguous: bool) -> Readings {
+        let mut out: Readings = self
             .host
             .iter()
             .filter(|(_, h)| hosts.contains(h))
-            .map(|(k, _)| *k)
+            .map(|(k, _)| k.clone())
             .collect();
         if ambiguous {
             out.extend(
                 self.candidates
                     .iter()
                     .filter(|(_, c)| c.iter().any(|h| hosts.contains(h)))
-                    .map(|(k, _)| *k),
+                    .map(|(k, _)| k.clone()),
             );
         }
         out
@@ -410,9 +429,9 @@ pub struct Revocation {
     /// engine's readings of the listed pages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc_ids: Option<Vec<String>>,
-    /// BOINC host ids (`quality.boinc_page_provenance.hostid`): only rows of
-    /// pages those hosts read. Needs the provenance files: with none the
-    /// release stops. Pages the provenance doesn't resolve to a host
+    /// BOINC host ids (`quality.boinc_page_provenance.hostid`): only the
+    /// rows those hosts read (a page's other readings stay in the race). Needs the provenance files: with none the
+    /// release stops. Readings the provenance doesn't resolve to a host
     /// (workunit already purged, or ambiguous) don't match unless
     /// `ambiguous_hosts`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -437,9 +456,9 @@ pub struct Revocation {
     /// `doc_ids` and `doc_hashes` as hashes, built by `check`.
     #[serde(skip)]
     listed: HashSet<u64>,
-    /// The pages `hosts` read, bound from the provenance by [`Self::bind`].
+    /// The readings of `hosts`, bound from the provenance by [`Self::bind`].
     #[serde(skip)]
-    host_pages: HashSet<u64>,
+    host_readings: Readings,
 }
 
 impl Revocation {
@@ -454,14 +473,17 @@ impl Revocation {
             && self.from.is_none_or(|f| at >= f)
             && self.to.is_none_or(|t| at < t)
             && (!self.has_pages() || self.listed.contains(&doc_hash(&row.doc_id)))
-            && (self.hosts.is_none() || self.host_pages.contains(&doc_hash(&row.doc_id)))
+            && (self.hosts.is_none()
+                || self
+                    .host_readings
+                    .contains(&(doc_hash(&row.doc_id), row.node.clone())))
     }
 
     /// Resolves `hosts` to their pages. A revocation naming hosts matches
     /// nothing until this is called.
     pub fn bind(&mut self, provenance: &Provenance) {
         if let Some(h) = &self.hosts {
-            self.host_pages = provenance.pages_of(h, self.ambiguous_hosts == Some(true));
+            self.host_readings = provenance.readings_of(h, self.ambiguous_hosts == Some(true));
         }
     }
 
@@ -470,14 +492,18 @@ impl Revocation {
         self.doc_ids.is_some() || self.doc_hashes.is_some()
     }
 
-    /// How many distinct pages it names (with `hosts`, the pages they read,
-    /// narrowed to the page list when it has one).
+    /// How many distinct pages it names (with `hosts`, the pages of the
+    /// readings they made, narrowed to the page list when it has one).
     pub fn page_count(&self) -> usize {
-        match (&self.hosts, self.has_pages()) {
-            (Some(_), false) => self.host_pages.len(),
-            (Some(_), true) => self.listed.intersection(&self.host_pages).count(),
-            _ => self.listed.len(),
+        if self.hosts.is_none() {
+            return self.listed.len();
         }
+        self.host_readings
+            .iter()
+            .map(|(page, _)| *page)
+            .filter(|page| !self.has_pages() || self.listed.contains(page))
+            .collect::<HashSet<_>>()
+            .len()
     }
 
     fn check(&mut self) -> anyhow::Result<()> {
@@ -563,7 +589,7 @@ pub async fn revocations(curated: &dyn ObjectStore) -> anyhow::Result<Vec<Revoca
         let provenance = Provenance::load(curated).await?;
         if provenance.is_empty() {
             bail!(
-                "a revocation names hosts but `{}` has no provenance",
+                "a revocation names hosts but `{}` has no provenance file",
                 provenance_prefix()
             );
         }
@@ -1088,6 +1114,9 @@ mod tests {
         assert_eq!(row.ours, Scores::of(stored, &["deu"]));
     }
 
+    const JOB_A: &str = "aaaaaaaaaaaa1111";
+    const JOB_B: &str = "bbbbbbbbbbbb2222";
+
     fn provenance_lines(lines: &[Value]) -> Vec<u8> {
         let mut out = Vec::new();
         for l in lines {
@@ -1098,44 +1127,66 @@ mod tests {
     }
 
     #[test]
-    fn provenance_resolves_pages_to_hosts_and_a_resolved_row_is_never_degraded() {
+    fn provenance_resolves_readings_to_hosts_and_a_resolved_row_is_never_degraded() {
         let mut p = Provenance::default();
+        assert!(p.is_empty());
         p.add(&provenance_lines(&[
-            json!({"doc_id": "a", "status": "resolved", "hostid": 2, "family": "amd64"}),
-            json!({"doc_id": "b", "status": "resolved", "hostid": 9}),
-            json!({"doc_id": "c", "status": "ambiguous_duplicate_wu", "candidate_host_ids": [2, 4]}),
+            json!({"doc_id": "a", "job_id": JOB_A, "status": "resolved", "hostid": 2}),
+            json!({"doc_id": "b", "job_id": JOB_A, "status": "resolved", "hostid": 9}),
+            json!({"doc_id": "c", "job_id": JOB_A, "status": "ambiguous_duplicate_wu",
+                   "candidate_host_ids": [2, 4]}),
             json!({"doc_id": "d", "status": "no_wu"}),
         ]))
         .unwrap();
-        // A later file with less on a page doesn't undo what an earlier one resolved.
+        // A later file with less on a reading doesn't undo what an earlier one resolved.
         p.add(&provenance_lines(&[
-            json!({"doc_id": "a", "status": "no_wu"}),
-            json!({"doc_id": "c", "status": "resolved", "hostid": 4}),
+            json!({"doc_id": "a", "job_id": JOB_A, "status": "no_canonical"}),
+            json!({"doc_id": "c", "job_id": JOB_A, "status": "resolved", "hostid": 4}),
         ]))
         .unwrap();
-        let h = |ids: &[&str]| -> HashSet<u64> { ids.iter().map(|i| doc_hash(i)).collect() };
-        assert_eq!(p.pages_of(&[2], false), h(&["a"]));
-        assert_eq!(p.pages_of(&[2, 9], false), h(&["a", "b"]));
+        assert!(!p.is_empty());
+        let h = |ids: &[(&str, &str)]| -> Readings {
+            ids.iter()
+                .map(|(d, j)| (doc_hash(d), format!("boinc-{}", &j[..12])))
+                .collect()
+        };
+        assert_eq!(p.readings_of(&[2], false), h(&[("a", JOB_A)]));
+        assert_eq!(
+            p.readings_of(&[2, 9], false),
+            h(&[("a", JOB_A), ("b", JOB_A)])
+        );
         // `c` resolved later, so it is no longer ambiguous.
-        assert_eq!(p.pages_of(&[4], true), h(&["c"]));
-        assert!(p.pages_of(&[77], true).is_empty());
+        assert_eq!(p.readings_of(&[4], true), h(&[("c", JOB_A)]));
+        assert!(p.readings_of(&[77], true).is_empty());
         let mut q = Provenance::default();
         q.add(&provenance_lines(&[
-            json!({"doc_id": "c", "status": "ambiguous_duplicate_wu", "candidate_host_ids": [2, 4]}),
+            json!({"doc_id": "c", "job_id": JOB_B, "status": "ambiguous_duplicate_wu",
+                   "candidate_host_ids": [2, 4]}),
         ]))
         .unwrap();
-        assert!(q.pages_of(&[2], false).is_empty());
-        assert_eq!(q.pages_of(&[2], true), h(&["c"]));
-        assert!(Provenance::default().is_empty() && !q.is_empty());
-        // A resolved line without a host, or a line that isn't JSON, is refused.
+        assert!(q.readings_of(&[2], false).is_empty());
+        assert_eq!(q.readings_of(&[2], true), h(&[("c", JOB_B)]));
+        // A snapshot of only unresolved rows is a snapshot: it matches nothing.
+        let mut only_unresolved = Provenance::default();
+        only_unresolved
+            .add(&provenance_lines(&[
+                json!({"doc_id": "d", "status": "no_wu"}),
+            ]))
+            .unwrap();
+        assert!(!only_unresolved.is_empty());
+        assert!(only_unresolved.readings_of(&[2], true).is_empty());
+        // A resolved line without a host or a job, or a line that isn't JSON, is refused.
         assert!(Provenance::default()
-            .add(br#"{"doc_id": "a", "status": "resolved"}"#)
+            .add(br#"{"doc_id": "a", "job_id": "aaaaaaaaaaaa1111", "status": "resolved"}"#)
+            .is_err());
+        assert!(Provenance::default()
+            .add(br#"{"doc_id": "a", "status": "resolved", "hostid": 2}"#)
             .is_err());
         assert!(Provenance::default().add(b"not json\n").is_err());
     }
 
     #[test]
-    fn a_revocation_by_host_matches_only_pages_that_host_read() {
+    fn a_revocation_by_host_matches_only_the_readings_that_host_made() {
         let checked = |v: Value| -> anyhow::Result<Revocation> {
             let mut r: Revocation = serde_json::from_value(v)?;
             r.check()?;
@@ -1147,21 +1198,39 @@ mod tests {
             b[k] = v;
             b
         };
-        let x = row(Some(0.1), 1_000_000);
+        let x = StoredRow {
+            node: format!("boinc-{}", &JOB_A[..12]),
+            ..row(Some(0.1), 1_000_000)
+        };
+        // The same page read by another BOINC job, and by a local worker.
+        let retry = StoredRow {
+            node: format!("boinc-{}", &JOB_B[..12]),
+            ..x.clone()
+        };
+        let local = StoredRow {
+            node: "node1".into(),
+            ..x.clone()
+        };
         let other = StoredRow {
             doc_id: "sn2_1900-01-02_ed-1_seq-1".into(),
             ..x.clone()
         };
         let mut p = Provenance::default();
         p.add(&provenance_lines(&[
-            json!({"doc_id": x.doc_id, "status": "resolved", "hostid": 2}),
-            json!({"doc_id": other.doc_id, "status": "resolved", "hostid": 9}),
+            json!({"doc_id": x.doc_id, "job_id": JOB_A, "status": "resolved", "hostid": 2}),
+            json!({"doc_id": x.doc_id, "job_id": JOB_B, "status": "resolved", "hostid": 9}),
+            json!({"doc_id": other.doc_id, "job_id": JOB_A, "status": "resolved", "hostid": 9}),
         ]))
         .unwrap();
         let mut by_host = checked(with("hosts", json!([2]))).unwrap();
         assert!(!by_host.matches(&x, "r"), "unbound, it matches nothing");
         by_host.bind(&p);
-        assert!(by_host.matches(&x, "r") && !by_host.matches(&other, "r"));
+        assert!(by_host.matches(&x, "r"));
+        assert!(
+            !by_host.matches(&retry, "r") && !by_host.matches(&local, "r"),
+            "the page's other readings stay in the race"
+        );
+        assert!(!by_host.matches(&other, "r"));
         assert_eq!(by_host.page_count(), 1);
         // Every selector must match: the engine, and a page list.
         let mut scoped = checked(with("hosts", json!([2, 9]))).unwrap();
@@ -1183,15 +1252,27 @@ mod tests {
     }
 
     /// A page of a held host falls back to LoC at release; another host's page of the same
-    /// engine keeps ours.
+    /// engine, and another reading of the held page, keep ours.
     #[tokio::test]
-    async fn a_host_hold_withdraws_that_hosts_pages_in_the_release_load() {
+    async fn a_host_hold_withdraws_that_hosts_readings_in_the_release_load() {
         const ENGLISH: &str = "tesseract/5.5.1 profile=eng image=sha256:3f9a0c1d2e4b \
             models=sha256:8c2d71aa09fe route=boinc@r1 contract=0";
         let text = "durch den engen Hausgang schritt, weiter und Drahtzaun";
         let dir = tempfile::tempdir().unwrap();
         let curated = usnm_store::open(dir.path().to_str().unwrap()).unwrap();
-        let rows = [imported(1, ENGLISH, text), imported(2, ENGLISH, text)];
+        let held = "sn1_1900-01-01_ed-1_seq-1";
+        let kept = "sn1_1900-01-01_ed-1_seq-2";
+        let two_readers = "sn1_1900-01-01_ed-1_seq-3";
+        let mut rows = [
+            imported(1, ENGLISH, text),
+            imported(2, ENGLISH, text),
+            imported(3, ENGLISH, text),
+            imported(3, ENGLISH, text),
+        ];
+        rows[0].node = format!("boinc-{}", &JOB_A[..12]);
+        rows[1].node = format!("boinc-{}", &JOB_B[..12]);
+        rows[2].node = format!("boinc-{}", &JOB_A[..12]);
+        rows[3].node = format!("boinc-{}", &JOB_B[..12]);
         curated
             .put_new(
                 &format!("{ROOT}/pages/sn1/20261011T000000Z-ab.parquet"),
@@ -1200,8 +1281,6 @@ mod tests {
             )
             .await
             .unwrap();
-        let held = "sn1_1900-01-01_ed-1_seq-1";
-        let kept = "sn1_1900-01-01_ed-1_seq-2";
         let revoke = json!({"reason": "host 2 held", "reference": "#1855", "hosts": [2]});
         curated
             .put_new(
@@ -1217,8 +1296,10 @@ mod tests {
             .put_new(
                 &format!("{ROOT}/provenance/20261114T000000Z.jsonl"),
                 provenance_lines(&[
-                    json!({"doc_id": held, "status": "resolved", "hostid": 2}),
-                    json!({"doc_id": kept, "status": "resolved", "hostid": 9}),
+                    json!({"doc_id": held, "job_id": JOB_A, "status": "resolved", "hostid": 2}),
+                    json!({"doc_id": kept, "job_id": JOB_B, "status": "resolved", "hostid": 9}),
+                    json!({"doc_id": two_readers, "job_id": JOB_A, "status": "resolved", "hostid": 2}),
+                    json!({"doc_id": two_readers, "job_id": JOB_B, "status": "resolved", "hostid": 9}),
                 ]),
                 "application/x-ndjson",
             )
@@ -1236,6 +1317,11 @@ mod tests {
         );
         assert!(loaded.revoked.contains(held));
         assert!(loaded.pages.contains_key(kept));
+        // The other host's reading of a page the held host also read still wins it.
+        assert_eq!(
+            loaded.pages[two_readers].row.node,
+            format!("boinc-{}", &JOB_B[..12])
+        );
     }
 
     /// An engine tag for `profile`, as a worker writes it.

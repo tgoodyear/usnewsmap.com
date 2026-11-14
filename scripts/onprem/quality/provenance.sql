@@ -5,6 +5,9 @@
 --
 --   psql -v ON_ERROR_STOP=1 -d usnm_quality -f provenance.sql
 --
+-- Fill it with `boinc_provenance.py` (resolves the published pages against a read-only export
+-- of the BOINC database; its docstring has the queries) and `provenance_load.sql` (the upsert).
+--
 -- `status` says how far the page resolved; only `resolved` rows carry a host. A later build
 -- never replaces a `resolved` row with a less complete one.
 

@@ -33,6 +33,12 @@ psql -v ON_ERROR_STOP=1 -d usnm_quality -f setup.sql
 | `loc_software`          | batch version                  | the software that made LoC's OCR, from each bulk OCR archive's first ALTO header (`load.py locsw`)                |
 | `boinc_page_provenance` | published BOINC OCR page       | which BOINC host, workunit and app version read it, from the BOINC database (`provenance.sql`, #1956)             |
 
+`boinc_page_provenance` is filled from the BOINC database, not by `load.py`: run
+`boinc_provenance.py` on exports of the workunit, result, host and app version rows, then
+`provenance_load.sql` as `postgres` or `quality_loader`. It has to run before `db_purge` removes
+those rows; the docstring of `boinc_provenance.py` has the queries. The release reads exports
+of the table from `curated/ocr-local/provenance/` (docs/ocr/revoke-page-list.md).
+
 Unit results carry the page hat's version (#1078): `hat_version` 2 is solved on the
 passage-matched disagreement, and `est_cer_v1` and the other `_v1` columns keep the unit's
 own version 1 values; a table without `hat_version` loads as version 1. When a page is in
