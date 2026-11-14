@@ -246,9 +246,20 @@ pub fn validate(record: &Record) -> anyhow::Result<()> {
                             && record.job.engine.timeout_secs <= crate::claim::MAX_TIMEOUT_SECS
                     })
                     && retry.provenance.as_ref().is_none_or(|p| {
-                        // A native retry's note names the original platform, and only it does.
+                        // A native retry's note names the original platform, and only it does;
+                        // that reason goes with the platform and the other way round.
                         retry.native.is_some() == p.parent_platform.is_some()
+                            && (p.reason == Reason::PlatformReroute) == p.parent_platform.is_some()
                             && p.valid(record, &retry.previous_job)
+                            // A re-route reads the parent's page, on another build of the one host
+                            // the journal names, at the parent's deadline.
+                            && retry.native.as_ref().is_none_or(|native| {
+                                p.parent_image == native.previous_image
+                                    && p.target_hosts == [native.target_host]
+                                    && record.job.engine.image != native.previous_image
+                                    && record.job.engine.timeout_secs
+                                        == native.previous_timeout_secs
+                            })
                     }),
                 "invalid retry journal"
             );
@@ -411,6 +422,11 @@ pub async fn prepare(
         ensure!(
             previous.job.lines.is_none() && opts.image != previous.job.engine.image,
             "a platform re-route is for a page job, on a build other than the parent's"
+        );
+        ensure!(
+            opts.timeout_secs
+                .is_none_or(|secs| secs == previous.job.engine.timeout_secs),
+            "a platform re-route keeps the parent's deadline"
         );
     } else {
         ensure!(
@@ -944,6 +960,15 @@ mod tests {
                 opts.note
             );
         }
+        opts.note = Some((Reason::PlatformReroute, vec![13]));
+        opts.timeout_secs = Some(parent.job.engine.timeout_secs + 600);
+        assert!(
+            prepare(&opts, &state, curated.as_ref(), reference.as_ref())
+                .await
+                .is_err(),
+            "another deadline"
+        );
+        opts.timeout_secs = None;
         opts.parent_platform = None;
         opts.note = Some((Reason::PlatformReroute, vec![13]));
         assert!(
@@ -1027,6 +1052,7 @@ mod tests {
                 parent_platform: Some("windows_x86_64".into()),
             });
         }
+        cross.job.engine.timeout_secs = 1200;
         validate(&cross).unwrap();
         let noted = cross
             .retry
@@ -1056,11 +1082,44 @@ mod tests {
             ("another build, no platform", |r| {
                 r.provenance = None;
             }),
+            ("slow-class with a platform", |r| {
+                r.provenance.as_mut().unwrap().reason = Reason::SlowClass
+            }),
+            ("another build in the note", |r| {
+                r.provenance.as_mut().unwrap().parent_image = format!("sha256:{}", "e".repeat(64))
+            }),
+            ("another host in the note", |r| {
+                r.provenance.as_mut().unwrap().target_hosts = vec![9]
+            }),
         ] {
             let mut bad = cross.clone();
             mutate(bad.retry.as_mut().unwrap());
             assert!(validate(&bad).is_err(), "{name}");
         }
+        // The reason without a platform, a child on the parent's own build, and another deadline.
+        let mut bad = child.clone();
+        bad.retry.as_mut().unwrap().provenance = Some(Provenance {
+            retry_of: parent.job.id.clone(),
+            parent_image: parent.job.engine.image.clone(),
+            reason: Reason::PlatformReroute,
+            target_hosts: vec![],
+            parent_platform: None,
+        });
+        assert!(validate(&bad).is_err(), "the reason on a container retry");
+        let mut bad = cross.clone();
+        bad.job.engine.image = bad
+            .retry
+            .as_ref()
+            .unwrap()
+            .native
+            .as_ref()
+            .unwrap()
+            .previous_image
+            .clone();
+        assert!(validate(&bad).is_err(), "the parent's own build");
+        let mut bad = cross.clone();
+        bad.job.engine.timeout_secs = 3600;
+        assert!(validate(&bad).is_err(), "another deadline");
 
         let project = temp.path().join("project");
         std::fs::create_dir_all(project.join("bin")).unwrap();
