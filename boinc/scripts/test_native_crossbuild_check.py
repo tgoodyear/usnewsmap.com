@@ -118,6 +118,16 @@ class HardPageTest(unittest.TestCase):
         self.assertNotIn("hard_page", row)
 
 
+    def test_hard_page_uses_unrounded_cers(self):
+        # reference of 20,019 chars; edit distances 12,012 and 13,013: gap 0.0500025 rounds to 0.05
+        loc = "z" * 20019
+        row = {"flagged": True}
+        from unittest import mock
+        with mock.patch.object(X, "distance", side_effect=[12012, 13013]):
+            X.judge_loc(row, "q", "w", loc)
+        self.assertEqual((row["flagged"], "hard_page" in row), (True, False))
+
+
 class SampleTest(unittest.TestCase):
     def pages(self, per_host):
         return [{"job": f"{h}-{i}", "host": h} for h, n in per_host.items() for i in range(n)]
@@ -474,6 +484,12 @@ class EndToEndTest(unittest.TestCase):
 
     def test_page_without_a_loc_text_is_judged_on_the_builds(self):
         self.add(1, "15", "q" * 600 + LINUX_TEXT[600:])
+        self.assertEqual(X.run(self.loc_args(), now=NOW), 3)
+        self.assertEqual(self.report()["rows"][0]["loc"], "missing")
+
+    def test_empty_loc_text_is_missing(self):
+        self.add(1, "15", "q" * 600 + LINUX_TEXT[600:])
+        self.put_loc(1, " \n")
         self.assertEqual(X.run(self.loc_args(), now=NOW), 3)
         self.assertEqual(self.report()["rows"][0]["loc"], "missing")
 

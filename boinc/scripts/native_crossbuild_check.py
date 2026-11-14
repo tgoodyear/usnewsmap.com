@@ -219,11 +219,13 @@ def is_hard_page(windows_cer, linux_cer):
 
 
 def judge_loc(row, windows, linux, loc):
-    """Add both builds' CER and word F1 against LoC's text to a judged row, and reclassify a flagged hard page."""
+    """Add both builds' CER and word F1 against LoC's text to a judged row, and reclassify a flagged hard page.
+    The hard-page test uses the unrounded CERs; only the reported values are rounded."""
     n = max(len(loc), 1)
-    row["windows_vs_loc"] = {"cer": round(distance(windows, loc) / n, 5), "word_f1": round(word_f1(windows, loc), 4)}
-    row["linux_vs_loc"] = {"cer": round(distance(linux, loc) / n, 5), "word_f1": round(word_f1(linux, loc), 4)}
-    if row["flagged"] and is_hard_page(row["windows_vs_loc"]["cer"], row["linux_vs_loc"]["cer"]):
+    win_cer, lin_cer = distance(windows, loc) / n, distance(linux, loc) / n
+    row["windows_vs_loc"] = {"cer": round(win_cer, 5), "word_f1": round(word_f1(windows, loc), 4)}
+    row["linux_vs_loc"] = {"cer": round(lin_cer, 5), "word_f1": round(word_f1(linux, loc), 4)}
+    if row["flagged"] and is_hard_page(win_cer, lin_cer):
         row["flagged"], row["hard_page"] = False, True
     return row
 
@@ -261,6 +263,8 @@ def check_page(page, a):
             loc = loc_text_path(a.loc_texts, page).read_text(errors="replace")
         except OSError:
             return dict(row, loc="missing")  # no LoC text: judged on the two builds alone
+        if not loc.strip():
+            return dict(row, loc="missing")  # an empty reference is no reference
         row = judge_loc(row, page["windows_text"], linux, loc)
     return row
 
