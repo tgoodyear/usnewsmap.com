@@ -9,7 +9,7 @@ lines and reports character and word error before and after the filter.
 
 `cherokee` takes test set v2's lines.jsonl: a row per LoC TextLine with `page`, `loc_text` and
 `reference` and `pixel_box`. A measured line matches the row on its page whose `loc_text` is its text
-before the filter; of several lines with that text, the one whose box is nearest `pixel_box`. Error is counted on syllabary letters only, as `cherokee_testset.py score` counts it; word
+before the filter; several lines with that text are matched by rank, top to bottom. Error is counted on syllabary letters only, as `cherokee_testset.py score` counts it; word
 error on the syllabary words.
 
 `crops` takes gold crops (`page_id` as `<lccn>/<date>/ed-<n>/seq-<m>`, `box` in the page image's
@@ -62,11 +62,6 @@ def measured(path: str, root: str):
     return lines, words, pages
 
 
-def distance(a, b) -> float:
-    """Between the centres of boxes [x0, y0, x1, y1]."""
-    return ((a[0] + a[2]) / 2 - (b[0] + b[2]) / 2) ** 2 + ((a[1] + a[3]) / 2 - (b[1] + b[3]) / 2) ** 2
-
-
 def strip_hyphen(s: str) -> str:
     return s[:-1] if s.endswith(("-", "¬", "⸗")) else s
 
@@ -84,13 +79,24 @@ def cmd_cherokee(a) -> dict:
                 by_text[(page, strip_hyphen(l["before"]))].append(l)
     tot = collections.Counter()
     changed = []
+    # Lines with the same text on a page are matched by rank, top to bottom then left to right: the
+    # reference boxes are in the downloaded image's pixels and the measured ones in the ALTO page's,
+    # so their order agrees where their coordinates may not.
+    keyed = collections.defaultdict(list)
     for r in rows:
-        cands = by_text.get((r["page"], r["loc_text"])) or by_text.get((r["page"], strip_hyphen(r["loc_text"])))
-        if not cands:
+        key = (r["page"], r["loc_text"]) if (r["page"], r["loc_text"]) in by_text else (r["page"], strip_hyphen(r["loc_text"]))
+        keyed[key].append(r)
+    match = {}
+    for key, refs in keyed.items():
+        cands = sorted(by_text.get(key, []), key=lambda c: (c["box"][1], c["box"][0]))
+        for i, r in enumerate(sorted(refs, key=lambda r: (r["pixel_box"][1], r["pixel_box"][0]))):
+            if cands:
+                match[r["crop"]] = cands[min(i, len(cands) - 1)]
+    for r in rows:
+        l = match.get(r["crop"])
+        if l is None:
             tot["unmatched"] += 1
             continue
-        # Lines with the same text on a page: the one whose box is nearest the reference crop's.
-        l = min(cands, key=lambda c: distance(c["box"], r["pixel_box"]))
         tot["lines"] += 1
         gold = "".join(SYLLABARY.findall(r["reference"]))
         gw = SYLLABARY.findall(r["reference"])
@@ -134,7 +140,9 @@ def cmd_crops(a) -> dict:
             cf.write(json.dumps({"crop_id": c["crop_id"], "group": page, "transcription": c["text"],
                                  "transcriber": "published ground truth", "reviewer": "not applicable"},
                                 ensure_ascii=False) + "\n")
-            texts = {side: "\n".join(l[side] for l in inside) for side in ("before", "after")}
+            # A line the filter emptied adds no line break: `con-` would otherwise be kept apart from
+            # `tinued` by a blank line, which the scorer doesn't rejoin.
+            texts = {side: "\n".join(l[side] for l in inside if l[side]) for side in ("before", "after")}
             bf.write(json.dumps({"crop_id": c["crop_id"], "text": texts["before"]}, ensure_ascii=False) + "\n")
             af.write(json.dumps({"crop_id": c["crop_id"], "text": texts["after"]}, ensure_ascii=False) + "\n")
             if texts["before"] != texts["after"]:

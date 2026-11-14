@@ -15,8 +15,8 @@
 //! row. The text after is the worker's: [`kept`] decides it, and a page
 //! without word boxes is left as it was.
 
-use std::io::{BufRead, Write};
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use usnm_alto::slivers::{kept, letters, line_height, MIN_LETTER};
@@ -79,14 +79,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         dpi: Some(a.dpi),
         ..ParseOptions::default()
     };
-    let mut w = std::io::BufWriter::new(std::fs::File::create(&a.out)?);
-    let list = std::io::BufReader::new(std::fs::File::open(&a.files)?);
-    for path in list.lines() {
-        let path = path?;
-        let path = path.trim();
-        if path.is_empty() {
-            continue;
+    let list = std::fs::read_to_string(&a.files)?;
+    let paths: Vec<&str> = list
+        .lines()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    // `--out` is created (and truncated) before anything is read, so it
+    // mustn't be the list or one of the files it names, by any alias.
+    if let Ok(out) = std::fs::canonicalize(&a.out) {
+        let inputs = std::iter::once(a.files.as_path()).chain(paths.iter().map(Path::new));
+        if inputs
+            .filter_map(|p| std::fs::canonicalize(p).ok())
+            .any(|p| p == out)
+        {
+            return Err(format!("--out {} is one of the inputs", a.out.display()).into());
         }
+    }
+    let mut w = std::io::BufWriter::new(std::fs::File::create(&a.out)?);
+    for path in paths {
         let page: Page = match std::fs::read(path)
             .map_err(|e| e.to_string())
             .and_then(|x| parse_with_languages(&normalize(x), &opts).map_err(|e| e.to_string()))
