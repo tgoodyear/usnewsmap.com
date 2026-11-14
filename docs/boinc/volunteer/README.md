@@ -307,18 +307,18 @@ documented Linux multi-CPU and GPU pilot requirements or task resource limits.
    requires **12 GiB**, so the previous 8 GiB example was insufficient. Separate
    multi-CPU and GPU admission and publication requirements still apply.
 
-   **Memory check before each page.** Before it starts Tesseract (for a single page or a
-   bundle of pages), the container
-   worker reads its free memory: the smaller of what is left under the
-   container's own limit (cgroup v2, or v1) and the VM's `MemAvailable`. A page
-   needs about 1.25 GiB free (an estimate of 1 GiB, plus a 256 MiB margin). If
-   less is free, the worker asks BOINC to retry the task in three to five
-   minutes and exits without starting, and the client log shows `Task ...
-   postponed for ... seconds: not enough free memory to start Tesseract`.
-   Stderr has a one-line `usnm memory check:` record of each decision. A
-   postponed task isn't an error. After 20 postponements the task starts
-   anyway. The check can't see tasks that are starting at the same moment, so
-   it softens an undersized VM but does not replace the sizing rule above.
+   **Memory check before each page.** Before it starts Tesseract (for a single
+   page or a bundle of pages), the container worker reads its free memory: the
+   smaller of what is left under the container's own limit (cgroup v2, or v1)
+   and the VM's `MemAvailable`. A page needs about 1.25 GiB free (an estimate of
+   1 GiB, plus a 256 MiB margin). If less is free, the worker asks BOINC to
+   retry the task in three to five minutes and exits without starting. The
+   client log then shows "postponed for ... seconds: not enough free memory to
+   start Tesseract". Stderr has a one-line `usnm memory check:` record of each
+   decision. A postponed task isn't an error. After 20 postponements the task
+   starts anyway. The check can't see tasks that are starting at the same
+   moment, so it softens an undersized VM but does not replace the sizing rule
+   above.
 
 3. **Verify `Run_Podman` pause and resume**: upstream `docker_wrapper` release 22 failed to resume paused containers on macOS because `Run_Podman` re-joins its arguments into a second shell command, so the unquoted `|` in `--format "{{.Names}}|{{.Status}}"` was parsed as a shell pipe (`client/Run_Podman.cpp`, `docker_wrapper.cpp` `get_container_state`). Our Mac app versions build `docker_wrapper` from the pinned BOINC commit with `boinc/scripts/patch-mac-wrapper.py` applied so `--format` pipe quoting survives `Run_Podman` and pause and resume work ([details](../../notes/2026-10-15-boinc-cross-platform-distribution.md)). This is a project application fix, not a replacement for the installed BOINC client or helper. After attaching, verify in Activity Monitor and the helper's `podman ps` output that suspending and resuming a task in BOINC Manager pauses and unpauses the container cleanly without duplicate-name errors.
 4. **Status**: runtime readiness was measured on Computer 1 (M1/16 GiB) with the unmodified stable **BOINC 8.2.11**, Homebrew **Podman 6.1.4**, and the BOINC-owned ARM VM above. Live client RPC reported that runtime after an idle-client restart. The pinned ARM OCR worker enforced `cpu.max=100000 100000`, `memory.max=1610612736`, `memory.swap.max=0`, `pids.max=64`, `NoNewPrivs=1`, and only `DAC_OVERRIDE`. This is **not** end-to-end acceptance: a reserved server cohort must still complete signed download, execution, client-controlled pause and resume, upload, validation, and bridge collection; Intel Mac acceptance remains unverified.
