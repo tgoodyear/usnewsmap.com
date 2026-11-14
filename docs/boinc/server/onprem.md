@@ -272,6 +272,8 @@ usnm-boinc-step --env prod --target handoff --step retry --wait-mins 15 \
   [--var EXPECTED_HANDOFF_URL=<the host's handoff location>] [--var RETRY_DRY_RUN=1]
 ```
 
+**The pinned version** is checked on the server (`verify_retry_worker` in `boinc/scripts/acceptance_server.py`). `RETRY_APP_VERSION` must be the only active `usnm_ocr` version number in the job's plan class (`docker`, or `docker_lines` for a line job). That version may have one active row per platform (Linux, Apple silicon and Intel macOS builds of one release). Every row must carry the same signed worker digest, and that digest must be `RETRY_IMAGE`. The check refuses two active version numbers, rows of one version that name different workers, and a `RETRY_IMAGE` that is not the signed worker.
+
 The same code runs as `usnm-boinc controller-retry` (named flags: `--job`, `--nonce`, `--image`,
 `--app-version-num`, `--reason`, `--reviewed-reason`, `--timeout-secs`, `--target-host`,
 `--journal-dir`, `--dry-run`, and the store URLs, with `--cosmos` for Cosmos). It prints the

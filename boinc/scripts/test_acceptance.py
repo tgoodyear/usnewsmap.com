@@ -46,7 +46,7 @@ class RegisteredVersionRouting(unittest.TestCase):
     def test_retry_rejects_ambiguous_versions_before_inspecting_worker(self):
         db = MagicMock()
         with patch.object(S, "db_connect", return_value=db), \
-                patch.object(S, "query", return_value=[{}, {}]), \
+                patch.object(S, "query", return_value=[dict(version_num=27, platform="a", plan_class="docker"), dict(version_num=28, platform="a", plan_class="docker")]), \
                 patch.object(S, "verify_version_files") as files:
             with self.assertRaisesRegex(ValueError, "unambiguous"):
                 S.verify_retry_worker(Path("/unused"), 27, "sha256:" + "a" * 64)
@@ -57,7 +57,7 @@ class RegisteredVersionRouting(unittest.TestCase):
         worker = "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "b" * 64
         image = "sha256:" + "b" * 64
         db = MagicMock()
-        version = dict(id=1, xml_doc="signed", plan_class="docker", platform="x86_64-pc-linux-gnu")
+        version = dict(id=1, version_num=27, xml_doc="signed", plan_class="docker", platform="x86_64-pc-linux-gnu")
         with patch.object(S, "db_connect", return_value=db), \
                 patch.object(S, "query", return_value=[version]), \
                 patch.object(S, "registered_version"), \
@@ -71,11 +71,62 @@ class RegisteredVersionRouting(unittest.TestCase):
             files.assert_called_with(Path("/unused"), None, "signed")
         self.assertEqual(db.close.call_count, 3)
 
+    def test_retry_accepts_one_version_with_a_row_per_platform(self):
+        image = "sha256:" + "d" * 64
+        worker = "ghcr.io/tgoodyear/usnm-boinc-worker@" + image
+        rows = [dict(id=i, version_num=106, xml_doc=name, plan_class="docker", platform=name)
+                for i, name in enumerate(["x86_64-pc-linux-gnu", "arm64-apple-darwin", "x86_64-apple-darwin"])]
+        with patch.object(S, "db_connect", return_value=MagicMock()), \
+                patch.object(S, "query", return_value=rows), \
+                patch.object(S, "registered_version") as registered, \
+                patch.object(S, "verify_version_files", return_value=worker):
+            S.verify_retry_worker(Path("/unused"), 106, image)
+            self.assertEqual(registered.call_count, 3)
+            with self.assertRaisesRegex(ValueError, "worker digest differs"):
+                S.verify_retry_worker(Path("/unused"), 106, "sha256:" + "e" * 64)
+
+    def test_retry_refuses_another_plan_class_on_the_pinned_number(self):
+        image = "sha256:" + "d" * 64
+        worker = "ghcr.io/tgoodyear/usnm-boinc-worker@" + image
+        rows = [dict(id=1, version_num=106, xml_doc="x", plan_class="docker", platform="p1"),
+                dict(id=2, version_num=106, xml_doc="x", plan_class="docker_lines", platform="p1")]
+        with patch.object(S, "db_connect", return_value=MagicMock()), \
+                patch.object(S, "query", return_value=rows), \
+                patch.object(S, "registered_version"), \
+                patch.object(S, "verify_version_files", return_value=worker):
+            with self.assertRaisesRegex(ValueError, "unambiguous"):
+                S.verify_retry_worker(Path("/unused"), 106, image)
+
+    def test_retry_refuses_two_active_versions(self):
+        image = "sha256:" + "d" * 64
+        worker = "ghcr.io/tgoodyear/usnm-boinc-worker@" + image
+        rows = [dict(id=1, version_num=106, xml_doc="x", plan_class="docker", platform="p1"),
+                dict(id=2, version_num=107, xml_doc="x", plan_class="docker", platform="p1")]
+        with patch.object(S, "db_connect", return_value=MagicMock()), \
+                patch.object(S, "query", return_value=rows), \
+                patch.object(S, "registered_version"), \
+                patch.object(S, "verify_version_files", return_value=worker):
+            with self.assertRaisesRegex(ValueError, "unambiguous"):
+                S.verify_retry_worker(Path("/unused"), 106, image)
+
+    def test_retry_refuses_a_platform_row_with_another_digest(self):
+        image = "sha256:" + "d" * 64
+        workers = {"x": "ghcr.io/tgoodyear/usnm-boinc-worker@" + image,
+                   "y": "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "f" * 64}
+        rows = [dict(id=1, version_num=106, xml_doc="x", plan_class="docker", platform="p1"),
+                dict(id=2, version_num=106, xml_doc="y", plan_class="docker", platform="p2")]
+        with patch.object(S, "db_connect", return_value=MagicMock()), \
+                patch.object(S, "query", return_value=rows), \
+                patch.object(S, "registered_version"), \
+                patch.object(S, "verify_version_files", side_effect=lambda project, _, xml: workers[xml]):
+            with self.assertRaisesRegex(ValueError, "different signed workers"):
+                S.verify_retry_worker(Path("/unused"), 106, image)
+
     def test_a_line_retry_needs_its_docker_lines_version(self):
         # #1621: a line job's worker is a docker_lines version; a page job's stays docker.
         worker = "ghcr.io/tgoodyear/usnm-boinc-worker@sha256:" + "b" * 64
         image = "sha256:" + "b" * 64
-        lines = dict(id=1, xml_doc="signed", plan_class="docker_lines", platform="x86_64-pc-linux-gnu")
+        lines = dict(id=1, version_num=108, xml_doc="signed", plan_class="docker_lines", platform="x86_64-pc-linux-gnu")
         with patch.object(S, "db_connect", return_value=MagicMock()), \
                 patch.object(S, "query", return_value=[lines]), \
                 patch.object(S, "registered_version") as registered, \
