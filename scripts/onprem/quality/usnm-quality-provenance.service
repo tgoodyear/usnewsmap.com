@@ -2,10 +2,14 @@
 Description=usnewsmap BOINC page provenance: resolve new and unresolved pages (#1956)
 Wants=network-online.target
 After=network-online.target
+RequiresMountsFor=/var/lib/usnm-quality-feed/outbox
 ConditionPathExists=/etc/usnm/quality-provenance.env
 
 [Service]
 Type=oneshot
+# The Arc agent's token endpoint, for sync_curated_pages.py (root reads its key file).
+Environment=IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
+Environment=IMDS_ENDPOINT=http://localhost:40342
 ExecStart=/opt/usnm-quality-feed/provenance-daily.sh
 Nice=10
 TimeoutStartSec=2h

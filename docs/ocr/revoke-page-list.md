@@ -167,3 +167,5 @@ is one line (`host=… dbname=usnm_quality user=quality_reader sslmode=verify-fu
 sslkey=… sslrootcert=…`) or a `postgres://` URL as the queue uses. Without the variable the
 release applies no database holds (it logs a warning) and stops at a revocation that names
 hosts. `usnm-boinc quality texts-export` (the quality hand-off job) reads the same variable.
+
+On `usnm-release` (installed 14 November 2026) they are `/etc/usnm/quality-reader/{ca.pem,client.crt,client.key,dsn}` (root:usnm, key mode 0640) and `/etc/usnm/release.env`, which `release.sh` runs get through `systemd-run -p EnvironmentFile=/etc/usnm/release.env` (see the rebuild runbook). The certificate comes from `queue-ct.sh --issue-client --role quality_reader` on pve and is valid 825 days (renew before 2029-02). The container stays stopped between releases.

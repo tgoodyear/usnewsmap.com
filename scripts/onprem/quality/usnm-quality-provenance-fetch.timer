@@ -1,0 +1,10 @@
+[Unit]
+Description=usnewsmap BOINC page provenance export, daily, before usnm-quality-provenance.timer (weekly is enough once #1959 is verified)
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 UTC
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

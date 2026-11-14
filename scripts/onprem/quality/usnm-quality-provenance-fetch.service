@@ -1,0 +1,12 @@
+[Unit]
+Description=usnewsmap BOINC page provenance: fetch the read-only BOINC export from CT 230 (#1956)
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/var/lib/usnm-quality-feed/outbox
+
+[Service]
+Type=oneshot
+# On pve-laptop (the host). ssh to pve uses the host's existing key (~/.ssh/config).
+ExecStart=/opt/usnm-quality-feed/provenance-export-fetch.sh
+Nice=10
+TimeoutStartSec=30min
