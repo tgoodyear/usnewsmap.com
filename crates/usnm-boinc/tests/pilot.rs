@@ -647,6 +647,13 @@ async fn stock_spool_and_terminal_failure_are_recognized() {
         )
         .unwrap();
     }
+    // The spool's host id is the fallback; one saved from `--host-id` takes precedence (#1956).
+    std::fs::write(
+        spool.join(format!("{}__host_id", record.job.workunit())),
+        "41\n",
+    )
+    .unwrap();
+    usnm_boinc::set_origin(&fx.options.root, &id, Some(7), None).unwrap();
     usnm_boinc::collect(
         &fx.options.root,
         &spool,
@@ -656,6 +663,53 @@ async fn stock_spool_and_terminal_failure_are_recognized() {
     )
     .await
     .unwrap();
+    let (alto_name, _) = record.paths().unwrap();
+    let alto = String::from_utf8(fx.stores.out.get(&alto_name).await.unwrap().unwrap()).unwrap();
+    assert!(alto.contains(">7</fileIdentifier>"), "{alto}");
+    assert!(!alto.contains(">41<"), "{alto}");
+    let fx = Fixture::new("eng").await;
+    let id = fx.export().await;
+    // With none saved, the spool's host id is used and saved before the put.
+    let record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    let files = fx.result(&id);
+    let spool2 = fx.tmp.path().join("spool2");
+    std::fs::create_dir_all(&spool2).unwrap();
+    for (source, logical) in [
+        (&files.0, "result.json"),
+        (&files.1, "text.txt"),
+        (&files.2, "layout.xml"),
+    ] {
+        std::fs::copy(
+            source,
+            spool2.join(format!("{}__file_{logical}", record.job.workunit())),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        spool2.join(format!("{}__host_id", record.job.workunit())),
+        "41\n",
+    )
+    .unwrap();
+    usnm_boinc::collect(
+        &fx.options.root,
+        &spool2,
+        &id,
+        fx.stores.curated.as_ref(),
+        fx.stores.out.as_ref(),
+    )
+    .await
+    .unwrap();
+    let (alto_name, _) = record.paths().unwrap();
+    let alto = String::from_utf8(fx.stores.out.get(&alto_name).await.unwrap().unwrap()).unwrap();
+    assert!(
+        alto.contains(r#"fileIdentifierLocation="usnm_boinc_host">41</"#),
+        "{alto}"
+    );
+    let saved = usnm_boinc::load(&fx.options.root, &id)
+        .unwrap()
+        .origin
+        .unwrap();
+    assert_eq!((saved.host, saved.sealed), (Some(41), true));
     let fx = Fixture::new("eng").await;
     let id = fx.export().await;
     let workunit = usnm_boinc::load(&fx.options.root, &id)

@@ -105,7 +105,7 @@ MAX_BOINC_WINDOW_HOURS = 8784  # A leap year.
 # crates/usnm-ocr-contract/src/boinc.rs). Stage is the bridge's, not a release or validation state.
 BOINC_STAGES = ("prepared", "reserved", "submitting", "submitted", "published", "failed")
 BOINC_RECORD_FIELDS = {"job", "plan", "stage", "stamp", "error", "terminal", "retry", "ledger",
-                       "bundle", "unbundled", "held"}
+                       "bundle", "unbundled", "held", "origin"}
 BOINC_JOB_FIELDS = {"v", "id", "attempt", "retry_of", "message", "batch_version", "scan", "engine",
                     "lines"}
 BOINC_MESSAGE_FIELDS = {"v", "page", "batch", "language", "reason", "score", "queued_at"}
