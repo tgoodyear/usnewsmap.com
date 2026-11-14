@@ -1516,22 +1516,24 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
             .await
         }
     };
-    // No host id: nothing says whose result it is, so this is a fault, not a hold.
-    assert!(usnm_boinc::trust::collect(
-        &fx.options.root,
-        &spool,
-        &id,
-        &trust,
-        None,
-        fx.stores.curated.as_ref(),
-        fx.stores.out.as_ref(),
-    )
-    .await
-    .is_err());
-    assert!(usnm_boinc::load(&fx.options.root, &id)
-        .unwrap()
-        .held
-        .is_none());
+    // No host id, or host 0: nothing says whose result it is, so this is a fault, not a hold.
+    for missing in [None, Some(0)] {
+        assert!(usnm_boinc::trust::collect(
+            &fx.options.root,
+            &spool,
+            &id,
+            &trust,
+            missing,
+            fx.stores.curated.as_ref(),
+            fx.stores.out.as_ref(),
+        )
+        .await
+        .is_err());
+        assert!(usnm_boinc::load(&fx.options.root, &id)
+            .unwrap()
+            .held
+            .is_none());
+    }
     // An untrusted host's complete result is kept and the record settled as held: this
     // succeeds, so the feed goes on and later ticks don't collect it again.
     let reason = match run(trust.clone()).await.unwrap() {

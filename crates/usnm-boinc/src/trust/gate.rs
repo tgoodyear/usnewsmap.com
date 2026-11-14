@@ -319,8 +319,8 @@ pub async fn collect(
             // complete and the job's own, it is kept and the record marked held, like a held
             // scope's, so later ticks don't collect it again and the feed goes on. It is
             // collected by hand once the host passes gold (a collect doesn't look at `held`).
-            // Without a host id, or with an incomplete result, nothing is settled: it fails.
-            if host_id.is_some() && trust.refused_for_host(&record.job) {
+            // Without a (nonzero) host id, or with an incomplete result, nothing is settled: it fails.
+            if host_id.is_some_and(|host| host != 0) && trust.refused_for_host(&record.job) {
                 let _lock = Lock::take(root)?;
                 let mut record = load(root, id)?;
                 let file = |logical: &str| spool.join(format!("{wu}__file_{logical}"));
