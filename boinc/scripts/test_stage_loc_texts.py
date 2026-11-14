@@ -176,7 +176,7 @@ class StageTest(unittest.TestCase):
         now_ms = int(time.time() * 1000)
         with mock.patch.object(S.urllib.request, "urlopen", side_effect=AssertionError("network")):
             for state in ({"hold_until_ms": now_ms + 60000},
-                          {"hold_until_ms": 0, "slowed": {"why": "HTTP 503"}}, "not json"):
+                          {"hold_until_ms": 0, "slowed": {"why": "HTTP 503"}}, "not json", ""):
                 f.write_text(state if isinstance(state, str) else json.dumps(state))
                 counts, _ = self.run_stage([page(1)], loc_pacer=f)
                 self.assertEqual(counts["missing"], 1)
@@ -218,9 +218,28 @@ class StageTest(unittest.TestCase):
         self.assertEqual(counts["missing"], 3)
         calls.clear()
         rounds[:] = [[page(4)], [page(4), page(5, seq=5)], [page(4), page(5, seq=5)]]
-        with mock.patch.object(S.urllib.request, "urlopen", fake_open):
+
+        def fake_404(req, timeout):
+            calls.append(req.full_url)
+            raise urllib.error.HTTPError(req.full_url, 404, "no", {}, None)
+
+        with mock.patch.object(S.urllib.request, "urlopen", fake_404):
             S.stage(self.args(loc_max=1, out=self.out / "x"), check=check, sleep=lambda s: None, now=NOW)
         self.assertEqual(len(calls), 1)
+
+    def test_blank_text_is_not_a_reference(self):
+        d = self.scans / "keep/nn_carson/sn83030272/1876-10-17/1"
+        d.mkdir(parents=True)
+        (d / "4.txt").write_text("  \n")
+        self.make_archive("nn_carson_ver02", {"sn83030272/1876/10/17/ed-1/seq-4/ocr.txt": "real text"})
+        counts, _ = self.run_stage([page(1)], no_loc_gov=True)
+        self.assertEqual((counts["local"], counts["archive"]), (0, 1))
+        f = self.out / "sn83030272/1876-10-17/ed-1/seq-4.txt"
+        self.assertEqual(f.read_text(), "real text")
+        f.write_text("\n")  # a blank kept file is a miss and is replaced
+        counts, _ = self.run_stage([page(2)], no_loc_gov=True)
+        self.assertEqual((counts["have"], counts["archive"]), (0, 1))
+        self.assertEqual(f.read_text(), "real text")
 
     def test_xb_environment_fallbacks(self):
         argv = ["--handoff", "h", "--scans", "s", "--state-dir", "d", "--out", "o", "--archives", "a",

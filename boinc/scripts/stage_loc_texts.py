@@ -23,6 +23,7 @@ nothing. Prints one line: pages by source (have, local, archive, loc.gov, missin
 niced and idle (the unit sets Nice=19 and IOSchedulingClass=idle).
 """
 import argparse
+import fcntl
 import importlib.util
 import json
 import os
@@ -53,10 +54,15 @@ def log(msg):
     print(f"stage_loc_texts: {msg}", file=sys.stderr, flush=True)
 
 
+def blank(data):
+    """True for no text at all: the check treats that reference as missing."""
+    return not data.decode("utf-8", errors="ignore").strip()
+
+
 def keep(path, data):
-    """Write atomically; never overwrite a file already kept."""
+    """Write atomically; never overwrite a kept file that has text (a blank one is replaced)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
+    if path.exists() and not blank(path.read_bytes()):
         return
     tmp = path.with_name(f".{path.name}.part")
     tmp.write_bytes(data)
@@ -138,7 +144,10 @@ def pacer_blocked(path, now_ms=None):
         return None
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
     try:
-        state = json.loads(Path(path).read_text() or "{}")
+        with open(path, "rb") as f:
+            fcntl.flock(f, fcntl.LOCK_SH)  # the fetcher rewrites the file under an exclusive lock
+            raw = f.read()
+        state = json.loads(raw)  # empty or invalid: blocked
     except (OSError, ValueError) as e:
         return f"the shared LoC pacer file can't be read ({type(e).__name__})"
     if int(state.get("hold_until_ms") or 0) > now_ms:
@@ -214,11 +223,11 @@ def stage_round(a, check, sleep, now, counts, done, loc):
     todo = []
     for p in picked:
         dest = a.out / f"{p['page']}.txt"
-        if dest.is_file():
+        if dest.is_file() and not blank(dest.read_bytes()):
             counts["have"] += 1
             continue
         text = local_text(a.scans, p)
-        if text is not None:
+        if text is not None and not blank(text):
             keep(dest, text)
             counts["local"] += 1
         else:
@@ -236,7 +245,7 @@ def stage_round(a, check, sleep, now, counts, done, loc):
             got = {}
         for p in group:
             data = got.get(p["page"])
-            if data is None:
+            if data is None or blank(data):
                 rest.append(p)
             else:
                 keep(a.out / f"{p['page']}.txt", data)
@@ -260,7 +269,7 @@ def stage_round(a, check, sleep, now, counts, done, loc):
         except (OSError, ValueError, KeyError, IndexError, StopIteration, urllib.error.URLError) as e:
             log(f"loc.gov {p['page']}: {type(e).__name__}: {str(e)[:100]}")
             text = None
-        if text is None:
+        if text is None or blank(text):
             counts["missing"] += 1
         else:
             keep(a.out / f"{p['page']}.txt", text)
