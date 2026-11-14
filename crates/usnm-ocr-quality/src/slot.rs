@@ -239,7 +239,7 @@ fn load_measure(job: &Job, bytes: Option<&[u8]>) -> anyhow::Result<Option<Measur
             ensure!(q.input.matches(b), "input qe checksum mismatch");
             let m = Measure::load(b).context("qe.bin")?;
             ensure!(
-                m.language() == q.language,
+                m.serves(&q.language),
                 "qe.bin is for {}, the job says {}",
                 m.language(),
                 q.language
@@ -425,7 +425,7 @@ fn compute_page_record(
     let mut r = analysis.report;
     // The measure scores the texts the unit read: LoC's ALTO text stands in
     // for an empty LoC text, as in the comparison.
-    if let Some(m) = qe.filter(|m| m.language() == language) {
+    if let Some(m) = qe.filter(|m| m.serves(language)) {
         let read = reader_inputs(readers_spec, texts, || Some(usnm_alto::text(&alto)))
             .context("the ALTO text is always available here")?;
         m.add(&mut r.readers, &read);

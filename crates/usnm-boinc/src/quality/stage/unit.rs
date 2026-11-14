@@ -175,6 +175,9 @@ pub(super) fn pack_bundles(
     let mut scan_bytes = 0usize;
     let mut alto_bytes = 0usize;
     let mut texts_bytes = 0usize;
+    // A bundle carries one quality-measure file or none, so a page whose
+    // unit carries another starts a new bundle.
+    let mut chunk_qe: Option<Option<QeInput>> = None;
     let flush = |chunk: &mut Vec<PathBuf>, idx: usize| -> anyhow::Result<()> {
         if chunk.is_empty() {
             return Ok(());
@@ -198,8 +201,11 @@ pub(super) fn pack_bundles(
         let t_len = std::fs::metadata(u.join(TEXTS_FILE))
             .map(|m| m.len() as usize)
             .unwrap_or(0);
+        let qe = unit_qe(&u)?;
+        let other_qe = chunk_qe.as_ref().is_some_and(|q| *q != qe);
         let over_size = !chunk.is_empty()
-            && (chunk.len() >= bundle_size
+            && (other_qe
+                || chunk.len() >= bundle_size
                 || scan_bytes + p_len > MAX_BUNDLE_SCAN
                 || alto_bytes + a_len > MAX_BUNDLE_ALTO
                 || texts_bytes + t_len > MAX_BUNDLE_TEXTS);
@@ -213,6 +219,7 @@ pub(super) fn pack_bundles(
         scan_bytes += p_len;
         alto_bytes += a_len;
         texts_bytes += t_len;
+        chunk_qe = Some(qe);
         chunk.push(u);
     }
     if !chunk.is_empty() {
@@ -299,6 +306,12 @@ pub fn write_unit(u: &WriteUnit) -> anyhow::Result<Job> {
     }
     atomic(&u.dir.join(JOB_FILE), &serde_json::to_vec_pretty(&job)?)?;
     Ok(job)
+}
+
+/// The quality-measure file a staged page unit's job carries.
+fn unit_qe(unit: &Path) -> anyhow::Result<Option<QeInput>> {
+    let job: Job = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB_JSON)?)?;
+    Ok(job.qe)
 }
 
 /// Packs `page_units` (1 to [`MAX_BUNDLE_PAGES`] staged single-page unit
@@ -412,17 +425,16 @@ pub fn write_bundle(dir: &Path, page_units: &[PathBuf]) -> anyhow::Result<Job> {
     );
     let fj = first_job.expect("non-empty page_units");
     let places_bytes = places_bytes.expect("non-empty page_units");
-    // The bundle carries the quality measure's file when its first page's
-    // unit did and every page's unit carried the same one or none (a page of
-    // another language is not measured).
-    let qe = fj.qe.clone().filter(|q| {
-        page_units.iter().all(|u| {
-            read(&u.join(JOB_FILE), MAX_JOB_JSON)
-                .ok()
-                .and_then(|b| serde_json::from_slice::<Job>(&b).ok())
-                .is_some_and(|j| j.qe.as_ref().is_none_or(|x| x == q))
-        })
-    });
+    // The bundle carries its pages' quality-measure file; `pack_bundles`
+    // starts a new bundle where it changes.
+    let qe = fj.qe.clone();
+    for u in &page_units[1..] {
+        ensure!(
+            unit_qe(u)? == qe,
+            "{}: its quality-measure file differs from the bundle's first page",
+            u.display()
+        );
+    }
 
     let mut job = Job {
         v: VERSION,
@@ -563,6 +575,44 @@ mod tests {
             std::fs::read(bundle_dir.join(QE_FILE)).unwrap(),
             b"resource bytes"
         );
+        // A page without the file starts a bundle of its own.
+        let plain = tmp.path().join("pages").join("sn1_1900-01-01_ed-1_seq-3");
+        write_unit(&WriteUnit {
+            dir: &plain,
+            doc_id: "sn1_1900-01-01_ed-1_seq-3",
+            group: &base.group,
+            language: &base.language,
+            page: &page,
+            page_source: "local:page.jpg",
+            alto: &alto,
+            alto_source: "local:loc.xml",
+            texts: &texts,
+            texts_source: "local:texts.json",
+            places: &places,
+            places_source: "campaign:places.txt",
+            engine: base.engine.clone(),
+            function_words: base.function_words.clone(),
+            crop_seed: base.crop_seed,
+            k_crops: base.k_crops,
+            qe: None,
+        })
+        .unwrap();
+        assert!(write_bundle(&tmp.path().join("mixed"), &[dirs[0].clone(), plain]).is_err());
+        let units = tmp.path().join("units");
+        let docs: Vec<String> = ["1", "2", "3"]
+            .iter()
+            .map(|n| format!("sn1_1900-01-01_ed-1_seq-{n}"))
+            .collect();
+        let made = pack_bundles(
+            &tmp.path().join("pages"),
+            &units,
+            20,
+            &docs,
+            &BTreeSet::new(),
+            0,
+        )
+        .unwrap();
+        assert_eq!(made, 2);
         // A unit whose qe.bin is not the job's is damaged and staged again.
         std::fs::remove_file(dirs[0].join(QE_FILE)).unwrap();
         std::fs::write(dirs[0].join(QE_FILE), b"other bytes").unwrap();

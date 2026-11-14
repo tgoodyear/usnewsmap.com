@@ -7,6 +7,12 @@ use usnm_ocr_contract::{
     quality::{round6_opt, QeReport, ReaderReport},
 };
 
+/// A job's language code as the resource files name it: ISO 639-3, with
+/// the catalog's MARC codes (`cze`, `ger`, `fre`, ...) mapped.
+pub fn iso3(language: &str) -> &str {
+    usnm_core::lang::marc_to_iso3(language).unwrap_or(language)
+}
+
 /// One language's resources, loaded and checked, with the file's sha256.
 pub struct Measure {
     resources: usnm_core::qe::Resources,
@@ -24,6 +30,11 @@ impl Measure {
     /// ISO 639-3.
     pub fn language(&self) -> &str {
         self.resources.language()
+    }
+
+    /// Whether a page of `language` (ISO 639-3 or MARC) is measured with these resources.
+    pub fn serves(&self, language: &str) -> bool {
+        iso3(language) == self.language()
     }
 
     pub fn sha256(&self) -> &str {

@@ -855,18 +855,34 @@ enum Column {
 /// all integers as `Int64`, others as `Float64`. Field order is the
 /// struct's.
 pub fn to_parquet<T: serde::Serialize>(rows: &[T]) -> anyhow::Result<Vec<u8>> {
-    to_parquet_typed(rows, &[])
+    to_parquet_typed(rows, QE_TYPES)
 }
 
+/// The quality-measure columns keep their types when every value is null
+/// (no `--qe-dir`, units staged without the file, readings with no words).
+const QE_TYPES: &[(&str, DataType)] = &[
+    ("qe_version", DataType::Utf8),
+    ("qe_resources", DataType::Utf8),
+    ("qe_words", DataType::Int64),
+    ("qe_known3", DataType::Int64),
+    ("qe_chars", DataType::Int64),
+    ("qe_no_words", DataType::Boolean),
+    ("qe_oov", DataType::Float64),
+    ("qe_charlm_bpc", DataType::Float64),
+    ("qe_lm_oov", DataType::Float64),
+];
+
 fn crop_parquet(rows: &[CropRow]) -> anyhow::Result<Vec<u8>> {
-    to_parquet_typed(
-        rows,
-        &[
+    let types: Vec<(&str, DataType)> = QE_TYPES
+        .iter()
+        .cloned()
+        .chain([
             ("vlm_reference_chars", DataType::Int64),
             ("vlm_reference_words", DataType::Int64),
             ("vlm_reading_present", DataType::Boolean),
-        ],
-    )
+        ])
+        .collect();
+    to_parquet_typed(rows, &types)
 }
 
 fn to_parquet_typed<T: serde::Serialize>(
@@ -899,6 +915,36 @@ fn to_parquet_typed<T: serde::Serialize>(
                             v.as_i64()
                                 .map(Some)
                                 .with_context(|| format!("column {name} must fit Int64"))
+                        }
+                    })
+                    .collect::<anyhow::Result<_>>()?,
+            )
+        } else if hint == Some(&DataType::Float64) {
+            Column::F64(
+                cells
+                    .iter()
+                    .map(|v| {
+                        if v.is_null() {
+                            Ok(None)
+                        } else {
+                            v.as_f64()
+                                .map(Some)
+                                .with_context(|| format!("column {name} must be Float64"))
+                        }
+                    })
+                    .collect::<anyhow::Result<_>>()?,
+            )
+        } else if hint == Some(&DataType::Utf8) {
+            Column::Str(
+                cells
+                    .iter()
+                    .map(|v| {
+                        if v.is_null() {
+                            Ok(None)
+                        } else {
+                            v.as_str()
+                                .map(|x| Some(x.to_owned()))
+                                .with_context(|| format!("column {name} must be Utf8"))
                         }
                     })
                     .collect::<anyhow::Result<_>>()?,
@@ -1909,7 +1955,21 @@ pub(super) mod tests {
         assert_eq!(rows[0].qe.qe_lm_oov, Some(2.542466));
         assert_eq!(rows[0].qe.qe_known3, Some(7));
         assert_eq!(rows[1].qe, QeColumns::default());
-        assert!(!to_parquet(&rows).unwrap().is_empty());
+        // Measured and all-null tables have the same column types.
+        let schema = |rows: &[PageRow]| {
+            let bytes = bytes::Bytes::from(to_parquet(rows).unwrap());
+            let r = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(bytes)
+                .unwrap();
+            r.schema()
+                .fields()
+                .iter()
+                .filter(|f| f.name().starts_with("qe_"))
+                .map(|f| (f.name().clone(), f.data_type().clone()))
+                .collect::<Vec<_>>()
+        };
+        let measured = schema(&rows);
+        assert_eq!(measured.len(), 9);
+        assert_eq!(measured, schema(&rows[1..]));
     }
 
     #[test]

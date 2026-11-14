@@ -49,7 +49,7 @@ pub fn lock() -> anyhow::Result<Lock> {
 /// The lock's language for a job's language code (ISO 639-3, or MARC as
 /// some catalogs give it).
 pub fn iso3(language: &str) -> &str {
-    usnm_core::lang::marc_to_iso3(language).unwrap_or(language)
+    usnm_ocr_quality::qe::iso3(language)
 }
 
 /// A directory of resource files, each checked against the lock when first read.
@@ -92,7 +92,8 @@ impl Dir {
                 path,
                 QeInput {
                     input: Input::of(&bytes, &format!("lake:qe-resources/qe-v1/{}", e.file)),
-                    language: language.to_owned(),
+                    // The file's own code, so a host checks the header against it.
+                    language: iso3(language).to_owned(),
                 },
             )
         }))
