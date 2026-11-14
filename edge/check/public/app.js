@@ -165,12 +165,26 @@ function examples(text, diff, labels = new Map()) {
 // A Cherokee reading is only answerable once the served font has loaded: otherwise a visitor's installed font may draw
 // letters alike (#1939). Resolves false when the font failed to load; true when it has, or the task has no Cherokee letters.
 const CHEROKEE = /[\u13A0-\u13FF\uAB70-\uABBF]/;
+// The fonts the page serves, by the letters they cover (style.css, @font-face). The family is the one the page declares.
+const BUNDLED = [[CHEROKEE, "Noto Sans Cherokee"]];
+const bundledFamily = (t) => { const hit = t && BUNDLED.find(([re]) => re.test(t.a + t.b)); return hit ? hit[1] : null; };
 async function fontReady(t) {
-  if (!t || !CHEROKEE.test(t.a + t.b) || !document.fonts || !document.fonts.load) return true;
+  const family = bundledFamily(t);
+  if (!family || !document.fonts || !document.fonts.load) return true;
   try {
-    const faces = await document.fonts.load('32px "Noto Sans Cherokee"', t.a + t.b);
+    const faces = await document.fonts.load(`32px "${family}"`, t.a + t.b);
     return faces.length > 0 && faces.every((f) => f.status === "loaded");
   } catch { return false; }
+}
+
+// What the page reports with an answer about the bundled font (worker.mjs, FONT_STATES): the word's bundled font has
+// loaded or not, no bundled font applies to its letters, or the browser can't say. Nothing else about the visitor's fonts
+// is read or sent.
+function fontState(t) {
+  const family = bundledFamily(t);
+  if (!family) return "none";
+  if (!document.fonts || !document.fonts.check) return "unknown";
+  try { return document.fonts.check(`32px "${family}"`, t.a + t.b) ? "loaded" : "not_loaded"; } catch { return "unknown"; }
 }
 
 function render(prev) {
@@ -256,7 +270,7 @@ async function choose(choice) {
   const had = controlFocused();
   busy = true; render();
   try {
-    await authed("/api/answers", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: task.id, choice, display: DISPLAY }) });
+    await authed("/api/answers", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: task.id, choice, display: DISPLAY, font: fontState(task) }) });
     history.push({ task, choice });
     if (history.length > 50) history.shift();
     busy = false;

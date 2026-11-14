@@ -32,7 +32,7 @@ A word **settles** once at least 3 answers are in and one choice has two thirds 
 
 Seed answers (from `load.sh --seed`) are stored as contributor `seed:<name>` and count as one person.
 
-Answers are published under CC0. `GET /api/export?lang=chr` returns one JSON line per word, with its readings, which is which (`a_is`, `b_is`), the count of each answer and the outcome. Contributor ids are never exported. A word with look-alike letters also has its `lookalikes`; a word marked `confusable_display` also has `confusable_display`, `held` and `excluded_counts` ([below](#words-whose-readings-look-alike)).
+Answers are published under CC0. `GET /api/export?lang=chr` returns one JSON line per word, with its readings, which is which (`a_is`, `b_is`), the count of each answer and the outcome. Contributor ids are never exported. Each word also has `font_counts`, the same answers counted by what the visitor's page reported about the bundled font ([below](#which-font-each-answer-was-given-with)). A word with look-alike letters also has its `lookalikes`; a word marked `confusable_display` also has `confusable_display`, `held`, `excluded_counts` and `excluded_font_counts` ([below](#words-whose-readings-look-alike)).
 
 ## API
 
@@ -43,7 +43,7 @@ Answers are published under CC0. `GET /api/export?lang=chr` returns one JSON lin
 | `GET /api/languages/<code>`               | anyone      | A language's configuration.                                                                                |
 | `POST /api/session`                       | anyone      | `{turnstile}` → `{session}`.                                                                               |
 | `GET /api/next?lang=<code>[&skip=id,...]` | session     | `{task, answered}`; `task` is null when none is left for this person.                                      |
-| `POST /api/answers`                       | session     | `{task, choice}`: `a`, `b`, `neither`, `unsure` or `notext`.                                               |
+| `POST /api/answers`                       | session     | `{task, choice[, display, font]}`: `a`, `b`, `neither`, `unsure` or `notext`; `font` is optional ([below](#which-font-each-answer-was-given-with)). |
 | `GET /api/stats?lang=<code>`              | anyone      | Tasks, settled, answers, people.                                                                           |
 | `GET /api/export?lang=<code>`             | anyone      | CC0 JSON lines (above).                                                                                    |
 | `PUT /admin/clips/<key>`                  | admin token | An image (JPEG, PNG or WebP).                                                                              |
@@ -100,6 +100,21 @@ After merging, in this order:
 3. Check `curl https://check.usnewsmap.com/build.txt` against `git rev-parse origin/main:edge/check`, and that `/fonts/NotoSansCherokee-Regular.woff2` loads.
 4. Put the task ids in a file and run `edge/check/confusable.sh --vault usnmtlskvprodffapzy --action mark --tasks ids.txt`, then `--action reopen` with the same file. Marking and reopening can be one after the other: the point of the pause is only to look at the export (`excluded_counts`) first.
 5. Rebuild and reload a language's tasks, as [below](#loading-a-language), to add `lookalikes` and their labels to tasks already loaded. Nothing needs this to be right: without `lookalikes` a task shows no label.
+
+## Which font each answer was given with
+
+Each answer stores one small value about the page that sent it: whether the font the page serves for the word's script had loaded when the person answered (#1939). The page asks the browser's CSS Font Loading API (`document.fonts.check`) about the family `style.css` declares, for the letters shown, and sends the result as `font` (`fontState` in `public/app.js`). The stored values (`FONT_STATES` in `worker.mjs`, a `CHECK` on the column):
+
+| Value        | Meaning                                                                                                                                  |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `loaded`     | The word has letters a bundled font covers (today Cherokee, `Noto Sans Cherokee`), and it had loaded.                                    |
+| `not_loaded` | The same, and it had not. The page keeps the answer buttons off in that state, so this value should be rare.                             |
+| `none`       | No bundled font applies to the letters shown (Hebrew letters, Cyrillic): the page draws them with whatever the visitor has.             |
+| `unknown`    | The browser has no font loading API or the check threw; the page is from before the value existed (a cached page sends none); the answer is older than the column; or the request sent anything else. |
+
+Nothing else about the visitor is stored: no font list, no user agent, no screen size. The page does not enumerate fonts. An answer changed later takes the new answer's value. Seed answers are `unknown`. The export gives each word `font_counts` (`loaded`, `not_loaded`, `none`, `unknown`), which add up to the total of `counts`; a word marked `confusable_display` also has `excluded_font_counts` for its set-aside answers, which keep their value in `answers_excluded`. Existing readers that use `counts` and `excluded_counts` are unaffected.
+
+`migrations/0003-answer-font.sql` adds the column to `answers` and `answers_excluded` with `DEFAULT 'unknown'`, so every stored answer reads `unknown`. It only adds: the Worker from before it keeps working on the migrated database, so run it before the merge. The new Worker fails without it. The Worker still accepts answers from a page that sends no `font`.
 
 ## Making tasks from two readings
 
@@ -219,7 +234,7 @@ CI deploys the site: after `ci` passes on main, `.github/workflows/check-site-de
 
 Every run, whether it deploys or not, also sends `languages/*.json` to the site with `sync-languages.mjs`, so a merged change to a name, intro or letter note goes live with it. The site's `examples` are kept and the build options are left out, as `from_tap_data.py` does; a language the site doesn't have yet is skipped, since it needs its tasks and clips through `load.sh`. The CI identity reads `usnm-prod-check-admin-token` for this through the grant in `infra/modules/edge-worker-ci.bicep`. To see what a sync would change without sending anything: `node edge/check/sync-languages.mjs --dry-run`.
 
-Changes to an existing database are in `migrations/`, run once in order: `0001-answers-notext.sql` must run before a page with "Not text" is deployed, and `0002-confusable-display.sql` before the Worker that marks `confusable_display` is. The D1 schema is applied with `wrangler d1 execute usnm-check --remote --file schema.sql`, or through the D1 API; every statement is idempotent.
+Changes to an existing database are in `migrations/`, run once in order: `0001-answers-notext.sql` must run before a page with "Not text" is deployed, `0002-confusable-display.sql` before the Worker that marks `confusable_display` is, and `0003-answer-font.sql` before the Worker that stores `font` is. The D1 schema is applied with `wrangler d1 execute usnm-check --remote --file schema.sql`, or through the D1 API; every statement is idempotent.
 
 ### Secrets
 

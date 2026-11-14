@@ -294,3 +294,26 @@ test("a Cherokee word is answerable only once the served font has loaded", async
   assert.match(appJs, /const live = !!task && !busy && !fontFailed;/);
   assert.match(appJs, /if \(!task \|\| busy \|\| fontFailed\) return;/);
 });
+
+test("each answer carries what the page knows about the bundled font", () => {
+  const start = appJs.indexOf("const CHEROKEE");
+  const end = appJs.indexOf("function render(");
+  assert.ok(start > 0 && end > start, "app.js no longer has the markers this test slices between");
+  const state = (document) => new Function("document", `${appJs.slice(start, end)}\nreturn fontState;`)(document);
+  const word = { a: "ᏒᎯ", b: "ᎡᎯ" };
+  const checks = [];
+  const fonts = (result) => ({ fonts: { check: (spec, text) => { checks.push([spec, text]); if (result instanceof Error) throw result; return result; } } });
+  assert.equal(state(fonts(true))(word), "loaded");
+  assert.deepEqual(checks, [['32px "Noto Sans Cherokee"', "ᏒᎯᎡᎯ"]], "asks about the family the page declares, for the letters shown");
+  assert.equal(state(fonts(false))(word), "not_loaded");
+  assert.equal(state(fonts(new Error("bad font list")))(word), "unknown");
+  assert.equal(state({})(word), "unknown", "a browser with no font loading API");
+  // no bundled font for the word's letters: the answer says so, and nothing is asked of the browser
+  checks.length = 0;
+  assert.equal(state(fonts(false))({ a: "אל", b: "בל" }), "none");
+  assert.equal(state(fonts(false))({ a: "пн", b: "нп" }), "none");
+  assert.deepEqual(checks, []);
+  // the page sends only that value, and the family it names is the one @font-face declares
+  assert.match(css, /font-family:\s*"Noto Sans Cherokee"/);
+  assert.doesNotMatch(appJs, /queryLocalFonts|navigator\.userAgent|document\.fonts\.forEach|document\.fonts\.values/);
+});
