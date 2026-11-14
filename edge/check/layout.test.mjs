@@ -167,3 +167,94 @@ test("highlights never overlap other letters (real layout, all languages)", (t) 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------- labels under the readings of a flagged pair (#1939) ----------
+
+function examplesSource() {
+  const start = appJs.indexOf("const segmenter");
+  const end = appJs.indexOf("function render(");
+  assert.ok(start > 0 && end > start, "app.js no longer has the markers this test slices between");
+  return appJs.slice(start, end);
+}
+
+test("lookalikeLabels names a flagged letter by the letter it sits on, and ignores tasks with no flags", () => {
+  const { lookalikeLabels } = new Function(`${scriptTextSource()}\nreturn { lookalikeLabels };`)();
+  const t = { a: "ᏒᎯ", b: "ᎡᎯ", lookalikes: [{ a: 0, a_label: "sv", b: 0, b_label: "e" }] };
+  assert.deepEqual([...lookalikeLabels(t, "a")], [["Ꮢ", "sv"]]);
+  assert.deepEqual([...lookalikeLabels(t, "b")], [["Ꭱ", "e"]]);
+  assert.equal(lookalikeLabels({ a: "ᏒᎯ", b: "ᎡᎯ" }, "a").size, 0);
+  assert.equal(lookalikeLabels({ a: "ᏒᎯ", lookalikes: [{ a: 7, a_label: "x" }] }, "a").size, 0, "an index past the word is ignored");
+  // a letter with marks is one letter, as in a_diff
+  assert.deepEqual([...lookalikeLabels({ a: "אַל", lookalikes: [{ a: 0, a_label: "alef patah" }] }, "a")], [["אַ", "alef patah"]]);
+});
+
+test("labels render under each reading, in left-to-right and right-to-left languages, without overlap or overflow", (t) => {
+  const chrome = findChrome();
+  if (!chrome) {
+    if (process.env.CI) assert.fail("CI is set but no Chrome was found");
+    t.skip("no Chrome or Chromium found; set CHROME=/path/to/chrome");
+    return;
+  }
+  const flagged = (a, b, a_label, b_label) => ({ a, b, a_diff: [0], b_diff: [0], lookalikes: [{ a: 0, a_label, b: 0, b_label }] });
+  const cases = [
+    { code: "chr", cfg: { dir: null, notes: { "Ꮢ": "a note" } }, task: flagged("ᏒᎯ", "ᎡᎯ", "sv", "e"), expect: { a: "sv", b: "e" } },
+    { code: "yi", cfg: { dir: "rtl", notes: {} }, task: flagged("אַל", "אָל", "hebrew letter alef + hebrew point patah", "hebrew letter alef + hebrew point qamats"),
+      expect: { a: "hebrew letter alef + hebrew point patah", b: "hebrew letter alef + hebrew point qamats" } },
+    { code: "sr", cfg: { dir: null, notes: {} }, task: flagged("пс", "нс", "cyrillic small letter pe", "cyrillic small letter en"), expect: { a: "cyrillic small letter pe", b: "cyrillic small letter en" } },
+    { code: "chr", cfg: { dir: null, notes: {} }, task: { a: "ᏒᎯ", b: "ᎡᎯ", a_diff: [0], b_diff: [0] }, expect: { a: null, b: null } },
+  ];
+  const dir = mkdtempSync(join(tmpdir(), "check-labels-"));
+  try {
+    const page = join(dir, "harness.html");
+    writeFileSync(page, `<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="file://${join(publicDir, "style.css")}">
+<body><div id="stage" style="width:300px"></div><pre id="out"></pre>
+<script>
+let lang = null, cfg = null;
+${examplesSource()}
+const cases = ${JSON.stringify(cases)};
+const stage = document.getElementById("stage");
+const found = [], seen = [];
+document.fonts.ready.then(() => {
+  for (const c of cases) {
+    lang = c.code; cfg = c.cfg;
+    for (const side of ["a", "b"]) {
+      const box = examples(c.task[side], c.task[side + "_diff"], lookalikeLabels(c.task, side));
+      stage.replaceChildren(box);
+      const names = [...box.querySelectorAll(".name")];
+      seen.push({ code: c.code, side, names: names.map((n) => n.textContent) });
+      const want = c.expect[side];
+      if (want === null ? names.length !== 0 : names.length !== 1 || names[0].textContent !== want) found.push({ code: c.code, side, problem: "label", names: names.map((n) => n.textContent) });
+      for (const n of names) {
+        if (n.dir !== "ltr") found.push({ code: c.code, side, problem: "label is not left to right" });
+        const r = n.getBoundingClientRect(), l = n.parentElement.querySelector(".letter").getBoundingClientRect();
+        if (Math.min(r.right, l.right) - Math.max(r.left, l.left) > 0.5 && Math.min(r.bottom, l.bottom) - Math.max(r.top, l.top) > 0.5) found.push({ code: c.code, side, problem: "label overlaps its letter" });
+        const s = stage.getBoundingClientRect();
+        if (r.left < s.left - 0.5 || r.right > s.right + 0.5) found.push({ code: c.code, side, problem: "label outside the column" });
+      }
+      if (stage.scrollWidth > stage.clientWidth) found.push({ code: c.code, side, problem: "overflow" });
+    }
+  }
+  document.getElementById("out").textContent = JSON.stringify({ found, seen });
+});
+</script>`);
+    const dom = execFileSync(chrome, ["--headless=new", "--no-sandbox", "--disable-gpu", "--allow-file-access-from-files",
+      "--virtual-time-budget=20000", "--dump-dom", `file://${page}`], { encoding: "utf8", timeout: 120000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+    const m = dom.match(/<pre id="out">([\s\S]*?)<\/pre>/);
+    assert.ok(m && m[1].trim(), "the harness page produced no result");
+    const result = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"));
+    assert.equal(result.seen.length, 8);
+    assert.deepEqual(result.found, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the page serves a Cherokee font first in the stack, for the Cherokee blocks only", () => {
+  const face = css.match(/@font-face\s*\{([^}]*)\}/);
+  assert.ok(face, "style.css has an @font-face");
+  assert.match(face[1], /font-family:\s*"Noto Sans Cherokee"/);
+  assert.match(face[1], /url\("fonts\/NotoSansCherokee-Regular\.woff2"\)/);
+  assert.match(face[1], /unicode-range:\s*U\+13A0-13FF,\s*U\+AB70-ABBF/);
+  assert.match(css, /--font-script:\s*"Noto Sans Cherokee",/);
+  assert.ok(existsSync(join(publicDir, "fonts", "NotoSansCherokee-Regular.woff2")));
+});

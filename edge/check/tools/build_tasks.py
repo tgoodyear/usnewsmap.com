@@ -16,12 +16,18 @@ with no letter in common (specks, picture texture).
 
 A line's own `a_is` and `b_is` replace --a-is and --b-is, for sets whose readings come from different sources.
 
+Look-alike letters (lookalike.py): for each pair of letters that differ at the same position, both are drawn in the font
+the page asks for first and the pair is recorded in the task's `lookalikes` when the pictures nearly coincide. Cherokee
+uses the font the site serves; for a script the site serves no font for, the installed reference font is used, or one given
+with --font SCRIPT=PATH, and pairs with no font or glyph are counted, not guessed. The page labels the letters of a flagged pair.
+
 Writes OUT_DIR/clips/<lang>/<set>/{lines,words}/..., OUT_DIR/tasks.jsonl and OUT_DIR/language.json (the
 --language-config without its build-only fields; example letters only from --examples). Needs Pillow.
 
   python3 build_tasks.py --lines lines.jsonl --images DIR --lang yi --set loc-yidj2-v1 \
     --a-is loc --b-is yidj2 --language-config languages/yi.json --out-dir OUT \
-    [--equivalent װ=וו ...] [--min-similarity 0.34] [--skip-punctuation-only] [--examples examples.json]
+    [--equivalent װ=וו ...] [--min-similarity 0.34] [--skip-punctuation-only] [--examples examples.json] \
+    [--font Hebrew=font.ttf ...] [--lookalike-threshold 0.82]
 """
 import argparse
 import difflib
@@ -178,11 +184,20 @@ def main() -> None:
     ap.add_argument("--examples", help="JSON {letter: [clip key, ...]} for language.json's `examples`: pictures already on the "
                     "site (for example the ones /api/languages/chr serves), so a new set shows the same letter pictures")
     ap.add_argument("--quality", type=int, default=85, help="JPEG quality of the clips")
+    ap.add_argument("--font", action="append", help="SCRIPT=PATH: reference font for the look-alike check of a script "
+                    "(default: the site's Cherokee font, installed fonts for other scripts); repeatable")
+    ap.add_argument("--lookalike-threshold", type=float, default=None, help="flag letter pairs whose pictures overlap at least this "
+                    "much (0-1; default: lookalike.THRESHOLD)")
     ap.add_argument("--skip-punctuation-only", action="store_true",
                     help="leave out pairs whose letters and digits are the same (they differ only in punctuation)")
     a = ap.parse_args()
 
-    from PIL import Image  # only the clip cutting needs Pillow
+    from PIL import Image  # only the clip cutting and the look-alike check need Pillow
+    import lookalike
+
+    fonts = lookalike.Fonts(lookalike.parse_fonts(a.font))
+    threshold = lookalike.THRESHOLD if a.lookalike_threshold is None else a.lookalike_threshold
+    flagged = 0
 
     cfg = json.load(open(a.language_config, encoding="utf-8"))
     equivalents = parse_equivalents([f"{k}={v}" for k, v in cfg.get("equivalents", {}).items()] + (a.equivalent or []))
@@ -229,6 +244,8 @@ def main() -> None:
                 word_key = f"{prefix}/words/{ln['id']}_w{k}.jpg"
                 img.crop(crop_box(wa["box"], max(4, h // 4), img.size)).save(os.path.join(root, word_key), quality=a.quality)
                 ad, bd = letter_diff(ta, wb, equivalents)
+                alike = lookalike.flags(ta, wb, equivalents, fonts, threshold)
+                flagged += bool(alike)
                 out.write(json.dumps({
                     "id": f"{prefix}/{word_id}", "lang": a.lang, "set": a.set,
                     "page": ln.get("page"), "source": ln.get("source"), "label": ln.get("label"),
@@ -236,6 +253,7 @@ def main() -> None:
                     "box": [round(x / W, 4), round(y / H, 4), round(w / W, 4), round(h / H, 4)],
                     "a": ta, "b": wb,
                     "a_diff": ad, "b_diff": bd, "a_is": ln.get("a_is", a.a_is), "b_is": ln.get("b_is", a.b_is),
+                    **({"lookalikes": alike} if alike else {}),
                 }, ensure_ascii=False) + "\n")
                 tasks += 1
 
@@ -249,6 +267,10 @@ def main() -> None:
     with open(os.path.join(a.out_dir, "language.json"), "w", encoding="utf-8") as f:
         json.dump(language, f, ensure_ascii=False, indent=1)
     print(f"{lines} lines, {tasks} tasks, {unpaired} words of reading a left out (no partner alike enough, or no letters)")
+    print(f"{flagged} tasks with look-alike letters (overlap at least {threshold}); reference fonts: "
+          + ", ".join(f"{s or 'other'}={os.path.basename(p) if p else 'none found'}" for s, p in sorted(fonts.paths.items())))
+    if fonts.unmeasured:
+        print("letter pairs not checked (no font or no glyph): " + ", ".join(f"{s or 'other'} {n}" for s, n in sorted(fonts.unmeasured.items())))
 
 
 if __name__ == "__main__":

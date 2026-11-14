@@ -125,7 +125,15 @@ function scriptText(text, diff) {
   return span;
 }
 
-function examples(text, diff) {
+// The name shown under a reading's letter for pairs the task build flagged as look-alikes in the page's font (lookalikes:
+// [{a, a_label, b, b_label}], letter indexes as a_diff and b_diff): the syllable for Cherokee, else the Unicode name.
+function lookalikeLabels(t, side) {
+  const labels = new Map(), ls = letters(t[side]); // keyed by the letter, so a letter that repeats shows its name once
+  for (const p of t.lookalikes || []) if (typeof p[side + "_label"] === "string" && p[side] < ls.length) labels.set(ls[p[side]], p[side + "_label"]);
+  return labels;
+}
+
+function examples(text, diff, labels = new Map()) {
   const box = document.createElement("div"); box.className = "examples";
   if (cfg.dir) box.dir = cfg.dir;
   const seen = new Set();
@@ -133,6 +141,9 @@ function examples(text, diff) {
     if (!diff.includes(i) || seen.has(ch)) return; seen.add(ch);
     const ex = document.createElement("span"); ex.className = "ex";
     const l = document.createElement("span"); l.className = "letter"; l.lang = lang; l.textContent = ch; ex.appendChild(l);
+    if (labels.has(ch)) {
+      const n = document.createElement("span"); n.className = "name"; n.dir = "ltr"; n.textContent = labels.get(ch); ex.appendChild(n);
+    }
     const note = (cfg.notes || {})[ch];
     if (note) { const n = document.createElement("span"); n.className = "note"; n.dir = "auto"; n.textContent = note; ex.appendChild(n); }
     for (const key of ((cfg.examples || {})[ch] || []).slice(0, 3)) {
@@ -182,7 +193,7 @@ function render(prev) {
     const b = document.createElement("button"); b.type = "button"; b.className = "opt"; b.id = "opt" + (k + 1); b.disabled = busy;
     if (prev === side) b.classList.add("chosen");
     const key = document.createElement("span"); key.className = "key"; key.textContent = `Reading ${k + 1}  (${k + 1})`;
-    b.append(key, scriptText(t[side], t[side + "_diff"]), examples(t[side], t[side + "_diff"]));
+    b.append(key, scriptText(t[side], t[side + "_diff"]), examples(t[side], t[side + "_diff"], lookalikeLabels(t, side)));
     b.addEventListener("click", () => choose(side));
     opts.appendChild(b);
   });
