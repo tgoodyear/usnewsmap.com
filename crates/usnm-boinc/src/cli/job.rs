@@ -144,6 +144,13 @@ pub struct RetryArgs {
     /// time (#1159). Default: the failed job's. A resumed retry must give the same value.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=i64::from(crate::claim::MAX_TIMEOUT_SECS)))]
     timeout_secs: Option<u32>,
+    /// A page of the native build (`usnm_ocr_native`, #1919): the child keeps the parent's build
+    /// (`--image` is its `engine.image`) and `--app-version-num` is the native version that
+    /// packages it. `--timeout-secs` is longer than the parent's for a CPU-limit failure (exit
+    /// status 197); any other failure is retried once at the same deadline, so none. Submit it
+    /// with `submit --app usnm_ocr_native`.
+    #[arg(long)]
+    native: bool,
     #[arg(long)]
     handoff_url: String,
     #[arg(long)]
@@ -182,6 +189,7 @@ pub async fn retry(args: RetryArgs) -> anyhow::Result<()> {
             image: &args.image,
             reviewed_reason: &args.reviewed_reason,
             timeout_secs: args.timeout_secs,
+            native: args.native,
             handoff: handoff.as_ref(),
         },
         &State::new(docs),
@@ -294,11 +302,8 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
     } = args;
     if app == SubmitApp::UsnmOcrNative {
         anyhow::ensure!(
-            app_version_num.is_none()
-                && curated_url.is_none()
-                && state_file.is_none()
-                && cosmos.is_none(),
-            "a usnm_ocr_native unit takes no --app-version-num or retry stores"
+            app_version_num.is_none(),
+            "a usnm_ocr_native unit takes no --app-version-num: it is pinned to its build's version"
         );
     }
     anyhow::ensure!(
@@ -338,17 +343,41 @@ pub async fn submit(args: SubmitArgs) -> anyhow::Result<()> {
             curated: curated.as_ref(),
         });
     if let Some(trust) = &trust {
-        crate::submit::submit_native(
-            &root,
-            &project,
-            &job,
-            download.as_ref(),
-            target_host,
-            trust,
-            crate::trust::BuildTrust::embedded()?,
-            &native_versions,
-        )
-        .await?;
+        // A retry's child (#1919) revalidates its reservation under the lease, so it takes the
+        // native stores; a first attempt ignores them (the bridge passes both).
+        let is_retry = crate::load(&root, &job)?.retry.is_some();
+        match (&sources, is_retry) {
+            (Some(native), true) => {
+                crate::submit::submit_native_retry(
+                    &root,
+                    &project,
+                    &job,
+                    download.as_ref(),
+                    native,
+                    target_host,
+                    trust,
+                    crate::trust::BuildTrust::embedded()?,
+                    &native_versions,
+                )
+                .await?
+            }
+            (_, false) => {
+                crate::submit::submit_native(
+                    &root,
+                    &project,
+                    &job,
+                    download.as_ref(),
+                    target_host,
+                    trust,
+                    crate::trust::BuildTrust::embedded()?,
+                    &native_versions,
+                )
+                .await?
+            }
+            (None, true) => anyhow::bail!(
+                "a retry's child needs --curated-url and exactly one of --state-file/--cosmos"
+            ),
+        }
         return Ok(());
     }
     let pin = match crate::load(&root, &job)?.job.lines {

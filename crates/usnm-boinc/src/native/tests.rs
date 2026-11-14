@@ -211,9 +211,50 @@ fn sleeping(secs: u32) -> String {
 fn a_finished_unit_ends_the_task_and_a_failed_one_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
     let control = BoincControl::noop();
-    let done = supervise(dir.path(), &|| shell("exit 0"), &control, false).unwrap();
+    let done = supervise(dir.path(), &|| shell("exit 0"), &control, false, 1800).unwrap();
     assert_eq!(done, Ended::Finished);
-    assert!(supervise(dir.path(), &|| shell("exit 3"), &control, false).is_err());
+    assert!(supervise(dir.path(), &|| shell("exit 3"), &control, false, 1800).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_unit_that_exits_at_the_cpu_limit_status_is_reported_as_too_slow() {
+    let dir = tempfile::tempdir().unwrap();
+    let control = BoincControl::noop();
+    let error = supervise(
+        dir.path(),
+        &|| shell(&format!("exit {CPU_LIMIT_EXIT}")),
+        &control,
+        false,
+        3600,
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), "too slow: SIGXCPU at timeout_secs 3600");
+    assert_eq!(exit_code(&error), CPU_LIMIT_EXIT);
+    let other = supervise(dir.path(), &|| shell("exit 3"), &control, false, 3600).unwrap_err();
+    assert_eq!(exit_code(&other), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_engine_killed_by_sigxcpu_becomes_a_cpu_limit_and_other_failures_do_not() {
+    use std::os::unix::process::ExitStatusExt as _;
+    let killed = |signal: i32| {
+        anyhow::Error::new(usnm_ocr_worker::engine::Exited {
+            status: std::process::ExitStatus::from_raw(signal),
+            stderr: String::new(),
+        })
+        .context("read failed")
+    };
+    let error = classify_unit_error(killed(24), Some(1800));
+    assert_eq!(
+        error.root_cause().to_string(),
+        "too slow: SIGXCPU at timeout_secs 1800"
+    );
+    assert_eq!(exit_code(&error), CPU_LIMIT_EXIT);
+    // SIGSEGV is a crash, not a slow page, and without a CPU limit nothing is too slow.
+    assert_eq!(exit_code(&classify_unit_error(killed(11), Some(1800))), 1);
+    assert_eq!(exit_code(&classify_unit_error(killed(24), None)), 1);
 }
 
 /// A slot with the client's channel, and a task control watching it.
@@ -270,7 +311,7 @@ fn a_quit_stops_the_whole_group_without_finishing() {
     // The grandchild stands for Tesseract: the stop has to reach it too.
     let pid = dir.path().join("grandchild");
     let script = format!("sleep 60 & echo $! > {}; wait", pid.display());
-    let ended = supervise(dir.path(), &|| shell(&script), &control, false).unwrap();
+    let ended = supervise(dir.path(), &|| shell(&script), &control, false, 1800).unwrap();
     client.join().unwrap();
     assert_eq!(ended, Ended::Stopped("quit"));
     let grandchild = std::fs::read_to_string(pid).unwrap();
@@ -302,7 +343,7 @@ fn a_quit_stops_the_whole_job_without_finishing() {
             unit.store(child.id(), Ordering::SeqCst);
             Ok(child)
         };
-        supervise(dir.path(), &start, &control, false).unwrap()
+        supervise(dir.path(), &start, &control, false, 1800).unwrap()
     });
     assert_eq!(ended, Ended::Stopped("quit"));
     let seen = seen.into_inner().unwrap();
@@ -330,7 +371,7 @@ fn a_suspended_gold_unit_starts_again_on_resume() {
         let first = starts.fetch_add(1, Ordering::SeqCst) == 0;
         shell(&if first { sleeping(60) } else { "exit 0".into() })
     };
-    let ended = supervise(dir.path(), &start, &control, true).unwrap();
+    let ended = supervise(dir.path(), &start, &control, true, 1800).unwrap();
     client.join().unwrap();
     assert_eq!(ended, Ended::Finished);
     assert_eq!(starts.load(Ordering::SeqCst), 2);
@@ -358,7 +399,7 @@ fn a_suspended_page_stays_stopped_and_carries_on() {
         shell(&script)
     };
     assert_eq!(
-        supervise(dir.path(), &start, &control, false).unwrap(),
+        supervise(dir.path(), &start, &control, false, 1800).unwrap(),
         Ended::Finished
     );
     client.join().unwrap();

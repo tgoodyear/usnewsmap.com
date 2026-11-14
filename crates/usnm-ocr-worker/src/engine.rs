@@ -147,6 +147,30 @@ impl Exited {
     }
 }
 
+impl Exited {
+    /// Killed by `SIGXCPU`: the native worker's CPU rlimit on one read (#1919). The signal
+    /// itself from a host process, or status 152 (128 + 24) as a container reports it.
+    pub fn is_cpu_limit(&self) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            if self.status.signal() == Some(24) {
+                return true;
+            }
+        }
+        self.status.code() == Some(152)
+    }
+}
+
+/// Whether `e` is Tesseract killed at its CPU limit ([`Exited::is_cpu_limit`]).
+pub fn exited_cpu_limit(e: &anyhow::Error) -> bool {
+    e.chain().any(|cause| {
+        cause
+            .downcast_ref::<Exited>()
+            .is_some_and(Exited::is_cpu_limit)
+    })
+}
+
 /// Whether `e` is Tesseract exiting with status 136 ([`Exited::is_status_136`]).
 pub fn exited_136(e: &anyhow::Error) -> bool {
     e.downcast_ref::<Exited>()

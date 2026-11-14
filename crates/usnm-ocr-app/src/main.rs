@@ -121,7 +121,9 @@ fn main() -> ExitCode {
         Err(error) => {
             // `{:?}` names every cause, and shows the backtrace when RUST_BACKTRACE asks for it.
             eprintln!("{error:?}");
-            ExitCode::FAILURE
+            // A page too slow for its CPU limit exits with its own status, for BOINC's
+            // `result.exit_status` (#1919).
+            ExitCode::from(native::exit_code(&error))
         }
     }
 }

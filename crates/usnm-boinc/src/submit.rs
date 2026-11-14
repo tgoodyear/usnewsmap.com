@@ -207,6 +207,66 @@ pub async fn submit_native(
     .await
 }
 
+/// [`submit_native`] for a retry's child (#1919): a page whose native unit failed for good, read
+/// again with a longer page deadline on the same build. `native` are the stores that revalidate the
+/// retry's reservation under the lease, as for a container retry. The child is targeted at
+/// `target_host`, which `trust` must admit for the same exact scope and native digest as for any
+/// native unit, and is pinned to the native version that packages that build, which must be the
+/// `--app-version-num` the retry was prepared with. Nothing about its validation changes: one
+/// result, checked and spot-checked like any other native result.
+#[allow(clippy::too_many_arguments)]
+pub async fn submit_native_retry(
+    root: &Path,
+    project: &Path,
+    id: &str,
+    download: Option<&Download>,
+    native: &RetryNative<'_>,
+    target_host: Option<u64>,
+    trust: &crate::trust::Trust,
+    builds: &crate::trust::BuildTrust,
+    registered: &[u32],
+) -> anyhow::Result<()> {
+    submit_unit(
+        root,
+        project,
+        id,
+        download,
+        Some(native),
+        None,
+        target_host,
+        Build::Native {
+            host: target_host,
+            trust,
+            builds,
+            registered,
+        },
+    )
+    .await
+}
+
+/// The same build: a native retry's pinned version is the one that packages the job's own.
+fn check_native_retry_pin(retry_version: u32, pin: Option<u32>) -> anyhow::Result<()> {
+    ensure!(
+        Some(retry_version) == pin,
+        "a native retry is pinned to the version that packages its build"
+    );
+    Ok(())
+}
+
+/// The `max_error_results` of a unit. A native unit is assigned to one host, so BOINC's
+/// transitioner never makes a replacement result for it (`TRANSITION_NO_NEW_RESULTS`); with the
+/// stock 3, its first failed result left the workunit with no error mask and no result for
+/// ever, and the page was lost (#1919). With 0 the first error makes the workunit fail for
+/// good (error mask 0x2) and the assimilator writes the terminal marker `collect` reads, so the
+/// page is dead-lettered and retried by hand like any other failed page.
+const fn max_error_results(native_unit: bool) -> &'static str {
+    if native_unit {
+        "0"
+    } else {
+        "3"
+    }
+}
+
 /// The `version_num` of the newest of the `registered` [`NATIVE_APP`] versions in `project` that
 /// packages the build `image` names: one whose directory (`apps/usnm_ocr_native/<major.minor>/<platform>/`) holds
 /// its manifest under the physical name that carries the digest (`usnm_native_build_<sha256>.json`,
@@ -295,8 +355,8 @@ async fn submit_unit(
             };
             ensure!(host > 0, "--target-host must be positive");
             ensure!(
-                record.job.lines.is_none() && !is_retry && record.bundle.is_none(),
-                "line jobs, retries and bundles are container work, never {NATIVE_APP} units"
+                record.job.lines.is_none() && record.bundle.is_none(),
+                "line jobs and bundles are container work, never {NATIVE_APP} units"
             );
             if let Some(reason) = trust.refuse_native_job(&record.job, Some(host), builds) {
                 anyhow::bail!("trust refuses host {host} for this {NATIVE_APP} job: {reason}");
@@ -315,6 +375,9 @@ async fn submit_unit(
         )?),
         Build::Container => pin,
     };
+    if let (Build::Native { .. }, Some(retry)) = (&build, &record.retry) {
+        check_native_retry_pin(retry.app_version_num, pin)?;
+    }
     ensure!(
         record.job.lines.is_none() || is_retry || pin.is_some(),
         "a line job needs --app-version-num, the usnm_ocr version whose worker reads line jobs"
@@ -349,7 +412,9 @@ async fn submit_unit(
         "staged scan changed"
     );
     let submission = |lease: Option<usnm_ocr_local::boinc::SubmissionLease>| async move {
-        if let Some(retry) = &record.retry {
+        // A native retry's signed build is the one `native_version` found in the project; the
+        // container's signed Dockerfile check doesn't apply to it.
+        if let Some(retry) = record.retry.as_ref().filter(|_| !native_unit) {
             let output = tokio::time::timeout(
             std::time::Duration::from_secs(90),
             Command::new("python3")
@@ -419,7 +484,7 @@ async fn submit_unit(
                 "--target_nresults",
                 "1",
                 "--max_error_results",
-                "3",
+                max_error_results(native_unit),
                 "--max_total_results",
                 "5",
                 "--max_success_results",
@@ -747,7 +812,61 @@ mod native_tests {
         assert!(calls[0].contains(&format!("--wu_name usnm_{}", ids[0])));
         assert!(calls[0].contains("--target_host 13"));
         assert!(calls[0].contains("--app_version_num 100 "), "{}", calls[0]);
+        // #1919: the first failed result makes the unit fail for good, since BOINC never makes
+        // another result for an assigned one.
+        assert!(calls[0].contains("--max_error_results 0 "), "{}", calls[0]);
         assert_eq!(stage(&s, &ids[0]), Stage::Submitted);
+    }
+
+    #[test]
+    fn only_a_native_unit_fails_for_good_on_its_first_error() {
+        assert_eq!(max_error_results(true), "0");
+        assert_eq!(max_error_results(false), "3");
+    }
+
+    #[test]
+    fn a_native_retry_must_be_pinned_to_the_version_that_packages_its_build() {
+        assert!(check_native_retry_pin(100, Some(100)).is_ok());
+        for pin in [Some(101), None] {
+            let error = check_native_retry_pin(100, pin).unwrap_err();
+            assert!(
+                error.to_string().contains("pinned to the version"),
+                "{error:#}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_native_unit_that_is_not_a_retry_takes_no_retry_route() {
+        let (s, ids) = Server::new(&[1]);
+        std::fs::write(s.project.join("config.xml"), ASSIGNMENT).unwrap();
+        publish(&s, "1.0", &job(1).engine.image);
+        let state = usnm_state::state::State::new(std::sync::Arc::new(
+            usnm_state::docs::MemoryDocs::default(),
+        ));
+        let curated = usnm_store::open(s.root.join("curated").to_str().unwrap()).unwrap();
+        let stores = RetryNative {
+            state: &state,
+            curated: curated.as_ref(),
+        };
+        // An untrusted host gets nothing, retry or not: the trust check is the same one.
+        let trust = trust(&s.root, &[13]);
+        let error = submit_native_retry(
+            &s.root,
+            &s.project,
+            &ids[0],
+            None,
+            &stores,
+            Some(14),
+            &trust,
+            &builds(),
+            &[100],
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("trust refuses"), "{error:#}");
+        assert!(s.calls().is_empty());
+        assert_eq!(stage(&s, &ids[0]), Stage::Reserved);
     }
 
     #[tokio::test]
