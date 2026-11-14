@@ -19,6 +19,25 @@
         "run": 43155081356
       }
     },
+    "sha256:5cb972211a87e56ec92f515f5dc642d33f416e6cf376ecc8c47b0bb1aef71bbc": {
+      "challenges": [
+        {
+          "char_edits": 5929,
+          "crops": 30,
+          "evidence": "Run on the dev container (Intel i7-7700K, AVX2) on 14 Nov 2026; every crop's edit counts equal those of 4d6e2a3b and the container worker 247c (issue 1903)",
+          "manifest_sha256": "d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f",
+          "max_cer": 0.08734328574534386,
+          "ref_chars": 82794
+        }
+      ],
+      "engine_base": "sha256:29780c2b6941c1c1a432a26c7f6f091ffa872a44022f740a08c93b1d130bd7e4",
+      "platform": "x86_64-pc-linux-gnu",
+      "source": {
+        "artifact_sha256": "162b85ac4664ab4eebb60c92788798cb85cb4e1ea7b8a1416f7809748227520f",
+        "commit": "416021e8adb9b5e7044519e38926015f480f29bc",
+        "run": 43626097094
+      }
+    },
     "sha256:78065a0a43d8f8bf67c00c014ae2b0540d51d0038e4050dbbd509e14b63fa836": {
       "challenges": [
         {
@@ -38,6 +57,25 @@
         "run": 43155081356
       }
     },
+    "sha256:bb9bfecc433ad85ca3ac3f83d4b08fc6b8ad73b64938ae58075083cab5c013b3": {
+      "challenges": [
+        {
+          "char_edits": 5951,
+          "crops": 30,
+          "evidence": "Run on VM 206, Windows 11 on an Intel i7-7700K, on 14 Nov 2026; the same total edits as the Windows build fd620775 (issue 1903)",
+          "manifest_sha256": "d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f",
+          "max_cer": 0.08734328574534386,
+          "ref_chars": 82794
+        }
+      ],
+      "engine_base": "sha256:0c5a32491a14bbed426aec9929ed469e07a704d8d7b63536fa423ae1679cfe36",
+      "platform": "windows_x86_64",
+      "source": {
+        "artifact_sha256": "9f75e68e9286ffea3de6d79fc541d3839fbee6b68d9b96d909687af360aac4bf",
+        "commit": "416021e8adb9b5e7044519e38926015f480f29bc",
+        "run": 43626097094
+      }
+    },
     "sha256:c353f7bff920d6d1ff2daff5bd3e2a8a27c589121fcdde0b7e2168bf3c174994": {
       "challenges": [
         {
@@ -55,6 +93,25 @@
         "artifact_sha256": "4435a4cec5351a5608a8fb1236cea0439e0acc1ac20cdb7a74b940af1d7dd833",
         "commit": "f2f4a9d03f9d0c485100b7da9a4fed4e9d2f8a6d",
         "run": 42290314510
+      }
+    },
+    "sha256:c4e80bddf60dc8ccda3681c2c441ca811181bc249be35de953b61bdfd8b86300": {
+      "challenges": [
+        {
+          "char_edits": 5957,
+          "crops": 30,
+          "evidence": "Run on an Apple M1, one thread, on 14 Nov 2026; the same total edits as the arm64 build 78065a0a (issue 1903)",
+          "manifest_sha256": "d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f",
+          "max_cer": 0.08734328574534386,
+          "ref_chars": 82794
+        }
+      ],
+      "engine_base": "sha256:84086d8fd17d0c258adbe7d10b9dc497880a6d7f2bdfb663dd91b95ed2e979d3",
+      "platform": "arm64-apple-darwin",
+      "source": {
+        "artifact_sha256": "0fa7fac662156beabc01eebd7271392417092c0623f5acdaa5ccc239f7a6523f",
+        "commit": "416021e8adb9b5e7044519e38926015f480f29bc",
+        "run": 43626097094
       }
     },
     "sha256:fd6207755c4cdec5506d44c360ac9c2a2bd5ab9d246c3cb20a2cb83fba1bf37d": {

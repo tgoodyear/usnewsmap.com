@@ -172,6 +172,16 @@ Every key is optional, with the defaults shown, and the setting is outside the a
 
 **Windows.** The same path: CI builds it, a project machine runs the challenge, the run is recorded, then the build is bound, released and gets gold for named hosts. The build `fd620775…` from run 43336026475 on main `27a634e7` is recorded with its run on a Windows 11 VM: 5951 edits in 82794 characters, CER 0.0719, under 0.0873 ([#1779](https://github.com/tgoodyear/usnewsmap.com/issues/1779#issuecomment-6840383201)). 2 of 30 crops have Linux's edit counts. It is bound in `gold-engine-platforms.json` on `windows_x86_64` with `engine.base` `sha256:27592415…`, the base its run recorded. It isn't released yet, and no host is trusted for it. Nothing in the code names a platform except the list of four in `builds.rs` and `check-build-trust.py`, which already has `windows_x86_64`.
 
+**The patched builds (#1903, with #1928).** `boinc-ocr-native.yml` run 43626097094 on main `416021e8` built the patched Tesseract with the heartbeat fix. Each build is recorded with its own challenge run, and each is bound on its platform. No host carries trust over from the earlier digests.
+
+| Platform              | `engine.image` | `engine.base` | Challenge edits (CER)                    | Machine                       |
+| --------------------- | -------------- | ------------- | ---------------------------------------- | ----------------------------- |
+| `x86_64-pc-linux-gnu` | `5cb97221…`    | `29780c2b…`   | 5929 (0.0716), every crop as `4d6e2a3b…` | dev container, Intel i7-7700K |
+| `arm64-apple-darwin`  | `c4e80bdd…`    | `84086d8f…`   | 5957 (0.0719)                            | Apple M1                      |
+| `windows_x86_64`      | `bb9bfecc…`    | `0c5a3249…`   | 5951 (0.0719)                            | VM 206, Intel i7-7700K        |
+
+The Linux `engine.base` equals the one #1903's CI printed, so the Linux engine builds reproducibly. The macOS and Windows engines don't: their stock builds in the same run also hash differently from #1903's, so those digests are new on every CI run. The `x86_64-apple-darwin` build (`c81b7092…`, base `f02c8bd3…`) has no challenge run and isn't bound. No project machine is an Intel Mac, and the Japanese headline JPEG (`ocr/ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg`) failed on the Intel CI runner with both the stock and the patched build. That failure has to be explained on an Intel Mac before this build is released.
+
 ## Parity
 
 Measured on 1 November 2026. The per-page results are in [2026-11-01-native-ocr-parity.json](../../notes/2026-11-01-native-ocr-parity.json). Every page went through `usnm_ocr` and through `usnm-boinc work` from the unpacked `247c…` worker image, started at the same moment on one 8-core host under other load (load average around 25). The container arm ran under chroot with the image's environment, not under a container runtime. One German page was also read under podman with the `job.toml` limits, and its text and ALTO had the same hashes.
