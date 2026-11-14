@@ -607,6 +607,40 @@ enum Command {
         #[arg(long)]
         unchecked_rights: bool,
     },
+    /// A person's harvester for a IIIF collection (#1623): `--action plan` lists the issues
+    /// and images, `--action fetch` fetches them, one request every 3 s at the fastest. See
+    /// the crate README. Agents must not run it.
+    IiifHarvest {
+        #[arg(long, value_parser = ["plan", "fetch"])]
+        action: String,
+        /// The collection's top document (plan).
+        #[arg(long)]
+        collection: Option<String>,
+        /// Where documents, images and sidecars go.
+        #[arg(long)]
+        out: PathBuf,
+        /// The plan fetch reads (default `<out>/plan.json`) or plan writes.
+        #[arg(long)]
+        plan: Option<PathBuf>,
+        /// Seconds between requests; 3 is the least, and a flag can only raise it.
+        #[arg(long, default_value_t = 3)]
+        min_gap_secs: u64,
+        /// A host besides the collection's that its documents may send the run to (repeat).
+        #[arg(long)]
+        allow_host: Vec<String>,
+        /// When to read a service's info.json (plan).
+        #[arg(long, default_value = "auto", value_parser = ["auto", "always", "never"])]
+        info_json: String,
+        /// Ask for images no bigger than this many pixels on the longer side.
+        #[arg(long)]
+        max_dimension: Option<u64>,
+        /// Plan: at most this many issues. Fetch: at most this many images this run.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// The most one image may be, in MB.
+        #[arg(long, default_value_t = 256)]
+        max_image_mb: u64,
+    },
     /// LoC's own text of pages a bulk OCR archive lacks, a page at a time from loc.gov's item
     /// API, inside the host's global LoC budget (#1419).
     LocText {
@@ -1654,6 +1688,50 @@ async fn command(cli: Cli) -> anyhow::Result<()> {
             )
             .await?;
             println!("{}", serde_json::to_string(&status)?);
+            Ok(())
+        }
+        Command::IiifHarvest {
+            action,
+            collection,
+            out,
+            plan,
+            min_gap_secs,
+            allow_host,
+            info_json,
+            max_dimension,
+            limit,
+            max_image_mb,
+        } => {
+            use usnm_ocr_worker::iiif_harvest as h;
+            let summary = h::run(
+                h::Options {
+                    action: if action == "plan" {
+                        h::Action::Plan
+                    } else {
+                        h::Action::Fetch
+                    },
+                    collection,
+                    out,
+                    plan,
+                    pace: h::pace::Pace::new(min_gap_secs)?,
+                    allow_hosts: allow_host,
+                    info_json: match info_json.as_str() {
+                        "always" => h::InfoJson::Always,
+                        "never" => h::InfoJson::Never,
+                        _ => h::InfoJson::Auto,
+                    },
+                    max_dimension,
+                    limit,
+                    max_image_bytes: max_image_mb.saturating_mul(1 << 20),
+                },
+                stop_signal(),
+            )
+            .await?;
+            println!("{}", serde_json::to_string(&summary)?);
+            anyhow::ensure!(
+                summary.clean(),
+                "the run did not finish cleanly; see problems.jsonl"
+            );
             Ok(())
         }
         Command::LocText {

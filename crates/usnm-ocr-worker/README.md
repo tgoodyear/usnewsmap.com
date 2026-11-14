@@ -312,6 +312,39 @@ podman run --rm -v "$PWD":/src:Z -w /src docker.io/library/almalinux:9 bash -c '
 
 The [BOINC pilot](../../docs/boinc/README.md) exports an explicitly allocated cohort of cached pages to stock BOINC and returns native ALTO and Parquet through the existing pickup. It shares this worker's locked Tesseract models and routing, and volunteers receive no Azure credentials. The `run` command is unchanged.
 
+## Harvesting a IIIF collection (a person runs this)
+
+`iiif-harvest` (#1623) fetches the page images of a collection published through IIIF, built for the Cherokee Advocate collection at the Gateway to Oklahoma History. **A person runs it. Agents must not**: that site's `robots.txt` bars ClaudeBot by name, and the tool has no option to send another user agent. The earlier OAI-PMH harvest (`scripts/chr_advocate_oai.py`, #1805) stays as it is and is not replaced by this.
+
+It follows IIIF Presentation 2.x and Image API 2.x as the specifications describe them and follows the `@id`s the documents give. On a collection page it reads `manifests`, `members` and `collections`, and goes on through `first` and `next`. In a manifest it walks `sequences[].canvases[].images[].resource`: it asks the image service named in `resource.service` (and that service's `info.json` when the manifest gives no profile, see `--info-json`) for `full/<size>/0/default.jpg`, and falls back to `resource.@id` when there is no service. `<size>` is `full` unless the service's `maxWidth`, `maxHeight`, `maxArea` or `sizes` call for less, or `--max-dimension` asks for a smaller image. The fixtures in the tests were written by hand from the specifications; they are not copies of the site's responses, so the site's real documents have not been checked against the tool.
+
+It goes through the shared fetcher (`src/fetcher`), the same HTTP stack as `ghn-fetch`, with one policy: a single connection, at most one request every 3 seconds in total, `Retry-After` honoured, a 403 or 429 ends the run and holds the budget (kept in `<out>/_state/pacer.json`, so the next run waits), and 5 transient failures in a row, or 10 failures of any kind in a row, end it too. Three seconds is the site's stated `Crawl-delay` and `Request-rate: 1/3`. It is a hard minimum: `--min-gap-secs` can raise it and a value below 3 is an error. It reads each host's `robots.txt` first, refuses to run when a path it would fetch is barred for its user agent (`usnewsmap-ocr-worker`, with a contact URL) or for `*`, and stops with a message when `robots.txt` asks for a longer delay than the flag gives. Hosts other than the collection's must be named with `--allow-host`. The tool has no built-in site and the tests reach only a stand-in server on this machine.
+
+The collection document names a licence or terms URL. The tool records it in the plan and every sidecar and prints it before fetching, with a reminder that the operator must have read it. It does not fetch that page. The site's terms allow use for research, teaching and private study and ask for credit to the holding partner and the Gateway. Copyright and any republication question are the operator's to settle. Read the terms at the URL the collection document gives.
+
+Run plan first. It fetches robots.txt, the collection pages, each manifest (and some `info.json`), saves each verbatim, and writes `plan.json` with the issues, canvases, image URLs, counts and an estimated duration. It fetches no image.
+
+```
+cargo run --release -p usnm-ocr-worker -- iiif-harvest --action plan \
+  --collection https://gateway.okhistory.org/explore/collections/CHRAD/top/ \
+  --out /path/to/cherokee-advocate --limit 3
+cargo run --release -p usnm-ocr-worker -- iiif-harvest --action fetch \
+  --out /path/to/cherokee-advocate --limit 10
+```
+
+Drop `--limit` for the full run. `--limit` counts issues in plan and images in fetch. Rerunning either action continues where it stopped.
+
+Expected duration: the collection is 895 issues on a stated 3,578 pages (#1805). At one request every 3 seconds that is about 45 minutes for the manifests and about 3 hours for the images, plus up to 3 hours more if every page needs its `info.json`. The plan prints the estimate for the images still to fetch.
+
+Where files land:
+
+- `<out>/<issue id>/<canvas index>.<ext>`, each image with a sidecar `<file>.json`: URL, bytes, sha256, fetch time, access time (UTC), user agent, the terms URL and the manifest's citation fields (`@id`, `label`, `attribution`, `license`, `metadata`, `related`, `seeAlso`, `rendering`, and the links among them). No link is built from a URL pattern.
+- `<out>/_iiif/`: the collection pages, manifests, `info.json` files and `robots.txt` copies exactly as served, each with a sidecar.
+- `<out>/plan.json`, `<out>/fetched.jsonl` (one line per file fetched), `<out>/problems.jsonl`, `<out>/status.json`.
+- `<out>/CITATIONS.tsv`, written at the end of every fetch run: issue label, persistent link (or the manifest `@id` when the manifest gives none), attribution, access date.
+
+A file whose sha256 matches its sidecar is never fetched again. A file with no matching sidecar is kept, not fetched again and not written over, and is listed in `problems.jsonl`. Nothing is deleted: a plan or `CITATIONS.tsv` that is replaced leaves the old one beside it as `<name>.replaced-<n>`. One failed image (a 404, say) is recorded and the run goes on; the exit status is non-zero when any image failed or the run stopped early.
+
 ## Engine catalog and production licences
 
 The worker embeds `ocr/engines/engines.toml`; `--engines <path>` (or

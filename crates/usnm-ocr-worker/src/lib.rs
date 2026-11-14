@@ -21,6 +21,8 @@ pub mod engine;
 pub mod fetcher;
 /// Georgia Historic Newspapers' IIIF page images (#1193).
 pub mod ghn;
+/// A harvester for IIIF collections, run by a person (#1623).
+pub mod iiif_harvest;
 pub mod loc;
 /// LoC's word confidence per page from the bulk OCR archives (#962).
 pub mod loc_alto;
