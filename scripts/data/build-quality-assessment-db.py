@@ -65,11 +65,89 @@ def discover_campaigns(quality_root: Path) -> list[tuple[str, Path, Path | None]
     return found
 
 
+def apply_qwen_exclusions(con, excluded_qwen: Path, has_crops: bool = True) -> None:
+    """Takes the excluded Qwen readings (#1919) out of the loaded tables.
+
+    `excluded_qwen` is a tab-separated export of the live rows of
+    quality.excluded_qwen_readings that name a page, with the header `job_id<TAB>doc_id<TAB>crop_id`
+    (crop_id empty for a whole unit):
+
+        \\copy (SELECT job_id, doc_id, crop_id FROM quality.excluded_qwen_readings
+                 WHERE released_at IS NULL AND doc_id IS NOT NULL)
+          TO 'excluded.tsv' WITH (FORMAT csv, DELIMITER E'\\t', HEADER)
+
+    The vision-language reader's crop rows carry their Qwen job in `source` (`qwen:<job_id>`), which
+    is how an exclusion finds them; the same crop in a campaign that read it with another unit is
+    left alone. Those rows are dropped; the other readers' rows of the same campaign, page and crop
+    keep the crop but lose their comparison with the reading and their crop-level hat estimate
+    (solved with it). A page-level row of a vision-language reader on an excluded page is dropped in every campaign,
+    since page rows have no Qwen job; a crop whose reading was empty has no vlm row to find the job
+    by, so its other rows are cleared unless another job's row shows a different unit read it.
+    Parquets that `quality collect` wrote with the exclusions already omit these readings, so this
+    is for older ones.
+    """
+    esc = str(excluded_qwen).replace("'", "''")
+    con.execute(
+        f"CREATE TEMP TABLE excluded_qwen AS SELECT job_id::VARCHAR AS job_id, "
+        f"doc_id::VARCHAR AS doc_id, NULLIF(crop_id, '')::VARCHAR AS crop_id "
+        f"FROM read_csv('{esc}', delim='\t', header=true, "
+        f"columns={{'job_id': 'VARCHAR', 'doc_id': 'VARCHAR', 'crop_id': 'VARCHAR'}}, nullstr='')"
+    )
+    # Page rows carry no Qwen job, so a vision-language reader's page row on an excluded page goes
+    # in every campaign (the fallback for pages-only campaigns and older exports).
+    con.execute(
+        "DELETE FROM raw_boinc_pages WHERE reader IN ('vlm', 'qwen') "
+        "AND doc_id IN (SELECT doc_id FROM excluded_qwen)"
+    )
+    if not has_crops:
+        return
+    for col_name, col_type in [("vlm_reading_present", "BOOLEAN"), ("vlm_crop_state", "VARCHAR"),
+                               ("vlm_model", "VARCHAR"), ("source", "VARCHAR")]:
+        con.execute(f"ALTER TABLE raw_boinc_crops ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+    named = """
+        c.doc_id = x.doc_id
+        AND (x.crop_id IS NULL OR x.crop_id = c.crop_id OR x.crop_id = c.doc_id || ':' || c.crop_id)
+    """
+    # The campaign, page and crop of every Qwen reading an exclusion names: the vision-language
+    # reader's own row, found through its source (`qwen:<job_id>`); and, for a reading that is
+    # empty and so has no row of its own, the crop's other rows, unless a row of another Qwen job
+    # shows that the campaign read the crop with a different unit.
+    con.execute(
+        f"""
+        CREATE TEMP TABLE affected_qwen_crops AS
+        SELECT DISTINCT c.campaign, c.doc_id, c.crop_id
+        FROM raw_boinc_crops c JOIN excluded_qwen x
+          ON c.source = 'qwen:' || x.job_id AND {named}
+        WHERE c.reader IN ('vlm', 'qwen')
+        UNION
+        SELECT DISTINCT c.campaign, c.doc_id, c.crop_id
+        FROM raw_boinc_crops c JOIN excluded_qwen x ON {named}
+        WHERE NOT EXISTS (
+            SELECT 1 FROM raw_boinc_crops v
+            WHERE v.campaign = c.campaign AND v.doc_id = c.doc_id AND v.crop_id = c.crop_id
+              AND v.reader IN ('vlm', 'qwen') AND v.source IS DISTINCT FROM 'qwen:' || x.job_id
+        )
+        """
+    )
+    con.execute(
+        "DELETE FROM raw_boinc_crops WHERE reader IN ('vlm', 'qwen') AND EXISTS ("
+        "SELECT 1 FROM affected_qwen_crops a WHERE a.campaign = raw_boinc_crops.campaign "
+        "AND a.doc_id = raw_boinc_crops.doc_id AND a.crop_id = raw_boinc_crops.crop_id)"
+    )
+    con.execute(
+        "UPDATE raw_boinc_crops SET vlm_text = NULL, cer_vs_vlm = NULL, dice_vs_vlm = NULL, "
+        "hat_est_cer = NULL, vlm_reading_present = NULL, vlm_crop_state = NULL, vlm_model = NULL "
+        "WHERE EXISTS (SELECT 1 FROM affected_qwen_crops a WHERE a.campaign = raw_boinc_crops.campaign "
+        "AND a.doc_id = raw_boinc_crops.doc_id AND a.crop_id = raw_boinc_crops.crop_id)"
+    )
+
+
 def build_database(
     quality_root: Path,
     manifest_parquet: Path,
     out_dir: Path,
     sqlite_path: Path | None,
+    excluded_qwen: Path | None = None,
 ) -> dict[str, int]:
     out_dir.mkdir(parents=True, exist_ok=True)
     campaigns = discover_campaigns(quality_root)
@@ -148,6 +226,9 @@ def build_database(
             "NULL::DOUBLE AS cer_vs_vlm, "
             "NULL::DOUBLE AS dice_vs_vlm, NULL::DOUBLE AS hat_est_cer WHERE 1=0"
         )
+
+    if excluded_qwen is not None:
+        apply_qwen_exclusions(con, excluded_qwen, has_crops=bool(crop_parts))
 
     # Extract pairwise metrics vs loc / loc-hist from pairs_json and deduplicate
     # per (doc_id, reader), preferring campaigns where loc/loc-hist has real text (>1 word).
@@ -995,8 +1076,17 @@ def main() -> None:
         default=None,
         help="Optional path to write indexed SQLite assessment database",
     )
+    parser.add_argument(
+        "--excluded-qwen",
+        type=Path,
+        default=None,
+        help="Tab-separated job_id/doc_id/crop_id export of the live rows of quality.excluded_qwen_readings;"
+        " their Qwen readings are taken out of the crop and page tables (#1919)",
+    )
     args = parser.parse_args()
-    stats = build_database(args.quality_root, args.manifest, args.out_dir, args.sqlite_out)
+    stats = build_database(
+        args.quality_root, args.manifest, args.out_dir, args.sqlite_out, args.excluded_qwen
+    )
     for k, v in stats.items():
         print(f"{k}: {v}")
 

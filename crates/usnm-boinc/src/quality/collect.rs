@@ -88,6 +88,10 @@ pub struct Options {
     /// Where `qwen compare --crop-states` keeps each judged pair's crop
     /// states. Without it every canonical crop joins, as the strict rule has it.
     pub qwen_crop_states: Option<PathBuf>,
+    /// Qwen units and crops kept out of the tables until re-read
+    /// (`quality.excluded_qwen_readings`). A unit's crops still join the page; only its
+    /// readings are left out, so no `vlm` row carries them.
+    pub qwen_exclusions: super::exclusions::Exclusions,
     /// Where `qwen compare --pages` keeps each bundle page's pair records.
     /// With it, a bundle unit with no canonical result joins the readings of
     /// each page two hosts agreed on (#1435); without it only canonical
@@ -119,6 +123,26 @@ pub struct Options {
     /// with one is measured into `crops.parquet`'s `qe_*` columns. Pages carry
     /// the unit's own measure whatever this is.
     pub qe_dir: Option<PathBuf>,
+}
+
+/// The exclusions in force in `quality.excluded_qwen_readings`, read with the DSN file given or
+/// the one `USNM_QUALITY_DSN_FILE` names. With neither, none (the collector then runs where
+/// the database is out of reach). A DSN that cannot be read is an error, never "no exclusions".
+pub async fn load_exclusions(
+    dsn_file: Option<&Path>,
+) -> anyhow::Result<super::exclusions::Exclusions> {
+    use usnm_ocr_local::quality_db::QualityDb;
+    let db = match dsn_file {
+        Some(path) => Some(QualityDb::from_file(&path.to_string_lossy())?),
+        None => QualityDb::from_env()?,
+    };
+    let Some(db) = db else {
+        return Ok(Default::default());
+    };
+    let exclusions = super::exclusions::Exclusions::from_rows(db.excluded_qwen_readings().await?);
+    let (whole, partial) = exclusions.counts();
+    eprintln!("qwen exclusions: {whole} units excluded whole, {partial} with crops excluded");
+    Ok(exclusions)
 }
 
 /// What a collection did besides its rows, for the operator and the driver.
@@ -1153,6 +1177,15 @@ impl QwenPage {
     }
 }
 
+/// `readings` without the crops `hide` names. When that leaves no reading at all, the page has
+/// none: not an empty result that would still count as a joined reading.
+fn without_excluded(readings: Option<Readings>, hide: impl Fn(&str) -> bool) -> Option<Readings> {
+    let mut r = readings?;
+    let before = r.readings.len();
+    r.readings.retain(|x| !hide(&x.id));
+    (before == 0 || !r.readings.is_empty()).then_some(r)
+}
+
 /// Every submitted `usnm_qwen` unit by doc id (supporting both single-page
 /// and multi-page bundle units), with its readings where the result is in.
 /// With `page_records`, the directory `qwen compare --pages` writes, a
@@ -1167,6 +1200,7 @@ fn qwen_pages(
     xiaomi_spool: Option<&Path>,
     crop_states: Option<&Path>,
     page_records: Option<&Path>,
+    exclusions: &super::exclusions::Exclusions,
 ) -> anyhow::Result<BTreeMap<String, QwenPage>> {
     let mut out = BTreeMap::new();
     let dir = units(root);
@@ -1189,7 +1223,7 @@ fn qwen_pages(
         let files = qwen_spool_for(&job, spool, xiaomi_spool)
             .map(|dir| spool_files(dir, &wu, &crate::qwen::outputs()))
             .unwrap_or_default();
-        let (readings, vouch) = if !files.is_empty() && files.iter().all(|f| f.exists()) {
+        let (mut readings, mut vouch) = if !files.is_empty() && files.iter().all(|f| f.exists()) {
             let got = crate::qwen::validate::load(&files)
                 .with_context(|| format!("canonical result {wu}"))?;
             anyhow::ensure!(
@@ -1206,7 +1240,18 @@ fn qwen_pages(
         } else {
             (None, None)
         };
+        // An excluded unit reads as if no result had come in. An excluded crop has no reading,
+        // but is dropped only once a page has been accepted or not: whether a retry takes the
+        // page over from an earlier bundle depends on the result as it came in.
+        let excluded = exclusions.job(&job.id);
+        if excluded.is_some_and(|e| e.whole) {
+            (readings, vouch) = (None, None);
+        }
+        let whole = excluded.is_some_and(|e| e.whole);
         if job.pages.is_empty() {
+            if let Some(e) = excluded {
+                readings = without_excluded(readings, |id| e.hides(None, id));
+            }
             out.insert(
                 job.doc_id.clone(),
                 QwenPage {
@@ -1224,7 +1269,7 @@ fn qwen_pages(
                     .is_file()
             });
             let mut agreed = match page_records {
-                Some(dir) if readings.is_none() || by_pages => {
+                Some(dir) if !whole && (readings.is_none() || by_pages) => {
                     crate::qwen::ledger::accepted_readings(root, &unit, &job, dir)
                         .with_context(|| format!("{wu}: page records"))?
                 }
@@ -1232,12 +1277,17 @@ fn qwen_pages(
             };
             for bp in &job.pages {
                 if let Some(page_readings) = agreed.remove(&bp.doc_id) {
-                    // An accepted page wins over the page in any other bundle.
+                    let page_readings = match excluded {
+                        Some(e) => without_excluded(Some(page_readings), |id| {
+                            e.hides(Some(&bp.doc_id), id)
+                        }),
+                        None => Some(page_readings),
+                    };
                     out.insert(
                         bp.doc_id.clone(),
                         QwenPage {
                             crops: bp.crops.clone(),
-                            readings: Some(page_readings),
+                            readings: page_readings,
                             vouch: Some(crate::qwen::consensus::Vouch::Page),
                         },
                     );
@@ -1292,6 +1342,10 @@ fn qwen_pages(
                 if !accepts && out.get(&bp.doc_id).is_some_and(|p| p.readings.is_some()) {
                     continue;
                 }
+                let page_readings = match excluded {
+                    Some(e) => without_excluded(page_readings, |id| e.hides(Some(&bp.doc_id), id)),
+                    None => page_readings,
+                };
                 out.insert(
                     bp.doc_id.clone(),
                     QwenPage {
@@ -1490,6 +1544,7 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
         opts.qwen_xiaomi_spool.as_deref(),
         opts.qwen_crop_states.as_deref(),
         opts.qwen_pages.as_deref(),
+        &opts.qwen_exclusions,
     )?;
     let surya = match (&opts.surya_root, &opts.surya_spool) {
         (Some(root), Some(spool)) => crate::surya::collect::results(root, spool)?.crops,
@@ -2324,6 +2379,7 @@ pub(super) mod tests {
             qwen_spool: tmp.path().join("no-qwen"),
             qwen_xiaomi_spool: None,
             qwen_crop_states: None,
+            qwen_exclusions: Default::default(),
             qwen_pages: None,
             surya_root: Some(sroot),
             surya_spool: Some(sspool),
@@ -2551,6 +2607,7 @@ pub(super) mod tests {
             qwen_spool: root.join("qwen-spool"),
             qwen_xiaomi_spool: None,
             qwen_crop_states: None,
+            qwen_exclusions: Default::default(),
             qwen_pages: None,
             surya_root: None,
             surya_spool: None,
@@ -3253,6 +3310,131 @@ pub(super) mod tests {
         assert!(collect(&opts).is_err());
     }
 
+    /// An excluded unit joins no reading, an excluded crop joins none of its own, the rest of
+    /// the page's rows stay, a release brings them back, and each change re-keys the unit.
+    #[tokio::test]
+    async fn excluded_units_and_crops_join_no_reading_until_released() {
+        use crate::quality::exclusions::Exclusions;
+        use usnm_ocr_local::quality_db::ExcludedQwenReading;
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (mut opts, unit, quality) = cached_fixture(dir.path()).await;
+        let (job, _) = qwen_canonical(&opts, &unit, &quality, &["the council reads this crop"]);
+        let all = job.crops.len();
+        let row = |crop: Option<&str>| ExcludedQwenReading {
+            job_id: job.id.clone(),
+            wu_id: 1,
+            crop_id: crop.map(Into::into),
+        };
+        let open = inventory(&opts, None).unwrap()["page"].fingerprint.clone();
+        let plain = collect(&opts).unwrap();
+        assert_eq!(vlm_rows(&plain).len(), all);
+        // One crop: its row has no reading, every other crop keeps its own.
+        let first = job.crops[0].id.clone();
+        opts.qwen_exclusions = Exclusions::from_rows([row(Some(&first))]);
+        let one = collect(&opts).unwrap();
+        assert_eq!(vlm_rows(&one).len(), all - 1);
+        assert!(vlm_rows(&one).iter().all(|r| r.crop_id != first));
+        let crop_key = inventory(&opts, None).unwrap()["page"].fingerprint.clone();
+        assert_ne!(crop_key, open);
+        // The whole unit: no reading at all, but the page and its crops are still rows.
+        opts.qwen_exclusions = Exclusions::from_rows([row(None)]);
+        let whole = collect(&opts).unwrap();
+        assert!(vlm_rows(&whole).is_empty());
+        assert_eq!(whole.summary.with_readings, 0);
+        assert_eq!(whole.pages.len(), plain.pages.len());
+        assert_ne!(
+            inventory(&opts, None).unwrap()["page"].fingerprint,
+            crop_key
+        );
+        // Every crop excluded: no reading is joined, so the page counts none.
+        opts.qwen_exclusions =
+            Exclusions::from_rows(job.crops.iter().map(|c| row(Some(c.id.as_str()))));
+        let none = collect(&opts).unwrap();
+        assert!(vlm_rows(&none).is_empty());
+        assert_eq!(none.summary.with_readings, 0);
+        // Another job's exclusion changes nothing here.
+        opts.qwen_exclusions = Exclusions::from_rows([ExcludedQwenReading {
+            job_id: "0".repeat(64),
+            wu_id: 2,
+            crop_id: None,
+        }]);
+        assert_eq!(vlm_rows(&collect(&opts).unwrap()).len(), all);
+        // Released (the database no longer returns the row): the readings are back.
+        opts.qwen_exclusions = Exclusions::default();
+        let released = collect(&opts).unwrap();
+        assert_eq!(vlm_rows(&released).len(), all);
+        assert_eq!(released.crops, plain.crops);
+        assert_eq!(inventory(&opts, None).unwrap()["page"].fingerprint, open);
+    }
+
+    /// Exclusions on a bundle: a whole-unit one joins nothing, a page-prefixed crop one only
+    /// loses its own crop (from accepted page records and from a canonical result alike), and a
+    /// page with every crop excluded counts no joined reading.
+    #[tokio::test]
+    async fn excluded_bundle_units_and_page_crops_join_no_reading() {
+        use crate::quality::exclusions::Exclusions;
+        use crate::qwen::{ledger::tests::result, validate::compare};
+        use usnm_ocr_local::quality_db::ExcludedQwenReading;
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (mut opts, unit, quality) = cached_fixture(dir.path()).await;
+        let (_bundle, job) = qwen_bundle(&opts, &unit, &quality);
+        let records = dir.path().join("qwen-pages");
+        let results = dir.path().join("results");
+        std::fs::create_dir_all(&results).unwrap();
+        let ours = quality.doc_id.clone();
+        let words = |_: &str, _: &str| "the council reads this crop".to_owned();
+        let a = result(&results, &job, "a", words);
+        let b = result(&results, &job, "b", words);
+        compare(&a, &b, 0.5, None, Some(&records)).unwrap();
+        opts.qwen_pages = Some(records);
+        opts.cache = None;
+        let page_crops: Vec<String> = job.pages[0].crops.iter().map(|c| c.id.clone()).collect();
+        let row = |crop: Option<String>| ExcludedQwenReading {
+            job_id: job.id.clone(),
+            wu_id: 1,
+            crop_id: crop,
+        };
+        let plain = collect(&opts).unwrap();
+        assert_eq!(vlm_rows(&plain).len(), page_crops.len());
+        // The whole unit.
+        opts.qwen_exclusions = Exclusions::from_rows([row(None)]);
+        let c = collect(&opts).unwrap();
+        assert!(vlm_rows(&c).is_empty());
+        assert_eq!(c.summary.with_readings, 0);
+        // One crop, named with its page.
+        opts.qwen_exclusions =
+            Exclusions::from_rows([row(Some(format!("{ours}:{}", page_crops[0])))]);
+        let c = collect(&opts).unwrap();
+        assert_eq!(vlm_rows(&c).len(), page_crops.len() - 1);
+        assert!(vlm_rows(&c).iter().all(|r| r.crop_id != page_crops[0]));
+        assert_eq!(c.summary.with_readings, 1);
+        // Every crop of the page: nothing joined, and the page does not count.
+        opts.qwen_exclusions =
+            Exclusions::from_rows(page_crops.iter().map(|c| row(Some(format!("{ours}:{c}")))));
+        let c = collect(&opts).unwrap();
+        assert!(vlm_rows(&c).is_empty());
+        assert_eq!(c.summary.with_readings, 0);
+        // A canonical result is filtered the same way, after it has been accepted.
+        let canonical = result(&results, &job, "z", |_, _| "the canonical reading".into());
+        std::fs::create_dir_all(&opts.qwen_spool).unwrap();
+        for (from, name) in canonical.iter().zip(crate::qwen::outputs()) {
+            std::fs::copy(
+                from,
+                opts.qwen_spool
+                    .join(format!("{}__file_{name}", job.workunit())),
+            )
+            .unwrap();
+        }
+        opts.qwen_pages = None;
+        opts.qwen_exclusions = Exclusions::default();
+        assert_eq!(vlm_rows(&collect(&opts).unwrap()).len(), page_crops.len());
+        opts.qwen_exclusions =
+            Exclusions::from_rows([row(Some(format!("{ours}:{}", page_crops[0])))]);
+        let c = collect(&opts).unwrap();
+        assert_eq!(vlm_rows(&c).len(), page_crops.len() - 1);
+        assert_eq!(c.summary.with_readings, 1);
+    }
+
     #[tokio::test]
     async fn a_page_with_no_vouched_crop_has_no_readings() {
         let dir = tempfile::tempdir_in(".").unwrap();
@@ -3691,6 +3873,7 @@ pub(super) mod tests {
             qwen_spool: tmp.path().join("no-qwen"),
             qwen_xiaomi_spool: None,
             qwen_crop_states: None,
+            qwen_exclusions: Default::default(),
             qwen_pages: None,
             surya_root: Some(sroot),
             surya_spool: Some(sspool),

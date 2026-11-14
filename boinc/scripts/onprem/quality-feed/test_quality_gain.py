@@ -22,6 +22,14 @@ def page(i, lang="eng", decade=1900, loc=0.4, ours=0.3, occ=60, reader="ours-tes
             "" if cer is None else cer[0], "" if cer is None else cer[1]]
 
 
+class ExportSqlTest(unittest.TestCase):
+    def test_estimates_come_from_the_view_that_leaves_out_excluded_qwen_readings(self):
+        sql = qg.export_sql(["ours-tesseract"])
+        self.assertIn("quality.reader_scores_effective", sql)
+        self.assertNotIn("quality.reader_scores r", sql)
+        self.assertNotRegex(sql, r"quality\.reader_scores\b(?!_effective)")
+
+
 class GainTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

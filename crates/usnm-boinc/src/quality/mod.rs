@@ -21,6 +21,8 @@
 //! - [`rescore`] computes a campaign's text part again on the server from
 //!   corrected LoC texts, keeping the units' scan features (#1079).
 //! - [`summary`] reads the validator's copies back into one table.
+//! - [`exclusions`] holds the Qwen units and crops `quality collect` leaves out, from
+//!   `quality.excluded_qwen_readings`.
 //! - [`page_dims`] records a bundle's page sizes, so collect needs no
 //!   image (#1743).
 use std::path::{Path, PathBuf};
@@ -34,6 +36,7 @@ pub mod cli;
 pub mod collect;
 mod collect_cache;
 pub mod estimate;
+pub mod exclusions;
 pub mod page_dims;
 pub mod qe;
 pub mod rehat;

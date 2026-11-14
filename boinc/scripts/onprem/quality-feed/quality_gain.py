@@ -12,7 +12,7 @@ The measure is the one the threshold was set on: for each page with a re-read te
 damage rate (quality.page_summary) minus the re-read text's (quality.ocr_outputs, the newest
 output of that reader), page by page. A cell is (reader, band, language, decade); band is the
 campaign builder's, from LoC's rate and the page's word occurrences (head + near). Where both
-texts have an estimated CER from a usnm_quality unit (quality.reader_scores, LoC as `loc` or
+texts have an estimated CER from a usnm_quality unit (quality.reader_scores_effective, LoC as `loc` or
 `loc-hist`), the cell also gets the mean drop in estimated CER, as a second measure. It
 decides nothing.
 
@@ -92,13 +92,13 @@ COPY (
     ORDER BY u.doc_id, u.hat_version DESC, c.loaded_at DESC
   ), l AS (
     SELECT DISTINCT ON (r.doc_id) r.doc_id, r.est_cer
-    FROM hat JOIN quality.reader_scores r USING (campaign, doc_id)
+    FROM hat JOIN quality.reader_scores_effective r USING (campaign, doc_id)
     WHERE r.reader IN ('loc', 'loc-hist') AND r.est_cer IS NOT NULL
     ORDER BY r.doc_id, (r.reader = 'loc-hist') DESC
   ), r AS (
     -- The reader's estimate from the same unit as LoC's, so the two are a pair.
     SELECT r.doc_id, r.reader, r.est_cer
-    FROM hat JOIN quality.reader_scores r USING (campaign, doc_id)
+    FROM hat JOIN quality.reader_scores_effective r USING (campaign, doc_id)
     WHERE r.est_cer IS NOT NULL AND r.reader IN (SELECT reader FROM wanted)
   )
   SELECT o.doc_id, o.reader, coalesce(s.lang, 'none') AS lang, s.decade, d.head + d.near AS occurrences,

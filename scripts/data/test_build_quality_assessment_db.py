@@ -94,6 +94,133 @@ class BuildQualityAssessmentDbTest(unittest.TestCase):
             "tables without hat_version must read as version 1",
         )
 
+    def test_excluded_qwen_readings_are_cleared_from_crops_and_dropped_from_pages(self):
+        mod = load_module()
+        executed: list[str] = []
+
+        class FakeConn:
+            def execute(self, sql: str):
+                executed.append(" ".join(sql.split()))
+                return self
+
+        mod.apply_qwen_exclusions(FakeConn(), Path("/tmp/excluded.tsv"))
+        self.assertIn("read_csv('/tmp/excluded.tsv'", executed[0])
+        affected = next(s for s in executed if "CREATE TEMP TABLE affected_qwen_crops" in s)
+        # The Qwen job is found through the crop row's source, so another job's rows stay.
+        self.assertIn("c.source = 'qwen:' || x.job_id", affected)
+        self.assertIn("x.crop_id IS NULL", affected)
+        self.assertIn("x.crop_id = c.doc_id || ':' || c.crop_id", affected)
+        deleted = next(s for s in executed if s.startswith("DELETE FROM raw_boinc_crops"))
+        self.assertIn("reader IN ('vlm', 'qwen')", deleted)
+        update = next(s for s in executed if s.startswith("UPDATE raw_boinc_crops"))
+        for col in ("vlm_text", "cer_vs_vlm", "dice_vs_vlm", "hat_est_cer", "vlm_reading_present",
+                    "vlm_crop_state"):
+            self.assertIn(f"{col} = NULL", update)
+        self.assertIn("a.campaign = raw_boinc_crops.campaign", update)
+        # Empty readings have no vlm row: the crop's other rows are found by page and crop.
+        self.assertIn("v.source IS DISTINCT FROM 'qwen:' || x.job_id", affected)
+        delete = next(s for s in executed if s.startswith("DELETE FROM raw_boinc_pages"))
+        self.assertIn("reader IN ('vlm', 'qwen')", delete)
+        self.assertIn("doc_id IN (SELECT doc_id FROM excluded_qwen)", delete)
+
+    @unittest.skipIf(duckdb is None, "duckdb not installed in this Python environment")
+    def test_excluded_qwen_readings_in_real_tables(self):
+        mod = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            tsv = Path(tmp) / "excluded.tsv"
+            tsv.write_text("job_id\tdoc_id\tcrop_id\naaa\td1\t\nbbb\td2\td2:c1\n", encoding="utf-8")
+            con = duckdb.connect()
+            con.execute(
+                "CREATE TABLE raw_boinc_crops (campaign VARCHAR, doc_id VARCHAR, crop_id VARCHAR, "
+                "reader VARCHAR, source VARCHAR, vlm_text VARCHAR, cer_vs_vlm DOUBLE, "
+                "dice_vs_vlm DOUBLE, hat_est_cer DOUBLE)"
+            )
+            con.execute(
+                """INSERT INTO raw_boinc_crops VALUES
+                ('w1','d1','c1','vlm','qwen:aaa','x',NULL,NULL,NULL),
+                ('w1','d1','c1','loc',NULL,'x',0.1,0.2,0.3),
+                ('w2','d1','c1','vlm','qwen:other','y',NULL,NULL,NULL),
+                ('w2','d1','c1','loc',NULL,'y',0.1,0.2,0.3),
+                ('w1','d1','c2','loc',NULL,NULL,0.1,0.2,0.3),
+                ('w1','d2','c1','vlm','qwen:bbb','z',NULL,NULL,NULL),
+                ('w1','d2','c1','loc',NULL,'z',0.1,0.2,0.3),
+                ('w1','d2','c2','loc',NULL,'z',0.1,0.2,0.3)"""
+            )
+            con.execute(
+                "CREATE TABLE raw_boinc_pages (campaign VARCHAR, doc_id VARCHAR, reader VARCHAR)"
+            )
+            con.execute(
+                "INSERT INTO raw_boinc_pages VALUES ('w1','d1','qwen'),('w3','d1','qwen'),"
+                "('w1','d1','loc'),('w1','d3','qwen')"
+            )
+            mod.apply_qwen_exclusions(con, tsv)
+            crops = con.execute(
+                "SELECT campaign, doc_id, crop_id, reader, vlm_text, hat_est_cer FROM raw_boinc_crops "
+                "ORDER BY 1, 2, 3, 4"
+            ).fetchall()
+            self.assertEqual(
+                crops,
+                [
+                    # w1/d1: whole unit, the empty-reading crop c2 too; the loc rows lose the reading.
+                    ("w1", "d1", "c1", "loc", None, None),
+                    ("w1", "d1", "c2", "loc", None, None),
+                    # w1/d2: only c1 is named.
+                    ("w1", "d2", "c1", "loc", None, None),
+                    ("w1", "d2", "c2", "loc", "z", 0.3),
+                    # w2 read d1 with another job: kept whole.
+                    ("w2", "d1", "c1", "loc", "y", 0.3),
+                    ("w2", "d1", "c1", "vlm", "y", None),
+                ],
+            )
+            pages = con.execute("SELECT campaign, doc_id, reader FROM raw_boinc_pages ORDER BY 1, 2, 3").fetchall()
+            self.assertEqual(pages, [("w1", "d1", "loc"), ("w1", "d3", "qwen")])
+
+    def test_a_pages_only_campaign_skips_the_crop_mutations(self):
+        mod = load_module()
+        executed: list[str] = []
+
+        class FakeConn:
+            def execute(self, sql: str):
+                executed.append(" ".join(sql.split()))
+                return self
+
+        mod.apply_qwen_exclusions(FakeConn(), Path("/tmp/excluded.tsv"), has_crops=False)
+        self.assertFalse(any("raw_boinc_crops" in s for s in executed))
+        # Page rows are still filtered, by page, in a pages-only campaign.
+        self.assertTrue(any(s.startswith("DELETE FROM raw_boinc_pages") for s in executed))
+
+    def test_without_an_exclusion_file_nothing_is_applied(self):
+        mod = load_module()
+        executed: list[str] = []
+
+        class FakeConn:
+            def execute(self, sql: str):
+                executed.append(" ".join(sql.split()))
+                return self
+
+            def fetchall(self):
+                return []
+
+            def fetchone(self):
+                return (0,)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cdir = root / "quality" / "v1-wave2"
+            cdir.mkdir(parents=True)
+            (cdir / "pages.parquet").write_bytes(b"x" * 256)
+            manifest = root / "manifest.parquet"
+            manifest.write_bytes(b"x" * 256)
+            orig = mod.duckdb.connect
+            mod.duckdb.connect = lambda: FakeConn()
+            try:
+                mod.build_database(root / "quality", manifest, root / "out", None)
+                self.assertFalse(any("excluded_qwen" in s for s in executed))
+                mod.build_database(root / "quality", manifest, root / "out", None, root / "x.tsv")
+                self.assertTrue(any("excluded_qwen" in s for s in executed))
+            finally:
+                mod.duckdb.connect = orig
+
     @unittest.skipIf(duckdb is None, "duckdb not installed in this Python environment")
     def test_a_page_in_several_campaigns_keeps_its_hat_v2_row(self):
         """The v1 row wins every later sort key (LoC words, a determined hat, campaign
