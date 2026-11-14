@@ -23,6 +23,7 @@ usnm-store.workspace = true
 usnm-state.workspace = true
 usnm-alto.workspace = true
 usnm-ocr-worker = { path = "../usnm-ocr-worker" }
+thiserror.workspace = true
 usnm-ocr-local.workspace = true
 anyhow.workspace = true
 # The dev-only validator webhook service (cloud validatord), built only with that feature.

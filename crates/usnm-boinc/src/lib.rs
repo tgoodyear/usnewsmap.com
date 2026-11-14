@@ -1255,6 +1255,35 @@ pub fn terminal_reason(marker: Option<&[u8]>, timeout_secs: u32) -> String {
 }
 
 #[cfg(test)]
+mod terminal_log_tests {
+    use super::*;
+
+    #[test]
+    fn a_page_that_fails_at_the_largest_deadline_is_listed_for_a_slower_class() {
+        let mut job = crate::bundle::work::tests::job(1);
+        job.engine.timeout_secs = 1800;
+        let lines = terminal_log(&job, "BOINC workunit failed for good");
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].starts_with("boinc_terminal_failure job="),
+            "{lines:?}"
+        );
+        assert!(lines[0].contains("timeout_secs=1800"), "{lines:?}");
+        job.engine.timeout_secs = claim::MAX_TIMEOUT_SECS;
+        let lines = terminal_log(&job, "BOINC workunit failed for good");
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines[1].starts_with("boinc_page_at_deadline_cap job="),
+            "{lines:?}"
+        );
+        assert!(
+            lines[1].contains(&format!("page={}", job.message.page)),
+            "{lines:?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod terminal_reason_tests {
     #[test]
     fn names_the_mask_and_the_deadline() {
@@ -1293,6 +1322,29 @@ mod terminal_reason_tests {
     }
 }
 
+/// What `collect` logs when a page's workunit fails for good (#1919). A page that fails with
+/// the largest page deadline a retry may give (`claim::MAX_TIMEOUT_SECS`) has no larger one
+/// left, so it is logged on its own line, to be listed for a slower class of host instead of
+/// being retried again or dropped without a trace.
+fn terminal_log(job: &boinc::Job, error: &str) -> Vec<String> {
+    let page = format!(
+        "job={} workunit={} page={} attempt={} timeout_secs={}",
+        job.id,
+        job.workunit(),
+        job.message.page,
+        job.attempt,
+        job.engine.timeout_secs
+    );
+    let mut lines = vec![format!("boinc_terminal_failure {page} reason={error:?}")];
+    if job.engine.timeout_secs >= claim::MAX_TIMEOUT_SECS {
+        lines.push(format!(
+            "boinc_page_at_deadline_cap {page}: no larger page deadline is left; \
+             list it for a slower class of host (#1919)"
+        ));
+    }
+    lines
+}
+
 /// Match stock batch_collect_assimilator's canonical output names.
 pub async fn collect(
     root: &Path,
@@ -1328,10 +1380,16 @@ pub async fn collect(
                     || record.error.as_deref() == Some(error.as_str())),
             "terminal disposition changed; preserve the first proof and reconcile"
         );
+        let first = record.stage != Stage::Failed;
         record.stage = Stage::Failed;
         record.error = Some(error);
         record.terminal = Some(terminal);
         save(root, &record)?;
+        if first {
+            for line in terminal_log(&record.job, record.error.as_deref().unwrap_or_default()) {
+                eprintln!("{line}");
+            }
+        }
         bail!("BOINC terminal failure");
     }
     import(

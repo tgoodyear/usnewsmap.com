@@ -2215,7 +2215,10 @@ class BoincJournalTests(unittest.TestCase):
             "previous_job": failed["id"], "previous_attempt": 0, "previous_workunit": "usnm_" + failed["id"],
             "previous_ledger": ledger, "terminal": {"error_mask": 4, "no_output_files": False,
                                                     "marker_sha256": "33" * 32},
-            "previous_error": "failed", "app_version_num": 7, "reviewed_reason": "reviewed"}))
+            "previous_error": "failed", "app_version_num": 7, "reviewed_reason": "reviewed",
+            # A native retry (#1919) keeps the parent's build and deadline and its one host.
+            "native": {"previous_image": "sha256:" + "a" * 64, "previous_timeout_secs": 1800,
+                       "target_host": 13}}))
         self.write(self.record(lines, stage="prepared"))
         self.write(self.record(bundled, stage="submitted", bundle="f" * 64, held="trust scope held"))
         self.assertEqual(self.ingest()["inserted"], 4)

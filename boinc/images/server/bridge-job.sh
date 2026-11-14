@@ -689,10 +689,11 @@ fi
 render_config
 umask 0002
 submit_ocr_job() {
-  local native_args=()
+  local native_args=() store_args=()
   if [ -n "${COSMOS_ENDPOINT:-}${CURATED_URL:-}" ]; then
     [ -n "${COSMOS_ENDPOINT:-}" ] && [ -n "${CURATED_URL:-}" ] || fail "retry native stores require COSMOS_ENDPOINT and CURATED_URL"
     native_args=(--cosmos "$COSMOS_ENDPOINT" --curated-url "$CURATED_URL")
+    store_args=("${native_args[@]}")
   fi
   # A line job (#1621) is pinned to LINE_APP_VERSION, a docker_lines usnm_ocr version, and may
   # be targeted at one calibrated host with LINE_TARGET_HOST; usnm-boinc puts it in batch 1621.
@@ -724,9 +725,10 @@ submit_ocr_job() {
       fail "could not read the usnm_ocr_native versions"
     rm -f "$mycnf"
     [[ $versions =~ ^[1-9][0-9]{0,8}(,[1-9][0-9]{0,8})*$ ]] || fail "no loaded usnm_ocr_native version is registered"
-    # In place of the arguments above: a native unit is never a retry, so takes no retry stores.
+    # In place of the arguments above. The retry stores go with it: a native retry's child (#1919)
+    # revalidates its reservation under the lease, and a first attempt ignores them.
     native_args=(--app usnm_ocr_native --target-host "$NATIVE_TARGET_HOST" --trust "$SHARE_DIR/gold/trust.json"
-      --native-versions "$versions")
+      --native-versions "$versions" ${store_args[@]+"${store_args[@]}"})
   fi
   exec usnm-boinc submit --root "$HANDOFF_DIR" --project "$PROJ" --job "$JOB_ID" ${native_args[@]+"${native_args[@]}"}
 }
