@@ -91,6 +91,33 @@ class JudgeTest(unittest.TestCase):
         self.assertLess(r["ratio"], 0.9)
 
 
+class HardPageTest(unittest.TestCase):
+    def test_1876_10_17_seq_4_is_a_hard_page(self):
+        # #1919: Windows vs LoC 0.796, Linux vs LoC 0.798 (Windows vs Linux 0.626)
+        self.assertTrue(X.is_hard_page(0.796, 0.798))
+
+    def test_1876_10_20_seq_4_is_a_hard_page(self):
+        self.assertTrue(X.is_hard_page(0.80, 0.80))
+
+    def test_a_real_defect_is_not(self):
+        self.assertFalse(X.is_hard_page(0.6, 0.05))  # Windows 0.6, Linux 0.05 from LoC
+
+    def test_edges(self):
+        self.assertFalse(X.is_hard_page(0.5, 0.5))  # not more than 0.5
+        self.assertTrue(X.is_hard_page(0.6, 0.65))  # gap of 0.05 is within
+        self.assertFalse(X.is_hard_page(0.6, 0.66))
+        self.assertFalse(X.is_hard_page(0.3, 0.3))  # both close enough to LoC to be a real difference
+
+    def test_judge_loc_reclassifies_only_flagged_pages(self):
+        row = {"flagged": True}
+        X.judge_loc(row, "q" * 100, "w" * 100, "z" * 100)
+        self.assertEqual((row["flagged"], row["hard_page"]), (False, True))
+        self.assertEqual(row["windows_vs_loc"], {"cer": 1.0, "word_f1": 0.0})
+        row = {"flagged": False}
+        X.judge_loc(row, "q" * 100, "w" * 100, "z" * 100)
+        self.assertNotIn("hard_page", row)
+
+
 class SampleTest(unittest.TestCase):
     def pages(self, per_host):
         return [{"job": f"{h}-{i}", "host": h} for h, n in per_host.items() for i in range(n)]
@@ -408,6 +435,70 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("crossbuild [linux] 2026-11-14", X.summary_line(
             json.loads((lin_dir / "crossbuild-2026-11-14.json").read_text())))
         self.assertTrue(X.summary_line(self.report()).startswith("crossbuild 2026-11-14"))
+
+    def loc_args(self, **kw):
+        loc = self.out.parent / "loc"
+        loc.mkdir(exist_ok=True)
+        return self.args(loc_texts=loc, **kw)
+
+    def put_loc(self, n, text):
+        d = self.out.parent / f"loc/sn1/1900-01-0{n}/ed-1"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "seq-1.txt").write_text(text)
+
+    def test_hard_page_is_reported_not_flagged(self):
+        self.add(1, "15", "q" * 600 + LINUX_TEXT[600:])  # far from Linux: flagged without LoC
+        self.put_loc(1, "z" * len(LINUX_TEXT))  # both builds ~1.0 from LoC
+        self.assertEqual(X.run(self.loc_args(), now=NOW), 0)
+        r = self.report()
+        row = r["rows"][0]
+        self.assertTrue(row["hard_page"])
+        self.assertFalse(row["flagged"])
+        self.assertEqual((r["summary"]["flagged"], r["summary"]["hard_pages"]), (0, 1))
+        for key in ("cer", "word_f1", "windows_vs_loc", "linux_vs_loc"):
+            self.assertIn(key, row)
+        self.assertIn("1 hard_page", X.summary_line(r))
+        self.assertEqual(r["consecutive_flag_days"], 0)
+
+    def test_without_loc_texts_the_same_page_is_flagged(self):
+        self.add(1, "15", "q" * 600 + LINUX_TEXT[600:])
+        self.assertEqual(X.run(self.args(), now=NOW), 3)
+
+    def test_a_real_defect_is_flagged_even_with_loc(self):
+        self.add(1, "15", "q" * 600 + LINUX_TEXT[600:])
+        self.put_loc(1, LINUX_TEXT.replace("quick", "quack", 3))  # Linux ~0.01 from LoC, Windows ~0.7
+        self.assertEqual(X.run(self.loc_args(), now=NOW), 3)
+        row = self.report()["rows"][0]
+        self.assertTrue(row["flagged"])
+        self.assertNotIn("hard_page", row)
+
+    def test_page_without_a_loc_text_is_judged_on_the_builds(self):
+        self.add(1, "15", "q" * 600 + LINUX_TEXT[600:])
+        self.assertEqual(X.run(self.loc_args(), now=NOW), 3)
+        self.assertEqual(self.report()["rows"][0]["loc"], "missing")
+
+    def test_more_than_three_hard_pages_alert(self):
+        for n in range(1, 5):
+            self.add(n, "15", "q" * 600 + LINUX_TEXT[600:])
+            self.put_loc(n, "z" * len(LINUX_TEXT))
+        self.assertEqual(X.run(self.loc_args(), now=NOW), 3)
+        r = self.report()
+        self.assertTrue(r["hard_page_alert"])
+        self.assertEqual(r["consecutive_flag_days"], 1)
+        self.assertIn("HARD-PAGE-ALERT", X.summary_line(r))
+
+    def test_three_hard_pages_do_not_alert(self):
+        for n in range(1, 4):
+            self.add(n, "15", "q" * 600 + LINUX_TEXT[600:])
+            self.put_loc(n, "z" * len(LINUX_TEXT))
+        self.assertEqual(X.run(self.loc_args(), now=NOW), 0)
+        self.assertFalse(self.report()["hard_page_alert"])
+
+    def test_linux_replication_instance_ignores_loc(self):
+        self.set_linux_build()
+        self.add(1, "13", "q" * 600 + LINUX_TEXT[600:], image=self.lin)
+        self.put_loc(1, "z" * len(LINUX_TEXT))
+        self.assertEqual(X.run(self.linux_args(), now=NOW), 3)  # no loc_texts set: unchanged
 
 
 if __name__ == "__main__":

@@ -6,6 +6,10 @@ Per page it records the CER of the Windows text against the Linux text and the c
 
 The Linux read is the worker's: `usnm_tesseract <scan> <base> -l <profile> --psm 3 --dpi 300 txt alto` with `OMP_THREAD_LIMIT=1` and the locked models, from the Linux build's own `usnm_tesseract` (compare its sha256 with `engine_base` in `native-build-trust.json`; the report records it). Two pages are read at a time, one thread each, niced, in a 200% CPU quota.
 
+## Hard pages (Windows instance only)
+
+Some pages are bad for both builds (small-type ads; LoC's own text is poor). With `XB_LOC_TEXTS` set in the env file to a directory of LoC text (`<sn>/<date>/ed-<n>/seq-<m>.txt`, the same layout `native_ocr_parity.py` reads as references), the check also compares each page's two texts with LoC's. A page that would be flagged, whose Windows and Linux CERs against LoC are both over 0.5 and within 0.05 of each other, is reported as `hard_page` and not flagged (#1919: 10-17 seq-4 was 0.796 and 0.798). The row keeps the CER and word F1 of all three pairs (`windows_vs_loc`, `linux_vs_loc`). More than 3 hard pages in one day is an alert (`HARD-PAGE-ALERT`, exit 3, counts as a flagged day), since it means the sample or the build has drifted. A page with no LoC text is judged on the two builds alone (`"loc": "missing"`). The Linux replication instance leaves `XB_LOC_TEXTS` unset, so its limits (CER 0.01, ratio 0.98-1.02, F1 0.98) are unchanged.
+
 ## What to expect
 
 The same engine and models differ by 1% to 8% per page across builds, mostly page layout and not characters (the 30-crop challenge gave CER 7.19% on Windows against 7.16% on Linux). Measured on 13 Nov 2026, Windows `fd620775...` against the Linux engine `21877bc3...`: CER 0.9%, 1.3%, 2.1%, 4.5% and 8.0% (a page with a segmentation miss), with character ratios of 0.99 to 1.01. So the limits are loose: ratio 0.9 to 1.1, word F1 0.9 (insensitive to column order), CER 10%. Each daily JSON records the CER, F1 and ratio distributions (`summary.*_distribution`); tighten the limits after two weeks of them.
@@ -62,6 +66,8 @@ PLAN=native-feed-4
 ```
 
 Install (after the handoff pre-step below): the first install step above already provides `/opt/usnm-crossbuild`; add the env file, copy `usnm-crossbuild.slice`, `usnm-crossbuild-linux.service` and `.timer` to `/etc/systemd/system/`, then `systemctl daemon-reload && systemctl enable --now usnm-crossbuild-linux.timer`, and try `systemctl start usnm-crossbuild-linux.service` and `journalctl -t usnm-crossbuild-linux`. The handoff directory is filled by the pre-step drop-in below.
+
+Both units set `TimeoutStartSec=6h`: the Linux re-read took 2h20m under load. Do not keep a local drop-in for it.
 
 Tests: `python3 -m unittest boinc/scripts/test_native_crossbuild_check.py`.
 
