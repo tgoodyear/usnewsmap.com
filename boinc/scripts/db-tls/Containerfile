@@ -16,6 +16,7 @@ RUN python3 /checks/patch-server-db-tls.py --source /opt/boinc \
  && sed 's|@TOP_BUILD_DIR@|/opt/boinc|g' py/boinc_path_config.py.in > py/boinc_path_config.py
 COPY boinc/scripts/db-tls/ /checks/
 COPY boinc/scripts/qwen-tiebreak-policy.py /checks/qwen-tiebreak-policy.py
+COPY boinc/scripts/native-stranded.py /checks/native-stranded.py
 RUN g++ -O1 -ffunction-sections -fdata-sections -include bsd/string.h \
       -I. -Ilib -Idb $(mariadb_config --include) \
       db/db_base.cpp /checks/consumer.cpp -Wl,--gc-sections \

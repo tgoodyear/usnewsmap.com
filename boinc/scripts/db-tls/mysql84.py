@@ -144,6 +144,57 @@ def qwen_tiebreak():
                       "skipped_after_dispatch": 1, "cancelled_replica_dispatch_rows": 0}), flush=True)
 
 
+def native_silent():
+    """#1971: a silent host's in-progress native unit is cancelled, and one whose host came back
+    after it was listed is left exactly as it was. Runs on the schema qwen_tiebreak loaded."""
+    import importlib.util
+    import types
+
+    spec = importlib.util.spec_from_file_location("native_stranded", "/checks/native-stranded.py")
+    stranded = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(stranded)
+    now = int(sql("SELECT UNIX_TIMESTAMP()"))
+    app = fixture.insert_row(sql, "fixture", "app", create_time=now, name="usnm_ocr_native",
+                             user_friendly_name="Native")
+    units, hosts = {}, {}
+    for case, silent_for in (("silent", 20 * 3600), ("returns", 20 * 3600), ("recent", 3600)):
+        name = "usnm_" + hashlib.sha256(case.encode()).hexdigest()
+        hosts[case] = fixture.insert_row(sql, "fixture", "host", create_time=now - 86400 * 3,
+                                         rpc_time=now - silent_for)
+        units[case] = fixture.insert_row(
+            sql, "fixture", "workunit", create_time=now - 86400, appid=app, name=name, batch=9,
+            transitioner_flags=2, min_quorum=1, target_nresults=1, max_error_results=1,
+            max_total_results=1, max_success_results=1, delay_bound=259200, transition_time=now + 86400,
+            rsc_fpops_est=1e12, rsc_fpops_bound=1e13, size_class=-1)
+        fixture.insert_row(
+            sql, "fixture", "result", create_time=now - 86400, workunitid=units[case], appid=app, batch=9,
+            name=f"{name}_0", server_state=4, outcome=0, hostid=hosts[case], sent_time=now - 86400,
+            report_deadline=now + 86400, random=1, size_class=-1)
+    config = SHARE / "native-config.xml"
+    config.write_text("<boinc><config><db_host>tls-db.test</db_host><db_user>fixture</db_user>"
+                      "<db_passwd>fixture-only</db_passwd><db_name>fixture</db_name></config></boinc>")
+    args = types.SimpleNamespace(config=str(config), db_ca=str(fixture.CA), db_defaults=str(fixture.OPTIONS))
+    db = stranded.connect(args)
+    cur = db.cursor()
+    listed = {e["workunit"] for e in stranded.find(cur, str(SHARE / "none"), now, 6 * 3600)}
+    names = {case: sql(f"SELECT name FROM fixture.workunit WHERE id={unit}") for case, unit in units.items()}
+    assert listed == {names["silent"], names["returns"]}, listed
+    cutoff = now - 18 * 3600
+
+    def state(case):
+        return (sql(f"SELECT error_mask FROM fixture.workunit WHERE id={units[case]}"),
+                sql("SELECT CONCAT_WS(',',server_state,outcome) FROM fixture.result "
+                    f"WHERE workunitid={units[case]}"))
+
+    sql(f"UPDATE fixture.host SET rpc_time={now} WHERE id={hosts['returns']}")  # it came back after the listing
+    for case in ("silent", "returns", "recent"):
+        stranded.cancel(db, names[case], silent_before=cutoff)
+    assert state("silent") == ("16", "5,3"), state("silent")
+    assert state("returns") == ("0", "4,0"), state("returns")
+    assert state("recent") == ("0", "4,0"), state("recent")
+    print(json.dumps({"case": "mysql84-native-host-silent", "cancelled": 1, "left_alone": 2}), flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("phase", choices=("prepare", "matrix", "restart"))
@@ -175,6 +226,7 @@ def main():
     print(json.dumps({"case": "mysql84-server-requires-tls", "consumer": "unpatched-cli",
                       "outcome": "rejected", "mysql_errno": 3159}), flush=True)
     qwen_tiebreak()
+    native_silent()
 
 
 if __name__ == "__main__":
