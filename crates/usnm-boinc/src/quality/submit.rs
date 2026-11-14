@@ -3,15 +3,18 @@
 //!
 //! `places.txt` is the same file for every unit of a campaign: its physical
 //! name is its checksum, so the download tree holds it once and a host
-//! downloads it once (the input template marks it sticky).
-use super::{units, APP, JOB_FILE, PLACES_FILE};
+//! downloads it once (the input template marks it sticky). The quality
+//! measure's resource file (`qe.bin`), in units whose job names one, is
+//! shared the same way by every unit of its language
+//! (`usnm_quality_qe_in`).
+use super::{units, APP, JOB_FILE, PLACES_FILE, QE_FILE};
 use crate::{atomic, read};
 use anyhow::ensure;
 use std::path::PathBuf;
 use tokio::process::Command;
 use usnm_ocr_contract::quality::{
     Job, MAX_ALTO, MAX_BUNDLE_ALTO, MAX_BUNDLE_SCAN, MAX_BUNDLE_TEXTS, MAX_JOB_JSON, MAX_PLACES,
-    MAX_SCAN, MAX_TEXTS,
+    MAX_QE, MAX_SCAN, MAX_TEXTS,
 };
 
 #[derive(Debug, Clone)]
@@ -58,7 +61,11 @@ pub fn create_work_args(job: &Job) -> Vec<String> {
         "--wu_name",
         &job.workunit(),
         "--wu_template",
-        "templates/usnm_quality_in",
+        if job.qe.is_some() {
+            "templates/usnm_quality_qe_in"
+        } else {
+            "templates/usnm_quality_in"
+        },
         "--result_template",
         "templates/usnm_quality_out",
         "--min_quorum",
@@ -93,7 +100,7 @@ pub fn create_work_args(job: &Job) -> Vec<String> {
 /// unit file each comes from. The places file is named by its checksum,
 /// shared across the campaign.
 pub fn physical_names(job: &Job) -> Vec<(String, &'static str)> {
-    vec![
+    let mut names = vec![
         (format!("{}_page_jpg", job.id), super::PAGE_FILE),
         (format!("{}_loc_xml", job.id), super::ALTO_FILE),
         (format!("{}_texts_json", job.id), super::TEXTS_FILE),
@@ -101,8 +108,12 @@ pub fn physical_names(job: &Job) -> Vec<(String, &'static str)> {
             format!("usnm_quality_places_v2_{}", job.inputs.places.sha256),
             PLACES_FILE,
         ),
-        (format!("{}_quality_json", job.id), JOB_FILE),
-    ]
+    ];
+    if let Some(qe) = &job.qe {
+        names.push((format!("usnm_quality_qe_v1_{}", qe.input.sha256), QE_FILE));
+    }
+    names.push((format!("{}_quality_json", job.id), JOB_FILE));
+    names
 }
 
 fn limit(file: &str) -> usize {
@@ -111,6 +122,7 @@ fn limit(file: &str) -> usize {
         super::ALTO_FILE => MAX_BUNDLE_ALTO.max(MAX_ALTO),
         super::TEXTS_FILE => MAX_BUNDLE_TEXTS.max(MAX_TEXTS),
         PLACES_FILE => MAX_PLACES,
+        QE_FILE => MAX_QE,
         _ => MAX_JOB_JSON,
     }
 }
@@ -150,6 +162,13 @@ pub async fn run_selected(
             ensure!(
                 input.matches(&read(&unit.join(file), limit(file))?),
                 "staged {file} changed for {}",
+                job.doc_id
+            );
+        }
+        if let Some(qe) = &job.qe {
+            ensure!(
+                qe.input.matches(&read(&unit.join(QE_FILE), MAX_QE)?),
+                "staged {QE_FILE} changed for {}",
                 job.doc_id
             );
         }
@@ -240,5 +259,27 @@ mod tests {
         let args = create_work_args(&j);
         assert!(args.contains(&"templates/usnm_quality_in".to_string()));
         assert!(args.ends_with(&[names[3].0.clone(), names[4].0.clone()]));
+    }
+
+    #[test]
+    fn a_job_with_the_quality_measure_ships_its_shared_resource_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut j = crate::quality::work::tests::unit(tmp.path());
+        j.qe = Some(usnm_ocr_contract::quality::QeInput {
+            input: usnm_ocr_contract::quality::Input::of(b"qe", "lake:qe-resources/qe-v1/eng.qe"),
+            language: "eng".into(),
+        });
+        j.id = j.identity().unwrap();
+        let names = physical_names(&j);
+        let files: Vec<&str> = names.iter().map(|(_, f)| *f).collect();
+        assert_eq!(files, super::super::inputs_with_qe());
+        assert_eq!(
+            names[4].0,
+            format!("usnm_quality_qe_v1_{}", j.qe.as_ref().unwrap().input.sha256)
+        );
+        assert!(!names[4].0.contains(&j.id));
+        let args = create_work_args(&j);
+        assert!(args.contains(&"templates/usnm_quality_qe_in".to_string()));
+        assert!(args.ends_with(&[names[4].0.clone(), names[5].0.clone()]));
     }
 }

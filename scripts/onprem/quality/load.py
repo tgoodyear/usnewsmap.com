@@ -62,6 +62,8 @@ SCORE_COLS = [
     "campaign", "doc_id", "reader", "source", "chars", "words", "est_cer", "est_cer_raw",
     "completeness", "precision", "findable_content", "findable_places", "cer_vs_loc",
     "wer_vs_loc", "dice_vs_loc", "pairs", "est_cer_v1", "est_cer_raw_v1", "matched",
+    "qe_version", "qe_resources", "qe_words", "qe_known3", "qe_no_words", "qe_oov", "qe_charlm_bpc",
+    "qe_lm_oov",
 ]
 PAGE_COLS = ["doc_id", "batch", "batch_version", "lccn", "date", "edition", "seq", "lang"]
 DAMAGE_COLS = [
@@ -251,6 +253,10 @@ def result_rows(table, campaign):
                 num(r.get("est_cer_v1") if v2 else r.get("est_cer")),
                 num(r.get("est_cer_raw_v1") if v2 else r.get("est_cer_raw")),
                 num(r.get("matched")),
+                # The unit's quality measure (usnm_core::qe); null in tables without it.
+                r.get("qe_version"), r.get("qe_resources"), integer(r.get("qe_words")),
+                integer(r.get("qe_known3")), r.get("qe_no_words"), num(r.get("qe_oov")),
+                num(r.get("qe_charlm_bpc")), num(r.get("qe_lm_oov")),
             ))
     return units, scores
 

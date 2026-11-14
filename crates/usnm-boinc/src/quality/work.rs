@@ -129,6 +129,7 @@ pub(crate) mod tests {
             alto: &l.alto,
             texts: &l.texts,
             places: &l.places,
+            qe: l.qe.as_deref(),
         })
         .unwrap();
         let r = &c.result;
@@ -160,6 +161,7 @@ pub(crate) mod tests {
             alto: &l.alto,
             texts: &l.texts,
             places: &l.places,
+            qe: l.qe.as_deref(),
         })
         .unwrap();
         assert_eq!(again.result.canonical(), r.canonical());

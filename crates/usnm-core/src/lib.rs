@@ -17,6 +17,7 @@
 //! - [`lang`]: MARC, ISO 639-3 and word-list language codes; with feature `damage`, the word lists (12 §12.5, #296)
 //! - [`query`]: the user query language and its limits (06 §6.4)
 //! - [`query_language`]: the language of a query's words, for its baseline (06 §6.3.3, #237)
+//! - `qe` (feature `qe`): reference-free OCR quality measures, version 1 (docs/reports/2026-11-ocr-quality-estimation)
 //! - [`params`]: request parameters and canonical cache keys (06 §6.3)
 //! - [`cube`]: the sparse place × bucket cube (06 §6.3.3)
 //! - [`names`]: LoC's language and state names (04 §4.6)
@@ -45,6 +46,8 @@ pub mod ocr_variants;
 pub mod page_id;
 pub mod page_language;
 pub mod params;
+#[cfg(feature = "qe")]
+pub mod qe;
 pub mod query;
 pub mod query_language;
 pub mod retry_after;

@@ -114,6 +114,11 @@ pub struct Options {
     /// after the rows are computed, and a part keyed on inputs that were rewritten meanwhile is
     /// never used by a later publication. Needs `cache`.
     pub warm_only: bool,
+    /// The quality measure's resource files (`<lang>.qe`, pinned by
+    /// `ocr/qe/resources.lock.json`): every crop text of a page of a language
+    /// with one is measured into `crops.parquet`'s `qe_*` columns. Pages carry
+    /// the unit's own measure whatever this is.
+    pub qe_dir: Option<PathBuf>,
 }
 
 /// What a collection did besides its rows, for the operator and the driver.
@@ -190,6 +195,55 @@ pub struct CropRow {
     pub region_overlap: bool,
     pub region_kind: Option<String>,
     pub region_legibility: Option<String>,
+    /// The quality measure of `text`, with `collect --qe-dir`.
+    #[serde(flatten)]
+    pub qe: QeColumns,
+}
+
+/// The reference-free quality measure of a reader's text (`usnm_core::qe`,
+/// `ocr/qe/README.md`) as table columns: in `pages.parquet` the unit's own
+/// (`ReaderReport::qe`), in `crops.parquet` the server's with
+/// `collect --qe-dir`. All null without one. `qe_version` is the measure's
+/// version and `qe_resources` the sha256 of the resource file.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct QeColumns {
+    #[serde(default)]
+    pub qe_version: Option<String>,
+    #[serde(default)]
+    pub qe_resources: Option<String>,
+    #[serde(default)]
+    pub qe_words: Option<u64>,
+    #[serde(default)]
+    pub qe_known3: Option<u64>,
+    #[serde(default)]
+    pub qe_chars: Option<u64>,
+    #[serde(default)]
+    pub qe_no_words: Option<bool>,
+    #[serde(default)]
+    pub qe_oov: Option<f64>,
+    #[serde(default)]
+    pub qe_charlm_bpc: Option<f64>,
+    #[serde(default)]
+    pub qe_lm_oov: Option<f64>,
+}
+
+impl QeColumns {
+    pub fn of(r: Option<&usnm_ocr_contract::quality::QeReport>) -> Self {
+        let Some(r) = r else {
+            return Self::default();
+        };
+        Self {
+            qe_version: Some(r.version.clone()),
+            qe_resources: Some(r.resources.clone()),
+            qe_words: Some(r.words),
+            qe_known3: Some(r.known3),
+            qe_chars: Some(r.chars),
+            qe_no_words: Some(r.no_words),
+            qe_oov: r.oov,
+            qe_charlm_bpc: r.charlm_bpc,
+            qe_lm_oov: r.lm_oov,
+        }
+    }
 }
 
 /// What the crop join needs for one page.
@@ -210,6 +264,9 @@ pub struct CropInputs<'a> {
     pub vouch: Option<&'a crate::qwen::consensus::Vouch>,
     /// Surya's read of each crop, by crop id, from the crop units.
     pub surya: Option<&'a BTreeMap<String, crate::surya::collect::CropText>>,
+    /// The quality measure of the page's language, to measure every crop
+    /// text with (`collect --qe-dir`).
+    pub qe: Option<&'a usnm_ocr_quality::qe::Measure>,
 }
 
 /// One reader's text in a crop box and the region of its text that
@@ -340,6 +397,10 @@ pub fn crop_rows(inputs: &CropInputs) -> Vec<CropRow> {
             region_overlap: false,
             region_kind: None,
             region_legibility: None,
+            qe: QeColumns::default(),
+        };
+        let measured = |text: Option<&str>| {
+            QeColumns::of(inputs.qe.zip(text).map(|(m, t)| m.report(t)).as_ref())
         };
         for (name, text, overlap, kind, legibility) in &texts {
             let mut row = base(name.clone());
@@ -347,6 +408,7 @@ pub fn crop_rows(inputs: &CropInputs) -> Vec<CropRow> {
             row.region_overlap = *overlap;
             row.region_kind = kind.clone();
             row.region_legibility = legibility.clone();
+            row.qe = measured(text.as_deref());
             if let (Some(t), Some(v)) = (text, vlm) {
                 let p = align::pair(t, &v.text);
                 row.cer_vs_vlm = Some(round6(p.cer_a));
@@ -358,6 +420,7 @@ pub fn crop_rows(inputs: &CropInputs) -> Vec<CropRow> {
         if let Some(v) = vlm {
             let mut row = base(VLM.into());
             row.text = Some(v.text.clone());
+            row.qe = measured(Some(&v.text));
             row.cer_vs_vlm = Some(0.0);
             row.dice_vs_vlm = Some(1.0);
             row.hat_est_cer = est(VLM);
@@ -366,6 +429,7 @@ pub fn crop_rows(inputs: &CropInputs) -> Vec<CropRow> {
         if let Some(c) = surya {
             let mut row = base(SURYA.into());
             row.text = Some(c.text.clone());
+            row.qe = measured(Some(&c.text));
             if let Some(v) = vlm {
                 let p = align::pair(&c.text, &v.text);
                 row.cer_vs_vlm = Some(round6(p.cer_a));
@@ -460,6 +524,10 @@ pub struct PageRow {
     pub matched: Option<f64>,
     /// Version 2: the page's pairs (`page_hat::PairD`) as JSON; empty for 1.
     pub hat_pairs_json: String,
+    /// The unit's quality measure of the reader's text, when its job
+    /// carried the language's resource file.
+    #[serde(flatten)]
+    pub qe: QeColumns,
 }
 
 fn compute_ink_word_coverage(
@@ -676,6 +744,7 @@ pub fn page_rows(job: &Job, r: &ResultManifest, with_readings: bool) -> Vec<Page
                 legibility_ceiling_v1: r.legibility.as_ref().and_then(|l| l.ceiling_est),
                 matched: None,
                 hat_pairs_json: String::new(),
+                qe: QeColumns::of(x.qe.as_ref()),
             }
         })
         .collect()
@@ -768,6 +837,7 @@ pub fn bundle_page_rows(
                 legibility_ceiling_v1: pr.legibility.as_ref().and_then(|l| l.ceiling_est),
                 matched: None,
                 hat_pairs_json: String::new(),
+                qe: QeColumns::of(x.qe.as_ref()),
             }
         })
         .collect()
@@ -785,18 +855,34 @@ enum Column {
 /// all integers as `Int64`, others as `Float64`. Field order is the
 /// struct's.
 pub fn to_parquet<T: serde::Serialize>(rows: &[T]) -> anyhow::Result<Vec<u8>> {
-    to_parquet_typed(rows, &[])
+    to_parquet_typed(rows, QE_TYPES)
 }
 
+/// The quality-measure columns keep their types when every value is null
+/// (no `--qe-dir`, units staged without the file, readings with no words).
+const QE_TYPES: &[(&str, DataType)] = &[
+    ("qe_version", DataType::Utf8),
+    ("qe_resources", DataType::Utf8),
+    ("qe_words", DataType::Int64),
+    ("qe_known3", DataType::Int64),
+    ("qe_chars", DataType::Int64),
+    ("qe_no_words", DataType::Boolean),
+    ("qe_oov", DataType::Float64),
+    ("qe_charlm_bpc", DataType::Float64),
+    ("qe_lm_oov", DataType::Float64),
+];
+
 fn crop_parquet(rows: &[CropRow]) -> anyhow::Result<Vec<u8>> {
-    to_parquet_typed(
-        rows,
-        &[
+    let types: Vec<(&str, DataType)> = QE_TYPES
+        .iter()
+        .cloned()
+        .chain([
             ("vlm_reference_chars", DataType::Int64),
             ("vlm_reference_words", DataType::Int64),
             ("vlm_reading_present", DataType::Boolean),
-        ],
-    )
+        ])
+        .collect();
+    to_parquet_typed(rows, &types)
 }
 
 fn to_parquet_typed<T: serde::Serialize>(
@@ -829,6 +915,36 @@ fn to_parquet_typed<T: serde::Serialize>(
                             v.as_i64()
                                 .map(Some)
                                 .with_context(|| format!("column {name} must fit Int64"))
+                        }
+                    })
+                    .collect::<anyhow::Result<_>>()?,
+            )
+        } else if hint == Some(&DataType::Float64) {
+            Column::F64(
+                cells
+                    .iter()
+                    .map(|v| {
+                        if v.is_null() {
+                            Ok(None)
+                        } else {
+                            v.as_f64()
+                                .map(Some)
+                                .with_context(|| format!("column {name} must be Float64"))
+                        }
+                    })
+                    .collect::<anyhow::Result<_>>()?,
+            )
+        } else if hint == Some(&DataType::Utf8) {
+            Column::Str(
+                cells
+                    .iter()
+                    .map(|v| {
+                        if v.is_null() {
+                            Ok(None)
+                        } else {
+                            v.as_str()
+                                .map(|x| Some(x.to_owned()))
+                                .with_context(|| format!("column {name} must be Utf8"))
                         }
                     })
                     .collect::<anyhow::Result<_>>()?,
@@ -1358,6 +1474,11 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
         .map(|dir| super::collect_cache::Cache::new(dir, opts))
         .transpose()?;
     let inventory_secs = started.elapsed().as_secs_f64();
+    let qe = opts
+        .qe_dir
+        .as_deref()
+        .map(super::qe::Dir::open)
+        .transpose()?;
     let mut dirty = 0;
     let mut deferred = false;
     let mut summary = Summary::default();
@@ -1500,6 +1621,10 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
                     None => serde_json::from_slice(&read(&unit.join(TEXTS_FILE), MAX_TEXTS)?)?,
                 };
                 let readers: Vec<String> = job.readers.iter().map(|r| r.name.clone()).collect();
+                let measure = match &qe {
+                    Some(d) => d.measure(&job.language)?,
+                    None => None,
+                };
                 crop_table.extend(crop_rows(&CropInputs {
                     doc_id: &job.doc_id,
                     job_id: &job.id,
@@ -1511,6 +1636,7 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
                     readings,
                     vouch,
                     surya: surya_crops,
+                    qe: measure.as_deref(),
                 }));
             }
         } else {
@@ -1600,6 +1726,10 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
                     };
                     let texts: Texts = serde_json::from_slice(t_bytes)?;
                     let readers: Vec<String> = bp.readers.iter().map(|r| r.name.clone()).collect();
+                    let measure = match &qe {
+                        Some(d) => d.measure(&bp.language)?,
+                        None => None,
+                    };
                     crop_table.extend(crop_rows(&CropInputs {
                         doc_id: &bp.doc_id,
                         job_id: &job.id,
@@ -1611,6 +1741,7 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
                         readings,
                         vouch,
                         surya: surya_crops,
+                        qe: measure.as_deref(),
                     }));
                 }
             }
@@ -1796,6 +1927,52 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn page_rows_carry_the_units_quality_measure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job = crate::quality::work::tests::unit(tmp.path());
+        let l = crate::quality::work::prepare(tmp.path()).unwrap();
+        let mut c = crate::quality::work::compute(&crate::quality::work::Inputs {
+            job: &l.job,
+            page: &l.page,
+            alto: &l.alto,
+            texts: &l.texts,
+            places: &l.places,
+            qe: None,
+        })
+        .unwrap();
+        c.result.readers[0].qe = Some(usnm_ocr_contract::quality::QeReport {
+            version: "qe-v1".into(),
+            resources: "c".repeat(64),
+            words: 10,
+            known3: 7,
+            chars: 60,
+            no_words: false,
+            oov: Some(0.1),
+            charlm_bpc: Some(2.0),
+            lm_oov: Some(2.542466),
+        });
+        let rows = page_rows(&job, &c.result, false);
+        assert_eq!(rows[0].qe.qe_lm_oov, Some(2.542466));
+        assert_eq!(rows[0].qe.qe_known3, Some(7));
+        assert_eq!(rows[1].qe, QeColumns::default());
+        // Measured and all-null tables have the same column types.
+        let schema = |rows: &[PageRow]| {
+            let bytes = bytes::Bytes::from(to_parquet(rows).unwrap());
+            let r = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(bytes)
+                .unwrap();
+            r.schema()
+                .fields()
+                .iter()
+                .filter(|f| f.name().starts_with("qe_"))
+                .map(|f| (f.name().clone(), f.data_type().clone()))
+                .collect::<Vec<_>>()
+        };
+        let measured = schema(&rows);
+        assert_eq!(measured.len(), 9);
+        assert_eq!(measured, schema(&rows[1..]));
+    }
+
+    #[test]
     fn crop_rows_compare_every_reader_with_the_reading() {
         let tmp = tempfile::tempdir().unwrap();
         let job = crate::quality::work::tests::unit(tmp.path());
@@ -1834,6 +2011,7 @@ pub(super) mod tests {
             readings: Some(&readings),
             vouch: None,
             surya: None,
+            qe: None,
         });
         // Three readers plus the vision-language row per crop.
         assert_eq!(rows.len(), crops.len() * 4);
@@ -1860,6 +2038,48 @@ pub(super) mod tests {
         assert_eq!(as_row.cer_vs_vlm, None);
         let vlm_row = rows.iter().find(|r| r.reader == VLM).unwrap();
         assert_eq!(vlm_row.dice_vs_vlm, Some(1.0));
+        assert_eq!(vlm_row.qe, QeColumns::default());
+        // With the language's measure every crop text is measured, the
+        // reading too, and a reader with no text in the box is not.
+        let text: String = crops.iter().map(|c| format!("{} ", c.loc_text)).collect();
+        let (entries, vocab) = usnm_core::qe::counts(&text.to_lowercase(), 5);
+        let bytes = usnm_core::qe::pack(
+            text.to_lowercase().split_whitespace().map(str::to_owned),
+            entries,
+            &usnm_core::qe::PackOptions {
+                language: "eng",
+                order: 5,
+                vocab,
+                prune_min_count: 1,
+                prune_from_order: 5,
+                hunspell: false,
+                licence: "CC-BY-SA-4.0",
+                notice: "test\n",
+            },
+        )
+        .unwrap();
+        let measure = usnm_ocr_quality::qe::Measure::load(&bytes).unwrap();
+        let measured = crop_rows(&CropInputs {
+            doc_id: "p1",
+            job_id: &job.id,
+            loc: &loc,
+            ours: None,
+            texts: &l.texts,
+            readers: &readers,
+            crops: &crops,
+            readings: Some(&readings),
+            vouch: None,
+            surya: None,
+            qe: Some(&measure),
+        });
+        for r in &measured {
+            assert_eq!(r.qe.qe_version.is_some(), r.text.is_some(), "{}", r.reader);
+        }
+        let m = |name: &str| measured.iter().find(|r| r.reader == name).unwrap();
+        assert_eq!(m("loc").qe.qe_resources.as_deref(), Some(measure.sha256()));
+        assert!(m(VLM).qe.qe_lm_oov.is_some());
+        let parquet = crop_parquet(&measured).unwrap();
+        assert!(!parquet.is_empty());
         // Without readings there are reader rows and nothing to compare.
         let rows = crop_rows(&CropInputs {
             doc_id: "p1",
@@ -1872,6 +2092,7 @@ pub(super) mod tests {
             readings: None,
             vouch: None,
             surya: None,
+            qe: None,
         });
         assert_eq!(rows.len(), crops.len() * 3);
         assert!(rows.iter().all(|r| r.vlm_text.is_none()));
@@ -1924,6 +2145,7 @@ pub(super) mod tests {
             readings: Some(&readings),
             vouch: None,
             surya: Some(&surya),
+            qe: None,
         });
         assert_eq!(rows.len(), crops.len() * 4 + 1);
         // The same id with another box (a campaign cut with another seed)
@@ -1941,6 +2163,7 @@ pub(super) mod tests {
             readings: Some(&readings),
             vouch: None,
             surya: Some(&other),
+            qe: None,
         });
         assert_eq!(misaligned.len(), crops.len() * 4);
         assert!(misaligned.iter().all(|r| r.reader != SURYA));
@@ -2007,6 +2230,7 @@ pub(super) mod tests {
                 readings: Some(&readings),
                 vouch: None,
                 surya: None,
+                qe: None,
             });
             assert!(!rows.is_empty());
             assert!(rows.iter().all(|r| {
@@ -2109,6 +2333,7 @@ pub(super) mod tests {
             max_dirty_units: 8,
             max_compute: None,
             warm_only: false,
+            qe_dir: None,
         })
         .unwrap();
         assert_eq!(
@@ -2143,6 +2368,7 @@ pub(super) mod tests {
             alto: &l.alto,
             texts: &l.texts,
             places: &l.places,
+            qe: l.qe.as_deref(),
         })
         .unwrap();
         let mut legacy = serde_json::to_value(&c.result).unwrap();
@@ -2218,6 +2444,7 @@ pub(super) mod tests {
             alto: &l.alto,
             texts: &l.texts,
             places: &l.places,
+            qe: l.qe.as_deref(),
         })
         .unwrap();
         job.language = "eng".into();
@@ -2268,6 +2495,7 @@ pub(super) mod tests {
             alto: &l.alto,
             texts: &l.texts,
             places: &l.places,
+            qe: l.qe.as_deref(),
         })
         .unwrap();
         let mut rows = page_rows(&job, &c.result, false);
@@ -2332,6 +2560,7 @@ pub(super) mod tests {
             max_dirty_units: 1,
             max_compute: None,
             warm_only: false,
+            qe_dir: None,
         };
         canonical(&unit, &job, &opts.spool);
         (opts, unit, job)
@@ -2400,6 +2629,7 @@ pub(super) mod tests {
         let (opts, _, _) = cached_fixture(dir.path()).await;
         let warm = Options {
             warm_only: true,
+            qe_dir: None,
             out_dir: None,
             ..opts.clone()
         };
@@ -3465,6 +3695,7 @@ pub(super) mod tests {
             max_dirty_units: 8,
             max_compute: None,
             warm_only: false,
+            qe_dir: None,
         };
         let cached = Options {
             cache: Some(tmp.path().join("cache")),

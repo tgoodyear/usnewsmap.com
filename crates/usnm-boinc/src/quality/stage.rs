@@ -17,7 +17,8 @@
 //! the campaign's, the same file for every unit; the function words are
 //! the page's language's, from `--function-words-dir/<lang>.txt`.
 use super::{
-    check_no_hold, units, PageSpec, ALTO_FILE, JOB_FILE, PAGE_FILE, PLACES_FILE, TEXTS_FILE,
+    check_no_hold, units, PageSpec, ALTO_FILE, JOB_FILE, PAGE_FILE, PLACES_FILE, QE_FILE,
+    TEXTS_FILE,
 };
 use crate::{assess::SampleRow, atomic, read};
 use anyhow::{ensure, Context};
@@ -96,6 +97,10 @@ pub struct Options {
     pub bundle_size: usize,
     pub scan_archive: Option<String>,
     pub batch_cache: Option<PathBuf>,
+    /// The quality measure's resource files (`<lang>.qe`, pinned by
+    /// `ocr/qe/resources.lock.json`): a unit of a language with one carries
+    /// it as `qe.bin`. Only for app versions that read it.
+    pub qe_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Default)]
@@ -179,6 +184,11 @@ pub async fn run_with(opts: &Options, src: &crate::scans::Sources) -> anyhow::Re
     };
     let places = read_places(&opts.places)?;
     ensure!(places.len() <= MAX_PLACES, "places over size limit");
+    let qe = opts
+        .qe_dir
+        .as_deref()
+        .map(super::qe::Dir::open)
+        .transpose()?;
     // What a crash left half-written is cleared here, so the run stages and packs it again
     // rather than submitting it (#529: the share runs with synchronous writes off).
     // Only the bundles named after one of the run's pages are read up front: a run packs its
@@ -262,7 +272,7 @@ pub async fn run_with(opts: &Options, src: &crate::scans::Sources) -> anyhow::Re
             atomic(&unit.join(SAMPLE_FILE), &serde_json::to_vec(row)?)?;
         }
         let fw = function_words[&p.lang].clone();
-        match page(src, p, &unit, opts, &places, fw).await {
+        match page(src, p, &unit, opts, &places, fw, qe.as_ref()).await {
             Ok(Some(loc_only)) => {
                 summary.staged += 1;
                 if loc_only {
@@ -416,6 +426,7 @@ async fn page(
     opts: &Options,
     places: &str,
     function_words: Vec<String>,
+    qe: Option<&super::qe::Dir>,
 ) -> anyhow::Result<Option<bool>> {
     let key = PageKey::from_doc_id(&p.doc_id)?;
     let scan = match opts
@@ -462,6 +473,10 @@ async fn page(
     );
     let loc_only = texts.readers.len() == 1;
     let ours = opts.texts_dir.join(format!("{}.ours.xml", p.doc_id));
+    let qe_input = match qe {
+        Some(d) => d.input(&p.lang)?,
+        None => None,
+    };
     let job = write_unit(&WriteUnit {
         dir: unit,
         doc_id: &p.doc_id,
@@ -479,6 +494,9 @@ async fn page(
         function_words,
         crop_seed: opts.crop_seed,
         k_crops: opts.k_crops,
+        qe: qe_input
+            .as_ref()
+            .map(|(path, input)| (path.as_path(), input.clone())),
     })?;
     if ours.exists() {
         atomic(&unit.join(OURS_ALTO_FILE), &read(&ours, MAX_ALTO)?)?;
@@ -783,6 +801,7 @@ pub(crate) mod tests {
             bundle_size: 1,
             scan_archive: None,
             batch_cache: None,
+            qe_dir: None,
         };
         let s = run(&opts).await.unwrap();
         assert_eq!((s.staged, s.missing, s.already, s.loc_only), (1, 0, 0, 0));
@@ -1009,6 +1028,7 @@ pub(crate) mod tests {
             bundle_size: 1,
             scan_archive: None,
             batch_cache: None,
+            qe_dir: None,
         };
 
         let sum = run_with(&opts, &src).await.unwrap();
@@ -1108,6 +1128,7 @@ pub(crate) mod tests {
             bundle_size,
             scan_archive: None,
             batch_cache: None,
+            qe_dir: None,
         }
     }
 

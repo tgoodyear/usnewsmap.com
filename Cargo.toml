@@ -68,10 +68,14 @@ chrono = { version = "0.4", default-features = false, features = ["std", "serde"
 clap = { version = "4", features = ["derive", "env"] }
 flate2 = "1"
 form_urlencoded = "1"
+# The reference-free OCR quality measure's lexicon and character model (usnm-core `qe`).
+fst = "0.4"
 http-body-util = "0.1"
 futures = "0.3"
 governor = "0.10"
 httpdate = "1"
+# Platform-independent log2 for the quality measure (usnm-core `qe`), so two hosts agree to the bit.
+libm = "0.2"
 # JPEG and PNG decoding for the gold bundle (usnm-ocr-survey) and the page features of the OCR
 # quality estimate (usnm-ocr-quality, #522).
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

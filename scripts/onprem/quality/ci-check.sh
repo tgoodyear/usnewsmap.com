@@ -43,7 +43,9 @@ x = {"doc_id": d, "batch": "b", "batch_version": 1, "lccn": "sn1", "date": datet
      "edition": 1, "seq": 1, "lang": "eng", "damage_rate": 0.4, "decision": "detected"}
 pages, damage = m.damage_rows([x], "damage-v2")
 units, scores = m.result_rows([{"doc_id": d, "reader": "loc-hist", "est_cer": "0.3", "outcome": "ok",
-                                "job_id": "j", "blocks": 3, "pairs_json": '{"as": {"cer_sym": 0.4}}'}], "v1-ci")
+                                "job_id": "j", "blocks": 3, "pairs_json": '{"as": {"cer_sym": 0.4}}',
+                                "qe_version": "qe-v1", "qe_resources": "a" * 64, "qe_words": 10, "qe_known3": 7,
+                                "qe_no_words": False, "qe_oov": 0.1, "qe_charlm_bpc": 2.0, "qe_lm_oov": 2.542466}], "v1-ci")
 print(m.campaign_sql("damage-v2", "damage") + m.campaign_sql("v1-ci", "boinc-quality", engine="sha256:" + "a" * 64)
       + m.upsert_sql("pages", m.PAGE_COLS, ["doc_id"], pages) + m.upsert_sql("damage", m.DAMAGE_COLS, ["doc_id"], damage)
       + m.upsert_sql("unit_pages", m.UNIT_COLS, ["campaign", "doc_id"], units)
@@ -86,6 +88,8 @@ PY
 } | psql_admin -d usnm_quality > /dev/null
 got=$(psql_admin -d usnm_quality -tA -c "SELECT doc_id, damage_rate, loc_est_cer, has_image_features, loc_as_local_cer_sym FROM quality.page_summary")
 [ "$got" = "sn1_1900-01-01_ed-1_seq-1|0.4|0.3|t|0.08" ] || die "page_summary after the load: $got"
+got=$(psql_admin -d usnm_quality -tA -c "SELECT qe_version, qe_known3, qe_no_words, round(qe_lm_oov::numeric, 3) FROM quality.reader_scores WHERE campaign = 'v1-ci'")
+[ "$got" = "qe-v1|7|f|2.542" ] || die "reader_scores' quality measure after the load: $got"
 got=$(psql_admin -d usnm_quality -tA -c "SELECT engine_family, engine_version, software->1->>'name', vendor FROM quality.pages p JOIN quality.loc_software USING (batch, batch_version)")
 [ "$got" = "abbyy|12.0|FineReader|CCS Content Conversion Specialists" ] || die "loc_software after the load: $got"
 { echo "SET ROLE quality_reader;"; cat "$here/rank.sql"; } | psql_admin -d usnm_quality -v limit=5 > /dev/null

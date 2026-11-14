@@ -237,6 +237,7 @@ HAND_PARSED = {
     # argv[0] says it started as `tesseract`; the rest goes to the engine unread (#1418).
     "crates/usnm-boinc/src/native.rs": 2,
     "crates/usnm-core/examples/add_text_cg.rs": 1,
+    "crates/usnm-core/examples/qe.rs": 1,
     "crates/usnm-core/examples/term_skew.rs": 1,
     "crates/usnm-ingest/examples/decade_fixture.rs": 1,
     "crates/usnm-ingest/examples/page_language_fixture.rs": 1,

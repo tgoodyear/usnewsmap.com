@@ -124,6 +124,7 @@ pub fn analyse(inputs: &PageInputs) -> Analysis {
             precision: round6_opt(cov.precision),
             source: r.source.clone(),
             words: tokens[i].len(),
+            qe: None,
         });
         confusions.insert(r.name.clone(), per_reader[i].top(confusion::TOP));
     }

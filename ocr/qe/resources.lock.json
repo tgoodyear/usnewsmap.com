@@ -1,0 +1,133 @@
+{
+  "languages": {
+    "ces": {
+      "bytes": 4744052,
+      "file": "ces.qe",
+      "hunspell": false,
+      "lexicon_words": 600568,
+      "licence": "CC-BY-SA-4.0",
+      "model_entries": 242312,
+      "sha256": "0a919e0f61fe462b827dc298be432b0a592c731bc35c972d6bc86ce49cc1d0eb"
+    },
+    "dan": {
+      "bytes": 3722537,
+      "file": "dan.qe",
+      "hunspell": true,
+      "lexicon_words": 836118,
+      "licence": "CC-BY-SA-4.0 AND MPL-1.1",
+      "model_entries": 129511,
+      "sha256": "89e3265543912d3aea9fbf6f30a5a959f655e969976300bec0e1cda3e27e5bd8"
+    },
+    "deu": {
+      "bytes": 4749592,
+      "file": "deu.qe",
+      "hunspell": false,
+      "lexicon_words": 628530,
+      "licence": "CC-BY-SA-4.0",
+      "model_entries": 156810,
+      "sha256": "e2b3190dbfdb792d346a9c0ef0cd1fd3158748ab4f348159d9e35b99b1a8dcbf"
+    },
+    "eng": {
+      "bytes": 2558531,
+      "file": "eng.qe",
+      "hunspell": true,
+      "lexicon_words": 345920,
+      "licence": "CC-BY-SA-4.0 AND LicenseRef-SCOWL",
+      "model_entries": 107230,
+      "sha256": "f0f34a3329f777e0b5cca5279c3dedd491d55dbc1271f4f084b120cfe84eb024"
+    },
+    "fin": {
+      "bytes": 4979354,
+      "file": "fin.qe",
+      "hunspell": false,
+      "lexicon_words": 726404,
+      "licence": "CC-BY-SA-4.0",
+      "model_entries": 168851,
+      "sha256": "2b0ce63c6a6c55f42fb178f35a1363edb7725a43bcbab83c00a25e073767a3d5"
+    },
+    "fra": {
+      "bytes": 3713688,
+      "file": "fra.qe",
+      "hunspell": true,
+      "lexicon_words": 839480,
+      "licence": "CC-BY-SA-4.0 AND MPL-2.0",
+      "model_entries": 140362,
+      "sha256": "e85962cfd85b895725ed55146370005147620699b8a4c14284aa3ca1ee0ce89a"
+    },
+    "nor": {
+      "bytes": 4663810,
+      "file": "nor.qe",
+      "hunspell": true,
+      "lexicon_words": 846466,
+      "licence": "CC-BY-SA-4.0 AND CC-BY-4.0",
+      "model_entries": 196637,
+      "sha256": "bd880be017c881e1ad639ac1c5b46e6f70b2830ec86edb2e33cf7f13fbe8ae8c"
+    },
+    "pol": {
+      "bytes": 5686345,
+      "file": "pol.qe",
+      "hunspell": true,
+      "lexicon_words": 4559913,
+      "licence": "CC-BY-SA-4.0 AND Apache-2.0",
+      "model_entries": 216312,
+      "sha256": "6423a0665e15673eb78b729eef61f0c6918b0cd45bb5efecebbdf075f6979134"
+    },
+    "rus": {
+      "bytes": 5367430,
+      "file": "rus.qe",
+      "hunspell": true,
+      "lexicon_words": 1564534,
+      "licence": "CC-BY-SA-4.0 AND LicenseRef-Lebedev-BSD",
+      "model_entries": 194047,
+      "sha256": "9634452a02757e25c5584cf1259905d261c67e37d65cc0ad48d02bd79ecea06a"
+    },
+    "slv": {
+      "bytes": 2560727,
+      "file": "slv.qe",
+      "hunspell": true,
+      "lexicon_words": 1159596,
+      "licence": "CC-BY-SA-4.0 AND LGPL-3.0-only",
+      "model_entries": 176028,
+      "sha256": "8017bb294798f552dbb7dd527f72d7f792c6ccae75afc4a8c837998571cf90a8"
+    },
+    "spa": {
+      "bytes": 3009210,
+      "file": "spa.qe",
+      "hunspell": true,
+      "lexicon_words": 1123723,
+      "licence": "CC-BY-SA-4.0 AND MPL-1.1",
+      "model_entries": 138811,
+      "sha256": "1934e100e4d2813a2bc6c7e0520fbca75a774d39c15d9ba0a088bd86cddf0b4e"
+    },
+    "srp": {
+      "bytes": 4694006,
+      "file": "srp.qe",
+      "hunspell": true,
+      "lexicon_words": 3176079,
+      "licence": "CC-BY-SA-4.0 AND MPL-2.0",
+      "model_entries": 191051,
+      "sha256": "259b90a96fa95db14753ebf438c90e167945108d261a9941daf1c477ec75e283"
+    },
+    "swe": {
+      "bytes": 4366529,
+      "file": "swe.qe",
+      "hunspell": true,
+      "lexicon_words": 1095002,
+      "licence": "CC-BY-SA-4.0 AND LGPL-3.0-only",
+      "model_entries": 132059,
+      "sha256": "eeef711b82473149137083d4825f1ebf913d0316de96a6dac15fbd6d57fea14f"
+    },
+    "yid": {
+      "bytes": 2046302,
+      "file": "yid.qe",
+      "hunspell": false,
+      "lexicon_words": 5000,
+      "licence": "CC-BY-SA-4.0",
+      "model_entries": 179503,
+      "sha256": "afcb43f550284c459e02c65b05cac25e367da9df4c733571a874ecfbf10d52e1"
+    }
+  },
+  "measure": "qe-v1",
+  "prune_from_order": 4,
+  "prune_min_count": 3
+}

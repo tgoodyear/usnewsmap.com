@@ -146,7 +146,19 @@ ALTER TABLE quality.reader_scores
   ADD COLUMN IF NOT EXISTS est_cer_v1     real,
   ADD COLUMN IF NOT EXISTS est_cer_raw_v1 real,
   -- Version 2: the mean share of this reader's characters placed in the other readers'.
-  ADD COLUMN IF NOT EXISTS matched        real;
+  ADD COLUMN IF NOT EXISTS matched        real,
+  -- The unit's reference-free quality measure of the reader's text (usnm_core::qe,
+  -- ocr/qe/README.md): qe_version is the measure's version, qe_resources the sha256 of the
+  -- language's resource file, qe_known3 the omission guard's count. Null for units staged
+  -- without the resource file. Nothing ranks or gates on these yet.
+  ADD COLUMN IF NOT EXISTS qe_version     text,
+  ADD COLUMN IF NOT EXISTS qe_resources   text,
+  ADD COLUMN IF NOT EXISTS qe_words       integer,
+  ADD COLUMN IF NOT EXISTS qe_known3      integer,
+  ADD COLUMN IF NOT EXISTS qe_no_words    boolean,
+  ADD COLUMN IF NOT EXISTS qe_oov         real,
+  ADD COLUMN IF NOT EXISTS qe_charlm_bpc  real,
+  ADD COLUMN IF NOT EXISTS qe_lm_oov      real;
 
 -- Rows loaded before these columns are version 1: their _v1 values are the unit's.
 UPDATE quality.unit_pages SET hat_determined_v1 = hat_determined, hat_residual_v1 = hat_residual,
