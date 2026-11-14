@@ -294,6 +294,13 @@ test("marking a task confusable_display sets its answers aside, keeps them, and 
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers_excluded WHERE task_id = 'chr/s/1'").get().n, 3, "the old answers stay set aside");
   const [y1] = await exported();
   assert.deepEqual([y1.counts.b, y1.counts.a, y1.excluded_counts.a, y1.outcome], [3, 0, 2, "b"]);
+  // a mark request that read the task before it was marked (a racing one) runs its statements now: they change nothing
+  const { MARK_CONFUSABLE_SQL } = await import("./worker.mjs");
+  const res = await DB.batch(MARK_CONFUSABLE_SQL.map((sql) => DB.prepare(sql).bind("chr/s/1")));
+  assert.equal(res[res.length - 1].meta.changes, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers WHERE task_id = 'chr/s/1'").get().n, 3, "the new answers are still active");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers_excluded WHERE task_id = 'chr/s/1'").get().n, 3);
+  assert.deepEqual(row("chr/s/1"), { n: 3, settled: 1, outcome: "b", confusable_display: 1, held: 0 });
   // reopening again, or marking again, does not disturb it
   assert.deepEqual((await (await adminCall(DB, "/admin/confusable", { action: "reopen", tasks: ["chr/s/1"] })).json()).unchanged, ["chr/s/1"]);
   assert.deepEqual((await (await adminCall(DB, "/admin/confusable", { action: "mark", tasks: ["chr/s/1"] })).json()).unchanged, ["chr/s/1"]);

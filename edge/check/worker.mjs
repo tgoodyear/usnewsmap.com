@@ -335,19 +335,22 @@ export async function record(env, task, contributor, choice, at = Date.now()) {
 // copied to answers_excluded, the copy is checked against the original, the originals leave `answers` (so they settle
 // nothing and count in no figure, and their authors may answer again) and the task is held out of the queue, unsettled,
 // with its count at zero. Nothing is deleted without a copy; the statement that checks the copy fails the batch if a row
-// is missing. ?1 is the task id.
+// is missing. Every statement is guarded by the task still being unmarked, inside the transaction, so a request that read
+// the task before another marked it (and the task was reopened and took new answers) changes nothing. ?1 is the task id.
 export const MARK_CONFUSABLE_SQL = [
-  `INSERT INTO answers_excluded (task_id, contributor, choice, at) SELECT task_id, contributor, choice, at FROM answers WHERE task_id = ?1`,
-  `SELECT CASE WHEN (SELECT COUNT(*) FROM answers_excluded WHERE task_id = ?1) < (SELECT COUNT(*) FROM answers WHERE task_id = ?1)
+  `INSERT INTO answers_excluded (task_id, contributor, choice, at) SELECT task_id, contributor, choice, at FROM answers
+     WHERE task_id = ?1 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND confusable_display = 0)`,
+  `SELECT CASE WHEN EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND confusable_display = 0)
+     AND (SELECT COUNT(*) FROM answers_excluded WHERE task_id = ?1) < (SELECT COUNT(*) FROM answers WHERE task_id = ?1)
      THEN json_extract('answers were not all copied', '$') END`,
-  `DELETE FROM answers WHERE task_id = ?1`,
+  `DELETE FROM answers WHERE task_id = ?1 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND confusable_display = 0)`,
   `UPDATE tasks SET confusable_display = 1, held = 1, n = 0, settled = 0, outcome = NULL WHERE id = ?1 AND confusable_display = 0`,
 ];
 // Reopening lets a marked task take new answers again. Its excluded answers stay excluded.
 export const REOPEN_CONFUSABLE_SQL = `UPDATE tasks SET held = 0 WHERE id = ?1 AND confusable_display = 1 AND held = 1`;
 
 // Applies "mark" or "reopen" to task ids. Marking a task that is already marked does nothing (so a second run can't
-// set aside the new answers); reopening a task that isn't held does nothing.
+// set aside the new answers); reopening a task that isn't held does nothing. `found` only tells which ids are tasks.
 export async function confusable(env, action, ids) {
   const found = new Map();
   for (let i = 0; i < ids.length; i += 50) {
@@ -357,16 +360,16 @@ export async function confusable(env, action, ids) {
   }
   const out = { action, requested: ids.length, changed: [], unchanged: [], missing: ids.filter((i) => !found.has(i)) };
   for (const id of ids) {
-    const t = found.get(id);
-    if (!t) continue;
+    if (!found.has(id)) continue;
+    // changed or not is what the guarded UPDATE did, not what was read above
+    let changes;
     if (action === "mark") {
-      if (t.confusable_display) { out.unchanged.push(id); continue; }
-      await env.DB.batch(MARK_CONFUSABLE_SQL.map((sql) => env.DB.prepare(sql).bind(id)));
+      const res = await env.DB.batch(MARK_CONFUSABLE_SQL.map((sql) => env.DB.prepare(sql).bind(id)));
+      changes = res[res.length - 1].meta.changes;
     } else {
-      if (!t.confusable_display || !t.held) { out.unchanged.push(id); continue; }
-      await env.DB.prepare(REOPEN_CONFUSABLE_SQL).bind(id).run();
+      changes = (await env.DB.prepare(REOPEN_CONFUSABLE_SQL).bind(id).run()).meta.changes;
     }
-    out.changed.push(id);
+    (changes ? out.changed : out.unchanged).push(id);
   }
   return out;
 }
