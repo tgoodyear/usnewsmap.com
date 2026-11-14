@@ -1,0 +1,3 @@
+44a8455646facb3f9f6cbcc3357dfe09444ae1a5c50347df2bb24203e8291be8  challenge-gold.json
+0f08a7fe48e8f0663360325215c7e13f4bd3ba60ec6f57b5d07cf075a7c6b427  gold-result-macos-arm64.json
+f5f18ee0f3ff8d11cfd773806ec5e969c4ab046ef8b0757de47efc965cafabd4  parity-pages.json

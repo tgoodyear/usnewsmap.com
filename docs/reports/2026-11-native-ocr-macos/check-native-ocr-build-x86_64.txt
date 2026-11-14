@@ -1,0 +1,1 @@
+native OCR build for x86_64-apple-darwin: engine.image sha256:dd7a112f0666f85952662cdf490edf059d5461833d270b25c14354a530f6acfc, engine.base sha256:19cb25416cb19ea87f0257dae27a7c7ce3c6e1eee1bb04bda1093094d6abfb7f
