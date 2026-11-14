@@ -199,7 +199,7 @@ class StageTest(unittest.TestCase):
                 "--trust-file", "t"]
         seen = []
         with mock.patch.dict(S.os.environ, {"XB_IMAGE": "ab12", "XB_HOSTS": "3,4"}), \
-                mock.patch.object(S, "stage", lambda a: seen.append((a.image, a.hosts)) or {}):
+                mock.patch.object(S, "stage", lambda a: seen.append((a.image, a.hosts)) or dict.fromkeys(S.SOURCES, 0)):
             S.main(argv)
             S.main(argv + ["--host", "9"])
         self.assertEqual(seen, [("ab12", ["3", "4"]), ("ab12", ["9"])])
