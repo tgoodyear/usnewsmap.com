@@ -177,8 +177,8 @@ class MarkOnly(unittest.TestCase):
         self.assertEqual(la.mark_only(al + self.PATAH, al + self.QAMATS), (al, self.PATAH, self.QAMATS))
         self.assertEqual(la.mark_only(al, al + self.PATAH), (al, "", self.PATAH))  # one may have none
         self.assertEqual(la.mark_only(pe + self.DAGESH, pe + self.RAFE), (pe, self.DAGESH, self.RAFE))
-        # every script, not only Hebrew: a Latin letter with and without an acute accent
-        self.assertEqual(la.mark_only("e\u0301", "e"), ("e", "\u0301", ""))
+        # every script, not only Hebrew: a Latin letter with and without a dot above (q has no precomposed form)
+        self.assertEqual(la.mark_only("q\u0307", "q"), ("q", "\u0307", ""))
         # a different base letter keeps the overlap check; identical letters are no pair
         self.assertIsNone(la.mark_only(al + self.PATAH, pe + self.PATAH))
         self.assertIsNone(la.mark_only("\u05e8", "\u05d3"))
@@ -201,6 +201,16 @@ class MarkOnly(unittest.TestCase):
         self.assertEqual(sum(F.unmeasured.values()) + sum(F.unshaped.values()), 0, "mark pairs are not measured")
         # the old call sees only the overlap-flagged pairs
         self.assertEqual(la.flags("\u05e4\u05bc", "\u05e4\u05bf", {}, F), [])
+
+    @unittest.skipUnless(HAVE_PIL, "Pillow not installed")
+    def test_marks_that_survive_nfc_in_any_script_and_precomposed_letters_stay_apart(self):
+        F = la.Fonts({"LATIN": la.BUNDLED["CHEROKEE"]})
+        _, marks = la.analyse("q\u0307a", "qa", {}, F)
+        self.assertEqual([(m["a"], m["a_marks"], m["b_marks"], m["base"]) for m in marks], [(0, "\u0307", "", "q")])
+        # a letter the build keeps precomposed (the readings are NFC) is its own base letter, as Serbian's и and й are:
+        # it keeps the overlap check, so Serbian and the other precomposed scripts behave as before
+        self.assertEqual(la.analyse("\u0439", "\u0438", {}, F)[1], [])
+        self.assertEqual(la.analyse("\u00e9", "e", {}, F)[1], [])
 
     @need_font
     def test_cherokee_and_cyrillic_are_unchanged(self):

@@ -17,6 +17,9 @@ counted per word, not per choice, so a word goes in the group `loaded`, `not_loa
 answers carry that value, `mixed` when they carry several, and `unknown` when the export has no `font_counts`.
 
   python3 mark_report.py --export check-yi.jsonl [--export ...] [--font SCRIPT=PATH ...] [--min-answers 20] [--json]
+
+It stops when some letter pairs could not be checked for look-alikes (no reference font or glyph, or a Pillow without Raqm
+for a mark), unless --allow-incomplete: those words would otherwise land in the unflagged group.
 """
 import argparse
 import collections
@@ -123,13 +126,24 @@ def main() -> None:
     ap.add_argument("--threshold", type=float, default=la.THRESHOLD)
     ap.add_argument("--min-answers", type=int, default=MIN_ANSWERS, help="rows with fewer answers print 'too few answers'")
     ap.add_argument("--languages-dir", default=os.path.join(la.HERE, "..", "languages"))
+    ap.add_argument("--allow-incomplete", action="store_true", help="report even when some letter pairs could not be checked for look-alikes "
+                    "(no font, no glyph, or no Raqm to shape a mark): those words then count as unflagged")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
     tasks = []
     for path in a.export:
         with open(path, encoding="utf-8") as f:
             tasks.extend(json.loads(raw) for raw in f if raw.strip())
-    rep = report(tasks, la.Fonts(la.parse_fonts(a.font)), a.languages_dir, a.threshold, a.min_answers)
+    fonts = la.Fonts(la.parse_fonts(a.font))
+    rep = report(tasks, fonts, a.languages_dir, a.threshold, a.min_answers)
+    skipped = {"no font or glyph": dict(fonts.unmeasured), "no Raqm to shape a mark": dict(fonts.unshaped)}
+    if any(skipped.values()):
+        msg = "; ".join(f"{why}: " + ", ".join(f"{k or 'other'} {n}" for k, n in sorted(v.items())) for why, v in skipped.items() if v)
+        if not a.allow_incomplete:
+            raise SystemExit(f"letter pairs were not checked for look-alikes ({msg}), so the unflagged group would include words the overlap "
+                             "measure should have flagged. Give a reference font with --font SCRIPT=PATH, use a Pillow built with Raqm, "
+                             "or pass --allow-incomplete.")
+        print(f"WARNING: incomplete overlap check ({msg})", file=sys.stderr)
     if a.json:
         print(json.dumps(rep, ensure_ascii=False, indent=1, sort_keys=True))
     else:

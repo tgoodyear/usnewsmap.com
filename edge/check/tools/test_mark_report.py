@@ -80,6 +80,23 @@ class Report(unittest.TestCase):
         rep = mr.report([both], la.Fonts(), os.path.join(HERE, "..", "languages"), 0.0, 1)
         self.assertEqual(rep, {})
 
+    def test_the_command_stops_when_pairs_could_not_be_checked(self):
+        try:
+            la.Fonts().bitmap(la.BUNDLED["CHEROKEE"], "Ꭰ")
+        except OSError as e:
+            self.skipTest(f"this Pillow can't read the bundled woff2: {e}")
+        path = self.write([task("yi/t/1", "\u05e8", "\u05d3", {"a": 25})])
+        # a reference font with no Hebrew glyph: the overlap check can't run, so every pair is unmeasured
+        run = lambda *extra: subprocess.run([sys.executable, os.path.join(HERE, "mark_report.py"), "--export", path, "--font", "HEBREW=" + la.BUNDLED["CHEROKEE"], *extra],
+                                            capture_output=True, text=True)
+        r = run()
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no font or glyph: HEBREW 1", r.stderr)
+        self.assertIn("--allow-incomplete", r.stderr)
+        ok = run("--allow-incomplete")
+        self.assertEqual(ok.returncode, 0)
+        self.assertIn("WARNING", ok.stderr)
+
     def write(self, tasks):
         d = tempfile.mkdtemp()
         path = os.path.join(d, "export.jsonl")
