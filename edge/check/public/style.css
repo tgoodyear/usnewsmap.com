@@ -99,3 +99,13 @@ h2 { font-size: 1rem; margin: 8px 0 0; }
 .done { text-align: center; padding: 24px 8px; }
 .done strong { font-size: 1.3rem; display: block; margin-bottom: 6px; }
 footer { color: var(--muted); font-size: .85rem; border-top: 1px solid var(--line); margin-top: 12px; }
+/* The "Show letter names" option. A real checkbox with its label, reachable by keyboard; the label is the click target too. */
+.toggle { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; cursor: pointer; min-height: 32px; }
+.toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+.toggle:has(input:focus-visible) { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+/* Letter names (option on): each named letter is a cell, the letter with its name centred under it. The cell is as wide as the
+   wider of the two and the cells are spaced by the same half-gap each side as unnamed letters have, so names never touch and
+   nothing is pulled back. The name is small text in the page's UI font, set left to right, and left out of copied text. */
+.script.named .cell { display: inline-flex; flex-direction: column; align-items: center; padding: 0 .09em; vertical-align: top; }
+.script.named .glyph { letter-spacing: 0; padding: 0; margin: 0; }
+.script.named .n { font-family: var(--font-ui); font-size: .8rem; font-weight: 600; line-height: 1.3; letter-spacing: 0; color: var(--muted); user-select: none; -webkit-user-select: none; }

@@ -9,6 +9,11 @@ const CHOICES = new Set(["a", "b", "neither", "unsure", "notext"]);
 // Anything else a request sends is stored as `unknown`. migrations/0003-answer-font.sql has the same list.
 export const FONT_STATES = ["loaded", "not_loaded", "none", "unknown"];
 const fontOf = (v) => (FONT_STATES.includes(v) ? v : "unknown");
+// Whether the page was showing letter names under the letters when an answer was given (public/app.js, namesState): `shown`,
+// `not_shown` (the option was off, or the language has no letter names to show), `unknown` for a page from before the value
+// existed. Anything else a request sends is stored as `unknown`. migrations/0004-answer-names.sql has the same list.
+export const NAMES_STATES = ["shown", "not_shown", "unknown"];
+const namesOf = (v) => (NAMES_STATES.includes(v) ? v : "unknown");
 const SESSION_DAYS = 30;
 const SETTLE_MIN = 3; // answers before a word can settle
 const DISPUTE_AT = 7; // answers after which a word that never agreed is closed as disputed
@@ -226,7 +231,7 @@ async function api(request, env, url) {
     if (t.settled && t.blind) throw new HttpError(409, "this word is already checked");
     if (t.held) throw new HttpError(409, "this word is not open for answers");
     if (t.confusable_display && !(Number(b.display) >= DISPLAY_REVISION)) throw new HttpError(426, "this page is out of date: reload it, then answer again");
-    await record(env, b.task, c, b.choice, Date.now(), Number(b.display) || 0, fontOf(b.font));
+    await record(env, b.task, c, b.choice, Date.now(), Number(b.display) || 0, fontOf(b.font), namesOf(b.names_shown));
     return json({ ok: true });
   }
   if (p === "/api/stats" && request.method === "GET") {
@@ -249,7 +254,8 @@ async function api(request, env, url) {
       `SELECT t.id, t.set_name, t.body, t.outcome, t.settled, t.confusable_display, t.held,
          SUM(a.choice = 'a') AS a, SUM(a.choice = 'b') AS b, SUM(a.choice = 'neither') AS neither, SUM(a.choice = 'unsure') AS unsure,
          SUM(a.choice = 'notext') AS notext,
-         SUM(a.font = 'loaded') AS f_loaded, SUM(a.font = 'not_loaded') AS f_not_loaded, SUM(a.font = 'none') AS f_none, SUM(a.font = 'unknown') AS f_unknown
+         SUM(a.font = 'loaded') AS f_loaded, SUM(a.font = 'not_loaded') AS f_not_loaded, SUM(a.font = 'none') AS f_none, SUM(a.font = 'unknown') AS f_unknown,
+         SUM(a.names_shown = 'shown') AS n_shown, SUM(a.names_shown = 'not_shown') AS n_not_shown, SUM(a.names_shown = 'unknown') AS n_unknown
        FROM tasks t LEFT JOIN answers a ON a.task_id = t.id WHERE t.lang = ? GROUP BY t.id ORDER BY t.id`,
     )
       .bind(l)
@@ -258,14 +264,17 @@ async function api(request, env, url) {
     const set = await env.DB.prepare(
       `SELECT e.task_id, COUNT(*) AS n, SUM(e.choice = 'a') AS a, SUM(e.choice = 'b') AS b, SUM(e.choice = 'neither') AS neither,
          SUM(e.choice = 'unsure') AS unsure, SUM(e.choice = 'notext') AS notext,
-         SUM(e.font = 'loaded') AS f_loaded, SUM(e.font = 'not_loaded') AS f_not_loaded, SUM(e.font = 'none') AS f_none, SUM(e.font = 'unknown') AS f_unknown
+         SUM(e.font = 'loaded') AS f_loaded, SUM(e.font = 'not_loaded') AS f_not_loaded, SUM(e.font = 'none') AS f_none, SUM(e.font = 'unknown') AS f_unknown,
+         SUM(e.names_shown = 'shown') AS n_shown, SUM(e.names_shown = 'not_shown') AS n_not_shown, SUM(e.names_shown = 'unknown') AS n_unknown
        FROM answers_excluded e JOIN tasks t ON t.id = e.task_id WHERE t.lang = ? GROUP BY e.task_id`,
     )
       .bind(l)
       .all();
     const fontCounts = (r) => ({ loaded: r.f_loaded || 0, not_loaded: r.f_not_loaded || 0, none: r.f_none || 0, unknown: r.f_unknown || 0 });
+    const namesCounts = (r) => ({ shown: r.n_shown || 0, not_shown: r.n_not_shown || 0, unknown: r.n_unknown || 0 });
     const excluded = new Map(set.results.map((e) => [e.task_id, { a: e.a || 0, b: e.b || 0, neither: e.neither || 0, unsure: e.unsure || 0, notext: e.notext || 0 }]));
     const excludedFonts = new Map(set.results.map((e) => [e.task_id, fontCounts(e)]));
+    const excludedNames = new Map(set.results.map((e) => [e.task_id, namesCounts(e)]));
     const lines = rows.results.map((r) => {
       const t = JSON.parse(r.body);
       // A blind task keeps what each reading is, and the truth for a calibration item, in `private`: they are
@@ -282,10 +291,13 @@ async function api(request, env, url) {
         // The same answers by what the visitor's page reported about the bundled font (FONT_STATES). Answers given before
         // the page reported it are `unknown`. The values add up to the counts' total.
         font_counts: fontCounts(r),
+        // The same answers by whether the page was showing letter names (NAMES_STATES). Answers given before the page reported it
+        // are `unknown`. The values add up to the counts' total.
+        names_counts: namesCounts(r),
         // confusable_display: the readings looked alike in the visitor's font. The answers given before are in
         // excluded_counts, never in counts, and they don't settle the word or count in any score. `held` is true until the
         // word is reopened for new answers.
-        ...(r.confusable_display ? { confusable_display: true, held: !!r.held, excluded_counts: excluded.get(r.id) || { a: 0, b: 0, neither: 0, unsure: 0, notext: 0 }, excluded_font_counts: excludedFonts.get(r.id) || fontCounts({}) } : {}),
+        ...(r.confusable_display ? { confusable_display: true, held: !!r.held, excluded_counts: excluded.get(r.id) || { a: 0, b: 0, neither: 0, unsure: 0, notext: 0 }, excluded_font_counts: excludedFonts.get(r.id) || fontCounts({}), excluded_names_counts: excludedNames.get(r.id) || namesCounts({}) } : {}),
         settled: !!r.settled, outcome: r.outcome,
       });
     });
@@ -335,17 +347,17 @@ WHERE id = ?1`;
 // readings were exported, and a held task (marked confusable_display, not yet reopened) takes none either. The
 // conditions are in the statement, so they hold against a racing request too. ?5 is the display revision the answer came
 // from: a marked task refuses an older one even if it was reopened after the request read the task. ?6 is the font state
-// (FONT_STATES); a replaced answer takes the new answer's state.
+// (FONT_STATES) and ?7 whether letter names were showing (NAMES_STATES); a replaced answer takes the new answer's states.
 export const ANSWER_SQL = `
-INSERT INTO answers (task_id, contributor, choice, at, font)
-SELECT ?1, ?2, ?3, ?4, ?6
+INSERT INTO answers (task_id, contributor, choice, at, font, names_shown)
+SELECT ?1, ?2, ?3, ?4, ?6, ?7
 WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND ((settled = 1 AND json_type(body, '$.private') IS NOT NULL) OR held = 1
   OR (confusable_display = 1 AND ?5 < ${DISPLAY_REVISION})))
-ON CONFLICT (task_id, contributor) DO UPDATE SET choice = excluded.choice, at = excluded.at, font = excluded.font`;
+ON CONFLICT (task_id, contributor) DO UPDATE SET choice = excluded.choice, at = excluded.at, font = excluded.font, names_shown = excluded.names_shown`;
 
-export async function record(env, task, contributor, choice, at = Date.now(), display = DISPLAY_REVISION, font = "unknown") {
+export async function record(env, task, contributor, choice, at = Date.now(), display = DISPLAY_REVISION, font = "unknown", names = "unknown") {
   const res = await env.DB.batch([
-    env.DB.prepare(ANSWER_SQL).bind(task, contributor, choice, at, display, fontOf(font)),
+    env.DB.prepare(ANSWER_SQL).bind(task, contributor, choice, at, display, fontOf(font), namesOf(names)),
     env.DB.prepare(SETTLE_SQL).bind(task),
   ]);
   // Zero rows written: the task settled (blind), was held, or was marked and the page is out of date, between the check in
@@ -362,7 +374,7 @@ export async function record(env, task, contributor, choice, at = Date.now(), di
 // is missing. Every statement is guarded by the task still being unmarked, inside the transaction, so a request that read
 // the task before another marked it (and the task was reopened and took new answers) changes nothing. ?1 is the task id.
 export const MARK_CONFUSABLE_SQL = [
-  `INSERT INTO answers_excluded (task_id, contributor, choice, at, font) SELECT task_id, contributor, choice, at, font FROM answers
+  `INSERT INTO answers_excluded (task_id, contributor, choice, at, font, names_shown) SELECT task_id, contributor, choice, at, font, names_shown FROM answers
      WHERE task_id = ?1 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND confusable_display = 0)`,
   `SELECT CASE WHEN EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND confusable_display = 0)
      AND (SELECT COUNT(*) FROM answers_excluded WHERE task_id = ?1) < (SELECT COUNT(*) FROM answers WHERE task_id = ?1)

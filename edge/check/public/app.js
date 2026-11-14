@@ -1,7 +1,8 @@
 // The letter-check page. "/" lists languages; "/<lang>" shows one word at a time.
 const $ = (id) => document.getElementById(id);
 const SESSION = "usnm-check-session";
-let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false, loaded = false, failed = false, fontFailed = false;
+const NAMES = "usnm-check-names"; // "1" when the visitor turned letter names on in this browser
+let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false, loaded = false, failed = false, fontFailed = false, showNames = false, shownPrev;
 // Sent with every answer. The Worker refuses answers to a word marked confusable_display from a page older than this: an
 // already-open tab has the old stylesheet and font, and would send answers about letters it draws alike (worker.mjs, DISPLAY_REVISION).
 const DISPLAY = 1;
@@ -111,12 +112,29 @@ function tightAfter(ls) {
   return out;
 }
 
-function scriptText(text, diff) {
+// The name printed under a letter when the option is on: the language's `labels` entry (the syllable for a Cherokee letter,
+// the Latin equivalent of a Serbian Cyrillic one). A language with none has no letter names, and the option is not offered.
+const nameOf = (ch) => (cfg.labels || {})[ch];
+const hasNames = () => !!cfg && !!cfg.labels && Object.keys(cfg.labels).length > 0;
+
+// With `named`, a letter that has a name is set in a cell: the letter, and the name centred under it in small type. The cell
+// is as wide as the wider of the two, so no name can touch the next one, and the cells are spaced evenly; the letters
+// do not keep the advances they have without names. A letter with no name (a space, a digit, a bracket) stays plain text.
+// The highlight is still the letter's own box, with no padding, so it sits on the letter alone.
+function scriptText(text, diff, named = false) {
   const span = document.createElement("span"); span.className = "script"; span.lang = lang;
   if (cfg.dir) span.dir = cfg.dir;
   const marked = new Set(diff), ls = letters(text), tight = tightAfter(ls);
   if (!ls.length) { const g = document.createElement("span"); g.className = "gap"; g.title = "nothing printed here"; span.appendChild(g); return span; }
+  if (named) span.classList.add("named");
   ls.forEach((ch, i) => {
+    const name = named ? nameOf(ch) : undefined;
+    if (name !== undefined) {
+      const cell = document.createElement("span"); cell.className = "cell";
+      const g = document.createElement(marked.has(i) ? "mark" : "span"); g.className = "glyph"; g.textContent = ch;
+      const n = document.createElement("span"); n.className = "n"; n.dir = "ltr"; n.textContent = name;
+      cell.append(g, n); span.appendChild(cell); return;
+    }
     let el;
     if (marked.has(i)) { el = document.createElement("mark"); el.textContent = ch; }
     else if (tight.has(i)) { el = document.createElement("span"); el.textContent = ch; }
@@ -167,7 +185,9 @@ function markLabels(t, side) {
   return labels;
 }
 
-function examples(text, diff, labels = new Map(), marks = new Map()) {
+// With `named` (the letter names are showing), a look-alike label that is the same text as the name under the letter is not
+// printed again; the picture row for the letter stays.
+function examples(text, diff, labels = new Map(), marks = new Map(), named = false) {
   const box = document.createElement("div"); box.className = "examples";
   if (cfg.dir) box.dir = cfg.dir;
   const seen = new Set();
@@ -176,7 +196,7 @@ function examples(text, diff, labels = new Map(), marks = new Map()) {
     if ((!diff.includes(i) && name === undefined && mark === undefined) || seen.has(key)) return; seen.add(key);
     const ex = document.createElement("span"); ex.className = "ex";
     const l = document.createElement("span"); l.className = "letter"; l.lang = lang; l.textContent = ch; ex.appendChild(l);
-    if (name !== undefined) {
+    if (name !== undefined && !(named && nameOf(ch) === name)) {
       const n = document.createElement("span"); n.className = "name"; n.dir = "ltr"; n.textContent = name; ex.appendChild(n);
     }
     if (mark !== undefined) {
@@ -215,6 +235,17 @@ async function fontReady(t) {
   } catch { return false; }
 }
 
+// Letter names are showing: the visitor turned them on and the language has names to show.
+const namesOn = () => showNames && hasNames();
+
+// What the page reports with an answer about letter names (worker.mjs, NAMES_STATES): `shown` when the option was on and at
+// least one letter of either reading had a name under it, else `not_shown`, which includes every language the option is not
+// offered for. Nothing else about the visitor is sent.
+function namesState(t) {
+  if (!namesOn() || !t) return "not_shown";
+  return letters(t.a + t.b).some((ch) => nameOf(ch) !== undefined) ? "shown" : "not_shown";
+}
+
 // What the page reports with an answer about the bundled font (worker.mjs, FONT_STATES): the word's bundled font has
 // loaded or not, no bundled font applies to its letters, or the browser can't say. Nothing else about the visitor's fonts
 // is read or sent.
@@ -226,6 +257,7 @@ function fontState(t) {
 }
 
 function render(prev) {
+  shownPrev = prev;
   const card = $("card"); card.textContent = "";
   $("progress").textContent = answered ? `${answered} answered` : "";
   $("back").disabled = history.length === 0 || busy;
@@ -268,7 +300,8 @@ function render(prev) {
     const b = document.createElement("button"); b.type = "button"; b.className = "opt"; b.id = "opt" + (k + 1); b.disabled = busy;
     if (prev === side) b.classList.add("chosen");
     const key = document.createElement("span"); key.className = "key"; key.textContent = `Reading ${k + 1}  (${k + 1})`;
-    b.append(key, scriptText(t[side], t[side + "_diff"]), examples(t[side], t[side + "_diff"], lookalikeLabels(t, side), markLabels(t, side)));
+    const named = namesOn();
+    b.append(key, scriptText(t[side], t[side + "_diff"], named), examples(t[side], t[side + "_diff"], lookalikeLabels(t, side), markLabels(t, side), named));
     b.addEventListener("click", () => choose(side));
     opts.appendChild(b);
   });
@@ -308,7 +341,7 @@ async function choose(choice) {
   const had = controlFocused();
   busy = true; render();
   try {
-    await authed("/api/answers", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: task.id, choice, display: DISPLAY, font: fontState(task) }) });
+    await authed("/api/answers", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: task.id, choice, display: DISPLAY, font: fontState(task), names_shown: namesState(task) }) });
     history.push({ task, choice });
     if (history.length > 50) history.shift();
     busy = false;
@@ -345,6 +378,13 @@ async function work(code) {
   $("unsure").addEventListener("click", () => choose("unsure"));
   $("notext").addEventListener("click", () => choose("notext"));
   $("back").addEventListener("click", back);
+  if (hasNames()) {
+    // The option stays off unless this browser's stored choice says "1"; a browser without storage keeps it for the page's life.
+    showNames = store(NAMES) === "1";
+    const box = $("names"); box.checked = showNames;
+    box.addEventListener("change", () => { showNames = box.checked; store(NAMES, showNames ? "1" : "0"); render(shownPrev); });
+    $("names-wrap").hidden = false;
+  }
   $("skip").addEventListener("click", skip);
   document.addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;

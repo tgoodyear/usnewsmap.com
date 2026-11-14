@@ -61,6 +61,12 @@ class Score(unittest.TestCase):
         with_fonts = [{**r, "font_counts": fonts, **({"excluded_font_counts": fonts} if "excluded_counts" in r else {})} for r in self.export]
         self.assertEqual(cds.line_states(self.manifest, with_fonts), cds.line_states(self.manifest, self.export))
 
+    def test_names_counts_in_the_export_change_nothing(self):
+        """The export also has names_counts (and excluded_names_counts): how many answers had letter names showing. Scoring ignores them."""
+        names = {"shown": 1, "not_shown": 0, "unknown": 2}
+        with_names = [{**r, "names_counts": names, **({"excluded_names_counts": names} if "excluded_counts" in r else {})} for r in self.export]
+        self.assertEqual(cds.line_states(self.manifest, with_names), cds.line_states(self.manifest, self.export))
+
     def test_report_counts_and_progress(self):
         rep = cds.report(self.manifest, self.export, target=10, draws=200, seed=1)
         p = rep["progress"]
