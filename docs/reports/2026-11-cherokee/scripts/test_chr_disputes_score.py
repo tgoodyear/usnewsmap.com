@@ -55,6 +55,12 @@ class Score(unittest.TestCase):
         self.assertEqual(rep["progress"]["resolved_lines"], 1)
         self.assertEqual(rep["progress"]["answers"], 4 + 3)  # l3's 3 answers and l4's 3, plus l5's 1 (not l1's or l2's)
 
+    def test_font_counts_in_the_export_change_nothing(self):
+        """The export also has font_counts (and excluded_font_counts): how many answers had the bundled font loaded. Scoring ignores them."""
+        fonts = {"loaded": 1, "not_loaded": 0, "none": 0, "unknown": 2}
+        with_fonts = [{**r, "font_counts": fonts, **({"excluded_font_counts": fonts} if "excluded_counts" in r else {})} for r in self.export]
+        self.assertEqual(cds.line_states(self.manifest, with_fonts), cds.line_states(self.manifest, self.export))
+
     def test_report_counts_and_progress(self):
         rep = cds.report(self.manifest, self.export, target=10, draws=200, seed=1)
         p = rep["progress"]

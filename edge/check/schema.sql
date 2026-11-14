@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS answers (
   contributor TEXT NOT NULL,      -- random id from a session, or "seed:<name>" for imported answers
   choice TEXT NOT NULL CHECK (choice IN ('a', 'b', 'neither', 'unsure', 'notext')),
   at INTEGER NOT NULL,            -- unix milliseconds
+  font TEXT NOT NULL DEFAULT 'unknown' CHECK (font IN ('loaded', 'not_loaded', 'none', 'unknown')),  -- the bundled font as the page reported it when the answer was given; unknown for answers from before (migrations/0003-answer-font.sql)
   PRIMARY KEY (task_id, contributor)
 );
 CREATE INDEX IF NOT EXISTS answers_by_contributor ON answers (contributor);
@@ -34,5 +35,6 @@ CREATE TABLE IF NOT EXISTS answers_excluded (
   contributor TEXT NOT NULL,
   choice TEXT NOT NULL CHECK (choice IN ('a', 'b', 'neither', 'unsure', 'notext')),
   at INTEGER NOT NULL,
+  font TEXT NOT NULL DEFAULT 'unknown' CHECK (font IN ('loaded', 'not_loaded', 'none', 'unknown')),
   PRIMARY KEY (task_id, contributor)
 );
