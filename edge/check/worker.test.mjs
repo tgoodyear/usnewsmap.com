@@ -246,7 +246,7 @@ test("marking a task confusable_display sets its answers aside, keeps them, and 
   const E = { ...env, DB };
   const get = async (path, token) => worker.fetch(new Request("https://check.usnewsmap.com" + path, { headers: token ? { authorization: "Bearer " + token } : {} }), E, {});
   const post = async (path, token, body) => worker.fetch(new Request("https://check.usnewsmap.com" + path, { method: "POST", headers: { authorization: "Bearer " + token }, body: JSON.stringify(body) }), E, {});
-  const body = JSON.stringify({ page: "p", a: "ᏒᎯ", b: "ᎡᎯ", a_is: "reference", b_is: "loc", lookalikes: [{ a: 0, a_label: "sv", b: 0, b_label: "e" }] });
+  const body = JSON.stringify({ page: "p", a: "ᏒᎯ", b: "ᎡᎯ", a_is: "reference", b_is: "loc", lookalikes: [{ a: 0, a_label: "sv", b: 0, b_label: "e" }], mark_only: [{ a: 1, a_marks: "\u05b7", b: 1, b_marks: "", base: "\u05d0" }] });
   db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('chr/s/1', 'chr', 's', ?), ('chr/s/2', 'chr', 's', ?)").run(body, body);
   const t1 = await signSession(env.SESSION_KEY, "c1"), t2 = await signSession(env.SESSION_KEY, "c2"), t3 = await signSession(env.SESSION_KEY, "c3");
   for (const [tok, choice] of [[t1, "a"], [t2, "a"], [t3, "b"]]) assert.equal((await post("/api/answers", tok, { task: "chr/s/1", choice })).status, 200);
@@ -281,6 +281,7 @@ test("marking a task confusable_display sets its answers aside, keeps them, and 
   assert.deepEqual(x1.counts, { a: 0, b: 0, neither: 0, unsure: 0, notext: 0 });
   assert.deepEqual([x1.confusable_display, x1.held, x1.excluded_counts, x1.settled, x1.outcome], [true, true, { a: 2, b: 1, neither: 0, unsure: 0, notext: 0 }, false, null]);
   assert.deepEqual(x1.lookalikes, [{ a: 0, a_label: "sv", b: 0, b_label: "e" }]);
+  assert.deepEqual(x1.mark_only, [{ a: 1, a_marks: "\u05b7", b: 1, b_marks: "", base: "\u05d0" }], "mark_only is exported as stored");
   assert.equal("confusable_display" in x2, false);
   const stats = await (await get("/api/stats?lang=chr")).json();
   assert.deepEqual([stats.answers, stats.people], [1, 1], "the set-aside answers are in no figure");

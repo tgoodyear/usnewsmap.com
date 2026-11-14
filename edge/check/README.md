@@ -6,23 +6,24 @@ Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language, Yiddish (Ne
 
 ## Pieces
 
-| Piece                         | What it is                                                                            |
-| ----------------------------- | ------------------------------------------------------------------------------------- |
-| `worker.mjs`                  | The Worker: `/api/*` for the page, `/clips/*` from R2, `/admin/*` for loading data.   |
-| `public/`                     | The page (static assets). `/` lists languages; `/<code>` (e.g. `/chr`) shows words.   |
-| `public/fonts/`               | The Cherokee font the page serves, with its licence and source (`fonts/README.md`).   |
-| D1 `usnm-check`               | `languages`, `tasks`, `answers` (`schema.sql`).                                       |
-| R2 `usnm-check-clips`         | Line and word images, and the example letters, at `<lang>/<set>/...`.                 |
-| Turnstile widget `usnm-check` | The browser check before a session is issued.                                         |
-| `tools/build_tasks.py`        | Turns line images with two readings per line into tasks, clips and a configuration.   |
-| `tools/yiddish_lines.py`      | Makes `build_tasks.py`'s input for Yiddish: LoC's ALTO against our `yidj2` model.     |
-| `tools/serbian_lines.py`      | Makes `build_tasks.py`'s input for Serbian: LoC's ALTO against our held BOINC ALTO.   |
-| `tools/from_tap_data.py`      | Turns a glyph-check data file (Cherokee) into tasks, clips and a configuration.       |
-| `tools/phoenix_lines.py`      | Picks Cherokee lines from LoC's ALTO and our production re-read for `build_tasks.py`. |
-| `tools/lookalike.py`          | Finds letters of two readings the page draws almost alike; also a command on exports. |
-| `languages/<code>.json`       | A language's name, intro, writing direction and letter notes, plus build options.     |
-| `confusable.sh`               | Marks tasks `confusable_display`, or reopens them, run by hand.                       |
-| `load.sh`, `set-secrets.sh`   | Loading data and setting secrets, run by hand.                                        |
+| Piece                         | What it is                                                                                                                  |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `worker.mjs`                  | The Worker: `/api/*` for the page, `/clips/*` from R2, `/admin/*` for loading data.                                         |
+| `public/`                     | The page (static assets). `/` lists languages; `/<code>` (e.g. `/chr`) shows words.                                         |
+| `public/fonts/`               | The Cherokee font the page serves, with its licence and source (`fonts/README.md`).                                         |
+| D1 `usnm-check`               | `languages`, `tasks`, `answers` (`schema.sql`).                                                                             |
+| R2 `usnm-check-clips`         | Line and word images, and the example letters, at `<lang>/<set>/...`.                                                       |
+| Turnstile widget `usnm-check` | The browser check before a session is issued.                                                                               |
+| `tools/build_tasks.py`        | Turns line images with two readings per line into tasks, clips and a configuration.                                         |
+| `tools/yiddish_lines.py`      | Makes `build_tasks.py`'s input for Yiddish: LoC's ALTO against our `yidj2` model.                                           |
+| `tools/serbian_lines.py`      | Makes `build_tasks.py`'s input for Serbian: LoC's ALTO against our held BOINC ALTO.                                         |
+| `tools/from_tap_data.py`      | Turns a glyph-check data file (Cherokee) into tasks, clips and a configuration.                                             |
+| `tools/phoenix_lines.py`      | Picks Cherokee lines from LoC's ALTO and our production re-read for `build_tasks.py`.                                       |
+| `tools/lookalike.py`          | Finds letters of two readings the page draws almost alike, and pairs that differ only in a mark; also a command on exports. |
+| `tools/mark_report.py`        | Compares answers on words that differ only in a mark with other words, from exports.                                        |
+| `languages/<code>.json`       | A language's name, intro, writing direction and letter notes, plus build options.                                           |
+| `confusable.sh`               | Marks tasks `confusable_display`, or reopens them, run by hand.                                                             |
+| `load.sh`, `set-secrets.sh`   | Loading data and setting secrets, run by hand.                                                                              |
 
 ## Who answers, and how answers count
 
@@ -32,7 +33,7 @@ A word **settles** once at least 3 answers are in and one choice has two thirds 
 
 Seed answers (from `load.sh --seed`) are stored as contributor `seed:<name>` and count as one person.
 
-Answers are published under CC0. `GET /api/export?lang=chr` returns one JSON line per word, with its readings, which is which (`a_is`, `b_is`), the count of each answer and the outcome. Contributor ids are never exported. Each word also has `font_counts`, the same answers counted by what the visitor's page reported about the bundled font ([below](#which-font-each-answer-was-given-with)). A word with look-alike letters also has its `lookalikes`; a word marked `confusable_display` also has `confusable_display`, `held`, `excluded_counts` and `excluded_font_counts` ([below](#words-whose-readings-look-alike)).
+Answers are published under CC0. `GET /api/export?lang=chr` returns one JSON line per word, with its readings, which is which (`a_is`, `b_is`), the count of each answer and the outcome. Contributor ids are never exported. Each word also has `font_counts`, the same answers counted by what the visitor's page reported about the bundled font ([below](#which-font-each-answer-was-given-with)). A word with look-alike letters also has its `lookalikes`, and one whose readings differ only in a mark on the same letter has `mark_only`; a word marked `confusable_display` also has `confusable_display`, `held`, `excluded_counts` and `excluded_font_counts` ([below](#words-whose-readings-look-alike)).
 
 ## API
 
@@ -52,19 +53,20 @@ Answers are published under CC0. `GET /api/export?lang=chr` returns one JSON lin
 | `POST /admin/answers`                     | admin token | JSON lines of seed answers, `seed:` contributors only.                                                                                              |
 | `POST /admin/confusable`                  | admin token | `{action: "mark" or "reopen", tasks: [ids]}`, up to 500 ids ([below](#words-whose-readings-look-alike)).                                            |
 
-A task, as loaded: `id` (`<lang>/<set>/<word id>`), `lang`, `set`, then what the page shows: `page`, `source` (the page on Chronicling America), `label`, `line` and `word` (clip keys), `box` (the word in the line image, as fractions `[x, y, w, h]`), `a`, `b`, `a_diff`, `b_diff` (indexes of the letters that differ), `a_is`, `b_is` (what each reading is, e.g. `reference` and `loc`) and, when the build found letters the page draws almost alike, `lookalikes` (see below). The page shows `a` and `b` in an order fixed by the task id, so neither side is always first.
+A task, as loaded: `id` (`<lang>/<set>/<word id>`), `lang`, `set`, then what the page shows: `page`, `source` (the page on Chronicling America), `label`, `line` and `word` (clip keys), `box` (the word in the line image, as fractions `[x, y, w, h]`), `a`, `b`, `a_diff`, `b_diff` (indexes of the letters that differ), `a_is`, `b_is` (what each reading is, e.g. `reference` and `loc`) and, when the build found letters the page draws almost alike, `lookalikes` and `mark_only` (see below). The page shows `a` and `b` in an order fixed by the task id, so neither side is always first.
 
 ## A language's configuration
 
 `languages/<code>.json` is served at `/api/languages/<code>`, except for the build options, which the build tools remove:
 
-| Field                           | What it is                                                                                                                                           |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`, `title`, `intro`        | Shown on the page. `intro` covers the source and anything specific to the script; the answer rules every language shares are in `public/index.html`. |
-| `dir`                           | `rtl` for right-to-left scripts (Hebrew letters); the readings are then set right to left.                                                           |
-| `notes`                         | A short note per letter, shown under a reading when that letter is highlighted.                                                                      |
-| `drop_examples`, `min_examples` | Build options for `from_tap_data.py`'s example letter pictures (not served).                                                                         |
-| `equivalents`                   | Letters that print alike (`"װ": "וו"`): `build_tasks.py` compares them as equal, and the page sets the two-letter spelling with no space inside it.  |
+| Field                           | What it is                                                                                                                                                                                                                |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`, `title`, `intro`        | Shown on the page. `intro` covers the source and anything specific to the script; the answer rules every language shares are in `public/index.html`.                                                                      |
+| `dir`                           | `rtl` for right-to-left scripts (Hebrew letters); the readings are then set right to left.                                                                                                                                |
+| `notes`                         | A short note per letter, shown under a reading when that letter is highlighted.                                                                                                                                           |
+| `marks`                         | A name per combining mark, for the label the page shows when two readings differ only in that mark (`"\u05b7": "pasekh"`, written as the character). A mark with no name shows as "another mark", never its Unicode name. |
+| `drop_examples`, `min_examples` | Build options for `from_tap_data.py`'s example letter pictures (not served).                                                                                                                                              |
+| `equivalents`                   | Letters that print alike (`"װ": "וו"`): `build_tasks.py` compares them as equal, and the page sets the two-letter spelling with no space inside it.                                                                       |
 
 The page highlights letters as `a_diff` and `b_diff` count them: a base character with the marks that follow it (פּ, אַ) is one letter.
 
@@ -98,7 +100,23 @@ No candidate font reduces the set, so none is bundled. The flagged pairs are all
 
 Serbian, Times New Roman, 62 of 939 tasks: п/н 45 (regular 0.88, italic 0.74), п/ц 6, н/ц 4, Ц/П 2, П/Н 2, И/Н 2, and one each of П/H (Latin H), ћ/h and п/џ. Each of these pairs shares a skeleton and differs by one stroke: п and н by the crossbar, п and ц by the tail, ц and н by both, П and Н by the crossbar, И and Н by the diagonal, ћ and h by the bar through the stem. At 32px in Times New Roman, regular and italic, the stroke shows in every pair. They are look-alikes in small or worn type (п/н, ћ/h, П/Н, where the one stroke is the whole difference), and detector noise elsewhere: overlap counts shared verticals, and an italic н or ц already scores 0.58 to 0.74 against п. The pages measured were not checked against the print.
 
-**A label.** Under each reading of a task with `lookalikes`, the page names the flagged letter next to its highlight: the syllable for Cherokee (`CHEROKEE LETTER SV` gives `sv`), else the Unicode character name (`hebrew letter alef + hebrew point patah`). A flagged letter is shown even where the highlight doesn't mark it (a transposition). The label is set left to right inside right-to-left readings. The page also keeps the answer buttons off, and offers a reload, when a Cherokee word's font fails to load, so a visitor's installed font can't stand in for it. `layout.test.mjs` renders it in Chrome for Cherokee, Hebrew letters and Cyrillic.
+**Letters that differ only in a mark.** When the two letters of a differing pair have the same base character and differ only in combining marks (אַ and אָ, פּ and פֿ, א and אַ; one may have none), the build skips the overlap check and records the pair as `mark_only`, in any script. A mark is a few percent of the ink, so the overlap measure flags such a pair in every font, and says nothing about whether the mark shows. Pairs whose base letters differ keep the overlap check. A task gets `mark_only: [{"a": 1, "a_marks": "ַ", "b": 1, "b_marks": "", "base": "א"}]`: the letter indexes as `a_diff` and `b_diff` count them, the mark characters each reading has on that letter (`""` for none), and the base character. Keys are in ascending order. The field is separate from `lookalikes`, so both can be counted; `lookalike.py`'s report (and its `--json`) gives, per language, `mark_only_tasks`, `mark_only_pairs` and `mark_only_by_mark` (by the mark that differs), and `build_tasks.py` and `from_tap_data.py` print how many tasks have it. The export carries `mark_only` as stored.
+
+Under each reading of such a pair the page shows a short label naming the marks that reading has on that letter, and the letter (base and marks, as one cluster) at about twice the size of the highlight chip in a small box beside the label, so a small mark can be seen. A reading with no mark on that letter says "no mark". Names come from the language's `marks` ([above](#a-languages-configuration)); the label is text set left to right, and the enlarged letter is `aria-hidden` because the label already says what the letter is. `layout.test.mjs` renders it in right-to-left text and checks that no part of a row overlaps another or leaves the column. Nothing is marked `confusable_display` for a mark-only pair, and no answer is set aside.
+
+`languages/yi.json` names the marks in YIVO romanisation where a source gives it: pasekh (patah), komets (qamats), khirik (hiriq) and khoylem (holam), as the alphabet table of Wikipedia's "Yiddish orthography" article spells them (also "pasekh alef", "komets alef" and "khirik yud" on verterbukh.org's alphabet page, `doc/en/alefbeys.html`). The same article spells the other two marks the page names in the common English form, dagesh and rafe; no source checked gives the YIVO forms "dogesh" and "rofe", so the file does not use them. tsere and segol (in the Yiddish export, rarely) are named in the common English form for the same reason. The shin dot and the sin dot are "shin dot" and "sin dot". A language adds its own `marks`; without one, the label is "another mark".
+
+On the Yiddish export of 14 November 2026 (720 tasks, Times New Roman as the reference font, Pillow with Raqm): before this change 193 tasks and 209 pairs were flagged by overlap; after it 0 are, and 194 tasks with 211 pairs are `mark_only` (two more pairs than were flagged). By the mark that differs (a pair can differ in two): patah 96, qamats 89, dagesh 51, rafe 14, hiriq 5, tsere 4, holam 2, segol 2, shin dot 2, sin dot 1. The pairs are patah/qamats 43 (and 3 the other way), none/dagesh 40, none/patah 33, none/qamats 33, patah/none 16, qamats/none 7, rafe/none 7, dagesh/none 6, rafe/dagesh 5, and 18 more, none above 3.
+
+Whether a mark can be told apart in print is for the answers to say. `tools/mark_report.py` takes exports and, per language, mark and font group, gives the can't-tell rate (`unsure` over all answers) and the pairwise agreement (the share of pairs of answers to one word that chose the same thing) for mark-only words, beside the same two figures for words flagged by neither rule. The font group comes from the word's `font_counts` (the value all its answers carry, `mixed` when they differ, `unknown` when the export has none). A row with under 20 answers prints "too few answers" and no rates. On 14 November 2026 no mark has that many answers in Yiddish.
+
+```sh
+python3 edge/check/tools/mark_report.py --export check-yi.jsonl [--min-answers 20] [--json]
+```
+
+_Tasks already loaded_ were built before this field. They keep working: the page shows no mark label for a task without `mark_only`, and the old behaviour for them stays (a long Unicode-name label for any pair in their `lookalikes`). To add `mark_only` to the loaded Yiddish tasks, an operator rebuilds them as in [Making tasks](#making-tasks-from-two-readings) (the same `build_tasks.py` command, same inputs, so the task ids are the same) and loads the new `tasks.jsonl` with `load.sh --lang yi --no-clips` (see [Loading a language](#loading-a-language)). `/admin/tasks` replaces a task's body and leaves its answers, counts and outcome alone, so answers are kept. The Worker needs no migration: `mark_only` lives in the task's JSON body. The `marks` names reach the site with the deploy (`sync-languages.mjs`), so load the tasks after the deploy. The rebuild runs with a Pillow that has Raqm only so that the rest of the overlap check is complete; the mark pairs themselves need no font.
+
+**A label.** Under each reading of a task with `lookalikes`, the page names the flagged letter next to its highlight: the syllable for Cherokee (`CHEROKEE LETTER SV` gives `sv`), else the Unicode character name (`hebrew letter alef + hebrew point patah`). A flagged letter is shown even where the highlight doesn't mark it (a transposition). The label is set left to right inside right-to-left readings. The page also keeps the answer buttons off, and offers a reload, when a Cherokee word's font fails to load, so a visitor's installed font can't stand in for it. `layout.test.mjs` renders it in Chrome for Cherokee, Hebrew letters and Cyrillic. For pairs that differ only in a mark, see above: they are not in `lookalikes`.
 
 **Answers given before the fix.** A task marked `confusable_display` keeps its existing answers, but they no longer count. `POST /admin/confusable` (run with `confusable.sh`) does two things:
 
@@ -267,6 +285,6 @@ Changing `SESSION_KEY` (`--rotate`) signs everyone out; their earlier answers st
 node --test edge/check/worker.test.mjs edge/check/layout.test.mjs edge/check/languages.test.mjs edge/check/fonts.test.mjs
 ```
 
-The `check site` job in `ci.yml` runs these, a Wrangler dry-run build (`npx wrangler@4.154.0 deploy --dry-run`), shellcheck of the scripts and the tools' unit tests whenever anything under `edge/check/` but its Markdown changes. `languages.test.mjs` checks each language configuration's fields and that its keys are sorted. `fonts.test.mjs` checks the served font against the hash in `public/fonts/README.md`. `worker.test.mjs` runs the marking and reopening on SQLite with the real schema. `tools/test_lookalike.py` holds the table of letter pairs the threshold comes from and needs Pillow with a FreeType that reads woff2 (it skips otherwise).
+The `check site` job in `ci.yml` runs these, a Wrangler dry-run build (`npx wrangler@4.154.0 deploy --dry-run`), shellcheck of the scripts and the tools' unit tests whenever anything under `edge/check/` but its Markdown changes. `languages.test.mjs` checks each language configuration's fields and that its keys are sorted. `fonts.test.mjs` checks the served font against the hash in `public/fonts/README.md`. `worker.test.mjs` runs the marking and reopening on SQLite with the real schema. `tools/test_mark_report.py` runs the mark report on a small synthetic export. `tools/test_lookalike.py` holds the table of letter pairs the threshold comes from and needs Pillow with a FreeType that reads woff2 (it skips otherwise).
 
 `layout.test.mjs` renders every language's sample words in headless Chrome, one highlighted letter at a time, and fails if a highlight box overlaps another character. It skips when no Chrome is found (set `CHROME=/path/to/chrome`) unless `CI` is set.

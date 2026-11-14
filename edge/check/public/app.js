@@ -137,17 +137,40 @@ function lookalikeLabels(t, side) {
   return labels;
 }
 
-function examples(text, diff, labels = new Map()) {
+// The marks each reading has on a letter where the two readings are the same base letter and differ only in marks
+// (mark_only: [{a, a_marks, b, b_marks, base}], the mark characters as strings, "" for none). A Map from letter index to
+// the text shown: the names of the marks (the language's `marks`; a mark with no name is "another mark", never the Unicode
+// name), or "no mark". Tasks built before the field existed have none, and show nothing here.
+function markLabels(t, side) {
+  const labels = new Map(), n = letters(t[side]).length, names = cfg.marks || {};
+  for (const p of t.mark_only || []) {
+    const marks = p[side + "_marks"];
+    if (typeof marks !== "string" || !(p[side] < n)) continue;
+    const shown = [...new Set([...marks].map((m) => names[m] || "another mark"))];
+    labels.set(p[side], shown.length ? shown.join(" + ") : "no mark");
+  }
+  return labels;
+}
+
+function examples(text, diff, labels = new Map(), marks = new Map()) {
   const box = document.createElement("div"); box.className = "examples";
   if (cfg.dir) box.dir = cfg.dir;
   const seen = new Set();
   letters(text).forEach((ch, i) => {
-    const name = labels.get(i), key = ch + "|" + (name || "");
-    if ((!diff.includes(i) && name === undefined) || seen.has(key)) return; seen.add(key);
+    const name = labels.get(i), mark = marks.get(i), key = ch + "|" + (name || "") + "|" + (mark || "");
+    if ((!diff.includes(i) && name === undefined && mark === undefined) || seen.has(key)) return; seen.add(key);
     const ex = document.createElement("span"); ex.className = "ex";
     const l = document.createElement("span"); l.className = "letter"; l.lang = lang; l.textContent = ch; ex.appendChild(l);
     if (name !== undefined) {
       const n = document.createElement("span"); n.className = "name"; n.dir = "ltr"; n.textContent = name; ex.appendChild(n);
+    }
+    if (mark !== undefined) {
+      // The marks this reading has on the letter, as text, and the letter at about twice the chip's size so a small mark shows.
+      // The inset is a picture of the letter the page already names, so screen readers skip it.
+      const n = document.createElement("span"); n.className = "name"; n.dir = "ltr"; n.textContent = mark; ex.appendChild(n);
+      const big = document.createElement("span"); big.className = "inset"; big.lang = lang; big.setAttribute("aria-hidden", "true");
+      if (cfg.dir) big.dir = cfg.dir;
+      big.textContent = ch; ex.appendChild(big);
     }
     const note = (cfg.notes || {})[ch];
     if (note) { const n = document.createElement("span"); n.className = "note"; n.dir = "auto"; n.textContent = note; ex.appendChild(n); }
@@ -230,7 +253,7 @@ function render(prev) {
     const b = document.createElement("button"); b.type = "button"; b.className = "opt"; b.id = "opt" + (k + 1); b.disabled = busy;
     if (prev === side) b.classList.add("chosen");
     const key = document.createElement("span"); key.className = "key"; key.textContent = `Reading ${k + 1}  (${k + 1})`;
-    b.append(key, scriptText(t[side], t[side + "_diff"]), examples(t[side], t[side + "_diff"], lookalikeLabels(t, side)));
+    b.append(key, scriptText(t[side], t[side + "_diff"]), examples(t[side], t[side + "_diff"], lookalikeLabels(t, side), markLabels(t, side)));
     b.addEventListener("click", () => choose(side));
     opts.appendChild(b);
   });

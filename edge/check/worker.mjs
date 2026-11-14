@@ -276,6 +276,8 @@ async function api(request, env, url) {
         a_is: t.private ? reveal.a_is : t.a_is, b_is: t.private ? reveal.b_is : t.b_is,
         ...(t.private ? { strata: t.private.strata, truth: reveal.truth } : {}),
         ...(t.lookalikes ? { lookalikes: t.lookalikes } : {}),
+        // Pairs of one base letter that differ only in combining marks (lookalike.py): {a, a_marks, b, b_marks, base}.
+        ...(t.mark_only ? { mark_only: t.mark_only } : {}),
         counts: { a: r.a || 0, b: r.b || 0, neither: r.neither || 0, unsure: r.unsure || 0, notext: r.notext || 0 },
         // The same answers by what the visitor's page reported about the bundled font (FONT_STATES). Answers given before
         // the page reported it are `unknown`. The values add up to the counts' total.
