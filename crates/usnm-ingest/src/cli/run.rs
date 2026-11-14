@@ -36,6 +36,12 @@ pub(crate) struct RunArgs {
     #[arg(long)]
     ocr_local: bool,
     /// As for `release`.
+    #[arg(long, value_name = "N", requires = "ocr_local")]
+    expect_revoked: Option<u64>,
+    /// As for `release`.
+    #[arg(long, requires = "ocr_local")]
+    no_db_holds: bool,
+    /// As for `release`.
     #[arg(long, env = "USNM_CONGRESS")]
     congress: bool,
     /// Include manually acquired Annals and Register after operator QA.
@@ -85,6 +91,8 @@ pub(crate) async fn run_command(
         american_stories,
         ja_latin,
         ocr_local,
+        expect_revoked,
+        no_db_holds,
         congress,
         congress_manual,
         partition_decade,
@@ -96,6 +104,7 @@ pub(crate) async fn run_command(
         target,
     } = args;
     // Before hours of curation and titles-sync: the release would refuse.
+    let db_holds = usnm_ocr_local::quality_db::DbHolds::from_flags(*no_db_holds, *expect_revoked)?;
     if *american_stories {
         let curated = usnm_store::open(&cli.stores.curated)?;
         usnm_ingest::american_stories::check_written(curated.as_ref()).await?;
@@ -135,6 +144,7 @@ pub(crate) async fn run_command(
         *american_stories,
         *ja_latin,
         *ocr_local,
+        db_holds,
         *congress,
         *congress_manual,
         *partition_decade,

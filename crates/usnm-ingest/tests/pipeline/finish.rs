@@ -303,6 +303,7 @@ async fn a_release_stopped_after_its_count_is_finished_as_it_would_have_ended() 
         american_stories: true,
         ja_latin: true,
         ocr_local: true,
+        db_holds: usnm_ocr_local::quality_db::DbHolds::Skip,
         partition_decade: true,
         single_text_field: true,
         page_language: true,

@@ -588,6 +588,7 @@ async fn a_batch_list_that_does_not_match_its_manifest_stops_the_release() {
         american_stories: false,
         ja_latin: false,
         ocr_local: false,
+        db_holds: Default::default(),
         congress: false,
         congress_manual: false,
         partition_decade: false,

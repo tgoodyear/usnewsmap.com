@@ -36,7 +36,7 @@ use sha2::{Digest, Sha256};
 use usnm_store::ObjectStore;
 
 use super::pages::{self, Scores, StoredRow};
-use super::quality_db::{PageHold, QualityHolds};
+use super::quality_db::{DbHolds, PageHold, QualityHolds};
 use super::report::{engine_key, Tally as Count};
 use super::rule::{self, Keep};
 use super::ROOT;
@@ -536,6 +536,28 @@ pub async fn revocations(
     curated: &dyn ObjectStore,
     db: Option<&dyn QualityHolds>,
 ) -> anyhow::Result<Vec<Revocation>> {
+    revocations_with(curated, db, false).await
+}
+
+/// As [`revocations`], for a release by its [`DbHolds`] setting: `db` is `None` only when the
+/// holds are skipped, and when they are required a table with no rows stops the release too
+/// (31,786 rows live there as of #1956; an empty read means the wrong database or a lost table).
+pub async fn release_revocations(
+    curated: &dyn ObjectStore,
+    db: Option<&dyn QualityHolds>,
+    holds: DbHolds,
+) -> anyhow::Result<Vec<Revocation>> {
+    if db.is_none() && holds.requires_rows() {
+        bail!("the database holds are required but there is no quality database");
+    }
+    revocations_with(curated, db, holds.requires_rows()).await
+}
+
+async fn revocations_with(
+    curated: &dyn ObjectStore,
+    db: Option<&dyn QualityHolds>,
+    require_rows: bool,
+) -> anyhow::Result<Vec<Revocation>> {
     let prefix = revoked_prefix();
     let mut out = Vec::new();
     let mut paths = curated.list(&prefix).await?;
@@ -554,6 +576,9 @@ pub async fn revocations(
     match db {
         Some(db) => {
             let holds = db.page_holds().await.context("page holds")?;
+            if require_rows && holds.is_empty() {
+                bail!("quality.boinc_page_holds has no rows, but the release expects holds");
+            }
             out.extend(holds_as_revocations(holds)?);
         }
         None => tracing::warn!(
@@ -1210,6 +1235,48 @@ mod tests {
             }
             Ok(self.holds.clone())
         }
+    }
+
+    #[tokio::test]
+    async fn a_release_requiring_holds_stops_when_they_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let curated = usnm_store::open(dir.path().to_str().unwrap()).unwrap();
+        let db = |holds: Vec<PageHold>, down: bool| FakeDb {
+            provenance: vec![],
+            holds,
+            down,
+        };
+        let required = DbHolds::default();
+        // No database, an unreachable one and an empty table all stop it.
+        assert!(release_revocations(curated.as_ref(), None, required)
+            .await
+            .is_err());
+        assert!(
+            release_revocations(curated.as_ref(), Some(&db(vec![], true)), required)
+                .await
+                .is_err()
+        );
+        let empty = release_revocations(curated.as_ref(), Some(&db(vec![], false)), required)
+            .await
+            .unwrap_err();
+        assert!(format!("{empty:#}").contains("no rows"), "{empty:#}");
+        // A table with a row passes; the opt-out needs no database.
+        let held = PageHold {
+            doc_id: "sn1_1900-01-01_ed-1_seq-1".into(),
+            node: Some("boinc-aaaaaaaaaaaa".into()),
+            engine: None,
+            reason: "test".into(),
+            created_at: "2026-11-14T20:00:00Z".parse().unwrap(),
+            created_by: "tester".into(),
+        };
+        let found = release_revocations(curated.as_ref(), Some(&db(vec![held], false)), required)
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        let skipped = release_revocations(curated.as_ref(), None, DbHolds::Skip)
+            .await
+            .unwrap();
+        assert!(skipped.is_empty());
     }
 
     #[test]

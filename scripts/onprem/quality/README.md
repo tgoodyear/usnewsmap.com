@@ -89,7 +89,7 @@ the OCR workunits (about 24 November 2026).
 `boinc_page_holds` (`holds.sql`) holds single readings of single pages out of the index: a
 `doc_id` with the stored engine tag or the `node`, a `reason`, `created_at` and `created_by`.
 Rows are added and removed as `postgres` on the primary; the release reads them with the
-provenance. The odd page goes here; node, run, time and page-list revocations stay files in
+provenance, and a release stops if it can't read them or the table is empty (`--expect-revoked`, `--no-db-holds`: docs/ocr/revoke-page-list.md). The odd page goes here; node, run, time and page-list revocations stay files in
 `curated/ocr-local/revoked/`.
 
 Unit results carry the page hat's version (#1078): `hat_version` 2 is solved on the

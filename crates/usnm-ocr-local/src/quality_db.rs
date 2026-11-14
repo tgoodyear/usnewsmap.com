@@ -22,6 +22,94 @@ use crate::replace::{Provenance, ProvenanceLine};
 /// The environment variable naming the DSN file of the read-only role.
 pub const DSN_FILE_ENV: &str = "USNM_QUALITY_DSN_FILE";
 
+/// What a release does about the quality database's holds (#1956). The default
+/// is to require them: a release that could not read `quality.boinc_page_holds`
+/// would publish pages that were revoked, so it stops instead. Not reading them
+/// takes [`DbHolds::Skip`], which the operator asks for by name
+/// (`--no-db-holds`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DbHolds {
+    /// Read the holds, stop if they can't be read or the table has no rows, and
+    /// stop before publishing if fewer than `expect_revoked` pages came out
+    /// revoked (`ocr_local.json`'s `kept.revoked`).
+    Required { expect_revoked: u64 },
+    /// Apply no database holds.
+    Skip,
+}
+
+impl Default for DbHolds {
+    fn default() -> Self {
+        DbHolds::Required { expect_revoked: 0 }
+    }
+}
+
+impl DbHolds {
+    /// From `--no-db-holds` and `--expect-revoked`. A non-zero count with the
+    /// opt-out is an error: nothing could meet it.
+    pub fn from_flags(no_db_holds: bool, expect_revoked: Option<u64>) -> anyhow::Result<Self> {
+        match (no_db_holds, expect_revoked) {
+            (true, Some(n)) if n > 0 => bail!(
+                "--expect-revoked {n} conflicts with --no-db-holds: a release without database \
+                 holds revokes none of them"
+            ),
+            (true, _) => Ok(DbHolds::Skip),
+            (false, n) => Ok(DbHolds::Required {
+                expect_revoked: n.unwrap_or(0),
+            }),
+        }
+    }
+
+    /// The database to read holds from: `None` only for [`DbHolds::Skip`].
+    /// Required with `USNM_QUALITY_DSN_FILE` unset or empty, or its file
+    /// missing or unusable, is an error.
+    pub fn open(self) -> anyhow::Result<Option<QualityDb>> {
+        self.open_with(std::env::var(DSN_FILE_ENV))
+    }
+
+    fn open_with(
+        self,
+        dsn_file: Result<String, std::env::VarError>,
+    ) -> anyhow::Result<Option<QualityDb>> {
+        if self == DbHolds::Skip {
+            tracing::warn!("--no-db-holds: quality.boinc_page_holds is not applied");
+            return Ok(None);
+        }
+        match dsn_file {
+            Ok(path) if !path.trim().is_empty() => Ok(Some(QualityDb::from_file(path.trim())?)),
+            Ok(_) | Err(std::env::VarError::NotPresent) => bail!(
+                "{DSN_FILE_ENV} is not set, so quality.boinc_page_holds can't be read and its \
+                 revocations would ship; set it, or pass --no-db-holds for a release meant to run \
+                 without them"
+            ),
+            Err(e) => bail!("{DSN_FILE_ENV}: {e}"),
+        }
+    }
+
+    /// Whether the release must read at least one hold row.
+    pub fn requires_rows(self) -> bool {
+        matches!(self, DbHolds::Required { .. })
+    }
+
+    /// After the revocations are applied: `revoked` is the number of pages the
+    /// release kept LoC's text on because they were revoked (the tally's
+    /// `kept.revoked`, as in `ocr_local.json`; files and holds together). Logs
+    /// it beside the expected count, and fails if it is below.
+    pub fn check_revoked(self, revoked: u64) -> anyhow::Result<()> {
+        let expected = match self {
+            DbHolds::Required { expect_revoked } => expect_revoked,
+            DbHolds::Skip => 0,
+        };
+        tracing::info!(expected, actual = revoked, "pages revoked (kept.revoked)");
+        if revoked < expected {
+            bail!(
+                "{revoked} pages revoked, fewer than the {expected} expected (--expect-revoked): \
+                 the database holds were not all applied, so nothing is published"
+            );
+        }
+        Ok(())
+    }
+}
+
 /// A hold on one page: its `doc_id`, and the `node` or the engine tag (or
 /// both) of the reading it withdraws.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,5 +251,54 @@ impl QualityHolds for QualityDb {
                 })
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_flags_make_the_setting() {
+        assert_eq!(
+            DbHolds::from_flags(false, None).unwrap(),
+            DbHolds::default()
+        );
+        assert_eq!(
+            DbHolds::from_flags(false, Some(7)).unwrap(),
+            DbHolds::Required { expect_revoked: 7 }
+        );
+        assert_eq!(DbHolds::from_flags(true, None).unwrap(), DbHolds::Skip);
+        assert_eq!(DbHolds::from_flags(true, Some(0)).unwrap(), DbHolds::Skip);
+        let err = DbHolds::from_flags(true, Some(1)).unwrap_err().to_string();
+        assert!(err.contains("conflicts with --no-db-holds"), "{err}");
+    }
+
+    #[test]
+    fn a_required_release_fails_without_a_usable_dsn_file() {
+        let required = DbHolds::default();
+        let unset = required.open_with(Err(std::env::VarError::NotPresent));
+        assert!(unset.unwrap_err().to_string().contains(DSN_FILE_ENV));
+        assert!(required.open_with(Ok("  ".into())).is_err());
+        let missing = required.open_with(Ok("/nonexistent/usnm/quality/dsn".into()));
+        assert!(missing.is_err());
+        // An opt-out reads nothing, whatever the variable says.
+        let skip = DbHolds::Skip.open_with(Err(std::env::VarError::NotPresent));
+        assert!(skip.unwrap().is_none());
+    }
+
+    #[test]
+    fn fewer_revoked_than_expected_fails_and_at_or_above_passes() {
+        let want = DbHolds::Required {
+            expect_revoked: 31786,
+        };
+        assert!(want.check_revoked(0).is_err());
+        let err = want.check_revoked(31785).unwrap_err().to_string();
+        assert!(err.contains("31785") && err.contains("31786"), "{err}");
+        want.check_revoked(31786).unwrap();
+        want.check_revoked(40000).unwrap();
+        // No expectation, or the opt-out, passes at any count.
+        DbHolds::default().check_revoked(0).unwrap();
+        DbHolds::Skip.check_revoked(0).unwrap();
     }
 }

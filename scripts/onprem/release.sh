@@ -5,8 +5,8 @@
 #
 #   scripts/onprem/release.sh --run-dir DIR --step mirror
 #   scripts/onprem/release.sh --run-dir DIR --step seed [--sample 1pct]
-#   scripts/onprem/release.sh --run-dir DIR --step release [--split-docs N]
-#   scripts/onprem/release.sh --run-dir DIR --step finish --index-version V [--split-docs N]
+#   scripts/onprem/release.sh --run-dir DIR --step release [--split-docs N] (--expect-revoked N | --no-db-holds)
+#   scripts/onprem/release.sh --run-dir DIR --step finish --index-version V [--split-docs N] (--expect-revoked N | --no-db-holds)
 #   scripts/onprem/release.sh --run-dir DIR --step publish (--dry-run | --cosmos-endpoint URL)
 #   scripts/onprem/release.sh --run-dir DIR --step restore [--dry-run]
 #   scripts/onprem/release.sh --run-dir DIR --step ready --app-url URL --index-version V
@@ -25,13 +25,20 @@
 #          Stories, our OCR, the Latin text, v1 ingest). It writes
 #          DIR/reference/index-storage-pending.json and nothing in Azure.
 #          Its merge wait is USNM_MERGE_TIMEOUT_SECS (default 14400).
+#          It fails closed on the quality database's holds (#1956): it needs
+#          USNM_QUALITY_DSN_FILE and a readable quality.boinc_page_holds with
+#          rows, and --expect-revoked N stops it before publishing if fewer than N
+#          pages came out revoked (ocr_local.json kept.revoked). Give N, or
+#          --no-db-holds on purpose to run without the holds; the two conflict.
 # finish   finishes the release of version V in DIR when it stopped after its
 #          main index passed the exact count (its merge wait ran out):
 #          usnm-ingest release-finish with the release's settings, checked
 #          against DIR/release.log. Its merge wait is
 #          USNM_FINISH_MERGE_TIMEOUT_SECS (default 86400). Give it the
 #          release's Kafka settings (USNM_WRITER_KAFKA and its partitions)
-#          and --split-docs, and log it to another file than release.log.
+#          and --split-docs, and log it to another file than release.log. Give it
+#          the release's --expect-revoked or --no-db-holds too.
+#          Give it the release's --expect-revoked or --no-db-holds as well.
 # publish  copies the staged version into the index account and the lake
 #          (usnm-ingest publish-staged), then records its run in Cosmos
 #          index_runs (usnm-ingest import-staged-run, #1096), so /v1/versions
@@ -76,7 +83,8 @@
 # identity: usnm must be in the himds group.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '2,77s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '2,83s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+EXPECT_REVOKED="" NO_DB_HOLDS=false
 RUN="" STEP="" SAMPLE="" SPLIT_DOCS=60000 DRY_RUN=false VERSION="" APP_URL="" DELETE=false COSMOS_ENDPOINT=${USNM_COSMOS_ENDPOINT:-}
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -87,6 +95,8 @@ while [ $# -gt 0 ]; do
     --index-version) VERSION=${2:-}; shift 2 ;;
     --app-url) APP_URL=${2:-}; shift 2 ;;
     --cosmos-endpoint) COSMOS_ENDPOINT=${2:-}; shift 2 ;;
+    --expect-revoked) EXPECT_REVOKED=${2:-}; shift 2 ;;
+    --no-db-holds) NO_DB_HOLDS=true; shift ;;
     --dry-run) DRY_RUN=true; shift ;;
     --delete) DELETE=true; shift ;;
     -h|--help) usage ;;
@@ -97,6 +107,10 @@ done
 [[ $RUN == /* ]] || die "--run-dir: an absolute path"
 [ -z "$SAMPLE" ] || [ "$SAMPLE" = 1pct ] || die "--sample: 1pct"
 [[ $SPLIT_DOCS =~ ^[0-9]+$ ]] || die "--split-docs: a number"
+[ -z "$EXPECT_REVOKED" ] || [[ $EXPECT_REVOKED =~ ^[0-9]+$ ]] || die "--expect-revoked: a number"
+if $NO_DB_HOLDS && [ -n "$EXPECT_REVOKED" ] && [ "$EXPECT_REVOKED" -gt 0 ]; then
+  die "--expect-revoked $EXPECT_REVOKED conflicts with --no-db-holds"
+fi
 [ -z "$VERSION" ] || [[ $VERSION =~ ^pages-v[0-9]{8}-[0-9]+$ ]] || die "--index-version: pages-vYYYYMMDD-N"
 APP_URL_PATTERN='^(https://[A-Za-z0-9.-]+|http://(localhost|127\.0\.0\.1))(:[0-9]+)?/?$'
 [ -z "$APP_URL" ] || [[ $APP_URL =~ $APP_URL_PATTERN ]] || die "--app-url: https://HOST (http only for localhost)"
@@ -140,9 +154,22 @@ staged_version() {
 WRITER_ENV=(USNM_WORK_DIR="$RUN/work" USNM_WRITER_WAL_DIR="$RUN/wal"
   USNM_WRITER_HEAP=6GiB USNM_WRITER_COMMIT_SECS=120 USNM_WRITER_QUEUE=4GiB
   USNM_WRITER_INGEST=v1 QW_DISABLE_TELEMETRY=1)
+# The release fails closed on the quality database's holds: the steps that build need a count
+# or the opt-out, said on purpose (#1956).
+HOLDS=()
+case "$STEP" in
+  release|finish)
+    if $NO_DB_HOLDS; then
+      HOLDS=(--no-db-holds)
+    else
+      [ -n "$EXPECT_REVOKED" ] || die "--step $STEP needs --expect-revoked N (the pages the database holds revoke), or --no-db-holds for a release meant to run without them"
+      HOLDS=(--expect-revoked "$EXPECT_REVOKED")
+    fi ;;
+esac
 SETTINGS=(--full --stage-index-storage
   --american-stories --ja-latin --ocr-local
   --partition-decade --single-text-field --page-language --split-docs "$SPLIT_DOCS"
+  ${HOLDS[@]+"${HOLDS[@]}"}
   --quickwit-bin "$QUICKWIT"
   --quickwit-metastore "file://$RUN/qw" --quickwit-index-root "file://$RUN/qw")
 

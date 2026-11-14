@@ -626,6 +626,7 @@ async fn releases_american_stories_into_a_quickwit_writer_node() {
             american_stories: true,
             ja_latin: false,
             ocr_local: false,
+            db_holds: Default::default(),
             congress: false,
             congress_manual: false,
             partition_decade: false,

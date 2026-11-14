@@ -151,6 +151,12 @@ pub struct Release {
     /// nothing is read and the documents are as before; a delta still
     /// carries the published version's `ocr_local_pages.bin` forward.
     pub ocr_local: bool,
+    /// What `ocr_local` does about the quality database's holds
+    /// (`quality.boinc_page_holds`, #1956): by default it must read them (the
+    /// release stops if it can't, or the table has no rows) and stops before
+    /// publishing if fewer pages than `--expect-revoked` came out revoked;
+    /// `--no-db-holds` skips them. Not used without `ocr_local`.
+    pub db_holds: ocr_local::quality_db::DbHolds,
     /// Search the Congress pages the fetch jobs curated under `congress/`
     /// (#229, 04 §4.10): the version gets a Congress index set
     /// (`congress-…`), `congress.json`, `congress/baselines.json` and a
@@ -993,12 +999,16 @@ impl Release {
             // Host holds and page holds are read from the quality database now
             // (`USNM_QUALITY_DSN_FILE`), once, so a revoked page can't come back
             // because the database was down: that stops the release.
-            let quality = ocr_local::quality_db::QualityDb::from_env()?;
-            let revoked = ocr_local::replace::revocations(
+            // Fail closed: with the holds required (the default) an unset or
+            // unusable DSN file, an unreachable database or an empty table stops
+            // the release here, before anything is written.
+            let quality = self.db_holds.open()?;
+            let revoked = ocr_local::replace::release_revocations(
                 self.curated.as_ref(),
                 quality
                     .as_ref()
                     .map(|q| q as &dyn ocr_local::quality_db::QualityHolds),
+                self.db_holds,
             )
             .await?;
             // Pages of published batches only take ours at a full rebuild:
@@ -1046,6 +1056,19 @@ impl Release {
                 estimate,
             })
         } else {
+            if self.ocr_local {
+                // An overlay-only release plans no replacement, but it publishes, so the
+                // holds policy holds for it too: the database must be readable.
+                let quality = self.db_holds.open()?;
+                ocr_local::replace::release_revocations(
+                    self.curated.as_ref(),
+                    quality
+                        .as_ref()
+                        .map(|q| q as &dyn ocr_local::quality_db::QualityHolds),
+                    self.db_holds,
+                )
+                .await?;
+            }
             None
         };
         if let Some(r) = resume {
@@ -1241,6 +1264,12 @@ impl Release {
                 )
                 .await?
             };
+            // Before anything is staged or published: the pages given back must
+            // be at least the count the operator expects.
+            if self.ocr_local {
+                self.db_holds
+                    .check_revoked(local_tally.kept.get("revoked").copied().unwrap_or(0))?;
+            }
             let added_latin = (latin_new.len() + replaced.len()) as u64;
             latin_after.pages.extend(replaced);
             let stories_record = stories.as_deref().zip(stories_record.as_ref());
