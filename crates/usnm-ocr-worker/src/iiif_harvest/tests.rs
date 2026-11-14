@@ -862,6 +862,9 @@ async fn runs_against_one_host_share_one_lock_across_output_directories() {
     )
     .unwrap();
     let second = super::Client::new(b.path(), shared.path(), &hosts, Pace::for_test(GAP), rx);
-    assert!(second.is_err(), "a second run on the same host is refused");
+    assert!(
+        second.is_err(),
+        "a second run is refused, whatever its hosts"
+    );
     drop(first);
 }

@@ -62,7 +62,7 @@ pub struct Options {
     /// The collection's top document, for `plan`.
     pub collection: Option<String>,
     pub out: PathBuf,
-    /// Where the host's pacer and run lock live, shared by every run against that host.
+    /// Where the pacer and run lock live, shared by every harvest.
     pub state_dir: PathBuf,
     /// The plan `fetch` reads; `<out>/plan.json` by default.
     pub plan: Option<PathBuf>,
@@ -231,14 +231,13 @@ impl Client {
         std::fs::create_dir_all(out.join("_state"))?;
         let lock = crate::bulk::hold_lock(&out.join("_state").join("run.lock"))
             .context("one run at a time per output directory")?;
-        // The pacer and its lock belong to the host, not the output directory: two runs
-        // against one host, into different directories, share one pace and one push-back
-        // hold, and take turns.
+        // The pacer and its lock belong to the machine's user, not the output directory or
+        // one host: every harvest shares one pace and one push-back hold, and takes turns,
+        // whatever hosts its documents name.
         std::fs::create_dir_all(state_dir)?;
-        let host = hosts.first().map_or("host", String::as_str);
-        let host_lock = crate::bulk::hold_lock(&state_dir.join(format!("{host}.run.lock")))
-            .context("one run at a time per host")?;
-        let pacer_file = state_dir.join(format!("{host}.pacer.json"));
+        let host_lock = crate::bulk::hold_lock(&state_dir.join("iiif-harvest.run.lock"))
+            .context("one harvest at a time")?;
+        let pacer_file = state_dir.join("iiif-harvest.pacer.json");
         let policy: Policy = pace::policy(hosts, pace)?;
         let budgets = FileBudgets::new(None).with_file(pace::POLICY, pacer_file, None);
         let engine = Engine::new(

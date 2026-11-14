@@ -622,7 +622,7 @@ enum Command {
         /// The plan fetch reads (default `<out>/plan.json`) or plan writes.
         #[arg(long)]
         plan: Option<PathBuf>,
-        /// Where the host's pacer and run lock go, shared by every run against that host
+        /// Where the host's pacer and run lock go, shared by every harvest
         /// (default `$HOME/.local/state/usnm-iiif-harvest`).
         #[arg(long)]
         state_dir: Option<PathBuf>,
