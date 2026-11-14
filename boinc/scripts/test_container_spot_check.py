@@ -416,6 +416,23 @@ class ContainerSpotTests(unittest.TestCase):
         self.assertNotIn("e" * 64, self.spot()["pending"])
         self.assertEqual(self.spot()["counts"]["expired"], 1)
 
+    def test_a_replay_that_never_comes_back_is_kept_and_alerted_on_not_dropped(self):
+        self.cycle()
+        pending = self.spot()["pending"]
+        job = sorted(pending)[0]
+        pending[job]["at"] = NOW - batch.CONTAINER_SPOT_MAX_AGE - 1
+        event = self.tick()
+        # Still pending in BOINC, so still counted against max_outstanding.
+        self.assertIn(job, pending)
+        self.assertNotIn("expired", self.spot()["counts"])
+        (alert,) = [a for a in event["alerts"] if a["code"] == "container_spot_stale"]
+        self.assertEqual(alert["units"], [f"usnm_spot_{job}_1_9"])
+        # Cancelled in BOINC, the next comparison reports it failed and it is dropped.
+        self.fake.verdicts[job] = "failed"
+        event = self.tick()
+        self.assertNotIn(job, pending)
+        self.assertEqual([a for a in event["alerts"] if a["code"] == "container_spot_stale"], [])
+
     def test_a_long_run_of_skips_alerts(self):
         self.cycle()
         self.fake.lock_held = True

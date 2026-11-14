@@ -3241,7 +3241,7 @@ CONTAINER_SPOT_LOCK_WAIT_SECS = 10
 CONTAINER_SPOT_MAX_LOCK_WAIT_SECS = 60
 CONTAINER_SPOT_HEADROOM_MINS = 5
 CONTAINER_SPOT_LOCK_BUSY_ALERT_SECS = 6 * 3600
-# A replay not made or not back within this is given up, as the native ones are.
+# A replay not made within this is given up. One made and not back within it raises an alert.
 CONTAINER_SPOT_MAX_AGE = 96 * 3600
 CONTAINER_SPOT_MISMATCHES = 100
 
@@ -3398,8 +3398,10 @@ def container_spot_step(config, state, transport, now, submit_room=100, active=N
             counts["deferred"] = counts.get("deferred", 0) + 1
             continue
         if status == "pending":
-            if now - entry["at"] > CONTAINER_SPOT_MAX_AGE:
-                expire(job_id, "replay not back in time")
+            # Never dropped for age: the unit is still live in BOINC, and dropping the entry would
+            # free room for more units while this one stays out. It keeps its place against
+            # max_outstanding and is alerted on (container_spot_stale); cancelling the workunit
+            # in BOINC makes the next comparison report it failed, which ends it.
             continue
         del pending[job_id]
         counts[status] = counts.get(status, 0) + 1
@@ -3433,7 +3435,7 @@ def release_container_spot_hold(state, host, note, now):
     del spot["releases"][:-CONTAINER_SPOT_MISMATCHES]
 
 
-def container_spot_alerts(config, state):
+def container_spot_alerts(config, state, now):
     if CONTAINER_SPOT_KEY not in config:
         return []
     spot = state.get("container_spot", {})
@@ -3447,6 +3449,15 @@ def container_spot_alerts(config, state):
     if spot.get("failing"):
         alerts.append({"code": "container_spot_failing", "app": OCR_APP_NAME, **spot["failing"],
                        "message": "the container-spot step failed; no host is held by it until it runs"})
+    stale = sorted(job for job, entry in spot.get("pending", {}).items()
+                   if entry["stage"] == "submitted" and now - entry["at"] > CONTAINER_SPOT_MAX_AGE)
+    if stale:
+        alerts.append({"code": "container_spot_stale", "app": OCR_APP_NAME, "count": len(stale),
+                       "units": [f"usnm_spot_{job}_{spot['pending'][job]['source']}_{spot['pending'][job]['target']}"
+                                 for job in stale[:5]],
+                       "message": "replay units made over 96 hours ago have not come back; they still count against "
+                                  "max_outstanding and the global cap. Cancel them in BOINC (the next comparison "
+                                  "then reports them failed and drops them) or find why the peer is not asking for work"})
     busy = spot.get("lock_busy")
     if busy and busy["last"] - busy["since"] >= CONTAINER_SPOT_LOCK_BUSY_ALERT_SECS:
         alerts.append({"code": "container_spot_lock_busy", "app": OCR_APP_NAME, **busy,
@@ -3856,7 +3867,6 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     global_free = max(0, global_room(cohort_info, global_pending, budgeted_other))
     free = min(cohort_free, global_free)
     submitted = 0
-    spot_backlog = 0
     if feed:
         # Every tick, so the list stays current when this one claims nothing (#1754).
         feed.settled_messages = settled_messages(records, claimed_messages(state.get("claims"), sibling_claims))
@@ -3918,7 +3928,6 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         backlog = sum(not settled(record) and
                       record["job"]["id"] not in pending_jobs | candidates for record in records)
         backlog += sum(page not in owned and page not in conflicts for page in selected)
-        spot_backlog = backlog
         cohort_backlog = backlog
         if native:
             cohort_backlog = sum(not settled(record) and
@@ -4048,7 +4057,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # for this tick when the lock stays held, and a time budget on what it does when it runs.
         # A replay is a workunit like any other: none while draining or past the global cap,
         # counting the units this tick just submitted. Comparisons go on.
-        room = 0 if drain else max(0, global_room(cohort_info, global_in_flight + spot_backlog + submitted,
+        # Retained work as the pre-submit inventory has it: what this tick submitted was part of it,
+        # so it is counted once, and a tick that submitted nothing still counts what waits.
+        uncollected, missing = retained_backlog(config, records, owned, selected, pending_jobs, conflicts)
+        room = 0 if drain else max(0, global_room(cohort_info, global_in_flight + uncollected + len(missing),
                                                   budgeted_other))
         try:
             container_step = container_spot_step(config, state, transport, now, submit_room=room,
@@ -4147,7 +4159,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         alerts.append({"code": "native_paused", "app": NATIVE_APP_NAME, **native_paused,
                        "message": "native OCR paused; inspect the held results, then --resume-native"})
     alerts += native_spot_alerts(config, state)
-    alerts += container_spot_alerts(config, state)
+    alerts += container_spot_alerts(config, state, now)
     for run in gold_runs:
         for step, outcome in run["steps"].items():
             if outcome not in ("ok", GOLD_SKIPPED_AT_CAP):
