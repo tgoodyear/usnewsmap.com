@@ -136,7 +136,10 @@ def scan_archive(job: tuple) -> dict:
             name = m.name[2:] if m.name.startswith("./") else m.name
             key = name if name in left else "/".join(name.split("/")[-7:])
             if key in left and m.isfile():
-                found[key] = alto_heights(tf.extractfile(m).read())
+                try:
+                    found[key] = alto_heights(tf.extractfile(m).read())
+                except (ET.ParseError, ValueError):  # an unreadable page falls back to its clips; the others go on
+                    pass
                 left.discard(key)
     return found
 

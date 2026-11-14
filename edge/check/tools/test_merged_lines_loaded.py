@@ -252,6 +252,12 @@ class Run(unittest.TestCase):
         self.assertEqual([t for t, r in res.items() if r["flagged"]], [rows[5][0]])
         self.assertEqual([r["how"] for r in res.values()], ["alto"] * 5 + ["clip"])
 
+    def test_an_unreadable_page_does_not_stop_the_archive(self):
+        path = os.path.join(self.d, "bad.tar.bz2")
+        make_tar(path, {"sn1/1900/01/01/ed-1/seq-1/ocr.xml": b"<alto><unclosed>", "sn1/1900/01/01/ed-1/seq-2/ocr.xml": alto([60] * 5)})
+        found = mll.scan_archive((path, ("sn1/1900/01/01/ed-1/seq-1/ocr.xml", "sn1/1900/01/01/ed-1/seq-2/ocr.xml")))
+        self.assertEqual(list(found), ["sn1/1900/01/01/ed-1/seq-2/ocr.xml"])
+
     def test_clips_url_fetches_gently_and_keeps_the_clip(self):
         served = []
 
