@@ -352,6 +352,7 @@ async fn an_archived_journal_without_terminal_fields_is_retried_from_the_databas
             parent_image: fx.parent.job.engine.image.clone(),
             reason: Reason::SlowClass,
             target_hosts: vec![1, 9],
+            parent_platform: None,
         })
     );
     assert_eq!(record.retry.as_ref().unwrap().app_version_num, 106);
@@ -1306,6 +1307,7 @@ fn the_note_goes_in_the_real_source_image_information_element() {
         parent_image: format!("sha256:{}", "b".repeat(64)),
         reason: Reason::SegfaultOnce,
         target_hosts: vec![],
+        parent_platform: None,
     };
     let note = |location: &str, prefix: &str| {
         format!("<{prefix}fileIdentifier fileIdentifierLocation=\"{location}\">")
@@ -1437,6 +1439,7 @@ fn only_altos_own_source_image_information_takes_the_note() {
         parent_image: format!("sha256:{}", "b".repeat(64)),
         reason: Reason::SlowClass,
         target_hosts: vec![],
+        parent_platform: None,
     };
     // An empty ALTO element, with a foreign one of the same name in foreign XML: refused.
     let foreign = r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Description><sourceImageInformation/><Processing><x:sourceImageInformation xmlns:x="urn:foreign"><fileName/></x:sourceImageInformation></Processing></Description></alto>"#;

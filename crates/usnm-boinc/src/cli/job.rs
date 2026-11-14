@@ -154,6 +154,12 @@ pub struct RetryArgs {
     /// spot-check draw reads it, and submission refuses another.
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     native_host: Option<u64>,
+    /// A native page that failed on another platform's build (for example `windows_x86_64`, its
+    /// build `engine.image` of the parent), read again by the trusted build `--image` on
+    /// `--native-host` at the parent's deadline. The child records `retry_of`, the original
+    /// platform and build and the reason `platform-reroute`, and publishes them in its ALTO.
+    #[arg(long, requires = "native_host")]
+    parent_platform: Option<String>,
     #[arg(long)]
     handoff_url: String,
     #[arg(long)]
@@ -192,7 +198,12 @@ pub async fn retry(args: RetryArgs) -> anyhow::Result<()> {
             image: &args.image,
             reviewed_reason: &args.reviewed_reason,
             timeout_secs: args.timeout_secs,
-            note: None,
+            note: args
+                .parent_platform
+                .as_ref()
+                .zip(args.native_host)
+                .map(|(_, host)| (crate::retry::Reason::PlatformReroute, vec![host])),
+            parent_platform: args.parent_platform,
             now: None,
             native_host: args.native_host,
             handoff: handoff.as_ref(),

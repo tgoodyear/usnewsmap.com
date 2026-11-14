@@ -251,6 +251,9 @@ fn child_timeout(
         (Reason::SegfaultOnce, Some(_)) => anyhow::bail!(
             "a segfault-once retry keeps the parent's settings; --timeout-secs is for slow-class"
         ),
+        (Reason::PlatformReroute, _) => anyhow::bail!(
+            "a platform re-route is a native retry (usnm-boinc retry --parent-platform), not a container page's"
+        ),
         (Reason::SegfaultOnce, None) => {
             ensure!(
                 parent.attempt == 0,
@@ -544,6 +547,7 @@ pub async fn run(request: &Request<'_>, stores: &Stores<'_>) -> anyhow::Result<O
             note: Some((request.reason, request.target_hosts.to_vec())),
             now: Some(queued_at),
             native_host: None,
+            parent_platform: None,
             handoff: stores.handoff,
         },
         stores.state,

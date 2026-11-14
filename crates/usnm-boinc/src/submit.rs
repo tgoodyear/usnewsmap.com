@@ -232,6 +232,15 @@ fn refuse_retry_target(
             provenance.target_hosts
         ));
     }
+    // A native retry's host is checked against the native trust list and its build
+    // (`refuse_native_job`) by the caller; the container image check does not apply to it.
+    if record
+        .retry
+        .as_ref()
+        .is_some_and(|retry| retry.native.is_some())
+    {
+        return None;
+    }
     let Some(trust) = trust else {
         return Some("a targeted retry needs --trust, the host trust list".into());
     };
