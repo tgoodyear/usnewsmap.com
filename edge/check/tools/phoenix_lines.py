@@ -36,7 +36,8 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 
-import merged_lines
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # `python3 -I` leaves the script directory off the path
+import merged_lines  # noqa: E402
 
 SYL = re.compile("[Ꭰ-Ᏽ]")
 NA, NAH = "Ꮎ", "Ꮐ"

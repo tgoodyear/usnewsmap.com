@@ -1,4 +1,5 @@
 """Tests for merged_lines_loaded.py, on small tar.bz2 archives built here: python3 -m unittest discover -s edge/check/tools."""
+import collections
 import contextlib
 import http.server
 import io
@@ -187,10 +188,42 @@ class Run(unittest.TestCase):
         self.assertEqual({r["how"] for r in res.values()}, {"clip"})
 
     def test_missing_archive_or_page_falls_back_and_nothing_is_fetched(self):
-        jobs, why = mll.plan_archives({PAGE_CHR, PAGE_YI, PAGE_LOST}, self.arch, {PAGE_CHR: ["gone_ver01.tar.bz2"]}, {PAGE_YI.replace("/", "_"): ["nyu_test_ver01.tar.bz2"]})
+        jobs, why, prefs = mll.plan_archives({PAGE_CHR, PAGE_YI, PAGE_LOST}, self.arch, {PAGE_CHR: ["gone_ver01.tar.bz2"]}, {PAGE_YI.replace("/", "_"): ["nyu_test_ver01.tar.bz2"]})
         self.assertEqual(jobs, {"nyu_test_ver01.tar.bz2": {mll.archive_member(PAGE_YI)}})
+        self.assertEqual(prefs, {mll.archive_member(PAGE_YI): ["nyu_test_ver01.tar.bz2"]})
         self.assertIn("archive not in --archives", why[PAGE_CHR])
         self.assertEqual(why[PAGE_LOST], "no archive listed for the page")
+
+    def test_a_page_in_two_archives_takes_the_preferred_one(self):
+        # ver03 is listed first; ver01 sorts first and also holds the page, with other heights
+        make_tar(os.path.join(self.arch, "dlc_misctopsn83020866_ver01.tar.bz2"), {"sn83020866/1828/05/28/ed-1/seq-3/ocr.xml": alto([160] * 6)})
+        jobs, why, prefs = mll.plan_archives({PAGE_CHR}, self.arch, {PAGE_CHR: ["dlc_misctopsn83020866_ver03.tar.bz2", "dlc_misctopsn83020866_ver01.tar.bz2"]}, {})
+        got = mll.read_alto(jobs, prefs, self.arch, 1)
+        self.assertEqual([h for _, h in got[mll.archive_member(PAGE_CHR)]["all"]], [160, 160, 400, 160, 160, 160])
+
+    def test_one_source_line_loaded_in_two_sets_counts_once_for_the_median_and_once_per_set(self):
+        clips = os.path.join(self.d, "c3")
+        os.makedirs(clips)
+        for name, h in (("a", 100), ("b", 100), ("c", 100), ("d", 100), ("e", 330)):
+            with open(os.path.join(clips, name + ".png"), "wb") as f:
+                f.write(png(20, h))
+        page = "p/1900-01-01/ed-1/seq-1"
+        stem = "p_1900-01-01_ed-1_seq-1_"
+        rows = [(f"sr/{st}/{stem}l{i}~0", page, f"{st}/{n}.png", {}) for st in ("one", "two") for i, n in enumerate("abcde")]
+        # keys differ by set, so the clip files are looked up under the set; give both sets the same files
+        for st in ("one", "two"):
+            os.makedirs(os.path.join(clips, st))
+            for n in "abcde":
+                os.link(os.path.join(clips, n + ".png"), os.path.join(clips, st, n + ".png"))
+        tasks, _, _ = mll.read_dump(dump(rows), ("sr",))
+        res = mll.measure(tasks, {}, mll.Clips(clips, None, 0), 1.6, 5)
+        self.assertEqual([r["flagged"] for r in res.values()].count(True), 2)  # five distinct lines: checked, the tall one flagged in each set
+        rep = mll.build_report(tasks, res, collections.Counter(), collections.Counter(), 1.6, 5, {}, 0)
+        self.assertEqual([rep["sets"][f"sr/{s}"]["lines_flagged"] for s in ("one", "two")], [1, 1])
+        short = [r for r in rows if r[0].endswith("l4~0") or r[0].endswith("l0~0")]
+        tasks, _, _ = mll.read_dump(dump(short), ("sr",))
+        res = mll.measure(tasks, {}, mll.Clips(clips, None, 0), 1.6, 5)
+        self.assertFalse(any(r["flagged"] for r in res.values()), "two lines in two sets are not five lines")
 
     def test_clips_url_fetches_gently_and_keeps_the_clip(self):
         served = []

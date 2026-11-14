@@ -26,9 +26,11 @@ import json
 import os
 import random
 import re
+import sys
 
-import merged_lines
-from yiddish_lines import alto_lines, fetch, iiif_full, label
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # `python3 -I` leaves the script directory off the path
+import merged_lines  # noqa: E402
+from yiddish_lines import alto_lines, fetch, iiif_full, label  # noqa: E402
 
 CYRILLIC = re.compile(r"[Ѐ-ӿ]")
 LETTER = re.compile(r"[^\W\d_]")

@@ -703,3 +703,48 @@ test("migration 0005 only adds, so the Worker from before it still runs on the m
   const shape = (d) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('tasks') ORDER BY name`).all().map((r) => ({ ...r }));
   assert.deepEqual(shape(db), shape(fresh));
 });
+
+test("a confusable_display task can move to merged_line: held ones just change reason, reopened ones keep every answer and withdraw the current outcome", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  const post = async (path, token, body) => worker.fetch(new Request("https://check.usnewsmap.com" + path, { method: "POST", headers: { authorization: "Bearer " + token }, body: JSON.stringify(body) }), E, {});
+  const mark = async (reason, ...tasks) => (await adminCall(DB, "/admin/confusable", { action: "mark", reason, tasks })).json();
+  const row = (id) => ({ ...db.prepare("SELECT n, settled, outcome, confusable_display, held, mark_reason, outcome_withdrawn, withdrawn_reason FROM tasks WHERE id = ?").get(id) });
+  const ids = ["chr/s/held", "chr/s/again", "chr/s/clash", "chr/s/twice"];
+  for (const id of ids) db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES (?, 'chr', 's', '{}')").run(id);
+  const tok = {};
+  for (const c of ["c1", "c2", "c3"]) tok[c] = await signSession(env.SESSION_KEY, c);
+  const answer = async (id, c, choice) => assert.equal((await post("/api/answers", tok[c], { task: id, choice, display: DISPLAY_REVISION })).status, 200);
+  for (const id of ids) for (const [c, choice] of [["c1", "a"], ["c2", "a"], ["c3", "b"]]) await answer(id, c, choice); // each settles on a
+  assert.deepEqual((await mark("confusable_display", ...ids)).changed, ids);
+  assert.deepEqual(row("chr/s/held").outcome_withdrawn, "a");
+  // held and never reopened: only the reason changes (the older withdrawn outcome stays)
+  assert.deepEqual((await mark("merged_line", "chr/s/held")).changed, ["chr/s/held"]);
+  assert.deepEqual(row("chr/s/held"), { n: 0, settled: 0, outcome: null, confusable_display: 0, held: 1, mark_reason: "merged_line", outcome_withdrawn: "a", withdrawn_reason: "confusable_display" });
+  assert.deepEqual((await mark("merged_line", "chr/s/held")).unchanged, ["chr/s/held"], "a second request changes nothing");
+  assert.deepEqual((await adminCall(DB, "/admin/confusable", { action: "reopen", tasks: ["chr/s/held"] }).then((r) => r.json())).changed, [], "and it can't be reopened now");
+  assert.deepEqual((await mark("confusable_display", "chr/s/held")).unchanged, ["chr/s/held"], "merged_line does not go back");
+
+  // reopened, answered by new people in a different way, settled on b: the move keeps the new answers and withdraws "b"
+  await adminCall(DB, "/admin/confusable", { action: "reopen", tasks: ["chr/s/again"] });
+  db.prepare("INSERT INTO answers (task_id, contributor, choice, at) VALUES ('chr/s/again', 'n1', 'b', 5), ('chr/s/again', 'n2', 'b', 6), ('chr/s/again', 'n3', 'b', 7)").run();
+  db.prepare("UPDATE tasks SET n = 3, settled = 1, outcome = 'b', outcome_withdrawn = NULL, withdrawn_reason = NULL, withdrawn_at = NULL WHERE id = 'chr/s/again'").run();
+  assert.deepEqual((await mark("merged_line", "chr/s/again")).changed, ["chr/s/again"]);
+  assert.deepEqual(row("chr/s/again"), { n: 0, settled: 0, outcome: null, confusable_display: 0, held: 1, mark_reason: "merged_line", outcome_withdrawn: "b", withdrawn_reason: "merged_line" });
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers WHERE task_id = 'chr/s/again'").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers_excluded WHERE task_id = 'chr/s/again'").get().n, 6, "the old and the new answers are all kept");
+
+  // a person who answered before and again after the reopening has two different answers and one place for them: refused, nothing changes
+  await adminCall(DB, "/admin/confusable", { action: "reopen", tasks: ["chr/s/clash"] });
+  db.prepare("INSERT INTO answers (task_id, contributor, choice, at) VALUES ('chr/s/clash', 'c1', 'neither', 9)").run();
+  db.prepare("UPDATE tasks SET n = 1 WHERE id = 'chr/s/clash'").run();
+  assert.deepEqual((await mark("merged_line", "chr/s/clash")).unchanged, ["chr/s/clash"]);
+  assert.deepEqual([row("chr/s/clash").mark_reason, row("chr/s/clash").held, db.prepare("SELECT COUNT(*) AS n FROM answers WHERE task_id = 'chr/s/clash'").get().n, db.prepare("SELECT COUNT(*) AS n FROM answers_excluded WHERE task_id = 'chr/s/clash'").get().n], ["confusable_display", 0, 1, 3]);
+
+  // settled again after already holding a withdrawn outcome: the second would overwrite the first, so it is refused too
+  await adminCall(DB, "/admin/confusable", { action: "reopen", tasks: ["chr/s/twice"] });
+  db.prepare("INSERT INTO answers (task_id, contributor, choice, at) VALUES ('chr/s/twice', 'n1', 'b', 5)").run();
+  db.prepare("UPDATE tasks SET n = 3, settled = 1, outcome = 'b' WHERE id = 'chr/s/twice'").run();
+  assert.deepEqual((await mark("merged_line", "chr/s/twice")).unchanged, ["chr/s/twice"]);
+  assert.deepEqual([row("chr/s/twice").outcome, row("chr/s/twice").outcome_withdrawn, row("chr/s/twice").mark_reason], ["b", "a", "confusable_display"]);
+});

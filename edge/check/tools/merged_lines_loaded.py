@@ -164,8 +164,8 @@ def read_archive_map(path: str) -> dict:
 
 
 def plan_archives(pages, archive_dir: str, page_archives: dict, doc_archives: dict) -> tuple:
-    """({archive file: set of members}, {page: reason it has no archive}). A page lists its archives in preference order."""
-    jobs, missing, why = collections.defaultdict(set), {}, {}
+    """({archive file: set of members}, {page: reason it has no archive}, {member: [archive files that exist], in preference order})."""
+    jobs, prefs, why = collections.defaultdict(set), {}, {}
     for page in sorted(pages):
         names = page_archives.get(page, []) + doc_archives.get(page.replace("/", "_"), [])
         names = [n for n in dict.fromkeys(names)]
@@ -176,21 +176,27 @@ def plan_archives(pages, archive_dir: str, page_archives: dict, doc_archives: di
         if not have:
             why[page] = "archive not in --archives: " + ", ".join(names)
             continue
+        prefs[archive_member(page)] = have
         for n in have:
             jobs[n].add(archive_member(page))
-    return dict(jobs), why
+    return dict(jobs), why, prefs
 
 
-def read_alto(jobs: dict, archive_dir: str, workers: int, progress=None) -> dict:
-    """{page member: alto_heights} for every wanted member found. A page listed in several archives is read from each until found."""
-    out = {}
+def read_alto(jobs: dict, prefs: dict, archive_dir: str, workers: int, progress=None) -> dict:
+    """{page member: alto_heights}. A page listed in several archives takes the first of its preferred archives that holds it."""
+    found_in = {}
     items = [(os.path.join(archive_dir, name), tuple(sorted(members))) for name, members in sorted(jobs.items())]
     with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, workers)) as pool:
         for (path, _), found in zip(items, pool.map(scan_archive, items)):
-            for k, v in found.items():
-                out.setdefault(k, v)
+            found_in[os.path.basename(path)] = found
             if progress:
                 progress(path, len(found))
+    out = {}
+    for member, names in prefs.items():
+        for name in names:
+            if member in found_in.get(name, {}):
+                out[member] = found_in[name][member]
+                break
     return out
 
 
@@ -290,11 +296,11 @@ def measure(tasks: dict, alto: dict, clips: Clips, factor: float, min_lines: int
             key = tasks[tid]["body"].get("line")
             if key not in got:
                 got[key] = clips.height(key)
-        lines = {}
+        lines = {}  # by the source line, not the clip key: a clip key names its set, and one line can be loaded in several
         for tid, ref in items:
             h = got.get(tasks[tid]["body"].get("line"))
             if h:
-                lines[tasks[tid]["body"]["line"]] = h
+                lines.setdefault(ref, h)
         median = ml.page_median(list(lines.values()), min_lines)
         for tid, ref in items:
             h = got.get(tasks[tid]["body"].get("line"))
@@ -323,7 +329,7 @@ def build_report(tasks, results, active, aside, factor, min_lines, why_pages, ho
         if not res["flagged"]:
             continue
         s["tasks_flagged"] += 1
-        flagged_lines[(res["page"], res["line"])] = res
+        flagged_lines[(res["set"], res["page"], res["line"])] = res
         s["answers_active"] += active[tid]
         s["answers_set_aside"] += aside[tid]
         s["answers"] += active[tid] + aside[tid]
@@ -332,7 +338,7 @@ def build_report(tasks, results, active, aside, factor, min_lines, why_pages, ho
             s["settled_" + str(t.get("outcome") or "none")] += 1
         if t.get("held") or t.get("confusable_display") or t.get("mark_reason"):
             s["already_marked"] += 1
-    for (page, line), res in flagged_lines.items():
+    for res in flagged_lines.values():
         sets[res["set"]]["lines_flagged"] += 1
     return {"factor": factor, "min_page_lines": min_lines, "sets": {k: dict(sorted(v.items())) for k, v in sorted(sets.items())},
             "pages_without_archive": why_pages, "pages_read_from_archives": how_found}
@@ -377,9 +383,9 @@ def main(argv=None) -> int:
     if not tasks:
         raise Refused("no tasks of " + ", ".join(langs) + " in the dump")
     pages = {t["body"]["page"] for t in tasks.values() if str(t["body"].get("page", "")).count("/") == 3}
-    jobs, why_pages = plan_archives(pages, a.archives, read_pages_file(a.pages) if a.pages else {}, read_archive_map(a.archive_map) if a.archive_map else {})
+    jobs, why_pages, prefs = plan_archives(pages, a.archives, read_pages_file(a.pages) if a.pages else {}, read_archive_map(a.archive_map) if a.archive_map else {})
     print(f"{len(tasks)} tasks on {len(pages)} pages; {len(jobs)} archives to read, {len(why_pages)} pages without one", file=sys.stderr, flush=True)
-    alto = read_alto(jobs, a.archives, a.workers, lambda path, n: print(f"{os.path.basename(path)}: {n} pages", file=sys.stderr, flush=True))
+    alto = read_alto(jobs, prefs, a.archives, a.workers, lambda path, n: print(f"{os.path.basename(path)}: {n} pages", file=sys.stderr, flush=True))
     clips = Clips(a.clips, a.clips_url, a.delay)
     results = measure(tasks, alto, clips, a.factor, a.min_page_lines)
     rep = build_report(tasks, results, active, aside, a.factor, a.min_page_lines, why_pages, len(alto))
@@ -395,12 +401,12 @@ def main(argv=None) -> int:
     with open(os.path.join(a.out_dir, "flagged-lines.jsonl"), "w", encoding="utf-8") as f:
         for t in flagged:
             r = results[t]
-            if (r["page"], r["line"]) in seen:
+            if (r["set"], r["page"], r["line"]) in seen:
                 continue
-            seen.add((r["page"], r["line"]))
+            seen.add((r["set"], r["page"], r["line"]))
             f.write(json.dumps({"set": r["set"], "page": r["page"], "line": r["line"], "measured": r["how"], "height": r["height"],
                                 "median": r["median"], "ratio": r["ratio"], "factor": a.factor,
-                                "tasks": [x for x in flagged if (results[x]["page"], results[x]["line"]) == (r["page"], r["line"])]},
+                                "tasks": [x for x in flagged if (results[x]["set"], results[x]["page"], results[x]["line"]) == (r["set"], r["page"], r["line"])]},
                                ensure_ascii=False, sort_keys=True) + "\n")
     json.dump(rep, open(os.path.join(a.out_dir, "report.json"), "w", encoding="utf-8"), indent=1, sort_keys=True)
     open(os.path.join(a.out_dir, "report.txt"), "w", encoding="utf-8").write(report_text(rep))

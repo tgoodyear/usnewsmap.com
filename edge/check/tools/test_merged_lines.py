@@ -81,7 +81,8 @@ def alto(width, height, lines, ids=False):
 
 
 def run(args, env=None):
-    r = subprocess.run([sys.executable] + args, capture_output=True, text=True, env=env, cwd=HERE)
+    r = subprocess.run([sys.executable, "-I"] + args,  # -I as the Containerfile runs the tools: the script directory is not on the path
+                        capture_output=True, text=True, env=env, cwd=HERE)
     if r.returncode:
         raise AssertionError(r.stdout + r.stderr)
     return r

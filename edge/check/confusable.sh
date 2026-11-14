@@ -10,7 +10,8 @@
 # outcome as outcome_withdrawn, and holds the task out of the queue; `reopen` takes a task marked confusable_display back
 # into the queue for new answers. --reason (mark only; default confusable_display, as before) is why the tasks are marked:
 # merged_line is for a line clip that covers two printed lines, and such a task is never reopened. Marking a marked task,
-# or reopening a task that isn't held (or isn't confusable_display), does nothing. The reply lists what changed, what
+# or reopening a task that isn't held (or isn't confusable_display), does nothing. A confusable_display task can be marked
+# merged_line (README.md says when that is refused). The reply lists what changed, what
 # didn't and what isn't a task. With --reason merged_line the script fails if the reply does not echo that reason, which
 # is what a Worker from before migration 0005 would do (it would mark the tasks confusable_display).
 set -euo pipefail

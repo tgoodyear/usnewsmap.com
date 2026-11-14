@@ -22,11 +22,13 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import urllib.request
 import xml.etree.ElementTree as ET
 
-import merged_lines
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # `python3 -I` leaves the script directory off the path
+import merged_lines  # noqa: E402
 
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 HEBREW = re.compile(r"[֐-׿יִ-ﭏ]")

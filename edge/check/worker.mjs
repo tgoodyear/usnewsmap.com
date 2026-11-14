@@ -381,20 +381,33 @@ export async function record(env, task, contributor, choice, at = Date.now(), di
 // lines; the word stays held and is never reopened). A task marked before reasons existed has confusable_display = 1 and no
 // mark_reason, and reads as confusable_display.
 export const MARK_REASONS = ["confusable_display", "merged_line"];
-const UNMARKED = "confusable_display = 0 AND mark_reason IS NULL";
+// A task can be marked when it is unmarked, or (for merged_line only) when it is marked confusable_display, as the four
+// marked before reasons existed are: a clip that covers two printed lines outranks look-alike letters, and such a task may have
+// been reopened, answered and settled again. That move copies its current answers to answers_excluded and withdraws its current
+// outcome. It is refused (the task stays as it was and is listed under `unchanged`) when it could not keep everything: a current
+// answer whose contributor already has a different set-aside answer, or a settled outcome on a task that already holds a
+// withdrawn one. A task marked merged_line is never marked again.
+const MARKABLE = `((confusable_display = 0 AND mark_reason IS NULL)
+  OR (?2 = 'merged_line' AND confusable_display = 1 AND mark_reason IS NOT 'merged_line'
+      AND NOT (settled = 1 AND outcome_withdrawn IS NOT NULL)
+      AND NOT EXISTS (SELECT 1 FROM answers a JOIN answers_excluded x ON x.task_id = a.task_id AND x.contributor = a.contributor
+                       WHERE a.task_id = ?1 AND (x.choice <> a.choice OR x.at <> a.at))))`;
 export const reasonOf = (r) => r.mark_reason || (r.confusable_display ? "confusable_display" : null);
 // [sql, which of (id, reason, at) it binds, in the order of its ?1, ?2, ?3]
 export const MARK_SQL = [
-  [`INSERT INTO answers_excluded (task_id, contributor, choice, at, font, names_shown) SELECT task_id, contributor, choice, at, font, names_shown FROM answers
-     WHERE task_id = ?1 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND ${UNMARKED})`, ["id"]],
-  [`SELECT CASE WHEN EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND ${UNMARKED})
-     AND (SELECT COUNT(*) FROM answers_excluded WHERE task_id = ?1) < (SELECT COUNT(*) FROM answers WHERE task_id = ?1)
-     THEN json_extract('answers were not all copied', '$') END`, ["id"]],
-  [`DELETE FROM answers WHERE task_id = ?1 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND ${UNMARKED})`, ["id"]],
+  [`INSERT INTO answers_excluded (task_id, contributor, choice, at, font, names_shown) SELECT task_id, contributor, choice, at, font, names_shown FROM answers a
+     WHERE task_id = ?1 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND ${MARKABLE})
+       AND NOT EXISTS (SELECT 1 FROM answers_excluded x WHERE x.task_id = a.task_id AND x.contributor = a.contributor)`, ["id", "reason"]],
+  [`SELECT CASE WHEN EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND ${MARKABLE})
+     AND EXISTS (SELECT 1 FROM answers a WHERE a.task_id = ?1 AND NOT EXISTS
+       (SELECT 1 FROM answers_excluded x WHERE x.task_id = a.task_id AND x.contributor = a.contributor AND x.choice = a.choice AND x.at = a.at))
+     THEN json_extract('answers were not all copied', '$') END`, ["id", "reason"]],
+  [`DELETE FROM answers WHERE task_id = ?1 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND ${MARKABLE})`, ["id", "reason"]],
   [`UPDATE tasks SET mark_reason = ?2, confusable_display = CASE WHEN ?2 = 'confusable_display' THEN 1 ELSE 0 END, held = 1,
-       outcome_withdrawn = CASE WHEN settled = 1 THEN outcome END, withdrawn_reason = CASE WHEN settled = 1 THEN ?2 END, withdrawn_at = CASE WHEN settled = 1 THEN ?3 END,
+       outcome_withdrawn = CASE WHEN settled = 1 THEN outcome ELSE outcome_withdrawn END, withdrawn_reason = CASE WHEN settled = 1 THEN ?2 ELSE withdrawn_reason END,
+       withdrawn_at = CASE WHEN settled = 1 THEN ?3 ELSE withdrawn_at END,
        n = 0, settled = 0, outcome = NULL
-     WHERE id = ?1 AND ${UNMARKED}`, ["id", "reason", "at"]],
+     WHERE id = ?1 AND ${MARKABLE}`, ["id", "reason", "at"]],
 ];
 export const markStatements = (id, reason = "confusable_display", at = Date.now()) => MARK_SQL.map(([sql, uses]) => [sql, uses.map((u) => ({ id, reason, at })[u])]);
 // Reopening lets a task marked confusable_display take new answers again. Its excluded answers stay excluded. A merged_line task is never reopened.
