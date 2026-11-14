@@ -48,6 +48,11 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
         job.lines.is_some() || request.len() <= boinc::MAX_JSON,
         "file over size limit"
     );
+    // Before the scan is read and the engine started: if the VM can't hold the task, the client
+    // retries it later (#1934).
+    if !crate::memgate::gate(&work, job.engine.kind)? {
+        return Ok(());
+    }
     let image = read(&work.join("page"), boinc::MAX_SCAN)?;
     ensure!(
         image.len() as u64 == job.scan.bytes && boinc::sha256(&image) == job.scan.sha256,

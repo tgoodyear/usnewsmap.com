@@ -42,6 +42,11 @@ pub fn load(work: &Path) -> anyhow::Result<Bundle> {
 
 pub async fn run(work: &Path) -> anyhow::Result<()> {
     let bundle = load(work)?;
+    // Before the engine and the pages are loaded; a deferral writes nothing else, so a restart
+    // resumes from the checkpoint (#1934).
+    if !crate::memgate::gate(work, bundle.pages[0].job.engine.kind)? {
+        return Ok(());
+    }
     let engine = crate::worker::tesseract(&bundle.pages[0].job.engine).await?;
     let check = |job: &Job| -> anyhow::Result<()> {
         crate::worker::check_models(&job.engine)?;
