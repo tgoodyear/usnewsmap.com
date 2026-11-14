@@ -579,3 +579,15 @@ test("the page sends a value the Worker stores, and a language with no letter na
   assert.match(app, /if \(!namesOn\(\) \|\| !t\) return "not_shown";/);
   assert.match(readFileSync(new URL("./migrations/0004-answer-names.sql", import.meta.url), "utf8"), /IN \('shown', 'not_shown', 'unknown'\)/);
 });
+
+test("namesState looks at each reading on its own, so a leading combining mark in one cannot hide the other's names", () => {
+  const app = readFileSync(new URL("./public/app.js", import.meta.url), "utf8");
+  const start = app.indexOf("const segmenter"), end = app.indexOf("function examples(");
+  const make = (cfg, on) => new Function(`const cfg = ${JSON.stringify(cfg)}, showNames = ${on};\n${app.slice(start, end)}\nconst namesOn = () => showNames && hasNames();\n${app.slice(app.indexOf("function namesState"), app.indexOf("// What the page reports with an answer about the bundled font"))}\nreturn namesState;`)();
+  const labels = { labels: { "Ꭰ": "a" } };
+  assert.equal(make(labels, true)({ a: "Ꭰ", b: "\u0301x" }), "shown", "b starts with a combining mark");
+  assert.equal(make(labels, true)({ a: "\u0301x", b: "Ꭰ" }), "shown");
+  assert.equal(make(labels, true)({ a: "x", b: "y" }), "not_shown", "no named letter");
+  assert.equal(make(labels, false)({ a: "Ꭰ", b: "Ꭰ" }), "not_shown", "option off");
+  assert.equal(make({}, true)({ a: "Ꭰ", b: "Ꭰ" }), "not_shown", "a language with no letter names");
+});

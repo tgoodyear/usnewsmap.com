@@ -244,7 +244,7 @@ const namesOn = () => showNames && hasNames();
 // offered for. Nothing else about the visitor is sent.
 function namesState(t) {
   if (!namesOn() || !t) return "not_shown";
-  return letters(t.a + t.b).some((ch) => nameOf(ch) !== undefined) ? "shown" : "not_shown";
+  return [t.a, t.b].some((text) => letters(text || "").some((ch) => nameOf(ch) !== undefined)) ? "shown" : "not_shown"; // each reading on its own, as it is drawn
 }
 
 // What the page reports with an answer about the bundled font (worker.mjs, FONT_STATES): the word's bundled font has
