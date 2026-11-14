@@ -127,8 +127,8 @@ boinc/scripts/start-boinc-bridge.sh --env prod --target handoff --step collect -
 ```
 
 It publishes to `ocr-out` for a trusted host and writes the
-dispatch root back with the job `published`. An untrusted host's result is held in the
-dispatch root's `quarantine/<job>/`. Stop there: `ocr-sync` is the next step, as usual. A terminal BOINC failure
+dispatch root back with the job `published`. An untrusted host's result is kept in the
+dispatch root's `quarantine/<job>/` and the job marked held. Stop there: `ocr-sync` is the next step, as usual. A terminal BOINC failure
 (an `_error` or `_no_output_files` spool) needs neither a host nor the trust list: collect
 marks the job failed. Each run writes back only the journal entries it touched; run one
 execution at a time all the same. If a write-back keeps failing, the job's log carries the
