@@ -1516,13 +1516,41 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
             .await
         }
     };
-    assert!(run(trust.clone()).await.is_err());
+    // No host id, or host 0: nothing says whose result it is, so this is a fault, not a hold.
+    for missing in [None, Some(0)] {
+        assert!(usnm_boinc::trust::collect(
+            &fx.options.root,
+            &spool,
+            &id,
+            &trust,
+            missing,
+            fx.stores.curated.as_ref(),
+            fx.stores.out.as_ref(),
+        )
+        .await
+        .is_err());
+        assert!(usnm_boinc::load(&fx.options.root, &id)
+            .unwrap()
+            .held
+            .is_none());
+    }
+    // An untrusted host's complete result is kept and the record settled as held: this
+    // succeeds, so the feed goes on and later ticks don't collect it again.
+    let reason = match run(trust.clone()).await.unwrap() {
+        usnm_boinc::trust::Collected::Held(reason) => reason,
+        other => panic!("{other:?}"),
+    };
+    assert!(reason.contains("host 42 has no gold report"));
     let q = quarantine_dir(&fx.options.root, &id);
     assert!(q.join("reason.json").exists() && q.join("result.json").exists());
-    assert_ne!(
-        usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
-        Stage::Published
-    );
+    let kept = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    assert_ne!(kept.stage, Stage::Published);
+    assert_eq!(kept.held.as_deref(), Some(reason.as_str()));
+    // Collected again, it is still held, with the same record.
+    assert!(matches!(
+        run(trust.clone()).await.unwrap(),
+        usnm_boinc::trust::Collected::Held(_)
+    ));
     trust
         .hosts
         .entry(record.job.engine.image.clone())
@@ -1558,11 +1586,11 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
         }
         assert!(trust.refuse_job(&job, Some(42)).is_some(), "{field}");
     }
+    // Once the host passes gold, the held result is collected and published as any other.
     run(trust.clone()).await.unwrap();
-    assert_eq!(
-        usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
-        Stage::Published
-    );
+    let published = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    assert_eq!(published.stage, Stage::Published);
+    assert!(published.held.is_none());
 
     // Coexisting eng/eng + deu/frak2021 policy: a host trusted only for eng/eng (42) is refused
     // when collecting a deu/frak2021 job, while a host trusted for deu/frak2021 (77) succeeds.
@@ -1600,17 +1628,20 @@ async fn untrusted_host_is_held_back_until_it_passes_gold() {
         v: usnm_boinc::trust::TRUST_VERSION,
     };
     let coexisting = trust.merge(&deu_trust).unwrap();
-    assert!(usnm_boinc::trust::collect(
-        &fx_deu.options.root,
-        &spool_deu,
-        &id_deu,
-        &coexisting,
-        Some(42),
-        fx_deu.stores.curated.as_ref(),
-        fx_deu.stores.out.as_ref(),
-    )
-    .await
-    .is_err());
+    assert!(matches!(
+        usnm_boinc::trust::collect(
+            &fx_deu.options.root,
+            &spool_deu,
+            &id_deu,
+            &coexisting,
+            Some(42),
+            fx_deu.stores.curated.as_ref(),
+            fx_deu.stores.out.as_ref(),
+        )
+        .await
+        .unwrap(),
+        usnm_boinc::trust::Collected::Held(_)
+    ));
     assert_ne!(
         usnm_boinc::load(&fx_deu.options.root, &id_deu)
             .unwrap()
@@ -1770,7 +1801,10 @@ async fn a_held_scope_keeps_german_results_until_a_calibration_lifts_it() {
     };
     assert!(held.merge(&calibrated(1.0)).is_err());
     let lifted = held.merge(&calibrated(0.15)).unwrap();
-    assert!(run(lifted.clone(), Some(42)).await.is_err());
+    assert!(matches!(
+        run(lifted.clone(), Some(42)).await.unwrap(),
+        Collected::Held(_)
+    ));
     assert!(fx.stores.out.list("pages").await.unwrap().is_empty());
     assert_eq!(run(lifted, Some(77)).await.unwrap(), Collected::Published);
     let published = usnm_boinc::load(&fx.options.root, &id).unwrap();
@@ -4586,8 +4620,12 @@ async fn a_line_job_is_collected_through_the_trust_gate() {
     page_only.policies.clear();
     assert!(run(page_only, 7).await.is_err());
     // A host the line scope doesn't list is refused, even one the English scope trusts.
-    assert!(run(line_trust(&image, 41), 42).await.is_err());
-    assert!(run(line_trust(&image, 42), 7).await.is_err());
+    for (listed, host) in [(41, 42), (42, 7)] {
+        assert!(matches!(
+            run(line_trust(&image, listed), host).await.unwrap(),
+            usnm_boinc::trust::Collected::Held(_)
+        ));
+    }
     assert_ne!(
         usnm_boinc::load(&fx.options.root, &id).unwrap().stage,
         Stage::Published

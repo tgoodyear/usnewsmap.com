@@ -310,10 +310,14 @@ usnm-boinc collect --root ROOT --spool SPOOL --job JOB_ID \
 ```
 
 With `--trust`, a result outside a held scope (below) is held back when its host
-is untrusted or no `--host-id` is given: `collect` copies its spool files and a
-`reason.json` to `<root>/quarantine/<job>/`, publishes nothing, leaves the job's
-stage as it was and exits non-zero. Once the host passes a gold unit, rebuild
-`trust.json` and run `collect` again. Without `--trust`, `collect` publishes as
+is untrusted. A complete result of a job in a calibrated scope is kept like a held
+scope's: `collect` writes it and a `reason.json` to `<root>/quarantine/<job>/`,
+publishes nothing, marks the record `held` and exits zero, so the controller doesn't
+collect it again or stop its tick. Once the host passes a gold unit, rebuild
+`trust.json` and run `collect` again by hand: it publishes the result and clears the
+mark. With no `--host-id`, an incomplete result, or a job outside the calibrated scope,
+`collect` instead copies the spool files and the reason, leaves the job's stage as it was
+and exits non-zero. Without `--trust`, `collect` publishes as
 before. Production collection must use the existing hand-off `collect` step,
 which always passes the trust list and refuses to run without one. It passes the
 canonical host when the server recorded one; without it, `collect` refuses the

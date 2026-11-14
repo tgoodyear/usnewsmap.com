@@ -133,6 +133,16 @@ impl Trust {
         hosts
     }
 
+    /// Whether a refusal of `job` is about its host alone: the job's image, engine and exact
+    /// scope are all calibrated and valid, so only the host (not yet on the gold list, or held)
+    /// keeps its result from publication. Any other refusal is a fault in what was run.
+    pub fn refused_for_host(&self, job: &usnm_ocr_contract::boinc::Job) -> bool {
+        immutable_image(&job.engine.image)
+            && job.engine.kind.is_tesseract()
+            && self.validate().is_ok()
+            && self.job_policy(job).is_some()
+    }
+
     pub fn refuse_job(
         &self,
         job: &usnm_ocr_contract::boinc::Job,
@@ -255,9 +265,10 @@ pub enum Collected {
 
 /// `usnm-boinc collect` with the trust check in front of [`crate::collect`].
 ///
-/// A result whose host the policy doesn't trust is held back and this fails, leaving the
-/// record as it was. A result of a held scope is kept the same way, but the record is marked
-/// `held` and this succeeds: the hold is policy, not a fault for the feed to stop on.
+/// A result whose host the policy doesn't trust is kept the same way as a held scope's: the
+/// record is marked `held` and this succeeds, as the hold is policy, not a fault for the feed
+/// to stop on. Only a result that is incomplete, or has no host id, is held back with a failure,
+/// leaving the record as it was.
 pub async fn collect(
     root: &Path,
     spool: &Path,
@@ -304,6 +315,39 @@ pub async fn collect(
             return Ok(Collected::Held(reason));
         }
         if let Some(reason) = trust.refuse_job(&record.job, host_id) {
+            // A host the policy doesn't trust (yet) is policy, not a fault: when the result is
+            // complete and the job's own, it is kept and the record marked held, like a held
+            // scope's, so later ticks don't collect it again and the feed goes on. It is
+            // collected by hand once the host passes gold (a collect doesn't look at `held`).
+            // Without a (nonzero) host id, or with an incomplete result, nothing is settled: it fails.
+            if host_id.is_some_and(|host| host != 0) && trust.refused_for_host(&record.job) {
+                let _lock = Lock::take(root)?;
+                let mut record = load(root, id)?;
+                let file = |logical: &str| spool.join(format!("{wu}__file_{logical}"));
+                if let Ok(checked) = crate::checked_result(
+                    root,
+                    &record,
+                    &file("result.json"),
+                    &file("text.txt"),
+                    &file("layout.xml"),
+                ) {
+                    let q = quarantine_dir(root, id);
+                    std::fs::create_dir_all(&q)?;
+                    for (logical, bytes) in [
+                        ("result.json", &checked.result_bytes),
+                        ("text.txt", &checked.text),
+                        ("layout.xml", &checked.alto),
+                    ] {
+                        atomic(&q.join(logical), bytes)?;
+                    }
+                    write_reason(&q, id, &record.job, host_id, &reason)?;
+                    if record.held.as_deref() != Some(reason.as_str()) {
+                        record.held = Some(reason.clone());
+                        save(root, &record)?;
+                    }
+                    return Ok(Collected::Held(reason));
+                }
+            }
             let q = quarantine_dir(root, id);
             std::fs::create_dir_all(&q)?;
             for logical in ["result.json", "text.txt", "layout.xml"] {
