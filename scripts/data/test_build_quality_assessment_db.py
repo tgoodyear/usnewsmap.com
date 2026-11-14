@@ -105,7 +105,10 @@ class BuildQualityAssessmentDbTest(unittest.TestCase):
 
         mod.apply_qwen_exclusions(FakeConn(), Path("/tmp/excluded.tsv"))
         self.assertIn("read_csv('/tmp/excluded.tsv'", executed[0])
+        deleted = next(s for s in executed if s.startswith("DELETE FROM raw_boinc_crops"))
+        self.assertIn("reader IN ('vlm', 'qwen')", deleted)
         update = next(s for s in executed if s.startswith("UPDATE raw_boinc_crops"))
+        self.assertIn("hat_est_cer = NULL", update)
         for col in ("vlm_text", "cer_vs_vlm", "dice_vs_vlm", "vlm_reading_present", "vlm_crop_state"):
             self.assertIn(f"{col} = NULL", update)
         # A whole unit (no crop id) or the named crop, with or without the bundle's page prefix.
@@ -113,6 +116,19 @@ class BuildQualityAssessmentDbTest(unittest.TestCase):
         self.assertIn("x.doc_id || ':'", update.replace("raw_boinc_crops.doc_id", "x.doc_id"))
         delete = next(s for s in executed if s.startswith("DELETE FROM raw_boinc_pages"))
         self.assertIn("reader IN ('vlm', 'qwen')", delete)
+
+    def test_a_pages_only_campaign_skips_the_crop_mutations(self):
+        mod = load_module()
+        executed: list[str] = []
+
+        class FakeConn:
+            def execute(self, sql: str):
+                executed.append(" ".join(sql.split()))
+                return self
+
+        mod.apply_qwen_exclusions(FakeConn(), Path("/tmp/excluded.tsv"), has_crops=False)
+        self.assertFalse(any("raw_boinc_crops" in s for s in executed))
+        self.assertTrue(any(s.startswith("DELETE FROM raw_boinc_pages") for s in executed))
 
     def test_without_an_exclusion_file_nothing_is_applied(self):
         mod = load_module()

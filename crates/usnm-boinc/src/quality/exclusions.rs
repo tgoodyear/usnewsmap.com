@@ -68,20 +68,15 @@ impl Exclusions {
         self.0.get(job_id)
     }
 
-    /// A digest of the exclusions, part of the row cache's key so that adding or
-    /// releasing one re-keys the rows. None when nothing is excluded, which
-    /// leaves the key as it was before exclusions existed.
-    pub fn fingerprint(&self) -> Option<String> {
-        if self.0.is_empty() {
-            return None;
-        }
+    /// A digest of what is excluded of the unit `job_id`, part of its row cache key so that
+    /// adding or releasing an exclusion re-keys the pages that carry its readings. None when
+    /// nothing is excluded, which leaves the key as it was before exclusions existed.
+    pub fn job_fingerprint(&self, job_id: &str) -> Option<String> {
+        let e = self.0.get(job_id)?;
         let mut h = Sha256::new();
-        for (job, e) in &self.0 {
-            h.update(format!("{job}\t{}\n", e.whole));
-            for c in &e.crops {
-                h.update(format!("{c}\n"));
-            }
-            h.update(b"\0");
+        h.update(format!("{}\n", e.whole));
+        for c in &e.crops {
+            h.update(format!("{c}\n"));
         }
         Some(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
     }
@@ -118,15 +113,15 @@ mod tests {
     }
 
     #[test]
-    fn the_fingerprint_follows_the_set_and_is_absent_when_empty() {
-        assert_eq!(Exclusions::default().fingerprint(), None);
-        let a = Exclusions::from_rows([row("a", None)]).fingerprint();
-        let b = Exclusions::from_rows([row("a", Some("c"))]).fingerprint();
-        assert!(a.is_some() && a != b);
-        let reordered = Exclusions::from_rows([row("b", None), row("a", None)]).fingerprint();
-        assert_eq!(
-            reordered,
-            Exclusions::from_rows([row("a", None), row("b", None)]).fingerprint()
-        );
+    fn the_fingerprint_follows_the_job_and_is_absent_without_exclusions() {
+        assert_eq!(Exclusions::default().job_fingerprint("a"), None);
+        let a = Exclusions::from_rows([row("a", None), row("b", None)]);
+        let b = Exclusions::from_rows([row("a", Some("c"))]);
+        assert_eq!(a.job_fingerprint("z"), None);
+        assert!(a.job_fingerprint("a").is_some());
+        assert_ne!(a.job_fingerprint("a"), b.job_fingerprint("a"));
+        // Another job's exclusions don't move this job's fingerprint.
+        let more = Exclusions::from_rows([row("a", None), row("b", Some("x"))]);
+        assert_eq!(a.job_fingerprint("a"), more.job_fingerprint("a"));
     }
 }

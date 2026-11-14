@@ -362,11 +362,6 @@ impl Cache {
             }
             None => field(&mut version, b"no-qwen-crop-states"),
         }
-        // Which units and crops are excluded changes every row that carries their readings.
-        if let Some(print) = opts.qwen_exclusions.fingerprint() {
-            field(&mut version, b"qwen-exclusions");
-            field(&mut version, print.as_bytes());
-        }
         // Whether crop texts are measured, and with which files, changes every crop row.
         match &opts.qe_dir {
             Some(_) => {
@@ -387,6 +382,12 @@ impl Cache {
             let job: qwen::Job = serde_json::from_slice(&bytes)?;
             let mut paths = vec![path.clone()];
             let mut salt = Vec::new();
+            // Which of this unit's readings are excluded re-keys the pages that carry them, and
+            // only those; a unit with no exclusion keeps its key.
+            if let Some(print) = opts.qwen_exclusions.job_fingerprint(&job.id) {
+                field_bytes(&mut salt, b"qwen-exclusions");
+                field_bytes(&mut salt, print.as_bytes());
+            }
             if let Some(spool) = super::collect::qwen_spool_for(
                 &job,
                 &opts.qwen_spool,

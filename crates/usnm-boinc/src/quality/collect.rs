@@ -1231,17 +1231,18 @@ fn qwen_pages(
         } else {
             (None, None)
         };
-        // An excluded unit reads as if no result had come in; an excluded crop has no reading.
+        // An excluded unit reads as if no result had come in. An excluded crop has no reading,
+        // but is dropped only once a page has been accepted or not: whether a retry takes the
+        // page over from an earlier bundle depends on the result as it came in.
         let excluded = exclusions.job(&job.id);
-        if let Some(e) = excluded {
-            if e.whole {
-                (readings, vouch) = (None, None);
-            } else if let Some(r) = readings.as_mut() {
-                r.readings.retain(|x| !e.hides(None, &x.id));
-            }
+        if excluded.is_some_and(|e| e.whole) {
+            (readings, vouch) = (None, None);
         }
         let whole = excluded.is_some_and(|e| e.whole);
         if job.pages.is_empty() {
+            if let (Some(e), Some(r)) = (excluded, readings.as_mut()) {
+                r.readings.retain(|x| !e.hides(None, &x.id));
+            }
             out.insert(
                 job.doc_id.clone(),
                 QwenPage {
@@ -1332,6 +1333,12 @@ fn qwen_pages(
                 if !accepts && out.get(&bp.doc_id).is_some_and(|p| p.readings.is_some()) {
                     continue;
                 }
+                let page_readings = page_readings.map(|mut r| {
+                    if let Some(e) = excluded {
+                        r.readings.retain(|x| !e.hides(Some(&bp.doc_id), &x.id));
+                    }
+                    r
+                });
                 out.insert(
                     bp.doc_id.clone(),
                     QwenPage {

@@ -190,12 +190,12 @@ psql_admin -d usnm_quality -c "INSERT INTO quality.campaigns (campaign, source) 
   -c "INSERT INTO quality.unit_pages (campaign, doc_id, job_id, outcome) VALUES ('ci-excl', '$d1', 'k', 'ok'), ('ci-excl', 'other', 'k', 'ok')" \
   -c "INSERT INTO quality.reader_scores (campaign, doc_id, reader, est_cer) VALUES ('ci-excl', '$d1', 'qwen', 0.1), ('ci-excl', '$d1', 'ours-tesseract', 0.2), ('ci-excl', 'other', 'qwen', 0.3)" > /dev/null
 effective() { psql_admin -d usnm_quality -tA -c "SET ROLE quality_reader" -c "SELECT string_agg(doc_id || ':' || reader, ',' ORDER BY doc_id, reader) FROM quality.reader_scores_effective WHERE campaign = 'ci-excl'" | tail -1; }
-all="$d1:ours-tesseract,$d1:qwen,other:qwen"
+all="other:qwen,$d1:ours-tesseract,$d1:qwen"
 [ "$(effective)" = "$all" ] || die "the effective view with no exclusion: $(effective)"
 excl="INSERT INTO quality.excluded_qwen_readings (job_id, wu_id, doc_id, reason, created_by) VALUES ('$job', 1, '$d1', 'ci', 'ci') ON CONFLICT DO NOTHING"
 psql_admin -d usnm_quality -c "$excl" -c "$excl" > /dev/null
 [ "$(psql_admin -d usnm_quality -tA -c 'SELECT count(*) FROM quality.excluded_qwen_readings')" = "1" ] || die "an exclusion added twice"
-[ "$(effective)" = "$d1:ours-tesseract,other:qwen" ] || die "the effective view with an exclusion: $(effective)"
+[ "$(effective)" = "other:qwen,$d1:ours-tesseract" ] || die "the effective view with an exclusion: $(effective)"
 psql_admin -d usnm_quality -c "SET ROLE quality_reader" -c "SELECT count(*) FROM quality.excluded_qwen_readings" > /dev/null || die "the reader can't read exclusions"
 psql_admin -d usnm_quality -c "SET ROLE quality_reader" -c "UPDATE quality.excluded_qwen_readings SET released_at = now()" > /dev/null 2>&1 \
   && die "the reader released an exclusion"
@@ -205,6 +205,11 @@ psql_admin -d usnm_quality -c "UPDATE quality.excluded_qwen_readings SET reason 
 psql_admin -d usnm_quality -c "UPDATE quality.excluded_qwen_readings SET released_at = now() WHERE released_at IS NULL" > /dev/null
 [ "$(effective)" = "$all" ] || die "the effective view after the release: $(effective)"
 [ "$(psql_admin -d usnm_quality -tA -c 'SELECT count(*) FROM quality.excluded_qwen_readings')" = "1" ] || die "a release removed the row"
+# A bundle's pages each get a whole-unit row for the one job.
+bundle="INSERT INTO quality.excluded_qwen_readings (job_id, wu_id, doc_id, reason, created_by) VALUES ('$job', 1, 'other', 'ci', 'ci')"
+psql_admin -d usnm_quality -c "$bundle" > /dev/null
+[ "$(effective)" = "$d1:ours-tesseract,$d1:qwen" ] || die "a second page's whole-unit row: $(effective)"
+psql_admin -d usnm_quality -c "UPDATE quality.excluded_qwen_readings SET released_at = now() WHERE doc_id = 'other' AND released_at IS NULL" > /dev/null
 # A crop of the unit may be excluded again after the release; a second live one for it is refused.
 crop="INSERT INTO quality.excluded_qwen_readings (job_id, wu_id, doc_id, crop_id, reason, created_by) VALUES ('$job', 1, '$d1', 'c1', 'ci', 'ci')"
 psql_admin -d usnm_quality -c "$crop" > /dev/null

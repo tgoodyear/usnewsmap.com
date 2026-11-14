@@ -20,7 +20,7 @@
 --   WHERE job_id = '<64 hex>' AND crop_id IS NULL AND released_at IS NULL;
 --
 -- `crop_id` is the id as the unit's readings.json has it (`<doc_id>:<crop>` in a bundle).
--- `doc_id` is the page the unit read: the view needs it to find the page-level rows, because
+-- `doc_id` is the page the unit read (a bundle unit has one row for each of its pages): the view needs it to find the page-level rows, because
 -- reader_scores keys on the page and has no Qwen job. Without it the exclusion still keeps the
 -- readings out of `quality collect`, but the view cannot match a row.
 
@@ -37,9 +37,11 @@ CREATE TABLE IF NOT EXISTS quality.excluded_qwen_readings (
   created_by   text NOT NULL CHECK (btrim(created_by) <> ''),
   released_at  timestamptz CHECK (released_at >= created_at)
 );
--- One live exclusion for a unit or crop, so adding it again changes nothing.
+-- One live exclusion for a unit or crop (and page, for a bundle, which has a row for each page
+-- it read), so adding it again changes nothing.
 CREATE UNIQUE INDEX IF NOT EXISTS excluded_qwen_readings_live
-  ON quality.excluded_qwen_readings (job_id, coalesce(crop_id, '')) WHERE released_at IS NULL;
+  ON quality.excluded_qwen_readings (job_id, coalesce(crop_id, ''), coalesce(doc_id, ''))
+  WHERE released_at IS NULL;
 CREATE INDEX IF NOT EXISTS excluded_qwen_readings_doc
   ON quality.excluded_qwen_readings (doc_id) WHERE released_at IS NULL;
 
