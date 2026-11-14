@@ -303,7 +303,9 @@ resource ingest 'Microsoft.App/jobs@2025-01-01' = {
             full || stageIndexStorage ? ['--full'] : [],
             americanStories ? ['--american-stories'] : [],
             jaLatin ? ['--ja-latin'] : [],
-            ocrLocal ? ['--ocr-local'] : [],
+            // This job has no route to the quality replica, so it never read the holds;
+            // a release fails closed on them now, so it opts out on purpose (#1956).
+            ocrLocal ? ['--ocr-local', '--no-db-holds'] : [],
             congress ? ['--congress'] : [],
             congressManual ? ['--congress-manual'] : [],
             partitionDecade ? ['--partition-decade'] : [],

@@ -69,6 +69,48 @@ class ReleaseScript(unittest.TestCase):
             json.dump({"index_version": VERSION}, f)
 
 
+class DbHolds(ReleaseScript):
+    """The release step fails closed on the quality database's holds (#1956)."""
+
+    def setUp(self):
+        super().setUp()
+        self.quickwit = os.path.join(self.dir, "quickwit")
+        with open(self.quickwit, "w") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(self.quickwit, 0o755)
+
+    def build(self, step, *args):
+        return self.release("--step", step, *args, USNM_QUICKWIT_BIN=self.quickwit)
+
+    def test_a_release_needs_a_count_or_the_opt_out(self):
+        p = self.build("release")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("--expect-revoked N", p.stderr)
+        self.assertFalse(os.path.exists(self.args_file), "usnm-ingest ran")
+
+    def test_the_count_is_passed_to_the_release(self):
+        p = self.build("release", "--expect-revoked", "31786")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        args = self.ingest_args()
+        self.assertEqual(args[args.index("--expect-revoked") + 1], "31786")
+        self.assertNotIn("--no-db-holds", args)
+
+    def test_the_opt_out_is_passed_and_conflicts_with_a_count(self):
+        p = self.build("release", "--no-db-holds")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        args = self.ingest_args()
+        self.assertIn("--no-db-holds", args)
+        self.assertNotIn("--expect-revoked", args)
+        p = self.build("release", "--no-db-holds", "--expect-revoked", "5")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("conflicts with --no-db-holds", p.stderr)
+
+    def test_the_count_is_a_number(self):
+        p = self.build("release", "--expect-revoked", "lots")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("--expect-revoked: a number", p.stderr)
+
+
 class PublishAndRestore(ReleaseScript):
     def test_publish_passes_no_restore(self):
         self.stage()

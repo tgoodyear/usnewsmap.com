@@ -10,6 +10,7 @@ use usnm_ingest::merges::{self, MergeWait};
 use usnm_ingest::release::{self, Published, Release};
 use usnm_ingest::sink::{IndexSink, IngestApi, JsonlSink, QuickwitNode, QuickwitSink};
 use usnm_ingest::state::State;
+use usnm_ocr_local::quality_db::DbHolds;
 use usnm_state::owner_id;
 
 use super::common::{root, IndexTarget, Stores};
@@ -44,6 +45,21 @@ pub(crate) struct ReleaseArgs {
     /// it at the next full release.
     #[arg(long)]
     ocr_local: bool,
+    /// With `--ocr-local`: stop before publishing if fewer than N pages came
+    /// out revoked (`ocr_local.json`'s `kept.revoked`: pages kept on LoC's
+    /// text because a revocation file or a `quality.boinc_page_holds` row
+    /// took our reading). Counts the batches the release indexes, so give it
+    /// on a full rebuild. The expected and actual counts are logged either
+    /// way. A release with `--ocr-local` also stops, before writing anything,
+    /// if the holds table can't be read (`USNM_QUALITY_DSN_FILE` unset, file
+    /// missing, connection, TLS or query error) or has no rows.
+    #[arg(long, value_name = "N", requires = "ocr_local")]
+    expect_revoked: Option<u64>,
+    /// With `--ocr-local`: apply no `quality.boinc_page_holds` rows, for a
+    /// release meant to run without them. Must be given on purpose; a
+    /// non-zero `--expect-revoked` is an error with it.
+    #[arg(long, requires = "ocr_local")]
+    no_db_holds: bool,
     /// Search the Congress pages curated under `congress/` (#229, 04
     /// §4.10): the version gets a Congress index set, rebuilt when the
     /// curated units changed and kept otherwise. Off: no Congress set.
@@ -127,6 +143,12 @@ pub(crate) struct ReleaseFinishArgs {
     #[arg(long)]
     ocr_local: bool,
     /// As for `release`.
+    #[arg(long, value_name = "N", requires = "ocr_local")]
+    expect_revoked: Option<u64>,
+    /// As for `release`.
+    #[arg(long, requires = "ocr_local")]
+    no_db_holds: bool,
+    /// As for `release`.
     #[arg(long, env = "USNM_CONGRESS")]
     congress: bool,
     /// As for `release`.
@@ -158,6 +180,7 @@ pub(super) async fn release(
     american_stories: bool,
     ja_latin: bool,
     ocr_local: bool,
+    db_holds: DbHolds,
     congress: bool,
     congress_manual: bool,
     partition_decade: bool,
@@ -181,6 +204,7 @@ pub(super) async fn release(
         american_stories,
         ja_latin,
         ocr_local,
+        db_holds,
         congress,
         congress_manual,
         partition_decade,
@@ -266,6 +290,7 @@ struct ReleaseFlags {
     american_stories: bool,
     ja_latin: bool,
     ocr_local: bool,
+    db_holds: DbHolds,
     congress: bool,
     congress_manual: bool,
     partition_decade: bool,
@@ -315,6 +340,7 @@ async fn release_finish(
             american_stories: flags.american_stories,
             ja_latin: flags.ja_latin,
             ocr_local: flags.ocr_local,
+            db_holds: flags.db_holds,
             congress: flags.congress,
             congress_manual: flags.congress_manual,
             partition_decade: flags.partition_decade,
@@ -435,6 +461,8 @@ pub(crate) async fn release_command(
         american_stories,
         ja_latin,
         ocr_local,
+        expect_revoked,
+        no_db_holds,
         congress,
         congress_manual,
         partition_decade,
@@ -443,6 +471,7 @@ pub(crate) async fn release_command(
         split_docs,
         target,
     } = args;
+    let db_holds = DbHolds::from_flags(*no_db_holds, *expect_revoked)?;
     release(
         &cli.stores,
         &state,
@@ -451,6 +480,7 @@ pub(crate) async fn release_command(
         *american_stories,
         *ja_latin,
         *ocr_local,
+        db_holds,
         *congress,
         *congress_manual,
         *partition_decade,
@@ -480,6 +510,8 @@ pub(crate) async fn release_finish_command(
         american_stories,
         ja_latin,
         ocr_local,
+        expect_revoked,
+        no_db_holds,
         congress,
         congress_manual,
         partition_decade,
@@ -494,6 +526,7 @@ pub(crate) async fn release_finish_command(
         american_stories: *american_stories,
         ja_latin: *ja_latin,
         ocr_local: *ocr_local,
+        db_holds: DbHolds::from_flags(*no_db_holds, *expect_revoked)?,
         congress: *congress,
         congress_manual: *congress_manual,
         partition_decade: *partition_decade,
@@ -704,5 +737,70 @@ mod tests {
             "pages-v20261022-1",
         ])
         .is_err());
+    }
+
+    fn parse_release(extra: &[&str]) -> Result<DbHolds, anyhow::Error> {
+        let mut args = vec![
+            "usnm-ingest",
+            "--curated",
+            "c",
+            "--reference",
+            "r",
+            "release",
+            "--ocr-local",
+            "--index-dir",
+            "x",
+        ];
+        args.extend_from_slice(extra);
+        let cli = Cli::try_parse_from(args)?;
+        let Command::Release(ReleaseArgs {
+            expect_revoked,
+            no_db_holds,
+            ..
+        }) = cli.command
+        else {
+            panic!("not a release");
+        };
+        DbHolds::from_flags(no_db_holds, expect_revoked)
+    }
+
+    #[test]
+    fn a_release_requires_db_holds_unless_it_opts_out() {
+        assert_eq!(parse_release(&[]).unwrap(), DbHolds::default());
+        assert_eq!(
+            parse_release(&["--expect-revoked", "31786"]).unwrap(),
+            DbHolds::Required {
+                expect_revoked: 31786
+            }
+        );
+        assert_eq!(parse_release(&["--no-db-holds"]).unwrap(), DbHolds::Skip);
+        assert_eq!(
+            parse_release(&["--no-db-holds", "--expect-revoked", "0"]).unwrap(),
+            DbHolds::Skip
+        );
+        let err = parse_release(&["--no-db-holds", "--expect-revoked", "5"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("conflicts with --no-db-holds"), "{err}");
+    }
+
+    #[test]
+    fn the_db_hold_flags_need_ocr_local() {
+        let args = |flag: &'static [&'static str]| {
+            let mut a = vec![
+                "usnm-ingest",
+                "--curated",
+                "c",
+                "--reference",
+                "r",
+                "release",
+            ];
+            a.extend_from_slice(flag);
+            a.extend_from_slice(&["--index-dir", "x"]);
+            Cli::try_parse_from(a)
+        };
+        assert!(args(&["--no-db-holds"]).is_err());
+        assert!(args(&["--expect-revoked", "1"]).is_err());
+        assert!(args(&["--ocr-local", "--no-db-holds"]).is_ok());
     }
 }

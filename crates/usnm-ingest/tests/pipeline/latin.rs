@@ -678,6 +678,7 @@ async fn our_latin_text_follows_the_decade_layout() {
         split_docs: None,
         ja_latin: true,
         ocr_local: false,
+        db_holds: Default::default(),
         congress: false,
         congress_manual: false,
         ..e.releaser(day, full)

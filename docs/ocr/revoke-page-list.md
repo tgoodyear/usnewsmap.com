@@ -164,8 +164,35 @@ replica admits a role only over TLS with its client certificate (`hostssl usnm_q
 samenet cert`), so the container needs the `quality_reader` certificate, key and CA and a DSN
 file naming them, then `USNM_QUALITY_DSN_FILE` set in the release environment. The DSN file
 is one line (`host=… dbname=usnm_quality user=quality_reader sslmode=verify-full sslcert=…
-sslkey=… sslrootcert=…`) or a `postgres://` URL as the queue uses. Without the variable the
-release applies no database holds (it logs a warning) and stops at a revocation that names
-hosts. `usnm-boinc quality texts-export` (the quality hand-off job) reads the same variable.
+sslkey=… sslrootcert=…`) or a `postgres://` URL as the queue uses. A release with `--ocr-local` fails closed on the holds: with the variable unset, the DSN file
+missing, a connection, TLS or query error, or no rows in `quality.boinc_page_holds`, it exits
+non-zero while it plans, before it writes anything (31,786 `frak2021` revocation rows live
+there as of #1956, so a missing credential would otherwise ship those pages). It also stops at
+a revocation that names hosts if the provenance can't be read.
+`usnm-boinc quality texts-export` (the quality hand-off job) reads the same variable.
+
+### Checking the count: `--expect-revoked N`
+
+After the revocations are applied to the batches the release indexes, it compares the pages
+revoked with N and logs both (`pages revoked (kept.revoked)`, with `expected` and `actual`).
+Below N it exits non-zero before anything is published. The count is the total
+`kept.revoked` in `ocr_local.json`: the pages kept on LoC's text because a revocation file or a
+hold row took our reading, and no other reading of the page survived. It is the figure the
+planning output shows, and it includes the file revocations as well as the holds. It counts
+the batches the release indexes, so give it on a full rebuild; a delta sees only its new
+batches. The count stays under the number of rows when a held page has another reading or
+isn't in the batches indexed, so take N from a previous full rebuild's `ocr_local.json`, not
+from the row count. The full rebuild after #1956 uses `--expect-revoked 31786`.
+
+On-prem, `scripts/onprem/release.sh --step release` and `--step finish` need one of the two:
+`--expect-revoked N` (passed to `usnm-ingest release`), or `--no-db-holds`.
+
+### Running without the holds: `--no-db-holds`
+
+A release meant to run without database holds (a rehearsal, a fixture, a rollback build) says
+so with `--no-db-holds`; nothing else makes the release skip them. It logs a warning, reads
+no database and applies no hold rows. A non-zero `--expect-revoked` is an error with it, and
+both flags need `--ocr-local`. The Azure ingest job (`infra/modules/ingestjobs.bicep`) has no route to
+the replica, so it passes `--no-db-holds`.
 
 On `usnm-release` (installed 14 November 2026) they are `/etc/usnm/quality-reader/{ca.pem,client.crt,client.key,dsn}` (root:usnm, key mode 0640) and `/etc/usnm/release.env`, which `release.sh` runs get through `systemd-run -p EnvironmentFile=/etc/usnm/release.env` (see the rebuild runbook). The certificate comes from `queue-ct.sh --issue-client --role quality_reader` on pve and is valid 825 days (renew before 2029-02). The container stays stopped between releases.

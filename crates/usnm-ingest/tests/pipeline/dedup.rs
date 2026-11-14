@@ -258,6 +258,7 @@ async fn quickwit_searches_hide_the_copies_a_delta_could_not_drop() {
             american_stories: false,
             ja_latin: false,
             ocr_local: false,
+            db_holds: Default::default(),
             congress: false,
             congress_manual: false,
             partition_decade: false,

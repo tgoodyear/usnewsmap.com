@@ -353,6 +353,7 @@ async fn a_page_list_revocation_returns_only_the_listed_pages_to_locs_text() {
     let release = |day| {
         let r = Release {
             ocr_local: true,
+            db_holds: usnm_ocr_local::quality_db::DbHolds::Skip,
             congress: false,
             congress_manual: false,
             ..e.releaser(day, true)
@@ -548,6 +549,7 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
         let r = Release {
             ja_latin: true,
             ocr_local: true,
+            db_holds: usnm_ocr_local::quality_db::DbHolds::Skip,
             congress: false,
             congress_manual: false,
             ..e.releaser(day, full)
@@ -727,6 +729,7 @@ async fn our_ocr_replaces_locs_text_where_rule_v1_prefers_it() {
     let r3 = Release {
         ja_latin: true,
         ocr_local: true,
+        db_holds: usnm_ocr_local::quality_db::DbHolds::Skip,
         congress: false,
         congress_manual: false,
         single_text_field: true,
@@ -827,6 +830,7 @@ async fn a_model_swap_inside_a_profile_fails_the_release() {
         let r = Release {
             ja_latin: true,
             ocr_local: true,
+            db_holds: usnm_ocr_local::quality_db::DbHolds::Skip,
             congress: false,
             congress_manual: false,
             ..e.releaser(day, true)
