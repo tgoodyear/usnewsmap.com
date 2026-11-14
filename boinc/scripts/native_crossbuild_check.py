@@ -42,6 +42,9 @@ import statistics
 import subprocess
 import tempfile
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ocr_stored_form import comparable, settled  # noqa: E402
+
 CER_LIMIT = 0.10
 F1_LIMIT = 0.90
 RATIO_RANGE = (0.9, 1.1)
@@ -134,6 +137,7 @@ def returned_pages(handoff, images, now, window=WINDOW_SECONDS, seen=(), hosts=N
                 continue  # line reads use crop boxes; this check re-reads whole pages
             page.update(host=(job / "host_id").read_text().strip(), page=request["message"]["page"],
                         batch=request["message"]["batch"], language=result["engine"]["profile"],
+                        message_language=request["message"].get("language", result["engine"]["profile"]),
                         scan_sha256=request["scan"]["sha256"], scan_url=request["scan"]["url"])
             raw = (job / f"usnm_{job.name}__file_text.txt").read_bytes()
             if not (result["job_id"] == job.name == request["id"]
@@ -205,7 +209,7 @@ def word_f1(a, b):
 def judge(windows, linux, cer_limit=CER_LIMIT, f1_limit=F1_LIMIT, ratio_range=RATIO_RANGE):
     """CER of `windows` against `linux`, the length ratio, word F1, and whether a limit is passed."""
     cer = distance(windows, linux) / max(len(linux), 1)
-    ratio = len(windows) / max(len(linux), 1)
+    ratio = 1.0 if not windows and not linux else len(windows) / max(len(linux), 1)
     f1 = word_f1(windows, linux)
     flagged = cer > cer_limit or f1 < f1_limit or not ratio_range[0] <= ratio <= ratio_range[1]
     return {"cer": round(cer, 5), "ratio": round(ratio, 4), "word_f1": round(f1, 4),
@@ -256,7 +260,11 @@ def check_page(page, a):
             linux = read_linux(a.tesseract, a.tessdata, scan, page["language"], work)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as e:
         return dict(row, error=str(e)[:300], flagged=True)
-    row = dict(row, **judge(page["windows_text"], linux, a.cer_limit, a.f1_limit,
+    # Both reads in the form the import stores (#1919), so a word broken at a line end is not an error.
+    # The engine is the profile, which names the Fraktur models; the language is the job's own.
+    lang = page.get("message_language", page["language"])
+    windows, linux = comparable(page["windows_text"], linux, page["language"], lang)
+    row = dict(row, **judge(windows, linux, a.cer_limit, a.f1_limit,
                             (getattr(a, "ratio_min", RATIO_RANGE[0]), getattr(a, "ratio_max", RATIO_RANGE[1]))))
     if getattr(a, "loc_texts", None):
         try:
@@ -265,7 +273,7 @@ def check_page(page, a):
             return dict(row, loc="missing")  # no LoC text: judged on the two builds alone
         if not loc.strip():
             return dict(row, loc="missing")  # an empty reference is no reference
-        row = judge_loc(row, page["windows_text"], linux, loc)
+        row = judge_loc(row, windows, linux, settled(loc, page["language"], lang))
     return row
 
 

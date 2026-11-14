@@ -1,0 +1,51 @@
+[
+  {
+    "engine": "tesseract-5.5.1/frak2021",
+    "language": "deu",
+    "name": "fraktur_hyphen_mark",
+    "raw": "Die Zei⸗\ntung kam an.",
+    "stored": "Die Zeitung kam an."
+  },
+  {
+    "engine": "tesseract-5.5.1/frak2021",
+    "language": "deu",
+    "name": "fraktur_em_dash_before_lowercase",
+    "raw": "im Drath—\nhaus",
+    "stored": "im Drathhaus"
+  },
+  {
+    "engine": "tesseract-5.5.1/eng",
+    "language": "eng",
+    "name": "english_em_dash_is_a_dash",
+    "raw": "wait—\nthen go",
+    "stored": "wait—\nthen go"
+  },
+  {
+    "engine": "tesseract-5.5.1/eng",
+    "language": "eng",
+    "name": "ascii_hyphen",
+    "raw": "indus-\ntry grew",
+    "stored": "industry grew"
+  },
+  {
+    "engine": "tesseract-5.5.1/eng",
+    "language": "eng",
+    "name": "long_s_ligatures_and_blanks",
+    "raw": "Zeiſtung ﬁnd  a \n\n  b",
+    "stored": "Zeistung find a\nb"
+  },
+  {
+    "engine": "tesseract-5.5.1/frak2021",
+    "language": "deu",
+    "name": "already_stored",
+    "raw": "Die Zeitung kam an.",
+    "stored": "Die Zeitung kam an."
+  },
+  {
+    "engine": "tesseract-5.5.1/eng",
+    "language": "deu",
+    "name": "german_language_with_a_latin_engine",
+    "raw": "im Drath—\nhaus",
+    "stored": "im Drathhaus"
+  }
+]

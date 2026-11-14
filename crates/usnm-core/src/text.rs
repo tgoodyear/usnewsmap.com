@@ -126,6 +126,44 @@ pub fn normalize_ocr_for(raw: &str, hyphenation: Hyphenation) -> String {
     collapse_whitespace(&joined)
 }
 
+/// A page's text in the form the BOINC import stores it: `raw` normalized for the
+/// page's engine tag and language (`Hyphenation::for_page`), so a word broken at
+/// a line end is rejoined as it is in the published text.
+///
+/// Every comparison of two texts of one page, where one may be raw worker or
+/// Tesseract output and the other published text, goes through this on both
+/// sides (see [`comparable`]). Normalizing text that is already in this form
+/// changes nothing, so it is safe whichever form a side is in.
+pub fn stored_form(raw: &str, ocr_engine: &str, language: &str) -> String {
+    normalize_ocr_for(raw, Hyphenation::for_page(ocr_engine, language))
+}
+
+/// [`stored_form`] applied until it changes nothing. Normalizing once is not
+/// always a fixpoint (`aﬁ` then a combining accent: the ligature expands, and
+/// only a second pass composes the accent), so a raw text and its published
+/// form, which is already one pass in, settle to the same text.
+fn settled(raw: &str, ocr_engine: &str, language: &str) -> String {
+    let mut text = stored_form(raw, ocr_engine, language);
+    for _ in 0..4 {
+        let next = stored_form(&text, ocr_engine, language);
+        if next == text {
+            break;
+        }
+        text = next;
+    }
+    text
+}
+
+/// Both texts of one page in the same form, ready to score against each
+/// other: [`stored_form`], settled, on each side. Either side may be raw or
+/// published.
+pub fn comparable(a: &str, b: &str, ocr_engine: &str, language: &str) -> (String, String) {
+    (
+        settled(a, ocr_engine, language),
+        settled(b, ocr_engine, language),
+    )
+}
+
 pub fn text_status(normalized: &str) -> TextStatus {
     let n = normalized.chars().filter(|c| !c.is_whitespace()).count();
     if n == 0 {
@@ -920,5 +958,47 @@ mod tests {
                 assert_eq!(tokenize(&f1, Analyzer::V1), vec![f1.clone()], "{c:?}");
             }
         }
+    }
+
+    /// The fixtures the Python port (`boinc/scripts/ocr_stored_form.py`) is
+    /// tested against.
+    #[test]
+    fn stored_form_matches_the_shared_fixtures() {
+        let cases: Vec<serde_json::Value> =
+            serde_json::from_str(include_str!("../tests/fixtures/stored_form.json")).unwrap();
+        assert!(!cases.is_empty());
+        for c in cases {
+            let f = |k: &str| c[k].as_str().unwrap().to_owned();
+            assert_eq!(
+                stored_form(&f("raw"), &f("engine"), &f("language")),
+                f("stored"),
+                "{}",
+                f("name")
+            );
+        }
+    }
+
+    #[test]
+    fn a_raw_text_and_its_published_form_compare_equal() {
+        let engine = "tesseract-5.5.1/eng";
+        let raw = "a\u{FB01}\u{0301}n";
+        let published = stored_form(raw, engine, "eng");
+        let (a, b) = comparable(raw, &published, engine, "eng");
+        assert_eq!(a, b);
+    }
+
+    /// A line-end hyphen in a re-read is not OCR error: the raw re-read has
+    /// `Zei⸗` at a line end and `tung` on the next line, the published text has
+    /// `Zeitung`. Scored raw against published they differ (#1919); in stored
+    /// form on both sides they are equal.
+    #[test]
+    fn a_hyphenated_fraktur_line_compares_equal_in_stored_form_only() {
+        let engine = "tesseract-5.5.1/frak2021";
+        let reread = "Die Zei\u{2E17}\ntung kam an.";
+        let published = "Die Zeitung kam an.";
+        assert_ne!(reread, published);
+        let (a, b) = comparable(reread, published, engine, "deu");
+        assert_eq!(a, b);
+        assert_eq!(a, published);
     }
 }
