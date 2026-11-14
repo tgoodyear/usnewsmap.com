@@ -87,6 +87,7 @@ impl Fixture {
                 bundle: None,
                 unbundled: None,
                 held: None,
+                origin: None,
             },
         )
         .unwrap();

@@ -351,6 +351,65 @@ pub struct Record {
     /// and clears this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<String>,
+    /// Where the result ran (#1956): the BOINC host and its platform family, saved before the
+    /// ALTO is put so a re-run publishes the same bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
+}
+
+/// The host a result came from, as `collect` was told it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Origin {
+    /// The BOINC host id of the canonical result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<u64>,
+    /// `amd64` or `arm64`, from the host row (`host_trust::family`), not the app version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_family: Option<String>,
+    /// Set when the ALTO is put: from then on the origin is frozen, absent entries included, so
+    /// a re-run after a partial publication writes the same bytes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sealed: bool,
+}
+
+/// Saves where `id`'s result ran, before it is published. A value given replaces the one
+/// saved; one not given keeps it, except that a new host drops the old host's family. Once the
+/// ALTO is put, the origin is sealed and this changes nothing. A published record is left as it is. A host of 0 is none.
+pub fn set_origin(
+    root: &Path,
+    id: &str,
+    host: Option<u64>,
+    family: Option<host_trust::Family>,
+) -> anyhow::Result<()> {
+    let host = host.filter(|h| *h > 0);
+    if host.is_none() && family.is_none() {
+        return Ok(());
+    }
+    let _lock = Lock::take(root)?;
+    let mut record = load(root, id)?;
+    if record.stage == Stage::Published {
+        return Ok(());
+    }
+    let mut origin = record.origin.clone().unwrap_or_default();
+    if origin.sealed {
+        return Ok(());
+    }
+    if host.is_some() {
+        // A different host is a different platform until its own family is given.
+        if origin.host.is_some() && origin.host != host {
+            origin.platform_family = None;
+        }
+        origin.host = host;
+    }
+    if let Some(family) = family {
+        origin.platform_family = Some(family.as_str().to_owned());
+    }
+    if record.origin.as_ref() != Some(&origin) {
+        record.origin = Some(origin);
+        save(root, &record)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -956,6 +1015,7 @@ pub async fn export(
                 bundle: None,
                 unbundled: None,
                 held: None,
+                origin: None,
             };
             save(&opts.root, &record)?;
             record
@@ -1124,6 +1184,13 @@ pub async fn import(
     } else {
         (normalized_text(&record.job, &text)?, alto)
     };
+    if record.origin.as_ref().and_then(|o| o.host).is_none() {
+        eprintln!(
+            "boinc_import_no_host job={} workunit={}: published without a host id",
+            record.job.id,
+            record.job.workunit()
+        );
+    }
     let alto = published_alto(&record, &alto)?;
     let row = usnm_overlay::OverlayRow {
         key: key.clone(),
@@ -1183,6 +1250,12 @@ pub async fn import(
         atomic(&accepted.join("layout.xml"), &raw_alto)?;
         atomic(&accepted.join("result.json"), &result_bytes)?;
     }
+    // From the first put on, the origin is frozen: a re-run publishes the same bytes.
+    let origin = record.origin.get_or_insert_with(Origin::default);
+    if !origin.sealed {
+        origin.sealed = true;
+        save(root, &record)?;
+    }
     put_same(out, &alto_name, alto.into_bytes(), "application/xml").await?;
     put_same(out, &part_name, part, "application/vnd.apache.parquet").await?;
     record.stage = Stage::Published;
@@ -1206,6 +1279,20 @@ pub fn published_alto(record: &Record, alto: &[u8]) -> anyhow::Result<String> {
         Some(provenance) => provenance.alto_note(&alto)?,
         None => alto,
     };
+    let origin = record.origin.as_ref();
+    let job_id = record.job.id.as_str();
+    let host = origin.and_then(|o| o.host).map(|h| h.to_string());
+    let mut notes = vec![
+        (retry::ALTO_ENGINE_IMAGE, record.job.engine.image.as_str()),
+        (retry::ALTO_JOB_ID, job_id),
+    ];
+    if let Some(host) = host.as_deref() {
+        notes.push((retry::ALTO_BOINC_HOST, host));
+    }
+    if let Some(family) = origin.and_then(|o| o.platform_family.as_deref()) {
+        notes.push((retry::ALTO_PLATFORM_FAMILY, family));
+    }
+    let alto = retry::splice_notes(&alto, &notes)?;
     checks::check_alto(alto.as_bytes()).map_err(|r| anyhow::anyhow!("{}", r.code()))?;
     Ok(alto)
 }
@@ -1404,6 +1491,17 @@ pub async fn collect(
             }
         }
         bail!("BOINC terminal failure");
+    }
+    // The host id the caller gave is already saved (`set_origin`); the spool's is the fallback.
+    if load(root, id)?
+        .origin
+        .as_ref()
+        .and_then(|o| o.host)
+        .is_none()
+    {
+        if let Ok(text) = std::fs::read_to_string(spool.join(format!("{workunit}__host_id"))) {
+            set_origin(root, id, text.trim().parse().ok(), None)?;
+        }
     }
     import(
         root,

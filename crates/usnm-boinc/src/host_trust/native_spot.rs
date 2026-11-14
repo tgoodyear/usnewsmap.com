@@ -840,6 +840,7 @@ mod tests {
             bundle: None,
             unbundled: None,
             held: None,
+            origin: None,
         };
         crate::save(&jobs, &record).unwrap();
         for d in ["results/0", "results/7", "host-trust"] {

@@ -92,6 +92,11 @@ pub struct Provenance {
 pub const ALTO_RETRY_OF: &str = "usnm_retry_of";
 pub const ALTO_PARENT_IMAGE: &str = "usnm_parent_image";
 pub const ALTO_RETRY_REASON: &str = "usnm_retry_reason";
+/// The `fileIdentifierLocation` values of a container import's origin (#1956).
+pub const ALTO_ENGINE_IMAGE: &str = "usnm_engine_image";
+pub const ALTO_BOINC_HOST: &str = "usnm_boinc_host";
+pub const ALTO_PLATFORM_FAMILY: &str = "usnm_platform_family";
+pub const ALTO_JOB_ID: &str = "usnm_job_id";
 
 impl Provenance {
     /// The ALTO with the note as `fileIdentifier`s after the others in `sourceImageInformation`
@@ -101,22 +106,14 @@ impl Provenance {
     /// ALTO without that element, or with it empty, is refused: a retry is never published
     /// without its note.
     pub fn alto_note(&self, alto: &str) -> anyhow::Result<String> {
-        let (end, prefix) = source_image_information_end(alto)
-            .context("the ALTO has no sourceImageInformation to carry the retry's note")?;
-        // The parent's id and image are hex, and the reason one of two words: nothing to escape.
-        let ids: String = [
-            (ALTO_RETRY_OF, self.retry_of.as_str()),
-            (ALTO_PARENT_IMAGE, self.parent_image.as_str()),
-            (ALTO_RETRY_REASON, self.reason.as_str()),
-        ]
-        .iter()
-        .map(|(location, value)| {
-            format!(
-                "<{prefix}fileIdentifier fileIdentifierLocation=\"{location}\">{value}</{prefix}fileIdentifier>"
-            )
-        })
-        .collect();
-        Ok(format!("{}{ids}{}", &alto[..end], &alto[end..]))
+        splice_notes(
+            alto,
+            &[
+                (ALTO_RETRY_OF, self.retry_of.as_str()),
+                (ALTO_PARENT_IMAGE, self.parent_image.as_str()),
+                (ALTO_RETRY_REASON, self.reason.as_str()),
+            ],
+        )
     }
 
     fn valid(&self, record: &Record, retry_of: &str) -> bool {
@@ -130,6 +127,27 @@ impl Provenance {
             && self.target_hosts.len() <= 64
             && record.job.lines.is_none()
     }
+}
+
+/// `notes` as `fileIdentifier`s (location, value) at the end of `sourceImageInformation`, which
+/// is how a retry's note and every container page's origin (#1956) are published. The values
+/// are escaped; the locations are this crate's own constants.
+pub fn splice_notes(alto: &str, notes: &[(&str, &str)]) -> anyhow::Result<String> {
+    let (end, prefix) = source_image_information_end(alto)
+        .context("the ALTO has no sourceImageInformation to carry the note")?;
+    let ids: String = notes
+        .iter()
+        .map(|(location, value)| {
+            let value = value
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            format!(
+                "<{prefix}fileIdentifier fileIdentifierLocation=\"{location}\">{value}</{prefix}fileIdentifier>"
+            )
+        })
+        .collect();
+    Ok(format!("{}{ids}{}", &alto[..end], &alto[end..]))
 }
 
 /// Where the closing tag of ALTO's own `sourceImageInformation` starts (`alto/Description/
@@ -469,6 +487,7 @@ pub async fn prepare(
             bundle: None,
             unbundled: None,
             held: None,
+            origin: None,
         };
         validate(&child)?;
         child
@@ -669,6 +688,7 @@ mod tests {
             bundle: None,
             unbundled: None,
             held: None,
+            origin: None,
         };
         save(&root, &parent).unwrap();
         let parent_path = dir(&root, &parent.job.id).unwrap();
@@ -1185,6 +1205,7 @@ mod tests {
             bundle: None,
             unbundled: None,
             held: None,
+            origin: None,
         }
     }
 }

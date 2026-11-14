@@ -803,6 +803,7 @@ mod native_tests {
             bundle: None,
             unbundled: None,
             held: None,
+            origin: None,
         }
     }
 
