@@ -213,6 +213,59 @@ class Commands(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.out, "yi", "tasks.jsonl")))
         self.assertFalse(json.load(open(os.path.join(self.out, "yi", "report.json")))["passed"])
 
+    def assert_stale_output_is_gone(self, r):
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.out, "yi", "tasks.jsonl")))
+        self.assertFalse(os.path.exists(os.path.join(self.out, "yi", "report.txt")))
+        self.assertFalse(json.load(open(os.path.join(self.out, "yi", "report.json")))["passed"])
+
+    def test_an_input_that_cannot_be_read_removes_an_older_passing_report_and_bodies(self):
+        # each failure of the input, none of them a refusal the tool raises itself: a failed dry run never leaves loadable output
+        directory = os.path.join(self.tmp.name, "a-directory")
+        os.mkdir(directory)
+        for name, content in (("malformed JSON", "{not json\n"), ("a line that is not an object", "[]\n"), ("a bad dump row", None)):
+            with self.subTest(name):
+                self.assertEqual(self.run_tool("--lang", "yi", "--bodies", self.bodies, "--out-dir", self.out).returncode, 0)
+                self.assertTrue(os.path.exists(os.path.join(self.out, "yi", "tasks.jsonl")))
+                if content is None:  # --dump with a task row that has no body
+                    path = os.path.join(self.tmp.name, "bad-dump.jsonl")
+                    open(path, "w", encoding="utf-8").write(json.dumps({"table": "tasks", "row": {"id": "yi/s/1~0"}}) + "\n")
+                    r = self.run_tool("--lang", "yi", "--dump", path, "--out-dir", self.out)
+                else:
+                    path = os.path.join(self.tmp.name, "bad.jsonl")
+                    open(path, "w", encoding="utf-8").write(content)
+                    r = self.run_tool("--lang", "yi", "--bodies", path, "--out-dir", self.out)
+                self.assert_stale_output_is_gone(r)
+        for name, args in (("a missing file", ["--bodies", os.path.join(self.tmp.name, "nope.jsonl")]),
+                           ("an unreadable file", ["--bodies", directory]),
+                           ("a missing export", ["--export", os.path.join(self.tmp.name, "nope.jsonl")]),
+                           ("a malformed export", ["--export", self.bodies + ".export"])):
+            with self.subTest(name):
+                open(self.bodies + ".export", "w", encoding="utf-8").write("{oops\n")
+                self.assertEqual(self.run_tool("--lang", "yi", "--bodies", self.bodies, "--out-dir", self.out).returncode, 0)
+                self.assert_stale_output_is_gone(self.run_tool("--lang", "yi", *args, "--out-dir", self.out))
+
+    def test_an_unexpected_error_in_one_language_invalidates_that_language_only(self):
+        for lang in ("yi", "sr"):
+            d = os.path.join(self.out, lang)
+            os.makedirs(d)
+            for n in ("tasks.jsonl", "report.json", "report.txt"):
+                open(os.path.join(d, n), "w").write("{\"passed\": true}" if n == "report.json" else "x")
+        def boom(lang, recs, ctx, full):
+            if lang == "yi":
+                raise KeyError("oops")
+            return [], {"passed": True, "preview": False, "lang": lang, "tasks_sha256": None, "input_sha256": None,
+                        "totals": {"tasks_read": 1, "unchanged": 1, "changed": 0, "changed_by_field": {"lookalikes": 0, "mark_only": 0},
+                                   "changed_in_both_fields": 0, "changed_by_kind": {}, "changed_by_mark": {}, "tasks_with_lookalikes_after": 0,
+                                   "tasks_with_mark_only_after": 0}, "unmeasured_pairs": {}, "letter_diff_mismatch": [], "fonts": {}, "threshold": 0, "raqm": True}
+        args = mock.Mock(lang=["yi", "sr"], out_dir=self.out)
+        recs = [dict(plain_task(), lang="yi"), dict(plain_task("sr/s/1~0"), lang="sr")]
+        with mock.patch.object(rm, "recompute_language", boom), mock.patch("sys.stderr"):
+            self.assertEqual(rm.dry_run(args, context(), recs, True), 1)
+        self.assertFalse(os.path.exists(os.path.join(self.out, "yi", "tasks.jsonl")))
+        self.assertFalse(json.load(open(os.path.join(self.out, "yi", "report.json")))["passed"])
+        self.assertTrue(json.load(open(os.path.join(self.out, "sr", "report.json")))["passed"])
+
 
 class FakeSite(http.server.BaseHTTPRequestHandler):
     records = []
@@ -281,6 +334,25 @@ class Load(unittest.TestCase):
             self.assertEqual(rm.load(self.args, self.site), 1)
         self.assertEqual(FakeSite.records[0]["page"], "edited by another loader")
         self.assertNotIn("mark_only", FakeSite.records[0])
+
+    def test_a_task_inserted_during_the_load_fails_the_read_back_check(self):
+        real = self.site.post_tasks
+        def post_then_insert(lines):
+            out = real(lines)
+            FakeSite.records.append(plain_task("yi/s/3~0"))  # another loader's insert, after the first snapshot
+            return out
+        with mock.patch.object(self.site, "post_tasks", post_then_insert), mock.patch("sys.stderr") as err, mock.patch("sys.stdout"):
+            self.assertEqual(rm.load(self.args, self.site), 1)
+        self.assertIn("yi/s/3~0", "".join(c.args[0] for c in err.write.call_args_list))
+
+    def test_a_task_deleted_or_edited_during_the_load_still_fails_the_read_back_check(self):
+        real = self.site.post_tasks
+        def post_then_delete(lines):
+            out = real(lines)
+            del FakeSite.records[1]
+            return out
+        with mock.patch.object(self.site, "post_tasks", post_then_delete), mock.patch("sys.stderr"), mock.patch("sys.stdout"):
+            self.assertEqual(rm.load(self.args, self.site), 1)
 
     def test_load_refuses_without_a_report_or_with_a_failed_one(self):
         os.remove(os.path.join(self.args.out_dir, "yi", "report.json"))

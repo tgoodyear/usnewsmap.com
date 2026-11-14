@@ -182,7 +182,7 @@ function examplesSource() {
 }
 
 test("lookalikeLabels maps flagged letter positions to names, and ignores tasks with no flags", () => {
-  const { lookalikeLabels } = new Function(`${scriptTextSource()}\nreturn { lookalikeLabels };`)();
+  const { lookalikeLabels } = new Function(`const cfg = {};\n${scriptTextSource()}\nreturn { lookalikeLabels };`)();
   const t = { a: "ᏒᎯ", b: "ᎡᎯ", lookalikes: [{ a: 0, a_label: "sv", b: 0, b_label: "e" }] };
   assert.deepEqual([...lookalikeLabels(t, "a")], [[0, "sv"]]);
   assert.deepEqual([...lookalikeLabels(t, "b")], [[0, "e"]]);
@@ -193,6 +193,35 @@ test("lookalikeLabels maps flagged letter positions to names, and ignores tasks 
   assert.equal(lookalikeLabels({ a: "ᏒᎯ", lookalikes: [{ a: 7, a_label: "x" }] }, "a").size, 0, "an index past the word is ignored");
   // a letter with marks is one letter, as in a_diff
   assert.deepEqual([...lookalikeLabels({ a: "אַל", lookalikes: [{ a: 0, a_label: "alef patah" }] }, "a")], [[0, "alef patah"]]);
+});
+
+test("lookalikeLabels takes a letter's label from the language's labels, and keeps the stored name for a letter with none", () => {
+  const make = (labels) => new Function(`const cfg = ${JSON.stringify({ labels })};\n${scriptTextSource()}\nreturn { lookalikeLabels };`)().lookalikeLabels;
+  const sr = make(JSON.parse(readFileSync(join(here, "languages", "sr.json"), "utf8")).labels);
+  const pair = (a, b) => ({ a, b, lookalikes: [{ a: 0, a_label: "cyrillic small letter a", b: 0, b_label: "cyrillic small letter b" }] });
+  // two Cyrillic letters: each reading shows its Latin equivalent
+  const pn = pair("пс", "нс");
+  assert.deepEqual([...sr(pn, "a")], [[0, "p"]]);
+  assert.deepEqual([...sr(pn, "b")], [[0, "n"]]);
+  assert.deepEqual([...sr(pair("Ц", "П"), "a")], [[0, "C"]]);
+  assert.deepEqual([...sr(pair("џ", "ц"), "a")], [[0, "dž"]]);
+  assert.deepEqual([...sr(pair("Њ", "Н"), "a")], [[0, "Nj"]]);
+  // a Cyrillic letter against a Latin look-alike: the Latin one says so, and the Cyrillic one says its script,
+  // so "H" against "Н" (or h against ћ) never reads as one letter twice
+  assert.deepEqual([...sr(pair("П", "H"), "a")], [[0, "Cyrillic P"]]);
+  assert.deepEqual([...sr(pair("П", "H"), "b")], [[0, "Latin H"]]);
+  assert.deepEqual([...sr(pair("ћ", "h"), "a")], [[0, "Cyrillic ć"]]);
+  assert.deepEqual([...sr(pair("ћ", "h"), "b")], [[0, "Latin h"]]);
+  assert.deepEqual([...sr(pair("х", "h"), "a")], [[0, "Cyrillic h"]]);
+  assert.notEqual(sr(pair("х", "h"), "a").get(0), sr(pair("х", "h"), "b").get(0));
+  // a letter the map doesn't have keeps the stored name; a language with no labels is unchanged
+  assert.deepEqual([...sr(pair("ё", "н"), "a")], [[0, "cyrillic small letter a"]]);
+  assert.deepEqual([...make(undefined)(pn, "a")], [[0, "cyrillic small letter a"]]);
+  assert.deepEqual([...make(undefined)(pair("П", "H"), "b")], [[0, "cyrillic small letter b"]]);
+  // a transposition flags both positions, each labelled from its own letter
+  const swap = { a: "пн", b: "нп", lookalikes: [{ a: 0, a_label: "x", b: 0, b_label: "y" }, { a: 1, a_label: "y", b: 1, b_label: "x" }] };
+  assert.deepEqual([...sr(swap, "a")], [[0, "p"], [1, "n"]]);
+  assert.deepEqual([...sr(swap, "b")], [[0, "n"], [1, "p"]]);
 });
 
 test("markLabels names the marks each reading has on the differing letter", () => {
@@ -231,6 +260,11 @@ test("labels render under each reading, in left-to-right and right-to-left langu
     { code: "yi", cfg: { dir: "rtl", notes: {} }, task: flagged("אַל", "אָל", "hebrew letter alef + hebrew point patah", "hebrew letter alef + hebrew point qamats"),
       expect: { a: ["hebrew letter alef + hebrew point patah"], b: ["hebrew letter alef + hebrew point qamats"] } },
     { code: "sr", cfg: { dir: null, notes: {} }, task: flagged("пс", "нс", "cyrillic small letter pe", "cyrillic small letter en"), expect: { a: ["cyrillic small letter pe"], b: ["cyrillic small letter en"] } },
+    // Serbian with the language's labels: Latin equivalents, and the Cyrillic-against-Latin pair told apart
+    { code: "sr", cfg: { dir: null, notes: {}, labels: languages.sr.labels }, task: flagged("пс", "нс", "x", "y"), expect: { a: ["p"], b: ["n"] } },
+    { code: "sr", cfg: { dir: null, notes: {}, labels: languages.sr.labels }, task: flagged("Џорђе", "Цорђе", "x", "y"), expect: { a: ["Dž"], b: ["C"] } },
+    { code: "sr", cfg: { dir: null, notes: { "ћ": "a note" }, labels: languages.sr.labels }, task: flagged("ћс", "hс", "x", "y"), expect: { a: ["Cyrillic ć"], b: ["Latin h"] } },
+    { code: "sr", cfg: { dir: null, notes: {}, labels: languages.sr.labels }, task: flagged("Пс", "Hс", "x", "y"), expect: { a: ["Cyrillic P"], b: ["Latin H"] } },
     { code: "chr", cfg: { dir: null, notes: {} }, task: { a: "ᏒᎯ", b: "ᎡᎯ", a_diff: [0], b_diff: [0] }, expect: { a: [], b: [] } },
     // a mark-only pair in right-to-left text: the name of each reading's mark, and the letter enlarged beside it
     { code: "yi", cfg: { dir: "rtl", notes: {}, marks: { "\u05b7": "pasekh", "\u05b8": "komets", "\u05bc": "dagesh" } },
@@ -305,7 +339,7 @@ document.fonts.load('32px "Noto Sans Cherokee"', "ᎠᎡᏒ").then((faces) => {
     const m = dom.match(/<pre id="out">([\s\S]*?)<\/pre>/);
     assert.ok(m && m[1].trim(), "the harness page produced no result");
     const result = JSON.parse(m[1].replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"));
-    assert.equal(result.seen.length, 16);
+    assert.equal(result.seen.length, cases.length * 2);
     assert.deepEqual(result.found, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });

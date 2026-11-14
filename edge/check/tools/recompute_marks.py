@@ -371,9 +371,9 @@ def dry_run(a, ctx: Context, records: list, full: bool) -> int:
             if not recs:
                 raise Refused(f"{lang}: no tasks in the input")
             changed, rep = recompute_language(lang, recs, ctx, full)
-        except Refused as e:
-            print(f"REFUSED {e}", file=sys.stderr)
-            invalidate(a.out_dir, lang, str(e))
+        except Exception as e:  # Refused, or anything unexpected: either way no older output of this language may stay loadable
+            print(f"REFUSED {e}" if isinstance(e, Refused) else f"FAILED {type(e).__name__}: {e}", file=sys.stderr)
+            invalidate(a.out_dir, lang, str(e) if isinstance(e, Refused) else f"{type(e).__name__}: {e}")
             failed = True
             continue
         write_language(a.out_dir, lang, changed, rep)
@@ -423,7 +423,10 @@ def load(a, site: Site) -> int:
             print(f"{lang}: {len(stale)} tasks changed on the site since the dry run read them and were not replaced: " + ", ".join(stale[:5]), file=sys.stderr)
         after = {r["id"]: r for r in site.dump_records() if r["lang"] == lang}
         wrong = [t["id"] for t in new if t["id"] not in stale and after.get(t["id"]) != t]
-        others = [i for i in old if i not in {t["id"] for t in new} and after.get(i) != old[i]]
+        # Every id in either snapshot that is not one of the changed tasks must be as it was: an edit, a deletion or a task
+        # another loader inserted during the load (in `after` only) all fail the check.
+        changed_ids = {t["id"] for t in new}
+        others = sorted(i for i in old.keys() | after.keys() if i not in changed_ids and after.get(i) != old.get(i))
         print(f"{lang}: sent {sent} bodies; {len(stale)} stale (changed since the read, not replaced); read back {len(new) - len(stale) - len(wrong)} as sent, {len(wrong)} not; {len(others)} other tasks changed")
         if wrong or others or stale:
             print("  check the site: " + ", ".join((wrong + others)[:5]), file=sys.stderr)
@@ -471,11 +474,12 @@ def main() -> int:
             records = Site(a.site, vault_token(a.vault)).dump_records()
         ctx = Context(la.Fonts(overrides), a.languages_dir, a.lookalike_threshold, a.equivalent, a.allow_unmeasured)
         return dry_run(a, ctx, records, full)
-    except Refused as e:
-        print(f"REFUSED {e}", file=sys.stderr)
+    except Exception as e:  # a refusal, or an input that can't be read (malformed JSON, a missing file...): nothing was written yet
+        reason = str(e) if isinstance(e, Refused) else f"{type(e).__name__}: {e}"
+        print(f"REFUSED {reason}" if isinstance(e, Refused) else f"FAILED {reason}", file=sys.stderr)
         if a.action == "dry-run":
             for lang in a.lang:
-                invalidate(a.out_dir, lang, str(e))
+                invalidate(a.out_dir, lang, reason)
         return 1
 
 

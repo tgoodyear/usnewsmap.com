@@ -129,11 +129,26 @@ function scriptText(text, diff) {
 }
 
 // The names shown under a reading for pairs the task build flagged as look-alikes in the page's font (lookalikes:
-// [{a, a_label, b, b_label}], letter indexes as a_diff and b_diff): the syllable for Cherokee, else the Unicode name.
-// A Map from letter index to name. A flagged letter is shown even where the highlight doesn't mark it (a transposition).
+// [{a, a_label, b, b_label}], letter indexes as a_diff and b_diff). A Map from letter index to name. A flagged letter
+// is shown even where the highlight doesn't mark it (a transposition). The name is, in order:
+//  - the letter's entry in the language's `labels`, e.g. the Latin equivalent of a Serbian Cyrillic letter;
+//  - "Latin <letter>" for a Latin letter in a language that has `labels` (a Latin look-alike in a Cyrillic reading);
+//  - the name the task stored: the syllable for Cherokee, else the Unicode character name.
+// When one reading of the pair is a Latin letter and the other is not, the labelled letter also says its script
+// ("Cyrillic ć" against "Latin h"), so two labels never read as the same letter.
+const LATIN = /^\p{Script=Latin}/u;
 function lookalikeLabels(t, side) {
-  const labels = new Map(), n = letters(t[side]).length;
-  for (const p of t.lookalikes || []) if (typeof p[side + "_label"] === "string" && p[side] < n) labels.set(p[side], p[side + "_label"]);
+  const labels = new Map(), mine = letters(t[side] || ""), other = side === "a" ? "b" : "a", theirs = letters(t[other] || ""), names = cfg.labels;
+  for (const p of t.lookalikes || []) {
+    if (typeof p[side + "_label"] !== "string" || !(p[side] < mine.length)) continue;
+    let label = p[side + "_label"];
+    if (names) {
+      const ch = mine[p[side]], named = names[ch], their = theirs[p[other]];
+      if (named !== undefined) label = (their !== undefined && LATIN.test(their) && !LATIN.test(ch) ? "Cyrillic " : "") + named;
+      else if (LATIN.test(ch)) label = "Latin " + ch;
+    }
+    labels.set(p[side], label);
+  }
   return labels;
 }
 
