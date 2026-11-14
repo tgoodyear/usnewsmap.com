@@ -14,7 +14,6 @@ use usnm_ocr_contract::{
 };
 use usnm_ocr_local::{ledger, sync};
 use usnm_ocr_worker::{
-    engine,
     loc::{ImageSize, ScanFormat},
     prefetch::{scan_path, sidecar_path, Sidecar},
     testimg,
