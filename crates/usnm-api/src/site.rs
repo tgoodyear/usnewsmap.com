@@ -964,7 +964,7 @@ pub(crate) fn served_on_api_host(path: &str) -> bool {
     };
     under("/v1")
         || under("/api/v1")
-        || under("/mcp")
+        || crate::mcp::is_mcp_path(path)
         || under("/.well-known")
         || matches!(path, "/healthz" | "/readyz" | "/robots.txt")
 }
@@ -1007,7 +1007,10 @@ pub async fn www_redirect(
             StatusCode::PERMANENT_REDIRECT,
             [
                 (header::LOCATION, location),
-                (header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=300")),
+                (
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("public, max-age=300"),
+                ),
             ],
         )
             .into_response(),

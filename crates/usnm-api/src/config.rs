@@ -403,8 +403,9 @@ mod tests {
         assert_eq!(c.ready_cap, Duration::from_secs(360));
         assert_eq!(c.site_host, "usnewsmap.com");
         assert!(c.api_host.is_none());
-        let api = Config::from_lookup(|k| (k == "USNM_API_HOST").then(|| " API.Example.test ".into()))
-            .unwrap();
+        let api =
+            Config::from_lookup(|k| (k == "USNM_API_HOST").then(|| " API.Example.test ".into()))
+                .unwrap();
         assert_eq!(api.api_host.as_deref(), Some("api.example.test"));
         assert!(c.ingest_cron.is_none());
         assert!(c.search_log_url.is_none());

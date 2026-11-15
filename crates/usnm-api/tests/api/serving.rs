@@ -1160,9 +1160,22 @@ async fn api_host_redirects_site_paths_to_the_apex() {
             "/search?q=%22cross+of+gold%22&from=1896-06-01",
             "https://usnewsmap.com/search?q=%22cross+of+gold%22&from=1896-06-01",
         ),
-        ("api.usnewsmap.com", "/status", "https://usnewsmap.com/status"),
+        (
+            "api.usnewsmap.com",
+            "/status",
+            "https://usnewsmap.com/status",
+        ),
+        (
+            "api.usnewsmap.com",
+            "/mcp/extra",
+            "https://usnewsmap.com/mcp/extra",
+        ),
         ("api.usnewsmap.com", "/v10", "https://usnewsmap.com/v10"),
-        ("api.usnewsmap.com", "/sitemap.xml", "https://usnewsmap.com/sitemap.xml"),
+        (
+            "api.usnewsmap.com",
+            "/sitemap.xml",
+            "https://usnewsmap.com/sitemap.xml",
+        ),
     ];
     for (host, uri, location) in cases {
         let resp = get_host(&s, host, uri).await;
@@ -1194,9 +1207,16 @@ async fn api_host_redirects_site_paths_to_the_apex() {
     // HTTP/2 puts the host in the URI.
     let resp = get_site(&s, "https://api.usnewsmap.com/?x=1", None).await;
     assert_eq!(resp.0, StatusCode::PERMANENT_REDIRECT);
-    assert_eq!(header_str(&resp.1, header::LOCATION), "https://usnewsmap.com/?x=1");
+    assert_eq!(
+        header_str(&resp.1, header::LOCATION),
+        "https://usnewsmap.com/?x=1"
+    );
     // The apex, other hosts and a crafted Host are served, or redirect only to the apex.
-    for host in ["usnewsmap.com", "127.0.0.1:8080", "api.usnewsmap.com.evil.test"] {
+    for host in [
+        "usnewsmap.com",
+        "127.0.0.1:8080",
+        "api.usnewsmap.com.evil.test",
+    ] {
         let resp = get_host(&s, host, "/").await;
         assert_eq!(resp.status(), StatusCode::OK, "{host}");
     }
