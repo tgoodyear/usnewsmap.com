@@ -39,6 +39,10 @@ pub(crate) const ENV_COMPUTE_RESERVE: &str = "USNM_QWEN_COMPUTE_RESERVE_MIB";
 /// What one region needs: image tokens, the prompt and 2,048 output tokens.
 pub(crate) const CTX_PER_SLOT: u32 = 8192;
 const MIB: u64 = 1 << 20;
+/// JSON around one reading, generously.
+const PER_READING: usize = 128;
+/// What readings.json may hold: the contract's limit less room for the header and diag.
+const READINGS_BUDGET: usize = usnm_ocr_contract::qwen::MAX_READINGS - 64 * 1024;
 
 /// The memory model in the slot rule: the slot count that fits.
 ///
@@ -372,7 +376,6 @@ struct Shared<'a, 'b> {
     /// Counts server starts; a request that began under an older count was in flight when the
     /// server was lost.
     generation: AtomicU64,
-    inflight: Mutex<BTreeSet<String>>,
     cp: Mutex<&'b mut QwenCheckpoint>,
     diag: Mutex<&'b mut Diag>,
     stop: AtomicBool,
@@ -380,6 +383,7 @@ struct Shared<'a, 'b> {
     peak: Mutex<Option<u64>>,
     halvings: AtomicU64,
     total: usize,
+    load_cost_ms: u64,
 }
 
 struct Feed<'a> {
@@ -436,14 +440,6 @@ impl Shared<'_, '_> {
         let log = std::fs::read_to_string(self.work.join("llama-server.log")).unwrap_or_default();
         if is_oom(&log) && halve_launch(&mut launch, self.per_slot_ctx) {
             self.note_halved(&launch);
-        }
-        // Every request in flight lost its server: none of their blank replies is believed.
-        {
-            let mut cp = self.cp.lock().unwrap();
-            for id in self.inflight.lock().unwrap().iter() {
-                cp.log_note(&format!("{id}: server lost while in flight"));
-            }
-            let _ = cp.save(self.work);
         }
         let left = LOAD_DEADLINE.min(self.deadline.saturating_sub(self.started.elapsed()));
         let r = start_halving(
@@ -553,16 +549,16 @@ fn worker(sh: &Shared<'_, '_>) {
                 return;
             }
         };
-        sh.inflight.lock().unwrap().insert(crop.id.clone());
         let t_crop = Instant::now();
         let max_tokens = sh.job.max_tokens(crop);
-        let distrust = sh
-            .cp
-            .lock()
-            .unwrap()
-            .restart_log
-            .iter()
-            .any(|n| n.starts_with(&format!("{}:", crop.id)));
+        // Once the server has been lost in this task, however long ago and whichever region
+        // lost it, a blank 0-token reply may be the damage of the crash (a reset GPU answers
+        // nothing), so none is believed. The counts are in the checkpoint, so this holds after
+        // the task is restarted too; it does not depend on any one region's notes.
+        let distrust = {
+            let cp = sh.cp.lock().unwrap();
+            cp.llama_restarts > 0 || cp.temporary_exits > 0
+        };
         let mut st = RegionState { seen: 0 };
         let end = run_crop(
             &mut st,
@@ -604,10 +600,23 @@ fn worker(sh: &Shared<'_, '_>) {
                 }
             },
         );
-        sh.inflight.lock().unwrap().remove(&crop.id);
         match end {
             CropEnd::Done((text, tokens, metadata)) => {
                 let mut cp = sh.cp.lock().unwrap();
+                // The readings file is bounded; a page that would not fit is not a success.
+                if !fits_readings(&cp.readings, text.len()) {
+                    drop(cp);
+                    sh.diag.lock().unwrap().section(
+                        "readings over the size limit",
+                        &format!("{}: no room for another reading", crop.id),
+                        256,
+                    );
+                    sh.end(Ending::Failed(format!(
+                        "{}: readings over the size limit",
+                        crop.id
+                    )));
+                    return;
+                }
                 cp.generation_metadata.insert(crop.id.clone(), metadata);
                 cp.readings.push(Reading {
                     id: crop.id.clone(),
@@ -615,9 +624,10 @@ fn worker(sh: &Shared<'_, '_>) {
                     text,
                     tokens,
                 });
+                cp.run_ms = sh.load_cost_ms + crate::ms(sh.started);
                 let _ = cp.save(sh.work);
-                let done = cp.readings.len();
-                drop(cp);
+                // The checkpoint stays locked until the progress is written, so two readers
+                // finishing together do not write the same file at once or out of order.
                 if let Some(dev) = sh.gpu.cuda_device {
                     if let Some(used) = crate::gpu::gpu_used_mib(dev) {
                         let delta = used.saturating_sub(sh.gpu.used_before_mb.unwrap_or(0));
@@ -625,7 +635,7 @@ fn worker(sh: &Shared<'_, '_>) {
                         *p = Some(p.map_or(delta, |p| p.max(delta)));
                     }
                 }
-                let frac = done as f64 / sh.total.max(1) as f64;
+                let frac = cp.readings.len() as f64 / sh.total.max(1) as f64;
                 let _ = write_atomic(
                     &sh.work.join(FRACTION_FILE),
                     format!("{frac:.4}\n").as_bytes(),
@@ -667,6 +677,8 @@ pub(crate) struct PageRun<'a> {
     pub(crate) control: &'a BoincControl,
     pub(crate) gpu: &'a crate::gpu::GpuState,
     pub(crate) per_slot_ctx: u32,
+    /// GPU time spent starting the server, failed starts included.
+    pub(crate) load_cost_ms: u64,
 }
 
 /// Reads the regions the checkpoint does not have, `launch.parallel` at a time, longest first.
@@ -699,7 +711,6 @@ pub(crate) fn read_regions<'a>(
         llama: Mutex::new(llama),
         launch: Mutex::new(launch),
         generation: AtomicU64::new(0),
-        inflight: Mutex::new(BTreeSet::new()),
         cp: Mutex::new(cp),
         diag: Mutex::new(diag),
         stop: AtomicBool::new(false),
@@ -707,6 +718,7 @@ pub(crate) fn read_regions<'a>(
         peak: Mutex::new(None),
         halvings: AtomicU64::new(0),
         total: run.job.crops.len(),
+        load_cost_ms: run.load_cost_ms,
     };
     let readers = sh.launch.lock().unwrap().parallel.max(1);
     std::thread::scope(|s| {
@@ -721,6 +733,12 @@ pub(crate) fn read_regions<'a>(
         slots,
         halvings: sh.halvings.load(Ordering::SeqCst) as u32,
     }
+}
+
+/// Whether one more reading of `next_len` bytes still fits in readings.json.
+pub(crate) fn fits_readings(have: &[Reading], next_len: usize) -> bool {
+    let used: usize = have.iter().map(|r| r.text.len() + PER_READING).sum();
+    used + next_len + PER_READING <= READINGS_BUDGET
 }
 
 /// `cp.readings` in the job's crop order.
@@ -977,6 +995,27 @@ mod tests {
         let p = plan_slots(None, true, Some(99_999), &model, &mmproj);
         assert_eq!(p.slots, 1);
         assert!(p.note.contains("unreadable"));
+    }
+
+    #[test]
+    fn a_page_whose_readings_would_not_fit_the_file_is_not_a_success() {
+        let r = |n: usize| Reading {
+            id: "r".into(),
+            ms: 1,
+            text: "x".repeat(n),
+            tokens: 1,
+        };
+        assert!(fits_readings(&[], 8 * 1024));
+        // 1,024 regions at 6 KiB each is over the 4 MiB the upload allows.
+        let mut have = Vec::new();
+        let mut n = 0;
+        while fits_readings(&have, 6 * 1024) {
+            have.push(r(6 * 1024));
+            n += 1;
+        }
+        assert!(n < 1024 && n > 600, "{n}");
+        let json = serde_json::to_vec(&have).unwrap();
+        assert!(json.len() <= usnm_ocr_contract::qwen::MAX_READINGS);
     }
 
     #[test]

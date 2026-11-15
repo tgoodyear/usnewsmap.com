@@ -289,7 +289,9 @@ fn page_mode_reads_regions_concurrently_on_one_server() {
         .unwrap()
         .parse()
         .unwrap();
-    assert_eq!(ms, result.load_ms + result.engine_ms);
+    // (Starting the server is timed from before the launch, so a little more than load_ms.)
+    assert!(ms >= result.load_ms + result.engine_ms, "{ms}");
+    assert!(ms < result.load_ms + result.engine_ms + 3000, "{ms}");
     // Three at a time over nine 0.3 s requests is well under nine in a row.
     assert!(result.engine_ms < 2400, "{}", result.engine_ms);
     let diag = std::fs::read_to_string(slot.join(DIAG_FILE)).unwrap();
@@ -359,6 +361,9 @@ fn page_mode_counts_a_blank_reply_after_a_crash_as_a_failed_attempt() {
         .iter()
         .all(|r| !r.text.is_empty() && r.tokens > 0));
     assert!(cp.readings.len() < 6);
+    // The run's GPU time is kept for the cost of the unit across restarts.
+    assert!(cp.gpu_ms > 0);
+    assert_eq!(cp.run_ms, 0);
 }
 
 #[test]

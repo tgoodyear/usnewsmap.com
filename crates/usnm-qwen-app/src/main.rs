@@ -563,6 +563,8 @@ fn run_crops(
         control,
     };
     let mut start_halvings = 0u32;
+    let start_clock = Instant::now();
+    let mut gpu_load_ms = 0u64;
     let mut load_ms = 0;
     let mut llama = match existing_port {
         Some(p) => Llama {
@@ -600,6 +602,8 @@ fn run_crops(
                 &mut |launch| halved.push((launch.parallel, launch.ctx_size)),
             );
             start_halvings = halved.len() as u32;
+            // Every load counts toward the GPU time, the ones that ran out of memory too.
+            gpu_load_ms = ms(start_clock);
             for (slots, ctx) in halved {
                 diag.section(
                     "slots halved",
@@ -627,7 +631,9 @@ fn run_crops(
 
     let started = Instant::now();
     let mut cp = match QwenCheckpoint::load_valid(work, &l.job, &model.name, &gpu.device_label) {
-        Some(existing) => {
+        Some(mut existing) => {
+            // The last run's GPU time, as far as it was saved, joins the earlier runs'.
+            existing.gpu_ms += std::mem::take(&mut existing.run_ms);
             if !existing.readings.is_empty() {
                 diag.section(
                     "checkpoint",
@@ -653,6 +659,8 @@ fn run_crops(
             generation_metadata: BTreeMap::new(),
             temporary_exits: 0,
             llama_restarts: 0,
+            gpu_ms: 0,
+            run_ms: 0,
             restart_log: Vec::new(),
         },
     };
@@ -799,6 +807,7 @@ fn run_crops(
             control,
             gpu,
             per_slot_ctx: pagemode::CTX_PER_SLOT,
+            load_cost_ms: gpu_load_ms,
         };
         let end = pagemode::read_regions(
             &run,
@@ -810,6 +819,10 @@ fn run_crops(
             diag,
         );
         gpu_peak_mib = end.gpu_peak_mib;
+        // This run's GPU time joins the earlier runs'; saved before any exit below.
+        cp.gpu_ms += gpu_load_ms + ms(started);
+        cp.run_ms = 0;
+        let _ = cp.save(work);
         page_slots = Some((end.slots, end.halvings + start_halvings));
         match end.ending {
             None => {}
@@ -831,6 +844,7 @@ fn run_crops(
     if outcome == Outcome::Ok && cp.readings.len() == l.job.crops.len() {
         let _ = std::fs::remove_file(work.join(CHECKPOINT_FILE));
     }
+    let gpu_ms_total = cp.gpu_ms;
     let out_readings = if l.job.page_mode.is_some() {
         // Read in completion order; reported in the unit's order.
         pagemode::in_crop_order(&l.job, cp.readings)
@@ -958,7 +972,7 @@ fn run_crops(
         }
         // The GPU was held for the whole run, so a page costs its token share of it (#1998).
         let shares = pagemode::split_ms(
-            load_ms + engine_ms,
+            gpu_ms_total,
             &pagemode::tokens_by_page(&l.job, &out_readings),
         );
         r_diag.extend(pagemode::gpu_ms_entries(&shares));
@@ -1794,6 +1808,8 @@ mod tests {
             )]),
             temporary_exits: 0,
             llama_restarts: 0,
+            gpu_ms: 0,
+            run_ms: 0,
             restart_log: Vec::new(),
         };
         let mut legacy = serde_json::to_value(&cp).unwrap();
@@ -2142,6 +2158,8 @@ mod tests {
             generation_metadata: BTreeMap::new(),
             temporary_exits: MAX_TEMPORARY_EXITS,
             llama_restarts: 0,
+            gpu_ms: 0,
+            run_ms: 0,
             restart_log: Vec::new(),
         };
         cp.save(&slot).unwrap();

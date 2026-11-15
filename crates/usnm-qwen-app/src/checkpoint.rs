@@ -26,12 +26,23 @@ pub struct QwenCheckpoint {
     /// How many times this task has restarted `llama-server` to retry a crop.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub llama_restarts: u32,
+    /// GPU time (server starts and reads) of the runs of this task before the current one, for
+    /// the cost of a page-mode unit that was restarted.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub gpu_ms: u64,
+    /// The current run's GPU time as last saved, folded into `gpu_ms` when the next run starts.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub run_ms: u64,
     /// Notes on those restarts, newest last, for the diagnostics.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub restart_log: Vec<String>,
 }
 
 fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+fn is_zero_u64(n: &u64) -> bool {
     *n == 0
 }
 
