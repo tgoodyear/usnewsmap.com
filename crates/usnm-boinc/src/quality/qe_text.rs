@@ -410,7 +410,8 @@ pub async fn submit(
         // The validator's copy of what the unit holds, before any result can come back.
         let m = manifest_path(&project, &job.id);
         std::fs::create_dir_all(m.parent().expect("has a parent"))?;
-        atomic(&m, &serde_json::to_vec(&job.manifest())?)?;
+        // Readable by the validator, which runs as another user.
+        crate::atomic_download(&m, &serde_json::to_vec(&job.manifest())?)?;
         send(&project, &unit, &job, &wu, true).await?;
         if is_spot(&job.id) {
             send(&project, &unit, &job, &workunit_of(&job, n, 1), false).await?;
@@ -720,15 +721,18 @@ pub async fn collect(
     if !bad.is_empty() {
         bad.sort_unstable();
         bad.dedup();
-        if let Some(w) = writer {
+        if writer.is_some() {
             save_bad_hosts(root, &bad)?;
-            w.mark_invalid(&bad).await?;
         }
         s.hosts_failed = bad.clone();
     }
-    if writer.is_some() {
-        // Hosts failed in earlier runs may have rows from this one's batch too.
+    if let Some(w) = writer {
+        // Every failed host, this run's and earlier ones: invalidating again is harmless, and
+        // it retries an update that failed after the list was saved. Only then are units resent.
         let all = bad_hosts(root);
+        if !all.is_empty() {
+            w.mark_invalid(&all).await?;
+        }
         s.units_resent = resend_units(root, &all, &again)?;
     }
     Ok(s)

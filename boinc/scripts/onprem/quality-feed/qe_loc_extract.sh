@@ -41,7 +41,9 @@ supervise() {
   wait "$pid"
 }
 backlog_gb() {
-  for d in "$state"/units/*/; do [ -e "${d}submitted" ] || echo "$d"; done | xargs -r du -sc -B1G 2>/dev/null | tail -1 | cut -f1 | grep . || echo 0
+  # One du over every unit without a submitted marker, so hard-linked qe.bin files count once.
+  find "$state/units" -mindepth 1 -maxdepth 1 -type d ! -exec test -e '{}/submitted' \; -print0 2>/dev/null \
+    | du -sc -B1G --files0-from=- 2>/dev/null | tail -1 | cut -f1 | grep . || echo 0
 }
 worker() {
   w=$1; i=0
