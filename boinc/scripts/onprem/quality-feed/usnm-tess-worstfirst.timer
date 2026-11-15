@@ -1,0 +1,10 @@
+[Unit]
+Description=Tesseract worst-first English re-read, every 30 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
