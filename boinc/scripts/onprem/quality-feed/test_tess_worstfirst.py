@@ -48,6 +48,10 @@ class Decide(unittest.TestCase):
     def test_tops_up(self):
         self.assertEqual(t.decide(self.cfg, self.st(wave_queued=3000), self.now, 0, None)[0], "enqueue")
 
+    def test_skipped_pages_do_not_count_toward_the_target(self):
+        st = self.st(wave_queued=10000, wave_skipped=15000)
+        self.assertEqual(t.decide(self.cfg, st, self.now, 0, None)[0], "enqueue")
+
     def test_waits_for_gain(self):
         self.assertEqual(t.decide(self.cfg, self.st(), self.now, 19500, None)[0], "idle")
 

@@ -197,10 +197,10 @@ def decide(cfg, st, now, published, gain):
     started = datetime.datetime.strptime(st["wave_started"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
     age_days = (now - started).total_seconds() / 86400
     timed_out = age_days >= cfg["max_wave_days"]
-    if st["wave_queued"] + st["wave_skipped"] < target and not timed_out:
+    if st["wave_queued"] < target and not timed_out:
         if st["outstanding"] >= cfg["max_outstanding"]:
             return "idle", "queue full: %d outstanding" % st["outstanding"]
-        return "enqueue", "wave %d: %d of %d" % (n, st["wave_queued"] + st["wave_skipped"], target)
+        return "enqueue", "wave %d: %d of %d" % (n, st["wave_queued"], target)
     done = published >= cfg["complete_fraction"] * max(st["wave_queued"], 1) or timed_out
     if not done:
         return "idle", "wave %d: %d of %d queued pages published" % (n, published, st["wave_queued"])
@@ -242,8 +242,8 @@ def published_count(dsn, ids):
 
 
 def enqueue(cfg, ids, campaign):
-    """Runs ocr-enqueue on this host. Returns the doc_ids it did not queue (outstanding already, or
-    not in the published version); the rest of `ids` are queued."""
+    """Runs ocr-enqueue on this host. Returns {doc_id: why} for the pages it did not queue (outstanding
+    already, or not in the published version); the rest of `ids` are queued."""
     p = subprocess.run([cfg["ingest_run"], "--command", "ocr-enqueue", "--wait", "--nice", "19", "--",
                         "--pages", ",".join(ids), "--reason", "bulk", "--plan", campaign],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=3600)
@@ -253,11 +253,12 @@ def enqueue(cfg, ids, campaign):
             report = json.loads(line)["fields"]
     if p.returncode or report is None:
         raise RuntimeError("ocr-enqueue failed (%s): %s" % (p.returncode, p.stdout[-400:]))
-    skipped_ids = set()
+    skipped = {}
     for line in p.stdout.splitlines():
         if '"page not queued"' in line:
-            skipped_ids.add(json.loads(line)["fields"]["doc_id"])
-    return skipped_ids
+            f = json.loads(line)["fields"]
+            skipped[f["doc_id"]] = f.get("why")
+    return skipped
 
 
 def stop_self(cfg, state_dir, st, why, log):
@@ -313,7 +314,7 @@ def cmd_run(a):
         seen = set()
         for fn in os.listdir(os.path.join(state_dir, "waves")):
             seen.update(open(os.path.join(state_dir, "waves", fn)).read().split())
-        remaining = wave_size(cfg, st["wave"]) - st["wave_queued"] - st["wave_skipped"]
+        remaining = wave_size(cfg, st["wave"]) - st["wave_queued"]
         want = min(cfg["chunk_pages"], remaining)
         cut = cfg["cut"]
         # Rank the pages, leave out those an earlier step queued, take the next `want`.
@@ -325,7 +326,8 @@ def cmd_run(a):
             sql += " LIMIT %d" % (len(seen) + want)
         rows = [r.split("\t") for r in psql(dsn, sql).splitlines() if r]
         pending = os.path.join(state_dir, "pending.txt")
-        if os.path.exists(pending):  # a chunk whose send failed: send the same pages again first
+        retry = os.path.exists(pending)
+        if retry:  # a chunk whose send failed: send the same pages again first
             fresh = open(pending).read().split()
         else:
             fresh = [r[1] for r in rows if r[1] not in seen][:want]
@@ -337,11 +339,14 @@ def cmd_run(a):
             log("no eligible pages left past %d" % len(seen))
         else:
             try:
-                skipped_ids = enqueue(cfg, fresh, st["campaign"])
+                skipped = enqueue(cfg, fresh, st["campaign"])
             except Exception as e:  # pending.txt stays: ocr-enqueue skips what already went out
                 log("enqueue failed: %s" % e)
                 save_json(sp, st)
                 sys.exit(1)
+            if retry:  # the failed attempt may have put some out: its "outstanding" pages are ours
+                skipped = {i: w for i, w in skipped.items() if w != "outstanding"}
+            skipped_ids = set(skipped)
             queued_ids = [i for i in fresh if i not in skipped_ids]
             with open(wave_file, "a") as f:
                 f.write("".join(i + "\n" for i in queued_ids))
