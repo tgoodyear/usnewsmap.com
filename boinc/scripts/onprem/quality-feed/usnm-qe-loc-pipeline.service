@@ -1,0 +1,10 @@
+[Unit]
+Description=qe-loc-v1 pipeline: collect, ship and submit text-only quality units
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/qe_loc_pipeline.sh
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
