@@ -748,3 +748,91 @@ test("a confusable_display task can move to merged_line: held ones just change r
   assert.deepEqual((await mark("merged_line", "chr/s/twice")).unchanged, ["chr/s/twice"]);
   assert.deepEqual([row("chr/s/twice").outcome, row("chr/s/twice").outcome_withdrawn, row("chr/s/twice").mark_reason], ["b", "a", "confusable_display"]);
 });
+
+// ---------- words held without a mark ----------
+
+test("holding a task keeps its answers, counts and outcome, takes it out of the queue, and release undoes only the hold", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  const get = async (path, token) => worker.fetch(new Request("https://check.usnewsmap.com" + path, { headers: token ? { authorization: "Bearer " + token } : {} }), E, {});
+  const post = async (path, token, body) => worker.fetch(new Request("https://check.usnewsmap.com" + path, { method: "POST", headers: { authorization: "Bearer " + token }, body: JSON.stringify(body) }), E, {});
+  const body = JSON.stringify({ page: "p", a: "ᏒᎯ", b: "ᎡᎯ", a_is: "reference", b_is: "loc" });
+  for (const id of ["chr/s/1", "chr/s/2", "chr/s/3", "chr/s/4", "chr/s/5"]) db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES (?, 'chr', 's', ?)").run(id, body);
+  const [t1, t2, t3] = await Promise.all(["c1", "c2", "c3"].map((c) => signSession(env.SESSION_KEY, c)));
+  for (const [tok, choice] of [[t1, "a"], [t2, "a"], [t3, "b"]]) await post("/api/answers", tok, { task: "chr/s/1", choice }); // settles: a
+  await post("/api/answers", t1, { task: "chr/s/2", choice: "b" }); // unsettled
+  const full = (id) => ({ ...db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) });
+  const answers = () => db.prepare("SELECT task_id, contributor, choice, at FROM answers ORDER BY task_id, contributor").all().map((r) => ({ ...r }));
+  const stats = async () => JSON.stringify(await (await get("/api/stats?lang=chr")).json());
+  const exported = async () => (await (await get("/api/export?lang=chr")).text()).trim().split("\n").map((l) => JSON.parse(l));
+  const beforeRows = await exported();
+  const beforeStats = await stats();
+  const beforeAnswers = answers();
+  const beforeTask = { 1: full("chr/s/1"), 2: full("chr/s/2") };
+  // a task marked merged_line, and one marked confusable_display, for the refusals
+  await adminCall(DB, "/admin/confusable", { action: "mark", reason: "merged_line", tasks: ["chr/s/3"] });
+  await adminCall(DB, "/admin/confusable", { action: "mark", tasks: ["chr/s/4"] });
+
+  const excludedBefore = db.prepare("SELECT * FROM answers_excluded ORDER BY task_id, contributor").all().map((r) => ({ ...r }));
+  // the reason is required and checked
+  for (const reason of [undefined, "", "Bad", "has space", "x".repeat(41), 1, null, "merged_line_"]) {
+    assert.equal((await adminCall(DB, "/admin/confusable", { action: "hold", tasks: ["chr/s/1"], reason })).status, 400, String(reason));
+  }
+  assert.equal((await adminCall(DB, "/admin/confusable", { action: "hold", tasks: ["chr/s/1"], reason: "x".repeat(40) })).status, 200);
+  assert.equal((await adminCall(DB, "/admin/confusable", { action: "release", tasks: ["chr/s/1"] })).status, 200);
+  assert.deepEqual(full("chr/s/1"), beforeTask[1], "a 40-character slug is accepted, and release restores the row exactly");
+
+  const held = await (await adminCall(DB, "/admin/confusable", { action: "hold", reason: "reference-mismatch-v1", tasks: ["chr/s/1", "chr/s/2", "chr/s/1", "chr/s/3", "chr/s/4", "chr/s/missing"] })).json();
+  assert.deepEqual(held, { action: "hold", reason: "reference-mismatch-v1", requested: 5, changed: ["chr/s/1", "chr/s/2"], unchanged: ["chr/s/3", "chr/s/4"], missing: ["chr/s/missing"] });
+  // only held and the reason changed; answers, counts, outcome, settled and everything else did not
+  for (const [k, id] of [[1, "chr/s/1"], [2, "chr/s/2"]]) {
+    assert.deepEqual({ ...full(id), held: 0, withdrawn_reason: null }, beforeTask[k]);
+    assert.deepEqual([full(id).held, full(id).withdrawn_reason], [1, "hold:reference-mismatch-v1"]);
+  }
+  assert.deepEqual(answers(), beforeAnswers);
+  assert.deepEqual(db.prepare("SELECT * FROM answers_excluded ORDER BY task_id, contributor").all().map((r) => ({ ...r })), excludedBefore);
+  // a second hold, even with another reason, changes nothing
+  const again = await (await adminCall(DB, "/admin/confusable", { action: "hold", reason: "other-reason", tasks: ["chr/s/1"] })).json();
+  assert.deepEqual([again.changed, again.unchanged], [[], ["chr/s/1"]]);
+  assert.equal(full("chr/s/1").withdrawn_reason, "hold:reference-mismatch-v1");
+
+  // the queue skips it; an answer gets the 409; the totals are unchanged
+  const fresh = await signSession(env.SESSION_KEY, "fresh");
+  const seen = new Set();
+  for (let i = 0; i < 6; i++) { const r = await (await get("/api/next?lang=chr", fresh)).json(); if (r.task) seen.add(r.task.id); }
+  assert.equal(seen.has("chr/s/1") || seen.has("chr/s/2"), false);
+  assert.equal((await post("/api/answers", fresh, { task: "chr/s/1", choice: "a" })).status, 409);
+  assert.equal((await post("/api/answers", fresh, { task: "chr/s/2", choice: "a" })).status, 409);
+  assert.equal(await stats(), beforeStats);
+  assert.deepEqual(answers(), beforeAnswers);
+
+  // the export: the same fields plus held and hold_reason on the two held-only tasks; others unchanged
+  const rows = await exported();
+  const byId = (rs, id) => rs.find((x) => x.id === id);
+  for (const id of ["chr/s/1", "chr/s/2"]) {
+    const { held: h, hold_reason: why, ...rest } = byId(rows, id);
+    assert.deepEqual([h, why], [true, "reference-mismatch-v1"]);
+    assert.deepEqual(rest, byId(beforeRows, id));
+  }
+  const x1 = byId(rows, "chr/s/1");
+  assert.deepEqual([x1.settled, x1.outcome, x1.counts.a, x1.counts.b], [true, "a", 2, 1]);
+  assert.equal("mark_reason" in x1 || "excluded_counts" in x1, false);
+  assert.equal("hold_reason" in byId(rows, "chr/s/3") || "hold_reason" in byId(rows, "chr/s/5"), false);
+  assert.equal("held" in byId(rows, "chr/s/5"), false);
+  assert.deepEqual(byId(rows, "chr/s/3").mark_reason, "merged_line");
+
+  // release: undoes a hold only; a marked task is refused and left as it is
+  const marked3 = full("chr/s/3"), marked4 = full("chr/s/4");
+  const rel = await (await adminCall(DB, "/admin/confusable", { action: "release", tasks: ["chr/s/1", "chr/s/3", "chr/s/4", "chr/s/5", "chr/s/missing"] })).json();
+  assert.deepEqual(rel, { action: "release", requested: 5, changed: ["chr/s/1"], unchanged: ["chr/s/3", "chr/s/4", "chr/s/5"], missing: ["chr/s/missing"] });
+  assert.deepEqual([full("chr/s/3"), full("chr/s/4")], [marked3, marked4]);
+  assert.deepEqual(full("chr/s/1"), beforeTask[1]);
+  assert.equal((await post("/api/answers", fresh, { task: "chr/s/1", choice: "a" })).status, 200, "released: takes answers again");
+  // a held word that was held for another cause (no hold reason) is not released
+  db.prepare("UPDATE tasks SET held = 1 WHERE id = 'chr/s/5'").run();
+  assert.deepEqual((await (await adminCall(DB, "/admin/confusable", { action: "release", tasks: ["chr/s/5"] })).json()).unchanged, ["chr/s/5"]);
+  assert.deepEqual((await (await adminCall(DB, "/admin/confusable", { action: "hold", reason: "x", tasks: ["chr/s/5"] })).json()).unchanged, ["chr/s/5"]);
+  // reopen does not release a hold
+  assert.deepEqual((await (await adminCall(DB, "/admin/confusable", { action: "reopen", tasks: ["chr/s/2"] })).json()).unchanged, ["chr/s/2"]);
+  assert.equal(full("chr/s/2").held, 1);
+});
