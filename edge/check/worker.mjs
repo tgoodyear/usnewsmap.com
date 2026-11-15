@@ -188,9 +188,13 @@ async function api(request, env, url) {
   }
   if (p === "/api/languages" && request.method === "GET") {
     const rows = await env.DB.prepare(
-      "SELECT l.code, l.config, COUNT(t.id) AS tasks, SUM(t.settled) AS settled FROM languages l LEFT JOIN tasks t ON t.lang = l.code GROUP BY l.code ORDER BY l.code",
+      // The language list counts the words a visitor can still be given or that were checked: a held word (marked, or held
+      // with a reason) is in neither figure, whatever it had settled as. `held` says how many were left out.
+      `SELECT l.code, l.config, COUNT(CASE WHEN t.held = 0 THEN 1 END) AS tasks, SUM(CASE WHEN t.held = 0 THEN t.settled ELSE 0 END) AS settled,
+              COUNT(CASE WHEN t.held = 1 THEN 1 END) AS held
+       FROM languages l LEFT JOIN tasks t ON t.lang = l.code GROUP BY l.code ORDER BY l.code`,
     ).all();
-    return json(rows.results.map((r) => ({ code: r.code, name: JSON.parse(r.config).name, tasks: r.tasks, settled: r.settled || 0 })), 200, {
+    return json(rows.results.map((r) => ({ code: r.code, name: JSON.parse(r.config).name, tasks: r.tasks, settled: r.settled || 0, held: r.held || 0 })), 200, {
       "cache-control": "public, max-age=60",
     });
   }
