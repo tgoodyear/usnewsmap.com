@@ -340,7 +340,8 @@ pub enum QualityCommands {
         /// The archive's file name, e.g. ak_albatross_ver01.tar.bz2.
         #[arg(long)]
         archive: String,
-        /// doc_id<TAB>lang lines: `quality.pages.lang`, the detected language.
+        /// doc_id<TAB>lang lines of the pages whose `quality.loc_alto.archive` is this archive
+        /// (`quality.pages.lang`, the detected language); other pages of the extract are left out.
         #[arg(long)]
         languages: PathBuf,
         /// JSON object: LCCN to the title's MARC language codes (the reference store's

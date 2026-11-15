@@ -23,6 +23,10 @@ supervise() {
   hot=0; stopped=0
   while kill -0 "$pid" 2>/dev/null; do
     sleep 60
+    if [ -e "$state/stop" ]; then
+      kill -CONT "$pid" 2>/dev/null; kill -TERM "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+      log "stop: ended $pid"; return 143
+    fi
     if [ "$(io60)" -gt 75 ] 2>/dev/null; then hot=$((hot+1)); else hot=0; fi
     if [ "$stopped" = 0 ] && { [ "$hot" -ge 5 ] || held; }; then
       kill -STOP "$pid"; stopped=1; log "stopped $pid (io60 $(io60), hold $(held && echo yes || echo no))"
@@ -35,10 +39,15 @@ supervise() {
 for f in $(ls "$archives" | grep '\.tar\.bz2$'); do
   [ -e "$state/stop" ] && { log stop; exit 0; }
   [ -e "$state/done/$f" ] && continue
-  while held; do sleep 600; done
+  while held; do
+    [ -e "$state/stop" ] && { log stop; exit 0; }
+    sleep 60
+  done
+  [ -e "$state/stop" ] && { log stop; exit 0; }
   tmp="$state/work/$f"; rm -rf "$tmp"; mkdir -p "$tmp"
   if [ -s "$state/langs/$f.tsv" ] \
      && supervise nice -n 19 ionice -c3 "$bin" quality qe-text-extract --archive "$archives/$f" --out "$tmp/extract.jsonl" 2>> "$state/run.log" \
+     && [ ! -e "$state/stop" ] \
      && nice -n 19 ionice -c3 "$bin" quality qe-text-stage --extract "$tmp/extract.jsonl" --archive "$f" \
           --languages "$state/langs/$f.tsv" --title-languages "$state/titles.json" \
           --qe-dir "$qe_dir" --root "$state" 2>> "$state/run.log"; then

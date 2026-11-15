@@ -128,7 +128,8 @@ pub fn language_of(detected: Option<&str>, titles: &[String]) -> (Option<String>
 pub struct StageOptions {
     pub extract: PathBuf,
     pub archive: String,
-    /// `doc_id<TAB>lang` lines: `quality.pages.lang`, the detected language.
+    /// `doc_id<TAB>lang` lines for the pages whose `quality.loc_alto.archive` is this archive:
+    /// `quality.pages.lang`, the detected language. Pages not listed are left out.
     pub languages: PathBuf,
     /// JSON object: LCCN to the title's MARC language codes (as `quality sample` reads).
     pub title_languages: Option<PathBuf>,
@@ -142,6 +143,9 @@ pub struct StageSummary {
     pub pages: u64,
     pub units: u64,
     pub already: u64,
+    /// Pages of the extract that `--languages` does not list for this archive: another copy of
+    /// an overlapping archive holds the page the corpus uses, so no unit is made of them.
+    pub not_authoritative: u64,
     pub by_source: BTreeMap<String, u64>,
 }
 
@@ -167,6 +171,10 @@ pub fn stage(o: &StageOptions) -> anyhow::Result<StageSummary> {
     let mut s = StageSummary::default();
     for line in std::io::BufReader::new(std::fs::File::open(&o.extract)?).lines() {
         let l: Line = serde_json::from_str(&line?)?;
+        if !detected.contains_key(&l.doc_id) {
+            s.not_authoritative += 1;
+            continue;
+        }
         let lccn = l.doc_id.split('_').next().unwrap_or_default();
         let none = vec![];
         let (lang, source) = language_of(
@@ -521,6 +529,7 @@ mod tests {
         for (path, body) in [
             ("sn1/1900/01/01/ed-1/seq-1/ocr.xml", xml.as_bytes()),
             ("sn1/1900/01/01/ed-1/seq-2/ocr.xml", xml.as_bytes()),
+            ("sn1/1900/01/01/ed-1/seq-3/ocr.xml", xml.as_bytes()),
             ("sn1/1900/01/01/ed-1/seq-1/ocr.txt", b"skipped".as_slice()),
         ] {
             let mut h = tar::Header::new_gnu();
@@ -535,7 +544,7 @@ mod tests {
         std::fs::write(&archive, enc.finish().unwrap()).unwrap();
         let ex = tmp.path().join("x.jsonl");
         let sum = extract(&archive, &ex).unwrap();
-        assert_eq!((sum.pages, sum.left_out), (2, 0));
+        assert_eq!((sum.pages, sum.left_out), (3, 0));
 
         // Italian has no file in the lock, so its unit carries no qe.bin; the `und` page has
         // no language and no title.
@@ -557,7 +566,7 @@ mod tests {
             pages_per_unit: 10,
         };
         let sum = stage(&o).unwrap();
-        assert_eq!((sum.pages, sum.units), (2, 2));
+        assert_eq!((sum.pages, sum.units, sum.not_authoritative), (2, 2, 1));
         assert_eq!(sum.by_source[SOURCE_PAGE], 1);
         assert_eq!(sum.by_source[SOURCE_NONE], 1);
         assert_eq!(stage(&o).unwrap().already, 2);
