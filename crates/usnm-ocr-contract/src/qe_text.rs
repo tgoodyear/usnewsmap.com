@@ -171,8 +171,20 @@ impl QeTextResult {
                     r.doc_id
                 );
                 for x in [q.oov, q.charlm_bpc, q.lm_oov].into_iter().flatten() {
-                    ensure!(x.is_finite(), "{}: non-finite measure", r.doc_id);
+                    ensure!(
+                        x.is_finite() && x >= 0.0,
+                        "{}: measure out of range",
+                        r.doc_id
+                    );
                 }
+                ensure!(
+                    q.no_words == (q.words == 0)
+                        && q.known3 <= q.words
+                        && i64::try_from(q.words).is_ok()
+                        && i64::try_from(q.chars).is_ok(),
+                    "{}: inconsistent counts",
+                    r.doc_id
+                );
             }
         }
         Ok(())
@@ -267,6 +279,52 @@ mod tests {
         r.check(&j).unwrap();
         r.rows[0].null_reason = None;
         assert!(r.check(&j).is_err());
+    }
+
+    #[test]
+    fn counts_and_measures_must_be_consistent() {
+        let j = job();
+        let q = QeReport {
+            version: "qe-v1".into(),
+            resources: "b".repeat(64),
+            words: 3,
+            known3: 2,
+            chars: 13,
+            no_words: false,
+            oov: Some(0.25),
+            charlm_bpc: Some(2.5),
+            lm_oov: Some(4.0),
+        };
+        let r = |q: QeReport| QeTextResult {
+            v: VERSION,
+            id: j.id.clone(),
+            rows: vec![QeTextRow {
+                doc_id: j.pages[0].doc_id.clone(),
+                qe: Some(q),
+                null_reason: None,
+            }],
+        };
+        r(q.clone()).check_shape().unwrap();
+        for bad in [
+            QeReport {
+                known3: 4,
+                ..q.clone()
+            },
+            QeReport {
+                no_words: true,
+                ..q.clone()
+            },
+            QeReport {
+                oov: Some(-0.1),
+                ..q.clone()
+            },
+            QeReport {
+                words: u64::MAX,
+                ..q.clone()
+            },
+        ] {
+            assert!(r(bad).check_shape().is_err());
+        }
     }
 
     #[test]
