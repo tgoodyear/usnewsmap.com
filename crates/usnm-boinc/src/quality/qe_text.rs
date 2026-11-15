@@ -350,14 +350,18 @@ async fn send(
     create_work(project, job, wu).await
 }
 
+/// `max_results` bounds the workunits created, replicas included: a spot unit counts two and a
+/// replacement replica one, so a queue cap in results holds.
 pub async fn submit(
     root: &Path,
     project: &Path,
     max_units: usize,
+    max_results: usize,
 ) -> anyhow::Result<SubmitSummary> {
     let project = project.canonicalize()?;
     let _lock = StateLock::acquire(root)?;
     let mut s = SubmitSummary::default();
+    let mut results = 0usize;
     let mut names: Vec<_> = std::fs::read_dir(units(root))?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -381,6 +385,15 @@ pub async fn submit(
         if !replica_due && !first_due {
             continue;
         }
+        let name = unit
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        let need = if replica_due || !is_spot(name) { 1 } else { 2 };
+        if results + need > max_results {
+            continue;
+        }
+        results += need;
         let job: QeTextJob = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB)?)?;
         if replica_due {
             create_work(
@@ -972,6 +985,35 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn the_result_budget_counts_replicas() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join("bin")).unwrap();
+        for (name, body) in [
+            (
+                "dir_hier_path",
+                "#!/bin/sh\nprintf 'download/%s\\n' \"$1\"\n",
+            ),
+            ("create_work", "#!/bin/sh\nexit 0\n"),
+        ] {
+            let p = project.join("bin").join(name);
+            std::fs::write(&p, body).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let spot = (1..300).map(job_of).find(|j| is_spot(&j.id)).unwrap();
+        let unit = units(tmp.path()).join(&spot.id);
+        std::fs::create_dir_all(&unit).unwrap();
+        std::fs::write(unit.join(JOB_FILE), serde_json::to_vec(&spot).unwrap()).unwrap();
+        // One result of room is not enough for a unit that also goes to a second host.
+        let s = submit(tmp.path(), &project, 10, 1).await.unwrap();
+        assert_eq!((s.submitted, s.spot_replicas), (0, 0));
+        let s = submit(tmp.path(), &project, 10, 2).await.unwrap();
+        assert_eq!((s.submitted, s.spot_replicas), (1, 1));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn submit_sends_the_manifest_and_a_replica_of_a_spot_unit() {
         use std::os::unix::fs::PermissionsExt as _;
         let tmp = tempfile::tempdir().unwrap();
@@ -1000,7 +1042,7 @@ mod tests {
             std::fs::create_dir_all(&unit).unwrap();
             std::fs::write(unit.join(JOB_FILE), serde_json::to_vec(j).unwrap()).unwrap();
         }
-        let s = submit(tmp.path(), &project, 10).await.unwrap();
+        let s = submit(tmp.path(), &project, 10, usize::MAX).await.unwrap();
         assert_eq!((s.submitted, s.spot_replicas), (2, 1));
         let created = std::fs::read_to_string(&log).unwrap();
         assert_eq!(

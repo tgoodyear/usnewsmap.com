@@ -26,7 +26,10 @@ mysql --ssl -h "$(g db_host)" -u "$(g db_user)" "$(g db_name)" -N -B -e "$SQL"'
 }
 case "$cmd" in
 status)
-  inflight=$(dbq "SELECT COUNT(*) FROM result r JOIN workunit w ON w.id = r.workunitid WHERE w.name LIKE 'usnm_quality_qetext%' AND r.server_state IN (2, 4)")
+  # An unknown count must not read as an empty queue: a failed query fails the status.
+  inflight=$(dbq "SELECT COUNT(*) FROM result r JOIN workunit w ON w.id = r.workunitid WHERE w.name LIKE 'usnm_quality_qetext%' AND r.server_state IN (2, 4)") \
+    || { echo "the BOINC count query failed" >&2; exit 1; }
+  case "$inflight" in ''|*[!0-9]*) echo "the BOINC count query gave no number" >&2; exit 1;; esac
   staged=0; need=""
   for d in "$Q"/units/*/; do
     [ -d "$d" ] || continue
@@ -44,7 +47,7 @@ status)
   ;;
 submit)
   flock -w 1800 -E 75 /run/usnm-boinc-step.lock podman exec $C usnm-boinc quality qe-text-submit \
-    --root /project/qetext --project /project/usnmocr --max-units "$count"
+    --root /project/qetext --project /project/usnmocr --max-units "$count" --max-results "$count"
   ;;
 collect)
   dbq "SELECT w.name, r.hostid, CONCAT(av.version_num, ' ', p.name) FROM workunit w JOIN result r ON r.id = w.canonical_resultid JOIN app_version av ON av.id = r.app_version_id JOIN platform p ON p.id = av.platformid WHERE w.name LIKE 'usnm_quality_qetext%'" > "$Q/hosts.tsv.new" || exit 1
