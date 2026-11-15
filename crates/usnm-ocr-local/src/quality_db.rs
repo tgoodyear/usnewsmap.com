@@ -332,7 +332,7 @@ impl QeLocWriter {
             .await
             .context("marking quality.qe_loc_scores rows invalid");
         task.abort();
-        Ok(n?)
+        n
     }
 }
 
