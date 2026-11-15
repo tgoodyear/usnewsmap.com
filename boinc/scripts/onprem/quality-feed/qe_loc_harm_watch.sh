@@ -2,11 +2,14 @@
 # Host-side companion of qe_loc_extract.sh (runs as root on pve-big, systemd service): writes
 # CTL/harm while pve-big is harmed and removes it when it clears. Harmed means io full
 # avg60 above 75 for 5 minutes (20 samples 15 s apart), a new "blocked for more than" kernel message,
-# or more than 30 tasks in D state. Usage: qe_loc_harm_watch.sh CTL
+# or more than 30 tasks in D state. Usage: qe_loc_harm_watch.sh --ctl DIR
 # CTL is a directory only root can write (the extractors in CT 211 read it, never write): the
 # watcher is root on the host and must not follow links planted by the container's user.
 set -u
-state=$1; [ "$(stat -c %u "$state")" = 0 ] && [ -z "$(find "$state" -maxdepth 0 -perm /022)" ] || { echo "$state must be root-owned and not group or world writable" >&2; exit 2; }
+state=
+while [ $# -gt 0 ]; do case "$1" in
+  --ctl) state=$2; shift 2;; *) echo "unknown $1" >&2; exit 2;; esac; done
+[ -n "$state" ] && [ "$(stat -c %u "$state")" = 0 ] && [ -z "$(find "$state" -maxdepth 0 -perm /022)" ] || { echo "$state must be root-owned and not group or world writable" >&2; exit 2; }
 hot=0; msgs=$(dmesg | grep -c 'blocked for more than'); clear=0
 while :; do
   a=$(sed -n 's/^full avg10=[0-9.]* avg60=\([0-9]*\).*/\1/p' /proc/pressure/io)
