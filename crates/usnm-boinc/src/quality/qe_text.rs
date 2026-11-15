@@ -24,8 +24,8 @@ use usnm_core::ids::PageKey;
 use usnm_ocr_contract::{
     boinc::sha256,
     qe_text::{
-        QeTextJob, QeTextPage, QeTextResult, JOB_FILE, MAX_JOB, MAX_PAGES, MAX_RESULT, NO_WORDS,
-        RESULT_FILE, SOURCE_NONE, SOURCE_PAGE, SOURCE_TITLE, VERSION,
+        is_spot, QeTextJob, QeTextPage, QeTextResult, JOB_FILE, MAX_JOB, MAX_PAGES, MAX_RESULT,
+        NO_WORDS, RESULT_FILE, SOURCE_NONE, SOURCE_PAGE, SOURCE_TITLE, VERSION,
     },
 };
 
@@ -233,16 +233,36 @@ pub fn stage(o: &StageOptions) -> anyhow::Result<StageSummary> {
     Ok(s)
 }
 
-pub fn workunit(job: &QeTextJob) -> String {
-    format!("usnm_quality_qetext_{}", job.id)
+/// A unit's attempt: how many times it has been sent again after its host failed a spot check.
+fn attempt(unit: &Path) -> u32 {
+    std::fs::read_to_string(unit.join("resend"))
+        .ok()
+        .and_then(|t| t.trim().parse().ok())
+        .unwrap_or(0)
 }
 
-pub fn create_work_args(job: &QeTextJob) -> Vec<String> {
+/// The workunit of a unit's attempt, and of its replica on a second host (`spot` 1, 2, ...:
+/// a replica that lands on the same host is sent again under the next number).
+pub fn workunit_of(job: &QeTextJob, attempt: u32, spot: u32) -> String {
+    let base = if attempt == 0 {
+        job.id.clone()
+    } else {
+        format!("{}-r{attempt}", job.id)
+    };
+    match spot {
+        0 => format!("usnm_quality_qetext_{base}"),
+        n => format!("usnm_quality_qetextspot{n}_{base}"),
+    }
+}
+
+pub fn create_work_args(job: &QeTextJob, wu_name: &str) -> Vec<String> {
+    // One result is enough (quorum 1): the validator checks the result against the unit's
+    // pages, and 3 in 100 units are replicated on a second host and compared.
     let mut args: Vec<String> = [
         "--appname",
         super::APP,
         "--wu_name",
-        &workunit(job),
+        wu_name,
         "--wu_template",
         if job.qe.is_some() {
             "templates/usnm_quality_qetext_in"
@@ -252,15 +272,15 @@ pub fn create_work_args(job: &QeTextJob) -> Vec<String> {
         "--result_template",
         "templates/usnm_quality_qetext_out",
         "--min_quorum",
-        "2",
+        "1",
         "--target_nresults",
-        "2",
+        "1",
         "--max_error_results",
         "3",
         "--max_total_results",
         "4",
         "--max_success_results",
-        "3",
+        "1",
         "--rsc_fpops_est",
         "1e13",
         "--rsc_fpops_bound",
@@ -291,6 +311,43 @@ pub fn physical_names(job: &QeTextJob) -> Vec<(String, &'static str)> {
 #[derive(Debug, Default, Serialize)]
 pub struct SubmitSummary {
     pub submitted: u64,
+    pub spot_replicas: u64,
+}
+
+/// Where the validator finds a unit's manifest: `<project>/qetext/jobs/<id>.json`.
+pub fn manifest_path(project: &Path, id: &str) -> PathBuf {
+    project.join("qetext/jobs").join(format!("{id}.json"))
+}
+
+async fn create_work(project: &Path, job: &QeTextJob, wu: &str) -> anyhow::Result<()> {
+    let status = tokio::process::Command::new(project.join("bin/create_work"))
+        .current_dir(project)
+        .args(create_work_args(job, wu))
+        .status()
+        .await?;
+    ensure!(status.success(), "create_work failed for {wu}");
+    Ok(())
+}
+
+/// Sends one unit's input files and workunit; a spot replica shares the input files.
+async fn send(
+    project: &Path,
+    unit: &Path,
+    job: &QeTextJob,
+    wu: &str,
+    files: bool,
+) -> anyhow::Result<()> {
+    if files {
+        for (physical, file) in physical_names(job) {
+            crate::assess::submit::stage_file(
+                project,
+                &physical,
+                &read(&unit.join(file), MAX_JOB)?,
+            )
+            .await?;
+        }
+    }
+    create_work(project, job, wu).await
 }
 
 pub async fn submit(
@@ -307,13 +364,33 @@ pub async fn submit(
         .collect();
     names.sort();
     for unit in names {
+        let job: QeTextJob = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB)?)?;
+        // A replica asked for by the collector (the first landed on the same host).
+        let want_spot = std::fs::read_to_string(unit.join("spot-wanted"))
+            .ok()
+            .and_then(|t| t.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        let spot_sent = std::fs::read_to_string(unit.join("spot-sent"))
+            .ok()
+            .and_then(|t| t.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        if unit.join("submitted").exists() && want_spot > spot_sent {
+            create_work(
+                &project,
+                &job,
+                &workunit_of(&job, attempt(&unit), want_spot),
+            )
+            .await?;
+            atomic(&unit.join("spot-sent"), want_spot.to_string().as_bytes())?;
+            s.spot_replicas += 1;
+            continue;
+        }
         if s.submitted as usize >= max_units {
-            break;
+            continue;
         }
         if unit.join("submitted").exists() || unit.join("submitting").exists() {
             continue;
         }
-        let job: QeTextJob = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB)?)?;
         job.validate()?;
         if let Some(qe) = &job.qe {
             ensure!(
@@ -325,39 +402,54 @@ pub async fn submit(
                 job.id
             );
         }
-        atomic(&unit.join("submitting"), workunit(&job).as_bytes())?;
-        for (physical, file) in physical_names(&job) {
-            crate::assess::submit::stage_file(
-                &project,
-                &physical,
-                &read(&unit.join(file), MAX_JOB)?,
-            )
-            .await?;
+        let n = attempt(&unit);
+        let wu = workunit_of(&job, n, 0);
+        atomic(&unit.join("submitting"), wu.as_bytes())?;
+        // The validator's copy of what the unit holds, before any result can come back.
+        let m = manifest_path(&project, &job.id);
+        std::fs::create_dir_all(m.parent().expect("has a parent"))?;
+        atomic(&m, &serde_json::to_vec(&job.manifest())?)?;
+        send(&project, &unit, &job, &wu, true).await?;
+        if is_spot(&job.id) {
+            send(&project, &unit, &job, &workunit_of(&job, n, 1), false).await?;
+            atomic(&unit.join("spot-wanted"), b"1")?;
+            atomic(&unit.join("spot-sent"), b"1")?;
+            s.spot_replicas += 1;
         }
-        let status = tokio::process::Command::new(project.join("bin/create_work"))
-            .current_dir(&project)
-            .args(create_work_args(&job))
-            .status()
-            .await?;
-        ensure!(
-            status.success(),
-            "create_work failed for {}; {} is uncertain until checked",
-            workunit(&job),
-            unit.display()
-        );
         std::fs::rename(unit.join("submitting"), unit.join("submitted"))?;
         s.submitted += 1;
     }
     Ok(s)
 }
 
-/// The rows of one unit's result, from the values it reported.
+/// `wu_name<TAB>host_id<TAB>app version`, one line per canonical result, exported from the BOINC
+/// database:
+/// `SELECT w.name, r.hostid, CONCAT(av.version_num, ' ', p.name) FROM workunit w JOIN result r
+///  ON r.id = w.canonical_resultid JOIN app_version av ON av.id = r.app_version_id JOIN platform p
+///  ON p.id = av.platformid WHERE w.name LIKE 'usnm_quality_qetext%'`.
+pub fn read_hosts(path: &Path) -> anyhow::Result<BTreeMap<String, (i64, String)>> {
+    let mut out = BTreeMap::new();
+    for line in std::fs::read_to_string(path)?.lines() {
+        let mut f = line.splitn(3, '\t');
+        if let (Some(wu), Some(host), Some(app)) = (f.next(), f.next(), f.next()) {
+            if let Ok(host) = host.parse() {
+                out.insert(wu.to_owned(), (host, app.trim().to_owned()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The rows of one unit's result, from the values it reported, for the host that computed them.
 pub fn rows_of(
     job: &QeTextJob,
     result: &QeTextResult,
+    host: &(i64, String),
 ) -> anyhow::Result<Vec<usnm_ocr_local::quality_db::QeLocScore>> {
     use usnm_ocr_local::quality_db::QeLocScore;
     result.check(job)?;
+    result.check_manifest(&job.manifest())?;
+    ensure!(!host.1.is_empty(), "no app version for host {}", host.0);
     let mut out = Vec::with_capacity(result.rows.len());
     for (row, page) in result.rows.iter().zip(&job.pages) {
         if let Some(q) = &row.qe {
@@ -388,6 +480,8 @@ pub fn rows_of(
             no_words: row.qe.as_ref().map(|q| q.no_words),
             words: row.qe.as_ref().map(|q| q.words as i64),
             null_reason,
+            host_id: host.0,
+            app_version: host.1.clone(),
         });
     }
     Ok(out)
@@ -399,11 +493,72 @@ pub struct CollectSummary {
     pub units_pending: u64,
     pub units_failed: u64,
     pub rows_new: u64,
+    pub spot_checked: u64,
+    pub spot_same_host: u64,
+    pub hosts_failed: Vec<i64>,
+    pub units_resent: u64,
+}
+
+fn read_result(spool: &Path, wu: &str) -> anyhow::Result<Option<QeTextResult>> {
+    let file = spool.join(format!("{wu}__file_{RESULT_FILE}"));
+    if !file.exists() {
+        return Ok(None);
+    }
+    Ok(Some(serde_json::from_slice(&read(&file, MAX_RESULT)?)?))
+}
+
+/// What a spot check says about a unit.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Spot {
+    /// The replica has not come back (or its host is not exported yet).
+    Waiting,
+    /// Both ran on one host: send another replica.
+    SameHost,
+    Agree,
+    /// The hosts disagree; neither is trusted.
+    Disagree(i64, i64),
+}
+
+pub fn spot_verdict(
+    first: &(QeTextResult, (i64, String)),
+    replica: Option<&(QeTextResult, (i64, String))>,
+) -> Spot {
+    let Some(replica) = replica else {
+        return Spot::Waiting;
+    };
+    if first.1 .0 == replica.1 .0 {
+        return Spot::SameHost;
+    }
+    match first.0.spot_agrees(&replica.0) {
+        Ok(()) => Spot::Agree,
+        Err(_) => Spot::Disagree(first.1 .0, replica.1 .0),
+    }
+}
+
+/// Sends every unit a failed host computed again: its markers go, its attempt number goes up.
+fn resend_units(root: &Path, bad: &[i64]) -> anyhow::Result<u64> {
+    let mut n = 0;
+    for e in std::fs::read_dir(units(root))? {
+        let unit = e?.path();
+        let Ok(host) = std::fs::read_to_string(unit.join("collected")) else {
+            continue;
+        };
+        if host.trim().parse::<i64>().is_ok_and(|h| bad.contains(&h)) {
+            let next = attempt(&unit) + 1;
+            for m in ["collected", "submitted", "spot-wanted", "spot-sent"] {
+                let _ = std::fs::remove_file(unit.join(m));
+            }
+            atomic(&unit.join("resend"), next.to_string().as_bytes())?;
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 pub async fn collect(
     root: &Path,
     spool: &Path,
+    hosts: &BTreeMap<String, (i64, String)>,
     writer: Option<&usnm_ocr_local::quality_db::QeLocWriter>,
     batch: usize,
 ) -> anyhow::Result<CollectSummary> {
@@ -415,43 +570,84 @@ pub async fn collect(
         .collect();
     dirs.sort();
     let mut pending_rows = Vec::new();
-    let mut pending_units = Vec::new();
+    let mut pending_units: Vec<(PathBuf, i64)> = Vec::new();
+    let mut bad: Vec<i64> = Vec::new();
     for unit in dirs {
         let job: QeTextJob = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB)?)?;
-        let wu = workunit(&job);
+        let n = attempt(&unit);
+        let wu = workunit_of(&job, n, 0);
         if spool.join(format!("{wu}_error")).exists()
             || spool.join(format!("{wu}_no_output_files")).exists()
         {
             s.units_failed += 1;
             continue;
         }
-        let file = spool.join(format!("{wu}__file_{RESULT_FILE}"));
-        if !file.exists() {
+        let (Some(result), Some(host)) = (read_result(spool, &wu)?, hosts.get(&wu)) else {
             s.units_pending += 1;
             continue;
+        };
+        let first = (result, host.clone());
+        if is_spot(&job.id) {
+            let wanted = std::fs::read_to_string(unit.join("spot-wanted"))
+                .ok()
+                .and_then(|t| t.trim().parse::<u32>().ok())
+                .unwrap_or(1);
+            let rwu = workunit_of(&job, n, wanted);
+            let replica = match (read_result(spool, &rwu)?, hosts.get(&rwu)) {
+                (Some(r), Some(h)) => Some((r, h.clone())),
+                _ => None,
+            };
+            match spot_verdict(&first, replica.as_ref()) {
+                Spot::Waiting => {
+                    s.units_pending += 1;
+                    continue;
+                }
+                Spot::SameHost => {
+                    s.spot_same_host += 1;
+                    atomic(
+                        &unit.join("spot-wanted"),
+                        (wanted + 1).to_string().as_bytes(),
+                    )?;
+                    s.units_pending += 1;
+                    continue;
+                }
+                Spot::Disagree(a, b) => {
+                    bad.extend([a, b]);
+                    continue;
+                }
+                Spot::Agree => s.spot_checked += 1,
+            }
         }
-        let result: QeTextResult = serde_json::from_slice(&read(&file, MAX_RESULT)?)?;
-        pending_rows.extend(rows_of(&job, &result)?);
-        pending_units.push(unit);
+        pending_rows.extend(rows_of(&job, &first.0, &first.1)?);
+        pending_units.push((unit, first.1 .0));
         if pending_rows.len() >= batch {
             flush(writer, &mut pending_rows, &mut pending_units, batch, &mut s).await?;
         }
     }
     flush(writer, &mut pending_rows, &mut pending_units, batch, &mut s).await?;
+    if !bad.is_empty() {
+        bad.sort_unstable();
+        bad.dedup();
+        if let Some(w) = writer {
+            w.mark_invalid(&bad).await?;
+            s.units_resent = resend_units(root, &bad)?;
+        }
+        s.hosts_failed = bad;
+    }
     Ok(s)
 }
 
 async fn flush(
     writer: Option<&usnm_ocr_local::quality_db::QeLocWriter>,
     rows: &mut Vec<usnm_ocr_local::quality_db::QeLocScore>,
-    units: &mut Vec<PathBuf>,
+    units: &mut Vec<(PathBuf, i64)>,
     batch: usize,
     s: &mut CollectSummary,
 ) -> anyhow::Result<()> {
     if let Some(w) = writer {
         s.rows_new += w.insert(rows, batch).await?;
-        for u in units.iter() {
-            atomic(&u.join("collected"), b"")?;
+        for (u, host) in units.iter() {
+            atomic(&u.join("collected"), host.to_string().as_bytes())?;
         }
     }
     s.units_collected += units.len() as u64;
@@ -570,5 +766,154 @@ mod tests {
         assert_eq!(sum.by_source[SOURCE_PAGE], 1);
         assert_eq!(sum.by_source[SOURCE_NONE], 1);
         assert_eq!(stage(&o).unwrap().already, 2);
+    }
+
+    fn job_of(n: usize) -> QeTextJob {
+        let mut j = QeTextJob {
+            v: VERSION,
+            id: String::new(),
+            archive: "x_ver01.tar.bz2".into(),
+            group: GROUP.into(),
+            lock: "a".repeat(64),
+            language: None,
+            pages: (1..=n)
+                .map(|i| QeTextPage {
+                    doc_id: format!("sn1_1900-01-01_ed-1_seq-{i}"),
+                    language_source: SOURCE_NONE.into(),
+                    text: "text".into(),
+                })
+                .collect(),
+            qe: None,
+        };
+        j.id = j.identity().unwrap();
+        j
+    }
+
+    fn result_for(j: &QeTextJob) -> QeTextResult {
+        QeTextResult {
+            v: VERSION,
+            id: j.id.clone(),
+            rows: j
+                .pages
+                .iter()
+                .map(|p| usnm_ocr_contract::qe_text::QeTextRow {
+                    doc_id: p.doc_id.clone(),
+                    qe: None,
+                    null_reason: Some(usnm_ocr_contract::qe_text::NO_LANGUAGE.into()),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn units_are_sent_for_one_result_and_rows_name_their_host() {
+        let j = job_of(2);
+        let args = create_work_args(&j, &workunit_of(&j, 0, 0));
+        let at = |k: &str| {
+            args.iter()
+                .position(|a| a == k)
+                .map(|i| args[i + 1].clone())
+        };
+        assert_eq!(at("--min_quorum").as_deref(), Some("1"));
+        assert_eq!(at("--target_nresults").as_deref(), Some("1"));
+        assert_ne!(workunit_of(&j, 0, 0), workunit_of(&j, 0, 1));
+        assert_ne!(workunit_of(&j, 0, 0), workunit_of(&j, 1, 0));
+        let rows = rows_of(&j, &result_for(&j), &(42, "1.5 x86_64-pc-linux-gnu".into())).unwrap();
+        assert!(rows
+            .iter()
+            .all(|r| r.host_id == 42 && r.app_version == "1.5 x86_64-pc-linux-gnu"));
+        assert!(rows_of(&j, &result_for(&j), &(42, String::new())).is_err());
+        // A result with a page missing is not turned into rows.
+        let mut short = result_for(&j);
+        short.rows.pop();
+        assert!(rows_of(&j, &short, &(42, "1.5 p".into())).is_err());
+    }
+
+    #[test]
+    fn a_spot_check_compares_two_hosts() {
+        let j = job_of(1);
+        let a = (result_for(&j), (1, "1.5 linux".to_owned()));
+        assert_eq!(spot_verdict(&a, None), Spot::Waiting);
+        let same = (result_for(&j), (1, "1.5 linux".to_owned()));
+        assert_eq!(spot_verdict(&a, Some(&same)), Spot::SameHost);
+        let other = (result_for(&j), (2, "1.5 windows".to_owned()));
+        assert_eq!(spot_verdict(&a, Some(&other)), Spot::Agree);
+        let mut bad = other.clone();
+        bad.0.rows[0].null_reason = Some("no_resource_file".into());
+        assert_eq!(spot_verdict(&a, Some(&bad)), Spot::Disagree(1, 2));
+    }
+
+    #[test]
+    fn a_failed_host_has_its_units_sent_again_under_a_new_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ids = vec![];
+        for (n, host) in [(1usize, "7"), (2, "8")] {
+            let j = job_of(n);
+            let unit = units(tmp.path()).join(&j.id);
+            std::fs::create_dir_all(&unit).unwrap();
+            for m in ["submitted", "spot-sent"] {
+                std::fs::write(unit.join(m), "1").unwrap();
+            }
+            std::fs::write(unit.join("collected"), host).unwrap();
+            ids.push((j, unit));
+        }
+        assert_eq!(resend_units(tmp.path(), &[7]).unwrap(), 1);
+        let (j, unit) = &ids[0];
+        assert!(!unit.join("submitted").exists() && !unit.join("collected").exists());
+        assert_eq!(attempt(unit), 1);
+        assert_eq!(
+            workunit_of(j, attempt(unit), 0),
+            format!("usnm_quality_qetext_{}-r1", j.id)
+        );
+        // The other host's unit stays collected.
+        assert!(ids[1].1.join("collected").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn submit_sends_the_manifest_and_a_replica_of_a_spot_unit() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join("bin")).unwrap();
+        let log = tmp.path().join("created");
+        for (name, body) in [
+            (
+                "dir_hier_path",
+                "#!/bin/sh\nprintf 'download/%s\\n' \"$1\"\n".to_owned(),
+            ),
+            (
+                "create_work",
+                format!("#!/bin/sh\necho \"$@\" >> {}\n", log.display()),
+            ),
+        ] {
+            let p = project.join("bin").join(name);
+            std::fs::write(&p, body).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // Find a page count whose unit is a spot unit and one that is not.
+        let spot = (1..200).map(job_of).find(|j| is_spot(&j.id)).unwrap();
+        let plain = (1..200).map(job_of).find(|j| !is_spot(&j.id)).unwrap();
+        for j in [&spot, &plain] {
+            let unit = units(tmp.path()).join(&j.id);
+            std::fs::create_dir_all(&unit).unwrap();
+            std::fs::write(unit.join(JOB_FILE), serde_json::to_vec(j).unwrap()).unwrap();
+        }
+        let s = submit(tmp.path(), &project, 10).await.unwrap();
+        assert_eq!((s.submitted, s.spot_replicas), (2, 1));
+        let created = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            created.lines().count(),
+            3,
+            "two units and one replica: {created}"
+        );
+        assert!(created.contains("usnm_quality_qetextspot1_"));
+        for j in [&spot, &plain] {
+            let m: usnm_ocr_contract::qe_text::QeTextManifest = serde_json::from_slice(
+                &std::fs::read(manifest_path(&project.canonicalize().unwrap(), &j.id)).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(m, j.manifest());
+        }
     }
 }

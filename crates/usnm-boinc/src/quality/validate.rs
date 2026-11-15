@@ -74,8 +74,18 @@ pub fn load_text(
     Ok((r, read(&files[1], MAX_DIAG)?))
 }
 
-fn check_text(files: &[PathBuf], keep: Option<&Path>) -> anyhow::Result<()> {
+/// A text-only result is accepted only when it has exactly its unit's pages: with `jobs`, the
+/// directory `submit` writes the manifests to, its page count and doc ids must equal the
+/// unit's input, and a result with no manifest is refused.
+fn check_text(files: &[PathBuf], keep: Option<&Path>, jobs: Option<&Path>) -> anyhow::Result<()> {
     let (r, diag) = load_text(files)?;
+    if let Some(jobs) = jobs {
+        let m: usnm_ocr_contract::qe_text::QeTextManifest = serde_json::from_slice(
+            &read(&jobs.join(format!("{}.json", r.id)), 1 << 20)
+                .with_context(|| format!("no manifest for unit {}", r.id))?,
+        )?;
+        r.check_manifest(&m)?;
+    }
     if let Some(dir) = keep {
         let to = dir.join(result_name(&files[0])?);
         std::fs::create_dir_all(&to)?;
@@ -89,8 +99,17 @@ fn check_text(files: &[PathBuf], keep: Option<&Path>) -> anyhow::Result<()> {
 }
 
 pub fn check(files: &[PathBuf], keep: Option<&Path>) -> anyhow::Result<()> {
+    check_jobs(files, keep, None)
+}
+
+/// As [`check`]; text-only results are also checked against their unit's manifest in `jobs`.
+pub fn check_jobs(
+    files: &[PathBuf],
+    keep: Option<&Path>,
+    jobs: Option<&Path>,
+) -> anyhow::Result<()> {
     if files.len() == 2 {
-        return check_text(files, keep);
+        return check_text(files, keep, jobs);
     }
     let l = load(files)?;
     if let Some(dir) = keep {
@@ -182,6 +201,35 @@ mod tests {
         let (a, b) = (files("a", &r), files("b", &r));
         check(&a, None).unwrap();
         compare(&a, &b, None).unwrap();
+        // With a manifest directory, the result must have exactly the unit's pages.
+        let jobs = tmp.path().join("jobs");
+        std::fs::create_dir_all(&jobs).unwrap();
+        let manifest = |id: &str, pages: usize, doc_ids: &[&str]| {
+            let m = usnm_ocr_contract::qe_text::QeTextManifest {
+                id: id.into(),
+                pages,
+                doc_ids_sha256: usnm_ocr_contract::boinc::sha256(doc_ids.join("\n").as_bytes()),
+            };
+            std::fs::write(
+                jobs.join(format!("{id}.json")),
+                serde_json::to_vec(&m).unwrap(),
+            )
+            .unwrap();
+        };
+        assert!(
+            check_jobs(&a, None, Some(&jobs)).is_err(),
+            "no manifest: refused"
+        );
+        manifest(&r.id, 1, &["sn1_1900-01-01_ed-1_seq-1"]);
+        check_jobs(&a, None, Some(&jobs)).unwrap();
+        manifest(
+            &r.id,
+            2,
+            &["sn1_1900-01-01_ed-1_seq-1", "sn1_1900-01-01_ed-1_seq-2"],
+        );
+        assert!(check_jobs(&a, None, Some(&jobs)).is_err(), "a page missing");
+        manifest(&r.id, 1, &["sn1_1900-01-01_ed-1_seq-9"]);
+        assert!(check_jobs(&a, None, Some(&jobs)).is_err(), "another page");
         let mut other = r.clone();
         other.rows[0].null_reason = Some("no_resource_file".into());
         assert!(compare(&a, &files("c", &other), None).is_err());

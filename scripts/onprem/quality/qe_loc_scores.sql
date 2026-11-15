@@ -5,8 +5,8 @@
 --
 --   psql -v ON_ERROR_STOP=1 -d usnm_quality -f qe_loc_scores.sql
 --
--- Append-only and unique on (doc_id, qe_version): a page is scored once for each measure
--- version, and a later version is a new row beside it. Rows are written only from the units'
+-- Append-only (the writer may only set `invalid`) and unique on (doc_id, qe_version) among valid
+-- rows: a page is scored once for each measure version, and a later version is a new row beside it. Rows are written only from the units'
 -- own reported values (`usnm-boinc quality qe-text-collect`, as quality_text_writer).
 
 CREATE TABLE IF NOT EXISTS quality.qe_loc_scores (
@@ -28,11 +28,23 @@ CREATE TABLE IF NOT EXISTS quality.qe_loc_scores (
   no_words        boolean,
   words           bigint,
   scored_at       timestamptz NOT NULL DEFAULT now(),
+  -- The BOINC host that computed the row and the app version it ran, so a host that fails a
+  -- spot check can have all its rows marked invalid and its units sent again.
+  host_id         bigint      NOT NULL,
+  app_version     text        NOT NULL,
+  -- Set only by `usnm-boinc quality qe-text-collect` when a spot check fails the row's host.
+  invalid         boolean     NOT NULL DEFAULT false,
   -- Why there are no measures: no_language, no_resource_file, or no_words.
   null_reason     text CHECK (null_reason IN ('no_language', 'no_resource_file', 'no_words')),
-  PRIMARY KEY (doc_id, qe_version)
+  CHECK (btrim(app_version) <> '')
 );
+-- One valid row for a page and measure version. A row of a failed host is marked invalid and
+-- the page's unit is scored again, so the new row sits beside it.
+CREATE UNIQUE INDEX IF NOT EXISTS qe_loc_scores_valid
+  ON quality.qe_loc_scores (doc_id, qe_version) WHERE NOT invalid;
+CREATE INDEX IF NOT EXISTS qe_loc_scores_host ON quality.qe_loc_scores (host_id);
 CREATE INDEX IF NOT EXISTS qe_loc_scores_archive ON quality.qe_loc_scores (archive);
 
 GRANT SELECT ON quality.qe_loc_scores TO quality_loader, quality_text_writer, quality_reader;
 GRANT INSERT ON quality.qe_loc_scores TO quality_text_writer;
+GRANT UPDATE (invalid) ON quality.qe_loc_scores TO quality_text_writer;
