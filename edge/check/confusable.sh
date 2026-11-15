@@ -3,7 +3,7 @@
 # Run by hand from the operator's machine, after the fix is live. It reads the admin token from Key Vault and keeps it
 # off the command line.
 #
-#   edge/check/confusable.sh --vault NAME --action mark|reopen --tasks FILE [--reason confusable_display|merged_line] [--site URL]
+#   edge/check/confusable.sh --vault NAME --action mark|reopen|hold|release --tasks FILE [--reason SLUG] [--site URL]
 #
 # FILE has one task id per line (blank lines and lines starting with # are skipped). `mark` sets each task's existing
 # answers aside (kept, in answers_excluded, and excluded from settling and every figure), keeps a settled task's old
@@ -14,6 +14,11 @@
 # merged_line (README.md says when that is refused). The reply lists what changed, what
 # didn't and what isn't a task. With --reason merged_line the script fails if the reply does not echo that reason, which
 # is what a Worker from before migration 0005 would do (it would mark the tasks confusable_display).
+#
+# `hold --reason SLUG` (lower-case letters, digits, hyphens; at most 40) only takes each task out of the queue: its answers,
+# counts and outcome stay as they are (README.md, "Taking words out of the queue without a mark"). `release` undoes a hold
+# and nothing else, and does nothing to a marked task. A task already held or marked is left alone by `hold`. The script
+# fails if the reply does not echo the action (and, for hold, the reason), which is what an older Worker would do.
 set -euo pipefail
 VAULT="" ACTION="" TASKS="" REASON="" SITE=https://check.usnewsmap.com
 while [ $# -gt 0 ]; do
@@ -26,9 +31,10 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
-[[ $VAULT =~ ^[a-z0-9-]+$ ]] && [[ $ACTION =~ ^(mark|reopen)$ ]] && [ -f "$TASKS" ] && [[ $SITE =~ ^https://[a-z0-9.-]+$ ]] \
-  && [[ -z $REASON || ( $ACTION == mark && $REASON =~ ^(confusable_display|merged_line)$ ) ]] \
-  || { echo "usage: $0 --vault NAME --action mark|reopen --tasks FILE [--reason confusable_display|merged_line (mark only)] [--site URL]" >&2; exit 2; }
+[[ $VAULT =~ ^[a-z0-9-]+$ ]] && [[ $ACTION =~ ^(mark|reopen|hold|release)$ ]] && [ -f "$TASKS" ] && [[ $SITE =~ ^https://[a-z0-9.-]+$ ]] \
+  && [[ -z $REASON || ( $ACTION == mark && $REASON =~ ^(confusable_display|merged_line)$ ) || ( $ACTION == hold && $REASON =~ ^[a-z0-9-]{1,40}$ ) ]] \
+  && [[ $ACTION != hold || -n $REASON ]] \
+  || { echo "usage: $0 --vault NAME --action mark|reopen|hold|release --tasks FILE [--reason confusable_display|merged_line (mark) | SLUG (hold, required)] [--site URL]" >&2; exit 2; }
 
 TOKEN=$(az keyvault secret show --vault-name "$VAULT" -n usnm-prod-check-admin-token --query value -o tsv)
 [ -n "$TOKEN" ] || { echo "no admin token in $VAULT" >&2; exit 1; }
@@ -46,9 +52,12 @@ PY
 curl -fsS -X POST --max-time 120 -H "@$work/header" -H "content-type: application/json" --data-binary "@$work/body.json" "$SITE/admin/confusable" > "$work/reply.json"
 cat "$work/reply.json"
 echo
-if [ -n "$REASON" ] && [ "$REASON" != confusable_display ]; then
-  python3 - "$REASON" "$work/reply.json" <<'PY' || { echo "the site did not echo reason $REASON: it may predate migration 0005 and its Worker; the tasks may be marked confusable_display" >&2; exit 1; }
+if [ "$ACTION" = hold ] || [ "$ACTION" = release ] || { [ -n "$REASON" ] && [ "$REASON" != confusable_display ]; }; then
+  python3 - "$ACTION" "$REASON" "$work/reply.json" <<'PY' || { echo "the site did not echo action $ACTION${REASON:+ and reason $REASON}: its Worker may be older than this script (before migration 0005, or before hold); nothing may have been done as asked" >&2; exit 1; }
 import json, sys
-sys.exit(0 if json.load(open(sys.argv[2])).get("reason") == sys.argv[1] else 1)
+action, reason, path = sys.argv[1:4]
+reply = json.load(open(path))
+ok = reply.get("action") == action and (action == "release" or reply.get("reason") == reason)
+sys.exit(0 if ok else 1)
 PY
 fi

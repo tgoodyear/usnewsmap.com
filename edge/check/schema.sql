@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   mark_reason TEXT CHECK (mark_reason IN ('confusable_display', 'merged_line')),  -- why the task was marked and its answers set aside; NULL if never marked (a task marked before migrations/0005-mark-reason.sql has confusable_display = 1 and NULL here)
   outcome_withdrawn TEXT,         -- the outcome a settled task had when it was marked; outcome is NULL from then on
   withdrawn_reason TEXT,          -- the mark_reason it was withdrawn for
-  withdrawn_at INTEGER            -- unix milliseconds
+  withdrawn_at INTEGER,           -- unix milliseconds
+  hold_reason TEXT                -- why a task is held without a mark (action hold): a slug of lower-case letters, digits and hyphens; NULL otherwise
 );
 CREATE INDEX IF NOT EXISTS tasks_open ON tasks (lang, settled, n);
 

@@ -251,7 +251,7 @@ async function api(request, env, url) {
   if (p === "/api/export" && request.method === "GET") {
     const l = lang(url);
     const rows = await env.DB.prepare(
-      `SELECT t.id, t.set_name, t.body, t.outcome, t.settled, t.confusable_display, t.held, t.mark_reason, t.outcome_withdrawn, t.withdrawn_reason, t.withdrawn_at,
+      `SELECT t.id, t.set_name, t.body, t.outcome, t.settled, t.confusable_display, t.held, t.mark_reason, t.outcome_withdrawn, t.withdrawn_reason, t.withdrawn_at, t.hold_reason,
          SUM(a.choice = 'a') AS a, SUM(a.choice = 'b') AS b, SUM(a.choice = 'neither') AS neither, SUM(a.choice = 'unsure') AS unsure,
          SUM(a.choice = 'notext') AS notext,
          SUM(a.font = 'loaded') AS f_loaded, SUM(a.font = 'not_loaded') AS f_not_loaded, SUM(a.font = 'none') AS f_none, SUM(a.font = 'unknown') AS f_unknown,
@@ -299,6 +299,9 @@ async function api(request, env, url) {
         // (a task marked before reasons existed is confusable_display). `held` is true until the word is reopened for new answers,
         // which only a confusable_display word can be.
         ...(reasonOf(r) ? { mark_reason: reasonOf(r), ...(reasonOf(r) === "confusable_display" ? { confusable_display: true } : {}), held: !!r.held, excluded_counts: excluded.get(r.id) || { a: 0, b: 0, neither: 0, unsure: 0, notext: 0 }, excluded_font_counts: excludedFonts.get(r.id) || fontCounts({}), excluded_names_counts: excludedNames.get(r.id) || namesCounts({}) } : {}),
+        // A word held without a mark (README.md, "Taking words out of the queue without a mark"): its answers, counts and outcome
+        // are as before, in `counts` and `settled`; it only takes no new answers. `hold_reason` is the slug.
+        ...(!reasonOf(r) && holdOf(r) ? { held: true, hold_reason: holdOf(r) } : {}),
         // The outcome a settled word had when it was marked: it no longer counts as checked text, and `settled` above is false.
         ...(r.outcome_withdrawn ? { outcome_withdrawn: r.outcome_withdrawn, withdrawn_reason: r.withdrawn_reason, withdrawn_at: r.withdrawn_at } : {}),
         settled: !!r.settled, outcome: r.outcome,
@@ -392,6 +395,14 @@ const MARKABLE = `((confusable_display = 0 AND mark_reason IS NULL)
       AND NOT (settled = 1 AND outcome_withdrawn IS NOT NULL)
       AND NOT EXISTS (SELECT 1 FROM answers a JOIN answers_excluded x ON x.task_id = a.task_id AND x.contributor = a.contributor
                        WHERE a.task_id = ?1 AND (x.choice <> a.choice OR x.at <> a.at))))`;
+// A held-only word (action "hold") has held = 1, no mark (confusable_display = 0, mark_reason NULL) and hold_reason set to the
+// slug. holdOf gives the slug or null.
+export const HOLD_REASON = /^[a-z0-9-]{1,40}$/;
+export const holdOf = (r) => (r.held && !r.confusable_display && !r.mark_reason && r.hold_reason ? r.hold_reason : null);
+export const HOLD_SQL = `UPDATE tasks SET held = 1, hold_reason = ?2
+  WHERE id = ?1 AND held = 0 AND confusable_display = 0 AND mark_reason IS NULL`;
+export const RELEASE_HOLD_SQL = `UPDATE tasks SET held = 0, hold_reason = NULL
+  WHERE id = ?1 AND held = 1 AND confusable_display = 0 AND mark_reason IS NULL AND hold_reason IS NOT NULL`;
 export const reasonOf = (r) => r.mark_reason || (r.confusable_display ? "confusable_display" : null);
 // [sql, which of (id, reason, at) it binds, in the order of its ?1, ?2, ?3]
 export const MARK_SQL = [
@@ -406,7 +417,7 @@ export const MARK_SQL = [
   [`UPDATE tasks SET mark_reason = ?2, confusable_display = CASE WHEN ?2 = 'confusable_display' THEN 1 ELSE 0 END, held = 1,
        outcome_withdrawn = CASE WHEN settled = 1 THEN outcome ELSE outcome_withdrawn END, withdrawn_reason = CASE WHEN settled = 1 THEN ?2 ELSE withdrawn_reason END,
        withdrawn_at = CASE WHEN settled = 1 THEN ?3 ELSE withdrawn_at END,
-       n = 0, settled = 0, outcome = NULL
+       hold_reason = NULL, n = 0, settled = 0, outcome = NULL
      WHERE id = ?1 AND ${MARKABLE}`, ["id", "reason", "at"]],
 ];
 export const markStatements = (id, reason = "confusable_display", at = Date.now()) => MARK_SQL.map(([sql, uses]) => [sql, uses.map((u) => ({ id, reason, at })[u])]);
@@ -423,7 +434,7 @@ export async function confusable(env, action, ids, reason = "confusable_display"
     const rows = await env.DB.prepare(`SELECT id, confusable_display, held FROM tasks WHERE id IN (${part.map(() => "?").join(",")})`).bind(...part).all();
     for (const r of rows.results) found.set(r.id, r);
   }
-  const out = { action, ...(action === "mark" ? { reason } : {}), requested: ids.length, changed: [], unchanged: [], missing: ids.filter((i) => !found.has(i)) };
+  const out = { action, ...(action === "mark" || action === "hold" ? { reason } : {}), requested: ids.length, changed: [], unchanged: [], missing: ids.filter((i) => !found.has(i)) };
   for (const id of ids) {
     if (!found.has(id)) continue;
     // changed or not is what the guarded UPDATE did, not what was read above
@@ -431,6 +442,10 @@ export async function confusable(env, action, ids, reason = "confusable_display"
     if (action === "mark") {
       const res = await env.DB.batch(markStatements(id, reason, at).map(([sql, args]) => env.DB.prepare(sql).bind(...args)));
       changes = res[res.length - 1].meta.changes;
+    } else if (action === "hold") {
+      changes = (await env.DB.prepare(HOLD_SQL).bind(id, reason).run()).meta.changes;
+    } else if (action === "release") {
+      changes = (await env.DB.prepare(RELEASE_HOLD_SQL).bind(id).run()).meta.changes;
     } else {
       changes = (await env.DB.prepare(REOPEN_CONFUSABLE_SQL).bind(id).run()).meta.changes;
     }
@@ -535,8 +550,12 @@ async function admin(request, env, url) {
   if (p === "/admin/confusable" && request.method === "POST") {
     const b = await body(request, 200000);
     const ids = Array.isArray(b.tasks) ? [...new Set(b.tasks)] : [];
-    if ((b.action !== "mark" && b.action !== "reopen") || !ids.length || ids.length > 500 || ids.some((i) => typeof i !== "string" || !i || i.length > 300)) {
-      throw new HttpError(400, 'body wants {"action": "mark" or "reopen", "tasks": [1 to 500 task ids], "reason": optional "confusable_display" or "merged_line"}');
+    if (!["mark", "reopen", "hold", "release"].includes(b.action) || !ids.length || ids.length > 500 || ids.some((i) => typeof i !== "string" || !i || i.length > 300)) {
+      throw new HttpError(400, 'body wants {"action": "mark", "reopen", "hold" or "release", "tasks": [1 to 500 task ids], "reason": optional "confusable_display" or "merged_line" for mark, a required slug for hold}');
+    }
+    if (b.action === "hold") {
+      if (typeof b.reason !== "string" || !HOLD_REASON.test(b.reason)) throw new HttpError(400, "hold wants a reason: lower-case letters, digits and hyphens, at most 40 characters");
+      return json(await confusable(env, "hold", ids, b.reason));
     }
     const reason = b.reason === undefined ? "confusable_display" : b.reason;
     if (!MARK_REASONS.includes(reason)) throw new HttpError(400, `reason is one of ${MARK_REASONS.join(", ")}`);

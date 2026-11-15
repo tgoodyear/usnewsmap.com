@@ -70,6 +70,14 @@ class Score(unittest.TestCase):
         self.assertEqual(rep["score"]["resolved"]["lines"], 1)
         self.assertEqual(sum(v["excluded"] for v in rep["by_kind"].values()), 2)
 
+    def test_a_held_only_word_is_scored_as_before(self):
+        """A word held without a mark (action hold): the export adds held and hold_reason, and its counts and outcome are read as usual."""
+        held = {**self.export[2], "held": True, "hold_reason": "reference-mismatch-v1"}
+        export = self.export[:2] + [held] + self.export[3:]
+        before = {r["id"]: (r["state"], r["answers"]) for r in cds.line_states(self.manifest, self.export)}
+        after = {r["id"]: (r["state"], r["answers"]) for r in cds.line_states(self.manifest, export)}
+        self.assertEqual(after, before)
+
     def test_font_counts_in_the_export_change_nothing(self):
         """The export also has font_counts (and excluded_font_counts): how many answers had the bundled font loaded. Scoring ignores them."""
         fonts = {"loaded": 1, "not_loaded": 0, "none": 0, "unknown": 2}
