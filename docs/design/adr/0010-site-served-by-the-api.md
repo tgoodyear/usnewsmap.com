@@ -30,6 +30,7 @@ The API app (`ca-usnm-{env}`) serves the built SPA from its own image. `USNM_SIT
 - **Routing and headers are code.**
   - Paths with no file behind them (app routes) get `index.html`. The app's pages (`/` and `/status`) are 200. Other paths get the same shell with a 404, and the app shows a not-found page. Missing files are 404.
   - Requests for `www.usnewsmap.com` get a 301 to `https://usnewsmap.com` with the same path and query (`USNM_SITE_HOST`).
+  - With `USNM_API_HOST` set, `api.usnewsmap.com` serves only the API, `/mcp`, the probes, `robots.txt` and `/.well-known/`; every other path gets a 308 to the same path on the apex, so search engines index one host.
   - Search permalinks (`/?q=…`) and `/status` send `X-Robots-Tag: noindex`. `robots.txt`, `sitemap.xml` and the IndexNow key file are static files in `web/public`.
   - Unknown `/v1` paths stay RFC 9457 problems.
   - Hashed assets are cached for a year, and `index.html` is revalidated on each load.

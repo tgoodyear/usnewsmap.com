@@ -1142,6 +1142,103 @@ async fn www_redirects_to_the_apex() {
 }
 
 #[tokio::test]
+async fn api_host_redirects_site_paths_to_the_apex() {
+    let dir = site_dir("apihost");
+    std::fs::write(dir.join("robots.txt"), "User-agent: *\n").unwrap();
+    let mut cfg = config();
+    cfg.site_dir = Some(dir);
+    cfg.api_host = Some("api.usnewsmap.com".to_owned());
+    let s = Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ));
+    let cases = [
+        ("api.usnewsmap.com", "/", "https://usnewsmap.com/"),
+        (
+            "API.UsNewsMap.com:443",
+            "/search?q=%22cross+of+gold%22&from=1896-06-01",
+            "https://usnewsmap.com/search?q=%22cross+of+gold%22&from=1896-06-01",
+        ),
+        (
+            "api.usnewsmap.com",
+            "/status",
+            "https://usnewsmap.com/status",
+        ),
+        (
+            "api.usnewsmap.com",
+            "/mcp/extra",
+            "https://usnewsmap.com/mcp/extra",
+        ),
+        ("api.usnewsmap.com", "/v10", "https://usnewsmap.com/v10"),
+        (
+            "api.usnewsmap.com",
+            "/sitemap.xml",
+            "https://usnewsmap.com/sitemap.xml",
+        ),
+    ];
+    for (host, uri, location) in cases {
+        let resp = get_host(&s, host, uri).await;
+        assert_eq!(resp.status(), StatusCode::PERMANENT_REDIRECT, "{host}{uri}");
+        assert_eq!(header_str(resp.headers(), header::LOCATION), location);
+        assert_eq!(
+            header_str(resp.headers(), header::CACHE_CONTROL),
+            "public, max-age=300"
+        );
+    }
+    // The API surface and machine-facing files stay on the API host.
+    for uri in [
+        "/v1/meta",
+        "/api/v1/meta",
+        "/v1/nothing-here",
+        "/healthz",
+        "/readyz",
+        "/robots.txt",
+        "/mcp",
+        "/.well-known/security.txt",
+    ] {
+        let resp = get_host(&s, "api.usnewsmap.com", uri).await;
+        assert_ne!(resp.status(), StatusCode::PERMANENT_REDIRECT, "{uri}");
+    }
+    for uri in ["/v1/meta", "/healthz", "/robots.txt"] {
+        let resp = get_host(&s, "api.usnewsmap.com", uri).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{uri}");
+    }
+    // HTTP/2 puts the host in the URI.
+    let resp = get_site(&s, "https://api.usnewsmap.com/?x=1", None).await;
+    assert_eq!(resp.0, StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(
+        header_str(&resp.1, header::LOCATION),
+        "https://usnewsmap.com/?x=1"
+    );
+    // The apex, other hosts and a crafted Host are served, or redirect only to the apex.
+    for host in [
+        "usnewsmap.com",
+        "127.0.0.1:8080",
+        "api.usnewsmap.com.evil.test",
+    ] {
+        let resp = get_host(&s, host, "/").await;
+        assert_eq!(resp.status(), StatusCode::OK, "{host}");
+    }
+    let resp = get_host(&s, "api.usnewsmap.com", "//evil.test/x").await;
+    assert_eq!(resp.status(), StatusCode::PERMANENT_REDIRECT);
+    assert!(header_str(resp.headers(), header::LOCATION).starts_with("https://usnewsmap.com/"));
+}
+
+#[tokio::test]
+async fn api_host_unset_serves_the_site_everywhere() {
+    let mut cfg = config();
+    cfg.site_dir = Some(site_dir("apihost-unset"));
+    let s = Arc::new(AppState::new(
+        cfg,
+        Arc::new(fixture_backend()),
+        refdata().await,
+    ));
+    let resp = get_host(&s, "api.usnewsmap.com", "/").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn without_a_site_only_the_api_answers() {
     let s = state_with(None).await;
     let (status, _, _) = get_site(&s, "/", None).await;

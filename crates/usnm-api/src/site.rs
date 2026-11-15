@@ -934,31 +934,84 @@ async fn robots_tag(State(state): State<Arc<AppState>>, req: Request, next: Next
     resp
 }
 
-/// Redirects requests for `www.{host}` to `https://{host}`, keeping the path
-/// and query (301). `host` is the site's canonical hostname, lowercase.
-pub async fn www_redirect(State(host): State<Arc<str>>, req: Request, next: Next) -> Response {
-    // HTTP/2 carries the host in the URI's authority, HTTP/1.1 in `Host`.
-    let requested = req.uri().host().or_else(|| {
+/// The hostnames the redirect middleware compares against, lowercase.
+#[derive(Clone, Debug)]
+pub struct RedirectHosts {
+    /// The site's canonical hostname; the only host a redirect points at.
+    pub site: String,
+    /// The API hostname, when set: non-API paths on it redirect to `site`.
+    pub api: Option<String>,
+}
+
+/// The request's host without a port, from the URI (HTTP/2) or `Host`.
+fn requested_host(req: &Request) -> Option<&str> {
+    req.uri().host().or_else(|| {
         req.headers()
             .get(header::HOST)
             .and_then(|h| h.to_str().ok())
             .map(|h| h.split(':').next().unwrap_or(h))
-    });
+    })
+}
+
+/// Paths the API host keeps serving: the API, its probes, the MCP endpoint and
+/// the files crawlers and clients fetch from it.
+pub(crate) fn served_on_api_host(path: &str) -> bool {
+    let under = |prefix: &str| {
+        path == prefix
+            || path
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('/'))
+    };
+    under("/v1")
+        || under("/api/v1")
+        || crate::mcp::is_mcp_path(path)
+        || under("/.well-known")
+        || matches!(path, "/healthz" | "/readyz" | "/robots.txt")
+}
+
+/// Redirects requests for `www.{site}` to `https://{site}` (301), and, when an
+/// API host is set, requests on it for anything but the API surface (308),
+/// keeping the path and query. The target is always the configured site host,
+/// never the request's.
+pub async fn www_redirect(
+    State(hosts): State<Arc<RedirectHosts>>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let host = hosts.site.as_str();
+    // HTTP/2 carries the host in the URI's authority, HTTP/1.1 in `Host`.
+    let requested = requested_host(&req);
     let is_www = requested.is_some_and(|h| {
         let (h, host) = (h.as_bytes(), host.as_bytes());
         h.len() == host.len() + 4
             && h[..4].eq_ignore_ascii_case(b"www.")
             && h[4..].eq_ignore_ascii_case(host)
     });
-    if !is_www {
+    let is_api_page = !is_www
+        && hosts.api.as_deref().is_some_and(|api| {
+            requested.is_some_and(|h| h.eq_ignore_ascii_case(api))
+                && !served_on_api_host(req.uri().path())
+        });
+    if !is_www && !is_api_page {
         return next.run(req).await;
     }
     let path = req.uri().path_and_query().map_or("/", |p| p.as_str());
     let location = format!("https://{host}{path}");
     match HeaderValue::from_str(&location) {
-        Ok(location) => (
+        Ok(location) if is_www => (
             StatusCode::MOVED_PERMANENTLY,
             [(header::LOCATION, location)],
+        )
+            .into_response(),
+        Ok(location) => (
+            StatusCode::PERMANENT_REDIRECT,
+            [
+                (header::LOCATION, location),
+                (
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("public, max-age=300"),
+                ),
+            ],
         )
             .into_response(),
         Err(_) => (StatusCode::BAD_REQUEST, "bad request").into_response(),

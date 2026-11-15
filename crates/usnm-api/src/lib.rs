@@ -369,7 +369,10 @@ pub fn app(state: Arc<AppState>) -> Router {
         .fallback(|| async { ApiError::NotFound("no such endpoint".to_owned()) });
 
     let site = state.config.site_dir.clone();
-    let site_host: Arc<str> = state.config.site_host.as_str().into();
+    let hosts = Arc::new(site::RedirectHosts {
+        site: state.config.site_host.clone(),
+        api: state.config.api_host.clone(),
+    });
     let mut router = Router::new()
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(routes::readyz))
@@ -383,10 +386,7 @@ pub fn app(state: Arc<AppState>) -> Router {
     }
     router = router.merge(mcp::router(state.clone()));
     // Inside the header layers, so redirects carry the security headers too.
-    router = router.layer(middleware::from_fn_with_state(
-        site_host,
-        site::www_redirect,
-    ));
+    router = router.layer(middleware::from_fn_with_state(hosts, site::www_redirect));
     for (name, value) in site::SECURITY_HEADERS {
         router = router.layer(SetResponseHeaderLayer::if_not_present(
             header::HeaderName::from_static(name),

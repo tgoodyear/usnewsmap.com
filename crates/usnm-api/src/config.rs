@@ -134,6 +134,11 @@ pub struct Config {
     /// The site's canonical hostname: requests for `www.` + this host are
     /// redirected to `https://` + this host.
     pub site_host: String,
+    /// The API's hostname (`USNM_API_HOST`, unset by default). When set, a
+    /// request on it for anything but the API surface (`/v1`, `/api/v1`,
+    /// `/mcp`, `/healthz`, `/readyz`, `/robots.txt`, `/.well-known/`) gets a
+    /// 308 to the same path on `site_host`.
+    pub api_host: Option<String>,
     /// Cosmos DB endpoint of the pipeline state, read-only for `/v1/status`
     /// (the same variable the ingest jobs use).
     pub cosmos_endpoint: Option<String>,
@@ -318,6 +323,9 @@ impl Config {
             site_host: var("USNM_SITE_HOST")
                 .unwrap_or_else(|| "usnewsmap.com".to_owned())
                 .to_ascii_lowercase(),
+            api_host: var("USNM_API_HOST")
+                .map(|h| h.trim().to_ascii_lowercase())
+                .filter(|h| !h.is_empty()),
             cosmos_endpoint: var("USNM_COSMOS_ENDPOINT"),
             state_file: var("USNM_STATE_FILE").map(PathBuf::from),
             status_refresh: Duration::from_secs(num("USNM_STATUS_REFRESH_SECS", 60)?.max(1)),
@@ -394,6 +402,11 @@ mod tests {
         // Past the startup warm-up's budget, so a start is ready when it's warm.
         assert_eq!(c.ready_cap, Duration::from_secs(360));
         assert_eq!(c.site_host, "usnewsmap.com");
+        assert!(c.api_host.is_none());
+        let api =
+            Config::from_lookup(|k| (k == "USNM_API_HOST").then(|| " API.Example.test ".into()))
+                .unwrap();
+        assert_eq!(api.api_host.as_deref(), Some("api.example.test"));
         assert!(c.ingest_cron.is_none());
         assert!(c.search_log_url.is_none());
         assert!(c.sitemap_state_url().is_none());

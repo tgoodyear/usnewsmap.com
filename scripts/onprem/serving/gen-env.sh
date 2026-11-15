@@ -119,6 +119,8 @@ trap 'rm -f "$API_ENV"' EXIT
     fi
   fi
   echo "USNM_ALLOWED_ORIGINS=https://$ZONE,https://www.$ZONE"
+  echo "USNM_SITE_HOST=$ZONE"
+  echo "USNM_API_HOST=api.$ZONE"
   echo "USNM_TRUST_CF_CONNECTING_IP=true"
   echo "USNM_TRUSTED_PROXY_HOPS=0"
   echo "USNM_READY_REQUIRES_PUBLISHED_INDEXES=true"
@@ -190,7 +192,7 @@ if $CHECK_APP; then
     | ($onprem | split("\n") | map(select(length > 0) | capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): .v}) | add) as $o
     | ["USNM_QUICKWIT_URL", "USNM_RESPONSE_CACHE_URL", "USNM_SITEMAP_STATE_URL", "USNM_COMPUTE_CONCURRENCY", "USNM_TRUSTED_PROXY_HOPS", "USNM_PREWARM_STARTUP_BUDGET_SECS", "USNM_READY_CAP_SECS"] as $differ
     | (["AZURE_CLIENT_ID", "USNM_SITEMAP_GENERATE"] + (if $production then [] else ["USNM_SEARCH_LOG_URL", "USNM_OCR_REQUESTS_URL"] end)) as $azure_only
-    | ["IDENTITY_ENDPOINT", "IMDS_ENDPOINT", "USNM_SITEMAP_STATE_URL", "USNM_TRUST_CF_CONNECTING_IP", "USNM_READY_REQUIRES_PUBLISHED_INDEXES"] as $onprem_only
+    | ["IDENTITY_ENDPOINT", "IMDS_ENDPOINT", "USNM_SITEMAP_STATE_URL", "USNM_TRUST_CF_CONNECTING_IP", "USNM_READY_REQUIRES_PUBLISHED_INDEXES", "USNM_API_HOST", "USNM_SITE_HOST"] as $onprem_only
     | ($a | keys) as $ak | ($o | keys) as $ok
     | [($ak - $ok - $azure_only)[] as $k | "\($k): only in the Azure app (\($a[$k]))"]
     + [($ok - $ak - $onprem_only)[] as $k | "\($k): only here (\($o[$k]))"]
