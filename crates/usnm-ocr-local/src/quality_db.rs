@@ -204,6 +204,109 @@ impl HoldsWriter {
     }
 }
 
+/// One page's row of `quality.qe_loc_scores` (the `qe-loc-v1` text-only run).
+#[derive(Debug, Clone, PartialEq)]
+pub struct QeLocScore {
+    pub doc_id: String,
+    pub archive: String,
+    pub language: Option<String>,
+    pub language_source: String,
+    pub qe_version: String,
+    pub resources_lock: String,
+    pub oov: Option<f64>,
+    pub charlm_bpc: Option<f64>,
+    pub lm_oov: Option<f64>,
+    pub known3: Option<i64>,
+    pub no_words: Option<bool>,
+    pub words: Option<i64>,
+    pub null_reason: Option<String>,
+}
+
+/// The environment variable naming the DSN file of the role that writes
+/// `quality.qe_loc_scores` (`quality_text_writer`, INSERT only).
+pub const QE_WRITER_DSN_FILE_ENV: &str = "USNM_QUALITY_QE_WRITER_DSN_FILE";
+
+/// Writes `quality.qe_loc_scores`, in batches, never changing a row already there.
+pub struct QeLocWriter {
+    config: tokio_postgres::Config,
+    tls: tokio_postgres_rustls::MakeRustlsConnect,
+    label: String,
+}
+
+impl QeLocWriter {
+    pub fn from_env() -> anyhow::Result<Self> {
+        match std::env::var(QE_WRITER_DSN_FILE_ENV) {
+            Ok(path) if !path.trim().is_empty() => Self::from_file(path.trim()),
+            _ => bail!("{QE_WRITER_DSN_FILE_ENV} is not set: writing qe scores needs the writer's DSN file"),
+        }
+    }
+
+    pub fn from_file(path: &str) -> anyhow::Result<Self> {
+        let dsn = std::fs::read_to_string(path)
+            .with_context(|| format!("reading the qe writer DSN file `{path}`"))?;
+        let (mut config, tls, label) = usnm_store::pgmq::connection_options(dsn.trim())
+            .with_context(|| format!("the qe writer DSN file `{path}`"))?;
+        config
+            .application_name("usnm-qe-loc-collect")
+            .connect_timeout(Duration::from_secs(15));
+        Ok(Self { config, tls, label })
+    }
+
+    /// Inserts the rows in one statement a batch of `batch` rows; returns how many were new.
+    pub async fn insert(&self, rows: &[QeLocScore], batch: usize) -> anyhow::Result<u64> {
+        let (client, connection) = self
+            .config
+            .connect(self.tls.clone())
+            .await
+            .with_context(|| format!("connecting to {}", self.label))?;
+        let task = tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let mut new = 0;
+        for chunk in rows.chunks(batch.max(1)) {
+            let col = |f: fn(&QeLocScore) -> String| chunk.iter().map(f).collect::<Vec<_>>();
+            let opt =
+                |f: fn(&QeLocScore) -> Option<String>| chunk.iter().map(f).collect::<Vec<_>>();
+            let n = client
+                .execute(
+                    "INSERT INTO quality.qe_loc_scores \
+                     (doc_id, archive, language, language_source, qe_version, resources_lock, \
+                      oov, charlm_bpc, lm_oov, known3, no_words, words, null_reason) \
+                     SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], \
+                      $6::text[], $7::float8[], $8::float8[], $9::float8[], $10::int8[], $11::bool[], \
+                      $12::int8[], $13::text[]) \
+                     ON CONFLICT (doc_id, qe_version) DO NOTHING",
+                    &[
+                        &col(|r| r.doc_id.clone()),
+                        &col(|r| r.archive.clone()),
+                        &opt(|r| r.language.clone()),
+                        &col(|r| r.language_source.clone()),
+                        &col(|r| r.qe_version.clone()),
+                        &col(|r| r.resources_lock.clone()),
+                        &chunk.iter().map(|r| r.oov).collect::<Vec<_>>(),
+                        &chunk.iter().map(|r| r.charlm_bpc).collect::<Vec<_>>(),
+                        &chunk.iter().map(|r| r.lm_oov).collect::<Vec<_>>(),
+                        &chunk.iter().map(|r| r.known3).collect::<Vec<_>>(),
+                        &chunk.iter().map(|r| r.no_words).collect::<Vec<_>>(),
+                        &chunk.iter().map(|r| r.words).collect::<Vec<_>>(),
+                        &opt(|r| r.null_reason.clone()),
+                    ],
+                )
+                .await
+                .context("inserting into quality.qe_loc_scores");
+            match n {
+                Ok(n) => new += n,
+                Err(e) => {
+                    task.abort();
+                    return Err(e);
+                }
+            }
+        }
+        task.abort();
+        Ok(new)
+    }
+}
+
 /// One live row of `quality.excluded_qwen_readings`: a `usnm_qwen` unit (its
 /// `job_id`), or one crop of it, whose readings stay out of the quality tables
 /// until the unit is re-read.

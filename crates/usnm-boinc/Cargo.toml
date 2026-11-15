@@ -34,6 +34,8 @@ parquet.workspace = true
 quick-xml.workspace = true
 base64.workspace = true
 bytes.workspace = true
+bzip2.workspace = true
+tar.workspace = true
 chrono.workspace = true
 clap.workspace = true
 # PNM too: the line re-read decodes the test image crate's scans (#1621).

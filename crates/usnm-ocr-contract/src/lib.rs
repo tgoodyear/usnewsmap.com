@@ -37,6 +37,9 @@ pub mod surya;
 /// app `usnm_quality`.
 pub mod quality;
 
+/// Text-only units that measure LoC's own text with the quality measure.
+pub mod qe_text;
+
 /// File-based jobs for the vision-language readings on BOINC (#522): the
 /// GPU app `usnm_qwen`, with its CPU fallback.
 pub mod qwen;

@@ -325,6 +325,58 @@ pub enum QualityCommands {
         #[arg(long)]
         decode: bool,
     },
+    /// Read one bulk OCR archive once and write each page's LoC text as JSON lines (qe-loc-v1).
+    QeTextExtract {
+        #[arg(long)]
+        archive: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Make text-only qe units from an extract: one language a unit, with `qe.bin` when the lock
+    /// pins one for it.
+    QeTextStage {
+        #[arg(long)]
+        extract: PathBuf,
+        /// The archive's file name, e.g. ak_albatross_ver01.tar.bz2.
+        #[arg(long)]
+        archive: String,
+        /// doc_id<TAB>lang lines: `quality.pages.lang`, the detected language.
+        #[arg(long)]
+        languages: PathBuf,
+        /// JSON object: LCCN to the title's MARC language codes (the reference store's
+        /// titles.json, as `quality sample` reads it).
+        #[arg(long)]
+        title_languages: Option<PathBuf>,
+        #[arg(long)]
+        qe_dir: PathBuf,
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long, default_value_t = 5000)]
+        pages_per_unit: usize,
+    },
+    /// Hand staged text-only qe units to create_work, two results each.
+    QeTextSubmit {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long)]
+        project: PathBuf,
+        #[arg(long, default_value_t = 100)]
+        max_units: usize,
+    },
+    /// Write `quality.qe_loc_scores` from the canonical results of text-only qe units. Writes
+    /// with the DSN file in `USNM_QUALITY_QE_WRITER_DSN_FILE`.
+    QeTextCollect {
+        #[arg(long)]
+        root: PathBuf,
+        /// Where the assimilator keeps the canonical results.
+        #[arg(long)]
+        spool: PathBuf,
+        /// Check the results and count the rows; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, default_value_t = 5000)]
+        batch: usize,
+    },
     /// Print a Markdown table of the kept results and the logged pairs.
     Summary {
         #[arg(long)]
@@ -431,6 +483,52 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             })
             .await?;
             eprintln!("{s:?}");
+        }
+        QualityCommands::QeTextExtract { archive, out } => {
+            let s = x::qe_text::extract(&archive, &out)?;
+            eprintln!("{}", serde_json::to_string(&s)?);
+        }
+        QualityCommands::QeTextStage {
+            extract,
+            archive,
+            languages,
+            title_languages,
+            qe_dir,
+            root,
+            pages_per_unit,
+        } => {
+            let s = x::qe_text::stage(&x::qe_text::StageOptions {
+                extract,
+                archive,
+                languages,
+                title_languages,
+                qe_dir,
+                root,
+                pages_per_unit,
+            })?;
+            eprintln!("{}", serde_json::to_string(&s)?);
+        }
+        QualityCommands::QeTextSubmit {
+            root,
+            project,
+            max_units,
+        } => {
+            let s = x::qe_text::submit(&root, &project, max_units).await?;
+            eprintln!("{}", serde_json::to_string(&s)?);
+        }
+        QualityCommands::QeTextCollect {
+            root,
+            spool,
+            dry_run,
+            batch,
+        } => {
+            let writer = if dry_run {
+                None
+            } else {
+                Some(usnm_ocr_local::quality_db::QeLocWriter::from_env()?)
+            };
+            let s = x::qe_text::collect(&root, &spool, writer.as_ref(), batch).await?;
+            eprintln!("{}", serde_json::to_string(&s)?);
         }
         QualityCommands::Submit {
             members,
