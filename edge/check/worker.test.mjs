@@ -421,7 +421,7 @@ test("migration 0002 only adds, so the Worker from before it still runs on the m
   const fresh = new DatabaseSync(":memory:");
   fresh.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
   // (without the font, names_shown and mark columns, which migrations 0003, 0004 and 0005 add)
-  const shape = (d) => ["tasks", "answers_excluded"].map((t) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('${t}') WHERE name NOT IN ('font', 'names_shown', 'mark_reason', 'outcome_withdrawn', 'withdrawn_reason', 'withdrawn_at') ORDER BY name`).all().map((r) => ({ ...r })));
+  const shape = (d) => ["tasks", "answers_excluded"].map((t) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('${t}') WHERE name NOT IN ('font', 'names_shown', 'mark_reason', 'outcome_withdrawn', 'withdrawn_reason', 'withdrawn_at', 'hold_reason') ORDER BY name`).all().map((r) => ({ ...r })));
   assert.deepEqual(shape(db), shape(fresh));
 });
 
@@ -488,7 +488,7 @@ test("migration 0003 only adds, so the Worker from before it still runs on the m
   // the schema.sql a new database gets has the same columns as the migrated one
   const fresh = new DatabaseSync(":memory:");
   fresh.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
-  const shape = (d) => ["tasks", "answers", "answers_excluded"].map((t) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('${t}') WHERE name NOT IN ('names_shown', 'mark_reason', 'outcome_withdrawn', 'withdrawn_reason', 'withdrawn_at') ORDER BY name`).all().map((r) => ({ ...r })));
+  const shape = (d) => ["tasks", "answers", "answers_excluded"].map((t) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('${t}') WHERE name NOT IN ('names_shown', 'mark_reason', 'outcome_withdrawn', 'withdrawn_reason', 'withdrawn_at', 'hold_reason') ORDER BY name`).all().map((r) => ({ ...r })));
   assert.deepEqual(shape(db), shape(fresh));
   // and the new Worker's statements run on the migrated database once migration 0004 has added its column
   db.exec(readFileSync(new URL("./migrations/0004-answer-names.sql", import.meta.url), "utf8"));
@@ -562,7 +562,7 @@ test("migration 0004 only adds, so the Worker from before it still runs on the m
   // the schema.sql a new database gets has the same columns as the migrated one
   const fresh = new DatabaseSync(":memory:");
   fresh.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
-  const shape = (d) => ["tasks", "answers", "answers_excluded"].map((t) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('${t}') WHERE name NOT IN ('mark_reason', 'outcome_withdrawn', 'withdrawn_reason', 'withdrawn_at') ORDER BY name`).all().map((r) => ({ ...r })));
+  const shape = (d) => ["tasks", "answers", "answers_excluded"].map((t) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('${t}') WHERE name NOT IN ('mark_reason', 'outcome_withdrawn', 'withdrawn_reason', 'withdrawn_at', 'hold_reason') ORDER BY name`).all().map((r) => ({ ...r })));
   assert.deepEqual(shape(db), shape(fresh));
   // and the new Worker's statements run on the migrated database
   const { ANSWER_SQL } = await import("./worker.mjs");
@@ -786,15 +786,15 @@ test("holding a task keeps its answers, counts and outcome, takes it out of the 
   assert.deepEqual(held, { action: "hold", reason: "reference-mismatch-v1", requested: 5, changed: ["chr/s/1", "chr/s/2"], unchanged: ["chr/s/3", "chr/s/4"], missing: ["chr/s/missing"] });
   // only held and the reason changed; answers, counts, outcome, settled and everything else did not
   for (const [k, id] of [[1, "chr/s/1"], [2, "chr/s/2"]]) {
-    assert.deepEqual({ ...full(id), held: 0, withdrawn_reason: null }, beforeTask[k]);
-    assert.deepEqual([full(id).held, full(id).withdrawn_reason], [1, "hold:reference-mismatch-v1"]);
+    assert.deepEqual({ ...full(id), held: 0, hold_reason: null }, beforeTask[k]);
+    assert.deepEqual([full(id).held, full(id).hold_reason, full(id).withdrawn_reason], [1, "reference-mismatch-v1", null]);
   }
   assert.deepEqual(answers(), beforeAnswers);
   assert.deepEqual(db.prepare("SELECT * FROM answers_excluded ORDER BY task_id, contributor").all().map((r) => ({ ...r })), excludedBefore);
   // a second hold, even with another reason, changes nothing
   const again = await (await adminCall(DB, "/admin/confusable", { action: "hold", reason: "other-reason", tasks: ["chr/s/1"] })).json();
   assert.deepEqual([again.changed, again.unchanged], [[], ["chr/s/1"]]);
-  assert.equal(full("chr/s/1").withdrawn_reason, "hold:reference-mismatch-v1");
+  assert.equal(full("chr/s/1").hold_reason, "reference-mismatch-v1");
 
   // the queue skips it; an answer gets the 409; the totals are unchanged
   const fresh = await signSession(env.SESSION_KEY, "fresh");

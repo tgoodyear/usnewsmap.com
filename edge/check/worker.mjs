@@ -251,7 +251,7 @@ async function api(request, env, url) {
   if (p === "/api/export" && request.method === "GET") {
     const l = lang(url);
     const rows = await env.DB.prepare(
-      `SELECT t.id, t.set_name, t.body, t.outcome, t.settled, t.confusable_display, t.held, t.mark_reason, t.outcome_withdrawn, t.withdrawn_reason, t.withdrawn_at,
+      `SELECT t.id, t.set_name, t.body, t.outcome, t.settled, t.confusable_display, t.held, t.mark_reason, t.outcome_withdrawn, t.withdrawn_reason, t.withdrawn_at, t.hold_reason,
          SUM(a.choice = 'a') AS a, SUM(a.choice = 'b') AS b, SUM(a.choice = 'neither') AS neither, SUM(a.choice = 'unsure') AS unsure,
          SUM(a.choice = 'notext') AS notext,
          SUM(a.font = 'loaded') AS f_loaded, SUM(a.font = 'not_loaded') AS f_not_loaded, SUM(a.font = 'none') AS f_none, SUM(a.font = 'unknown') AS f_unknown,
@@ -395,14 +395,14 @@ const MARKABLE = `((confusable_display = 0 AND mark_reason IS NULL)
       AND NOT (settled = 1 AND outcome_withdrawn IS NOT NULL)
       AND NOT EXISTS (SELECT 1 FROM answers a JOIN answers_excluded x ON x.task_id = a.task_id AND x.contributor = a.contributor
                        WHERE a.task_id = ?1 AND (x.choice <> a.choice OR x.at <> a.at))))`;
-// A held-only word (action "hold") has held = 1, no mark (confusable_display = 0, mark_reason NULL) and withdrawn_reason
-// `hold:<slug>`. No column is added: withdrawn_reason is otherwise set only on a marked word. holdOf gives the slug or null.
+// A held-only word (action "hold") has held = 1, no mark (confusable_display = 0, mark_reason NULL) and hold_reason set to the
+// slug. holdOf gives the slug or null.
 export const HOLD_REASON = /^[a-z0-9-]{1,40}$/;
-export const holdOf = (r) => (r.held && !r.confusable_display && !r.mark_reason && typeof r.withdrawn_reason === "string" && r.withdrawn_reason.startsWith("hold:") ? r.withdrawn_reason.slice(5) : null);
-export const HOLD_SQL = `UPDATE tasks SET held = 1, withdrawn_reason = 'hold:' || ?2
+export const holdOf = (r) => (r.held && !r.confusable_display && !r.mark_reason && r.hold_reason ? r.hold_reason : null);
+export const HOLD_SQL = `UPDATE tasks SET held = 1, hold_reason = ?2
   WHERE id = ?1 AND held = 0 AND confusable_display = 0 AND mark_reason IS NULL`;
-export const RELEASE_HOLD_SQL = `UPDATE tasks SET held = 0, withdrawn_reason = NULL
-  WHERE id = ?1 AND held = 1 AND confusable_display = 0 AND mark_reason IS NULL AND withdrawn_reason LIKE 'hold:%'`;
+export const RELEASE_HOLD_SQL = `UPDATE tasks SET held = 0, hold_reason = NULL
+  WHERE id = ?1 AND held = 1 AND confusable_display = 0 AND mark_reason IS NULL AND hold_reason IS NOT NULL`;
 export const reasonOf = (r) => r.mark_reason || (r.confusable_display ? "confusable_display" : null);
 // [sql, which of (id, reason, at) it binds, in the order of its ?1, ?2, ?3]
 export const MARK_SQL = [
@@ -417,7 +417,7 @@ export const MARK_SQL = [
   [`UPDATE tasks SET mark_reason = ?2, confusable_display = CASE WHEN ?2 = 'confusable_display' THEN 1 ELSE 0 END, held = 1,
        outcome_withdrawn = CASE WHEN settled = 1 THEN outcome ELSE outcome_withdrawn END, withdrawn_reason = CASE WHEN settled = 1 THEN ?2 ELSE withdrawn_reason END,
        withdrawn_at = CASE WHEN settled = 1 THEN ?3 ELSE withdrawn_at END,
-       n = 0, settled = 0, outcome = NULL
+       hold_reason = NULL, n = 0, settled = 0, outcome = NULL
      WHERE id = ?1 AND ${MARKABLE}`, ["id", "reason", "at"]],
 ];
 export const markStatements = (id, reason = "confusable_display", at = Date.now()) => MARK_SQL.map(([sql, uses]) => [sql, uses.map((u) => ({ id, reason, at })[u])]);
