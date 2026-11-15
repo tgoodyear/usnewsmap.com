@@ -52,6 +52,18 @@ impl QwenCheckpoint {
         {
             return None;
         }
+        if job.page_mode.is_some() {
+            // Regions finish in any order: each reading must be one of the job's, once.
+            let mut seen = std::collections::BTreeSet::new();
+            let known: std::collections::BTreeSet<&str> =
+                job.crops.iter().map(|c| c.id.as_str()).collect();
+            for got in &cp.readings {
+                if !known.contains(got.id.as_str()) || !seen.insert(got.id.as_str()) {
+                    return None;
+                }
+            }
+            return Some(cp);
+        }
         for (got, want) in cp.readings.iter().zip(&job.crops) {
             if got.id != want.id {
                 return None;
