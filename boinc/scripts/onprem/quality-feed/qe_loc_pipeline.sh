@@ -16,16 +16,20 @@
 #                           about 60 to 125 MB, sent once (quorum 1) plus 3% to a second host:
 #                           200 in flight is about 25 GB at most outstanding.
 #   --submit-per-run 60     new units an hour: about 7.5 GB an hour, 17 Mbit/s on average.
-#   --max-staged 120        shipped units waiting to be submitted, so the share holds about two
-#                           runs' worth ahead and no more.
-#   --min-free-gb 150       ships and submits nothing while CT 230's project share has less.
-#   --prune-days 14         a collected unit's files leave CT 230 after this (pve-big keeps them).
+#   --max-staged 60         shipped units waiting to be submitted, so the share holds about one
+#                           run's worth ahead and no more (about 6 GB).
+#   --min-free-gb 40        ships and submits nothing while CT 230's project share (270 GB, shared
+#                           with every other app) has less. In flight and staged units hold about
+#                           26 GB; a collected unit's download copy is deleted by the next run and
+#                           its staged files after --prune-days.
+#   --prune-days 2          a collected unit's staged files leave CT 230 after this (pve-big keeps
+#                           the units; one a resend needs again is shipped again).
 # Usage: qe_loc_pipeline.sh [--state DIR] [--ssh-host H] [--ct N] [--max-inflight N]
 #   [--submit-per-run N] [--max-staged N] [--min-free-gb N] [--prune-days N]
 # For tests: QE_LOC_SSH (the ssh command) and QE_LOC_NOW (epoch seconds) replace ssh and date.
 set -uo pipefail
 state=/tank/locstats/qeloc/state; host=pve.tjg.fyi; ct=230
-max_inflight=200; per_run=60; max_staged=120; min_free=150; prune_days=14
+max_inflight=200; per_run=60; max_staged=60; min_free=40; prune_days=2
 while [ $# -gt 0 ]; do case "$1" in
   --state) state=$2; shift 2;; --ssh-host) host=$2; shift 2;; --ct) ct=$2; shift 2;;
   --max-inflight) max_inflight=$2; shift 2;; --submit-per-run) per_run=$2; shift 2;;
