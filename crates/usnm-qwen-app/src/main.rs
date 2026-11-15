@@ -824,7 +824,9 @@ fn run_crops(
         cp.run_ms = 0;
         let _ = cp.save(work);
         page_slots = Some((end.slots, end.halvings + start_halvings));
-        match end.ending {
+        // A deadline or a stop that came after the last reading changes nothing.
+        let all_read = cp.readings.len() == l.job.crops.len();
+        match end.ending.filter(|_| !all_read) {
             None => {}
             Some(pagemode::Ending::Exit) => outcome = Outcome::Failed,
             Some(pagemode::Ending::Timeout(msg)) => {

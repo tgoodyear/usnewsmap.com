@@ -128,6 +128,7 @@ pub(crate) fn write_unit(
 
 /// A page-mode unit pinned to Xiaomi-OCR-0: `regions` regions of one page, each its own crop,
 /// with `slots` forced when given. Longer regions have longer LoC text.
+#[cfg(unix)]
 pub(crate) fn write_page_unit(dir: &Path, regions: usize, slots: Option<u32>) -> Job {
     use usnm_ocr_contract::qwen::{PageMode, Region};
     let mut job = write_xiaomi_unit(dir);

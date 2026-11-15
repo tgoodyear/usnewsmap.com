@@ -393,12 +393,28 @@ struct Feed<'a> {
 }
 
 /// Region indexes in the order to read them: longest LoC text first, so the last ones to finish
-/// are short and the slots do not sit idle at the end. Ties keep the unit's order.
+/// are short and the slots do not sit idle at the end. Ties keep the unit's order. In a bundle
+/// the pages go one after the other (in the unit's order) and each is longest first, since only
+/// one decoded page is kept at a time.
 pub(crate) fn longest_first(crops: &[Crop], done: &BTreeSet<&str>) -> Vec<usize> {
     let mut v: Vec<usize> = (0..crops.len())
         .filter(|&i| !done.contains(crops[i].id.as_str()))
         .collect();
-    v.sort_by_key(|&i| std::cmp::Reverse(crops[i].loc_text.chars().count()));
+    let mut pages: Vec<String> = Vec::new();
+    let mut rank = |id: &str| {
+        let doc = id.split_once(':').map_or("", |(d, _)| d);
+        pages.iter().position(|p| p == doc).unwrap_or_else(|| {
+            pages.push(doc.to_owned());
+            pages.len() - 1
+        })
+    };
+    let ranks: Vec<usize> = crops.iter().map(|c| rank(&c.id)).collect();
+    v.sort_by_key(|&i| {
+        (
+            ranks[i],
+            std::cmp::Reverse(crops[i].loc_text.chars().count()),
+        )
+    });
     v
 }
 
@@ -914,6 +930,14 @@ mod tests {
         assert_eq!(longest_first(&crops, &BTreeSet::new()), [1, 3, 0, 2]);
         let done: BTreeSet<&str> = ["b"].into();
         assert_eq!(longest_first(&crops, &done), [3, 0, 2]);
+        // A bundle reads its pages one after the other.
+        let bundle = [
+            c("p1:a", "xx"),
+            c("p2:a", "xxxxxx"),
+            c("p1:b", "xxxx"),
+            c("p2:b", "x"),
+        ];
+        assert_eq!(longest_first(&bundle, &BTreeSet::new()), [2, 0, 1, 3]);
     }
 
     /// A GGUF header with the keys the shape needs, and a string array like a tokenizer.
