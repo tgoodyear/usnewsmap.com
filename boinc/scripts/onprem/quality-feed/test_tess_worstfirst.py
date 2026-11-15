@@ -62,3 +62,13 @@ class Decide(unittest.TestCase):
 
     def test_exhausted(self):
         self.assertEqual(t.decide(self.cfg, self.st(wave_queued=0, exhausted=True), self.now, 0, None)[0], "stop")
+
+    def test_exhausted_mid_wave_stops(self):
+        self.assertEqual(t.decide(self.cfg, self.st(wave_queued=5000, exhausted=True), self.now, 0, None)[0], "stop")
+
+    def test_timeout_beats_queue_full(self):
+        old = self.st(wave_queued=10000, wave_skipped=0, outstanding=70000, wave_started="2026-10-01T00:00:00Z")
+        cfg = dict(self.cfg, wave_sizes=[100000])
+        self.assertEqual(t.decide(cfg, old, self.now, 100, None)[0], "idle")  # done, waiting for gain
+        g = {"pass_rate": 0.1, "median_gain": 1}
+        self.assertEqual(t.decide(cfg, old, self.now, 100, g)[0], "stop")

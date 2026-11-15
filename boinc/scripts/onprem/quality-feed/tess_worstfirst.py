@@ -192,15 +192,16 @@ def decide(cfg, st, now, published, gain):
         return "idle", "paused until " + cfg["rebuild_done_marker"] + " exists"
     n = st["wave"]
     target = wave_size(cfg, n)
-    if st["wave_queued"] + st["wave_skipped"] < target and not st.get("exhausted"):
+    if st.get("exhausted"):
+        return "stop", "no eligible pages left (wave %d had %d queued)" % (n, st["wave_queued"])
+    started = datetime.datetime.strptime(st["wave_started"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    age_days = (now - started).total_seconds() / 86400
+    timed_out = age_days >= cfg["max_wave_days"]
+    if st["wave_queued"] + st["wave_skipped"] < target and not timed_out:
         if st["outstanding"] >= cfg["max_outstanding"]:
             return "idle", "queue full: %d outstanding" % st["outstanding"]
         return "enqueue", "wave %d: %d of %d" % (n, st["wave_queued"] + st["wave_skipped"], target)
-    if st.get("exhausted") and st["wave_queued"] == 0:
-        return "stop", "no eligible pages left"
-    started = datetime.datetime.strptime(st["wave_started"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
-    age_days = (now - started).total_seconds() / 86400
-    done = published >= cfg["complete_fraction"] * max(st["wave_queued"], 1) or age_days >= cfg["max_wave_days"]
+    done = published >= cfg["complete_fraction"] * max(st["wave_queued"], 1) or timed_out
     if not done:
         return "idle", "wave %d: %d of %d queued pages published" % (n, published, st["wave_queued"])
     if gain is None:
@@ -231,7 +232,8 @@ def save_json(path, obj):
 def published_count(dsn, ids):
     total = 0
     for part in chunk(ids, 3000):
-        sql = ("SELECT count(DISTINCT doc_id) FROM quality.boinc_page_provenance "
+        sql = ("SELECT count(DISTINCT doc_id) FROM (SELECT doc_id FROM quality.boinc_page_provenance "
+               "UNION ALL SELECT doc_id FROM quality.ocr_outputs WHERE reader = 'ours-tesseract') x "
                "WHERE doc_id = ANY(string_to_array('%s', ','))" % ",".join(part))
         if not all(re.match(r"^[A-Za-z0-9._-]+$", i) for i in part):
             raise SystemExit("odd doc_id in wave file")
@@ -240,7 +242,8 @@ def published_count(dsn, ids):
 
 
 def enqueue(cfg, ids, campaign):
-    """Runs ocr-enqueue on this host. Returns (queued, skipped_outstanding) from its report."""
+    """Runs ocr-enqueue on this host. Returns the doc_ids it did not queue (outstanding already, or
+    not in the published version); the rest of `ids` are queued."""
     p = subprocess.run([cfg["ingest_run"], "--command", "ocr-enqueue", "--wait", "--nice", "19", "--",
                         "--pages", ",".join(ids), "--reason", "bulk", "--plan", campaign],
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=3600)
@@ -250,9 +253,11 @@ def enqueue(cfg, ids, campaign):
             report = json.loads(line)["fields"]
     if p.returncode or report is None:
         raise RuntimeError("ocr-enqueue failed (%s): %s" % (p.returncode, p.stdout[-400:]))
-    skipped = report.get("skipped", "")
-    m = re.search(r'"outstanding": (\d+)', skipped) or re.search(r"outstanding\W+(\d+)", skipped)
-    return int(report["queued"]), int(m.group(1)) if m else 0
+    skipped_ids = set()
+    for line in p.stdout.splitlines():
+        if '"page not queued"' in line:
+            skipped_ids.add(json.loads(line)["fields"]["doc_id"])
+    return skipped_ids
 
 
 def stop_self(cfg, state_dir, st, why, log):
@@ -300,7 +305,7 @@ def cmd_run(a):
     dsn = open(cfg["dsn_file"]).read().strip()
     published = published_count(dsn, wave_ids) if wave_ids else 0
     st["published"] = published
-    st["outstanding"] = st["wave_queued"] - published
+    st["outstanding"] = max(st["wave_queued"] - published, 0)
     gain = load_json(os.path.join(state_dir, "gain", st["campaign"] + ".json"), None)
     action, why = decide(cfg, st, now_utc(), published, gain)
 
@@ -319,24 +324,36 @@ def cmd_run(a):
         if args["top_n"] is None:  # a bounded read: the next page of the ranking
             sql += " LIMIT %d" % (len(seen) + want)
         rows = [r.split("\t") for r in psql(dsn, sql).splitlines() if r]
-        fresh = [r[1] for r in rows if r[1] not in seen][:want]
+        pending = os.path.join(state_dir, "pending.txt")
+        if os.path.exists(pending):  # a chunk whose send failed: send the same pages again first
+            fresh = open(pending).read().split()
+        else:
+            fresh = [r[1] for r in rows if r[1] not in seen][:want]
+            if fresh:
+                with open(pending, "w") as f:
+                    f.write("\n".join(fresh) + "\n")
         if not fresh:
             st["exhausted"] = True
             log("no eligible pages left past %d" % len(seen))
         else:
             try:
-                queued, skipped = enqueue(cfg, fresh, st["campaign"])
-            except Exception as e:  # nothing recorded: ocr-enqueue skips what went out as outstanding
+                skipped_ids = enqueue(cfg, fresh, st["campaign"])
+            except Exception as e:  # pending.txt stays: ocr-enqueue skips what already went out
                 log("enqueue failed: %s" % e)
                 save_json(sp, st)
                 sys.exit(1)
+            queued_ids = [i for i in fresh if i not in skipped_ids]
             with open(wave_file, "a") as f:
-                f.write("\n".join(fresh) + "\n")
-            st["wave_queued"] += queued
-            st["wave_skipped"] += skipped  # already queued by the seeder: read, but without the tag
-            st["outstanding"] = st["wave_queued"] - published
-            log("%s: queued %d, already outstanding %d (wave %d/%d)" % (
-                st["campaign"], queued, skipped, st["wave_queued"] + st["wave_skipped"], wave_size(cfg, st["wave"])))
+                f.write("".join(i + "\n" for i in queued_ids))
+            with open(wave_file[:-4] + ".skipped", "a") as f:
+                f.write("".join(i + "\n" for i in sorted(skipped_ids)))
+            os.remove(pending)
+            st["wave_queued"] += len(queued_ids)
+            st["wave_skipped"] += len(skipped_ids)  # already queued by the seeder, or not queueable: no campaign tag
+            st["outstanding"] = max(st["wave_queued"] - published, 0)
+            log("%s: queued %d, not queued %d (wave %d/%d)" % (
+                st["campaign"], len(queued_ids), len(skipped_ids),
+                st["wave_queued"] + st["wave_skipped"], wave_size(cfg, st["wave"])))
     elif action == "next_wave":
         with open(os.path.join(state_dir, "waves.jsonl"), "a") as f:
             f.write(json.dumps(dict(gain, campaign=st["campaign"], queued=st["wave_queued"],
