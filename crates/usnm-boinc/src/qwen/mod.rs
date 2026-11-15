@@ -5,6 +5,8 @@
 //!
 //! - [`stage`] cuts the crops of each staged `usnm_quality` page (the same
 //!   seed, so both apps agree on them) and writes one unit per page.
+//! - [`page_mode`] stages Xiaomi-OCR-0 page-mode units (#1998): every text region of a page,
+//!   from LoC's ALTO, small pages packed.
 //! - [`submit`] hands staged units to stock `create_work`, two results each.
 //! - [`work`] runs one unit on a volunteer host, GPU or CPU, and always
 //!   writes the readings, a result and the diagnostics.
@@ -26,6 +28,7 @@ pub mod consensus;
 pub mod doc_id;
 pub mod grounded;
 pub mod ledger;
+pub mod page_mode;
 pub mod replay;
 pub mod retain;
 pub mod stage;

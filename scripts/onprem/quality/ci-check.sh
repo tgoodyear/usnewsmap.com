@@ -233,4 +233,46 @@ PY
 } | psql_admin -d usnm_quality)
 [ "$(printf '%s\n' "$gain_csv" | head -1)" = "doc_id,reader,lang,decade,occurrences,loc_damage,ours_damage,loc_est_cer,ours_est_cer" ] \
   || die "the gain export's columns"
-echo "usnm_quality checked: schema, roles, loader upserts, LoC software, page_summary, rank queries, campaign and gain exports"
+# The English pilot's draw (#1998): the worst qe-v1 tenth, the filters on language, source,
+# words, validity and version, Tesseract's fixed pages left out and its other pages kept and
+# flagged, the strata's shares and floor, and a draw that repeats. Its pages (pilot-NNNN) are
+# the only rows in quality.qe_loc_scores, so the tenths are theirs.
+psql_admin -d usnm_quality < "$here/test_pilot_selection.sql" > /dev/null
+pilot() { { echo "SET ROLE quality_reader;"; cat "$here/pilot_selection.sql"; } | psql_admin -d usnm_quality -v n="$1" -v seed="$2" -v floor="$3"; }
+pilot 100 ci-seed 2 > /tmp/pilot-all.csv
+pilot 12 ci-seed 2 > /tmp/pilot-12.csv
+pilot 12 ci-seed 2 > /tmp/pilot-12-again.csv
+pilot 12 other-seed 2 > /tmp/pilot-12-other.csv
+python3 - <<'PY' || die "the pilot draw"
+import collections, csv
+def rows(p):
+    return list(csv.DictReader(open(p)))
+allr, twelve = rows("/tmp/pilot-all.csv"), rows("/tmp/pilot-12.csv")
+docs = lambda rs: {r["doc_id"] for r in rs}
+n = lambda i: "pilot-%04d" % i
+# n above the pool takes every page of the worst tenth, 361 to 400, less 361 and 365 (fixed by
+# Tesseract); 401 to 406 are out for their language, source, words, validity, version.
+assert docs(allr) == {n(i) for i in range(362, 401)} - {n(365)}, sorted(docs(allr) ^ {n(i) for i in range(362, 401)})
+flags = {r["doc_id"]: r["tess_read"] for r in allr}
+assert [flags[n(i)] for i in (362, 363, 364, 366)] == ["t", "t", "t", "f"], flags
+by = collections.Counter((r["decade"], r["band"]) for r in allr)
+assert set(by) == {(d, b) for d in ("1890", "1900") for b in ("worst", "moderate", "low")}, by
+assert all(int(r["stratum_pages"]) == by[(r["decade"], r["band"])] for r in allr)
+assert {r["band"]: r["damage_rate"] for r in allr if r["doc_id"] == n(399)} == {"worst": "0.4"}
+assert {r["band"] for r in allr if r["doc_id"] == n(400)} == {"moderate"}
+assert {r["band"] for r in allr if r["doc_id"] == n(398)} == {"low"}
+# 12 pages over 6 strata: each takes its share rounded up, none under the floor of 2, so no
+# fewer than 12 in all (the selector trims the excess), and k runs 1 to take.
+t12 = collections.defaultdict(list)
+for r in twelve:
+    t12[(r["decade"], r["band"])].append(int(r["k"]))
+assert all(sorted(ks) == list(range(1, int(next(r["take"] for r in twelve if (r["decade"], r["band"]) == key)) + 1))
+           for key, ks in t12.items()), t12
+assert all(len(ks) >= 2 for ks in t12.values()) and 12 <= sum(map(len, t12.values())) == len(twelve) <= 12 + len(t12), t12
+assert docs(twelve) <= docs(allr)
+# The same seed draws the same pages, another seed other ones.
+assert rows("/tmp/pilot-12-again.csv") == twelve
+assert docs(rows("/tmp/pilot-12-other.csv")) != docs(twelve)
+PY
+rm -f /tmp/pilot-all.csv /tmp/pilot-12.csv /tmp/pilot-12-again.csv /tmp/pilot-12-other.csv
+echo "usnm_quality checked: schema, roles, loader upserts, LoC software, page_summary, rank queries, campaign and gain exports, the pilot draw"

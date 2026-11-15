@@ -21,9 +21,9 @@ use usnm_ocr_contract::{
         MAX_JOB_JSON as MAX_QUALITY_JOB, MAX_SCAN,
     },
     qwen::{
-        BundlePage, Crop, Engine, Job, Outcome, Reading, Readings, MAX_BUNDLE_CROPS,
-        MAX_BUNDLE_PAGES, MAX_CROP_TEXT, MAX_DEADLINE_SECS, MAX_JOB_JSON, MAX_READINGS,
-        PROMPT_VERSION, VERSION,
+        BundlePage, Crop, Engine, Job, Outcome, PageMode, Reading, Readings, Region,
+        MAX_BUNDLE_CROPS, MAX_BUNDLE_PAGES, MAX_CROP_TEXT, MAX_DEADLINE_SECS, MAX_JOB_JSON,
+        MAX_READINGS, PROMPT_VERSION, VERSION,
     },
 };
 use usnm_ocr_quality::crops;
@@ -84,9 +84,9 @@ pub struct Summary {
 }
 
 /// The source name of a bundle's `page.jpg`.
-const BUNDLE_SOURCE: &str = "bundle:page.jpg";
+pub(super) const BUNDLE_SOURCE: &str = "bundle:page.jpg";
 /// The marker on a staged page too large to publish, alone or in a bundle.
-const TOO_LARGE: &str = "too_large";
+pub(super) const TOO_LARGE: &str = "too_large";
 const SOURCE_FILE: &str = "source-provenance.json";
 const MAX_SOURCE_PROVENANCE: usize = 16 * 1024;
 /// Room in a bundle's `readings.json` for its `diag` facts (the context
@@ -167,7 +167,7 @@ fn image_provenance(root: &Path, quality: &QualityJob) -> anyhow::Result<Option<
     Ok(Some(binding))
 }
 
-fn retain_source(
+pub(super) fn retain_source(
     root: &Path,
     unit: &Path,
     quality: &QualityJob,
@@ -189,7 +189,7 @@ fn retain_source(
     Ok(())
 }
 
-fn check_retained_source(root: &Path, page: &Path, unit: &Path) -> anyhow::Result<()> {
+pub(super) fn check_retained_source(root: &Path, page: &Path, unit: &Path) -> anyhow::Result<()> {
     if !unit.join(SOURCE_FILE).try_exists()? {
         ensure!(
             !unit.join(crate::quality::JOB_FILE).try_exists()?
@@ -481,7 +481,7 @@ pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Res
 /// a `qwen.json`). The one file it writes over is a `rejected-qwen.json`
 /// with no marker beside it, left by a run stopped between the two writes:
 /// it writes the evidence again, then the marker.
-fn publish(unit: &Path, job: &Job) -> anyhow::Result<bool> {
+pub(super) fn publish(unit: &Path, job: &Job) -> anyhow::Result<bool> {
     ensure!(
         ![JOB_FILE, "no_crops", TOO_LARGE]
             .iter()
@@ -501,7 +501,12 @@ fn publish(unit: &Path, job: &Job) -> anyhow::Result<bool> {
 
 /// Marks a staged page `too_large`: its `qwen.json` (`what`) would be `len`
 /// bytes, over the `MAX_JOB_JSON` submit and the workers read it with.
-fn mark_too_large(unit: &Path, doc_id: &str, what: &str, len: usize) -> anyhow::Result<()> {
+pub(super) fn mark_too_large(
+    unit: &Path,
+    doc_id: &str,
+    what: &str,
+    len: usize,
+) -> anyhow::Result<()> {
     let why = format!("{what} would be {len} bytes, over the {MAX_JOB_JSON}-byte limit");
     eprintln!("{doc_id}: {why}; marked {TOO_LARGE}");
     atomic(&unit.join(TOO_LARGE), format!("{why}\n").as_bytes())
@@ -519,7 +524,7 @@ fn mark_too_large(unit: &Path, doc_id: &str, what: &str, len: usize) -> anyhow::
 /// most [`MAX_PAGE_ATTEMPTS`] bundles in all; a bundle holding exactly the
 /// pages of an earlier one would be that unit again, so it waits for other
 /// pages. Returns the bundles written and the pages marked.
-fn bundle_lock(units_dir: &Path) -> anyhow::Result<PathBuf> {
+pub(super) fn bundle_lock(units_dir: &Path) -> anyhow::Result<PathBuf> {
     Ok(units_dir
         .parent()
         .context("units directory has no root")?
@@ -881,11 +886,17 @@ fn check_same_reader(unit: &Path, opts: &Options) -> anyhow::Result<()> {
 
 /// Whether `a` and `b` share the settings a bundle runs every page with
 /// (taken from its first page): the engine, deadlines and token allowance.
-fn same_settings(a: &Job, b: &Job) -> bool {
-    a.v == b.v
+///
+/// A page-mode page (#1998) has a deadline of its own, from its LoC text; a bundle's is the
+/// sum of its pages', so only the page-mode flag has to match there.
+pub(super) fn same_settings(a: &Job, b: &Job) -> bool {
+    let page_mode = a.page_mode.is_some();
+    page_mode == b.page_mode.is_some()
+        && a.v == b.v
         && a.engine == b.engine
-        && a.gpu_timeout_secs == b.gpu_timeout_secs
-        && a.cpu_timeout_secs == b.cpu_timeout_secs
+        && (page_mode
+            || (a.gpu_timeout_secs == b.gpu_timeout_secs
+                && a.cpu_timeout_secs == b.cpu_timeout_secs))
         && a.max_tokens_per_1000px2 == b.max_tokens_per_1000px2
         && a.prompt_version == b.prompt_version
         && a.model == b.model
@@ -941,14 +952,45 @@ pub(super) fn bundle_job(pages: &[Job], blob: Input) -> anyhow::Result<Job> {
             .checked_add(pj.input.bytes)
             .context("bundle page.jpg size overflow")?;
     }
+    // Page-mode regions are listed like the crops: every page's, under `<doc_id>:<id>`, and
+    // the deadline is the pages' own, summed.
+    let page_mode = first.page_mode.as_ref().map(|_| PageMode {
+        regions: pages
+            .iter()
+            .flat_map(|pj| {
+                pj.page_mode.iter().flat_map(|pm| {
+                    pm.regions.iter().map(|r| Region {
+                        id: format!("{}:{}", pj.doc_id, r.id),
+                        block: r.block.clone(),
+                        lines: r.lines.clone(),
+                    })
+                })
+            })
+            .collect(),
+        slots: None,
+    });
+    let (cpu_timeout_secs, gpu_timeout_secs) = if page_mode.is_some() {
+        let sum = |f: fn(&Job) -> u32| {
+            pages
+                .iter()
+                .fold(0u32, |n, pj| n.saturating_add(f(pj)))
+                .min(MAX_DEADLINE_SECS)
+        };
+        (sum(|j| j.cpu_timeout_secs), sum(|j| j.gpu_timeout_secs))
+    } else {
+        (
+            bundle_deadline(first.cpu_timeout_secs, pages.len()),
+            bundle_deadline(first.gpu_timeout_secs, pages.len()),
+        )
+    };
     let mut job = Job {
         v: VERSION,
         id: String::new(),
-        cpu_timeout_secs: bundle_deadline(first.cpu_timeout_secs, pages.len()),
+        cpu_timeout_secs,
         crops,
         doc_id: first.doc_id.clone(),
         engine: first.engine.clone(),
-        gpu_timeout_secs: bundle_deadline(first.gpu_timeout_secs, pages.len()),
+        gpu_timeout_secs,
         group: first.group.clone(),
         input: blob,
         language: first.language.clone(),
@@ -956,7 +998,7 @@ pub(super) fn bundle_job(pages: &[Job], blob: Input) -> anyhow::Result<Job> {
         pages: bundle_pages,
         prompt_version: first.prompt_version,
         model: first.model.clone(),
-        page_mode: None,
+        page_mode,
     };
     job.id = job.identity()?;
     Ok(job)
@@ -983,6 +1025,22 @@ pub(super) fn bundle_json_len(pages: &[Job]) -> anyhow::Result<usize> {
         source: BUNDLE_SOURCE.to_owned(),
     };
     Ok(serde_json::to_vec_pretty(&bundle_job(pages, blob)?)?.len())
+}
+
+/// How many times longer than LoC's text a page-mode region's reading is allowed to be when
+/// the unit's `readings.json` is sized (#1998). A sample crop is sized at [`MAX_CROP_TEXT`],
+/// which 1,024 regions would pass `MAX_READINGS` many times over.
+pub(super) const READING_GROWTH: usize = 2;
+/// The shortest reading a page-mode region is sized for, in bytes.
+pub(super) const READING_FLOOR: usize = 64;
+
+/// The most bytes a crop's reading is sized at.
+fn longest_reading_text(page: &Job, crop: &Crop) -> usize {
+    if page.page_mode.is_some() {
+        (crop.loc_text.len() * READING_GROWTH).clamp(READING_FLOOR, MAX_CROP_TEXT)
+    } else {
+        MAX_CROP_TEXT
+    }
 }
 
 /// The longest `readings.json` a bundle of `pages` can produce, as the workers
@@ -1012,7 +1070,7 @@ pub(super) fn longest_readings_len(pages: &[Job]) -> anyhow::Result<usize> {
                 p.crops.iter().map(|c| Reading {
                     id: format!("{}:{}", p.doc_id, c.id),
                     ms: u64::MAX,
-                    text: "\"".repeat(MAX_CROP_TEXT),
+                    text: "\"".repeat(longest_reading_text(p, c)),
                     tokens: u32::MAX,
                 })
             })
@@ -1026,6 +1084,16 @@ pub(super) fn longest_readings_len(pages: &[Job]) -> anyhow::Result<usize> {
 /// Nothing is written unless the bundle's `page.jpg` and `qwen.json` are
 /// within the limits the workers read them with.
 pub fn write_bundle(dir: &Path, page_units: &[PathBuf]) -> anyhow::Result<Job> {
+    write_bundle_with(dir, page_units, &[])
+}
+
+/// [`write_bundle`], also writing `extra` files into the bundle directory before its
+/// `qwen.json`, so a unit is never visible without them.
+pub(super) fn write_bundle_with(
+    dir: &Path,
+    page_units: &[PathBuf],
+    extra: &[(&str, Vec<u8>)],
+) -> anyhow::Result<Job> {
     ensure!(
         !page_units.is_empty() && page_units.len() <= MAX_BUNDLE_PAGES,
         "a qwen bundle requires 1 to {MAX_BUNDLE_PAGES} page units"
@@ -1078,9 +1146,14 @@ pub fn write_bundle(dir: &Path, page_units: &[PathBuf]) -> anyhow::Result<Job> {
         "bundle page.jpg over size limit"
     );
     let job = bundle_job(&jobs, Input::of(&page_blob, BUNDLE_SOURCE))?;
+    let max_crops = if job.page_mode.is_some() {
+        usnm_ocr_contract::qwen::MAX_PAGE_REGIONS
+    } else {
+        MAX_BUNDLE_CROPS
+    };
     ensure!(
-        job.crops.len() <= MAX_BUNDLE_CROPS,
-        "bundle crops exceed {MAX_BUNDLE_CROPS}"
+        job.crops.len() <= max_crops,
+        "bundle crops exceed {max_crops}"
     );
     ensure!(
         longest_readings_len(&jobs)? <= MAX_READINGS,
@@ -1110,6 +1183,9 @@ pub fn write_bundle(dir: &Path, page_units: &[PathBuf]) -> anyhow::Result<Job> {
         &dir.join(MEMBERSHIP_FILE),
         &serde_json::to_vec_pretty(&membership)?,
     )?;
+    for (name, bytes) in extra {
+        atomic(&dir.join(name), bytes)?;
+    }
     atomic(&dir.join(JOB_FILE), &json)?;
     Ok(job)
 }

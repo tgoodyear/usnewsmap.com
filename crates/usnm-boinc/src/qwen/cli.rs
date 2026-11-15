@@ -108,6 +108,49 @@ pub enum QwenCommands {
         /// 0 publishes it at once (#1435).
         #[arg(long, default_value_t = 21_600)]
         max_hold_secs: u64,
+        /// Xiaomi-OCR-0 page mode (#1998): one region per LoC text block (long blocks split at
+        /// line boundaries), every region of the page read, small pages packed into bundles.
+        /// Reads the page and ALTO from `--quality-root` and fetches nothing. Pins the model to
+        /// `xiaomi-ocr-0-q8`; `--bundle-size`, `--page-records`, `--max-hold-secs` and the
+        /// timeouts do not apply (a page's deadline comes from its LoC characters).
+        #[arg(long, requires = "campaign")]
+        page_mode: bool,
+        /// With `--page-mode`, the campaign id (`x08-eng-pilot`): the units' group and in each
+        /// page's `page-mode.json`. A root holds one campaign.
+        #[arg(long, requires = "page_mode")]
+        campaign: Option<String>,
+        /// With `--page-mode`, the pilot selection's strata (`pilot_select.py`'s `strata.json`),
+        /// recorded in each page's `page-mode.json`.
+        #[arg(long, requires = "page_mode")]
+        strata: Option<PathBuf>,
+        /// With `--page-mode`, the most LoC characters in a region.
+        #[arg(long, default_value_t = 1500, requires = "page_mode")]
+        region_chars: usize,
+        /// With `--page-mode`, blocks with fewer LoC characters are not read.
+        #[arg(long, default_value_t = 3, requires = "page_mode")]
+        min_chars: usize,
+        /// With `--page-mode`, the longest side of a region's box in page pixels. Not measured
+        /// yet: set it from the first units' `gpu_mem_peak_mib`.
+        #[arg(long, default_value_t = 2048, requires = "page_mode")]
+        max_side_px: u32,
+        /// With `--page-mode`, characters a second of the fastest admitted class; a page that
+        /// it would read in under `--min-unit-secs` is packed with others.
+        #[arg(long, default_value_t = 22.0, requires = "page_mode")]
+        fastest_cps: f64,
+        /// With `--page-mode`, characters a second of the slowest admitted class, for the
+        /// deadline. A page whose deadline would pass four hours is not staged.
+        #[arg(long, default_value_t = 10.0, requires = "page_mode")]
+        slowest_cps: f64,
+        /// With `--page-mode`, the shortest a unit should take on the fastest class.
+        #[arg(long, default_value_t = 300, requires = "page_mode")]
+        min_unit_secs: u32,
+        /// With `--page-mode`, the most pages in a bundle (1 to 4).
+        #[arg(long, default_value_t = 4, requires = "page_mode")]
+        pack_pages: usize,
+        /// With `--page-mode`, publish a last bundle that cannot fill a unit instead of holding
+        /// its pages for the next run.
+        #[arg(long, requires = "page_mode")]
+        flush_short: bool,
     },
     /// Hand staged units to create_work, two results each.
     Submit {
@@ -331,7 +374,51 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             bundle_size,
             page_records,
             max_hold_secs,
+            page_mode,
+            campaign,
+            strata,
+            region_chars,
+            min_chars,
+            max_side_px,
+            fastest_cps,
+            slowest_cps,
+            min_unit_secs,
+            pack_pages,
+            flush_short,
         } => {
+            if page_mode {
+                let model = model.unwrap_or_else(|| x::XIAOMI_MODEL.to_owned());
+                let (models, _) = x::stage_reader(Some(&model), prompt_version)?;
+                let s = x::page_mode::run(
+                    &x::page_mode::Options {
+                        quality_root,
+                        root,
+                        engine: usnm_ocr_contract::qwen::Engine {
+                            image: engine_image,
+                            llama: engine_llama,
+                            models,
+                            weights: engine_weights,
+                        },
+                        campaign: campaign.context("--page-mode needs --campaign")?,
+                        params: x::page_mode::Params {
+                            region_chars,
+                            min_chars,
+                            max_side_px,
+                            fastest_cps,
+                            slowest_cps,
+                            min_unit_secs,
+                            pack_pages,
+                        },
+                        max_tokens_per_1000px2,
+                        max_pages,
+                        strata,
+                        flush_short,
+                    },
+                    members.as_deref(),
+                )?;
+                eprintln!("{s:?}");
+                return Ok(());
+            }
             let (models, prompt_version) = x::stage_reader(model.as_deref(), prompt_version)?;
             let s = x::stage::run_selected(
                 &x::stage::Options {
