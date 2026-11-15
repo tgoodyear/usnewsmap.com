@@ -1,0 +1,18 @@
+[Unit]
+Description=Dry-run one archive batch and report it; the maintainer runs it (#2008)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The controller's own checkout, identity (its az sign-in) and settings: the archive tool
+# imports the controller's batch_scheduler.py beside it.
+WorkingDirectory=/opt/usnm
+Environment=USNM_SETTINGS_HOME=/root/.config/usnewsmap
+# One batch of 1,000 pages, the tool's default and the docs' (batch-scheduler.md, "Archive
+# drained history"). A dry run only reads: no pause, no lock, no lease, no writes but the
+# report in /var/lib/usnm-archive-report/latest.json. It exits 0 when nothing is eligible and 1
+# on any failed check; the maintainer approves each live run.
+ExecStart=/usr/bin/bash /opt/usnm/boinc/scripts/onprem/archive-report.sh --pages 1000 --min-age-hours 24
+TimeoutStartSec=1h
+Nice=10
