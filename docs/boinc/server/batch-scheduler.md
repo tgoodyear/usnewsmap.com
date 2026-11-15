@@ -663,7 +663,7 @@ For a new plan: run one approved `--apply` tick, check reservations, host IDs, t
 
 State and journals are durable recovery state. After a crash the lease stays held: stop the schedule, inspect executions and journals, reconcile `submitting` jobs, and only once the former owner is confirmed stopped may the serialized operator break the stale `scheduler/controller.lock` lease. Never delete journals, reset state or break a live lease. A missing reply doesn't mean `create_work` failed.
 
-The inventory fails closed above 10,000 journals, 100,000 spool entries or the workunit cap (default 50,000, `USNM_MAX_EXISTING_WORKUNITS` in the BOINC host's `bridge.env`, 1 to 200,000, reported as `existing_jobs_limit`; older server images: 10,000). BOINC keeps workunits `delete_delay_hours` (168) after they finish (#1483). The cap covers rows (`existing_workunits`) and pages (`existing_jobs`); the 80% warning uses the larger.
+The inventory fails closed above 10,000 journals, 100,000 spool entries (see [Spool lookup](#spool-lookup-2008)) or the workunit cap (default 50,000, `USNM_MAX_EXISTING_WORKUNITS` in the BOINC host's `bridge.env`, 1 to 200,000, reported as `existing_jobs_limit`; older server images: 10,000). BOINC keeps workunits `delete_delay_hours` (168) after they finish (#1483). The cap covers rows (`existing_workunits`) and pages (`existing_jobs`); the 80% warning uses the larger.
 
 ### Archive drained history (#1483)
 
@@ -729,6 +729,27 @@ The maintainer approves each live run:
 6. Repeat until well under the cap, start the timers again, and watch a tick end without `dispatch inventory limit/consistency failure`.
 
 The archive is the only copy; back it up with the controller state.
+
+#### Spool lookup (#2008)
+
+`spool_candidates` in `boinc/images/server/batch-inventory.py` no longer walks the results tree. Other apps' results (mostly `usnm_quality`) made `spool_entries` reach 85,412 of 100,000 in prod and the walk slow, while the controller needs only its own jobs' outputs. It now lists the entries of the results directory (the batch directories the assimilator writes, `results/<batch>/`), then makes one `lstat` for each output name of each journalled job and bundle in `results/` and in each batch directory: `usnm_<id>__file_{result.json,text.txt,layout.xml}`, `_error` and `_no_output_files`, and the `usnm_ocrb_<bundle>` names (`results.json`, `texts`, `layouts`). The batch directories themselves are never listed, so the cost follows the journals, not the tree. Symlinks are neither followed nor returned, and the checks on what it finds (complete or terminal outputs, one spool per job, nothing outside `results/`) are unchanged.
+
+- `spool_entries` now counts the entries of `results/` and the job output files found. It is typically a few hundred, not the size of the tree. `spool_entries_limit` is still `MAX_FILES` (100,000), and `warn_near_cap` in `batch_scheduler.py` and the feed-health alert read both as before.
+- The inventory still fails closed with "inventory spool limit reached" above `MAX_FILES` such entries, above `MAX_SPOOL_DIRS` (1,000) directories, or when directories times output names would pass `MAX_LOOKUPS` (5,000,000, about 100 directories for 10,000 journals).
+- A spool deeper than `results/<batch>/` is not found. The bridge's `HANDOFF_SPOOL` check accepts any path under `results/`, but the assimilator writes one level.
+- `archive_history.py bridge` still walks the whole results tree once per run, as a dry run and an apply, to find a batch's outputs.
+
+The change is in the server image: roll it by the [release pipeline](onprem.md#reviewed-resumable-release-pipeline-551), and not while an archive run has the plans paused. An older image keeps the full walk and its counts.
+
+#### Nightly archive report (#2008)
+
+`boinc/scripts/onprem/usnm-boinc-archive-report.timer` runs `archive-report.sh` on the controller host at 05:10 UTC every day. It is a dry run and a report only: it runs `archive_history.py dispatch` without `--apply` for one batch of `--pages 1000` (`--min-age-hours 24`), which takes no lock, pauses nothing and writes nothing but `/var/lib/usnm-archive-report/latest.json`. The maintainer approves each live run (above), so nothing applies by timer. The run ends one of three ways:
+
+- **Skipped** (exit 0, `"ready": false`) when `pages.eligible` is 0 or a batch is planned already and waiting for its steps.
+- **Failed** (exit 1, `boinc_archive_report_failure`) on any failed check: the dry run exits non-zero or prints no result, the journals and state disagree (`outstanding_pages.error`), the batch would leave pages needing work again (`outstanding_pages.unchanged`), the batch is larger than `--pages`, the archive dataset is not mounted or lacks the space the apply needs. The tool's own checks decide; the script adds none of its own that weaken them.
+- **Ready** (exit 0, `"ready": true`) with the batch's pages and bytes, the journal counts before and after, and the command to approve.
+
+`controller/install.sh` copies the two unit files; enabling the timer (`systemctl enable --now usnm-boinc-archive-report.timer`) is a separate step.
 
 #### Archive held pages (#835)
 

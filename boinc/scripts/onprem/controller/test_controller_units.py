@@ -637,7 +637,9 @@ class Install(unittest.TestCase):
         expected = {SERVICE: SERVICE.name, TIMER: TIMER.name,
                     LEASE_BREAK_UNIT: LEASE_BREAK_UNIT.name,
                     ONPREM / "usnm-boinc-held-archive.service": "usnm-boinc-held-archive.service",
-                    ONPREM / "usnm-boinc-held-archive.timer": "usnm-boinc-held-archive.timer"}
+                    ONPREM / "usnm-boinc-held-archive.timer": "usnm-boinc-held-archive.timer",
+                    ONPREM / "usnm-boinc-archive-report.service": "usnm-boinc-archive-report.service",
+                    ONPREM / "usnm-boinc-archive-report.timer": "usnm-boinc-archive-report.timer"}
         self.assertEqual(sorted(p.name for p in self.units.iterdir()), sorted(expected.values()))
         for source, name in expected.items():
             self.assertEqual((self.units / name).read_bytes(), source.read_bytes())

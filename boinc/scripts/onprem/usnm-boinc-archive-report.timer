@@ -1,0 +1,11 @@
+[Unit]
+Description=Report the next archive batch every night (#2008)
+
+[Timer]
+# 05:10 UTC, off the held-archive timer's 00:30/04:30/08:30 runs.
+OnCalendar=*-*-* 05:10:00 UTC
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

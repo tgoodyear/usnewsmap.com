@@ -62,7 +62,8 @@ for flags in "$ROOT"/etc/usnm/boinc-priority-controller.flags "$ROOT"/etc/usnm/b
 done
 install -d -m 0755 "$units"
 for file in "$HERE/usnm-boinc-controller-lease-break.service" "$HERE/usnm-boinc-priority-controller@.service" "$HERE/usnm-boinc-priority-controller@.timer" \
-  "$ONPREM/usnm-boinc-held-archive.service" "$ONPREM/usnm-boinc-held-archive.timer"; do
+  "$ONPREM/usnm-boinc-held-archive.service" "$ONPREM/usnm-boinc-held-archive.timer" \
+  "$ONPREM/usnm-boinc-archive-report.service" "$ONPREM/usnm-boinc-archive-report.timer"; do
   install -m 0644 "$file" "$units/$(basename "$file")"
   echo "installed $units/$(basename "$file")"
 done

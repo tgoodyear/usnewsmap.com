@@ -81,45 +81,90 @@ class InventoryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             inventory.inventory(self.root, self.root / "missing", [1, 2], "b" * 32)
 
-    def test_other_apps_nested_dirs_and_symlinks_as_with_rglob(self):
-        # #932: the scandir walk finds a job's spool in a nested directory, ignores other apps'
-        # files and unknown jobs, and neither follows nor yields symlinks.
-        nested = self.results / "0" / "deeper"
-        nested.mkdir(parents=True)
+    def test_other_apps_batch_dirs_and_symlinks_are_not_followed(self):
+        # #932, #2008: a job's spool is found in a batch directory or in results itself, other
+        # apps' files and unknown jobs are ignored, and symlinks are neither followed nor yielded.
+        other = self.results / "0"
+        other.mkdir()
         for suffix in ("__file_result.json", "__file_text.txt", "__file_layout.xml"):
-            (nested / ("usnm_" + self.job + suffix)).write_text("ok")
-        (self.results / "0" / ("usnm_quality_" + "c" * 64 + "_0")).write_text("other app")
-        (self.results / "0" / ("usnm_" + "d" * 64 + "_error")).write_text("unknown job")
+            (other / ("usnm_" + self.job + suffix)).write_text("ok")
+        (other / ("usnm_quality_" + "c" * 64 + "_0")).write_text("other app")
+        (other / ("usnm_" + "d" * 64 + "_error")).write_text("unknown job")
         outside = self.root / "outside"
         outside.mkdir()
         (outside / ("usnm_" + self.job + "_error")).write_text("outside")
         (self.results / "link").symlink_to(outside, target_is_directory=True)
         (self.spool / ("usnm_" + self.job + "_error")).symlink_to(outside / ("usnm_" + self.job + "_error"))
-        self.assertEqual(self.payload()["jobs"][self.job]["spool"], str(nested))
+        self.assertEqual(self.payload()["jobs"][self.job]["spool"], str(other))
 
-    def test_every_entry_counts_towards_the_file_limit(self):
-        for i in range(3):
-            (self.spool / f"usnm_quality_{i}").write_text("other app")
-        with patch.object(inventory, "MAX_FILES", 4):  # batch1 and its 3 files
-            result = self.payload()
-            self.assertEqual((result["spool_entries"], result["spool_entries_limit"]), (4, 4))
-        with patch.object(inventory, "MAX_FILES", 3), self.assertRaisesRegex(ValueError, "spool limit"):
-            self.payload()
+    def test_results_itself_is_searched_and_deeper_directories_are_not(self):
+        (self.results / ("usnm_" + self.job + "_error")).write_text("flat")
+        self.assertEqual(self.payload()["jobs"][self.job]["spool"], str(self.results))
+        (self.results / ("usnm_" + self.job + "_error")).unlink()
+        deeper = self.spool / "deeper"
+        deeper.mkdir()
+        (deeper / ("usnm_" + self.job + "_error")).write_text("too deep")
+        self.assertIsNone(self.payload()["jobs"][self.job]["spool"])
 
-    def test_non_matching_files_are_never_statted(self):
-        # The walk must not stat entries it doesn't keep: that per-file stat over SMB was the cost.
+    def test_other_apps_results_are_neither_listed_nor_counted(self):
+        # #2008: the cost follows the controller's jobs. 50 other-app files in a batch directory
+        # leave spool_entries at the directory (1) plus the job's file (1), and the cap, set below
+        # the other files' number, doesn't trip.
         for i in range(50):
             (self.spool / f"usnm_quality_{i}").write_text("other app")
-        calls = []
-        real = Path.stat
+        self.write("_error")
+        with patch.object(inventory, "MAX_FILES", 10):
+            result = self.payload()
+        self.assertEqual((result["spool_entries"], result["spool_entries_limit"]), (2, 10))
+        self.assertEqual(result["jobs"][self.job]["spool"], str(self.spool))
 
-        def counting(path, *args, **kwargs):
-            calls.append(path.name)
-            return real(path, *args, **kwargs)
+    def test_the_cap_counts_what_the_walk_visits(self):
+        with patch.object(inventory, "MAX_FILES", 1):  # batch1 only
+            self.assertEqual(self.payload()["spool_entries"], 1)
+        self.write("_error")
+        with patch.object(inventory, "MAX_FILES", 1), self.assertRaisesRegex(ValueError, "spool limit"):
+            self.payload()  # batch1 and the job's file
+        for i in range(3):
+            (self.results / f"batch{i + 2}").mkdir()
+        with patch.object(inventory, "MAX_FILES", 3), self.assertRaisesRegex(ValueError, "spool limit"):
+            self.payload()  # four entries listed
 
-        with patch.object(Path, "stat", counting):
+    def test_directory_and_lookup_limits_fail_closed(self):
+        with patch.object(inventory, "MAX_SPOOL_DIRS", 1), self.assertRaisesRegex(ValueError, "directories"):
             self.payload()
-        self.assertFalse([name for name in calls if name.startswith("usnm_quality_")])
+        with patch.object(inventory, "MAX_LOOKUPS", 9), self.assertRaisesRegex(ValueError, "lookups"):
+            self.payload()  # two directories, five names
+        with patch.object(inventory, "MAX_LOOKUPS", 10):
+            self.payload()
+
+    def test_only_the_jobs_own_paths_are_looked_up(self):
+        # The walk lists results once and makes one lstat per output name of each journalled job,
+        # in each directory, and never lists a batch directory (#2008).
+        for i in range(50):
+            (self.spool / f"usnm_quality_{i}").write_text("other app")
+        scanned, statted = [], []
+        real_scandir, real_lstat = os.scandir, os.lstat
+
+        def scandir(path):
+            scanned.append(str(path))
+            return real_scandir(path)
+
+        def lstat(path, *args, **kwargs):
+            statted.append(Path(path).name)
+            return real_lstat(path, *args, **kwargs)
+
+        with patch.object(inventory.os, "scandir", scandir), patch.object(inventory.os, "lstat", lstat):
+            self.payload()
+        self.assertEqual(scanned, [str(self.results)])
+        self.assertEqual(len(statted), 10)  # 2 directories x 5 names
+        self.assertTrue(all(name.startswith("usnm_" + self.job) for name in statted))
+
+    def test_bundle_outputs_are_found_by_name(self):
+        bundle = "e" * 64
+        self.bundle(bundle, [self.job])
+        for suffix in ("__file_results.json", "__file_texts", "__file_layouts"):
+            (self.spool / ("usnm_ocrb_" + bundle + suffix)).write_text("ok")
+        self.assertEqual(self.payload()["jobs"][self.job]["spool"], str(self.spool))
 
     def run_main(self, stdout):
         out = self.root / "inventory.json"

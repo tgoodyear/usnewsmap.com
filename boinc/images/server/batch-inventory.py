@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -14,6 +15,11 @@ ID = re.compile(r"[0-9a-f]{64}")
 STAGES = {"prepared", "reserved", "submitting", "submitted", "published", "failed"}
 MAX_JOBS = 10000
 MAX_FILES = 100000
+# Directories the spool lookup searches: `results` and its batch directories (#2008).
+MAX_SPOOL_DIRS = 1000
+# Output-name lookups a run may make (directories times names): at 5 names for each of 10,000
+# journals, 100 directories.
+MAX_LOOKUPS = 5000000
 # Workunits stay in the database for BOINC's delete_delay_hours (168) after they finish, so the
 # existing-workunit count runs well ahead of the journals and needs its own, larger cap (#1483).
 # USNM_MAX_EXISTING_WORKUNITS in bridge.env overrides it, within 1..MAX_EXISTING_WORKUNITS_CEILING.
@@ -109,6 +115,8 @@ SPOOL_FILE = re.compile(
 BUNDLE_SPOOL_FILE = re.compile(
     r"usnm_ocrb_([0-9a-f]{64})(__file_(results\.json|texts|layouts)|_error|_no_output_files)")
 BUNDLE_PREFIX = "ocrb_"
+SPOOL_SUFFIXES = ("__file_result.json", "__file_text.txt", "__file_layout.xml", "_error", "_no_output_files")
+BUNDLE_SPOOL_SUFFIXES = ("__file_results.json", "__file_texts", "__file_layouts", "_error", "_no_output_files")
 APP_NAME = r"[A-Za-z0-9_.-]{1,254}"
 APP_ROW = re.compile(rf"app\t({APP_NAME})?\t([0-9]+)")
 MAX_APPS = 100
@@ -116,29 +124,48 @@ MAX_APPS = 100
 
 def spool_candidates(results, jobs, bundles=()):
     """The regular files under `results` named as a known job's assimilator output, with their
-    name match. Walked with os.scandir: a directory listing carries each entry's type, so the
-    tens of thousands of other apps' results (usnm_quality's, mostly) cost no stat each, which
-    over the SMB project share made the inventory take minutes (#932). Symlinks are neither
-    followed nor returned, as with rglob, and every entry counts towards MAX_FILES. Returns the
-    matches and the number of entries walked, which the inventory reports (#1483)."""
+    name match. The walk looks up only the paths the inventory needs (#2008): it lists `results`
+    itself, whose entries are the batch directories (the assimilator writes one directory per
+    BOINC batch, results/<batch>/, not listed here), and then for each of those directories and
+    `results` it looks up each journalled job's and bundle's output names with one lstat each.
+    The tens of thousands of other apps' results (usnm_quality's, mostly) are neither listed
+    nor statted, so the cost follows the controller's own journals and not the size of the
+    results tree (#932 made the walk a scandir, which still listed all of them). A spool
+    nested deeper than results/<batch>/ isn't looked for. Symlinks are neither followed nor
+    returned. Returns the matches and the number of entries visited: the entries of `results`
+    and the output files found. More than MAX_FILES of them, more than MAX_SPOOL_DIRS
+    directories or more than MAX_LOOKUPS lookups fail closed. The inventory reports the
+    count (#1483)."""
     count = 0
+    directories = [results]
+    with os.scandir(results) as entries:
+        for entry in entries:
+            count += 1
+            if count > MAX_FILES:
+                raise ValueError("inventory spool limit reached; archive drained results")
+            if entry.is_dir(follow_symlinks=False):
+                directories.append(Path(entry.path))
+    if len(directories) > MAX_SPOOL_DIRS:
+        raise ValueError("inventory spool limit reached; too many results directories")
+    names = [("usnm_" + job + suffix, SPOOL_FILE) for job in sorted(jobs) for suffix in SPOOL_SUFFIXES]
+    names += [("usnm_" + BUNDLE_PREFIX + bundle + suffix, BUNDLE_SPOOL_FILE)
+              for bundle in sorted(bundles) for suffix in BUNDLE_SPOOL_SUFFIXES]
+    if len(directories) * len(names) > MAX_LOOKUPS:
+        raise ValueError("inventory spool limit reached; too many lookups")
     found = []
-    stack = [results]
-    while stack:
-        with os.scandir(stack.pop()) as entries:
-            for entry in entries:
-                count += 1
-                if count > MAX_FILES:
-                    raise ValueError("inventory spool limit reached; archive drained results")
-                if entry.is_dir(follow_symlinks=False):
-                    stack.append(entry.path)
-                elif entry.is_file(follow_symlinks=False):
-                    match = SPOOL_FILE.fullmatch(entry.name)
-                    if match and match[1] in jobs:
-                        found.append((Path(entry.path), match))
-                    match = BUNDLE_SPOOL_FILE.fullmatch(entry.name)
-                    if match and match[1] in bundles:
-                        found.append((Path(entry.path), match))
+    for directory in directories:
+        for name, pattern in names:
+            path = directory / name
+            try:
+                mode = os.lstat(path).st_mode
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            if not stat.S_ISREG(mode):
+                continue
+            count += 1
+            if count > MAX_FILES:
+                raise ValueError("inventory spool limit reached; archive drained results")
+            found.append((path, pattern.fullmatch(name)))
     return found, count
 
 
@@ -247,7 +274,10 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
         "existing_jobs_limit": existing_limit,
         "active_hosts": counts[1],
         "jobs": jobs,
-        # Towards MAX_FILES, so the controller can warn before the limit stops it (#1483).
+        # Entries visited by the spool lookup, towards MAX_FILES, so the controller can warn
+        # before the limit stops it (#1483): the entries of the results directory and the
+        # job output files found. Other apps' results under the batch directories aren't visited
+        # and aren't counted (#2008).
         "spool_entries": spool_entries,
         "spool_entries_limit": MAX_FILES,
     }
