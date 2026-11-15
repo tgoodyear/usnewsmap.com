@@ -23,11 +23,16 @@
 #
 #   archive-report.sh [--config FILE] [--state-dir DIR] [--archive-dir DIR] [--pages N]
 #                     [--min-age-hours N] [--controller-unit UNIT] [--report-dir DIR]
-#                     [--tool FILE] [--check-state-dir DIR]...
+#                     [--tool FILE] [--check-state-dir DIR]... [--allow-root-device]
 #
 # Other plans' state directories are passed as --check-state-dir, as held-archive.sh does (#1713):
 # a page another plan has claimed or selected is never eligible. Without --check-state-dir,
-# every sibling `<state dir>.*` with a state.json is used.
+# every sibling `<state dir>.*` with a state.json is used. The command the report names for the
+# maintainer carries the same --check-state-dir list, shell-quoted, because `dispatch --apply`
+# finds no other plan's directory itself.
+#
+# The archive directory must be on another device than /, so an unmounted dataset's empty
+# directory on the root filesystem doesn't pass; --allow-root-device (tests) turns that off.
 set -euo pipefail
 usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" >&2; exit 2; }
 die() {
@@ -44,6 +49,7 @@ ARCHIVE=/srv/usnm-archive
 REPORT_DIR=/var/lib/usnm-archive-report
 PAGES=1000 MIN_AGE=24
 UNIT=${USNM_CONTROLLER_UNIT:-usnm-boinc-priority-controller@main}
+ROOT_DEVICE_OK=false
 CHECK_DIRS=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -56,6 +62,7 @@ while [ $# -gt 0 ]; do
     --controller-unit) [ $# -ge 2 ] || usage; UNIT=$2; shift 2 ;;
     --tool) [ $# -ge 2 ] || usage; TOOL=$2; shift 2 ;;
     --check-state-dir) [ $# -ge 2 ] || usage; CHECK_DIRS+=("$2"); shift 2 ;;
+    --allow-root-device) ROOT_DEVICE_OK=true; shift ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
   esac
@@ -72,6 +79,9 @@ if ! [[ $PAGES =~ ^[0-9]{1,4}$ && $MIN_AGE =~ ^[0-9]{1,5}$ ]]; then die "--pages
 if [ "$PAGES" -lt 1 ] || [ "$PAGES" -gt 5000 ]; then die "--pages is 1 to 5000"; fi
 [ -f "$TOOL" ] || die "no $TOOL"
 [ -d "$ARCHIVE/batches" ] || die "no $ARCHIVE/batches: the archive's own dataset isn't mounted"
+if ! $ROOT_DEVICE_OK && [ "$(stat -c %d "$ARCHIVE")" = "$(stat -c %d /)" ]; then
+  die "$ARCHIVE is on the root filesystem: the archive's own dataset isn't mounted"
+fi
 mkdir -p "$REPORT_DIR"
 
 out=$(mktemp)
@@ -82,11 +92,12 @@ python3 "$TOOL" dispatch --min-age-hours "$MIN_AGE" --pages "$PAGES" \
   ${CHECKS[@]+"${CHECKS[@]}"} > "$out" || status=$?
 [ "$status" -eq 0 ] || { cat "$out"; die "the dry run failed (status $status)"; }
 
-python3 - "$out" "$ARCHIVE" "$PAGES" "$REPORT_DIR" "$UNIT" "$MIN_AGE" "$STATE_DIR" "$CONFIG" << 'PY'
-import json, shutil, sys, time
+python3 - "$out" "$ARCHIVE" "$PAGES" "$REPORT_DIR" "$UNIT" "$MIN_AGE" "$STATE_DIR" "$CONFIG" \
+  ${CHECK_DIRS[@]+"${CHECK_DIRS[@]}"} << 'PY'
+import json, shlex, shutil, sys, time
 from pathlib import Path
 
-out, archive, pages, report_dir, unit, min_age, state_dir, config = sys.argv[1:]
+out, archive, pages, report_dir, unit, min_age, state_dir, config, *check_dirs = sys.argv[1:]
 pages = int(pages)
 
 
@@ -124,10 +135,12 @@ else:
         fail(f"not enough free space in {archive} for the batch: {free} bytes free, {int(need)} needed")
     summary.update(
         ready=True, batch=batch, journals_after=result["after_batch"]["journals"], archive_free_bytes=free,
-        next_step=("the maintainer approves the run: docs/boinc/server/batch-scheduler.md, "
-                   "Archive drained history; dispatch --apply --confirm-controller-paused "
-                   f"--pages {pages} --min-age-hours {min_age} --controller-unit {unit} "
-                   f"--config {config} --state-dir {state_dir} --archive-dir {archive}"))
+        next_step=("the maintainer approves the run (docs/boinc/server/batch-scheduler.md, Archive drained "
+                   "history): " + " ".join(shlex.quote(word) for word in [
+                       "python3", "archive_history.py", "dispatch", "--apply", "--confirm-controller-paused",
+                       "--pages", str(pages), "--min-age-hours", min_age, "--controller-unit", unit,
+                       "--config", config, "--state-dir", state_dir, "--archive-dir", archive,
+                       *[word for directory in check_dirs for word in ("--check-state-dir", directory)]])))
 text = json.dumps(summary, sort_keys=True)
 target = Path(report_dir) / "latest.json"
 temp = target.with_name(".latest.json.tmp")

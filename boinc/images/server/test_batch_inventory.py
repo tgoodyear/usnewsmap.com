@@ -155,7 +155,9 @@ class InventoryTests(unittest.TestCase):
 
         with patch.object(inventory.os, "scandir", scandir), patch.object(inventory.os, "lstat", lstat):
             self.payload()
-        self.assertEqual(scanned, [str(self.results)])
+        # (Reading the journals lists root/jobs; os is shared, so only results matters here.)
+        self.assertEqual([path for path in scanned if str(self.results) in path], [str(self.results)])
+        statted = [name for name in statted if name.startswith("usnm_")]
         self.assertEqual(len(statted), 10)  # 2 directories x 5 names
         self.assertTrue(all(name.startswith("usnm_" + self.job) for name in statted))
 

@@ -52,7 +52,7 @@ class ArchiveReport(unittest.TestCase):
         return subprocess.run(
             ["bash", str(SCRIPT), "--config", "c.json", "--state-dir", str(self.root / "state"),
              "--archive-dir", str(self.root / "archive"), "--report-dir", str(self.root / "report"),
-             "--tool", str(self.root / "tool.py"), "--pages", "1000", *extra],
+             "--tool", str(self.root / "tool.py"), "--pages", "1000", "--allow-root-device", *extra],
             env=environment, capture_output=True, text=True, timeout=60)
 
     def last(self, done):
@@ -65,6 +65,8 @@ class ArchiveReport(unittest.TestCase):
         self.assertEqual((report["event"], report["ready"], report["eligible"]), ("boinc_archive_report", True, 1500))
         self.assertEqual((report["batch"]["pages"], report["journals_after"]), (1000, 8000))
         self.assertIn("--pages 1000", report["next_step"])
+        # The same cross-plan checks the dry run used, or the apply would not find them.
+        self.assertIn(f"--check-state-dir {self.root / 'state.other'}", report["next_step"])
         self.assertEqual(json.loads((self.root / "report/latest.json").read_text()), report)
         calls = (self.root / "log").read_text().splitlines()
         self.assertEqual(len(calls), 1)
@@ -110,6 +112,21 @@ class ArchiveReport(unittest.TestCase):
         done = self.run_report(result(batch={"pages": 1000, "bytes": 1 << 60}))
         self.assertEqual(done.returncode, 1)
         self.assertIn("not enough free space", done.stdout)
+
+    def test_an_archive_on_the_root_device_refuses(self):
+        done = subprocess.run(
+            ["bash", str(SCRIPT), "--config", "c.json", "--state-dir", str(self.root / "state"),
+             "--archive-dir", str(self.root / "archive"), "--report-dir", str(self.root / "report"),
+             "--tool", str(self.root / "tool.py")],
+            env={**os.environ, "FAKE_LOG": str(self.root / "log"), "FAKE_RESULT": result()},
+            capture_output=True, text=True, timeout=60)
+        on_root = os.stat(self.root).st_dev == os.stat("/").st_dev
+        if on_root:
+            self.assertEqual(done.returncode, 1, done.stdout)
+            self.assertIn("root filesystem", done.stdout)
+            self.assertFalse((self.root / "log").exists())
+        else:
+            self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
 
     def test_an_unmounted_archive_and_bad_numbers_refuse(self):
         (self.root / "archive/batches").rmdir()
