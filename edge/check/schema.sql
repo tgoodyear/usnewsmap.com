@@ -15,7 +15,12 @@ CREATE TABLE IF NOT EXISTS tasks (
   outcome TEXT,                   -- a, b, neither, unsure or notext once settled; "disputed" if never agreed
   settled INTEGER NOT NULL DEFAULT 0,
   confusable_display INTEGER NOT NULL DEFAULT 0,  -- 1: the readings looked alike in the visitor's font; answers given before are in answers_excluded
-  held INTEGER NOT NULL DEFAULT 0                 -- 1: kept out of the queue and closed to answers until reopened (confusable_display only)
+  held INTEGER NOT NULL DEFAULT 0,                -- 1: kept out of the queue and closed to answers until reopened (a merged_line task is never reopened)
+  mark_reason TEXT CHECK (mark_reason IN ('confusable_display', 'merged_line')),  -- why the task was marked and its answers set aside; NULL if never marked (a task marked before migrations/0005-mark-reason.sql has confusable_display = 1 and NULL here)
+  outcome_withdrawn TEXT,         -- the outcome a settled task had when it was marked; outcome is NULL from then on
+  withdrawn_reason TEXT,          -- the mark_reason it was withdrawn for
+  withdrawn_at INTEGER,           -- unix milliseconds
+  hold_reason TEXT                -- why a task is held without a mark (action hold): a slug of lower-case letters, digits and hyphens; NULL otherwise
 );
 CREATE INDEX IF NOT EXISTS tasks_open ON tasks (lang, settled, n);
 
@@ -30,7 +35,7 @@ CREATE TABLE IF NOT EXISTS answers (
 );
 CREATE INDEX IF NOT EXISTS answers_by_contributor ON answers (contributor);
 
--- Answers set aside for a task marked confusable_display: kept and exported, never counted (README.md, "Words whose readings look alike").
+-- Answers set aside for a marked task (mark_reason): kept and exported, never counted (README.md, "Words whose readings look alike").
 CREATE TABLE IF NOT EXISTS answers_excluded (
   task_id TEXT NOT NULL,
   contributor TEXT NOT NULL,

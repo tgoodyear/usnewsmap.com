@@ -21,7 +21,9 @@ Reports, as JSON on standard output:
 
 Answers set aside on the site are never counted. A word marked `confusable_display` (its readings looked alike in the visitors'
 font, #1939) has its earlier answers in the export's `excluded_counts`, apart from `counts`; this script reads only `counts`, and
-a marked word that is still `held` (not yet reopened) counts as waiting, whatever else its row says.
+a marked word that is still `held` (not yet reopened) counts as waiting, whatever else its row says. A word marked `merged_line`
+(the line clip covers two printed lines, #1978) is never scored: its line is `excluded`, counted in neither the resolved nor the waiting
+lines. Its old outcome, if it had settled, is in `outcome_withdrawn`, which this script does not read.
 
 Only lines where the readings differ are loaded. Each reading can differ from the checked text only in the disputed word, and
 errors the readings share elsewhere on the page are not seen. The figures are not each reading's error on the page.
@@ -62,9 +64,14 @@ def task_key(task_id: str) -> tuple:
 
 def usable(row: dict) -> dict:
     """The export row as scoring may see it. A held word marked `confusable_display` has no usable answers yet: it is
-    waiting, with no counts, no outcome and not settled. The answers it had are in `excluded_counts`, which nothing here reads."""
+    waiting, with no counts, no outcome and not settled. A word marked `merged_line` (its clip covers two printed lines, #1978)
+    never has usable answers: it is `excluded`, and its line leaves the scoring. The answers they had are in `excluded_counts`,
+    and a settled word's old outcome is in `outcome_withdrawn`; nothing here reads either."""
+    empty = {**row, "counts": dict.fromkeys(row["counts"], 0), "settled": False, "outcome": None}
+    if row.get("mark_reason") == "merged_line":
+        return {**empty, "excluded": True}
     if row.get("confusable_display") and row.get("held"):
-        return {**row, "counts": dict.fromkeys(row["counts"], 0), "settled": False, "outcome": None}
+        return empty
     return row
 
 
@@ -77,7 +84,9 @@ def line_states(manifest: list, export: list) -> list:
         rows = [tasks.get((m["id"], k)) for k in m["words"]]
         answers = sum(sum(r["counts"].values()) for r in rows if r)
         rec = {"id": m["id"], "page": m["page"], "kind": m["kind"], "answers": answers, "words": []}
-        if any(r is None or not r["settled"] for r in rows):
+        if any(r and r.get("excluded") for r in rows):
+            rec["state"] = "excluded"
+        elif any(r is None or not r["settled"] for r in rows):
             rec["state"] = "pending"
         elif any(r["outcome"] in SETTLED_OTHER for r in rows):
             rec["state"] = "open"
@@ -179,7 +188,7 @@ def report(manifest: list, export: list, target: int, draws: int, seed: int) -> 
         "progress": {
             "target_lines": target, "resolved_lines": resolved, "still_needed": max(0, target - resolved),
             "share_of_target": round(resolved / target, 3), "lines_loaded": len(recs),
-            "lines_open": states["open"], "lines_pending": states["pending"], "answers": answers,
+            "lines_open": states["open"], "lines_pending": states["pending"], "lines_excluded": states["excluded"], "answers": answers,
             "answers_per_resolved_line": None if per_line is None else round(per_line, 2),
             "resolved_share_of_settled_lines": None if yield_ is None else round(yield_, 3),
             "expected_resolved_if_all_loaded_lines_settle": None if expected is None else round(expected),
@@ -197,7 +206,7 @@ def report(manifest: list, export: list, target: int, draws: int, seed: int) -> 
     for kind in sorted({r["kind"] for r in recs}):
         sub = [r for r in recs if r["kind"] == kind]
         c = collections.Counter(r["state"] for r in sub)
-        out["by_kind"][kind] = {"loaded": len(sub), "resolved": c["resolved"], "open": c["open"], "pending": c["pending"], **{
+        out["by_kind"][kind] = {"loaded": len(sub), "resolved": c["resolved"], "open": c["open"], "pending": c["pending"], "excluded": c["excluded"], **{
             k: v for k, v in score(sub).items() if k in ("chr_phoenix", "loc", "difference")}}
     pages = {r["page"] for r in recs if r["state"] == "resolved"}
     out["pages_with_resolved_lines"] = len(pages)

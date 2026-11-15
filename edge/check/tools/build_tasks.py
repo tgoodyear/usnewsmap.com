@@ -14,6 +14,9 @@ with no partner at least --min-similarity alike (one reading split, joined, drop
 out, and so is a word with no letter or digit in either reading, or a pair of one- or two-letter readings
 with no letter in common (specks, picture texture).
 
+A line row with `"merged_line": true` is left out and counted: the line tools (phoenix_lines.py, yiddish_lines.py,
+serbian_lines.py) already drop merged lines (merged_lines.py, #1978), so this only guards a hand-made lines file.
+
 A line's own `a_is` and `b_is` replace --a-is and --b-is, for sets whose readings come from different sources.
 
 Look-alike letters (lookalike.py): for each pair of letters that differ at the same position, both are drawn in the font
@@ -38,6 +41,7 @@ import os
 import sys
 import unicodedata
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # `python3 -I` leaves the script directory off the path
 BUILD_ONLY = ("drop_examples", "min_examples")
 BIDI_CONTROLS = dict.fromkeys(map(ord, "\u200e\u200f\u061c\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"))
 
@@ -209,12 +213,15 @@ def main() -> None:
     os.makedirs(os.path.join(root, prefix, "lines"), exist_ok=True)
     os.makedirs(os.path.join(root, prefix, "words"), exist_ok=True)
 
-    lines = tasks = unpaired = 0
+    lines = tasks = unpaired = merged = 0
     with open(a.lines, encoding="utf-8") as src, open(os.path.join(a.out_dir, "tasks.jsonl"), "w", encoding="utf-8") as out:
         for raw in src:
             if not raw.strip():
                 continue
             ln = json.loads(raw)
+            if ln.get("merged_line"):
+                merged += 1
+                continue
             lines += 1
             a_words = [clean(w["text"]) for w in ln["a_words"]]
             b_words = clean(ln["b"]).split()
@@ -272,6 +279,8 @@ def main() -> None:
     with open(os.path.join(a.out_dir, "language.json"), "w", encoding="utf-8") as f:
         json.dump(language, f, ensure_ascii=False, indent=1)
     print(f"{lines} lines, {tasks} tasks, {unpaired} words of reading a left out (no partner alike enough, or no letters)")
+    if merged:
+        print(f"{merged} lines marked merged_line left out")
     print(f"{flagged} tasks with look-alike letters (overlap at least {threshold}), {marked} differing only in marks; reference fonts: "
           + ", ".join(f"{s or 'other'}={os.path.basename(p) if p else 'none found'}" for s, p in sorted(fonts.paths.items())))
     if fonts.unmeasured:

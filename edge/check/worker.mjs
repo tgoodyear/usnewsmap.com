@@ -251,7 +251,7 @@ async function api(request, env, url) {
   if (p === "/api/export" && request.method === "GET") {
     const l = lang(url);
     const rows = await env.DB.prepare(
-      `SELECT t.id, t.set_name, t.body, t.outcome, t.settled, t.confusable_display, t.held,
+      `SELECT t.id, t.set_name, t.body, t.outcome, t.settled, t.confusable_display, t.held, t.mark_reason, t.outcome_withdrawn, t.withdrawn_reason, t.withdrawn_at, t.hold_reason,
          SUM(a.choice = 'a') AS a, SUM(a.choice = 'b') AS b, SUM(a.choice = 'neither') AS neither, SUM(a.choice = 'unsure') AS unsure,
          SUM(a.choice = 'notext') AS notext,
          SUM(a.font = 'loaded') AS f_loaded, SUM(a.font = 'not_loaded') AS f_not_loaded, SUM(a.font = 'none') AS f_none, SUM(a.font = 'unknown') AS f_unknown,
@@ -294,10 +294,16 @@ async function api(request, env, url) {
         // The same answers by whether the page was showing letter names (NAMES_STATES). Answers given before the page reported it
         // are `unknown`. The values add up to the counts' total.
         names_counts: namesCounts(r),
-        // confusable_display: the readings looked alike in the visitor's font. The answers given before are in
-        // excluded_counts, never in counts, and they don't settle the word or count in any score. `held` is true until the
-        // word is reopened for new answers.
-        ...(r.confusable_display ? { confusable_display: true, held: !!r.held, excluded_counts: excluded.get(r.id) || { a: 0, b: 0, neither: 0, unsure: 0, notext: 0 }, excluded_font_counts: excludedFonts.get(r.id) || fontCounts({}), excluded_names_counts: excludedNames.get(r.id) || namesCounts({}) } : {}),
+        // A marked task (README.md, "Words whose readings look alike" and "Words cut from a merged line"): the answers given before
+        // are in excluded_counts, never in counts, and they don't settle the word or count in any score. `mark_reason` says why
+        // (a task marked before reasons existed is confusable_display). `held` is true until the word is reopened for new answers,
+        // which only a confusable_display word can be.
+        ...(reasonOf(r) ? { mark_reason: reasonOf(r), ...(reasonOf(r) === "confusable_display" ? { confusable_display: true } : {}), held: !!r.held, excluded_counts: excluded.get(r.id) || { a: 0, b: 0, neither: 0, unsure: 0, notext: 0 }, excluded_font_counts: excludedFonts.get(r.id) || fontCounts({}), excluded_names_counts: excludedNames.get(r.id) || namesCounts({}) } : {}),
+        // A word held without a mark (README.md, "Taking words out of the queue without a mark"): its answers, counts and outcome
+        // are as before, in `counts` and `settled`; it only takes no new answers. `hold_reason` is the slug.
+        ...(!reasonOf(r) && holdOf(r) ? { held: true, hold_reason: holdOf(r) } : {}),
+        // The outcome a settled word had when it was marked: it no longer counts as checked text, and `settled` above is false.
+        ...(r.outcome_withdrawn ? { outcome_withdrawn: r.outcome_withdrawn, withdrawn_reason: r.withdrawn_reason, withdrawn_at: r.withdrawn_at } : {}),
         settled: !!r.settled, outcome: r.outcome,
       });
     });
@@ -367,41 +373,79 @@ export async function record(env, task, contributor, choice, at = Date.now(), di
 
 // ---------- words whose readings look alike (README.md, "Words whose readings look alike") ----------
 
-// Marking a task confusable_display sets its existing answers aside, in one batch (one transaction) per task: they are
-// copied to answers_excluded, the copy is checked against the original, the originals leave `answers` (so they settle
-// nothing and count in no figure, and their authors may answer again) and the task is held out of the queue, unsettled,
-// with its count at zero. Nothing is deleted without a copy; the statement that checks the copy fails the batch if a row
-// is missing. Every statement is guarded by the task still being unmarked, inside the transaction, so a request that read
-// the task before another marked it (and the task was reopened and took new answers) changes nothing. ?1 is the task id.
-export const MARK_CONFUSABLE_SQL = [
-  `INSERT INTO answers_excluded (task_id, contributor, choice, at, font, names_shown) SELECT task_id, contributor, choice, at, font, names_shown FROM answers
-     WHERE task_id = ?1 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND confusable_display = 0)`,
-  `SELECT CASE WHEN EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND confusable_display = 0)
-     AND (SELECT COUNT(*) FROM answers_excluded WHERE task_id = ?1) < (SELECT COUNT(*) FROM answers WHERE task_id = ?1)
-     THEN json_extract('answers were not all copied', '$') END`,
-  `DELETE FROM answers WHERE task_id = ?1 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND confusable_display = 0)`,
-  `UPDATE tasks SET confusable_display = 1, held = 1, n = 0, settled = 0, outcome = NULL WHERE id = ?1 AND confusable_display = 0`,
+// Marking a task sets its existing answers aside, in one batch (one transaction) per task: they are copied to
+// answers_excluded, the copy is checked against the original, the originals leave `answers` (so they settle nothing and count
+// in no figure, and their authors may answer again) and the task is held out of the queue, unsettled, with its count at zero.
+// Nothing is deleted without a copy; the statement that checks the copy fails the batch if a row is missing. A settled task
+// keeps the outcome it had in outcome_withdrawn, with the reason and the time, so it can be told from one never settled.
+// Every statement is guarded by the task still being unmarked, inside the transaction, so a request that read the task before
+// another marked it (and the task was reopened and took new answers) changes nothing. The reason is `confusable_display`
+// (readings that look alike in the visitor's font; the word can be reopened) or `merged_line` (the clip covers two printed
+// lines; the word stays held and is never reopened). A task marked before reasons existed has confusable_display = 1 and no
+// mark_reason, and reads as confusable_display.
+export const MARK_REASONS = ["confusable_display", "merged_line"];
+// A task can be marked when it is unmarked, or (for merged_line only) when it is marked confusable_display, as the four
+// marked before reasons existed are: a clip that covers two printed lines outranks look-alike letters, and such a task may have
+// been reopened, answered and settled again. That move copies its current answers to answers_excluded and withdraws its current
+// outcome. It is refused (the task stays as it was and is listed under `unchanged`) when it could not keep everything: a current
+// answer whose contributor already has a different set-aside answer, or a settled outcome on a task that already holds a
+// withdrawn one. A task marked merged_line is never marked again.
+const MARKABLE = `((confusable_display = 0 AND mark_reason IS NULL)
+  OR (?2 = 'merged_line' AND confusable_display = 1 AND mark_reason IS NOT 'merged_line'
+      AND NOT (settled = 1 AND outcome_withdrawn IS NOT NULL)
+      AND NOT EXISTS (SELECT 1 FROM answers a JOIN answers_excluded x ON x.task_id = a.task_id AND x.contributor = a.contributor
+                       WHERE a.task_id = ?1 AND (x.choice <> a.choice OR x.at <> a.at))))`;
+// A held-only word (action "hold") has held = 1, no mark (confusable_display = 0, mark_reason NULL) and hold_reason set to the
+// slug. holdOf gives the slug or null.
+export const HOLD_REASON = /^[a-z0-9-]{1,40}$/;
+export const holdOf = (r) => (r.held && !r.confusable_display && !r.mark_reason && r.hold_reason ? r.hold_reason : null);
+export const HOLD_SQL = `UPDATE tasks SET held = 1, hold_reason = ?2
+  WHERE id = ?1 AND held = 0 AND confusable_display = 0 AND mark_reason IS NULL`;
+export const RELEASE_HOLD_SQL = `UPDATE tasks SET held = 0, hold_reason = NULL
+  WHERE id = ?1 AND held = 1 AND confusable_display = 0 AND mark_reason IS NULL AND hold_reason IS NOT NULL`;
+export const reasonOf = (r) => r.mark_reason || (r.confusable_display ? "confusable_display" : null);
+// [sql, which of (id, reason, at) it binds, in the order of its ?1, ?2, ?3]
+export const MARK_SQL = [
+  [`INSERT INTO answers_excluded (task_id, contributor, choice, at, font, names_shown) SELECT task_id, contributor, choice, at, font, names_shown FROM answers a
+     WHERE task_id = ?1 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND ${MARKABLE})
+       AND NOT EXISTS (SELECT 1 FROM answers_excluded x WHERE x.task_id = a.task_id AND x.contributor = a.contributor)`, ["id", "reason"]],
+  [`SELECT CASE WHEN EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND ${MARKABLE})
+     AND EXISTS (SELECT 1 FROM answers a WHERE a.task_id = ?1 AND NOT EXISTS
+       (SELECT 1 FROM answers_excluded x WHERE x.task_id = a.task_id AND x.contributor = a.contributor AND x.choice = a.choice AND x.at = a.at))
+     THEN json_extract('answers were not all copied', '$') END`, ["id", "reason"]],
+  [`DELETE FROM answers WHERE task_id = ?1 AND EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND ${MARKABLE})`, ["id", "reason"]],
+  [`UPDATE tasks SET mark_reason = ?2, confusable_display = CASE WHEN ?2 = 'confusable_display' THEN 1 ELSE 0 END, held = 1,
+       outcome_withdrawn = CASE WHEN settled = 1 THEN outcome ELSE outcome_withdrawn END, withdrawn_reason = CASE WHEN settled = 1 THEN ?2 ELSE withdrawn_reason END,
+       withdrawn_at = CASE WHEN settled = 1 THEN ?3 ELSE withdrawn_at END,
+       hold_reason = NULL, n = 0, settled = 0, outcome = NULL
+     WHERE id = ?1 AND ${MARKABLE}`, ["id", "reason", "at"]],
 ];
-// Reopening lets a marked task take new answers again. Its excluded answers stay excluded.
+export const markStatements = (id, reason = "confusable_display", at = Date.now()) => MARK_SQL.map(([sql, uses]) => [sql, uses.map((u) => ({ id, reason, at })[u])]);
+// Reopening lets a task marked confusable_display take new answers again. Its excluded answers stay excluded. A merged_line task is never reopened.
 export const REOPEN_CONFUSABLE_SQL = `UPDATE tasks SET held = 0 WHERE id = ?1 AND confusable_display = 1 AND held = 1`;
 
-// Applies "mark" or "reopen" to task ids. Marking a task that is already marked does nothing (so a second run can't
-// set aside the new answers); reopening a task that isn't held does nothing. `found` only tells which ids are tasks.
-export async function confusable(env, action, ids) {
+// Applies "mark" (with a reason) or "reopen" to task ids. Marking a task that is already marked, for any reason, does nothing
+// (so a second run can't set aside the new answers); reopening a task that isn't held, or isn't confusable_display, does
+// nothing. `found` only tells which ids are tasks.
+export async function confusable(env, action, ids, reason = "confusable_display", at = Date.now()) {
   const found = new Map();
   for (let i = 0; i < ids.length; i += 50) {
     const part = ids.slice(i, i + 50);
     const rows = await env.DB.prepare(`SELECT id, confusable_display, held FROM tasks WHERE id IN (${part.map(() => "?").join(",")})`).bind(...part).all();
     for (const r of rows.results) found.set(r.id, r);
   }
-  const out = { action, requested: ids.length, changed: [], unchanged: [], missing: ids.filter((i) => !found.has(i)) };
+  const out = { action, ...(action === "mark" || action === "hold" ? { reason } : {}), requested: ids.length, changed: [], unchanged: [], missing: ids.filter((i) => !found.has(i)) };
   for (const id of ids) {
     if (!found.has(id)) continue;
     // changed or not is what the guarded UPDATE did, not what was read above
     let changes;
     if (action === "mark") {
-      const res = await env.DB.batch(MARK_CONFUSABLE_SQL.map((sql) => env.DB.prepare(sql).bind(id)));
+      const res = await env.DB.batch(markStatements(id, reason, at).map(([sql, args]) => env.DB.prepare(sql).bind(...args)));
       changes = res[res.length - 1].meta.changes;
+    } else if (action === "hold") {
+      changes = (await env.DB.prepare(HOLD_SQL).bind(id, reason).run()).meta.changes;
+    } else if (action === "release") {
+      changes = (await env.DB.prepare(RELEASE_HOLD_SQL).bind(id).run()).meta.changes;
     } else {
       changes = (await env.DB.prepare(REOPEN_CONFUSABLE_SQL).bind(id).run()).meta.changes;
     }
@@ -506,10 +550,16 @@ async function admin(request, env, url) {
   if (p === "/admin/confusable" && request.method === "POST") {
     const b = await body(request, 200000);
     const ids = Array.isArray(b.tasks) ? [...new Set(b.tasks)] : [];
-    if ((b.action !== "mark" && b.action !== "reopen") || !ids.length || ids.length > 500 || ids.some((i) => typeof i !== "string" || !i || i.length > 300)) {
-      throw new HttpError(400, 'body wants {"action": "mark" or "reopen", "tasks": [1 to 500 task ids]}');
+    if (!["mark", "reopen", "hold", "release"].includes(b.action) || !ids.length || ids.length > 500 || ids.some((i) => typeof i !== "string" || !i || i.length > 300)) {
+      throw new HttpError(400, 'body wants {"action": "mark", "reopen", "hold" or "release", "tasks": [1 to 500 task ids], "reason": optional "confusable_display" or "merged_line" for mark, a required slug for hold}');
     }
-    return json(await confusable(env, b.action, ids));
+    if (b.action === "hold") {
+      if (typeof b.reason !== "string" || !HOLD_REASON.test(b.reason)) throw new HttpError(400, "hold wants a reason: lower-case letters, digits and hyphens, at most 40 characters");
+      return json(await confusable(env, "hold", ids, b.reason));
+    }
+    const reason = b.reason === undefined ? "confusable_display" : b.reason;
+    if (!MARK_REASONS.includes(reason)) throw new HttpError(400, `reason is one of ${MARK_REASONS.join(", ")}`);
+    return json(await confusable(env, b.action, ids, reason));
   }
   if (p === "/admin/dump" && request.method === "GET") {
     // Everything in D1 as JSON lines, one {"table", "row"} per line, for the nightly backup

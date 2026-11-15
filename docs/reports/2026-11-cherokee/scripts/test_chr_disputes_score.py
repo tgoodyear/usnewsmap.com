@@ -55,6 +55,29 @@ class Score(unittest.TestCase):
         self.assertEqual(rep["progress"]["resolved_lines"], 1)
         self.assertEqual(rep["progress"]["answers"], 4 + 3)  # l3's 3 answers and l4's 3, plus l5's 1 (not l1's or l2's)
 
+    def test_a_merged_line_word_is_excluded_not_waiting_and_a_withdrawn_outcome_is_not_read(self):
+        """A word marked merged_line (#1978): its line leaves the scoring, whatever outcome its row shows."""
+        merged = {**row("l1", None, settled=False, counts={}), "mark_reason": "merged_line", "held": True, "outcome_withdrawn": "a", "withdrawn_reason": "merged_line",
+                  "withdrawn_at": 1, "excluded_counts": {"a": 3, "b": 0, "neither": 0, "unsure": 0, "notext": 0}}
+        # an export that still shows the old outcome on it must not be trusted either
+        stale = {**row("l2", "a", counts={"a": 3}), "mark_reason": "merged_line", "held": True}
+        export = [merged, stale] + self.export[2:]
+        recs = {r["id"]: r for r in cds.line_states(self.manifest, export)}
+        self.assertEqual({k: r["state"] for k, r in recs.items()}, {"l1": "excluded", "l2": "excluded", "l3": "resolved", "l4": "open", "l5": "pending"})
+        self.assertEqual((recs["l1"]["answers"], recs["l2"]["answers"]), (0, 0))
+        rep = cds.report(self.manifest, export, target=10, draws=50, seed=1)
+        self.assertEqual((rep["progress"]["resolved_lines"], rep["progress"]["lines_pending"], rep["progress"]["lines_excluded"]), (1, 1, 2))
+        self.assertEqual(rep["score"]["resolved"]["lines"], 1)
+        self.assertEqual(sum(v["excluded"] for v in rep["by_kind"].values()), 2)
+
+    def test_a_held_only_word_is_scored_as_before(self):
+        """A word held without a mark (action hold): the export adds held and hold_reason, and its counts and outcome are read as usual."""
+        held = {**self.export[2], "held": True, "hold_reason": "reference-mismatch-v1"}
+        export = self.export[:2] + [held] + self.export[3:]
+        before = {r["id"]: (r["state"], r["answers"]) for r in cds.line_states(self.manifest, self.export)}
+        after = {r["id"]: (r["state"], r["answers"]) for r in cds.line_states(self.manifest, export)}
+        self.assertEqual(after, before)
+
     def test_font_counts_in_the_export_change_nothing(self):
         """The export also has font_counts (and excluded_font_counts): how many answers had the bundled font loaded. Scoring ignores them."""
         fonts = {"loaded": 1, "not_loaded": 0, "none": 0, "unknown": 2}

@@ -136,6 +136,8 @@ class Analysis(unittest.TestCase):
         self.assertEqual(an.verdict({"settled": True, "outcome": "b", "a_is": "loc", "b_is": "xiaomi"}), "xiaomi")
         self.assertEqual(an.verdict({"settled": True, "outcome": "neither"}), "neither")
         self.assertIsNone(an.verdict({"settled": False, "outcome": None}))
+        # a marked task (merged_line, #1978) exports unsettled with its old outcome apart, so it has no verdict
+        self.assertIsNone(an.verdict({"settled": False, "outcome": None, "mark_reason": "merged_line", "outcome_withdrawn": "a"}))
 
     def test_truth_rows_are_not_pilot_rows(self):
         rows = self.rows()

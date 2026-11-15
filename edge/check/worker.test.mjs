@@ -313,7 +313,7 @@ test("marking a task confusable_display sets its answers aside, keeps them, and 
   }
 
   const marked = await (await adminCall(DB, "/admin/confusable", { action: "mark", tasks: ["chr/s/1", "chr/s/1", "chr/s/missing"] })).json();
-  assert.deepEqual(marked, { action: "mark", requested: 2, changed: ["chr/s/1"], unchanged: [], missing: ["chr/s/missing"] });
+  assert.deepEqual(marked, { action: "mark", reason: "confusable_display", requested: 2, changed: ["chr/s/1"], unchanged: [], missing: ["chr/s/missing"] });
   // set aside, not deleted; unsettled; out of the queue; the other task untouched
   assert.deepEqual(row("chr/s/1"), { n: 0, settled: 0, outcome: null, confusable_display: 1, held: 1 });
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers WHERE task_id = 'chr/s/1'").get().n, 0);
@@ -356,8 +356,8 @@ test("marking a task confusable_display sets its answers aside, keeps them, and 
   const [y1] = await exported();
   assert.deepEqual([y1.counts.b, y1.counts.a, y1.excluded_counts.a, y1.outcome], [3, 0, 2, "b"]);
   // a mark request that read the task before it was marked (a racing one) runs its statements now: they change nothing
-  const { MARK_CONFUSABLE_SQL } = await import("./worker.mjs");
-  const res = await DB.batch(MARK_CONFUSABLE_SQL.map((sql) => DB.prepare(sql).bind("chr/s/1")));
+  const { markStatements } = await import("./worker.mjs");
+  const res = await DB.batch(markStatements("chr/s/1", "confusable_display", 1).map(([sql, args]) => DB.prepare(sql).bind(...args)));
   assert.equal(res[res.length - 1].meta.changes, 0);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers WHERE task_id = 'chr/s/1'").get().n, 3, "the new answers are still active");
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers_excluded WHERE task_id = 'chr/s/1'").get().n, 3);
@@ -420,8 +420,8 @@ test("migration 0002 only adds, so the Worker from before it still runs on the m
   // and the schema.sql a new database gets has the same tables and columns as the migrated one
   const fresh = new DatabaseSync(":memory:");
   fresh.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
-  // (without the font and names_shown columns, which migrations 0003 and 0004 add)
-  const shape = (d) => ["tasks", "answers_excluded"].map((t) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('${t}') WHERE name NOT IN ('font', 'names_shown') ORDER BY name`).all().map((r) => ({ ...r })));
+  // (without the font, names_shown and mark columns, which migrations 0003, 0004 and 0005 add)
+  const shape = (d) => ["tasks", "answers_excluded"].map((t) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('${t}') WHERE name NOT IN ('font', 'names_shown', 'mark_reason', 'outcome_withdrawn', 'withdrawn_reason', 'withdrawn_at', 'hold_reason') ORDER BY name`).all().map((r) => ({ ...r })));
   assert.deepEqual(shape(db), shape(fresh));
 });
 
@@ -488,7 +488,7 @@ test("migration 0003 only adds, so the Worker from before it still runs on the m
   // the schema.sql a new database gets has the same columns as the migrated one
   const fresh = new DatabaseSync(":memory:");
   fresh.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
-  const shape = (d) => ["tasks", "answers", "answers_excluded"].map((t) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('${t}') WHERE name <> 'names_shown' ORDER BY name`).all().map((r) => ({ ...r })));
+  const shape = (d) => ["tasks", "answers", "answers_excluded"].map((t) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('${t}') WHERE name NOT IN ('names_shown', 'mark_reason', 'outcome_withdrawn', 'withdrawn_reason', 'withdrawn_at', 'hold_reason') ORDER BY name`).all().map((r) => ({ ...r })));
   assert.deepEqual(shape(db), shape(fresh));
   // and the new Worker's statements run on the migrated database once migration 0004 has added its column
   db.exec(readFileSync(new URL("./migrations/0004-answer-names.sql", import.meta.url), "utf8"));
@@ -562,7 +562,7 @@ test("migration 0004 only adds, so the Worker from before it still runs on the m
   // the schema.sql a new database gets has the same columns as the migrated one
   const fresh = new DatabaseSync(":memory:");
   fresh.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
-  const shape = (d) => ["tasks", "answers", "answers_excluded"].map((t) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('${t}') ORDER BY name`).all().map((r) => ({ ...r })));
+  const shape = (d) => ["tasks", "answers", "answers_excluded"].map((t) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('${t}') WHERE name NOT IN ('mark_reason', 'outcome_withdrawn', 'withdrawn_reason', 'withdrawn_at', 'hold_reason') ORDER BY name`).all().map((r) => ({ ...r })));
   assert.deepEqual(shape(db), shape(fresh));
   // and the new Worker's statements run on the migrated database
   const { ANSWER_SQL } = await import("./worker.mjs");
@@ -590,4 +590,249 @@ test("namesState looks at each reading on its own, so a leading combining mark i
   assert.equal(make(labels, true)({ a: "x", b: "y" }), "not_shown", "no named letter");
   assert.equal(make(labels, false)({ a: "Ꭰ", b: "Ꭰ" }), "not_shown", "option off");
   assert.equal(make({}, true)({ a: "Ꭰ", b: "Ꭰ" }), "not_shown", "a language with no letter names");
+});
+
+// ---------- words cut from a merged line (#1978) ----------
+
+test("marking a task merged_line sets its answers aside, withdraws a settled outcome, holds it and never reopens it", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  const get = async (path, token) => worker.fetch(new Request("https://check.usnewsmap.com" + path, { headers: token ? { authorization: "Bearer " + token } : {} }), E, {});
+  const post = async (path, token, body) => worker.fetch(new Request("https://check.usnewsmap.com" + path, { method: "POST", headers: { authorization: "Bearer " + token }, body: JSON.stringify(body) }), E, {});
+  const body = JSON.stringify({ page: "p", a: "ᏒᎯ", b: "ᎡᎯ", a_is: "reference", b_is: "loc" });
+  for (const id of ["chr/s/1", "chr/s/2", "chr/s/3", "chr/s/4", "chr/s/5"]) db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES (?, 'chr', 's', ?)").run(id, body);
+  const [t1, t2, t3] = await Promise.all(["c1", "c2", "c3"].map((c) => signSession(env.SESSION_KEY, c)));
+  for (const [tok, choice] of [[t1, "a"], [t2, "a"], [t3, "b"]]) assert.equal((await post("/api/answers", tok, { task: "chr/s/1", choice })).status, 200); // settles: a
+  await post("/api/answers", t1, { task: "chr/s/2", choice: "b" }); // one answer, unsettled
+  for (const c of ["x1", "x2", "x3"]) await post("/api/answers", await signSession(env.SESSION_KEY, c), { task: "chr/s/3", choice: "neither" }); // settles: neither
+  for (let i = 0; i < 7; i++) await post("/api/answers", await signSession(env.SESSION_KEY, "d" + i), { task: "chr/s/4", choice: ["a", "b", "neither"][i % 3] }); // disputed
+  const row = (id) => ({ ...db.prepare("SELECT n, settled, outcome, confusable_display, held, mark_reason, outcome_withdrawn, withdrawn_reason, withdrawn_at FROM tasks WHERE id = ?").get(id) });
+  assert.deepEqual([row("chr/s/1").settled, row("chr/s/1").outcome, row("chr/s/4").outcome], [1, "a", "disputed"]);
+
+  // the reason is checked; without one the request means confusable_display, as before
+  for (const reason of ["other", 1, null]) assert.equal((await adminCall(DB, "/admin/confusable", { action: "mark", tasks: ["chr/s/5"], reason })).status, 400, String(reason));
+  const before = Date.now();
+  const r = await (await adminCall(DB, "/admin/confusable", { action: "mark", reason: "merged_line", tasks: ["chr/s/1", "chr/s/2", "chr/s/3", "chr/s/4", "chr/s/missing"] })).json();
+  assert.deepEqual([r.reason, r.changed, r.missing], ["merged_line", ["chr/s/1", "chr/s/2", "chr/s/3", "chr/s/4"], ["chr/s/missing"]]);
+
+  // a settled task: its outcome is withdrawn and kept; it counts as nothing
+  const one = row("chr/s/1");
+  assert.deepEqual({ ...one, withdrawn_at: typeof one.withdrawn_at }, { n: 0, settled: 0, outcome: null, confusable_display: 0, held: 1, mark_reason: "merged_line", outcome_withdrawn: "a", withdrawn_reason: "merged_line", withdrawn_at: "number" });
+  assert.ok(one.withdrawn_at >= before);
+  assert.equal(row("chr/s/3").outcome_withdrawn, "neither");
+  assert.equal(row("chr/s/4").outcome_withdrawn, "disputed");
+  // an unsettled one withdraws nothing
+  assert.deepEqual(row("chr/s/2"), { n: 0, settled: 0, outcome: null, confusable_display: 0, held: 1, mark_reason: "merged_line", outcome_withdrawn: null, withdrawn_reason: null, withdrawn_at: null });
+  // nothing is deleted: the answers are in answers_excluded
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers WHERE task_id IN ('chr/s/1','chr/s/2','chr/s/3','chr/s/4')").get().n, 0);
+  assert.deepEqual(db.prepare("SELECT choice FROM answers_excluded WHERE task_id = 'chr/s/1' ORDER BY contributor").all().map((x) => x.choice), ["a", "a", "b"]);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers_excluded WHERE task_id = 'chr/s/4'").get().n, 7);
+  // a task never marked is as it was
+  assert.deepEqual(row("chr/s/5"), { n: 0, settled: 0, outcome: null, confusable_display: 0, held: 0, mark_reason: null, outcome_withdrawn: null, withdrawn_reason: null, withdrawn_at: null });
+
+  // held: not served, not answerable, not reopened by "reopen", not marked again
+  const fresh = await signSession(env.SESSION_KEY, "c9");
+  assert.equal((await (await get("/api/next?lang=chr", fresh)).json()).task.id, "chr/s/5");
+  assert.equal((await post("/api/answers", fresh, { task: "chr/s/1", choice: "a", display: DISPLAY_REVISION })).status, 409);
+  const re = await (await adminCall(DB, "/admin/confusable", { action: "reopen", tasks: ["chr/s/1", "chr/s/2"] })).json();
+  assert.deepEqual([re.changed, re.unchanged], [[], ["chr/s/1", "chr/s/2"]]);
+  assert.equal(row("chr/s/1").held, 1);
+  assert.deepEqual((await (await adminCall(DB, "/admin/confusable", { action: "mark", reason: "merged_line", tasks: ["chr/s/1"] })).json()).unchanged, ["chr/s/1"]);
+  assert.equal(row("chr/s/1").withdrawn_at, one.withdrawn_at, "a second mark does not rewrite the record");
+  assert.deepEqual((await (await adminCall(DB, "/admin/confusable", { action: "mark", reason: "confusable_display", tasks: ["chr/s/1"] })).json()).unchanged, ["chr/s/1"], "a marked task keeps its first reason");
+
+  // the export: unsettled, the reason, the withdrawn outcome, the excluded counts; not a confusable_display word
+  const rows = (await (await get("/api/export?lang=chr")).text()).trim().split("\n").map((l) => JSON.parse(l));
+  const x1 = rows.find((x) => x.id === "chr/s/1");
+  assert.deepEqual([x1.settled, x1.outcome, x1.held, x1.mark_reason, x1.outcome_withdrawn, x1.withdrawn_reason, typeof x1.withdrawn_at], [false, null, true, "merged_line", "a", "merged_line", "number"]);
+  assert.deepEqual([x1.counts, x1.excluded_counts], [{ a: 0, b: 0, neither: 0, unsure: 0, notext: 0 }, { a: 2, b: 1, neither: 0, unsure: 0, notext: 0 }]);
+  assert.equal("confusable_display" in x1, false);
+  const x2 = rows.find((x) => x.id === "chr/s/2");
+  assert.equal("outcome_withdrawn" in x2, false);
+  const x5 = rows.find((x) => x.id === "chr/s/5");
+  assert.deepEqual(["mark_reason" in x5, "held" in x5, "outcome_withdrawn" in x5, "excluded_counts" in x5], [false, false, false, false]);
+  // settled totals and the answers figure leave the marked tasks out
+  const stats = await (await get("/api/stats?lang=chr")).json();
+  assert.deepEqual([stats.tasks, stats.settled, stats.answers, stats.people], [5, 0, 0, 0]);
+  const langs = await (await get("/api/languages")).json().catch(() => null);
+  if (langs) assert.equal(langs.find((l) => l.code === "chr")?.settled ?? 0, 0);
+  // the dump (the nightly backup) carries the columns
+  const dumped = (await (await worker.fetch(new Request("https://check.usnewsmap.com/admin/dump", { headers: { authorization: "Bearer secret-admin" } }), E, {})).text()).trim().split("\n").map((l) => JSON.parse(l)).find((l) => l.table === "tasks" && l.row.id === "chr/s/1");
+  assert.deepEqual([dumped.row.mark_reason, dumped.row.outcome_withdrawn], ["merged_line", "a"]);
+});
+
+test("a confusable_display mark also keeps a settled outcome, and a task marked before reasons existed still reads as confusable_display", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body, n, settled, outcome) VALUES ('chr/s/1', 'chr', 's', '{\"a\":\"x\"}', 3, 1, 'b')").run();
+  db.prepare("INSERT INTO answers (task_id, contributor, choice, at) VALUES ('chr/s/1', 'c1', 'b', 1), ('chr/s/1', 'c2', 'b', 2), ('chr/s/1', 'c3', 'b', 3)").run();
+  // marked by the Worker before reasons existed: confusable_display = 1, held, no reason
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body, confusable_display, held) VALUES ('chr/s/old', 'chr', 's', '{\"a\":\"x\"}', 1, 1)").run();
+  const done = await (await adminCall(DB, "/admin/confusable", { action: "mark", tasks: ["chr/s/1", "chr/s/old"] })).json();
+  assert.deepEqual([done.reason, done.changed, done.unchanged], ["confusable_display", ["chr/s/1"], ["chr/s/old"]], "marking the old one again does nothing");
+  assert.deepEqual({ ...db.prepare("SELECT mark_reason, confusable_display, outcome_withdrawn, withdrawn_reason FROM tasks WHERE id = 'chr/s/1'").get() }, { mark_reason: "confusable_display", confusable_display: 1, outcome_withdrawn: "b", withdrawn_reason: "confusable_display" });
+  const rows = (await (await worker.fetch(new Request("https://check.usnewsmap.com/api/export?lang=chr"), E, {})).text()).trim().split("\n").map((l) => JSON.parse(l));
+  const old = rows.find((x) => x.id === "chr/s/old");
+  assert.deepEqual([old.mark_reason, old.confusable_display, old.held, old.settled], ["confusable_display", true, true, false]);
+  assert.equal("outcome_withdrawn" in old, false);
+  // reopen still works for a confusable_display word, with or without a stored reason
+  assert.deepEqual((await (await adminCall(DB, "/admin/confusable", { action: "reopen", tasks: ["chr/s/1", "chr/s/old"] })).json()).changed, ["chr/s/1", "chr/s/old"]);
+});
+
+test("migration 0005 only adds, so the Worker from before it still runs on the migrated database", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(":memory:");
+  // the tasks table as it was after migration 0004; the answers tables are not touched by 0005
+  db.exec(`CREATE TABLE tasks (id TEXT PRIMARY KEY, lang TEXT NOT NULL, set_name TEXT NOT NULL, body TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, outcome TEXT, settled INTEGER NOT NULL DEFAULT 0, confusable_display INTEGER NOT NULL DEFAULT 0, held INTEGER NOT NULL DEFAULT 0);`);
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body, n, outcome, settled, confusable_display, held) VALUES ('t', 'chr', 's', '{}', 3, 'a', 1, 0, 0), ('m', 'chr', 's', '{}', 0, NULL, 0, 1, 1)").run();
+  db.exec(readFileSync(new URL("./migrations/0005-mark-reason.sql", import.meta.url), "utf8"));
+  assert.deepEqual(db.prepare("SELECT id, n, outcome, settled, confusable_display, held, mark_reason, outcome_withdrawn, withdrawn_reason, withdrawn_at FROM tasks ORDER BY id").all().map((r) => ({ ...r })), [
+    { id: "m", n: 0, outcome: null, settled: 0, confusable_display: 1, held: 1, mark_reason: null, outcome_withdrawn: null, withdrawn_reason: null, withdrawn_at: null },
+    { id: "t", n: 3, outcome: "a", settled: 1, confusable_display: 0, held: 0, mark_reason: null, outcome_withdrawn: null, withdrawn_reason: null, withdrawn_at: null },
+  ], "every existing task keeps its values; the new columns are empty");
+  // the statements the Worker of the 0004 revision ran on tasks still work
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('u', 'chr', 's', '{}') ON CONFLICT (id) DO UPDATE SET body = excluded.body").run();
+  db.prepare("UPDATE tasks SET confusable_display = 1, held = 1, n = 0, settled = 0, outcome = NULL WHERE id = 't' AND confusable_display = 0").run();
+  db.prepare("UPDATE tasks SET held = 0 WHERE id = 'm' AND confusable_display = 1 AND held = 1").run();
+  assert.equal(db.prepare("SELECT held FROM tasks WHERE id = 'm'").get().held, 0);
+  // a reason outside the two is refused by the column
+  assert.throws(() => db.prepare("UPDATE tasks SET mark_reason = 'other' WHERE id = 'u'").run());
+  // the schema.sql a new database gets has the same tasks columns as the migrated one
+  const fresh = new DatabaseSync(":memory:");
+  fresh.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
+  const shape = (d) => d.prepare(`SELECT name, type, "notnull", dflt_value FROM pragma_table_info('tasks') ORDER BY name`).all().map((r) => ({ ...r }));
+  assert.deepEqual(shape(db), shape(fresh));
+});
+
+test("a confusable_display task can move to merged_line: held ones just change reason, reopened ones keep every answer and withdraw the current outcome", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  const post = async (path, token, body) => worker.fetch(new Request("https://check.usnewsmap.com" + path, { method: "POST", headers: { authorization: "Bearer " + token }, body: JSON.stringify(body) }), E, {});
+  const mark = async (reason, ...tasks) => (await adminCall(DB, "/admin/confusable", { action: "mark", reason, tasks })).json();
+  const row = (id) => ({ ...db.prepare("SELECT n, settled, outcome, confusable_display, held, mark_reason, outcome_withdrawn, withdrawn_reason FROM tasks WHERE id = ?").get(id) });
+  const ids = ["chr/s/held", "chr/s/again", "chr/s/clash", "chr/s/twice"];
+  for (const id of ids) db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES (?, 'chr', 's', '{}')").run(id);
+  const tok = {};
+  for (const c of ["c1", "c2", "c3"]) tok[c] = await signSession(env.SESSION_KEY, c);
+  const answer = async (id, c, choice) => assert.equal((await post("/api/answers", tok[c], { task: id, choice, display: DISPLAY_REVISION })).status, 200);
+  for (const id of ids) for (const [c, choice] of [["c1", "a"], ["c2", "a"], ["c3", "b"]]) await answer(id, c, choice); // each settles on a
+  assert.deepEqual((await mark("confusable_display", ...ids)).changed, ids);
+  assert.deepEqual(row("chr/s/held").outcome_withdrawn, "a");
+  // held and never reopened: only the reason changes (the older withdrawn outcome stays)
+  assert.deepEqual((await mark("merged_line", "chr/s/held")).changed, ["chr/s/held"]);
+  assert.deepEqual(row("chr/s/held"), { n: 0, settled: 0, outcome: null, confusable_display: 0, held: 1, mark_reason: "merged_line", outcome_withdrawn: "a", withdrawn_reason: "confusable_display" });
+  assert.deepEqual((await mark("merged_line", "chr/s/held")).unchanged, ["chr/s/held"], "a second request changes nothing");
+  assert.deepEqual((await adminCall(DB, "/admin/confusable", { action: "reopen", tasks: ["chr/s/held"] }).then((r) => r.json())).changed, [], "and it can't be reopened now");
+  assert.deepEqual((await mark("confusable_display", "chr/s/held")).unchanged, ["chr/s/held"], "merged_line does not go back");
+
+  // reopened, answered by new people in a different way, settled on b: the move keeps the new answers and withdraws "b"
+  await adminCall(DB, "/admin/confusable", { action: "reopen", tasks: ["chr/s/again"] });
+  db.prepare("INSERT INTO answers (task_id, contributor, choice, at) VALUES ('chr/s/again', 'n1', 'b', 5), ('chr/s/again', 'n2', 'b', 6), ('chr/s/again', 'n3', 'b', 7)").run();
+  db.prepare("UPDATE tasks SET n = 3, settled = 1, outcome = 'b', outcome_withdrawn = NULL, withdrawn_reason = NULL, withdrawn_at = NULL WHERE id = 'chr/s/again'").run();
+  assert.deepEqual((await mark("merged_line", "chr/s/again")).changed, ["chr/s/again"]);
+  assert.deepEqual(row("chr/s/again"), { n: 0, settled: 0, outcome: null, confusable_display: 0, held: 1, mark_reason: "merged_line", outcome_withdrawn: "b", withdrawn_reason: "merged_line" });
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers WHERE task_id = 'chr/s/again'").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers_excluded WHERE task_id = 'chr/s/again'").get().n, 6, "the old and the new answers are all kept");
+
+  // a person who answered before and again after the reopening has two different answers and one place for them: refused, nothing changes
+  await adminCall(DB, "/admin/confusable", { action: "reopen", tasks: ["chr/s/clash"] });
+  db.prepare("INSERT INTO answers (task_id, contributor, choice, at) VALUES ('chr/s/clash', 'c1', 'neither', 9)").run();
+  db.prepare("UPDATE tasks SET n = 1 WHERE id = 'chr/s/clash'").run();
+  assert.deepEqual((await mark("merged_line", "chr/s/clash")).unchanged, ["chr/s/clash"]);
+  assert.deepEqual([row("chr/s/clash").mark_reason, row("chr/s/clash").held, db.prepare("SELECT COUNT(*) AS n FROM answers WHERE task_id = 'chr/s/clash'").get().n, db.prepare("SELECT COUNT(*) AS n FROM answers_excluded WHERE task_id = 'chr/s/clash'").get().n], ["confusable_display", 0, 1, 3]);
+
+  // settled again after already holding a withdrawn outcome: the second would overwrite the first, so it is refused too
+  await adminCall(DB, "/admin/confusable", { action: "reopen", tasks: ["chr/s/twice"] });
+  db.prepare("INSERT INTO answers (task_id, contributor, choice, at) VALUES ('chr/s/twice', 'n1', 'b', 5)").run();
+  db.prepare("UPDATE tasks SET n = 3, settled = 1, outcome = 'b' WHERE id = 'chr/s/twice'").run();
+  assert.deepEqual((await mark("merged_line", "chr/s/twice")).unchanged, ["chr/s/twice"]);
+  assert.deepEqual([row("chr/s/twice").outcome, row("chr/s/twice").outcome_withdrawn, row("chr/s/twice").mark_reason], ["b", "a", "confusable_display"]);
+});
+
+// ---------- words held without a mark ----------
+
+test("holding a task keeps its answers, counts and outcome, takes it out of the queue, and release undoes only the hold", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  const get = async (path, token) => worker.fetch(new Request("https://check.usnewsmap.com" + path, { headers: token ? { authorization: "Bearer " + token } : {} }), E, {});
+  const post = async (path, token, body) => worker.fetch(new Request("https://check.usnewsmap.com" + path, { method: "POST", headers: { authorization: "Bearer " + token }, body: JSON.stringify(body) }), E, {});
+  const body = JSON.stringify({ page: "p", a: "ᏒᎯ", b: "ᎡᎯ", a_is: "reference", b_is: "loc" });
+  for (const id of ["chr/s/1", "chr/s/2", "chr/s/3", "chr/s/4", "chr/s/5"]) db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES (?, 'chr', 's', ?)").run(id, body);
+  const [t1, t2, t3] = await Promise.all(["c1", "c2", "c3"].map((c) => signSession(env.SESSION_KEY, c)));
+  for (const [tok, choice] of [[t1, "a"], [t2, "a"], [t3, "b"]]) await post("/api/answers", tok, { task: "chr/s/1", choice }); // settles: a
+  await post("/api/answers", t1, { task: "chr/s/2", choice: "b" }); // unsettled
+  const full = (id) => ({ ...db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) });
+  const answers = () => db.prepare("SELECT task_id, contributor, choice, at FROM answers ORDER BY task_id, contributor").all().map((r) => ({ ...r }));
+  const stats = async () => JSON.stringify(await (await get("/api/stats?lang=chr")).json());
+  const exported = async () => (await (await get("/api/export?lang=chr")).text()).trim().split("\n").map((l) => JSON.parse(l));
+  const beforeRows = await exported();
+  const beforeStats = await stats();
+  const beforeAnswers = answers();
+  const beforeTask = { 1: full("chr/s/1"), 2: full("chr/s/2") };
+  // a task marked merged_line, and one marked confusable_display, for the refusals
+  await adminCall(DB, "/admin/confusable", { action: "mark", reason: "merged_line", tasks: ["chr/s/3"] });
+  await adminCall(DB, "/admin/confusable", { action: "mark", tasks: ["chr/s/4"] });
+
+  const excludedBefore = db.prepare("SELECT * FROM answers_excluded ORDER BY task_id, contributor").all().map((r) => ({ ...r }));
+  // the reason is required and checked
+  for (const reason of [undefined, "", "Bad", "has space", "x".repeat(41), 1, null, "merged_line_"]) {
+    assert.equal((await adminCall(DB, "/admin/confusable", { action: "hold", tasks: ["chr/s/1"], reason })).status, 400, String(reason));
+  }
+  assert.equal((await adminCall(DB, "/admin/confusable", { action: "hold", tasks: ["chr/s/1"], reason: "x".repeat(40) })).status, 200);
+  assert.equal((await adminCall(DB, "/admin/confusable", { action: "release", tasks: ["chr/s/1"] })).status, 200);
+  assert.deepEqual(full("chr/s/1"), beforeTask[1], "a 40-character slug is accepted, and release restores the row exactly");
+
+  const held = await (await adminCall(DB, "/admin/confusable", { action: "hold", reason: "reference-mismatch-v1", tasks: ["chr/s/1", "chr/s/2", "chr/s/1", "chr/s/3", "chr/s/4", "chr/s/missing"] })).json();
+  assert.deepEqual(held, { action: "hold", reason: "reference-mismatch-v1", requested: 5, changed: ["chr/s/1", "chr/s/2"], unchanged: ["chr/s/3", "chr/s/4"], missing: ["chr/s/missing"] });
+  // only held and the reason changed; answers, counts, outcome, settled and everything else did not
+  for (const [k, id] of [[1, "chr/s/1"], [2, "chr/s/2"]]) {
+    assert.deepEqual({ ...full(id), held: 0, hold_reason: null }, beforeTask[k]);
+    assert.deepEqual([full(id).held, full(id).hold_reason, full(id).withdrawn_reason], [1, "reference-mismatch-v1", null]);
+  }
+  assert.deepEqual(answers(), beforeAnswers);
+  assert.deepEqual(db.prepare("SELECT * FROM answers_excluded ORDER BY task_id, contributor").all().map((r) => ({ ...r })), excludedBefore);
+  // a second hold, even with another reason, changes nothing
+  const again = await (await adminCall(DB, "/admin/confusable", { action: "hold", reason: "other-reason", tasks: ["chr/s/1"] })).json();
+  assert.deepEqual([again.changed, again.unchanged], [[], ["chr/s/1"]]);
+  assert.equal(full("chr/s/1").hold_reason, "reference-mismatch-v1");
+
+  // the queue skips it; an answer gets the 409; the totals are unchanged
+  const fresh = await signSession(env.SESSION_KEY, "fresh");
+  const seen = new Set();
+  for (let i = 0; i < 6; i++) { const r = await (await get("/api/next?lang=chr", fresh)).json(); if (r.task) seen.add(r.task.id); }
+  assert.equal(seen.has("chr/s/1") || seen.has("chr/s/2"), false);
+  assert.equal((await post("/api/answers", fresh, { task: "chr/s/1", choice: "a" })).status, 409);
+  assert.equal((await post("/api/answers", fresh, { task: "chr/s/2", choice: "a" })).status, 409);
+  assert.equal(await stats(), beforeStats);
+  assert.deepEqual(answers(), beforeAnswers);
+
+  // the export: the same fields plus held and hold_reason on the two held-only tasks; others unchanged
+  const rows = await exported();
+  const byId = (rs, id) => rs.find((x) => x.id === id);
+  for (const id of ["chr/s/1", "chr/s/2"]) {
+    const { held: h, hold_reason: why, ...rest } = byId(rows, id);
+    assert.deepEqual([h, why], [true, "reference-mismatch-v1"]);
+    assert.deepEqual(rest, byId(beforeRows, id));
+  }
+  const x1 = byId(rows, "chr/s/1");
+  assert.deepEqual([x1.settled, x1.outcome, x1.counts.a, x1.counts.b], [true, "a", 2, 1]);
+  assert.equal("mark_reason" in x1 || "excluded_counts" in x1, false);
+  assert.equal("hold_reason" in byId(rows, "chr/s/3") || "hold_reason" in byId(rows, "chr/s/5"), false);
+  assert.equal("held" in byId(rows, "chr/s/5"), false);
+  assert.deepEqual(byId(rows, "chr/s/3").mark_reason, "merged_line");
+
+  // release: undoes a hold only; a marked task is refused and left as it is
+  const marked3 = full("chr/s/3"), marked4 = full("chr/s/4");
+  const rel = await (await adminCall(DB, "/admin/confusable", { action: "release", tasks: ["chr/s/1", "chr/s/3", "chr/s/4", "chr/s/5", "chr/s/missing"] })).json();
+  assert.deepEqual(rel, { action: "release", requested: 5, changed: ["chr/s/1"], unchanged: ["chr/s/3", "chr/s/4", "chr/s/5"], missing: ["chr/s/missing"] });
+  assert.deepEqual([full("chr/s/3"), full("chr/s/4")], [marked3, marked4]);
+  assert.deepEqual(full("chr/s/1"), beforeTask[1]);
+  assert.equal((await post("/api/answers", fresh, { task: "chr/s/1", choice: "a" })).status, 200, "released: takes answers again");
+  // a held word that was held for another cause (no hold reason) is not released
+  db.prepare("UPDATE tasks SET held = 1 WHERE id = 'chr/s/5'").run();
+  assert.deepEqual((await (await adminCall(DB, "/admin/confusable", { action: "release", tasks: ["chr/s/5"] })).json()).unchanged, ["chr/s/5"]);
+  assert.deepEqual((await (await adminCall(DB, "/admin/confusable", { action: "hold", reason: "x", tasks: ["chr/s/5"] })).json()).unchanged, ["chr/s/5"]);
+  // reopen does not release a hold
+  assert.deepEqual((await (await adminCall(DB, "/admin/confusable", { action: "reopen", tasks: ["chr/s/2"] })).json()).unchanged, ["chr/s/2"]);
+  assert.equal(full("chr/s/2").held, 1);
 });
