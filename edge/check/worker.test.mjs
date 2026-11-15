@@ -784,6 +784,10 @@ test("holding a task keeps its answers, counts and outcome, takes it out of the 
 
   const held = await (await adminCall(DB, "/admin/confusable", { action: "hold", reason: "reference-mismatch-v1", tasks: ["chr/s/1", "chr/s/2", "chr/s/1", "chr/s/3", "chr/s/4", "chr/s/missing"] })).json();
   assert.deepEqual(held, { action: "hold", reason: "reference-mismatch-v1", requested: 5, changed: ["chr/s/1", "chr/s/2"], unchanged: ["chr/s/3", "chr/s/4"], missing: ["chr/s/missing"] });
+  // the language list leaves held words out of both figures (chr/s/1 was settled and is held; 3 and 4 are marked and held)
+  db.prepare("INSERT OR IGNORE INTO languages (code, config) VALUES ('chr', ?)").run(JSON.stringify({ name: "Cherokee" }));
+  const card = (await (await get("/api/languages")).json()).find((l) => l.code === "chr");
+  assert.deepEqual([card.tasks, card.settled, card.held], [1, 0, 4]);
   // only held and the reason changed; answers, counts, outcome, settled and everything else did not
   for (const [k, id] of [[1, "chr/s/1"], [2, "chr/s/2"]]) {
     assert.deepEqual({ ...full(id), held: 0, hold_reason: null }, beforeTask[k]);
