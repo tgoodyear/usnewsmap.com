@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Selects the pages of a corpus-wide Tesseract re-read, worst first (usnewsmap.com#2000 part A).
+"""Selects the pages of a corpus-wide Tesseract re-read, worst first (usnewsmap.com#1999, part A).
 
   tess_worstfirst.py select --campaign ID --dsn-file FILE --out-dir DIR
       (--top-n N | --lm-oov-min X) [--language eng] [--min-words 100] [--chunk-pages 3000]
