@@ -367,6 +367,10 @@ pub enum QualityCommands {
         project: PathBuf,
         #[arg(long, default_value_t = 100)]
         max_units: usize,
+        /// At most this many workunits in all, a spot unit counting two (its replica) and a
+        /// replacement replica one.
+        #[arg(long, default_value_t = usize::MAX)]
+        max_results: usize,
     },
     /// Write `quality.qe_loc_scores` from the canonical results of text-only qe units. Writes
     /// with the DSN file in `USNM_QUALITY_QE_WRITER_DSN_FILE`.
@@ -521,8 +525,9 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             root,
             project,
             max_units,
+            max_results,
         } => {
-            let s = x::qe_text::submit(&root, &project, max_units).await?;
+            let s = x::qe_text::submit(&root, &project, max_units, max_results).await?;
             eprintln!("{}", serde_json::to_string(&s)?);
         }
         QualityCommands::QeTextCollect {
