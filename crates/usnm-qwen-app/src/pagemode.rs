@@ -21,7 +21,7 @@ use std::{
     io::{BufReader, Read, Seek, SeekFrom},
     path::Path,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Mutex,
     },
     time::{Duration, Instant},
@@ -39,8 +39,6 @@ pub(crate) const ENV_COMPUTE_RESERVE: &str = "USNM_QWEN_COMPUTE_RESERVE_MIB";
 /// What one region needs: image tokens, the prompt and 2,048 output tokens.
 pub(crate) const CTX_PER_SLOT: u32 = 8192;
 const MIB: u64 = 1 << 20;
-/// JSON around one reading, generously.
-const PER_READING: usize = 128;
 /// What readings.json may hold: the contract's limit less room for the header and diag.
 const READINGS_BUDGET: usize = usnm_ocr_contract::qwen::MAX_READINGS - 64 * 1024;
 
@@ -384,6 +382,8 @@ struct Shared<'a, 'b> {
     halvings: AtomicU64,
     total: usize,
     load_cost_ms: u64,
+    /// Bytes the readings so far take in readings.json; changed under the checkpoint lock.
+    readings_bytes: AtomicUsize,
 }
 
 struct Feed<'a> {
@@ -555,10 +555,7 @@ fn worker(sh: &Shared<'_, '_>) {
         // lost it, a blank 0-token reply may be the damage of the crash (a reset GPU answers
         // nothing), so none is believed. The counts are in the checkpoint, so this holds after
         // the task is restarted too; it does not depend on any one region's notes.
-        let distrust = {
-            let cp = sh.cp.lock().unwrap();
-            cp.llama_restarts > 0 || cp.temporary_exits > 0
-        };
+        let distrust = { server_was_lost(&sh.cp.lock().unwrap()) };
         let mut st = RegionState { seen: 0 };
         let end = run_crop(
             &mut st,
@@ -580,9 +577,12 @@ fn worker(sh: &Shared<'_, '_>) {
             |(text, tokens, _)| text.trim().is_empty() && *tokens == 0,
             distrust,
             |st| {
-                // Lost, or replaced since this request began.
+                // Lost, or replaced since this request began, or lost earlier in this task:
+                // asked again when a blank reply arrives, since another reader may have
+                // restarted the server after `distrust` was read.
                 let gone = sh.llama.lock().unwrap().has_exited();
                 gone || sh.generation.load(Ordering::SeqCst) != st.seen
+                    || server_was_lost(&sh.cp.lock().unwrap())
             },
             |st| sh.restart(&mut st.seen),
             || sh.control.should_exit().is_some() || sh.started.elapsed() >= sh.deadline,
@@ -604,7 +604,14 @@ fn worker(sh: &Shared<'_, '_>) {
             CropEnd::Done((text, tokens, metadata)) => {
                 let mut cp = sh.cp.lock().unwrap();
                 // The readings file is bounded; a page that would not fit is not a success.
-                if !fits_readings(&cp.readings, text.len()) {
+                let reading = Reading {
+                    id: crop.id.clone(),
+                    ms: crate::ms(t_crop),
+                    text,
+                    tokens,
+                };
+                let used = sh.readings_bytes.load(Ordering::SeqCst);
+                if !fits_readings(used, &reading) {
                     drop(cp);
                     sh.diag.lock().unwrap().section(
                         "readings over the size limit",
@@ -617,13 +624,10 @@ fn worker(sh: &Shared<'_, '_>) {
                     )));
                     return;
                 }
+                sh.readings_bytes
+                    .store(used + reading_json_len(&reading), Ordering::SeqCst);
                 cp.generation_metadata.insert(crop.id.clone(), metadata);
-                cp.readings.push(Reading {
-                    id: crop.id.clone(),
-                    ms: crate::ms(t_crop),
-                    text,
-                    tokens,
-                });
+                cp.readings.push(reading);
                 cp.run_ms = sh.load_cost_ms + crate::ms(sh.started);
                 let _ = cp.save(sh.work);
                 // The checkpoint stays locked until the progress is written, so two readers
@@ -695,6 +699,7 @@ pub(crate) fn read_regions<'a>(
 ) -> PageEnd {
     let done: BTreeSet<&str> = cp.readings.iter().map(|r| r.id.as_str()).collect();
     let pending: VecDeque<usize> = longest_first(&run.job.crops, &done).into();
+    let have_bytes: usize = cp.readings.iter().map(reading_json_len).sum();
     let sh = Shared {
         job: run.job,
         work: run.work,
@@ -719,6 +724,7 @@ pub(crate) fn read_regions<'a>(
         halvings: AtomicU64::new(0),
         total: run.job.crops.len(),
         load_cost_ms: run.load_cost_ms,
+        readings_bytes: AtomicUsize::new(have_bytes),
     };
     let readers = sh.launch.lock().unwrap().parallel.max(1);
     std::thread::scope(|s| {
@@ -735,10 +741,23 @@ pub(crate) fn read_regions<'a>(
     }
 }
 
-/// Whether one more reading of `next_len` bytes still fits in readings.json.
-pub(crate) fn fits_readings(have: &[Reading], next_len: usize) -> bool {
-    let used: usize = have.iter().map(|r| r.text.len() + PER_READING).sum();
-    used + next_len + PER_READING <= READINGS_BUDGET
+/// Whether the task has lost its `llama-server` before, in this run or an earlier one.
+pub(crate) fn server_was_lost(cp: &QwenCheckpoint) -> bool {
+    cp.llama_restarts > 0 || cp.temporary_exits > 0
+}
+
+/// Bytes the reading takes in the pretty-printed readings.json, escaping included.
+pub(crate) fn reading_json_len(r: &Reading) -> usize {
+    let one = serde_json::to_vec_pretty(r).map_or(usize::MAX / 4, |v| v.len());
+    let lines =
+        serde_json::to_vec_pretty(r).map_or(0, |v| v.iter().filter(|&&b| b == b'\n').count() + 1);
+    // Nested two levels deeper than on its own, and followed by a comma.
+    one.saturating_add(4 * lines).saturating_add(2)
+}
+
+/// Whether one more reading still fits in readings.json, given the bytes the others take.
+pub(crate) fn fits_readings(used: usize, next: &Reading) -> bool {
+    used.saturating_add(reading_json_len(next)) <= READINGS_BUDGET
 }
 
 /// `cp.readings` in the job's crop order.
@@ -999,23 +1018,63 @@ mod tests {
 
     #[test]
     fn a_page_whose_readings_would_not_fit_the_file_is_not_a_success() {
-        let r = |n: usize| Reading {
-            id: "r".into(),
-            ms: 1,
-            text: "x".repeat(n),
-            tokens: 1,
+        // Tabs and quotes double in JSON, and every reading carries its id and the pretty-printing.
+        let r = |i: usize| Reading {
+            id: format!("r{i:04}"),
+            ms: 123_456,
+            text: "\t\"x\n".repeat(2 * 1024),
+            tokens: 2048,
         };
-        assert!(fits_readings(&[], 8 * 1024));
-        // 1,024 regions at 6 KiB each is over the 4 MiB the upload allows.
         let mut have = Vec::new();
-        let mut n = 0;
-        while fits_readings(&have, 6 * 1024) {
-            have.push(r(6 * 1024));
-            n += 1;
+        let mut used = 0;
+        while fits_readings(used, &r(have.len())) {
+            used += reading_json_len(&r(have.len()));
+            have.push(r(have.len()));
         }
-        assert!(n < 1024 && n > 600, "{n}");
-        let json = serde_json::to_vec(&have).unwrap();
-        assert!(json.len() <= usnm_ocr_contract::qwen::MAX_READINGS);
+        assert!(have.len() > 100 && have.len() < 1024, "{}", have.len());
+        // What is accepted really does fit: the whole file, header and all.
+        let file = usnm_ocr_contract::qwen::Readings {
+            v: 1,
+            job_id: "a".repeat(64),
+            device: "vulkan".into(),
+            diag: Default::default(),
+            model: Some("xiaomi-ocr-0-q8".into()),
+            outcome: usnm_ocr_contract::qwen::Outcome::Ok,
+            prompt_version: 5,
+            readings: have,
+        };
+        let size = serde_json::to_vec_pretty(&file).unwrap().len();
+        assert!(size <= usnm_ocr_contract::qwen::MAX_READINGS, "{size}");
+        assert!(
+            size <= used + 4096,
+            "the estimate never undercounts: {size} > {used}"
+        );
+        assert!(fits_readings(0, &r(0)));
+    }
+
+    #[test]
+    fn a_blank_reply_is_distrusted_once_the_server_was_lost() {
+        let job = crate::test_support::write_xiaomi_unit(tempfile::tempdir().unwrap().path());
+        let mut cp = QwenCheckpoint {
+            v: 1,
+            job_id: job.id,
+            engine: job.engine,
+            model: "xiaomi-ocr-0-q8".into(),
+            device: "cpu".into(),
+            readings: vec![],
+            generation_metadata: Default::default(),
+            temporary_exits: 0,
+            llama_restarts: 0,
+            gpu_ms: 0,
+            run_ms: 0,
+            restart_log: vec![],
+        };
+        assert!(!server_was_lost(&cp));
+        cp.llama_restarts = 1;
+        assert!(server_was_lost(&cp));
+        cp.llama_restarts = 0;
+        cp.temporary_exits = 1;
+        assert!(server_was_lost(&cp));
     }
 
     #[test]

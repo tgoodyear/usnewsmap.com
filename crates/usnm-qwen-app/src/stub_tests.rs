@@ -289,8 +289,10 @@ fn page_mode_reads_regions_concurrently_on_one_server() {
         .unwrap()
         .parse()
         .unwrap();
-    // (Starting the server is timed from before the launch, so a little more than load_ms.)
-    assert!(ms >= result.load_ms + result.engine_ms, "{ms}");
+    // Starting the server is timed from before the launch, and the read is timed a moment
+    // before the manifest's, so the two differ by a few milliseconds either way.
+    let manifest = result.load_ms + result.engine_ms;
+    assert!(ms + 100 >= manifest, "{ms} against {manifest}");
     assert!(ms < result.load_ms + result.engine_ms + 3000, "{ms}");
     // Three at a time over nine 0.3 s requests is well under nine in a row.
     assert!(result.engine_ms < 2400, "{}", result.engine_ms);
