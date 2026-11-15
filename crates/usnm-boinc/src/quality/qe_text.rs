@@ -356,6 +356,7 @@ pub async fn submit(
     max_units: usize,
 ) -> anyhow::Result<SubmitSummary> {
     let project = project.canonicalize()?;
+    let _lock = StateLock::acquire(root)?;
     let mut s = SubmitSummary::default();
     let mut names: Vec<_> = std::fs::read_dir(units(root))?
         .filter_map(|e| e.ok())
@@ -363,18 +364,25 @@ pub async fn submit(
         .filter(|p| p.join(JOB_FILE).exists())
         .collect();
     names.sort();
+    let number = |unit: &Path, m: &str| {
+        std::fs::read_to_string(unit.join(m))
+            .ok()
+            .and_then(|t| t.trim().parse::<u32>().ok())
+            .unwrap_or(0)
+    };
     for unit in names {
+        // The markers say what a unit needs; its job is read only when something is sent.
+        let want_spot = number(&unit, "spot-wanted");
+        let spot_sent = number(&unit, "spot-sent");
+        let submitted = unit.join("submitted").exists();
+        let replica_due = submitted && want_spot > spot_sent;
+        let first_due =
+            !submitted && !unit.join("submitting").exists() && (s.submitted as usize) < max_units;
+        if !replica_due && !first_due {
+            continue;
+        }
         let job: QeTextJob = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB)?)?;
-        // A replica asked for by the collector (the first landed on the same host).
-        let want_spot = std::fs::read_to_string(unit.join("spot-wanted"))
-            .ok()
-            .and_then(|t| t.trim().parse::<u32>().ok())
-            .unwrap_or(0);
-        let spot_sent = std::fs::read_to_string(unit.join("spot-sent"))
-            .ok()
-            .and_then(|t| t.trim().parse::<u32>().ok())
-            .unwrap_or(0);
-        if unit.join("submitted").exists() && want_spot > spot_sent {
+        if replica_due {
             create_work(
                 &project,
                 &job,
@@ -383,12 +391,6 @@ pub async fn submit(
             .await?;
             atomic(&unit.join("spot-sent"), want_spot.to_string().as_bytes())?;
             s.spot_replicas += 1;
-            continue;
-        }
-        if s.submitted as usize >= max_units {
-            continue;
-        }
-        if unit.join("submitted").exists() || unit.join("submitting").exists() {
             continue;
         }
         job.validate()?;
@@ -535,20 +537,72 @@ pub fn spot_verdict(
     }
 }
 
-/// Sends every unit a failed host computed again: its markers go, its attempt number goes up.
-fn resend_units(root: &Path, bad: &[i64]) -> anyhow::Result<u64> {
+/// Held while submit or collect changes a unit's markers, so a submission never sees a unit
+/// between "sent again" and its new attempt number.
+pub struct StateLock(PathBuf);
+
+impl StateLock {
+    pub fn acquire(root: &Path) -> anyhow::Result<Self> {
+        let path = root.join("qe-text.lock");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .with_context(|| {
+                format!(
+                    "{} exists: another submit or collect is running (or died; remove it)",
+                    path.display()
+                )
+            })?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for StateLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// The hosts that failed a spot check, kept so that no later result of theirs is accepted.
+fn bad_hosts(root: &Path) -> Vec<i64> {
+    std::fs::read(root.join("bad-hosts.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn save_bad_hosts(root: &Path, hosts: &[i64]) -> anyhow::Result<()> {
+    let mut all = bad_hosts(root);
+    all.extend_from_slice(hosts);
+    all.sort_unstable();
+    all.dedup();
+    atomic(&root.join("bad-hosts.json"), &serde_json::to_vec(&all)?)
+}
+
+fn send_again(unit: &Path) -> anyhow::Result<()> {
+    let next = attempt(unit) + 1;
+    for m in ["collected", "submitted", "spot-wanted", "spot-sent"] {
+        let _ = std::fs::remove_file(unit.join(m));
+    }
+    atomic(&unit.join("resend"), next.to_string().as_bytes())
+}
+
+/// Sends every unit a failed host computed again (and the units in `extra`, whose spot check
+/// failed before they were collected): its markers go, its attempt number goes up.
+fn resend_units(root: &Path, bad: &[i64], extra: &[PathBuf]) -> anyhow::Result<u64> {
     let mut n = 0;
+    for unit in extra {
+        send_again(unit)?;
+        n += 1;
+    }
     for e in std::fs::read_dir(units(root))? {
         let unit = e?.path();
         let Ok(host) = std::fs::read_to_string(unit.join("collected")) else {
             continue;
         };
         if host.trim().parse::<i64>().is_ok_and(|h| bad.contains(&h)) {
-            let next = attempt(&unit) + 1;
-            for m in ["collected", "submitted", "spot-wanted", "spot-sent"] {
-                let _ = std::fs::remove_file(unit.join(m));
-            }
-            atomic(&unit.join("resend"), next.to_string().as_bytes())?;
+            send_again(&unit)?;
             n += 1;
         }
     }
@@ -562,7 +616,14 @@ pub async fn collect(
     writer: Option<&usnm_ocr_local::quality_db::QeLocWriter>,
     batch: usize,
 ) -> anyhow::Result<CollectSummary> {
+    let _lock = if writer.is_some() {
+        Some(StateLock::acquire(root)?)
+    } else {
+        None
+    };
     let mut s = CollectSummary::default();
+    let known_bad = bad_hosts(root);
+    let mut again: Vec<PathBuf> = Vec::new();
     let mut dirs: Vec<_> = std::fs::read_dir(units(root))?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -586,6 +647,14 @@ pub async fn collect(
             s.units_pending += 1;
             continue;
         };
+        if known_bad.contains(&host.0) {
+            // A host that failed a spot check: nothing of its is accepted.
+            if writer.is_some() {
+                again.push(unit);
+            }
+            s.units_pending += 1;
+            continue;
+        }
         let first = (result, host.clone());
         if is_spot(&job.id) {
             let wanted = std::fs::read_to_string(unit.join("spot-wanted"))
@@ -593,10 +662,33 @@ pub async fn collect(
                 .and_then(|t| t.trim().parse::<u32>().ok())
                 .unwrap_or(1);
             let rwu = workunit_of(&job, n, wanted);
+            let replica_failed = spool.join(format!("{rwu}_error")).exists()
+                || spool.join(format!("{rwu}_no_output_files")).exists();
             let replica = match (read_result(spool, &rwu)?, hosts.get(&rwu)) {
-                (Some(r), Some(h)) => Some((r, h.clone())),
+                (Some(r), Some(h)) if !known_bad.contains(&h.0) => Some((r, h.clone())),
+                (Some(_), Some(_)) => {
+                    // The replica's host is a failed one: ask for another.
+                    if writer.is_some() {
+                        atomic(
+                            &unit.join("spot-wanted"),
+                            (wanted + 1).to_string().as_bytes(),
+                        )?;
+                    }
+                    s.units_pending += 1;
+                    continue;
+                }
                 _ => None,
             };
+            if replica.is_none() && replica_failed {
+                if writer.is_some() {
+                    atomic(
+                        &unit.join("spot-wanted"),
+                        (wanted + 1).to_string().as_bytes(),
+                    )?;
+                }
+                s.units_pending += 1;
+                continue;
+            }
             match spot_verdict(&first, replica.as_ref()) {
                 Spot::Waiting => {
                     s.units_pending += 1;
@@ -629,10 +721,15 @@ pub async fn collect(
         bad.sort_unstable();
         bad.dedup();
         if let Some(w) = writer {
+            save_bad_hosts(root, &bad)?;
             w.mark_invalid(&bad).await?;
-            s.units_resent = resend_units(root, &bad)?;
         }
-        s.hosts_failed = bad;
+        s.hosts_failed = bad.clone();
+    }
+    if writer.is_some() {
+        // Hosts failed in earlier runs may have rows from this one's batch too.
+        let all = bad_hosts(root);
+        s.units_resent = resend_units(root, &all, &again)?;
     }
     Ok(s)
 }
@@ -857,7 +954,7 @@ mod tests {
             std::fs::write(unit.join("collected"), host).unwrap();
             ids.push((j, unit));
         }
-        assert_eq!(resend_units(tmp.path(), &[7]).unwrap(), 1);
+        assert_eq!(resend_units(tmp.path(), &[7], &[]).unwrap(), 1);
         let (j, unit) = &ids[0];
         assert!(!unit.join("submitted").exists() && !unit.join("collected").exists());
         assert_eq!(attempt(unit), 1);
