@@ -6,7 +6,8 @@
 #   --command submit --count N     qe-text-submit of at most N new units (under the step lock)
 #   --command collect              BOINC DB export of the canonical results' hosts, then
 #                                  qe-text-collect into quality.qe_loc_scores
-#   --command prune --days N       delete the files of units collected more than N days ago
+#   --command prune --days N       delete the files of units collected more than N days ago, and
+#                                  the BOINC download copy of every collected unit
 # The writer's DSN file is /project/qetext/writer/dsn (see qe_loc_writer_setup.sh); this script
 # never prints it.
 set -u
@@ -63,7 +64,16 @@ prune)
     d=$(dirname "$m")
     [ -e "$d/qe_text.json" ] && rm -f "$d/qe_text.json" "$d/qe.bin" && n=$((n+1))
   done
-  echo "pruned=$n"
+  # The download copy of a collected unit (the input files are no_delete, so BOINC keeps them).
+  # A unit collected again after a resend is looked at again: its dl-pruned marker is older.
+  dl=0
+  for m in $(find "$Q"/units -mindepth 2 -maxdepth 2 -name collected 2>/dev/null); do
+    d=$(dirname "$m")
+    [ -e "$d/dl-pruned" ] && [ ! "$m" -nt "$d/dl-pruned" ] && continue
+    podman exec -w /project/usnmocr $C sh -c 'f=$(bin/dir_hier_path "$1") && rm -f "$f"' sh "$(basename "$d")_qe_text_json" \
+      && : > "$d/dl-pruned" && dl=$((dl+1))
+  done
+  echo "pruned=$n downloads_pruned=$dl"
   ;;
 *) echo "usage: qe-loc-server --command status|submit|collect|prune [--count N] [--days N]" >&2; exit 2;;
 esac
