@@ -39,6 +39,7 @@ pub mod findability;
 pub mod hat;
 pub mod page_hat;
 pub mod qe;
+pub mod qe_text;
 pub mod qwen_pages;
 pub mod report;
 pub mod router;

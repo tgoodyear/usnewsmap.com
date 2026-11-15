@@ -39,6 +39,7 @@ pub mod estimate;
 pub mod exclusions;
 pub mod page_dims;
 pub mod qe;
+pub mod qe_text;
 pub mod rehat;
 pub mod rescore;
 pub mod sample;

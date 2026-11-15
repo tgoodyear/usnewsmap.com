@@ -904,7 +904,91 @@ pub fn run_container_slot(work: &Path) -> anyhow::Result<()> {
     run_slot_with_mode(work, false)
 }
 
+/// A text-only unit (`usnm_ocr_contract::qe_text`): scores each page's text, writes
+/// `qe_text_result.json`. A unit that cannot be read or checked fails the task.
+fn run_qe_text_unit(work: &Path, native_lifecycle: bool) -> anyhow::Result<()> {
+    use usnm_ocr_contract::qe_text::{QeTextJob, MAX_JOB, RESULT_FILE as QE_RESULT};
+    let result_out = resolve_slot_file(work, QE_RESULT);
+    let diag_out = resolve_slot_file(work, DIAG_FILE);
+    let fraction_out = work.join(FRACTION_FILE);
+    let finish_out = work.join(FINISH_FILE);
+    for p in [&result_out, &diag_out, &fraction_out] {
+        if p.exists() {
+            std::fs::remove_file(p)?;
+        }
+    }
+    if native_lifecycle && finish_out.exists() {
+        std::fs::remove_file(&finish_out)?;
+    }
+    write_atomic(&fraction_out, b"0.0\n")?;
+    let control = if native_lifecycle {
+        BoincControl::start(work)
+    } else {
+        BoincControl::noop()
+    };
+    let mut diag = Diag::new();
+    if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
+        diag.section(
+            "boinc control",
+            &format!("exiting without boinc_finish_called: {reason}"),
+            256,
+        );
+        write_atomic(&diag_out, &diag.finish())?;
+        return Ok(());
+    }
+    let job: QeTextJob = serde_json::from_slice(&read_bounded(
+        &resolve_slot_file(work, crate::qe_text::JOB_FILE),
+        MAX_JOB,
+    )?)?;
+    let qe = match job.qe {
+        Some(_) => Some(read_bounded(&resolve_slot_file(work, QE_FILE), MAX_QE)?),
+        None => None,
+    };
+    diag.section(
+        "unit",
+        &format!(
+            "qe_text job {} archive {} language {:?}: {} pages",
+            job.id,
+            job.archive,
+            job.language,
+            job.pages.len()
+        ),
+        512,
+    );
+    let result = crate::qe_text::score_with(&job, qe.as_deref(), || {
+        control.wait_if_suspended_or_should_exit().is_break()
+    })?;
+    let Some(result) = result else {
+        diag.section(
+            "boinc control",
+            "exiting without boinc_finish_called: asked to stop while scoring",
+            256,
+        );
+        write_atomic(&diag_out, &diag.finish())?;
+        return Ok(());
+    };
+    if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
+        diag.section(
+            "boinc control",
+            &format!("exiting without boinc_finish_called: {reason}"),
+            256,
+        );
+        write_atomic(&diag_out, &diag.finish())?;
+        return Ok(());
+    }
+    write_atomic(&diag_out, &diag.finish())?;
+    write_atomic(&result_out, &serde_json::to_vec(&result)?)?;
+    write_atomic(&fraction_out, b"1.0\n")?;
+    if native_lifecycle {
+        write_atomic(&finish_out, b"0\n")?;
+    }
+    Ok(())
+}
+
 fn run_slot_with_mode(work: &Path, native_lifecycle: bool) -> anyhow::Result<()> {
+    if resolve_slot_file(work, crate::qe_text::JOB_FILE).is_file() {
+        return run_qe_text_unit(work, native_lifecycle);
+    }
     let confusions_out = resolve_slot_file(work, CONFUSIONS_FILE);
     let diag_out = resolve_slot_file(work, DIAG_FILE);
     let result_out = resolve_slot_file(work, RESULT_FILE);

@@ -108,7 +108,14 @@ class InstallTest(unittest.TestCase):
         quality = module.install(self.project, self.wrapper, IMAGE, "1.0", "usnm_quality", "docker")
         self.assertEqual(quality.name, "x86_64-pc-linux-gnu__docker")
         self.assertNotIn("use_gpu", (quality / "job_usnm_quality_1.0_x86_64-pc-linux-gnu_docker.toml").read_text())
-        for name in ["usnm_quality_in", "usnm_quality_qe_in", "usnm_quality_out"]:
+        for name in [
+            "usnm_quality_in",
+            "usnm_quality_qe_in",
+            "usnm_quality_out",
+            "usnm_quality_qetext_in",
+            "usnm_quality_qetext_noqe_in",
+            "usnm_quality_qetext_out",
+        ]:
             self.assertTrue((self.project / "templates" / name).is_file())
         self.assertIn(
             "<file_info><number>4</number><sticky/><no_delete/></file_info>",
