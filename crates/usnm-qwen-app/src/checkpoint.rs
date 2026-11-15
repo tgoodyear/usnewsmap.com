@@ -26,12 +26,23 @@ pub struct QwenCheckpoint {
     /// How many times this task has restarted `llama-server` to retry a crop.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub llama_restarts: u32,
+    /// GPU time (server starts and reads) of the runs of this task before the current one, for
+    /// the cost of a page-mode unit that was restarted.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub gpu_ms: u64,
+    /// The current run's GPU time as last saved, folded into `gpu_ms` when the next run starts.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub run_ms: u64,
     /// Notes on those restarts, newest last, for the diagnostics.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub restart_log: Vec<String>,
 }
 
 fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+fn is_zero_u64(n: &u64) -> bool {
     *n == 0
 }
 
@@ -51,6 +62,18 @@ impl QwenCheckpoint {
             || cp.readings.len() > job.crops.len()
         {
             return None;
+        }
+        if job.page_mode.is_some() {
+            // Regions finish in any order: each reading must be one of the job's, once.
+            let mut seen = std::collections::BTreeSet::new();
+            let known: std::collections::BTreeSet<&str> =
+                job.crops.iter().map(|c| c.id.as_str()).collect();
+            for got in &cp.readings {
+                if !known.contains(got.id.as_str()) || !seen.insert(got.id.as_str()) {
+                    return None;
+                }
+            }
+            return Some(cp);
         }
         for (got, want) in cp.readings.iter().zip(&job.crops) {
             if got.id != want.id {

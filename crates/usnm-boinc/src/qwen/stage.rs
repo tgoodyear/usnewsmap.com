@@ -405,6 +405,7 @@ pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Res
             pages: vec![],
             prompt_version: opts.prompt_version,
             model: opts.model.clone(),
+            page_mode: None,
         };
         job.id = job.identity()?;
         job.validate_source_candidate()
@@ -831,6 +832,7 @@ pub fn local_unit(
         pages: vec![],
         prompt_version: PROMPT_VERSION,
         model: None,
+        page_mode: None,
     };
     job.id = job.identity()?;
     job.validate()?;
@@ -954,6 +956,7 @@ pub(super) fn bundle_job(pages: &[Job], blob: Input) -> anyhow::Result<Job> {
         pages: bundle_pages,
         prompt_version: first.prompt_version,
         model: first.model.clone(),
+        page_mode: None,
     };
     job.id = job.identity()?;
     Ok(job)
@@ -2141,6 +2144,7 @@ pub(crate) mod tests {
             pages: vec![],
             prompt_version: PROMPT_VERSION,
             model: None,
+            page_mode: None,
         };
         job.id = job.identity().unwrap();
         job.validate().unwrap();

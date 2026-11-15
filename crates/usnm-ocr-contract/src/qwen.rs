@@ -30,6 +30,10 @@ pub const MAX_BUNDLE_PAGES: usize = 32;
 /// Maximum total crops across a multi-page `usnm_qwen` bundle workunit.
 pub const MAX_BUNDLE_CROPS: usize = 256;
 pub const MAX_MODELS: usize = 4;
+/// Regions in a page-mode unit (#1998). A sample unit keeps [`MAX_CROPS`].
+pub const MAX_PAGE_REGIONS: usize = 1024;
+/// Most concurrent requests (`llama-server --parallel`) a page-mode task runs.
+pub const MAX_PAGE_SLOTS: u32 = 8;
 /// The longest deadline a unit, single page or bundle, may carry.
 pub const MAX_DEADLINE_SECS: u32 = 14_400;
 /// One crop's text, LoC's or the model's.
@@ -170,6 +174,19 @@ pub fn loop_cut(text: &str) -> Option<String> {
 /// rejects unrelated text.
 pub const PROBE_MIN_DICE: f64 = 0.5;
 
+/// A LoC ALTO id (`P1_TB00005`, or `P1_TB00005.2` for a split run): ASCII letters, digits and
+/// `_ - .`, at most 64 bytes.
+fn check_loc_id(s: &str, what: &str) -> anyhow::Result<()> {
+    ensure!(
+        !s.is_empty()
+            && s.len() <= 64
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_-.".contains(&b)),
+        "invalid {what} {s:?}"
+    );
+    Ok(())
+}
+
 /// One crop to read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -233,6 +250,32 @@ pub struct BundlePage {
     pub language: String,
 }
 
+/// One region of a page-mode unit: the LoC `TextBlock` (or a run of its lines) that the crop with
+/// the same id reads, so a reading can be put back into LoC's ALTO (#1997).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Region {
+    /// The id of the crop in `Job::crops` this region is read from.
+    pub id: String,
+    /// LoC's `TextBlock` id.
+    pub block: String,
+    /// LoC's `TextLine` ids in the region, in LoC's order.
+    pub lines: Vec<String>,
+}
+
+/// A page-mode unit (#1997): every `crops` entry is a region, read with several requests in
+/// flight on one `llama-server`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PageMode {
+    /// One entry per crop, in the crops' order.
+    pub regions: Vec<Region>,
+    /// Forces the number of slots, for calibration units only; production units leave the
+    /// client to pick it from free GPU memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slots: Option<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Job {
@@ -260,16 +303,28 @@ pub struct Job {
     /// staged before #1776) leaves the choice to the host's plan class.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Set on a page-mode unit; none on every unit staged before #1998.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_mode: Option<PageMode>,
 }
 impl Job {
     /// The job's checksum. A pinned model is appended to the hashed tuple, so
     /// every unpinned job keeps the identity it was staged with.
     pub fn identity(&self) -> anyhow::Result<String> {
         let mut bytes = self.unpinned_identity_bytes()?;
-        if let Some(model) = &self.model {
+        // A pinned model, then a page-mode block, are appended to the hashed tuple, so every
+        // job without them keeps the identity it was staged with.
+        if self.model.is_some() || self.page_mode.is_some() {
             ensure!(bytes.pop() == Some(b']'), "identity tuple is an array");
-            bytes.push(b',');
-            bytes.extend(serde_json::to_vec(model)?);
+            if let Some(model) = &self.model {
+                bytes.push(b',');
+                bytes.extend(serde_json::to_vec(model)?);
+            }
+            if let Some(page_mode) = &self.page_mode {
+                bytes.extend(b",{\"page_mode\":");
+                bytes.extend(serde_json::to_vec(page_mode)?);
+                bytes.push(b'}');
+            }
             bytes.push(b']');
         }
         Ok(sha256(&bytes))
@@ -381,10 +436,15 @@ impl Job {
                 .all(|w| w[0].min_gpu_mb >= w[1].min_gpu_mb),
             "models must be listed largest first"
         );
+        let (max_crops, max_bundle_crops) = if self.page_mode.is_some() {
+            (MAX_PAGE_REGIONS, MAX_PAGE_REGIONS)
+        } else {
+            (MAX_CROPS, MAX_BUNDLE_CROPS)
+        };
         if self.pages.is_empty() {
             ensure!(
-                !self.crops.is_empty() && self.crops.len() <= MAX_CROPS,
-                "a job has 1 to {MAX_CROPS} crops"
+                !self.crops.is_empty() && self.crops.len() <= max_crops,
+                "a job has 1 to {max_crops} crops"
             );
         } else {
             ensure!(
@@ -392,8 +452,8 @@ impl Job {
                 "a bundle has at most {MAX_BUNDLE_PAGES} pages"
             );
             ensure!(
-                !self.crops.is_empty() && self.crops.len() <= MAX_BUNDLE_CROPS,
-                "a bundle job has 1 to {MAX_BUNDLE_CROPS} crops"
+                !self.crops.is_empty() && self.crops.len() <= max_bundle_crops,
+                "a bundle job has 1 to {max_bundle_crops} crops"
             );
             let mut seen_docs = std::collections::BTreeSet::new();
             let mut expected_crops = Vec::new();
@@ -415,8 +475,8 @@ impl Job {
                     "bundle page slice exceeds page.jpg bytes"
                 );
                 ensure!(
-                    !p.crops.is_empty() && p.crops.len() <= MAX_CROPS,
-                    "a bundle page has 1 to {MAX_CROPS} crops"
+                    !p.crops.is_empty() && p.crops.len() <= max_crops,
+                    "a bundle page has 1 to {max_crops} crops"
                 );
                 for c in &p.crops {
                     check_name(&c.id, "crop id")?;
@@ -476,6 +536,37 @@ impl Job {
             xiaomi_pin || !self.engine.models.iter().any(|m| is_xiaomi_model(&m.name)),
             "an engine that lists a Xiaomi-OCR-0 model must pin it"
         );
+        if let Some(page_mode) = &self.page_mode {
+            ensure!(
+                self.prompt_version == PROMPT_VERSION_XIAOMI,
+                "page mode reads with request version {PROMPT_VERSION_XIAOMI}"
+            );
+            ensure!(
+                page_mode.regions.len() == self.crops.len()
+                    && page_mode
+                        .regions
+                        .iter()
+                        .zip(&self.crops)
+                        .all(|(r, c)| r.id == c.id),
+                "page-mode regions must list the crops, in order"
+            );
+            for r in &page_mode.regions {
+                check_loc_id(&r.block, "region block")?;
+                ensure!(
+                    !r.lines.is_empty() && r.lines.len() <= 1024,
+                    "a region has 1 to 1024 lines"
+                );
+                for l in &r.lines {
+                    check_loc_id(l, "region line")?;
+                }
+            }
+            ensure!(
+                page_mode
+                    .slots
+                    .is_none_or(|n| (1..=MAX_PAGE_SLOTS).contains(&n)),
+                "page-mode slots are 1 to {MAX_PAGE_SLOTS}"
+            );
+        }
         for t in [self.gpu_timeout_secs, self.cpu_timeout_secs] {
             ensure!((60..=MAX_DEADLINE_SECS).contains(&t), "invalid deadline");
         }
@@ -620,7 +711,7 @@ impl ResultManifest {
             "read count does not match the readings"
         );
         ensure!(
-            self.crops as usize <= MAX_BUNDLE_CROPS && r.readings.len() <= MAX_BUNDLE_CROPS,
+            self.crops as usize <= MAX_PAGE_REGIONS && r.readings.len() <= MAX_PAGE_REGIONS,
             "too many crops"
         );
         let mut ids: Vec<&str> = r.readings.iter().map(|x| x.id.as_str()).collect();
@@ -862,6 +953,7 @@ pub(crate) mod tests {
             pages: vec![],
             prompt_version: PROMPT_VERSION,
             model: None,
+            page_mode: None,
         };
         j.id = j.identity().unwrap();
         j
@@ -1078,6 +1170,87 @@ pub(crate) mod tests {
             .unwrap(),
         );
         assert_eq!(pinned.id, with_pin);
+    }
+
+    #[test]
+    fn page_mode_lists_its_regions_and_has_its_own_identity() {
+        let reid = |mut j: Job| {
+            j.id = j.identity().unwrap();
+            j
+        };
+        let paged = |n: usize, slots: Option<u32>| {
+            let mut j = xiaomi_job();
+            j.crops = (0..n)
+                .map(|i| Crop {
+                    rect: [0, 10 * i as u32, 50, 10 * i as u32 + 8],
+                    id: format!("r{i:03}"),
+                    loc_text: "word".into(),
+                    stratum: "region".into(),
+                })
+                .collect();
+            j.page_mode = Some(PageMode {
+                regions: (0..n)
+                    .map(|i| Region {
+                        id: format!("r{i:03}"),
+                        block: format!("P1_TB{i:05}"),
+                        lines: vec![format!("P1_TL{i:05}"), format!("P1_TL{i:05}.2")],
+                    })
+                    .collect(),
+                slots,
+            });
+            reid(j)
+        };
+        // Past the sample limit, up to the page limit.
+        paged(MAX_CROPS + 1, None).validate().unwrap();
+        paged(MAX_PAGE_REGIONS, Some(8)).validate().unwrap();
+        assert!(paged(MAX_PAGE_REGIONS + 1, None).validate().is_err());
+        // Without page mode the sample limit still holds.
+        let mut sample = paged(MAX_CROPS + 1, None);
+        sample.page_mode = None;
+        assert!(reid(sample).validate().is_err());
+        // The block is covered by the identity, and a plain job does not carry it.
+        let a = paged(3, None);
+        let b = paged(3, Some(2));
+        assert_ne!(a.id, b.id);
+        let mut plain = a.clone();
+        plain.page_mode = None;
+        assert_ne!(reid(plain.clone()).id, a.id);
+        assert!(serde_json::to_value(&plain)
+            .unwrap()
+            .get("page_mode")
+            .is_none());
+        let again: Job = serde_json::from_slice(&serde_json::to_vec(&a).unwrap()).unwrap();
+        assert_eq!(again, a);
+        // Slots are 1 to 8, and forcing is the calibration units' business only in the stager.
+        for bad in [0, 9] {
+            assert!(paged(3, Some(bad)).validate().is_err());
+        }
+        // One region per crop, in the crops' order.
+        let mut j = paged(3, None);
+        j.page_mode.as_mut().unwrap().regions.swap(0, 1);
+        assert!(reid(j).validate().is_err());
+        let mut j = paged(3, None);
+        j.page_mode.as_mut().unwrap().regions.pop();
+        assert!(reid(j).validate().is_err());
+        // LoC ids are mixed case with underscores; nothing else gets through.
+        let mut j = paged(2, None);
+        j.page_mode.as_mut().unwrap().regions[0].block = "P1/TB1".into();
+        assert!(reid(j).validate().is_err());
+        let mut j = paged(2, None);
+        j.page_mode.as_mut().unwrap().regions[0].lines.clear();
+        assert!(reid(j).validate().is_err());
+        // Page mode reads with Xiaomi's request.
+        let mut j = job();
+        j.page_mode = Some(PageMode {
+            regions: vec![Region {
+                id: "c01".into(),
+                block: "TB1".into(),
+                lines: vec!["TL1".into()],
+            }],
+            slots: None,
+        });
+        j.crops.truncate(1);
+        assert!(reid(j).validate().is_err());
     }
 
     #[test]

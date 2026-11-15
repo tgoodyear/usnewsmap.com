@@ -718,6 +718,7 @@ impl Server {
         load_deadline: Duration,
         image_min_tokens: Option<u32>,
         ctx_size: u32,
+        parallel: u32,
         control: &BoincControl,
     ) -> anyhow::Result<(Self, u64)> {
         if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
@@ -753,13 +754,18 @@ impl Server {
             "--seed",
             "42",
             "--parallel",
-            "1",
+            &parallel.max(1).to_string(),
             "--no-webui",
             "-ngl",
             &ngl.to_string(),
             "-t",
             &threads.max(1).to_string(),
         ]);
+        if parallel > 1 {
+            // Requests in flight share the server's decoding batches. Current llama.cpp builds
+            // do this by default; page mode does not leave it to the build.
+            cmd.arg("--cont-batching");
+        }
         if let Some(n) = image_min_tokens {
             cmd.args(["--image-min-tokens", &n.to_string()]);
         }
@@ -849,6 +855,9 @@ pub(crate) struct Launch<'a> {
     pub(crate) image_min_tokens: Option<u32>,
     /// `--ctx-size`, from the job's request version.
     pub(crate) ctx_size: u32,
+    /// `--parallel`: slots, each with `ctx_size / parallel` of the context. One except in page
+    /// mode (#1998).
+    pub(crate) parallel: u32,
     pub(crate) control: &'a BoincControl,
 }
 
@@ -879,6 +888,7 @@ impl Llama {
             load_deadline,
             l.image_min_tokens,
             l.ctx_size,
+            l.parallel,
             l.control,
         )?;
         self.port = srv.port;
@@ -1262,6 +1272,7 @@ mod completion_tests {
                 None,
                 // The context comes from the job's request version (4096, or 16384 for 5).
                 if partial { 4096 } else { 16_384 },
+                1,
                 &control,
             );
             let error = match result {

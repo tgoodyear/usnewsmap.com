@@ -118,9 +118,42 @@ pub(crate) fn write_unit(
         pages: vec![],
         prompt_version,
         model: pin.map(str::to_owned),
+        page_mode: None,
     };
     job.id = job.identity().unwrap();
     std::fs::write(dir.join(PAGE_FILE), &page).unwrap();
+    std::fs::write(dir.join(JOB_FILE), serde_json::to_vec_pretty(&job).unwrap()).unwrap();
+    job
+}
+
+/// A page-mode unit pinned to Xiaomi-OCR-0: `regions` regions of one page, each its own crop,
+/// with `slots` forced when given. Longer regions have longer LoC text.
+#[cfg(unix)]
+pub(crate) fn write_page_unit(dir: &Path, regions: usize, slots: Option<u32>) -> Job {
+    use usnm_ocr_contract::qwen::{PageMode, Region};
+    let mut job = write_xiaomi_unit(dir);
+    job.crops = (0..regions)
+        .map(|i| {
+            let y = 5 + 15 * i as u32;
+            Crop {
+                rect: [10, y, 190, y + 12],
+                id: format!("r{i:03}"),
+                loc_text: "word ".repeat(i + 1),
+                stratum: "region".into(),
+            }
+        })
+        .collect();
+    job.page_mode = Some(PageMode {
+        regions: (0..regions)
+            .map(|i| Region {
+                id: format!("r{i:03}"),
+                block: format!("P1_TB{i:05}"),
+                lines: vec![format!("P1_TL{i:05}")],
+            })
+            .collect(),
+        slots,
+    });
+    job.id = job.identity().unwrap();
     std::fs::write(dir.join(JOB_FILE), serde_json::to_vec_pretty(&job).unwrap()).unwrap();
     job
 }

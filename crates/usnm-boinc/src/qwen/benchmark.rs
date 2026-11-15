@@ -319,6 +319,7 @@ pub fn stage(opts: &Options) -> anyhow::Result<usize> {
             pages: vec![],
             prompt_version: opts.prompt_version,
             model: opts.model.clone(),
+            page_mode: None,
         };
         job.id = job.identity()?;
         job.validate()?;

@@ -7,7 +7,7 @@
 //! 2. Locates `llama-server` (`USNM_LLAMA_SERVER`, slot directory, `./llama-server[.exe]`,
 //!    or `/usr/local/bin/llama-server`) and spawns it on `127.0.0.1:<free_port>`
 //!    with `-m`, `--mmproj`, `--ctx-size 4096`, `--temp 0`, `--seed 42`,
-//!    `--parallel 1`, `--no-webui`, and `-ngl 99` (GPU) or `0` (CPU).
+//!    `--parallel 1` (page mode: one slot per concurrent region, see `pagemode`), `--no-webui`, and `-ngl 99` (GPU) or `0` (CPU).
 //! 3. Waits for `/health`, posts each crop PNG to `/v1/chat/completions`,
 //!    updates `fraction_done`, writes `readings.json`, `result.json`, and
 //!    `diag.txt`, kills `llama-server` on drop, and writes `boinc_finish_called`
@@ -18,6 +18,7 @@ mod boinc;
 mod checkpoint;
 mod gpu;
 mod locks;
+mod pagemode;
 mod report;
 mod retry;
 mod server;
@@ -432,6 +433,49 @@ pub fn run_slot_with(
     Ok(())
 }
 
+/// A region or crop whose `llama-server` kept failing: asks the BOINC client to restart the task
+/// (it resumes from the checkpoint) while the budget lasts. True when it asked, and the task
+/// must exit without a result.
+fn give_up(
+    work: &Path,
+    cp: &mut QwenCheckpoint,
+    diag: &mut Diag,
+    id: &str,
+    e: &anyhow::Error,
+) -> bool {
+    let msg = format!("{id}: {e:#}");
+    diag.section("chat completion failed", &msg, 1024);
+    // The count is saved before the client is asked, or a lost save would let a
+    // broken host restart forever.
+    let used = cp.temporary_exits;
+    if used < MAX_TEMPORARY_EXITS {
+        cp.temporary_exits = used + 1;
+        cp.log_note(&format!("{id}: temporary exit {}", used + 1));
+        if cp.save(work).is_ok() && write_temporary_exit(work, used + 1, &msg).is_ok() {
+            diag.section(
+                "boinc control",
+                &format!(
+                    "llama-server kept failing at crop {id}; asked the client to \
+                     restart the task (temporary exit {}/{MAX_TEMPORARY_EXITS}), \
+                     exiting without boinc_finish_called",
+                    used + 1
+                ),
+                512,
+            );
+            return true;
+        }
+        let _ = std::fs::remove_file(work.join(TEMPORARY_EXIT_FILE));
+        diag.section("temporary exit", "could not save the exit count", 256);
+    } else {
+        diag.section(
+            "temporary exit",
+            &format!("all {MAX_TEMPORARY_EXITS} temporary exits already used"),
+            256,
+        );
+    }
+    false
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_crops(
     work: &Path,
@@ -494,16 +538,33 @@ fn run_crops(
             .max(1)
     };
 
-    let launch = Launch {
+    // Page mode picks its slot count here; every other unit reads one crop at a time.
+    let slot_plan = l.job.page_mode.as_ref().map(|pm| {
+        pagemode::plan_slots(
+            pm.slots,
+            gpu.use_gpu,
+            gpu.free_mb,
+            &model_path,
+            &mmproj_path,
+        )
+    });
+    let mut launch = Launch {
         work,
         model_path: &model_path,
         mmproj_path: &mmproj_path,
         gpu,
         threads,
         image_min_tokens: image_min_tokens(l.job.prompt_version),
-        ctx_size: context_size(l.job.prompt_version),
+        ctx_size: slot_plan.as_ref().map_or_else(
+            || context_size(l.job.prompt_version),
+            |p| p.slots * pagemode::CTX_PER_SLOT,
+        ),
+        parallel: slot_plan.as_ref().map_or(1, |p| p.slots),
         control,
     };
+    let mut start_halvings = 0u32;
+    let start_clock = Instant::now();
+    let mut gpu_load_ms = 0u64;
     let mut load_ms = 0;
     let mut llama = match existing_port {
         Some(p) => Llama {
@@ -531,7 +592,26 @@ fn run_crops(
                 port: 0,
                 server_bin: Some(server_bin),
             };
-            match llama.start(&launch, LOAD_DEADLINE.min(deadline)) {
+            let mut halved = Vec::new();
+            let started_ok = pagemode::start_halving(
+                &mut llama,
+                &mut launch,
+                pagemode::CTX_PER_SLOT,
+                LOAD_DEADLINE.min(deadline),
+                false,
+                &mut |launch| halved.push((launch.parallel, launch.ctx_size)),
+            );
+            start_halvings = halved.len() as u32;
+            // Every load counts toward the GPU time, the ones that ran out of memory too.
+            gpu_load_ms = ms(start_clock);
+            for (slots, ctx) in halved {
+                diag.section(
+                    "slots halved",
+                    &format!("out of memory at start: now {slots} slots, ctx-size {ctx}"),
+                    256,
+                );
+            }
+            match started_ok {
                 Ok(ms_loaded) => load_ms = ms_loaded,
                 Err(e) => {
                     diag.section("llama-server start failed", &format!("{e:#}"), 2048);
@@ -551,7 +631,9 @@ fn run_crops(
 
     let started = Instant::now();
     let mut cp = match QwenCheckpoint::load_valid(work, &l.job, &model.name, &gpu.device_label) {
-        Some(existing) => {
+        Some(mut existing) => {
+            // The last run's GPU time, as far as it was saved, joins the earlier runs'.
+            existing.gpu_ms += std::mem::take(&mut existing.run_ms);
             if !existing.readings.is_empty() {
                 diag.section(
                     "checkpoint",
@@ -577,13 +659,21 @@ fn run_crops(
             generation_metadata: BTreeMap::new(),
             temporary_exits: 0,
             llama_restarts: 0,
+            gpu_ms: 0,
+            run_ms: 0,
             restart_log: Vec::new(),
         },
     };
     let mut outcome = Outcome::Ok;
     let mut gpu_peak_mib: Option<u64> = None;
 
-    for (idx, crop) in l.job.crops.iter().enumerate().skip(cp.readings.len()) {
+    // A page-mode unit is read by the concurrent loop below instead.
+    let sequential: &[Crop] = if l.job.page_mode.is_some() {
+        &[]
+    } else {
+        &l.job.crops
+    };
+    for (idx, crop) in sequential.iter().enumerate().skip(cp.readings.len()) {
         if control.wait_if_suspended_or_should_exit().is_break() {
             outcome = Outcome::Failed;
             break;
@@ -683,36 +773,8 @@ fn run_crops(
             CropEnd::GiveUp(e)
                 if control.should_exit().is_none() && started.elapsed() < deadline =>
             {
-                let msg = format!("{}: {e:#}", crop.id);
-                diag.section("chat completion failed", &msg, 1024);
-                // The count is saved before the client is asked, or a lost save would let a
-                // broken host restart forever.
-                let used = cp.temporary_exits;
-                if used < MAX_TEMPORARY_EXITS {
-                    cp.temporary_exits = used + 1;
-                    cp.log_note(&format!("{}: temporary exit {}", crop.id, used + 1));
-                    if cp.save(work).is_ok() && write_temporary_exit(work, used + 1, &msg).is_ok() {
-                        diag.section(
-                            "boinc control",
-                            &format!(
-                                "llama-server kept failing at crop {}; asked the client to \
-                                 restart the task (temporary exit {}/{MAX_TEMPORARY_EXITS}), \
-                                 exiting without boinc_finish_called",
-                                crop.id,
-                                used + 1
-                            ),
-                            512,
-                        );
-                        return None;
-                    }
-                    let _ = std::fs::remove_file(work.join(TEMPORARY_EXIT_FILE));
-                    diag.section("temporary exit", "could not save the exit count", 256);
-                } else {
-                    diag.section(
-                        "temporary exit",
-                        &format!("all {MAX_TEMPORARY_EXITS} temporary exits already used"),
-                        256,
-                    );
+                if give_up(work, &mut cp, diag, &crop.id, &e) {
+                    return None;
                 }
                 outcome = Outcome::Failed;
                 break;
@@ -734,10 +796,63 @@ fn run_crops(
         }
     }
 
+    let mut page_slots = None;
+    if l.job.page_mode.is_some() {
+        let (job, pages, page_bytes) = (&l.job, &mut l.pages, l.page_bytes.as_slice());
+        let run = pagemode::PageRun {
+            work,
+            job,
+            deadline,
+            started,
+            control,
+            gpu,
+            per_slot_ctx: pagemode::CTX_PER_SLOT,
+            load_cost_ms: gpu_load_ms,
+        };
+        let end = pagemode::read_regions(
+            &run,
+            pages,
+            page_bytes,
+            &mut llama,
+            &mut launch,
+            &mut cp,
+            diag,
+        );
+        gpu_peak_mib = end.gpu_peak_mib;
+        // This run's GPU time joins the earlier runs'; saved before any exit below.
+        cp.gpu_ms += gpu_load_ms + ms(started);
+        cp.run_ms = 0;
+        let _ = cp.save(work);
+        page_slots = Some((end.slots, end.halvings + start_halvings));
+        // A deadline or a stop that came after the last reading changes nothing.
+        let all_read = cp.readings.len() == l.job.crops.len();
+        match end.ending.filter(|_| !all_read) {
+            None => {}
+            Some(pagemode::Ending::Exit) => outcome = Outcome::Failed,
+            Some(pagemode::Ending::Timeout(msg)) => {
+                diag.section("timeout", &msg, 512);
+                outcome = Outcome::Timeout;
+            }
+            Some(pagemode::Ending::Failed(_)) => outcome = Outcome::Failed,
+            Some(pagemode::Ending::GiveUp(id, e)) => {
+                if give_up(work, &mut cp, diag, &id, &e) {
+                    return None;
+                }
+                outcome = Outcome::Failed;
+            }
+        }
+    }
+
     if outcome == Outcome::Ok && cp.readings.len() == l.job.crops.len() {
         let _ = std::fs::remove_file(work.join(CHECKPOINT_FILE));
     }
-    let out_readings = cp.readings;
+    let gpu_ms_total = cp.gpu_ms;
+    let out_readings = if l.job.page_mode.is_some() {
+        // Read in completion order; reported in the unit's order.
+        pagemode::in_crop_order(&l.job, cp.readings)
+    } else {
+        cp.readings
+    };
 
     let engine_ms = ms(started);
     let mut loop_crops = Vec::new();
@@ -767,8 +882,30 @@ fn run_crops(
             4096,
         );
     }
-    for (crop, metadata) in cp.generation_metadata {
-        diag.section(&format!("generation_v1/{crop}"), &metadata, 2048);
+    if let Some(pm) = &l.job.page_mode {
+        // One line per region (a thousand sections would not fit): the block it came from and
+        // how the read went. The per-region generation record stays in the checkpoint.
+        let by_id: BTreeMap<&str, &usnm_ocr_contract::qwen::Region> =
+            pm.regions.iter().map(|r| (r.id.as_str(), r)).collect();
+        let lines: Vec<String> = out_readings
+            .iter()
+            .map(|r| {
+                let looped = loop_crops.contains(&r.id);
+                format!(
+                    "{} block={} ms={} tokens={}{}",
+                    r.id,
+                    by_id.get(r.id.as_str()).map_or("?", |g| g.block.as_str()),
+                    r.ms,
+                    r.tokens,
+                    if looped { " looped" } else { "" }
+                )
+            })
+            .collect();
+        diag.section("regions", &lines.join("\n"), 40_000);
+    } else {
+        for (crop, metadata) in cp.generation_metadata {
+            diag.section(&format!("generation_v1/{crop}"), &metadata, 2048);
+        }
     }
     if let Some(ref srv) = llama.srv {
         if let Ok(log_text) = std::fs::read_to_string(&srv.log_path) {
@@ -782,10 +919,7 @@ fn run_crops(
     drop(llama);
 
     let mut r_diag = BTreeMap::new();
-    r_diag.insert(
-        "ctx_size".into(),
-        context_size(l.job.prompt_version).to_string(),
-    );
+    r_diag.insert("ctx_size".into(), launch.ctx_size.to_string());
     r_diag.insert(
         "image_min_tokens".into(),
         image_min_tokens(l.job.prompt_version).map_or("default".into(), |n| n.to_string()),
@@ -821,6 +955,30 @@ fn run_crops(
         "n_gpu_layers".into(),
         if gpu.use_gpu { "99" } else { "0" }.into(),
     );
+    if let (Some((slots, halvings)), Some(plan)) = (page_slots, &slot_plan) {
+        r_diag.insert("page_mode".into(), "1".into());
+        r_diag.insert("slots".into(), slots.to_string());
+        r_diag.insert("ctx_per_slot".into(), pagemode::CTX_PER_SLOT.to_string());
+        r_diag.insert("slots_planned".into(), plan.slots.to_string());
+        r_diag.insert("slots_forced".into(), plan.forced.to_string());
+        r_diag.insert("kv_per_slot_mib".into(), plan.kv_per_slot_mib.to_string());
+        r_diag.insert("fixed_mib".into(), plan.fixed_mib.to_string());
+        if let Some(free) = plan.free_mib {
+            r_diag.insert("free_mib".into(), free.to_string());
+        }
+        if halvings > 0 {
+            r_diag.insert("slot_halvings".into(), halvings.to_string());
+        }
+        if !plan.note.is_empty() {
+            r_diag.insert("slot_note".into(), tail(&plan.note, 200).to_owned());
+        }
+        // The GPU was held for the whole run, so a page costs its token share of it (#1998).
+        let shares = pagemode::split_ms(
+            gpu_ms_total,
+            &pagemode::tokens_by_page(&l.job, &out_readings),
+        );
+        r_diag.extend(pagemode::gpu_ms_entries(&shares));
+    }
     let device = gpu.device_label.clone();
     let readings = Readings {
         v: VERSION,
@@ -1618,6 +1776,7 @@ mod tests {
             ],
             prompt_version: PROMPT_VERSION_IMAGE_MIN_TOKENS,
             model: None,
+            page_mode: None,
         };
         job.id = job.identity().unwrap();
         std::fs::write(slot.join(PAGE_FILE), &page_blob).unwrap();
@@ -1651,6 +1810,8 @@ mod tests {
             )]),
             temporary_exits: 0,
             llama_restarts: 0,
+            gpu_ms: 0,
+            run_ms: 0,
             restart_log: Vec::new(),
         };
         let mut legacy = serde_json::to_value(&cp).unwrap();
@@ -1999,6 +2160,8 @@ mod tests {
             generation_metadata: BTreeMap::new(),
             temporary_exits: MAX_TEMPORARY_EXITS,
             llama_restarts: 0,
+            gpu_ms: 0,
+            run_ms: 0,
             restart_log: Vec::new(),
         };
         cp.save(&slot).unwrap();

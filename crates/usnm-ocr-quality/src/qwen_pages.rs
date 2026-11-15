@@ -167,6 +167,7 @@ mod tests {
             pages: bundle_pages,
             prompt_version: 1,
             model: None,
+            page_mode: None,
         };
         (job, blob)
     }

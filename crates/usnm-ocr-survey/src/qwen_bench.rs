@@ -161,6 +161,7 @@ pub fn stage(o: &StageOptions) -> anyhow::Result<Staged> {
             pages,
             prompt_version: PROMPT_VERSION,
             model: None,
+            page_mode: None,
         };
         job.id = job.identity()?;
         job.validate()?;
