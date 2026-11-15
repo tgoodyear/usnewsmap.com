@@ -92,12 +92,12 @@ python3 "$TOOL" dispatch --min-age-hours "$MIN_AGE" --pages "$PAGES" \
   ${CHECKS[@]+"${CHECKS[@]}"} > "$out" || status=$?
 [ "$status" -eq 0 ] || { cat "$out"; die "the dry run failed (status $status)"; }
 
-python3 - "$out" "$ARCHIVE" "$PAGES" "$REPORT_DIR" "$UNIT" "$MIN_AGE" "$STATE_DIR" "$CONFIG" \
+python3 - "$out" "$ARCHIVE" "$PAGES" "$REPORT_DIR" "$UNIT" "$MIN_AGE" "$STATE_DIR" "$CONFIG" "$TOOL" \
   ${CHECK_DIRS[@]+"${CHECK_DIRS[@]}"} << 'PY'
 import json, shlex, shutil, sys, time
 from pathlib import Path
 
-out, archive, pages, report_dir, unit, min_age, state_dir, config, *check_dirs = sys.argv[1:]
+out, archive, pages, report_dir, unit, min_age, state_dir, config, tool, *check_dirs = sys.argv[1:]
 pages = int(pages)
 
 
@@ -111,36 +111,39 @@ lines = [json.loads(line) for line in open(out) if line.startswith("{")]
 result = lines[-1] if lines else {}
 if result.get("event") != "boinc_archive_dispatch" or result.get("apply") is not False:
     fail("the dry run printed no boinc_archive_dispatch result")
-checks = result.get("outstanding_pages") or {}
-if checks.get("error") is not None:
-    fail(f"the journals and state don't agree already: {checks['error']}")
-if checks.get("unchanged") is not True:
-    fail("archiving this batch would leave pages needing work again")
 batch = result.get("batch") or {}
 eligible = (result.get("pages") or {}).get("eligible")
-if type(eligible) is not int or type(batch.get("pages")) is not int or batch["pages"] > pages:
-    fail("the dry run's page counts are missing or larger than --pages")
 summary = {"event": "boinc_archive_report", "schema_version": 1, "at": int(time.time()),
            "plan": result.get("plan"), "pages_limit": pages, "eligible": eligible,
            "journals": result.get("journals"), "journal_cap": result.get("journal_cap")}
 if result.get("resume"):
+    # A batch an earlier run stopped half way: its stores can disagree with the journals until
+    # its steps are finished, so the consistency checks below don't apply yet.
     summary.update(ready=False, skipped=f"batch {result['resume']['batch']} is planned already: finish its steps first",
                    resume=result["resume"])
-elif eligible == 0 or batch["pages"] == 0:
-    summary.update(ready=False, skipped="no page is drained and old enough to archive")
 else:
-    free = shutil.disk_usage(archive).free
-    need = batch["bytes"] * 1.1 + (64 << 20)
-    if free <= need:
-        fail(f"not enough free space in {archive} for the batch: {free} bytes free, {int(need)} needed")
-    summary.update(
-        ready=True, batch=batch, journals_after=result["after_batch"]["journals"], archive_free_bytes=free,
-        next_step=("the maintainer approves the run (docs/boinc/server/batch-scheduler.md, Archive drained "
-                   "history): " + " ".join(shlex.quote(word) for word in [
-                       "python3", "archive_history.py", "dispatch", "--apply", "--confirm-controller-paused",
-                       "--pages", str(pages), "--min-age-hours", min_age, "--controller-unit", unit,
-                       "--config", config, "--state-dir", state_dir, "--archive-dir", archive,
-                       *[word for directory in check_dirs for word in ("--check-state-dir", directory)]])))
+    checks = result.get("outstanding_pages") or {}
+    if checks.get("error") is not None:
+        fail(f"the journals and state don't agree already: {checks['error']}")
+    if checks.get("unchanged") is not True:
+        fail("archiving this batch would leave pages needing work again")
+    if type(eligible) is not int or type(batch.get("pages")) is not int or batch["pages"] > pages:
+        fail("the dry run's page counts are missing or larger than --pages")
+    if eligible == 0 or batch["pages"] == 0:
+        summary.update(ready=False, skipped="no page is drained and old enough to archive")
+    else:
+        free = shutil.disk_usage(archive).free
+        need = batch["bytes"] * 1.1 + (64 << 20)
+        if free <= need:
+            fail(f"not enough free space in {archive} for the batch: {free} bytes free, {int(need)} needed")
+        summary.update(
+            ready=True, batch=batch, journals_after=result["after_batch"]["journals"], archive_free_bytes=free,
+            next_step=("the maintainer approves the run (docs/boinc/server/batch-scheduler.md, Archive drained "
+                       "history): " + " ".join(shlex.quote(word) for word in [
+                           "python3", tool, "dispatch", "--apply", "--confirm-controller-paused",
+                           "--pages", str(pages), "--min-age-hours", min_age, "--controller-unit", unit,
+                           "--config", config, "--state-dir", state_dir, "--archive-dir", archive,
+                           *[word for directory in check_dirs for word in ("--check-state-dir", directory)]])))
 text = json.dumps(summary, sort_keys=True)
 target = Path(report_dir) / "latest.json"
 temp = target.with_name(".latest.json.tmp")

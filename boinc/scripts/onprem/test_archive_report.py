@@ -65,6 +65,7 @@ class ArchiveReport(unittest.TestCase):
         self.assertEqual((report["event"], report["ready"], report["eligible"]), ("boinc_archive_report", True, 1500))
         self.assertEqual((report["batch"]["pages"], report["journals_after"]), (1000, 8000))
         self.assertIn("--pages 1000", report["next_step"])
+        self.assertIn(f"python3 {self.root / 'tool.py'} dispatch --apply", report["next_step"])
         # The same cross-plan checks the dry run used, or the apply would not find them.
         self.assertIn(f"--check-state-dir {self.root / 'state.other'}", report["next_step"])
         self.assertEqual(json.loads((self.root / "report/latest.json").read_text()), report)
@@ -86,6 +87,11 @@ class ArchiveReport(unittest.TestCase):
         done = self.run_report(result(resume={"batch": "0003", "pages": 10, "jobs": 10}))
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("batch 0003 is planned already", self.last(done)["skipped"])
+        # Half-finished stores disagreeing with the journals are not a failure while it waits.
+        done = self.run_report(result(resume={"batch": "0003", "pages": 10, "jobs": 10},
+                                      outstanding_pages={"unchanged": False, "error": "SQL/journal mismatch"}))
+        self.assertEqual(done.returncode, 0, done.stdout)
+        self.assertEqual(self.last(done)["ready"], False)
 
     def test_any_failed_check_refuses(self):
         cases = {
