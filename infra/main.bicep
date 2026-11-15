@@ -1151,6 +1151,7 @@ module api 'modules/containerapp.bicep' = if (deployApi) {
     storageAccountName: storage.outputs.name
     cosmosEndpoint: cosmos.outputs.endpoint
     allowedOrigins: siteOrigins
+    siteDomain: dnsZoneName
     minReplicas: apiMinReplicas
     maxReplicas: apiMaxReplicas
     computeSlots: apiComputeSlots
@@ -1201,6 +1202,7 @@ module apiSpare 'modules/containerapp.bicep' = if (deployApi && spareEnvOn && vn
     storageAccountName: storage.outputs.name
     cosmosEndpoint: cosmos.outputs.endpoint
     allowedOrigins: union(allowedOrigins, domainOrigins, ['https://${n.spareApiApp}.${spareEnv!.outputs.defaultDomain}'])
+    siteDomain: dnsZoneName
     minReplicas: apiMinReplicas
     maxReplicas: apiMaxReplicas
     computeSlots: apiComputeSlots

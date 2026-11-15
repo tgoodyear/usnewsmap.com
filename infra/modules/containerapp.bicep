@@ -39,6 +39,8 @@ param ocrRequests bool = false
 @description('Cosmos DB endpoint of the pipeline state, read (Data Reader, private endpoint) for the public status page.')
 param cosmosEndpoint string
 param allowedOrigins array
+@description('The site\'s domain (usnewsmap.com). With it the API knows its two public hosts: www redirects to it, and on api.{siteDomain} anything that is not an API route redirects to it. Empty: neither redirect.')
+param siteDomain string = ''
 param indexStorageAccountName string = ''
 @maxLength(31)
 param indexSearcherName string = ''
@@ -109,6 +111,14 @@ var quickwitConfig = replace(
   storageAccountName
 )
 
+// The API's two public hosts, as scripts/onprem/serving/gen-env.sh sets them on-prem. Without the domain the
+// app has only its own hostname, and neither redirect applies.
+var siteHostEnv = empty(siteDomain)
+  ? []
+  : [
+      { name: 'USNM_SITE_HOST', value: siteDomain }
+      { name: 'USNM_API_HOST', value: 'api.${siteDomain}' }
+    ]
 var apiEnv = [
   { name: 'USNM_RESPONSE_CACHE_URL', value: '${storageBlobEndpoint}cache' }
   // The anonymous search log (06 §6.8, ADR-0012).
@@ -185,7 +195,7 @@ var apiContainer = {
   resources: sidecar
     ? { cpu: json('0.25'), memory: '0.5Gi' }
     : { cpu: json('1.0'), memory: '2Gi' }
-  env: concat(backendEnv, apiEnv, ocrRequestsEnv, telemetryEnv, scheduleEnv, americanStoriesEnv, congressEnv, pageLanguageFilterEnv, browsePagesEnv, readyEnv, computeEnv)
+  env: concat(backendEnv, apiEnv, siteHostEnv, ocrRequestsEnv, telemetryEnv, scheduleEnv, americanStoriesEnv, congressEnv, pageLanguageFilterEnv, browsePagesEnv, readyEnv, computeEnv)
   probes: [
     {
       // A start loads the published version (loadSecs), then warms the
