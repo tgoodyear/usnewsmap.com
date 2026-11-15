@@ -12,4 +12,5 @@ case "$#" in
   *) echo "usnm_quality_check: expected 2 or 3 files, got $#" >&2; exit 2 ;;
 esac
 exec /usr/local/bin/usnm-boinc quality check --files "$@" \
+  --jobs "${USNM_QUALITY_DIR:-$(cd .. && pwd)/quality}/../qetext/jobs" \
   --keep "${USNM_QUALITY_DIR:-$(cd .. && pwd)/quality}/seen"

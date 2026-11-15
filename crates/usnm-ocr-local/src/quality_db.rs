@@ -220,6 +220,9 @@ pub struct QeLocScore {
     pub no_words: Option<bool>,
     pub words: Option<i64>,
     pub null_reason: Option<String>,
+    /// The BOINC host that computed the row, and the app version it ran.
+    pub host_id: i64,
+    pub app_version: String,
 }
 
 /// The environment variable naming the DSN file of the role that writes
@@ -271,11 +274,11 @@ impl QeLocWriter {
                 .execute(
                     "INSERT INTO quality.qe_loc_scores \
                      (doc_id, archive, language, language_source, qe_version, resources_lock, \
-                      oov, charlm_bpc, lm_oov, known3, no_words, words, null_reason) \
+                      oov, charlm_bpc, lm_oov, known3, no_words, words, null_reason, host_id, app_version) \
                      SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], \
                       $6::text[], $7::float8[], $8::float8[], $9::float8[], $10::int8[], $11::bool[], \
-                      $12::int8[], $13::text[]) \
-                     ON CONFLICT (doc_id, qe_version) DO NOTHING",
+                      $12::int8[], $13::text[], $14::int8[], $15::text[]) \
+                     ON CONFLICT (doc_id, qe_version) WHERE NOT invalid DO NOTHING",
                     &[
                         &col(|r| r.doc_id.clone()),
                         &col(|r| r.archive.clone()),
@@ -290,6 +293,8 @@ impl QeLocWriter {
                         &chunk.iter().map(|r| r.no_words).collect::<Vec<_>>(),
                         &chunk.iter().map(|r| r.words).collect::<Vec<_>>(),
                         &opt(|r| r.null_reason.clone()),
+                        &chunk.iter().map(|r| r.host_id).collect::<Vec<_>>(),
+                        &col(|r| r.app_version.clone()),
                     ],
                 )
                 .await
@@ -304,6 +309,30 @@ impl QeLocWriter {
         }
         task.abort();
         Ok(new)
+    }
+}
+
+impl QeLocWriter {
+    /// Marks every row of these hosts invalid (a failed spot check); returns how many rows.
+    pub async fn mark_invalid(&self, host_ids: &[i64]) -> anyhow::Result<u64> {
+        let (client, connection) = self
+            .config
+            .connect(self.tls.clone())
+            .await
+            .with_context(|| format!("connecting to {}", self.label))?;
+        let task = tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        let n = client
+            .execute(
+                "UPDATE quality.qe_loc_scores SET invalid = true \
+                 WHERE host_id = ANY($1::int8[]) AND NOT invalid",
+                &[&host_ids],
+            )
+            .await
+            .context("marking quality.qe_loc_scores rows invalid");
+        task.abort();
+        n
     }
 }
 

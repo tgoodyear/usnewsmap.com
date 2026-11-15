@@ -152,6 +152,10 @@ pub enum QualityCommands {
         files: Vec<PathBuf>,
         #[arg(long)]
         keep: Option<PathBuf>,
+        /// Text-only qe units: the directory of unit manifests; a result must have exactly its
+        /// unit's pages.
+        #[arg(long)]
+        jobs: Option<PathBuf>,
     },
     /// script_validator's compare script: two results of one unit; --log appends the pair.
     Compare {
@@ -372,6 +376,10 @@ pub enum QualityCommands {
         /// Where the assimilator keeps the canonical results.
         #[arg(long)]
         spool: PathBuf,
+        /// `wu_name<TAB>host_id<TAB>app version` of the canonical results, exported from the
+        /// BOINC database (see `qe_text::read_hosts`).
+        #[arg(long)]
+        hosts: PathBuf,
         /// Check the results and count the rows; write nothing.
         #[arg(long)]
         dry_run: bool,
@@ -520,15 +528,17 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
         QualityCommands::QeTextCollect {
             root,
             spool,
+            hosts,
             dry_run,
             batch,
         } => {
+            let hosts = x::qe_text::read_hosts(&hosts)?;
             let writer = if dry_run {
                 None
             } else {
                 Some(usnm_ocr_local::quality_db::QeLocWriter::from_env()?)
             };
-            let s = x::qe_text::collect(&root, &spool, writer.as_ref(), batch).await?;
+            let s = x::qe_text::collect(&root, &spool, &hosts, writer.as_ref(), batch).await?;
             eprintln!("{}", serde_json::to_string(&s)?);
         }
         QualityCommands::Submit {
@@ -578,7 +588,9 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             })?;
             println!("{}", j.id);
         }
-        QualityCommands::Check { files, keep } => x::validate::check(&files, keep.as_deref())?,
+        QualityCommands::Check { files, keep, jobs } => {
+            x::validate::check_jobs(&files, keep.as_deref(), jobs.as_deref())?
+        }
         QualityCommands::Compare { files, files2, log } => {
             x::validate::compare(&files, &files2, log.as_deref())?
         }

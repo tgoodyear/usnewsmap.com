@@ -61,7 +61,42 @@ pub struct QeTextJob {
     pub qe: Option<QeInput>,
 }
 
+/// What the validator knows of a unit's input: its id, page count and the digest of its doc ids
+/// in order. `submit` writes it beside the project; a result is rejected unless it matches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QeTextManifest {
+    pub id: String,
+    pub pages: usize,
+    pub doc_ids_sha256: String,
+}
+
+/// Whether a unit is replicated on a second host: 3 in 100, by its id.
+pub const SPOT_PERCENT: u64 = 3;
+pub fn is_spot(id: &str) -> bool {
+    let h = sha256(format!("spot:{id}").as_bytes());
+    u64::from_str_radix(&h[..8], 16).is_ok_and(|v| v % 100 < SPOT_PERCENT)
+}
+
+/// The most two hosts' float measures may differ by.
+pub const SPOT_TOLERANCE: f64 = 1e-6;
+
 impl QeTextJob {
+    pub fn manifest(&self) -> QeTextManifest {
+        QeTextManifest {
+            id: self.id.clone(),
+            pages: self.pages.len(),
+            doc_ids_sha256: sha256(
+                self.pages
+                    .iter()
+                    .map(|p| p.doc_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .as_bytes(),
+            ),
+        }
+    }
+
     pub fn identity(&self) -> anyhow::Result<String> {
         Ok(sha256(&serde_json::to_vec(&(
             self.v,
@@ -151,6 +186,69 @@ pub struct QeTextResult {
 }
 
 impl QeTextResult {
+    /// The result has exactly the unit's pages: the same count and the same doc ids in order.
+    pub fn check_manifest(&self, m: &QeTextManifest) -> anyhow::Result<()> {
+        ensure!(self.id == m.id, "result is for another unit");
+        ensure!(
+            self.rows.len() == m.pages,
+            "result has {} rows, the unit {} pages",
+            self.rows.len(),
+            m.pages
+        );
+        let digest = sha256(
+            self.rows
+                .iter()
+                .map(|r| r.doc_id.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+                .as_bytes(),
+        );
+        ensure!(
+            digest == m.doc_ids_sha256,
+            "result doc ids are not the unit's"
+        );
+        Ok(())
+    }
+
+    /// Two hosts' results of one unit agree: the same rows, counts, flags and reasons exactly,
+    /// the float measures within [`SPOT_TOLERANCE`].
+    pub fn spot_agrees(&self, other: &QeTextResult) -> anyhow::Result<()> {
+        ensure!(
+            self.id == other.id && self.rows.len() == other.rows.len(),
+            "not the same unit"
+        );
+        let close = |a: Option<f64>, b: Option<f64>| match (a, b) {
+            (None, None) => true,
+            (Some(a), Some(b)) => (a - b).abs() <= SPOT_TOLERANCE,
+            _ => false,
+        };
+        for (a, b) in self.rows.iter().zip(&other.rows) {
+            ensure!(
+                a.doc_id == b.doc_id && a.null_reason == b.null_reason,
+                "{}: rows differ",
+                a.doc_id
+            );
+            match (&a.qe, &b.qe) {
+                (None, None) => {}
+                (Some(x), Some(y)) => ensure!(
+                    x.version == y.version
+                        && x.resources == y.resources
+                        && x.words == y.words
+                        && x.known3 == y.known3
+                        && x.chars == y.chars
+                        && x.no_words == y.no_words
+                        && close(x.oov, y.oov)
+                        && close(x.charlm_bpc, y.charlm_bpc)
+                        && close(x.lm_oov, y.lm_oov),
+                    "{}: the hosts' measures differ",
+                    a.doc_id
+                ),
+                _ => anyhow::bail!("{}: one host has measures, the other none", a.doc_id),
+            }
+        }
+        Ok(())
+    }
+
     /// What a result must look like whatever its job: one of measures or a reason on every
     /// row, finite numbers, the measure's version.
     pub fn check_shape(&self) -> anyhow::Result<()> {
@@ -349,5 +447,98 @@ mod tests {
             }],
         };
         assert!(r.check(&j).is_err());
+    }
+
+    fn one_result(j: &QeTextJob) -> QeTextResult {
+        QeTextResult {
+            v: VERSION,
+            id: j.id.clone(),
+            rows: j
+                .pages
+                .iter()
+                .map(|p| QeTextRow {
+                    doc_id: p.doc_id.clone(),
+                    qe: None,
+                    null_reason: Some(NO_LANGUAGE.into()),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_result_must_have_the_units_pages_exactly() {
+        let mut j = job();
+        let mut p2 = j.pages[0].clone();
+        p2.doc_id = "sn1_1900-01-01_ed-1_seq-2".into();
+        j.pages.push(p2);
+        j.id = j.identity().unwrap();
+        let m = j.manifest();
+        let r = one_result(&j);
+        r.check_manifest(&m).unwrap();
+        let mut short = r.clone();
+        short.rows.pop();
+        assert!(short.check_manifest(&m).is_err());
+        let mut other = r.clone();
+        other.rows[1].doc_id = "sn1_1900-01-01_ed-1_seq-3".into();
+        assert!(other.check_manifest(&m).is_err());
+        let mut swapped = r.clone();
+        swapped.rows.swap(0, 1);
+        assert!(swapped.check_manifest(&m).is_err());
+    }
+
+    fn measured() -> (QeTextJob, QeTextResult) {
+        let mut j = job();
+        j.language = Some("eng".into());
+        j.pages[0].language_source = SOURCE_PAGE.into();
+        j.id = j.identity().unwrap();
+        let mut r = one_result(&j);
+        r.rows[0] = QeTextRow {
+            doc_id: j.pages[0].doc_id.clone(),
+            qe: Some(QeReport {
+                version: "qe-v1".into(),
+                resources: "b".repeat(64),
+                words: 3,
+                known3: 2,
+                chars: 13,
+                no_words: false,
+                oov: Some(0.25),
+                charlm_bpc: Some(2.5),
+                lm_oov: Some(4.0),
+            }),
+            null_reason: None,
+        };
+        (j, r)
+    }
+
+    #[test]
+    fn spot_checks_allow_float_noise_and_no_count_difference() {
+        let (_, a) = measured();
+        let mut b = a.clone();
+        b.rows[0].qe.as_mut().unwrap().oov = Some(0.25 + 5e-7);
+        a.spot_agrees(&b).unwrap();
+        b.rows[0].qe.as_mut().unwrap().oov = Some(0.25 + 2e-6);
+        assert!(a.spot_agrees(&b).is_err());
+        for edit in [
+            |q: &mut QeReport| q.words += 1,
+            |q: &mut QeReport| q.known3 += 1,
+            |q: &mut QeReport| q.no_words = true,
+        ] {
+            let mut c = a.clone();
+            edit(c.rows[0].qe.as_mut().unwrap());
+            assert!(a.spot_agrees(&c).is_err());
+        }
+        let mut d = a.clone();
+        d.rows[0].qe = None;
+        d.rows[0].null_reason = Some(NO_LANGUAGE.into());
+        assert!(a.spot_agrees(&d).is_err());
+    }
+
+    #[test]
+    fn about_three_percent_of_units_are_spot_checked() {
+        let n = (0..20_000)
+            .filter(|i| is_spot(&sha256(i.to_string().as_bytes())))
+            .count();
+        assert!((500..700).contains(&n), "{n} of 20000");
+        assert_eq!(is_spot("x"), is_spot("x"));
     }
 }
