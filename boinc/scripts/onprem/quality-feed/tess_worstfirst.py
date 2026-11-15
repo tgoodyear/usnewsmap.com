@@ -241,15 +241,15 @@ def published_count(dsn, ids):
     return total
 
 
-def enqueue(cfg, ids, campaign):
+def enqueue(cfg, ids, campaign, dry_run=False):
     """Runs ocr-enqueue on this host. Returns {doc_id: why} for the pages it did not queue (outstanding
     already, or not in the published version); the rest of `ids` are queued."""
     p = subprocess.run([cfg["ingest_run"], "--command", "ocr-enqueue", "--wait", "--nice", "19", "--",
-                        "--pages", ",".join(ids), "--reason", "bulk", "--plan", campaign],
+                        "--pages", ",".join(ids), "--reason", "bulk", "--plan", campaign] + (["--dry-run"] if dry_run else []),
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=3600)
     report = None
     for line in p.stdout.splitlines():
-        if '"ocr-enqueue finished"' in line:
+        if '"ocr-enqueue finished"' in line or '"ocr-enqueue dry run"' in line:
             report = json.loads(line)["fields"]
     if p.returncode or report is None:
         raise RuntimeError("ocr-enqueue failed (%s): %s" % (p.returncode, p.stdout[-400:]))
@@ -325,15 +325,17 @@ def cmd_run(a):
         if args["top_n"] is None:  # a bounded read: the next page of the ranking
             sql += " LIMIT %d" % (len(seen) + want)
         rows = [r.split("\t") for r in psql(dsn, sql).splitlines() if r]
-        pending = os.path.join(state_dir, "pending.txt")
+        pending = os.path.join(state_dir, "pending.json")
         retry = os.path.exists(pending)
         if retry:  # a chunk whose send failed: send the same pages again first
-            fresh = open(pending).read().split()
+            p_ = load_json(pending, {})
+            fresh, before = p_["ids"], set(p_["outstanding_before"])
         else:
             fresh = [r[1] for r in rows if r[1] not in seen][:want]
-            if fresh:
-                with open(pending, "w") as f:
-                    f.write("\n".join(fresh) + "\n")
+            before = set()
+            if fresh:  # which pages were outstanding before our send, so a retry knows which are ours
+                before = {i for i, w in enqueue(cfg, fresh, st["campaign"], dry_run=True).items() if w == "outstanding"}
+                save_json(pending, {"ids": fresh, "outstanding_before": sorted(before)})
         if not fresh:
             st["exhausted"] = True
             log("no eligible pages left past %d" % len(seen))
@@ -344,8 +346,8 @@ def cmd_run(a):
                 log("enqueue failed: %s" % e)
                 save_json(sp, st)
                 sys.exit(1)
-            if retry:  # the failed attempt may have put some out: its "outstanding" pages are ours
-                skipped = {i: w for i, w in skipped.items() if w != "outstanding"}
+            if retry:  # the failed attempt may have put some out: pages outstanding now but not before are ours
+                skipped = {i: w for i, w in skipped.items() if w != "outstanding" or i in before}
             skipped_ids = set(skipped)
             queued_ids = [i for i in fresh if i not in skipped_ids]
             with open(wave_file, "a") as f:
