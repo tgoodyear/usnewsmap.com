@@ -1,6 +1,11 @@
+import importlib.util
 import unittest
+from pathlib import Path
 
-import tess_worstfirst as t
+HERE = Path(__file__).resolve().parent
+spec = importlib.util.spec_from_file_location("tess_worstfirst", HERE / "tess_worstfirst.py")
+t = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(t)
 
 
 class SelectSql(unittest.TestCase):
