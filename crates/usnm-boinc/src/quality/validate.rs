@@ -58,7 +58,40 @@ pub(crate) fn result_name(file: &Path) -> anyhow::Result<String> {
     Ok(n.to_owned())
 }
 
+/// A text-only qe unit's result: `qe_text_result.json` and `diag.txt`.
+pub fn load_text(
+    files: &[PathBuf],
+) -> anyhow::Result<(usnm_ocr_contract::qe_text::QeTextResult, Vec<u8>)> {
+    use usnm_ocr_contract::qe_text::{QeTextResult, MAX_RESULT, RESULT_FILE};
+    ensure!(
+        files.len() == 2,
+        "expected 2 output files ({RESULT_FILE}, {DIAG_FILE}), got {}",
+        files.len()
+    );
+    let r: QeTextResult =
+        serde_json::from_slice(&read(&files[0], MAX_RESULT)?).context(RESULT_FILE)?;
+    r.check_shape()?;
+    Ok((r, read(&files[1], MAX_DIAG)?))
+}
+
+fn check_text(files: &[PathBuf], keep: Option<&Path>) -> anyhow::Result<()> {
+    let (r, diag) = load_text(files)?;
+    if let Some(dir) = keep {
+        let to = dir.join(result_name(&files[0])?);
+        std::fs::create_dir_all(&to)?;
+        atomic(
+            &to.join(usnm_ocr_contract::qe_text::RESULT_FILE),
+            &serde_json::to_vec(&r)?,
+        )?;
+        atomic(&to.join(DIAG_FILE), &diag)?;
+    }
+    Ok(())
+}
+
 pub fn check(files: &[PathBuf], keep: Option<&Path>) -> anyhow::Result<()> {
+    if files.len() == 2 {
+        return check_text(files, keep);
+    }
     let l = load(files)?;
     if let Some(dir) = keep {
         let name = result_name(&files[0])?;
@@ -75,6 +108,13 @@ pub fn check(files: &[PathBuf], keep: Option<&Path>) -> anyhow::Result<()> {
 }
 
 pub fn compare(a: &[PathBuf], b: &[PathBuf], log: Option<&Path>) -> anyhow::Result<()> {
+    if a.len() == 2 && b.len() == 2 {
+        // Text-only qe units: the measures are a pure function of the unit, so two results
+        // agree exactly or not at all.
+        let ((ra, _), (rb, _)) = (load_text(a)?, load_text(b)?);
+        ensure!(ra == rb, "the text-only qe results differ");
+        return Ok(());
+    }
     let (la, lb) = (load(a)?, load(b)?);
     let verdict = quality::agree(&la.result, &lb.result);
     if let Some(log) = log {
@@ -115,6 +155,38 @@ mod tests {
             std::fs::copy(unit.join(name), f).unwrap();
         }
         files
+    }
+
+    #[test]
+    fn text_only_results_are_checked_and_compared() {
+        use usnm_ocr_contract::qe_text::{
+            QeTextResult, QeTextRow, NO_LANGUAGE, RESULT_FILE, VERSION,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let r = QeTextResult {
+            v: VERSION,
+            id: "a".repeat(64),
+            rows: vec![QeTextRow {
+                doc_id: "sn1_1900-01-01_ed-1_seq-1".into(),
+                qe: None,
+                null_reason: Some(NO_LANGUAGE.into()),
+            }],
+        };
+        let files = |tag: &str, r: &QeTextResult| {
+            let dir = tmp.path().join(tag);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(RESULT_FILE), serde_json::to_vec(r).unwrap()).unwrap();
+            std::fs::write(dir.join(DIAG_FILE), b"diag").unwrap();
+            vec![dir.join(RESULT_FILE), dir.join(DIAG_FILE)]
+        };
+        let (a, b) = (files("a", &r), files("b", &r));
+        check(&a, None).unwrap();
+        compare(&a, &b, None).unwrap();
+        let mut other = r.clone();
+        other.rows[0].null_reason = Some("no_resource_file".into());
+        assert!(compare(&a, &files("c", &other), None).is_err());
+        other.rows[0].null_reason = None;
+        assert!(check(&files("d", &other), None).is_err());
     }
 
     #[tokio::test]

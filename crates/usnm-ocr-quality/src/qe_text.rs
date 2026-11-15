@@ -11,8 +11,20 @@ use usnm_ocr_contract::{
     quality::MAX_QE,
 };
 
+/// Pages scored between looks at BOINC's control (suspend, quit).
+const CONTROL_EVERY: usize = 200;
+
 /// Scores a unit. `qe` is `qe.bin`, present exactly when the job names it.
 pub fn score(job: &QeTextJob, qe: Option<&[u8]>) -> anyhow::Result<QeTextResult> {
+    Ok(score_with(job, qe, || false)?.expect("never stopped"))
+}
+
+/// As [`score`], asking `stop` every [`CONTROL_EVERY`] pages; none when it says to stop.
+pub fn score_with(
+    job: &QeTextJob,
+    qe: Option<&[u8]>,
+    mut stop: impl FnMut() -> bool,
+) -> anyhow::Result<Option<QeTextResult>> {
     job.validate()?;
     let measure = match (&job.qe, qe) {
         (None, _) => None,
@@ -37,10 +49,12 @@ pub fn score(job: &QeTextJob, qe: Option<&[u8]>) -> anyhow::Result<QeTextResult>
     } else {
         NO_RESOURCE_FILE
     };
-    let rows = job
-        .pages
-        .iter()
-        .map(|p| match &measure {
+    let mut rows = Vec::with_capacity(job.pages.len());
+    for (i, p) in job.pages.iter().enumerate() {
+        if i % CONTROL_EVERY == 0 && stop() {
+            return Ok(None);
+        }
+        rows.push(match &measure {
             Some(m) => QeTextRow {
                 doc_id: p.doc_id.clone(),
                 qe: Some(m.report(&p.text)),
@@ -51,15 +65,15 @@ pub fn score(job: &QeTextJob, qe: Option<&[u8]>) -> anyhow::Result<QeTextResult>
                 qe: None,
                 null_reason: Some(reason.to_owned()),
             },
-        })
-        .collect();
+        });
+    }
     let r = QeTextResult {
         v: VERSION,
         id: job.id.clone(),
         rows,
     };
     r.check(job)?;
-    Ok(r)
+    Ok(Some(r))
 }
 
 #[cfg(test)]
@@ -112,6 +126,7 @@ mod tests {
             id: String::new(),
             archive: "x_ver01.tar.bz2".into(),
             group: "qe-loc-v1".into(),
+            lock: "a".repeat(64),
             language: bytes.map(|_| "eng".to_owned()),
             pages: TEXTS
                 .iter()

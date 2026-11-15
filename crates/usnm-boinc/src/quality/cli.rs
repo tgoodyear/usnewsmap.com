@@ -148,16 +148,16 @@ pub enum QualityCommands {
     },
     /// script_validator's init script: check one result (three files); --keep copies it there.
     Check {
-        #[arg(long, num_args = 3, required = true)]
+        #[arg(long, num_args = 2..=3, required = true)]
         files: Vec<PathBuf>,
         #[arg(long)]
         keep: Option<PathBuf>,
     },
     /// script_validator's compare script: two results of one unit; --log appends the pair.
     Compare {
-        #[arg(long, num_args = 3, required = true)]
+        #[arg(long, num_args = 2..=3, required = true)]
         files: Vec<PathBuf>,
-        #[arg(long, num_args = 3, required = true)]
+        #[arg(long, num_args = 2..=3, required = true)]
         files2: Vec<PathBuf>,
         #[arg(long)]
         log: Option<PathBuf>,

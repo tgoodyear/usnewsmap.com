@@ -50,6 +50,9 @@ pub struct QeTextJob {
     /// The scan archive the pages were read from.
     pub archive: String,
     pub group: String,
+    /// sha256 of `ocr/qe/resources.lock.json` as staged against, kept with the unit so the
+    /// collector stores the pin the unit was made with.
+    pub lock: String,
     /// ISO 639-3 of every page in the unit; none for pages with no language.
     pub language: Option<String>,
     pub pages: Vec<QeTextPage>,
@@ -64,6 +67,7 @@ impl QeTextJob {
             self.v,
             &self.archive,
             &self.group,
+            &self.lock,
             &self.language,
             &self.pages,
             &self.qe,
@@ -77,6 +81,7 @@ impl QeTextJob {
             "job id is not its identity"
         );
         check_name(&self.group, "group")?;
+        ensure!(is_sha256(&self.lock), "invalid lock digest");
         ensure!(
             !self.archive.is_empty()
                 && self.archive.len() <= 128
@@ -146,19 +151,14 @@ pub struct QeTextResult {
 }
 
 impl QeTextResult {
-    /// The result answers the job: one row per page, in order, each with
-    /// measures or a reason.
-    pub fn check(&self, job: &QeTextJob) -> anyhow::Result<()> {
+    /// What a result must look like whatever its job: one of measures or a reason on every
+    /// row, finite numbers, the measure's version.
+    pub fn check_shape(&self) -> anyhow::Result<()> {
         ensure!(
-            self.v == VERSION && self.id == job.id,
-            "result is for another job"
+            self.v == VERSION && is_sha256(&self.id),
+            "bad result header"
         );
-        ensure!(
-            self.rows.len() == job.pages.len(),
-            "result has the wrong number of rows"
-        );
-        for (r, p) in self.rows.iter().zip(&job.pages) {
-            ensure!(r.doc_id == p.doc_id, "rows are out of order");
+        for r in &self.rows {
             ensure!(
                 r.qe.is_some() != r.null_reason.is_some(),
                 "{}: measures or a reason, not both or neither",
@@ -177,6 +177,43 @@ impl QeTextResult {
         }
         Ok(())
     }
+
+    /// The result answers the job: one row per page, in order. A unit with a pinned resource
+    /// file has measures on every row, from that file; one without has the reason its job
+    /// implies on every row and no measures.
+    pub fn check(&self, job: &QeTextJob) -> anyhow::Result<()> {
+        ensure!(self.id == job.id, "result is for another job");
+        self.check_shape()?;
+        ensure!(
+            self.rows.len() == job.pages.len(),
+            "result has the wrong number of rows"
+        );
+        let reason = if job.language.is_none() {
+            NO_LANGUAGE
+        } else {
+            NO_RESOURCE_FILE
+        };
+        for (r, p) in self.rows.iter().zip(&job.pages) {
+            ensure!(r.doc_id == p.doc_id, "rows are out of order");
+            match (&job.qe, &r.qe) {
+                (Some(q), Some(m)) => ensure!(
+                    m.resources == q.input.sha256,
+                    "{}: measured with another resource file",
+                    r.doc_id
+                ),
+                (Some(_), None) => {
+                    anyhow::bail!("{}: the pinned resource file gave no measures", r.doc_id)
+                }
+                (None, Some(_)) => anyhow::bail!("{}: measures without a resource file", r.doc_id),
+                (None, None) => ensure!(
+                    r.null_reason.as_deref() == Some(reason),
+                    "{}: the reason is not {reason}",
+                    r.doc_id
+                ),
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -189,6 +226,7 @@ mod tests {
             id: String::new(),
             archive: "x_ver01.tar.bz2".into(),
             group: "qe-loc-v1".into(),
+            lock: "a".repeat(64),
             language: None,
             pages: vec![QeTextPage {
                 doc_id: "sn1_1900-01-01_ed-1_seq-1".into(),
@@ -228,6 +266,30 @@ mod tests {
         };
         r.check(&j).unwrap();
         r.rows[0].null_reason = None;
+        assert!(r.check(&j).is_err());
+    }
+
+    #[test]
+    fn a_pinned_resource_file_must_give_measures() {
+        use crate::quality::Input;
+        let mut j = job();
+        j.language = Some("eng".into());
+        j.pages[0].language_source = SOURCE_PAGE.into();
+        j.qe = Some(QeInput {
+            input: Input::of(b"qe", "lake:qe-resources/qe-v1/eng.qe"),
+            language: "eng".into(),
+        });
+        j.id = j.identity().unwrap();
+        j.validate().unwrap();
+        let r = QeTextResult {
+            v: VERSION,
+            id: j.id.clone(),
+            rows: vec![QeTextRow {
+                doc_id: j.pages[0].doc_id.clone(),
+                qe: None,
+                null_reason: Some(NO_RESOURCE_FILE.into()),
+            }],
+        };
         assert!(r.check(&j).is_err());
     }
 }

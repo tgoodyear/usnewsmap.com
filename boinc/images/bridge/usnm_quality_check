@@ -5,6 +5,11 @@
 # <project>/quality/seen/<result>/, so each host's diagnostics and timings are kept, not only the
 # canonical result's. BOINC's start runs daemons in <project>/tmp_<host>, so ../quality is the
 # project's quality/. Linked into bin/.
-[ "$#" -eq 3 ] || { echo "usnm_quality_check: expected 3 files, got $#" >&2; exit 2; }
-exec /usr/local/bin/usnm-boinc quality check --files "$1" "$2" "$3" \
+# A text-only qe unit (qe-loc-v1) has two: qe_text_result.json, diag.txt.
+case "$#" in
+  3) set -- "$1" "$2" "$3" ;;
+  2) set -- "$1" "$2" ;;
+  *) echo "usnm_quality_check: expected 2 or 3 files, got $#" >&2; exit 2 ;;
+esac
+exec /usr/local/bin/usnm-boinc quality check --files "$@" \
   --keep "${USNM_QUALITY_DIR:-$(cd .. && pwd)/quality}/seen"

@@ -955,7 +955,18 @@ fn run_qe_text_unit(work: &Path, native_lifecycle: bool) -> anyhow::Result<()> {
         ),
         512,
     );
-    let result = crate::qe_text::score(&job, qe.as_deref())?;
+    let result = crate::qe_text::score_with(&job, qe.as_deref(), || {
+        control.wait_if_suspended_or_should_exit().is_break()
+    })?;
+    let Some(result) = result else {
+        diag.section(
+            "boinc control",
+            "exiting without boinc_finish_called: asked to stop while scoring",
+            256,
+        );
+        write_atomic(&diag_out, &diag.finish())?;
+        return Ok(());
+    };
     if let ControlFlow::Break(reason) = control.wait_if_suspended_or_should_exit() {
         diag.section(
             "boinc control",

@@ -20,6 +20,7 @@ use std::{
     io::{BufRead as _, BufWriter, Read as _, Write as _},
     path::{Path, PathBuf},
 };
+use usnm_core::ids::PageKey;
 use usnm_ocr_contract::{
     boinc::sha256,
     qe_text::{
@@ -37,33 +38,29 @@ struct Line {
     text: String,
 }
 
-/// `sn84021930/1898/11/23/ed-1/seq-1/ocr.xml` to `sn84021930_1898-11-23_ed-1_seq-1`.
+/// The page an archive member holds, by the layouts `usnm-ingest`'s archive reader takes:
+/// `<lccn>/<yyyy-mm-dd>/ed-N/seq-N/ocr.xml` or `<lccn>/<yyyy>/<mm>/<dd>/ed-N/seq-N/ocr.xml`,
+/// under any prefix. The id is `PageKey`'s.
 pub fn doc_id_of(path: &str) -> Option<String> {
     let parts: Vec<&str> = path.trim_start_matches("./").split('/').collect();
-    let [lccn, y, m, d, ed, seq, "ocr.xml"] = parts.as_slice() else {
-        return None;
-    };
-    let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
-    let num = |s: &str, p: &str| {
-        s.strip_prefix(p)
-            .filter(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-            .map(str::to_owned)
-    };
-    if lccn.is_empty()
-        || !lccn
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        || !digits(y, 4)
-        || !digits(m, 2)
-        || !digits(d, 2)
-    {
+    let n = parts.len();
+    if parts.last() != Some(&"ocr.xml") || n < 5 {
         return None;
     }
-    Some(format!(
-        "{lccn}_{y}-{m}-{d}_ed-{}_seq-{}",
-        num(ed, "ed-")?,
-        num(seq, "seq-")?
-    ))
+    let num = |s: &str, prefix: &str| s.strip_prefix(prefix)?.parse::<u16>().ok();
+    let (seq, ed) = (num(parts[n - 2], "seq-")?, num(parts[n - 3], "ed-")?);
+    let (date, lccn) = if let Ok(d) = chrono::NaiveDate::parse_from_str(parts[n - 4], "%Y-%m-%d") {
+        (d, parts[n - 5])
+    } else if n >= 7 {
+        let ymd = format!("{}-{}-{}", parts[n - 6], parts[n - 5], parts[n - 4]);
+        (
+            chrono::NaiveDate::parse_from_str(&ymd, "%Y-%m-%d").ok()?,
+            parts[n - 7],
+        )
+    } else {
+        return None;
+    };
+    Some(PageKey::new(lccn, date, ed, seq).ok()?.doc_id())
 }
 
 /// LoC's text of one page's ALTO: what `stage` joins as the `loc` reader.
@@ -165,6 +162,7 @@ pub fn stage(o: &StageOptions) -> anyhow::Result<StageSummary> {
         None => BTreeMap::new(),
     };
     let dir = Dir::open(&o.qe_dir)?;
+    let lock_digest = sha256(super::qe::LOCK.as_bytes());
     let mut groups: BTreeMap<Option<String>, Vec<QeTextPage>> = BTreeMap::new();
     let mut s = StageSummary::default();
     for line in std::io::BufReader::new(std::fs::File::open(&o.extract)?).lines() {
@@ -198,6 +196,7 @@ pub fn stage(o: &StageOptions) -> anyhow::Result<StageSummary> {
                 id: String::new(),
                 archive: o.archive.clone(),
                 group: GROUP.to_owned(),
+                lock: lock_digest.clone(),
                 language: lang.clone(),
                 pages: chunk.to_vec(),
                 qe: qe.as_ref().map(|(_, q)| q.clone()),
@@ -348,24 +347,17 @@ pub async fn submit(
 pub fn rows_of(
     job: &QeTextJob,
     result: &QeTextResult,
-    lock_digest: &str,
 ) -> anyhow::Result<Vec<usnm_ocr_local::quality_db::QeLocScore>> {
     use usnm_ocr_local::quality_db::QeLocScore;
     result.check(job)?;
-    let lock = super::qe::lock()?;
-    let want = job
-        .language
-        .as_deref()
-        .and_then(|l| lock.languages.get(super::qe::iso3(l)));
     let mut out = Vec::with_capacity(result.rows.len());
     for (row, page) in result.rows.iter().zip(&job.pages) {
         if let Some(q) = &row.qe {
             ensure!(
-                q.version == usnm_core::qe::VERSION
-                    && want.is_some_and(|e| e.sha256 == q.resources),
-                "{}: the measure is not the lock's for {:?}",
+                q.version == usnm_core::qe::VERSION,
+                "{}: the measure is not {}",
                 row.doc_id,
-                job.language
+                usnm_core::qe::VERSION
             );
         }
         let null_reason = row.null_reason.clone().or_else(|| {
@@ -380,7 +372,7 @@ pub fn rows_of(
             language: job.language.clone(),
             language_source: page.language_source.clone(),
             qe_version: usnm_core::qe::VERSION.to_owned(),
-            resources_lock: lock_digest.to_owned(),
+            resources_lock: job.lock.clone(),
             oov: row.qe.as_ref().and_then(|q| q.oov),
             charlm_bpc: row.qe.as_ref().and_then(|q| q.charlm_bpc),
             lm_oov: row.qe.as_ref().and_then(|q| q.lm_oov),
@@ -407,7 +399,6 @@ pub async fn collect(
     writer: Option<&usnm_ocr_local::quality_db::QeLocWriter>,
     batch: usize,
 ) -> anyhow::Result<CollectSummary> {
-    let lock_digest = sha256(super::qe::LOCK.as_bytes());
     let mut s = CollectSummary::default();
     let mut dirs: Vec<_> = std::fs::read_dir(units(root))?
         .filter_map(|e| e.ok())
@@ -432,7 +423,7 @@ pub async fn collect(
             continue;
         }
         let result: QeTextResult = serde_json::from_slice(&read(&file, MAX_RESULT)?)?;
-        pending_rows.extend(rows_of(&job, &result, &lock_digest)?);
+        pending_rows.extend(rows_of(&job, &result)?);
         pending_units.push(unit);
         if pending_rows.len() >= batch {
             flush(writer, &mut pending_rows, &mut pending_units, batch, &mut s).await?;
@@ -475,8 +466,12 @@ mod tests {
             doc_id_of("./sn84021930/1898/11/23/ed-1/seq-1/ocr.xml").as_deref(),
             Some("sn84021930_1898-11-23_ed-1_seq-1")
         );
+        assert_eq!(
+            doc_id_of("batch_x_ver01/data/sn84021930/1898-11-23/ed-1/seq-12/ocr.xml").as_deref(),
+            Some("sn84021930_1898-11-23_ed-1_seq-12")
+        );
         assert_eq!(doc_id_of("sn1/1898/11/23/ed-1/seq-1/ocr.txt"), None);
-        assert_eq!(doc_id_of("../x/1898/11/23/ed-1/seq-1/ocr.xml"), None);
+        assert_eq!(doc_id_of("sn1/1898/13/23/ed-1/seq-1/ocr.xml"), None);
     }
 
     #[test]

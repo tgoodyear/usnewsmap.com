@@ -3,6 +3,11 @@
 # `usnm_quality_compare files files2`: two results' files, three each, in output template order.
 # Exit 0 when they agree (usnm-boinc quality compare: the same outcome and canonical records that
 # are equal). Every pair is appended to <project>/quality/pairs.jsonl. Linked into bin/.
-[ "$#" -eq 6 ] || { echo "usnm_quality_compare: expected 6 files, got $#" >&2; exit 2; }
-exec /usr/local/bin/usnm-boinc quality compare --files "$1" "$2" "$3" --files2 "$4" "$5" "$6" \
+# Text-only qe units (qe-loc-v1) have two files each.
+case "$#" in
+  6) set -- --files "$1" "$2" "$3" --files2 "$4" "$5" "$6" ;;
+  4) set -- --files "$1" "$2" --files2 "$3" "$4" ;;
+  *) echo "usnm_quality_compare: expected 4 or 6 files, got $#" >&2; exit 2 ;;
+esac
+exec /usr/local/bin/usnm-boinc quality compare "$@" \
   --log "${USNM_QUALITY_DIR:-$(cd .. && pwd)/quality}/pairs.jsonl"
