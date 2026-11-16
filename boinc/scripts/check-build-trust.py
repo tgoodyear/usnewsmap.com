@@ -40,7 +40,8 @@ def _count(value) -> bool:
 
 def validate(registry) -> None:
     """Raises ValueError unless `registry` reads as usnm-boinc's BuildTrust does."""
-    if not isinstance(registry, dict) or set(registry) != {"builds", "equivalent", "v"} or registry["v"] != 1:
+    if (not isinstance(registry, dict) or not {"builds", "equivalent", "v"} <= set(registry)
+            or set(registry) - {"builds", "cross_build", "equivalent", "v"} or registry["v"] != 1):
         raise ValueError("not a version 1 native-build-trust.json")
     builds = registry["builds"]
     if not isinstance(builds, dict):
@@ -87,6 +88,29 @@ def validate(registry) -> None:
         if tuple(digests) in seen:
             raise ValueError(f"duplicate equivalence {digests}")
         seen.add(tuple(digests))
+    crossed = set()
+    cross = registry.get("cross_build", [])
+    if not isinstance(cross, list):
+        raise ValueError("cross_build must be a list")
+    for pair in cross:
+        if not isinstance(pair, dict) or set(pair) != {"digests", "engine_version", "evidence", "max_cer", "min_f1"}:
+            raise ValueError("a cross-build pair has digests, engine_version, evidence, max_cer and min_f1")
+        digests = pair["digests"]
+        if (not isinstance(digests, list) or len(digests) != 2
+                or not all(isinstance(d, str) and d in builds for d in digests)
+                or not digests[0] < digests[1]):
+            raise ValueError("a cross-build pair names two distinct listed builds in ascending order")
+        if tuple(digests) in seen:
+            raise ValueError(f"{digests} are listed as equivalent: they compare byte for byte")
+        if tuple(digests) in crossed:
+            raise ValueError(f"duplicate cross-build pair {digests}")
+        crossed.add(tuple(digests))
+        if not _line(pair["evidence"]) or not _line(pair["engine_version"]):
+            raise ValueError("a cross-build pair needs its evidence and engine version")
+        cer, f1 = pair["max_cer"], pair["min_f1"]
+        if (isinstance(cer, bool) or not isinstance(cer, (int, float)) or not 0 < cer <= 0.25
+                or isinstance(f1, bool) or not isinstance(f1, (int, float)) or not 0.5 <= f1 < 1):
+            raise ValueError("a cross-build pair's max_cer is above 0 and at most 0.25, its min_f1 from 0.5 to under 1")
 
 
 def load(path: Path) -> dict:

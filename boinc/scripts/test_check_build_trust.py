@@ -96,6 +96,20 @@ class BuildTrust(unittest.TestCase):
         bad(lambda r: r["builds"][LINUX].update(extra=1))
         bad(lambda r: r["equivalent"][0].update(digests=[LINUX, "sha256:" + "0" * 64]))
         bad(lambda r: r["equivalent"].append(copy.deepcopy(r["equivalent"][0])))
+        # The cross-build pair: two listed builds, ascending, not also equivalent, with limits.
+        (pair,) = self.registry["cross_build"]
+        bad(lambda r: r["cross_build"][0].update(digests=list(reversed(pair["digests"]))))
+        bad(lambda r: r["cross_build"][0].update(digests=[LINUX, "sha256:" + "f" * 64]))
+        bad(lambda r: r["cross_build"].append(copy.deepcopy(r["cross_build"][0])))
+        bad(lambda r: r["cross_build"][0].update(max_cer=0))
+        bad(lambda r: r["cross_build"][0].update(max_cer=0.5))
+        bad(lambda r: r["cross_build"][0].update(min_f1=1))
+        bad(lambda r: r["cross_build"][0].update(engine_version=""))
+        bad(lambda r: r["cross_build"][0].update(extra=1))
+        bad(lambda r: r["equivalent"].append({"digests": pair["digests"], "evidence": "x"}))
+        without = copy.deepcopy(self.registry)
+        del without["cross_build"]
+        module.validate(without)
 
     def test_each_native_binding_is_a_recorded_build_with_a_passing_run(self):
         # A worker image binds every platform it's built for. A native build is one platform's

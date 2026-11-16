@@ -12,6 +12,10 @@
 //!   byte for byte only within one digest or across a listed pair ([`BuildTrust::comparable`]).
 //!   A pair says nothing about trust: a host trusted for one digest is not trusted for the other.
 //!   Pairs aren't transitive: each comparable pair is listed.
+//! - **Cross-build pairs.** Pairs of digests (other platforms or sources) that run one engine
+//!   version over the same locked models but don't give identical output, listed with the
+//!   limits their two readings of a page may differ by ([`BuildTrust::cross_build`]). Only a
+//!   native spot check of a plan that opts in compares them, and never byte for byte.
 //!
 //! Worker images (the container builds) aren't listed. Their trust is unchanged: each host earns
 //! it from its own gold reports against the calibrated threshold.
@@ -90,11 +94,31 @@ pub struct Equivalence {
     pub evidence: String,
 }
 
+/// Two builds whose output differs, but only by what one engine version over one set of models
+/// does across platforms and builds (layout and rare words, not the page's content): their
+/// pages are compared under `max_cer` and `min_f1` instead of byte for byte.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CrossBuild {
+    /// Two distinct digests of `builds`, in ascending order, not also listed as equivalent.
+    pub digests: [String; 2],
+    /// The Tesseract version both builds report: the jobs compared must name it.
+    pub engine_version: String,
+    pub evidence: String,
+    /// The most the page texts' character edit rate may be, over the mean of their lengths.
+    pub max_cer: f64,
+    /// The least the page texts' word-bag F1 (Dice) may be.
+    pub min_f1: f64,
+}
+
 /// `native-build-trust.json`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BuildTrust {
     pub builds: BTreeMap<String, Build>,
+    /// Absent in a file with no cross-build pair.
+    #[serde(default)]
+    pub cross_build: Vec<CrossBuild>,
     pub equivalent: Vec<Equivalence>,
     pub v: u32,
 }
@@ -169,6 +193,31 @@ impl BuildTrust {
             ensure!(line_ok(&pair.evidence), "an equivalence needs its evidence");
             ensure!(seen.insert((a, b)), "duplicate equivalence {a} {b}");
         }
+        let mut crossed = BTreeSet::new();
+        for pair in &self.cross_build {
+            let [a, b] = &pair.digests;
+            ensure!(
+                a < b && self.builds.contains_key(a) && self.builds.contains_key(b),
+                "a cross-build pair names two distinct listed builds in ascending order"
+            );
+            ensure!(
+                !seen.contains(&(a, b)),
+                "{a} and {b} are listed as equivalent: they compare byte for byte"
+            );
+            ensure!(crossed.insert((a, b)), "duplicate cross-build pair {a} {b}");
+            ensure!(
+                line_ok(&pair.evidence) && line_ok(&pair.engine_version),
+                "a cross-build pair needs its evidence and engine version"
+            );
+            ensure!(
+                pair.max_cer > 0.0 && pair.max_cer <= 0.25,
+                "a cross-build pair's max_cer is above 0 and at most 0.25"
+            );
+            ensure!(
+                pair.min_f1 >= 0.5 && pair.min_f1 < 1.0,
+                "a cross-build pair's min_f1 is at least 0.5 and under 1"
+            );
+        }
         Ok(())
     }
 
@@ -212,6 +261,21 @@ impl BuildTrust {
         self.equivalent
             .iter()
             .any(|p| p.digests[0] == lo && p.digests[1] == hi)
+    }
+}
+
+impl BuildTrust {
+    /// The limits two different builds' pages are compared under, if `a` and `b` are a listed
+    /// cross-build pair. None for the same digest and for a listed equivalent pair, which
+    /// compare byte for byte, and for any pair not listed: a pair is never inferred.
+    pub fn cross_build(&self, a: &str, b: &str) -> Option<&CrossBuild> {
+        if self.comparable(a, b) {
+            return None;
+        }
+        let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+        self.cross_build
+            .iter()
+            .find(|p| p.digests[0] == lo && p.digests[1] == hi)
     }
 }
 
@@ -359,6 +423,68 @@ mod tests {
         for other in [LINUX, MACOS, WORKER_247C] {
             assert!(!t.comparable(&windows(), other));
         }
+    }
+
+    #[test]
+    fn linux_and_windows_are_a_listed_cross_build_pair_and_nothing_else_is() {
+        let t = BuildTrust::embedded().unwrap();
+        let windows = "sha256:bb9bfecc433ad85ca3ac3f83d4b08fc6b8ad73b64938ae58075083cab5c013b3";
+        let pair = t.cross_build(LINUX, windows).expect("listed");
+        assert_eq!(t.cross_build(windows, LINUX), Some(pair));
+        assert_eq!(pair.engine_version, "5.5.0");
+        // Never byte for byte, and never inferred: no other pair, no pair with itself.
+        assert!(!t.comparable(LINUX, windows));
+        assert!(t.cross_build(LINUX, LINUX).is_none());
+        assert!(t.cross_build(LINUX, MACOS).is_none());
+        assert!(t.cross_build(MACOS, windows).is_none());
+        assert!(t.cross_build(C353, windows).is_none());
+        // A listed equivalent pair stays byte for byte.
+        assert!(t.cross_build(LINUX, WORKER_DAC9).is_none());
+    }
+
+    #[test]
+    fn invalid_cross_build_pairs_are_refused() {
+        let good: serde_json::Value = serde_json::from_str(EMBEDDED).unwrap();
+        let windows = "sha256:bb9bfecc433ad85ca3ac3f83d4b08fc6b8ad73b64938ae58075083cab5c013b3";
+        let bad = |edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut v = good.clone();
+            edit(&mut v);
+            BuildTrust::parse(&serde_json::to_vec(&v).unwrap()).is_err()
+        };
+        // The file as it is, and the same without the key, are fine.
+        assert!(!bad(&|_| {}));
+        assert!(!bad(&|v| {
+            v.as_object_mut().unwrap().remove("cross_build");
+        }));
+        assert!(bad(
+            &|v| v["cross_build"][0]["digests"] = serde_json::json!([windows, LINUX])
+        ));
+        assert!(bad(
+            &|v| v["cross_build"][0]["digests"] = serde_json::json!([LINUX, WORKER_DAC9])
+        ));
+        assert!(bad(
+            &|v| v["cross_build"][0]["digests"] = serde_json::json!([LINUX, LINUX])
+        ));
+        assert!(bad(&|v| {
+            let first = v["cross_build"][0].clone();
+            v["cross_build"].as_array_mut().unwrap().push(first);
+        }));
+        assert!(bad(&|v| v["cross_build"][0]["max_cer"] = 0.0.into()));
+        assert!(bad(&|v| v["cross_build"][0]["max_cer"] = 0.5.into()));
+        assert!(bad(&|v| v["cross_build"][0]["min_f1"] = 1.0.into()));
+        assert!(bad(&|v| v["cross_build"][0]["min_f1"] = 0.2.into()));
+        assert!(bad(&|v| v["cross_build"][0]["engine_version"] = "".into()));
+        assert!(bad(&|v| v["cross_build"][0]["evidence"] = "".into()));
+        assert!(bad(&|v| v["cross_build"][0]["extra"] = 1.into()));
+        // A pair that is also a byte-for-byte equivalent.
+        assert!(bad(&|v| {
+            v["equivalent"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({
+                    "digests": [LINUX, windows], "evidence": "x"
+                }));
+        }));
     }
 
     #[test]
