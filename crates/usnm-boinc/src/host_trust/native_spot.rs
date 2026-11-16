@@ -11,7 +11,7 @@
 //! Each replay is journaled under `<root>/native-spots/<job>/<target host>/`, and a compared
 //! one is never compared again, so a mismatch stays on record and is never retried away.
 use super::container_spot::{outside, Limits};
-use super::spot::{agree, differing_words, fetch, job_inputs, judge, stage, WordDiff};
+use super::spot::{agree, differing_words, fetch, job_inputs, judge, stage, Returned, WordDiff};
 use crate::trust::{BuildTrust, Hold, Trust};
 use crate::{atomic, load, read, Lock};
 use anyhow::{bail, ensure, Context};
@@ -19,6 +19,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use usnm_ocr_contract::boinc;
+use usnm_ocr_local::pages::Scores;
+use usnm_ocr_local::rule::Completeness;
 
 /// The longest list of replays or checks one call takes.
 pub const MAX_ITEMS: usize = 100;
@@ -122,24 +124,99 @@ pub enum Status {
     /// Different bytes within one build or a listed pair: both hosts are held.
     Mismatch,
     /// Two different builds of a listed cross-build pair, with pages outside the pair's limits.
-    /// Not a verdict: honest builds differ by a lot on a hard page, so neither host is held and
-    /// the replay is no match either.
+    /// Not a verdict on a host: honest builds differ by a lot on a hard page, so neither host is
+    /// held here and the replay is no match either. It does not let the page through: the
+    /// controller keeps both readings out of import until a third reading settles the page, and
+    /// counts the pair toward the host-level trip (Science Coordinator, 16 Nov 2026).
     Outside,
     /// Left for the next call: the call's time budget was spent before this item (a container
     /// spot check, #1934). Not a verdict, and nothing was made or written for it.
     Deferred,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Outcome {
     pub job: String,
     pub source_host: u64,
     pub target_host: u64,
     pub status: Status,
     pub detail: String,
+    /// What the two readings measured, for a pair that was compared (a match, an `outside`, a
+    /// mismatch): the pair log's numbers (Science Coordinator, 16 Nov 2026).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pair: Option<Pair>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// One compared pair, as the pair log keeps it. The peer is the replay's host. Measures are
+/// those of `usnm_ocr_quality::align::pair` on the original's text and the replay's, as the
+/// limits use them: CER is symmetric (edits over the mean of the lengths), word F1 is the
+/// word-bag Dice.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Pair {
+    pub source_image: String,
+    pub target_image: String,
+    pub cer: f64,
+    pub word_f1: f64,
+    /// The replay's characters over the original's.
+    pub length_ratio: f64,
+    pub peer_chars: usize,
+    /// The peer text's damage rate (`usnm_ocr_local::pages::Scores`), none for an empty text.
+    pub peer_damage_rate: Option<f64>,
+    /// The mean word confidence of the peer's ALTO lines, 0 to 100, by their word counts.
+    pub peer_confidence: Option<f64>,
+    /// The completeness gate (#1915, `usnm_ocr_local::rule::Completeness`) on the peer's text:
+    /// `pass`, `short` or `cover` when LoC's text for the page was weighed, `unweighed` when
+    /// there is none to weigh on the BOINC host (the gate then passes, as it does with no LoC
+    /// text to lose).
+    pub peer_gate: String,
+    pub peer_gate_pass: bool,
+}
+
+/// The pair log's numbers for `original` against `replay`.
+fn measure(
+    original: &Returned,
+    replay: &Returned,
+    job: &boinc::Job,
+    loc_text: Option<&str>,
+) -> Pair {
+    let m = usnm_ocr_quality::align::pair(&original.text, &replay.text);
+    let (mut weighted, mut words) = (0.0, 0usize);
+    for line in &replay.lines {
+        if let Some(c) = line.confidence {
+            weighted += c * line.words.len() as f64;
+            words += line.words.len();
+        }
+    }
+    let (peer_gate, peer_gate_pass) = match Completeness::default().check(&replay.text, loc_text) {
+        (Some(_), Err(keep)) => (keep.as_str().to_owned(), false),
+        (Some(_), Ok(())) => ("pass".to_owned(), true),
+        (None, _) => ("unweighed".to_owned(), true),
+    };
+    let scores = Scores::of(&replay.text, &[job.message.language.as_str()]);
+    Pair {
+        source_image: original.image.clone(),
+        target_image: replay.image.clone(),
+        cer: m.cer_sym,
+        word_f1: m.dice,
+        // Finite, so the record is plain JSON: an empty original gives a ratio of 1e9.
+        length_ratio: if m.chars_a == 0 {
+            if m.chars_b == 0 {
+                1.0
+            } else {
+                1e9
+            }
+        } else {
+            m.chars_b as f64 / m.chars_a as f64
+        },
+        peer_chars: m.chars_b,
+        peer_damage_rate: scores.damage_rate,
+        peer_confidence: (words > 0).then(|| weighted / words as f64),
+        peer_gate,
+        peer_gate_pass,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Report {
     pub submitted: Vec<Outcome>,
     pub checked: Vec<Outcome>,
@@ -435,7 +512,13 @@ fn outcome(r: &Replay, status: Status, detail: impl Into<String>) -> Outcome {
         target_host: r.target_host,
         status,
         detail: detail.into(),
+        pair: None,
     }
+}
+
+fn with_pair(mut o: Outcome, pair: &Pair) -> Outcome {
+    o.pair = Some(pair.clone());
+    o
 }
 
 /// Why `r` may not be replayed or compared now, if it may not: both hosts must be trusted for
@@ -793,7 +876,7 @@ async fn check_one(
                 &mut journal,
                 r,
                 &job,
-                format!("the replay is not a valid result: {error:#}"),
+                (format!("the replay is not a valid result: {error:#}"), None),
                 execute,
             )
         }
@@ -802,6 +885,8 @@ async fn check_one(
         p.cpus.simd(r.source_host).await,
         p.cpus.simd(r.target_host).await,
     );
+    // No LoC text is on the BOINC host, so the completeness gate is unweighed here.
+    let measures = measure(&original, &replay, &job, None);
     // Two different builds of a listed cross-build pair never compare byte for byte: their
     // pages are judged by the pair's limits, and a page outside them is no verdict (`refuse`
     // above has checked the pair, its engine version and both hosts' trust).
@@ -827,27 +912,36 @@ async fn check_one(
             Some(reason) => (
                 Status::Outside,
                 format!(
-                    "{reason}, outside the cross-build tier of builds {} and {}: no verdict, nobody held; pairing: {}",
+                    "{reason}, outside the cross-build tier of builds {} and {}: nobody held here, and the page is not let through (the controller withholds it for a third reading); pairing: {}",
                     job.engine.image,
                     target.engine.image,
                     pairing.label()
                 ),
             ),
         };
-        return finish(p, &path, &mut journal, outcome(r, status, detail), execute);
+        return finish(
+            p,
+            &path,
+            &mut journal,
+            with_pair(outcome(r, status, detail), &measures),
+            execute,
+        );
     }
     if agree(builds, &original, &replay, true)? {
         return finish(
             p,
             &path,
             &mut journal,
-            outcome(
-                r,
-                Status::Match,
-                format!(
-                    "text bytes and ALTO (without confidences) identical; pairing: {}",
-                    pairing.label()
+            with_pair(
+                outcome(
+                    r,
+                    Status::Match,
+                    format!(
+                        "text bytes and ALTO (without confidences) identical; pairing: {}",
+                        pairing.label()
+                    ),
                 ),
+                &measures,
             ),
             execute,
         );
@@ -886,15 +980,18 @@ async fn check_one(
                     p,
                     &path,
                     &mut journal,
-                    outcome(
-                        r,
-                        Status::Match,
-                        format!(
-                            "within the cross-SIMD tier (CER at most {}, F1 at least {}) of one build; {counts}; pairing: {}; {detail}",
-                            CROSS_SIMD_SAME_BUILD.max_cer,
-                            CROSS_SIMD_SAME_BUILD.min_f1,
-                            pairing.label()
+                    with_pair(
+                        outcome(
+                            r,
+                            Status::Match,
+                            format!(
+                                "within the cross-SIMD tier (CER at most {}, F1 at least {}) of one build; {counts}; pairing: {}; {detail}",
+                                CROSS_SIMD_SAME_BUILD.max_cer,
+                                CROSS_SIMD_SAME_BUILD.min_f1,
+                                pairing.label()
+                            ),
                         ),
+                        &measures,
                     ),
                     execute,
                 );
@@ -903,7 +1000,15 @@ async fn check_one(
         }
     }
     detail = format!("{detail}; pairing: {}", pairing.label());
-    mismatch(p, &path, &mut journal, r, &job, detail, execute)
+    mismatch(
+        p,
+        &path,
+        &mut journal,
+        r,
+        &job,
+        (detail, Some(measures)),
+        execute,
+    )
 }
 
 /// The differing words by the confidence of their line, for a verdict's detail.
@@ -922,10 +1027,11 @@ fn mismatch(
     journal: &mut Journal,
     r: &Replay,
     job: &boinc::Job,
-    detail: String,
+    (detail, pair): (String, Option<Pair>),
     execute: bool,
 ) -> anyhow::Result<Outcome> {
-    let verdict = outcome(r, Status::Mismatch, detail);
+    let mut verdict = outcome(r, Status::Mismatch, detail);
+    verdict.pair = pair;
     if !execute {
         return Ok(verdict);
     }
@@ -1775,7 +1881,8 @@ mod tests {
             .collect();
         let (o, t, f) = cross_build_compared(&original, &replay, "5.5.0");
         assert_eq!(o.status, Status::Outside, "{o:?}");
-        assert!(o.detail.contains("no verdict, nobody held"), "{}", o.detail);
+        assert!(o.detail.contains("nobody held here"), "{}", o.detail);
+        assert!(o.detail.contains("not let through"), "{}", o.detail);
         assert!(t.holds.is_empty());
         // The verdict is kept, so it is not compared again.
         let r = replay_of(&f);
@@ -1789,6 +1896,71 @@ mod tests {
 
     fn replay_of(f: &Fixture) -> Replay {
         replay(f, 301, &xbuild(), true)
+    }
+
+    #[test]
+    fn every_compared_pair_carries_its_log_numbers() {
+        // A pass, the pair log's first case: the measures, both builds and the peer's gate.
+        let original = page();
+        let mut close = original.clone();
+        close = close.replacen("w010x", "w010y", 1);
+        let (o, _, _) = cross_build_compared(&original, &close, "5.5.0");
+        assert_eq!(o.status, Status::Match, "{o:?}");
+        let pair = o.pair.expect("a match carries its pair");
+        assert_eq!(pair.source_image, LINUX);
+        assert_eq!(pair.target_image, xbuild());
+        assert!(pair.cer > 0.0 && pair.cer < 0.01, "{pair:?}");
+        assert!(pair.word_f1 > 0.99 && pair.word_f1 < 1.0, "{pair:?}");
+        assert!((pair.length_ratio - 1.0).abs() < 0.01);
+        assert_eq!(pair.peer_gate, "unweighed");
+        assert!(pair.peer_gate_pass);
+        // An outside pair carries them too, and survives the journal's JSON.
+        let (o, _, f) = cross_build_compared(&original, "something else entirely\n", "5.5.0");
+        assert_eq!(o.status, Status::Outside);
+        let pair = o.pair.clone().unwrap();
+        assert!(pair.word_f1 < 0.5 && pair.cer > 0.5, "{pair:?}");
+        let again = block(check_one(
+            &f.paths,
+            &trust(&f),
+            &f.builds,
+            &replay_of(&f),
+            true,
+        ))
+        .unwrap();
+        assert_eq!(again.pair, Some(pair));
+        let json = serde_json::to_string(&again).unwrap();
+        assert!(json.contains("\"word_f1\""), "{json}");
+    }
+
+    #[test]
+    fn the_peers_completeness_gate_is_weighed_when_loc_text_is_there() {
+        let f = fixture();
+        let loc = page();
+        let short = "w001 w002 w003\n";
+        let ours = Returned {
+            image: LINUX.into(),
+            text: loc.clone(),
+            ..Default::default()
+        };
+        let peer = Returned {
+            image: xbuild(),
+            text: short.into(),
+            ..Default::default()
+        };
+        let pair = measure(&ours, &peer, &f.job, Some(&loc));
+        assert_eq!(pair.peer_gate, "short");
+        assert!(!pair.peer_gate_pass);
+        let whole = Returned {
+            image: xbuild(),
+            text: loc.clone(),
+            ..Default::default()
+        };
+        let pair = measure(&ours, &whole, &f.job, Some(&loc));
+        assert_eq!(
+            (pair.peer_gate.as_str(), pair.peer_gate_pass),
+            ("pass", true)
+        );
+        assert_eq!(pair.cer, 0.0);
     }
 
     #[test]
