@@ -403,19 +403,31 @@ class HeldArchive(unittest.TestCase):
 
     def test_max_minutes_starts_no_batch_after_the_budget(self):
         (self.root / "left").write_text("5")
-        # bash starts SECONDS at the value in its environment: the run is 2 minutes old already.
+        # bash starts SECONDS at the value in its environment: the run is 2 minutes old already,
+        # so not even the first batch starts, and the controller is left running.
         done = self.run_archive("--max-batches", "5", "--max-minutes", "1", SECONDS="120")
         self.assertEqual(done.returncode, 0, done.stderr)
-        # The first batch always runs: the budget only keeps another from starting.
-        self.assertEqual(self.summary(done)["batches"], ["0001"])
+        self.assertEqual(self.summary(done)["batches"], [])
         self.assertEqual((self.root / "timer").read_text().strip(), "active")
 
     def test_max_minutes_starts_no_batch_the_rest_of_it_cannot_cover(self):
         (self.root / "left").write_text("5")
-        # 4 minutes of 5 are used: under --batch-mins 2 another batch does not fit, though the budget is not spent.
+        # 4 minutes of 5 are used: under --batch-mins 2 a batch does not fit, though the budget is not spent.
         done = self.run_archive("--max-batches", "5", "--max-minutes", "5", "--batch-mins", "2", SECONDS="240")
         self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.summary(done)["batches"], [])
+        # With time for just one, the first runs and no second starts.
+        (self.root / "left").write_text("5")
+        done = self.run_archive("--max-batches", "5", "--max-minutes", "5", "--batch-mins", "2", SECONDS="177",
+                                FAKE_BRIDGE_SLEEP="6")
         self.assertEqual(self.summary(done)["batches"], ["0001"])
+
+    def test_max_minutes_checks_the_budget_after_the_first_tick(self):
+        (self.root / "left").write_text("5")
+        done = self.run_archive("--max-batches", "5", "--max-minutes", "1", "--batch-mins", "0", "--pre-batch-tick",
+                                SECONDS="58", FAKE_TICK_SLEEP="3")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.summary(done)["batches"], [])
 
     def test_max_minutes_expects_the_longest_batch_so_far(self):
         (self.root / "left").write_text("5")
@@ -425,11 +437,11 @@ class HeldArchive(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.summary(done)["batches"], ["0001"])
 
-    def test_max_minutes_caps_the_wait_for_the_step_lock(self):
+    def test_max_minutes_leaves_the_bridge_step_its_own_wait(self):
         done = self.run_archive("--max-batches", "1", "--max-minutes", "2", "--batch-mins", "0", "--wait-mins", "30")
         self.assertEqual(done.returncode, 0, done.stderr)
         steps = [line for line in self.log() if line.startswith("step ")]
-        self.assertTrue(steps and "--wait-mins 2" in steps[0], steps)
+        self.assertTrue(steps and "--wait-mins 30" in steps[0], steps)
 
     def test_max_minutes_is_read_again_after_the_gap(self):
         (self.root / "left").write_text("5")
@@ -529,6 +541,15 @@ class HeldArchive(unittest.TestCase):
         ticks = [i for i, line in enumerate(log) if line == self.TICK]
         for n in range(3):
             self.assertLess(ticks[n], applies[n], log)
+
+    def test_pre_batch_tick_does_not_double_the_gap_tick(self):
+        (self.root / "left").write_text("5")
+        # The fake service is never active, so the gap sees no tick of its own: one blocking tick
+        # per batch. When it does see one end, none is added (covered by the real unit's state).
+        done = self.run_archive("--max-batches", "2", "--gap-mins", "1", "--pre-batch-tick",
+                                USNM_HELD_ARCHIVE_TICK_START_SECS="1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.log().count(self.TICK), 2)
 
     def test_a_failed_pre_batch_tick_is_logged_and_the_batch_goes_on(self):
         (self.root / "left").write_text("5")

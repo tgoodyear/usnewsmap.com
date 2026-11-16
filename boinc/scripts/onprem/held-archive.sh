@@ -44,9 +44,11 @@
 # --max-minutes N (default 0, no limit) is a budget for the whole run. No further batch starts
 # once the run is N minutes old, or when what is left cannot cover a typical batch: the longest
 # batch this run has taken, or --batch-mins N (default 10) before it has run one. A wait on the
-# controller's tick, the tick lock or the BOINC host's step lock is capped to what is left of the
-# budget (at least 1 minute) instead of --wait-mins; one that runs out fails the run, which
-# resumes on the next. A batch under way is finished: it is never cut short.
+# controller's tick or the tick lock is capped to what is left of the budget (at least 1 minute)
+# instead of --wait-mins; one that runs out fails the run, which resumes on the next. The first
+# batch is held to the same test, so a run whose pause, recovery bridges or tick used the budget
+# archives nothing. The bridge step's own --wait-mins is not reduced: it is also the step's
+# execution allowance. A batch under way is finished: it is never cut short.
 #
 # --pre-batch-tick (default off) runs one normal tick of the plan's controller unit before each
 # batch takes the pause, so the cohort is refilled to its high watermark first and the BOINC
@@ -268,18 +270,20 @@ gap() {
   flock -u 9
   if [ -n "$TICK_LOCK" ]; then flock -u 8; exec 8>&-; fi
   start_controller || die "the controller did not start between batches"
-  local started=$SECONDS limit seen=false
+  local started=$SECONDS limit seen=false ticked=false
   limit=$((SECONDS + $(gap_mins) * 60))
   while [ $SECONDS -lt $limit ]; do
     case $(systemctl is-active "$UNIT.service" || true) in
       active | activating | reloading) seen=true ;;
-      *) if $seen; then break; fi ;;
+      *) if $seen; then ticked=true; break; fi ;;
     esac
     # No tick started: it was skipped or is not due; the next pause won't wait for one either.
     $seen || [ $((SECONDS - started)) -lt "$TICK_START_SECS" ] || break
     sleep 1
   done
-  ! $PRE_TICK || pre_batch_tick
+  # The tick start_controller began is the one before the batch when it ended in the gap; one
+  # still running, or none, is joined or run by pre_batch_tick (a second would be a whole extra run).
+  ! $PRE_TICK || $ticked || pre_batch_tick
   flock -w 60 9 || die "the archive lock is held by another process after the gap"
   rm -f "$GAP_FILE"
   pause_controller
@@ -309,7 +313,7 @@ bridge() {
   {
     tar -C "$dir" -cf - manifest.json receipts/dispatch.json |
       "${STEP[@]}" --env "$ENV_NAME" --target archive --step bridge --var "ARCHIVE_BATCH=$n" \
-        --wait-mins "$(wait_mins)" > "$out"
+        --wait-mins "$WAIT_MINS" > "$out"
   } &
   child=$!
   wait "$child" || status=$?
@@ -340,7 +344,13 @@ out=$(mktemp)
 trap 'st=$?; rm -f "$out"; resume "$st"' EXIT
 for i in $(seq 1 "$MAX_BATCHES"); do
   if [ "$i" -eq 1 ]; then
-    ! $PRE_TICK || tick_before_batch
+    # Held to the same test as the later batches: the pause, recovery bridges and the tick before
+    # it can use the budget up.
+    over_budget && break
+    if $PRE_TICK; then
+      tick_before_batch
+      over_budget && break
+    fi
   else
     # A batch under way is never cut short; the budget only keeps another from starting. It is
     # read again after the gap, which can itself take its --gap-mins and a tick's end.
