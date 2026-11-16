@@ -370,9 +370,51 @@ fn load_build(work: &Path) -> anyhow::Result<(Build, BTreeMap<String, PathBuf>)>
 /// project directory share a filesystem. `crate::read` refuses symlinks, and it reads models.
 fn link_file(from: &Path, to: &Path) -> anyhow::Result<()> {
     if std::fs::hard_link(from, to).is_err() {
-        std::fs::copy(from, to).with_context(|| format!("copying {}", from.display()))?;
+        copy_file(from, to)?;
     }
     Ok(())
+}
+
+fn copy_file(from: &Path, to: &Path) -> anyhow::Result<()> {
+    std::fs::copy(from, to)
+        .with_context(|| format!("copying {} to {}", from.display(), to.display()))?;
+    Ok(())
+}
+
+/// Puts the engine at `real` and makes it executable. A hard link shares the project file's
+/// inode, so under the macOS client's sandbox (the task runs as `boinc_project`, the project
+/// directory belongs to `boinc_master`) `chmod` on it fails with EPERM (#1418, result 92572).
+/// So the link is kept only if it already has the execute bits, and a `chmod` that is refused
+/// falls back to a copy, which the task owns.
+#[cfg(unix)]
+fn place_engine(
+    from: &Path,
+    real: &Path,
+    chmod: &dyn Fn(&Path) -> std::io::Result<()>,
+) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    link_file(from, real)?;
+    let mode = std::fs::metadata(real)
+        .with_context(|| format!("reading the mode of {}", real.display()))?
+        .permissions()
+        .mode();
+    if mode & 0o111 == 0o111 {
+        return Ok(());
+    }
+    if chmod(real).is_err() {
+        // Remove the link, not the project's file: unlinking only drops this name.
+        std::fs::remove_file(real)
+            .with_context(|| format!("removing the link {} before a copy", real.display()))?;
+        copy_file(from, real)?;
+        chmod(real).with_context(|| format!("chmod 755 on the copy {}", real.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn chmod_755(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
 }
 
 /// Lays out the engine in the slot: the models and configs as `TESSDATA_PREFIX` expects them,
@@ -382,25 +424,34 @@ fn prepare_engine(
     work: &Path,
     paths: &BTreeMap<String, PathBuf>,
 ) -> anyhow::Result<(PathBuf, PathBuf)> {
-    use std::os::unix::fs::PermissionsExt as _;
     let dir = work.join(ENGINE_DIR);
     if dir.exists() {
-        std::fs::remove_dir_all(&dir)?;
+        std::fs::remove_dir_all(&dir)
+            .with_context(|| format!("removing the old engine directory {}", dir.display()))?;
     }
     let tessdata = dir.join("tessdata");
-    std::fs::create_dir_all(tessdata.join("configs"))?;
+    let configs = tessdata.join("configs");
+    std::fs::create_dir_all(&configs).with_context(|| format!("creating {}", configs.display()))?;
     for (name, path) in paths {
         if let Some(file) = name.strip_prefix(MODEL_PREFIX) {
-            link_file(path, &tessdata.join(file))?;
+            link_file(path, &tessdata.join(file))
+                .with_context(|| format!("placing the model {file}"))?;
         }
     }
     for (name, text) in CONFIGS {
-        std::fs::write(tessdata.join("configs").join(name), text)?;
+        let config = configs.join(name);
+        std::fs::write(&config, text).with_context(|| format!("writing {}", config.display()))?;
     }
     let real = dir.join(TESSERACT_FILE);
-    link_file(&paths[TESSERACT_FILE], &real)?;
-    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755))?;
-    std::os::unix::fs::symlink(&paths[WORKER_FILE], dir.join("tesseract"))?;
+    place_engine(&paths[TESSERACT_FILE], &real, &chmod_755).context("placing the engine")?;
+    let link = dir.join("tesseract");
+    std::os::unix::fs::symlink(&paths[WORKER_FILE], &link).with_context(|| {
+        format!(
+            "linking {} to {}",
+            link.display(),
+            paths[WORKER_FILE].display()
+        )
+    })?;
     Ok((dir, real))
 }
 
@@ -613,28 +664,33 @@ fn stopped_result(reason: &str) -> anyhow::Result<()> {
 
 /// One task in the slot `work`: the process the BOINC client starts.
 pub fn run_slot(work: &Path) -> anyhow::Result<()> {
-    let work = crate::plain_path(work.canonicalize()?);
+    let work = crate::plain_path(
+        work.canonicalize()
+            .with_context(|| format!("resolving the slot {}", work.display()))?,
+    );
     // A crash of the unit or the engine shows no dialog nobody is there to close, which the
     // job's own flag then ends. The mode is inherited by every process started below.
     #[cfg(windows)]
     win::silence_crash_dialogs();
     let control = control(&work);
-    let unit = read_unit(&work)?;
-    let (build, paths) = load_build(&work)?;
+    let unit = read_unit(&work).context("reading the unit")?;
+    let (build, paths) = load_build(&work).context("checking the build")?;
     check_unit(&unit, &build)?;
-    let (engine_dir, real) = prepare_engine(&work, &paths)?;
+    let (engine_dir, real) = prepare_engine(&work, &paths).context("preparing the engine")?;
     let tmp = work.join(TMP_DIR);
     let worker = paths[WORKER_FILE].clone();
     let start = || -> anyhow::Result<Child> {
         // A unit killed at a suspension or a restart leaves its scratch behind.
         if tmp.exists() {
-            std::fs::remove_dir_all(&tmp)?;
+            std::fs::remove_dir_all(&tmp)
+                .with_context(|| format!("clearing the scratch {}", tmp.display()))?;
         }
-        std::fs::create_dir_all(&tmp)?;
+        std::fs::create_dir_all(&tmp)
+            .with_context(|| format!("creating the scratch {}", tmp.display()))?;
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt as _;
-            Ok(Command::new(&worker)
+            Command::new(&worker)
                 .arg("unit")
                 .current_dir(&work)
                 .env_clear()
@@ -648,7 +704,8 @@ pub fn run_slot(work: &Path) -> anyhow::Result<()> {
                 .env(CPU_DEADLINE_ENV, unit.timeout_secs.to_string())
                 .process_group(0)
                 .stdin(Stdio::null())
-                .spawn()?)
+                .spawn()
+                .with_context(|| format!("starting the unit {}", worker.display()))
         }
         #[cfg(windows)]
         {
@@ -691,7 +748,9 @@ pub fn run_slot(work: &Path) -> anyhow::Result<()> {
         Ended::Finished => {
             let _ = std::fs::remove_dir_all(work.join(ENGINE_DIR));
             let _ = std::fs::remove_dir_all(&tmp);
-            write_atomic(&work.join(FINISH_FILE), b"0\n")?;
+            let finish = work.join(FINISH_FILE);
+            write_atomic(&finish, b"0\n")
+                .with_context(|| format!("writing {}", finish.display()))?;
         }
     }
     Ok(())

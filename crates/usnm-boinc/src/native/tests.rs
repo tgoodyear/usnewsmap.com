@@ -667,3 +667,65 @@ fn only_client_requested_stops_exit_zero() {
     let error = stopped_result("heartbeat_lost").unwrap_err();
     assert!(error.to_string().contains("heartbeat_lost"));
 }
+
+/// The macOS client's sandbox (#1418, result 92572): the engine in the project directory is not
+/// the task's, so a hard link to it can't be chmod-ed.
+#[cfg(unix)]
+mod engine_placement {
+    use super::*;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    fn engine(dir: &Path, mode: u32) -> PathBuf {
+        let from = dir.join("project_engine");
+        std::fs::write(&from, b"engine").unwrap();
+        std::fs::set_permissions(&from, std::fs::Permissions::from_mode(mode)).unwrap();
+        from
+    }
+
+    #[test]
+    fn an_executable_engine_is_linked_and_never_chmoded() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = engine(dir.path(), 0o755);
+        let real = dir.path().join("real");
+        let refuse = |_: &Path| -> std::io::Result<()> { panic!("chmod on a ready engine") };
+        place_engine(&from, &real, &refuse).unwrap();
+        assert_eq!(
+            std::fs::metadata(&from).unwrap().ino(),
+            std::fs::metadata(&real).unwrap().ino()
+        );
+    }
+
+    #[test]
+    fn a_refused_chmod_falls_back_to_a_copy_and_leaves_the_project_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = engine(dir.path(), 0o644);
+        let real = dir.path().join("real");
+        let refuses_the_link = |path: &Path| -> std::io::Result<()> {
+            if std::fs::metadata(path)?.nlink() > 1 {
+                return Err(std::io::Error::from_raw_os_error(1));
+            }
+            chmod_755(path)
+        };
+        place_engine(&from, &real, &refuses_the_link).unwrap();
+        assert_ne!(
+            std::fs::metadata(&from).unwrap().ino(),
+            std::fs::metadata(&real).unwrap().ino()
+        );
+        assert_eq!(std::fs::read(&real).unwrap(), b"engine");
+        assert_eq!(std::fs::metadata(&real).unwrap().mode() & 0o777, 0o755);
+        assert_eq!(std::fs::metadata(&from).unwrap().mode() & 0o777, 0o644);
+    }
+
+    #[test]
+    fn a_failure_names_the_path_and_the_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let from = engine(dir.path(), 0o644);
+        let real = dir.path().join("real");
+        let deny = |_: &Path| -> std::io::Result<()> { Err(std::io::Error::from_raw_os_error(1)) };
+        let error = place_engine(&from, &real, &deny).unwrap_err();
+        let text = format!("{error:#}");
+        assert!(text.contains("chmod 755 on the copy"), "{text}");
+        assert!(text.contains("real"), "{text}");
+        assert!(text.contains("Operation not permitted"), "{text}");
+    }
+}
