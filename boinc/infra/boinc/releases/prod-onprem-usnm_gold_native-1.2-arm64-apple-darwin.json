@@ -4,9 +4,9 @@
   "host": "pve.tjg.fyi",
   "images": {
     "base": "sha256:dc49f2267d8bfec9d7fdf503260b34897b4aad7edc1a4e5a5641d8a6e5da8f17",
-    "bin": "sha256:6098699b6d9488e715b5244842e3c3da053579d0c5c3cf06bab43953b764a03d",
-    "bridge": "sha256:2be4e677fab1c97e839fdee20be7e459d6fad7f63d7b77b9cf1c4efc9b0f7cab",
-    "server": "sha256:eaadfbd2ddd634c1d780ce1a3f129602cff8e7e9a1cfcb4440b8430ca6dd47cb",
+    "bin": "sha256:3fc384987f72160c0d15f3a4e8ea4c3e22456ab34259de999eafc08516693fbe",
+    "bridge": "sha256:78c3102190a176fa2b7ea439f1e1bb5b77f2da6a8e2362af8c9150cba03f344b",
+    "server": "sha256:aa7eb8b8a3d9176e028b2e0c7ac9e82e44e3fd88443576e544654284ec903ccd",
     "worker": null
   },
   "release": {
@@ -17,7 +17,7 @@
     "version": "1.2"
   },
   "schema": 1,
-  "source_commit": "c55aab6e2c558787a939ab3d54d7fbb6edbc2e97",
+  "source_commit": "10d3c63b16206fd07008a1ef046c8800a3a1db01",
   "worker": {
     "extra_files": {
       "notice_chr_phoenix_LICENSE-Apache-2.0.txt": {
