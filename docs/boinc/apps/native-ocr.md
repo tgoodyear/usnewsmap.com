@@ -183,6 +183,8 @@ Every key is optional, with the defaults shown, and the setting is outside the a
 | `arm64-apple-darwin`  | `c4e80bdd…`    | `84086d8f…`   | 5957 (0.0719)                            | Apple M1                      |
 | `windows_x86_64`      | `bb9bfecc…`    | `0c5a3249…`   | 5951 (0.0719)                            | VM 206, Intel i7-7700K        |
 
+**The macOS arm64 build after the sandbox fix (#2015).** `boinc-ocr-native.yml` run 43801347852 on main `4e6096ad` built `engine.image` `67b0e05e…`, `engine.base` `29a8048b…`. The challenge ran on a `macos-15` runner by `boinc-native-challenge.yml` (run 43854926823, macOS 15.8.2 on a virtual Apple M1): 5957 edits in 82794 characters, CER 0.0719, the same total as the two earlier arm64 builds, 143 s. It is recorded in `native-build-trust.json` and bound on `arm64-apple-darwin`. No host is trusted for it yet.
+
 The Linux `engine.base` equals the one #1903's CI printed, so the Linux engine builds reproducibly. The macOS and Windows engines don't: their stock builds in the same run also hash differently from #1903's, so those digests are new on every CI run. The `x86_64-apple-darwin` build (`c81b7092…`, base `f02c8bd3…`) has no challenge run and isn't bound. No project machine is an Intel Mac, and the Japanese headline JPEG (`ocr/ja-ocr/testdata/rocky-shimpo-1945-01-01-seq-4-headline.jpg`) failed on the Intel CI runner with both the stock and the patched build. That failure has to be explained on an Intel Mac before this build is released.
 
 ## Parity
