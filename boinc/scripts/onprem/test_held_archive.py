@@ -86,7 +86,7 @@ case "$1" in
       *.service)
         if [ -n "$FAKE_GAP_TICK" ] && [ -e "$USNM_HELD_ARCHIVE_LOCK.gap" ]; then
           n=$(cat "$FAKE_GAP_TICK_N" 2> /dev/null || echo 0); echo $((n + 1)) > "$FAKE_GAP_TICK_N"
-          if [ "$n" -eq 0 ]; then echo activating; else echo "$FAKE_GAP_TICK"; fi
+          if [ "$n" -eq 0 ]; then echo activating; else [ -z "$FAKE_GAP_TICK_SLEEP" ] || sleep "$FAKE_GAP_TICK_SLEEP"; echo "$FAKE_GAP_TICK"; fi
         else echo inactive; fi ;;
       *) echo inactive ;;
     esac ;;
@@ -578,6 +578,21 @@ class HeldArchive(unittest.TestCase):
                                 USNM_HELD_ARCHIVE_TICK_START_SECS="1")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.log().count(self.TICK), 2)
+
+    def test_a_gap_that_uses_the_budget_up_ends_the_run_without_pausing_again(self):
+        (self.root / "left").write_text("5")
+        # The gap's tick is running on the first look and ends 12 s into the gap, past the minute (50 s old
+        # at the start), so no batch follows and the run ends well, with the controller running.
+        done = self.run_archive("--max-batches", "5", "--max-minutes", "1", "--gap-mins", "1", "--batch-mins", "0",
+                                SECONDS="50", FAKE_GAP_TICK="inactive", FAKE_GAP_TICK_N=str(self.root / "n"),
+                                FAKE_GAP_TICK_SLEEP="12", USNM_HELD_ARCHIVE_TICK_START_SECS="1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        summary = json.loads([line for line in done.stdout.splitlines() if line.startswith("{")][-1])
+        self.assertEqual((summary["batches"], summary["budget_ended"]), (["0001"], True))
+        self.assertEqual((self.root / "timer").read_text().strip(), "active")
+        self.assertFalse(Path(f"{self.root / 'lock'}.gap").exists())
+        # No second pause: the controller was stopped once, for the one batch.
+        self.assertEqual(self.log().count(self.STOP), 1)
 
     def test_a_failed_pre_batch_tick_is_logged_and_the_batch_goes_on(self):
         (self.root / "left").write_text("5")
