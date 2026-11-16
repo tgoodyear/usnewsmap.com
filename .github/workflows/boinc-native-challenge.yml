@@ -45,8 +45,14 @@ jobs:
           set -euo pipefail
           [[ "$BUILD_RUN" =~ ^[0-9]+$ ]] || { echo "run_id must be a number" >&2; exit 1; }
           run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN")
+          # Only a build this repository made from main is run: the job executes the artifact's
+          # binaries with network access.
           [ "$(jq -r .path <<<"$run")" = ".github/workflows/boinc-ocr-native.yml" ]
           [ "$(jq -r .conclusion <<<"$run")" = success ]
+          [ "$(jq -r .head_branch <<<"$run")" = main ]
+          [ "$(jq -r .head_repository.full_name <<<"$run")" = "$GITHUB_REPOSITORY" ]
+          [ "$(jq -r '.head_repository.fork' <<<"$run")" = false ]
+          case "$(jq -r .event <<<"$run")" in workflow_dispatch|push|schedule) ;; *) exit 1 ;; esac
           echo "commit=$(jq -r .head_sha <<<"$run")" >> "$GITHUB_OUTPUT"
           digest=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN/artifacts" \
             --jq ".artifacts[] | select(.name == \"boinc-ocr-native-$PLATFORM\" and (.expired | not)) | .digest")

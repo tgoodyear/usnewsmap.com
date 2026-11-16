@@ -26,7 +26,8 @@ def result(edit_rate=0.07):
               "char_edits": round(counts["ref_chars"] * edit_rate), "ref_words": counts["ref_words"],
               "word_edits": 0, "elapsed_ms": 1, "profile": "eng"}
              for crop, (source, counts) in PREPARED["crops"].items()]
-    return {"manifest_sha256": PREPARED["manifest_sha256"], "limit": None, "skipped": [], "crops": crops}
+    return {"manifest_sha256": PREPARED["manifest_sha256"], "limit": None, "skipped": [], "crops": crops,
+            "boinc": {"engine_base": BASE, "engine_image": IMAGE, "host_id": None, "job_id": "f" * 64}}
 
 
 class Receipt(unittest.TestCase):
@@ -52,6 +53,12 @@ class Receipt(unittest.TestCase):
             lambda r: r.update(manifest_sha256="0" * 64),
             lambda r: r["crops"][0].update(ref_chars=1),
             lambda r: r["crops"].append(copy.deepcopy(r["crops"][0])),
+            lambda r: r["boinc"].update(engine_image="sha256:" + "9" * 64),
+            lambda r: r["boinc"].update(engine_base="sha256:" + "9" * 64),
+            lambda r: r.pop("boinc"),
+            lambda r: r["crops"][0].update(char_edits=-5),
+            lambda r: r["crops"][0].update(char_edits=True),
+            lambda r: r["crops"][0].update(char_edits=1.5),
         ):
             bad = result()
             change(bad)

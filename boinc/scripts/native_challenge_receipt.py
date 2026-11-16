@@ -46,6 +46,10 @@ def receipt(result: dict, identity: dict, prepared: dict, *, platform: str, run:
         raise ValueError("the result is for another challenge manifest")
     if result.get("limit") is not None or result["skipped"]:
         raise ValueError("a limited run or a run that skipped crops is not the challenge")
+    reported = result.get("boinc") or {}
+    if (reported.get("engine_image") != identity["engine_image"]
+            or reported.get("engine_base") != identity["engine_base"]):
+        raise ValueError("the result was not made by the build the identity names")
     expected = {crop: counts["ref_chars"] for crop, (_, counts) in prepared["crops"].items()}
     rows = {}
     for row in result["crops"]:
@@ -57,6 +61,8 @@ def receipt(result: dict, identity: dict, prepared: dict, *, platform: str, run:
     for crop, row in rows.items():
         if row["ref_chars"] != expected[crop]:
             raise ValueError(f"crop {crop} has another reference length than prepared.json")
+        if not trust._count(row["char_edits"]):
+            raise ValueError(f"crop {crop} has an invalid edit count")
     edits = sum(row["char_edits"] for row in rows.values())
     chars = sum(row["ref_chars"] for row in rows.values())
     cer = edits / chars
