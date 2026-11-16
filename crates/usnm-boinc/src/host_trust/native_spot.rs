@@ -196,7 +196,8 @@ impl Simd {
 }
 
 /// A host's SIMD level from its `p_features` (what the client reported: authoritative when
-/// there) or, with none, from its `p_model` by a small table of the families this project's
+/// there; the prod `host` table doesn't keep it, so prod passes "") or, with none, from its
+/// `p_model` by a small table of the families this project's
 /// hosts run. None when neither says.
 pub fn simd_level(p_model: &str, p_features: &str) -> Option<Simd> {
     let features: Vec<&str> = p_features.split_whitespace().collect();
@@ -261,6 +262,21 @@ pub fn simd_level(p_model: &str, p_features: &str) -> Option<Simd> {
     None
 }
 
+/// The query that reads a host's CPU model. Only columns the BOINC `host` table has: the table
+/// keeps `p_model` but no `p_features` (the scheduler request's feature string is not stored
+/// anywhere), and a query naming a missing column fails, which left every level unknown until
+/// 15 Nov 2026 (#1919).
+fn cpu_query(id: u64) -> String {
+    format!("SELECT LEFT(p_model, 120) FROM host WHERE id={id}")
+}
+
+/// The SIMD level out of `cpu_query`'s output: the first line's first field is the model. An
+/// empty output (no such host) or a model the table doesn't know is None.
+fn simd_from_rows(rows: &str) -> Option<Simd> {
+    let model = rows.lines().next()?.split('\t').next()?;
+    simd_level(model, "")
+}
+
 /// Where each host's `p_model` and `p_features` are read from.
 pub enum Cpus {
     Db {
@@ -274,27 +290,21 @@ pub enum Cpus {
 
 impl Cpus {
     /// The SIMD level of host `id`; None when the row doesn't say or can't be read. A host
-    /// whose level is not known is compared byte for byte, as before.
+    /// whose level is not known is compared byte for byte, as before. A failed read is logged,
+    /// since it otherwise looks like a host that is merely unknown.
     async fn simd(&self, id: u64) -> Option<Simd> {
         match self {
             Self::Db {
                 mysql_defaults,
                 mysql_ca,
                 database,
-            } => {
-                let rows = super::query_db(
-                    mysql_defaults,
-                    mysql_ca,
-                    database,
-                    &format!(
-                        "SELECT LEFT(p_model, 120), LEFT(p_features, 2000) FROM host WHERE id={id}"
-                    ),
-                )
-                .await
-                .ok()?;
-                let mut fields = rows.lines().next()?.split('\t');
-                simd_level(fields.next()?, fields.next().unwrap_or(""))
-            }
+            } => match super::query_db(mysql_defaults, mysql_ca, database, &cpu_query(id)).await {
+                Ok(rows) => simd_from_rows(&rows),
+                Err(error) => {
+                    eprintln!("native spot check: cannot read host {id}'s CPU model: {error}");
+                    None
+                }
+            },
             #[cfg(test)]
             Self::Fixed(hosts) => {
                 let (model, features) = hosts.get(&id)?;
@@ -1478,6 +1488,46 @@ mod tests {
         }
         assert_eq!(CROSS_SIMD_SAME_BUILD.min_ratio, 0.0);
         assert!(CROSS_SIMD_SAME_BUILD.max_ratio.is_infinite());
+    }
+
+    #[test]
+    fn the_cpu_query_names_only_columns_the_host_table_has() {
+        // The prod BOINC host table has p_model and no p_features: "Unknown column" made every
+        // level None (#1919).
+        let query = cpu_query(13);
+        assert!(!query.contains("p_features"), "{query}");
+        assert!(
+            query.contains("p_model") && query.ends_with("WHERE id=13"),
+            "{query}"
+        );
+    }
+
+    #[test]
+    fn prod_p_model_strings_give_the_levels_of_hosts_13_and_9() {
+        // The strings the BOINC host table holds, with the client's family suffix.
+        let ryzen = "AMD Ryzen 9 3900X 12-Core Processor [Family 23 Model 113 Stepping 0]\n";
+        let tiger =
+            "11th Gen Intel(R) Core(TM) i7-1185G7 @ 3.00GHz [Family 6 Model 140 Stepping 1]\n";
+        assert_eq!(simd_from_rows(ryzen), Some(Simd::Avx2));
+        assert_eq!(simd_from_rows(tiger), Some(Simd::Avx512));
+        assert_eq!(
+            Pairing::of(simd_from_rows(ryzen), simd_from_rows(tiger)),
+            Pairing::Cross(Simd::Avx2, Simd::Avx512)
+        );
+    }
+
+    #[test]
+    fn a_missing_row_or_column_leaves_the_level_unknown() {
+        // No such host: the query returns nothing. A failed query (such as an unknown column)
+        // never reaches here, and `Cpus::simd` turns it into None. Either way the pairing is
+        // Unknown, which is compared byte for byte.
+        assert_eq!(simd_from_rows(""), None);
+        assert_eq!(simd_from_rows("\n"), None);
+        assert_eq!(simd_from_rows("NULL\n"), None);
+        assert_eq!(
+            Pairing::of(simd_from_rows(""), Some(Simd::Avx512)),
+            Pairing::Unknown
+        );
     }
 
     #[test]
