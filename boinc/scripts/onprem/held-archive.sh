@@ -27,7 +27,7 @@
 #   held-archive.sh [--config FILE] [--state-dir DIR] [--archive-dir DIR] [--pages N]
 #                   [--min-age-hours N] [--max-batches N] [--wait-mins N] [--tool FILE]
 #                   [--check-state-dir DIR]... [--tick-lock FILE] [--gap-mins N]
-#                   [--max-minutes N]
+#                   [--max-minutes N] [--batch-mins N] [--pre-batch-tick]
 #
 # --gap-mins N (#2012; default 0, off) lets the controller tick between batches. The pause, the
 # tick lock and the archive lock (/run/usnm-boinc-held-archive.lock, which other plans' ticks
@@ -41,8 +41,22 @@
 # archive's unit being active. Pair it with a small --pages, so a batch is short (a batch of
 # 1,000 pages was 35 minutes on native-feed-4, 15 Nov 2026).
 #
-# --max-minutes N (default 0, no limit) starts no further batch once the run is N minutes old.
-# A batch under way is finished: it is never cut short.
+# --max-minutes N (default 0, no limit) is a budget for the whole run. No further batch starts
+# once the run is N minutes old, or when what is left cannot cover a typical batch: the longest
+# batch this run has taken, or --batch-mins N (default 10) before it has run one. A wait on the
+# controller's tick, the tick lock or the BOINC host's step lock is capped to what is left of the
+# budget (at least 1 minute) instead of --wait-mins; one that runs out fails the run, which
+# resumes on the next. A batch under way is finished: it is never cut short.
+#
+# --pre-batch-tick (default off) runs one normal tick of the plan's controller unit before each
+# batch takes the pause, so the cohort is refilled to its high watermark first and the BOINC
+# host's buffer is full when the exclusive section starts. Before the first batch the run lets
+# the archive lock and the tick lock go (as --gap-mins does) and runs `systemctl start
+# UNIT.service`, the command the plan's timer runs, to its end, then takes the locks back and
+# pauses. Before a later batch it is the gap's own tick (the one already running is joined, not
+# doubled), or, without --gap-mins, the same release-and-tick as the first. The tick waits at most
+# --wait-mins. A tick that fails, times out or finds the tick lock busy is logged
+# (boinc_held_archive_pre_batch_tick) and the batch goes on. Every archive check is unchanged.
 #
 # --tick-lock (or USNM_HELD_ARCHIVE_TICK_LOCK) names a flock file that every plan's tick runs
 # under (controller/controller-tick.sh; usnm-boinc-held-archive.service sets it). Once the
@@ -72,6 +86,7 @@ CONFIG=/etc/usnm/boinc-priority-controller.json
 STATE_DIR=/var/lib/usnm-priority-controller
 ARCHIVE=/srv/usnm-archive
 PAGES=1000 MIN_AGE=1 MAX_BATCHES=10 WAIT_MINS=60 GAP_MINS=0 MAX_MINUTES=0
+PRE_TICK=false BATCH_MINS=10
 UNIT=${USNM_CONTROLLER_UNIT:-usnm-boinc-priority-controller@main}
 # The shared unit every plan ticked in before #1690.
 LEGACY_UNIT=usnm-boinc-priority-controller
@@ -92,6 +107,8 @@ while [ $# -gt 0 ]; do
     --tick-lock) [ $# -ge 2 ] || usage; TICK_LOCK=$2; shift 2 ;;
     --gap-mins) [ $# -ge 2 ] || usage; GAP_MINS=$2; shift 2 ;;
     --max-minutes) [ $# -ge 2 ] || usage; MAX_MINUTES=$2; shift 2 ;;
+    --pre-batch-tick) PRE_TICK=true; shift ;;
+    --batch-mins) [ $# -ge 2 ] || usage; BATCH_MINS=$2; shift 2 ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
   esac
@@ -105,7 +122,7 @@ if [ ${#CHECK_DIRS[@]} -eq 0 ]; then
 fi
 CHECKS=()
 for dir in ${CHECK_DIRS[@]+"${CHECK_DIRS[@]}"}; do CHECKS+=(--check-state-dir "$dir"); done
-for n in "$PAGES" "$MIN_AGE" "$MAX_BATCHES" "$WAIT_MINS" "$GAP_MINS" "$MAX_MINUTES"; do
+for n in "$PAGES" "$MIN_AGE" "$MAX_BATCHES" "$WAIT_MINS" "$GAP_MINS" "$MAX_MINUTES" "$BATCH_MINS"; do
   [[ $n =~ ^[0-9]{1,5}$ ]] || die "--pages, --min-age-hours, --max-batches, --wait-mins, --gap-mins and --max-minutes are numbers"
 done
 [ "$MAX_BATCHES" -ge 1 ] && [ "$WAIT_MINS" -ge 1 ] || die "--max-batches and --wait-mins are at least 1"
@@ -182,18 +199,26 @@ trap on_stop TERM INT
 # tick waits on the lock for the moment this run ends. flock runs as a waited-for child so a
 # stop during the wait reaches on_stop at once (bash defers traps until a foreground command
 # ends); the lock belongs to fd 8's open file, so it stays held after the child exits.
+# The most a wait may take: --wait-mins, or under --max-minutes what is left of it (at least 1).
+wait_mins() {
+  local left
+  if [ "$MAX_MINUTES" -eq 0 ]; then echo "$WAIT_MINS"; return; fi
+  left=$(((MAX_MINUTES * 60 - SECONDS + 59) / 60))
+  [ "$left" -ge 1 ] || left=1
+  echo $((left < WAIT_MINS ? left : WAIT_MINS))
+}
 pause_controller() {
   systemctl stop "$UNIT.timer"
-  deadline=$((SECONDS + WAIT_MINS * 60))
+  deadline=$((SECONDS + $(wait_mins) * 60))
   until state=$(systemctl is-active "$UNIT.service" || true); [ "$state" = inactive ] || [ "$state" = failed ]; do
-    [ $SECONDS -lt $deadline ] || die "a controller tick is still running after $WAIT_MINS minutes"
+    [ $SECONDS -lt $deadline ] || die "a controller tick is still running after $(wait_mins) minutes"
     sleep 5
   done
   if [ -n "$TICK_LOCK" ]; then
     exec 8> "$TICK_LOCK"
     flock -w $((deadline > SECONDS ? deadline - SECONDS : 1)) 8 &
     child=$!
-    wait "$child" || die "another tick still holds $TICK_LOCK after $WAIT_MINS minutes"
+    wait "$child" || die "another tick still holds $TICK_LOCK after $(wait_mins) minutes"
     child=""
   fi
 }
@@ -203,12 +228,48 @@ pause_controller
 # lock and the tick lock are let go first, and the controller is started with its lock free, so
 # its tick, and any other plan's, runs for real.
 TICK_START_SECS=${USNM_HELD_ARCHIVE_TICK_START_SECS:-60}
+# --gap-mins, or under --max-minutes what is left of it if that is less (0 when nothing is).
+gap_mins() {
+  local left
+  if [ "$MAX_MINUTES" -eq 0 ]; then echo "$GAP_MINS"; return; fi
+  left=$(((MAX_MINUTES * 60 - SECONDS) / 60))
+  [ "$left" -ge 0 ] || left=0
+  echo $((left < GAP_MINS ? left : GAP_MINS))
+}
+# --pre-batch-tick: one tick of the plan's unit, run to its end (or --wait-mins), with the archive
+# and tick locks already let go. Starting the unit joins a tick that is already running. Failing
+# never stops the batch: the line says so and the run goes on.
+pre_batch_tick() {
+  local status=0
+  timeout "$(($(wait_mins) * 60))" systemctl start "$UNIT.service" &
+  child=$!
+  wait "$child" || status=$?
+  child=""
+  if [ "$status" -eq 0 ]; then
+    printf '{"event": "boinc_held_archive_pre_batch_tick", "ok": true}\n'
+  else
+    printf '{"event": "boinc_held_archive_pre_batch_tick", "ok": false, "status": %s}\n' "$status"
+    echo "warning: the tick before the batch failed or timed out (status $status); the batch goes on" >&2
+  fi
+}
+# Before a batch that does not follow a gap: lets the controller's locks go as gap() does, ticks,
+# and pauses again.
+tick_before_batch() {
+  : > "$GAP_FILE"
+  flock -u 9
+  if [ -n "$TICK_LOCK" ]; then flock -u 8; exec 8>&-; fi
+  pre_batch_tick
+  flock -w 60 9 || die "the archive lock is held by another process after the tick"
+  rm -f "$GAP_FILE"
+  pause_controller
+}
 gap() {
   : > "$GAP_FILE"
   flock -u 9
   if [ -n "$TICK_LOCK" ]; then flock -u 8; exec 8>&-; fi
   start_controller || die "the controller did not start between batches"
-  local started=$SECONDS limit=$((SECONDS + GAP_MINS * 60)) seen=false
+  local started=$SECONDS limit seen=false
+  limit=$((SECONDS + $(gap_mins) * 60))
   while [ $SECONDS -lt $limit ]; do
     case $(systemctl is-active "$UNIT.service" || true) in
       active | activating | reloading) seen=true ;;
@@ -218,6 +279,7 @@ gap() {
     $seen || [ $((SECONDS - started)) -lt "$TICK_START_SECS" ] || break
     sleep 1
   done
+  ! $PRE_TICK || pre_batch_tick
   flock -w 60 9 || die "the archive lock is held by another process after the gap"
   rm -f "$GAP_FILE"
   pause_controller
@@ -247,7 +309,7 @@ bridge() {
   {
     tar -C "$dir" -cf - manifest.json receipts/dispatch.json |
       "${STEP[@]}" --env "$ENV_NAME" --target archive --step bridge --var "ARCHIVE_BATCH=$n" \
-        --wait-mins "$WAIT_MINS" > "$out"
+        --wait-mins "$(wait_mins)" > "$out"
   } &
   child=$!
   wait "$child" || status=$?
@@ -268,22 +330,30 @@ for dir in "$ARCHIVE"/batches/[0-9][0-9][0-9][0-9]; do
   bridge "$(basename "$dir")"
 done
 
-over_budget() { [ "$MAX_MINUTES" -ne 0 ] && [ $SECONDS -ge $((MAX_MINUTES * 60)) ]; }
+# True once no batch should start: the budget is spent, or what is left can't cover a typical batch.
+LONGEST=$((BATCH_MINS * 60))
+over_budget() { [ "$MAX_MINUTES" -ne 0 ] && [ $((SECONDS + LONGEST)) -gt $((MAX_MINUTES * 60)) ]; }
 
 batches=() pages=0 held=0
 out=$(mktemp)
 # shellcheck disable=SC2154 # st is set in the trap itself
 trap 'st=$?; rm -f "$out"; resume "$st"' EXIT
 for i in $(seq 1 "$MAX_BATCHES"); do
-  if [ "$i" -gt 1 ]; then
+  if [ "$i" -eq 1 ]; then
+    ! $PRE_TICK || tick_before_batch
+  else
     # A batch under way is never cut short; the budget only keeps another from starting. It is
     # read again after the gap, which can itself take its --gap-mins and a tick's end.
     over_budget && break
     if [ "$GAP_MINS" -ne 0 ]; then
       gap
       over_budget && break
+    elif $PRE_TICK; then
+      tick_before_batch
+      over_budget && break
     fi
   fi
+  batch_start=$SECONDS
   # In the background, so a stop can reach it. A background job starts with SIGINT ignored,
   # so the wrapper turns SIGTERM into KeyboardInterrupt: the tool's finally blocks then run.
   python3 -c '
@@ -312,6 +382,8 @@ print(sum(1 for p in json.load(open(sys.argv[1]))["pages"] if p.get("held")))
 ' "$ARCHIVE/batches/$n/manifest.json")))
   batches+=("$n")
   bridge "$n"
+  # The longest batch so far is what the next one is expected to take.
+  [ $((SECONDS - batch_start)) -le "$LONGEST" ] || LONGEST=$((SECONDS - batch_start))
 done
 # The counts after: a dry run for the journals and what is left, and the state file.
 # In the background as well, so a stop doesn't wait for it.

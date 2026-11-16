@@ -59,6 +59,8 @@ FAKE_STEP = r'''
 import hashlib, io, json, os, sys, tarfile
 args = sys.argv[1:]
 open(os.environ["FAKE_LOG"], "a").write("step " + " ".join(args) + "\n")
+import time
+time.sleep(float(os.environ.get("FAKE_BRIDGE_SLEEP", "0")))
 if os.environ.get("FAKE_BRIDGE_FAILS"):
     sys.exit(1)
 files = {}
@@ -85,6 +87,8 @@ case "$1" in
   stop) echo inactive > "$FAKE_TIMER" ;;
   start)
     [ -z "$FAKE_START_FAILS" ] || exit 1
+    # The tick before a batch (--pre-batch-tick) starts the plan's service and waits for it.
+    case "$2" in *.service) [ -z "$FAKE_TICK_SLEEP" ] || sleep "$FAKE_TICK_SLEEP"; [ -z "$FAKE_TICK_FAILS" ] || exit 1 ;; esac
     if [ -n "$FAKE_PROBE" ]; then
       [ ! -e "$USNM_HELD_ARCHIVE_LOCK.gap" ] || echo "gap file present" >> "$FAKE_LOG"
       if flock -n "$USNM_HELD_ARCHIVE_LOCK" true; then echo "archive lock free" >> "$FAKE_LOG"; else echo "archive lock held" >> "$FAKE_LOG"; fi
@@ -406,11 +410,34 @@ class HeldArchive(unittest.TestCase):
         self.assertEqual(self.summary(done)["batches"], ["0001"])
         self.assertEqual((self.root / "timer").read_text().strip(), "active")
 
+    def test_max_minutes_starts_no_batch_the_rest_of_it_cannot_cover(self):
+        (self.root / "left").write_text("5")
+        # 4 minutes of 5 are used: under --batch-mins 2 another batch does not fit, though the budget is not spent.
+        done = self.run_archive("--max-batches", "5", "--max-minutes", "5", "--batch-mins", "2", SECONDS="240")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.summary(done)["batches"], ["0001"])
+
+    def test_max_minutes_expects_the_longest_batch_so_far(self):
+        (self.root / "left").write_text("5")
+        # Batch 1 takes 6 s (the bridge sleeps); at 56 s of 60 another 6 s does not fit, though 0 minutes were guessed.
+        done = self.run_archive("--max-batches", "5", "--max-minutes", "1", "--batch-mins", "0",
+                                SECONDS="50", FAKE_BRIDGE_SLEEP="6")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.summary(done)["batches"], ["0001"])
+
+    def test_max_minutes_caps_the_wait_for_the_step_lock(self):
+        done = self.run_archive("--max-batches", "1", "--max-minutes", "2", "--batch-mins", "0", "--wait-mins", "30")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        steps = [line for line in self.log() if line.startswith("step ")]
+        self.assertTrue(steps and "--wait-mins 2" in steps[0], steps)
+
     def test_max_minutes_is_read_again_after_the_gap(self):
         (self.root / "left").write_text("5")
-        # 59 seconds old at the first check, under the minute; the gap (up to 2 s here) ends past it.
-        done = self.run_archive("--max-batches", "5", "--max-minutes", "1", "--gap-mins", "1",
-                                SECONDS="59", USNM_HELD_ARCHIVE_TICK_START_SECS="3")
+        # About 58 s old after the first batch, under the minute; the tick before the next batch
+        # (3 s here) ends past it, and no batch starts. The gap itself is capped to what is left.
+        done = self.run_archive("--max-batches", "5", "--max-minutes", "1", "--gap-mins", "1", "--pre-batch-tick",
+                                "--batch-mins", "0", SECONDS="55", FAKE_TICK_SLEEP="3",
+                                USNM_HELD_ARCHIVE_TICK_START_SECS="1")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.summary(done)["batches"], ["0001"])
         self.assertEqual(len([line for line in self.log() if line.startswith("tool ") and "--apply" in line]), 1)
@@ -455,6 +482,72 @@ class HeldArchive(unittest.TestCase):
         self.assertFalse(Path(f"{self.root / 'lock'}.gap").exists())
         self.assertEqual((self.root / "timer").read_text().strip(), "active")
         self.assertEqual(subprocess.run(["flock", "-n", str(tick), "true"]).returncode, 0)
+
+    TICK = "systemctl start usnm-boinc-priority-controller@main.service"
+    STOP = "systemctl stop usnm-boinc-priority-controller@main.timer"
+
+    def test_pre_batch_tick_is_off_by_default(self):
+        done = self.run_archive("--max-batches", "2")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn(self.TICK, self.log())
+        self.assertNotIn("boinc_held_archive_pre_batch_tick", done.stdout)
+
+    def test_pre_batch_tick_runs_before_each_batch_with_the_locks_let_go(self):
+        (self.root / "left").write_text("5")
+        tick = self.root / "tick.lock"
+        done = self.run_archive("--max-batches", "2", "--pre-batch-tick", "--tick-lock", str(tick),
+                                FAKE_PROBE="1", FAKE_TICK_LOCK=str(tick))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.summary(done)["batches"], ["0001", "0002"])
+        log = self.log()
+        ticks = [i for i, line in enumerate(log) if line == self.TICK]
+        stops = [i for i, line in enumerate(log) if line == self.STOP]
+        applies = [i for i, line in enumerate(log) if line.startswith("tool ") and "--apply" in line]
+        self.assertEqual(len(ticks), 2, log)
+        for n in range(2):
+            # The tick comes after the first pause (the run's own) or the last batch, and the pause
+            # that dispatches the batch comes after the tick.
+            self.assertLess(ticks[n], stops[n + 1], log)
+            self.assertLess(stops[n + 1], applies[n], log)
+            # Only the run lock is held while it ticks, and the gap file says so.
+            self.assertEqual(log[ticks[n] + 1:ticks[n] + 5],
+                             ["gap file present", "archive lock free", "run lock held", "tick lock free"], log)
+        self.assertEqual(done.stdout.count('"boinc_held_archive_pre_batch_tick", "ok": true'), 2)
+        self.assertFalse(Path(f"{self.root / 'lock'}.gap").exists())
+        self.assertEqual((self.root / "timer").read_text().strip(), "active")
+        self.assertEqual(subprocess.run(["flock", "-n", str(tick), "true"]).returncode, 0)
+
+    def test_pre_batch_tick_with_a_gap_ticks_before_every_batch(self):
+        (self.root / "left").write_text("5")
+        done = self.run_archive("--max-batches", "3", "--gap-mins", "1", "--pre-batch-tick",
+                                USNM_HELD_ARCHIVE_TICK_START_SECS="1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.summary(done)["batches"], ["0001", "0002", "0003"])
+        log = self.log()
+        self.assertEqual(log.count(self.TICK), 3, log)
+        applies = [i for i, line in enumerate(log) if line.startswith("tool ") and "--apply" in line]
+        ticks = [i for i, line in enumerate(log) if line == self.TICK]
+        for n in range(3):
+            self.assertLess(ticks[n], applies[n], log)
+
+    def test_a_failed_pre_batch_tick_is_logged_and_the_batch_goes_on(self):
+        (self.root / "left").write_text("5")
+        done = self.run_archive("--max-batches", "2", "--pre-batch-tick", FAKE_TICK_FAILS="1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.summary(done)["batches"], ["0001", "0002"])
+        self.assertEqual(done.stdout.count('"boinc_held_archive_pre_batch_tick", "ok": false'), 2)
+        self.assertIn("the batch goes on", done.stderr)
+        self.assertEqual((self.root / "timer").read_text().strip(), "active")
+
+    def test_a_pre_batch_tick_does_not_skip_the_archive_checks(self):
+        # The tool still runs once per batch with the same arguments as without the tick.
+        (self.root / "left").write_text("1")
+        done = self.run_archive("--max-batches", "1", "--pre-batch-tick")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        applies = [line for line in self.log() if line.startswith("tool ") and "--apply" in line]
+        self.assertEqual(len(applies), 1)
+        self.assertIn("--confirm-controller-paused", applies[0])
+        self.assertIn("--include-held", applies[0])
 
     def test_a_gap_batch_failure_resumes_and_clears_the_gap(self):
         (self.root / "left").write_text("5")
