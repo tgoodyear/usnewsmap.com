@@ -82,13 +82,26 @@ case "$1" in
       # The shared unit from before #1690, when a test sets it apart.
       usnm-boinc-priority-controller.timer) cat "${FAKE_LEGACY_TIMER:-$FAKE_TIMER}" ;;
       *.timer) cat "$FAKE_TIMER" ;;
+      # A tick that is running on the first look and then ends in the state the test names.
+      *.service)
+        if [ -n "$FAKE_GAP_TICK" ] && [ -e "$USNM_HELD_ARCHIVE_LOCK.gap" ]; then
+          n=$(cat "$FAKE_GAP_TICK_N" 2> /dev/null || echo 0); echo $((n + 1)) > "$FAKE_GAP_TICK_N"
+          if [ "$n" -eq 0 ]; then echo activating; else echo "$FAKE_GAP_TICK"; fi
+        else echo inactive; fi ;;
       *) echo inactive ;;
     esac ;;
   stop) echo inactive > "$FAKE_TIMER" ;;
   start)
     [ -z "$FAKE_START_FAILS" ] || exit 1
     # The tick before a batch (--pre-batch-tick) starts the plan's service and waits for it.
-    case "$2" in *.service) [ -z "$FAKE_TICK_SLEEP" ] || sleep "$FAKE_TICK_SLEEP"; [ -z "$FAKE_TICK_FAILS" ] || exit 1 ;; esac
+    case "$2" in *.service)
+      if [ -n "$FAKE_TICK_SLEEP" ]; then
+        trap 'kill $p 2> /dev/null; exit 143' TERM
+        sleep "$FAKE_TICK_SLEEP" & p=$!
+        wait $p
+        trap - TERM
+      fi
+      [ -z "$FAKE_TICK_FAILS" ] || exit 1 ;; esac
     if [ -n "$FAKE_PROBE" ]; then
       [ ! -e "$USNM_HELD_ARCHIVE_LOCK.gap" ] || echo "gap file present" >> "$FAKE_LOG"
       if flock -n "$USNM_HELD_ARCHIVE_LOCK" true; then echo "archive lock free" >> "$FAKE_LOG"; else echo "archive lock held" >> "$FAKE_LOG"; fi
@@ -416,18 +429,41 @@ class HeldArchive(unittest.TestCase):
         done = self.run_archive("--max-batches", "5", "--max-minutes", "5", "--batch-mins", "2", SECONDS="240")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.summary(done)["batches"], [])
-        # With time for just one, the first runs and no second starts.
+        # With time for the estimate, the first runs; its measured 1 s then replaces the 2-minute
+        # estimate, so the rest follow.
         (self.root / "left").write_text("5")
         done = self.run_archive("--max-batches", "5", "--max-minutes", "5", "--batch-mins", "2", SECONDS="177",
-                                FAKE_BRIDGE_SLEEP="6")
-        self.assertEqual(self.summary(done)["batches"], ["0001"])
+                                FAKE_BRIDGE_SLEEP="1")
+        self.assertEqual(self.summary(done)["batches"], ["0001", "0002", "0003", "0004", "0005"])
 
     def test_max_minutes_checks_the_budget_after_the_first_tick(self):
         (self.root / "left").write_text("5")
-        done = self.run_archive("--max-batches", "5", "--max-minutes", "1", "--batch-mins", "0", "--pre-batch-tick",
-                                SECONDS="58", FAKE_TICK_SLEEP="3")
+        # 50 s old, a 1-minute estimate fits in 2; the tick takes 12 s, and then it no longer does.
+        done = self.run_archive("--max-batches", "5", "--max-minutes", "2", "--batch-mins", "1", "--pre-batch-tick",
+                                SECONDS="50", FAKE_TICK_SLEEP="12")
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(self.summary(done)["batches"], [])
+
+    def test_a_pre_batch_tick_still_running_when_the_budget_ends_fails_the_run_and_resumes(self):
+        (self.root / "left").write_text("5")
+        # 3 s of the budget are left: the tick is waited for that long, not a minute, and no batch starts.
+        done = self.run_archive("--max-batches", "5", "--max-minutes", "1", "--batch-mins", "0", "--pre-batch-tick",
+                                SECONDS="57", FAKE_TICK_SLEEP="30")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn('"timed_out": true', done.stdout)
+        self.assertEqual([line for line in self.log() if line.startswith("tool ") and "--apply" in line], [])
+        self.assertEqual((self.root / "timer").read_text().strip(), "active")
+        self.assertFalse(Path(f"{self.root / 'lock'}.gap").exists())
+
+    def test_a_failed_gap_tick_is_logged_and_not_repeated(self):
+        (self.root / "left").write_text("5")
+        done = self.run_archive("--max-batches", "2", "--gap-mins", "1", "--pre-batch-tick",
+                                FAKE_GAP_TICK="failed", FAKE_GAP_TICK_N=str(self.root / "n"))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.summary(done)["batches"], ["0001", "0002"])
+        self.assertEqual(done.stdout.count('"ok": false, "gap_tick": true'), 1, done.stdout)
+        # Only the tick before the first batch was started with a blocking start.
+        self.assertEqual(self.log().count(self.TICK), 1)
 
     def test_max_minutes_expects_the_longest_batch_so_far(self):
         (self.root / "left").write_text("5")
@@ -442,19 +478,6 @@ class HeldArchive(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         steps = [line for line in self.log() if line.startswith("step ")]
         self.assertTrue(steps and "--wait-mins 30" in steps[0], steps)
-
-    def test_max_minutes_is_read_again_after_the_gap(self):
-        (self.root / "left").write_text("5")
-        # About 58 s old after the first batch, under the minute; the tick before the next batch
-        # (3 s here) ends past it, and no batch starts. The gap itself is capped to what is left.
-        done = self.run_archive("--max-batches", "5", "--max-minutes", "1", "--gap-mins", "1", "--pre-batch-tick",
-                                "--batch-mins", "0", SECONDS="55", FAKE_TICK_SLEEP="3",
-                                USNM_HELD_ARCHIVE_TICK_START_SECS="1")
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(self.summary(done)["batches"], ["0001"])
-        self.assertEqual(len([line for line in self.log() if line.startswith("tool ") and "--apply" in line]), 1)
-        self.assertEqual((self.root / "timer").read_text().strip(), "active")
-        self.assertFalse(Path(f"{self.root / 'lock'}.gap").exists())
 
     def test_gap_lets_the_controller_tick_between_batches(self):
         (self.root / "left").write_text("5")
