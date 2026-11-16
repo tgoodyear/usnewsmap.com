@@ -121,6 +121,10 @@ pub enum Status {
     Match,
     /// Different bytes within one build or a listed pair: both hosts are held.
     Mismatch,
+    /// Two different builds of a listed cross-build pair, with pages outside the pair's limits.
+    /// Not a verdict: honest builds differ by a lot on a hard page, so neither host is held and
+    /// the replay is no match either.
+    Outside,
     /// Left for the next call: the call's time budget was spent before this item (a container
     /// spot check, #1934). Not a verdict, and nothing was made or written for it.
     Deferred,
@@ -444,10 +448,23 @@ fn refuse(
     r: &Replay,
 ) -> Option<String> {
     if !builds.comparable(&job.engine.image, &target.engine.image) {
-        return Some(format!(
-            "builds {} and {} are not listed as identical in native-build-trust.json",
-            job.engine.image, target.engine.image
-        ));
+        // A listed cross-build pair is compared by limits, and only for the engine version it
+        // was listed for: a job naming another one is refused, not compared.
+        match builds.cross_build(&job.engine.image, &target.engine.image) {
+            Some(pair) if pair.engine_version == job.engine.version => {}
+            Some(pair) => {
+                return Some(format!(
+                    "builds {} and {} are listed as a cross-build pair for engine {}, not {}",
+                    job.engine.image, target.engine.image, pair.engine_version, job.engine.version
+                ))
+            }
+            None => {
+                return Some(format!(
+                    "builds {} and {} are not listed as identical in native-build-trust.json, nor as a cross-build pair",
+                    job.engine.image, target.engine.image
+                ))
+            }
+        }
     }
     if let Some(reason) = trust.refuse_native_job(job, Some(r.source_host), builds) {
         return Some(format!("source: {reason}"));
@@ -785,6 +802,40 @@ async fn check_one(
         p.cpus.simd(r.source_host).await,
         p.cpus.simd(r.target_host).await,
     );
+    // Two different builds of a listed cross-build pair never compare byte for byte: their
+    // pages are judged by the pair's limits, and a page outside them is no verdict (`refuse`
+    // above has checked the pair, its engine version and both hosts' trust).
+    if let Some(pair) = builds.cross_build(&job.engine.image, &target.engine.image) {
+        let limits = Limits {
+            max_cer: pair.max_cer,
+            min_f1: pair.min_f1,
+            min_ratio: 0.0,
+            max_ratio: f64::INFINITY,
+        };
+        let (status, detail) = match outside(&limits, &original.text, &replay.text) {
+            None => (
+                Status::Match,
+                format!(
+                    "within the cross-build tier (CER at most {}, F1 at least {}) of builds {} and {}; pairing: {}",
+                    pair.max_cer,
+                    pair.min_f1,
+                    job.engine.image,
+                    target.engine.image,
+                    pairing.label()
+                ),
+            ),
+            Some(reason) => (
+                Status::Outside,
+                format!(
+                    "{reason}, outside the cross-build tier of builds {} and {}: no verdict, nobody held; pairing: {}",
+                    job.engine.image,
+                    target.engine.image,
+                    pairing.label()
+                ),
+            ),
+        };
+        return finish(p, &path, &mut journal, outcome(r, status, detail), execute);
+    }
     if agree(builds, &original, &replay, true)? {
         return finish(
             p,
@@ -1586,6 +1637,185 @@ mod tests {
             level("Intel(R) Core(TM) i7-4770 CPU @ 3.40GHz", ""),
             Some(Simd::Avx2)
         );
+    }
+
+    fn xbuild() -> String {
+        format!("sha256:{}", "8".repeat(64))
+    }
+
+    /// The fixture with a second, different build `xbuild()` (Windows) listed as a cross-build
+    /// pair of LINUX for engine `version`, host 301 trusted for it and a version packaging it.
+    fn with_cross_build(f: &mut Fixture, version: &str) {
+        let xb = xbuild();
+        f.builds = with_build(
+            f.builds.clone(),
+            &xb,
+            "windows_x86_64",
+            &"b".repeat(64),
+            0.1,
+            Some(100),
+        );
+        let (lo, hi) = if LINUX < xb.as_str() {
+            (LINUX.to_owned(), xb.clone())
+        } else {
+            (xb.clone(), LINUX.to_owned())
+        };
+        f.builds.cross_build.push(crate::trust::builds::CrossBuild {
+            digests: [lo, hi],
+            engine_version: version.into(),
+            evidence: "a test pair".into(),
+            max_cer: 0.1,
+            min_f1: 0.9,
+        });
+        let mut list: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&f.paths.trust).unwrap()).unwrap();
+        list["hosts"][&xb] = serde_json::json!([301]);
+        std::fs::write(&f.paths.trust, serde_json::to_vec(&list).unwrap()).unwrap();
+        let dir = f
+            .paths
+            .project
+            .join("apps")
+            .join(crate::submit::NATIVE_APP)
+            .join("1.2")
+            .join("windows_x86_64");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("usnm_native_build_{}.json", &xb[7..])),
+            "{}",
+        )
+        .unwrap();
+    }
+
+    /// Checks a replay on the Windows host 301 of `original` (host 13, Linux) against
+    /// `replay_text`, the fixture's cross-build pair listed for `version`.
+    fn cross_build_compared(
+        original: &str,
+        replay_text: &str,
+        version: &str,
+    ) -> (Outcome, Trust, Fixture) {
+        let mut f = fixture();
+        with_cross_build(&mut f, version);
+        let r = replay(&f, 301, &xbuild(), true);
+        submitted(&f, &r);
+        returned(
+            &f.job,
+            r.original_spool.as_deref().unwrap(),
+            &f.job.workunit(),
+            original,
+        );
+        let target = target_job(&f.job, &xbuild()).unwrap();
+        returned(&target, &f.paths.spool, &r.workunit(), replay_text);
+        if let Canonical::Fixed(hosts) = &f.paths.canonical {
+            hosts.lock().unwrap().insert(r.workunit(), 301);
+        }
+        let o = block(check_one(&f.paths, &trust(&f), &f.builds, &r, true)).unwrap();
+        let t = trust(&f);
+        (o, t, f)
+    }
+
+    #[test]
+    fn a_cross_build_pair_is_offered_only_when_listed_for_the_jobs_engine() {
+        let mut f = fixture();
+        with_cross_build(&mut f, "5.5.0");
+        let t = trust(&f);
+        let offer = |builds: &BuildTrust| {
+            block(submit_one(
+                &f.paths,
+                &t,
+                builds,
+                &[100, 101, 102],
+                &replay(&f, 301, &xbuild(), false),
+                false,
+            ))
+            .unwrap()
+        };
+        assert_eq!(offer(&f.builds).status, Status::Submitted);
+        // Not listed: refused, as any build not listed as identical is.
+        let mut unlisted = f.builds.clone();
+        unlisted.cross_build.clear();
+        let o = offer(&unlisted);
+        assert_eq!(o.status, Status::Refused);
+        assert!(o.detail.contains("not listed as identical"), "{o:?}");
+        // Listed for another engine version than the job's: refused.
+        let mut other = f.builds.clone();
+        other.cross_build.last_mut().unwrap().engine_version = "5.5.4".into();
+        let o = offer(&other);
+        assert_eq!(o.status, Status::Refused);
+        assert!(
+            o.detail.contains("cross-build pair for engine 5.5.4"),
+            "{o:?}"
+        );
+    }
+
+    #[test]
+    fn a_page_within_the_cross_build_limits_is_a_match_though_the_bytes_differ() {
+        let original = page();
+        // Four of 400 words read differently: CER about 0.5%, F1 0.99; far from byte-exact.
+        let mut replay = original.clone();
+        for w in ["w010x", "w120x", "w230x", "w340x"] {
+            replay = replay.replacen(w, &w.replace('x', "y"), 1);
+        }
+        let (o, t, _) = cross_build_compared(&original, &replay, "5.5.0");
+        assert_eq!(o.status, Status::Match, "{o:?}");
+        assert!(o.detail.contains("cross-build tier"), "{}", o.detail);
+        assert!(t.holds.is_empty());
+        // Which the same page is not between two hosts of one build, or of a byte-exact pair.
+        let (o, _) = compared(&original, &replay, ["", ""]);
+        assert_eq!(o.status, Status::Mismatch, "{o:?}");
+    }
+
+    #[test]
+    fn a_page_outside_the_cross_build_limits_is_no_verdict_and_holds_nobody() {
+        let original = page();
+        // A tenth of the characters changed: a hard page, not a faulty host.
+        let replay: String = original
+            .chars()
+            .enumerate()
+            .map(|(i, c)| if i % 6 == 3 && c != ' ' { 'Z' } else { c })
+            .collect();
+        let (o, t, f) = cross_build_compared(&original, &replay, "5.5.0");
+        assert_eq!(o.status, Status::Outside, "{o:?}");
+        assert!(o.detail.contains("no verdict, nobody held"), "{}", o.detail);
+        assert!(t.holds.is_empty());
+        // The verdict is kept, so it is not compared again.
+        let r = replay_of(&f);
+        let again = block(check_one(&f.paths, &trust(&f), &f.builds, &r, true)).unwrap();
+        assert_eq!(again.status, Status::Outside);
+        // A different page entirely is outside too, and still holds nobody.
+        let (o, t, _) = cross_build_compared(&original, "something else entirely\n", "5.5.0");
+        assert_eq!(o.status, Status::Outside, "{o:?}");
+        assert!(t.holds.is_empty());
+    }
+
+    fn replay_of(f: &Fixture) -> Replay {
+        replay(f, 301, &xbuild(), true)
+    }
+
+    #[test]
+    fn a_cross_build_replay_for_another_engine_version_is_unverified() {
+        let original = page();
+        let (o, t, _) = cross_build_compared(&original, &original, "5.5.4");
+        assert_eq!(o.status, Status::Unverified, "{o:?}");
+        assert!(t.holds.is_empty());
+    }
+
+    #[test]
+    fn identical_cross_build_pages_match_and_the_exact_tiers_are_unchanged() {
+        let original = page();
+        let (o, _, _) = cross_build_compared(&original, &original, "5.5.0");
+        assert_eq!(o.status, Status::Match, "{o:?}");
+        // A pair listed as equivalent never takes the cross-build tier, even if also listed.
+        let f = fixture();
+        let mut both = f.builds.clone();
+        let pair = both.equivalent[0].digests.clone();
+        both.cross_build.push(crate::trust::builds::CrossBuild {
+            digests: pair.clone(),
+            engine_version: "5.5.0".into(),
+            evidence: "x".into(),
+            max_cer: 0.1,
+            min_f1: 0.9,
+        });
+        assert!(both.cross_build(&pair[0], &pair[1]).is_none());
     }
 
     #[test]

@@ -134,6 +134,18 @@
       }
     }
   },
+  "cross_build": [
+    {
+      "digests": [
+        "sha256:4d6e2a3be41b3b9c9cf50e6404c6f056177cef547e9d9675298ee1fec94cc5d1",
+        "sha256:bb9bfecc433ad85ca3ac3f83d4b08fc6b8ad73b64938ae58075083cab5c013b3"
+      ],
+      "engine_version": "5.5.0",
+      "evidence": "Tesseract 5.5.0 and the locked models in both. Measured on related builds, not this pair: Windows fd620775 read against the Linux engine 21877bc3 (4d6e2a3b's base), 12 pages of host 16 on 13 and 14 Nov 2026 (boinc/scripts/onprem/crossbuild-check): CER 0.8% to 8.0% on 10, 32% and 63% on 2 hard pages, length ratio 0.97 to 1.01. Limits are the container cross-platform tier (container_spot CROSS).",
+      "max_cer": 0.1,
+      "min_f1": 0.9
+    }
+  ],
   "equivalent": [
     {
       "digests": [

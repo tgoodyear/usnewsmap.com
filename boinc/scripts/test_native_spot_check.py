@@ -16,6 +16,7 @@ batch, NOW = tbs.batch, tbs.NOW
 
 LINUX = "sha256:4d6e2a3be41b3b9c9cf50e6404c6f056177cef547e9d9675298ee1fec94cc5d1"
 WORKER_DAC9 = "sha256:dac9c123a52d7b10281d3204a815233da1fe9819afdadd4341a034a95441eb34"
+WINDOWS = "sha256:bb9bfecc433ad85ca3ac3f83d4b08fc6b8ad73b64938ae58075083cab5c013b3"
 MACOS = "sha256:78065a0a43d8f8bf67c00c014ae2b0540d51d0038e4050dbbd509e14b63fa836"
 
 
@@ -251,6 +252,42 @@ class NativeSpotTests(unittest.TestCase):
         self.assertEqual(submit.split("=")[1], f"13:300:{WORKER_DAC9[7:]}")
         self.assertTrue(batch.native_comparable(LINUX, WORKER_DAC9))
         self.assertFalse(batch.native_comparable(LINUX, MACOS))
+
+    def test_a_linux_peer_of_a_windows_plan_needs_the_opt_in_and_a_listed_pair(self):
+        peers = [{"host": 9, "image": LINUX}]
+        # Off by default: the Linux build is not listed as identical to the Windows one.
+        with self.assertRaisesRegex(ValueError, "not listed as identical"):
+            validate(spot_config(hosts=(16,), image=WINDOWS, peers=peers))
+        validate(spot_config(hosts=(16,), image=WINDOWS, peers=peers, cross_build=True))
+        # Identical peers stay fine with it on; a build that isn't a listed pair is still refused.
+        validate(spot_config(hosts=(13,), image=LINUX, peers=[{"host": 300, "image": WORKER_DAC9}], cross_build=True))
+        with self.assertRaisesRegex(ValueError, "nor as a cross-build pair"):
+            validate(spot_config(hosts=(16,), image=WINDOWS, peers=[{"host": 9, "image": MACOS}], cross_build=True))
+        with self.assertRaisesRegex(ValueError, "cross_build: true or false"):
+            validate(spot_config(hosts=(16,), image=WINDOWS, peers=peers, cross_build="yes"))
+        self.assertTrue(batch.native_cross_build(LINUX, WINDOWS) and batch.native_cross_build(WINDOWS, LINUX))
+        self.assertFalse(batch.native_cross_build(LINUX, LINUX))
+        self.assertFalse(batch.native_cross_build(LINUX, WORKER_DAC9))
+        self.assertFalse(batch.native_cross_build(LINUX, MACOS))
+        self.assertFalse(batch.native_comparable(LINUX, WINDOWS))
+
+    def test_a_windows_page_is_replayed_on_the_linux_peer_and_a_page_outside_the_limits_holds_nobody(self):
+        self.config = spot_config(hosts=(16,), cross_build=True, peers=[{"host": 9, "image": LINUX}])
+        self.fake.cpus = {16: 24, 9: 6}
+        self.cycle()
+        (submit, _), = self.fake.spot_calls
+        self.assertEqual(submit.split("=")[1], f"16:9:{LINUX[7:]}")
+        (job,) = self.state["native_spot"]["pending"]
+        self.fake.verdicts[job] = "outside"
+        self.tick()
+        spot = self.state["native_spot"]
+        self.assertEqual(spot["pending"], {})
+        self.assertNotIn("holds", spot)
+        self.assertEqual(spot["counts"]["outside"], 1)
+        self.assertEqual(spot["last_unverified"]["status"], "outside")
+        # No match: the host is still at canary size.
+        event = self.tick()
+        self.assertEqual(event["native"]["slots"], {"16": 1})
 
     def test_settings_are_checked(self):
         for spec in ({"share": 0}, {"share": 0.6}, {"canary_pages_per_host": 5}, {"other": 1},

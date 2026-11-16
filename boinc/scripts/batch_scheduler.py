@@ -2854,7 +2854,7 @@ def native_submit_untouched(transport, job_ids, clock):
 # native-spot). Off unless the plan has native_spot_check; with it, a host's room is its full room only while its checks run.
 NATIVE_SPOT_KEY = "native_spot_check"
 NATIVE_SPOT_FIELDS = {"share", "canary_pages_per_host", "max_outstanding_per_peer", "fresh_hours", "peers",
-                      "lock_wait_secs"}
+                      "lock_wait_secs", "cross_build"}
 # 1 page in 20 by default: a systematic fault on a host shows within about 20 of its pages,
 # and a peer reading for one other host spends about 5% of that host's output on it.
 NATIVE_SPOT_SHARE = 0.05
@@ -2889,6 +2889,17 @@ def native_comparable(a, b, registry=None):
     return sorted((a, b)) in [pair.get("digests") for pair in registry.get("equivalent", [])]
 
 
+def native_cross_build(a, b, registry=None):
+    """Whether builds `a` and `b` are a pair native-build-trust.json lists for cross-build checks:
+    different builds of one engine version, compared under limits, not byte for byte (as
+    usnm-boinc's BuildTrust::cross_build). Never for the same digest or a byte-for-byte pair."""
+    if native_comparable(a, b, registry):
+        return False
+    if registry is None:
+        registry = json.loads(NATIVE_BUILD_TRUST.read_text())
+    return sorted((a, b)) in [pair.get("digests") for pair in registry.get("cross_build", [])]
+
+
 def _validate_native_spot(config):
     if NATIVE_SPOT_KEY not in config:
         return
@@ -2908,6 +2919,8 @@ def _validate_native_spot(config):
     wait = spec.get("lock_wait_secs", NATIVE_SPOT_LOCK_WAIT_SECS)
     require(type(wait) is int and 0 <= wait <= NATIVE_SPOT_MAX_LOCK_WAIT_SECS,
             f"{NATIVE_SPOT_KEY}.lock_wait_secs: 0 to {NATIVE_SPOT_MAX_LOCK_WAIT_SECS}")
+    cross_build = spec.get("cross_build", False)
+    require(type(cross_build) is bool, f"{NATIVE_SPOT_KEY}.cross_build: true or false")
     peers = spec.get("peers", [])
     require(isinstance(peers, list) and len(peers) <= MAX_NATIVE_HOSTS, f"{NATIVE_SPOT_KEY}.peers is a list")
     seen = set()
@@ -2918,9 +2931,17 @@ def _validate_native_spot(config):
                 f"a {NATIVE_SPOT_KEY} peer is {{host, image}}")
         require(peer["host"] not in config["native_hosts"] and peer["host"] not in seen,
                 f"a {NATIVE_SPOT_KEY} peer is not one of the plan's native_hosts, and is listed once")
-        require(native_comparable(config["image"], peer["image"]),
-                f"peer {peer['host']}'s build {peer['image']} is not listed as identical to the plan's "
-                "in boinc/project/native-build-trust.json")
+        if cross_build:
+            # Opt-in: a peer on a listed cross-build pair of the plan's build, which compares by
+            # limits (no hold on a page outside them), or on an identical one.
+            require(native_comparable(config["image"], peer["image"])
+                    or native_cross_build(config["image"], peer["image"]),
+                    f"peer {peer['host']}'s build {peer['image']} is not listed as identical to the plan's, "
+                    "nor as a cross-build pair, in boinc/project/native-build-trust.json")
+        else:
+            require(native_comparable(config["image"], peer["image"]),
+                    f"peer {peer['host']}'s build {peer['image']} is not listed as identical to the plan's "
+                    "in boinc/project/native-build-trust.json")
         seen.add(peer["host"])
 
 
