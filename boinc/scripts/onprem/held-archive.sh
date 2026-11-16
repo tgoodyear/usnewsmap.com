@@ -309,6 +309,10 @@ gap() {
     $seen || [ $((SECONDS - started)) -lt "$TICK_START_SECS" ] || break
     sleep 1
   done
+  # The budget ran out in the gap (a tick can fill it): no batch follows, so the run ends here with
+  # the controller left running, not paused again (that wait is capped to nothing and would fail
+  # the run), and the closing dry run, which needs the pause, is skipped.
+  if over_budget; then BUDGET_ENDED=true; return 0; fi
   # The tick start_controller began is the one before the batch when it ended in the gap; one
   # still running, or none, is joined or run by pre_batch_tick (a second would be a whole extra run).
   ! $PRE_TICK || $ticked || pre_batch_tick
@@ -364,7 +368,7 @@ done
 
 # True once no batch should start: the budget is spent, or what is left can't cover a typical batch.
 # --batch-mins is the estimate until a batch has run; then it is the longest measured one.
-LONGEST=$((BATCH_MINS * 60)) MEASURED=false
+LONGEST=$((BATCH_MINS * 60)) MEASURED=false BUDGET_ENDED=false
 over_budget() {
   [ "$MAX_MINUTES" -ne 0 ] || return 1
   # Spent whatever the estimate (even 0), or the rest cannot cover it.
@@ -430,6 +434,11 @@ print(sum(1 for p in json.load(open(sys.argv[1]))["pages"] if p.get("held")))
   if ! $MEASURED || [ $((SECONDS - batch_start)) -gt "$LONGEST" ]; then LONGEST=$((SECONDS - batch_start)); fi
   MEASURED=true
 done
+if $BUDGET_ENDED; then
+  printf '{"event": "boinc_held_archive", "batches": %s, "pages": %s, "held": %s, "budget_ended": true, "closing_dry_run": "skipped"}\n' \
+    "$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1].split()))' "${batches[*]:-}")" "$pages" "$held"
+  exit 0
+fi
 # The counts after: a dry run for the journals and what is left, and the state file.
 # In the background as well, so a stop doesn't wait for it.
 python3 "$TOOL" dispatch --include-held --min-age-hours "$MIN_AGE" --pages "$PAGES" \
