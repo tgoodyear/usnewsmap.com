@@ -43,7 +43,8 @@
 #
 # A plan other than main skips its tick (exit 0, one boinc_batch_skipped line) while a held-page
 # archive runs: the scheduled unit (--held-archive-unit), a hand-run usnm-held-archive-* unit, or
-# any run holding held-archive.sh's lock (--held-archive-lock). A drain plan also skips while
+# any run holding held-archive.sh's lock (--held-archive-lock). A run with --gap-mins lets that
+# lock go between batches and says so with <lock>.gap: the plan then ticks. A drain plan also skips while
 # main's timer is stopped, as the shared drain service did: an operator's pause. This is checked
 # before the lock, every --lock-recheck-secs (default 30) while waiting for it, and once it is
 # taken. main is never skipped: the archive stops main's timer and starts a main tick itself
@@ -229,13 +230,18 @@ skipped() {
 # while it runs, so is-active alone would miss it.
 skip_reason() {
   [ "$PLAN" != main ] || return 1
-  case $(systemctl show "$HELD_ARCHIVE_UNIT" -p ActiveState --value 2> /dev/null || true) in
-    active | activating | deactivating | reloading) echo held_archive_running; return 0 ;;
-  esac
-  if [ -n "$(systemctl list-units --plain --no-legend --state=active,activating,deactivating \
-    'usnm-held-archive-*' 2> /dev/null || true)" ]; then
-    echo held_archive_running
-    return 0
+  # Between two batches of a run with --gap-mins (#2012) the unit is active but nothing is
+  # paused: held-archive.sh has let its archive lock go and says so with this file, so the
+  # plan ticks. The lock below still skips while a batch is dispatched or bridged.
+  if [ ! -e "$HELD_ARCHIVE_LOCK.gap" ]; then
+    case $(systemctl show "$HELD_ARCHIVE_UNIT" -p ActiveState --value 2> /dev/null || true) in
+      active | activating | deactivating | reloading) echo held_archive_running; return 0 ;;
+    esac
+    if [ -n "$(systemctl list-units --plain --no-legend --state=active,activating,deactivating \
+      'usnm-held-archive-*' 2> /dev/null || true)" ]; then
+      echo held_archive_running
+      return 0
+    fi
   fi
   if [ -e "$HELD_ARCHIVE_LOCK" ] && ! flock -n "$HELD_ARCHIVE_LOCK" true; then
     echo held_archive_running
