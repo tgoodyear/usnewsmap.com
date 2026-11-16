@@ -336,6 +336,7 @@ fn outcome(
         target_host: target,
         status,
         detail: detail.into(),
+        pair: None,
     }
 }
 
