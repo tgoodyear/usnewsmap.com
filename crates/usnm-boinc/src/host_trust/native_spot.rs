@@ -876,8 +876,7 @@ async fn check_one(
                 &mut journal,
                 r,
                 &job,
-                format!("the replay is not a valid result: {error:#}"),
-                None,
+                (format!("the replay is not a valid result: {error:#}"), None),
                 execute,
             )
         }
@@ -1007,8 +1006,7 @@ async fn check_one(
         &mut journal,
         r,
         &job,
-        detail,
-        Some(measures),
+        (detail, Some(measures)),
         execute,
     )
 }
@@ -1029,8 +1027,7 @@ fn mismatch(
     journal: &mut Journal,
     r: &Replay,
     job: &boinc::Job,
-    detail: String,
-    pair: Option<Pair>,
+    (detail, pair): (String, Option<Pair>),
     execute: bool,
 ) -> anyhow::Result<Outcome> {
     let mut verdict = outcome(r, Status::Mismatch, detail);
