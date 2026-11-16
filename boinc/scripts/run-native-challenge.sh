@@ -65,8 +65,9 @@ for file in "$build"/*; do
     printf '<soft_link>%s</soft_link>\n' "$file" > "$work/slot/$(basename "$file")"
 done
 "$fixture" --gold-root "$root" --gold-base "$engine_base" --image "$image" --dir "$work/slot"
+# The project's input template marks the originals <copy_file/>, so the slot holds the bytes.
 for f in "$work"/inputs/*; do
-  printf '<soft_link>%s</soft_link>\n' "$f" > "$work/slot/$(basename "$f")"
+  mv "$f" "$work/slot/$(basename "$f")"
 done
 start=$(date +%s)
 (cd "$work/slot" && "$build/usnm_ocr")
