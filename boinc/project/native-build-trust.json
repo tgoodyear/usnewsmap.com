@@ -38,6 +38,25 @@
         "run": 43626097094
       }
     },
+    "sha256:67b0e05ea81b915d6ba1ef615ad632f7f641ec5fc16a86e5ba4f1043a7271d51": {
+      "challenges": [
+        {
+          "char_edits": 5957,
+          "crops": 30,
+          "evidence": "Run on a GitHub macos-15 runner (Apple Silicon), one thread, in a slot of soft_link files, by native-challenge-macos.yml: macOS 15.8.2, Apple M1 (Virtual), challenge workflow run 43854926823; 5957 edits in 82794 characters, 143 s (issue 1418)",
+          "manifest_sha256": "d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f",
+          "max_cer": 0.08734328574534386,
+          "ref_chars": 82794
+        }
+      ],
+      "engine_base": "sha256:29a8048b2f2d2b1199ab0966d90c8796c39ecdaced062468c0cb780966ca8650",
+      "platform": "arm64-apple-darwin",
+      "source": {
+        "artifact_sha256": "891effa7d95dae6a07ef73fb3277c2966c7f9202d6ef756914855d8a21f466fe",
+        "commit": "4e6096ad4da252161b70b72b14291852a1e8794d",
+        "run": 43801347852
+      }
+    },
     "sha256:78065a0a43d8f8bf67c00c014ae2b0540d51d0038e4050dbbd509e14b63fa836": {
       "challenges": [
         {
