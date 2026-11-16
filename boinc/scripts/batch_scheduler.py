@@ -4438,14 +4438,15 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         spot_cap = max_global_pending if max_global_pending is not None else config.get("max_global_pending")
         # The cap counts the results held back too (retained_backlog), except the ones kept out by
         # a cross-build pair: those are what the replays settle, so counting them would leave a
-        # full cap with no room for the reading that lets them go.
+        # full cap with no room for the reading that lets them go. The units this tick submitted
+        # are in it already: their journals are unsettled and not in BOINC's pending snapshot.
         kept_out_now = native_spot_kept_out(config, state)
         retained, reserved = retained_backlog(config, records, owned, selected, pending_jobs, conflicts)
         spot_retained = max(0, retained + len(reserved)
                             - sum(not settled(record) and record["job"]["id"] in kept_out_now
                                   and record["job"]["id"] not in pending_jobs for record in records))
         spot_room = 0 if drain or state.get("native_paused") else (
-            100 if spot_cap is None else spot_cap - snapshot["pending_workunits"] - submitted - spot_retained)
+            100 if spot_cap is None else spot_cap - snapshot["pending_workunits"] - spot_retained)
         try:
             spot_step = native_spot_step(config, state, transport, now, submit_room=spot_room,
                                          active=spot_active)
