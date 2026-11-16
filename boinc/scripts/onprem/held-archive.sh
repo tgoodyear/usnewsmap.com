@@ -365,7 +365,12 @@ done
 # True once no batch should start: the budget is spent, or what is left can't cover a typical batch.
 # --batch-mins is the estimate until a batch has run; then it is the longest measured one.
 LONGEST=$((BATCH_MINS * 60)) MEASURED=false
-over_budget() { [ "$MAX_MINUTES" -ne 0 ] && [ $((SECONDS + LONGEST)) -gt $((MAX_MINUTES * 60)) ]; }
+over_budget() {
+  [ "$MAX_MINUTES" -ne 0 ] || return 1
+  # Spent whatever the estimate (even 0), or the rest cannot cover it.
+  [ "$SECONDS" -lt $((MAX_MINUTES * 60)) ] || return 0
+  [ $((SECONDS + LONGEST)) -gt $((MAX_MINUTES * 60)) ]
+}
 
 batches=() pages=0 held=0
 out=$(mktemp)

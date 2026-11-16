@@ -423,6 +423,11 @@ class HeldArchive(unittest.TestCase):
         self.assertEqual(self.summary(done)["batches"], [])
         self.assertEqual((self.root / "timer").read_text().strip(), "active")
 
+    def test_max_minutes_spent_starts_no_batch_even_with_a_zero_estimate(self):
+        done = self.run_archive("--max-batches", "5", "--max-minutes", "1", "--batch-mins", "0", SECONDS="60")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.summary(done)["batches"], [])
+
     def test_max_minutes_starts_no_batch_the_rest_of_it_cannot_cover(self):
         (self.root / "left").write_text("5")
         # 4 minutes of 5 are used: under --batch-mins 2 a batch does not fit, though the budget is not spent.
