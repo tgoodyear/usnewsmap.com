@@ -1,0 +1,108 @@
+name: boinc-native-challenge
+# The calibrated challenge for a native macOS build (#1418, docs/boinc/apps/native-ocr.md, "The
+# challenge gate"). It takes the arm64-apple-darwin artifact of one boinc-ocr-native.yml run,
+# runs the 30 English crops of challenge d8cd7279 through that exact build on a GitHub macos-15
+# (Apple Silicon) runner, and uploads gold-result.json, the build's identity and a receipt holding
+# the entry boinc/project/native-build-trust.json records. It records and publishes nothing: a
+# person reviews the receipt and merges the entry in a pull request.
+#
+# The inputs are public. The bundle tar and the BLN600 zip are fetched anonymously from the
+# project's download URL and checked against boinc/project/challenges/eng-d8cd7279.prepared.json
+# (sizes and sha256) before use. The artifact comes from this repository's own run with the
+# workflow token. No Azure identity, secret or storage account is involved.
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: The boinc-ocr-native.yml run whose arm64-apple-darwin artifact is challenged
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: boinc-native-challenge-${{ inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  challenge:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      BUILD_RUN: ${{ inputs.run_id }}
+      GH_TOKEN: ${{ github.token }}
+      PLATFORM: arm64-apple-darwin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Find the build run's commit and artifact
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_RUN" =~ ^[0-9]+$ ]] || { echo "run_id must be a number" >&2; exit 1; }
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN")
+          [ "$(jq -r .path <<<"$run")" = ".github/workflows/boinc-ocr-native.yml" ]
+          [ "$(jq -r .conclusion <<<"$run")" = success ]
+          echo "commit=$(jq -r .head_sha <<<"$run")" >> "$GITHUB_OUTPUT"
+          digest=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN/artifacts" \
+            --jq ".artifacts[] | select(.name == \"boinc-ocr-native-$PLATFORM\" and (.expired | not)) | .digest")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "artifact_sha256=${digest#sha256:}" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: boinc-ocr-native-${{ env.PLATFORM }}
+          path: artifact
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Read the Rust version from rust-toolchain.toml
+        id: rust-toolchain
+        shell: bash
+        run: echo "channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable branch
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build the fixture that makes the gold unit
+        run: cargo build --release --locked --target aarch64-apple-darwin -p usnm-ocr-app --example native_fixture
+      - name: Run the challenge through the artifact's build
+        shell: bash
+        run: |
+          set -euo pipefail
+          # An artifact download drops the executable bits.
+          chmod +x artifact/build/usnm_ocr artifact/build/usnm_tesseract
+          boinc/scripts/run-native-challenge.sh --build artifact/build \
+            --fixture target/aarch64-apple-darwin/release/examples/native_fixture \
+            --prepared boinc/project/challenges/eng-d8cd7279.prepared.json \
+            --mirror boinc/project/challenges/eng-d8cd7279.mirror.json --out challenge
+      - name: Score it and write the receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          machine="$(sw_vers -productName) $(sw_vers -productVersion), $(sysctl -n machdep.cpu.brand_string)"
+          set +e
+          python3 -I boinc/scripts/native_challenge_receipt.py --result challenge/gold-result.json \
+            --identity challenge/identity.json \
+            --prepared boinc/project/challenges/eng-d8cd7279.prepared.json --platform "$PLATFORM" \
+            --run "$BUILD_RUN" --commit "${{ steps.source.outputs.commit }}" \
+            --artifact-sha256 "${{ steps.source.outputs.artifact_sha256 }}" \
+            --machine "$machine" --out challenge/receipt.json | tee challenge/score.txt
+          status=${PIPESTATUS[0]}
+          {
+            echo "### Native challenge for build run $BUILD_RUN"
+            echo
+            echo "Image $(jq -r .engine_image challenge/identity.json), base $(jq -r .engine_base challenge/identity.json)"
+            echo
+            cat challenge/score.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: native-challenge-${{ env.PLATFORM }}-${{ inputs.run_id }}
+          path: challenge/
+          if-no-files-found: error

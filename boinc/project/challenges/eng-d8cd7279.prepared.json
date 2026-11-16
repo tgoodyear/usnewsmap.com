@@ -1,0 +1,232 @@
+{
+  "bundle": {
+    "bytes": 48640,
+    "md5": "4568c2cbb646d44e086aad5867b2817f",
+    "name": "bundle.tar",
+    "sha256": "007c9656de4338079217cfd5a4f267056f25779158ffca1c6d8a1d7131d9f2bc",
+    "url": null
+  },
+  "bundle_version": 3,
+  "crops": {
+    "pub-bln600-022": [
+      "bln600",
+      {
+        "ref_chars": 2696,
+        "ref_words": 453
+      }
+    ],
+    "pub-bln600-046": [
+      "bln600",
+      {
+        "ref_chars": 2737,
+        "ref_words": 469
+      }
+    ],
+    "pub-bln600-049": [
+      "bln600",
+      {
+        "ref_chars": 2558,
+        "ref_words": 432
+      }
+    ],
+    "pub-bln600-052": [
+      "bln600",
+      {
+        "ref_chars": 3498,
+        "ref_words": 617
+      }
+    ],
+    "pub-bln600-056": [
+      "bln600",
+      {
+        "ref_chars": 1505,
+        "ref_words": 257
+      }
+    ],
+    "pub-bln600-101": [
+      "bln600",
+      {
+        "ref_chars": 2275,
+        "ref_words": 375
+      }
+    ],
+    "pub-bln600-113": [
+      "bln600",
+      {
+        "ref_chars": 3231,
+        "ref_words": 570
+      }
+    ],
+    "pub-bln600-136": [
+      "bln600",
+      {
+        "ref_chars": 4777,
+        "ref_words": 845
+      }
+    ],
+    "pub-bln600-168": [
+      "bln600",
+      {
+        "ref_chars": 3258,
+        "ref_words": 568
+      }
+    ],
+    "pub-bln600-169": [
+      "bln600",
+      {
+        "ref_chars": 4319,
+        "ref_words": 751
+      }
+    ],
+    "pub-bln600-193": [
+      "bln600",
+      {
+        "ref_chars": 3816,
+        "ref_words": 671
+      }
+    ],
+    "pub-bln600-196": [
+      "bln600",
+      {
+        "ref_chars": 2873,
+        "ref_words": 480
+      }
+    ],
+    "pub-bln600-216": [
+      "bln600",
+      {
+        "ref_chars": 2158,
+        "ref_words": 339
+      }
+    ],
+    "pub-bln600-225": [
+      "bln600",
+      {
+        "ref_chars": 1501,
+        "ref_words": 248
+      }
+    ],
+    "pub-bln600-237": [
+      "bln600",
+      {
+        "ref_chars": 4532,
+        "ref_words": 791
+      }
+    ],
+    "pub-bln600-278": [
+      "bln600",
+      {
+        "ref_chars": 2178,
+        "ref_words": 365
+      }
+    ],
+    "pub-bln600-301": [
+      "bln600",
+      {
+        "ref_chars": 1349,
+        "ref_words": 237
+      }
+    ],
+    "pub-bln600-342": [
+      "bln600",
+      {
+        "ref_chars": 1174,
+        "ref_words": 181
+      }
+    ],
+    "pub-bln600-357": [
+      "bln600",
+      {
+        "ref_chars": 2622,
+        "ref_words": 465
+      }
+    ],
+    "pub-bln600-396": [
+      "bln600",
+      {
+        "ref_chars": 2464,
+        "ref_words": 418
+      }
+    ],
+    "pub-bln600-401": [
+      "bln600",
+      {
+        "ref_chars": 2126,
+        "ref_words": 359
+      }
+    ],
+    "pub-bln600-426": [
+      "bln600",
+      {
+        "ref_chars": 1989,
+        "ref_words": 347
+      }
+    ],
+    "pub-bln600-443": [
+      "bln600",
+      {
+        "ref_chars": 1530,
+        "ref_words": 257
+      }
+    ],
+    "pub-bln600-446": [
+      "bln600",
+      {
+        "ref_chars": 2162,
+        "ref_words": 372
+      }
+    ],
+    "pub-bln600-462": [
+      "bln600",
+      {
+        "ref_chars": 2337,
+        "ref_words": 405
+      }
+    ],
+    "pub-bln600-491": [
+      "bln600",
+      {
+        "ref_chars": 3084,
+        "ref_words": 533
+      }
+    ],
+    "pub-bln600-524": [
+      "bln600",
+      {
+        "ref_chars": 4166,
+        "ref_words": 739
+      }
+    ],
+    "pub-bln600-552": [
+      "bln600",
+      {
+        "ref_chars": 4351,
+        "ref_words": 736
+      }
+    ],
+    "pub-bln600-584": [
+      "bln600",
+      {
+        "ref_chars": 2382,
+        "ref_words": 393
+      }
+    ],
+    "pub-bln600-599": [
+      "bln600",
+      {
+        "ref_chars": 3146,
+        "ref_words": 550
+      }
+    ]
+  },
+  "manifest_sha256": "d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f",
+  "remotes": [
+    {
+      "bytes": 68051422,
+      "md5": "59fda268d1f13d38a1d17754670a3ae5",
+      "name": "1ed1d12959c1adfccab66a2b96a59eb219a7e73086f06f03a48d41c6a5825aad.zip",
+      "sha256": "1ed1d12959c1adfccab66a2b96a59eb219a7e73086f06f03a48d41c6a5825aad",
+      "url": "https://ndownloader.figshare.com/files/49365928"
+    }
+  ]
+}
