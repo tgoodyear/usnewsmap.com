@@ -268,15 +268,21 @@ for dir in "$ARCHIVE"/batches/[0-9][0-9][0-9][0-9]; do
   bridge "$(basename "$dir")"
 done
 
+over_budget() { [ "$MAX_MINUTES" -ne 0 ] && [ $SECONDS -ge $((MAX_MINUTES * 60)) ]; }
+
 batches=() pages=0 held=0
 out=$(mktemp)
 # shellcheck disable=SC2154 # st is set in the trap itself
 trap 'st=$?; rm -f "$out"; resume "$st"' EXIT
 for i in $(seq 1 "$MAX_BATCHES"); do
   if [ "$i" -gt 1 ]; then
-    # A batch under way is never cut short; the budget only keeps another from starting.
-    [ "$MAX_MINUTES" -eq 0 ] || [ $SECONDS -lt $((MAX_MINUTES * 60)) ] || break
-    [ "$GAP_MINS" -eq 0 ] || gap
+    # A batch under way is never cut short; the budget only keeps another from starting. It is
+    # read again after the gap, which can itself take its --gap-mins and a tick's end.
+    over_budget && break
+    if [ "$GAP_MINS" -ne 0 ]; then
+      gap
+      over_budget && break
+    fi
   fi
   # In the background, so a stop can reach it. A background job starts with SIGINT ignored,
   # so the wrapper turns SIGTERM into KeyboardInterrupt: the tool's finally blocks then run.

@@ -406,6 +406,17 @@ class HeldArchive(unittest.TestCase):
         self.assertEqual(self.summary(done)["batches"], ["0001"])
         self.assertEqual((self.root / "timer").read_text().strip(), "active")
 
+    def test_max_minutes_is_read_again_after_the_gap(self):
+        (self.root / "left").write_text("5")
+        # 59 seconds old at the first check, under the minute; the gap (up to 2 s here) ends past it.
+        done = self.run_archive("--max-batches", "5", "--max-minutes", "1", "--gap-mins", "1",
+                                SECONDS="59", USNM_HELD_ARCHIVE_TICK_START_SECS="3")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.summary(done)["batches"], ["0001"])
+        self.assertEqual(len([line for line in self.log() if line.startswith("tool ") and "--apply" in line]), 1)
+        self.assertEqual((self.root / "timer").read_text().strip(), "active")
+        self.assertFalse(Path(f"{self.root / 'lock'}.gap").exists())
+
     def test_gap_lets_the_controller_tick_between_batches(self):
         (self.root / "left").write_text("5")
         tick = self.root / "tick.lock"
