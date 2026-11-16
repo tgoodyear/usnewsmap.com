@@ -78,7 +78,9 @@ pub async fn run(work: &Path) -> anyhow::Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         for name in ["text.txt", "layout.xml", "result.json", "fraction_done"] {
-            std::fs::set_permissions(work.join(name), std::fs::Permissions::from_mode(0o644))?;
+            let path = work.join(name);
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+                .with_context(|| format!("chmod 644 on {}", path.display()))?;
         }
     }
     Ok(())
