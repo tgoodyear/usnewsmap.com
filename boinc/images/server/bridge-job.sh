@@ -919,9 +919,10 @@ case "$step" in
     [[ "${BATCH_NONCE:-}" =~ ^[0-9a-f]{32}$ ]] || fail "BATCH_NONCE must be 32 hex"
     item='[0-9a-f]{64}=[1-9][0-9]{0,9}:[1-9][0-9]{0,9}:[0-9a-f]{64}'
     [[ "${NATIVE_SPOT_SUBMIT:-}" =~ ^($item(,$item){0,99})?$ ]] || fail "NATIVE_SPOT_SUBMIT is up to 100 <job>=<source>:<target>:<image hex>"
-    check="$item:$PROJ/results/[A-Za-z0-9_./-]+"
+    # A third reading's check ends in the host of the page's first replay.
+    check="$item:$PROJ/results/[A-Za-z0-9_./-]+(:[1-9][0-9]{0,9})?"
     [[ "${NATIVE_SPOT_CHECK:-}" =~ ^($check(,$check){0,99})?$ ]] && [[ "${NATIVE_SPOT_CHECK:-}" != *..* ]] ||
-      fail "NATIVE_SPOT_CHECK is up to 100 <job>=<source>:<target>:<image hex>:<spool under $PROJ/results>"
+      fail "NATIVE_SPOT_CHECK is up to 100 <job>=<source>:<target>:<image hex>:<spool under $PROJ/results>[:<first host>]"
     [ -n "${NATIVE_SPOT_SUBMIT:-}${NATIVE_SPOT_CHECK:-}" ] || fail "set NATIVE_SPOT_SUBMIT or NATIVE_SPOT_CHECK"
     [ -f "$SHARE_DIR/gold/trust.json" ] || fail "native spot checks need the trust list $SHARE_DIR/gold/trust.json"
     validate_handoff_location

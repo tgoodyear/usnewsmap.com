@@ -1,6 +1,8 @@
 """LoC's text of one page for the native spot check's low-F1 scoring (native_spot_loc.py)."""
 import importlib.util
+import hashlib
 import io
+import json
 from pathlib import Path
 import tarfile
 import tempfile
@@ -46,18 +48,35 @@ class LocTextTests(unittest.TestCase):
                                      lookup=lambda doc: asked.append(doc) or "x_ver01.tar.bz2")
                 self.assertEqual((text, asked), ("The Evening\nStar", [DOC]))
 
-    def test_the_alto_cache_is_read_before_the_archive(self):
+    def test_the_flat_alto_cache_is_read_before_the_archive_when_its_receipt_matches(self):
         with tempfile.TemporaryDirectory() as tmp:
-            cache = Path(tmp) / "cache" / "x_ver01.tar.bz2"
-            cache.mkdir(parents=True)
+            cache = Path(tmp)
             (cache / f"{DOC}.xml").write_bytes(ALTO)
+            receipt = {"archive": "x_ver01.tar.bz2", "doc_id": DOC, "sha256": hashlib.sha256(ALTO).hexdigest()}
+            (cache / f"{DOC}.provenance.json").write_text(json.dumps(receipt))
 
             def never(*args):
                 raise AssertionError("the archive was read")
 
-            text = loc.page_text(PAGE, archives=tmp, cache=Path(tmp) / "cache", scan=never,
-                                 lookup=lambda doc: "x_ver01.tar.bz2")
+            text = loc.page_text(PAGE, archives=tmp, cache=cache, scan=never, lookup=lambda doc: "x_ver01.tar.bz2")
             self.assertEqual(text, "The Evening\nStar")
+
+    def test_a_cached_page_from_another_archive_or_with_a_wrong_hash_is_not_used(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            (cache / f"{DOC}.xml").write_bytes(ALTO)
+            receipt = {"archive": "other_ver01.tar.bz2", "doc_id": DOC, "sha256": hashlib.sha256(ALTO).hexdigest()}
+            (cache / f"{DOC}.provenance.json").write_text(json.dumps(receipt))
+            self.assertIsNone(loc.cached_alto(cache, DOC, "x_ver01.tar.bz2"))
+            receipt.update(archive="x_ver01.tar.bz2", sha256="0" * 64)
+            (cache / f"{DOC}.provenance.json").write_text(json.dumps(receipt))
+            self.assertIsNone(loc.cached_alto(cache, DOC, "x_ver01.tar.bz2"))
+            self.assertIsNone(loc.cached_alto(cache, "nothing_here", "x_ver01.tar.bz2"))
+
+    def test_a_line_end_hyphen_is_kept_so_the_word_joins(self):
+        alto = (b'<alto><TextLine><String CONTENT="news"/><HYP CONTENT="-"/></TextLine>'
+                b'<TextLine><String CONTENT="paper"/></TextLine></alto>')
+        self.assertEqual(loc.alto_text(alto), "news-\npaper")
 
     def test_a_page_no_archive_has_gives_no_text(self):
         with tempfile.TemporaryDirectory() as tmp:

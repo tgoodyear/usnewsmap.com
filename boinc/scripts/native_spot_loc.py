@@ -5,8 +5,8 @@
 The controller on CT 211 reads it from what that host already holds, never from the BOINC server
 and never from /tank/ocr:
 
-1. `quality.loc_alto` (the quality reader's DSN file) names the bulk OCR archive a page came from.
-2. The ALTO cache `/tank/locstats/qwen-alto/<archive>/<doc id>.xml`, when the page is in it.
+1. `quality.loc_alto`, joined with `quality.pages` on the batch version the corpus takes, names the bulk OCR archive (the quality reader's DSN file).
+2. The ALTO cache `/tank/locstats/qwen-alto/<doc id>.xml` (`archive_alto.py`), when its receipt names that archive.
 3. Otherwise the archive itself, `/tank/locbulk/ocr/<archive>`, streamed once in order (`nice`
    and `ionice` idle, as the qe-loc extraction runs) and stopped at the page's `ocr.xml`. An
    archive is up to about 4 GB of bzip2, so this takes minutes; the wait is bounded by
@@ -17,6 +17,8 @@ it is not byte for byte what `usnm_alto::text` joins (hyphen parts and the like)
 words doesn't see. Run it by hand: `native_spot_loc.py --page lccn/yyyy-mm-dd/ed-1/seq-N`.
 """
 import argparse
+import hashlib
+import json
 import re
 import shutil
 import subprocess
@@ -50,23 +52,32 @@ def member_suffixes(page):
 
 
 def alto_text(xml):
-    """The words of an ALTO page, a line to a line, in reading order."""
+    """The words of an ALTO page, a line to a line, in reading order. A line's `HYP` keeps its
+    hyphen at the line's end, as `usnm_alto::text` does, so normalisation joins the word."""
     lines = []
     for line in ET.fromstring(xml).iter():
         if line.tag.rsplit("}", 1)[-1] != "TextLine":
             continue
-        words = [child.get("CONTENT") for child in line if child.tag.rsplit("}", 1)[-1] == "String"]
-        lines.append(" ".join(w for w in words if w))
+        words, hyphen = [], ""
+        for child in line:
+            tag = child.tag.rsplit("}", 1)[-1]
+            if tag == "String" and child.get("CONTENT"):
+                words.append(child.get("CONTENT"))
+            elif tag == "HYP":
+                hyphen = child.get("CONTENT") or "-"
+        lines.append(" ".join(words) + hyphen)
     return "\n".join(lines)
 
 
 def archive_of(doc_id, dsn_file=DSN_FILE):
-    """The bulk archive `quality.loc_alto` has `doc_id` in, or None."""
+    """The bulk archive `quality.loc_alto` has `doc_id` in, for the batch version the corpus takes
+    the page from (the join with `quality.pages`, as qe_loc_extract.sh does), or None."""
     if not re.fullmatch(r"[A-Za-z0-9_-]+", doc_id):
         raise ValueError("invalid document id")
     dsn = Path(dsn_file).read_text().strip()
     done = subprocess.run(
-        ["psql", dsn, "-X", "-At", "-c", f"SELECT archive FROM quality.loc_alto WHERE doc_id = '{doc_id}' LIMIT 1"],
+        ["psql", dsn, "-X", "-At", "-c", "SELECT a.archive FROM quality.loc_alto a JOIN quality.pages p USING (doc_id, batch, batch_version) "
+         f"WHERE a.doc_id = '{doc_id}' ORDER BY a.batch_version DESC, a.archive LIMIT 1"],
         capture_output=True, text=True, timeout=60, check=False)
     if done.returncode != 0:
         raise RuntimeError("quality.loc_alto lookup failed")
@@ -94,6 +105,23 @@ def scan_archive(path, suffixes, deadline):
     finally:
         proc.kill()
         proc.wait()
+        proc.stdout.close()
+
+
+def cached_alto(cache, doc_id, archive):
+    """The ALTO bytes `archive_alto.py` cached for `doc_id` (flat `<doc id>.xml` with a
+    `<doc id>.provenance.json` receipt), when the receipt names `archive` and the file's SHA256;
+    otherwise None."""
+    xml_path, receipt_path = cache / f"{doc_id}.xml", cache / f"{doc_id}.provenance.json"
+    try:
+        if xml_path.stat().st_size > MAX_ALTO_BYTES:
+            return None
+        receipt, xml = json.loads(receipt_path.read_text()), xml_path.read_bytes()
+    except (OSError, ValueError):
+        return None
+    ok = (receipt.get("archive") == archive and receipt.get("doc_id") == doc_id
+          and receipt.get("sha256") == hashlib.sha256(xml).hexdigest())
+    return xml if ok else None
 
 
 def page_text(page, *, dsn_file=DSN_FILE, archives=ARCHIVES, cache=ALTO_CACHE, timeout_secs=TIMEOUT_SECS,
@@ -106,9 +134,9 @@ def page_text(page, *, dsn_file=DSN_FILE, archives=ARCHIVES, cache=ALTO_CACHE, t
     name = (lookup or (lambda d: archive_of(d, dsn_file)))(doc_id)
     if name is None:
         return None
-    cached = Path(cache) / name / f"{doc_id}.xml"
-    if cached.is_file() and cached.stat().st_size <= MAX_ALTO_BYTES:
-        return alto_text(cached.read_bytes())
+    xml = cached_alto(Path(cache), doc_id, name)
+    if xml is not None:
+        return alto_text(xml)
     xml = scan(Path(archives) / name, member_suffixes(page), time.monotonic() + timeout_secs)
     return None if xml is None else alto_text(xml)
 

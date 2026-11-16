@@ -2900,6 +2900,7 @@ NATIVE_SPOT_THIRD_ATTEMPTS = 3
 NATIVE_SPOT_LOC_GAP = 0.20
 NATIVE_SPOT_LOC_PER_TICK = 2
 NATIVE_SPOT_LOC_QUEUE = 20
+NATIVE_SPOT_LOC_TIMEOUT_SECS = 600
 NATIVE_SPOT_LOW_F1_LOG = 100
 NATIVE_SPOT_RESOLUTIONS = 100
 NATIVE_SPOT_RESOLUTION_LOG = "native-spot-resolutions.jsonl"
@@ -3209,6 +3210,11 @@ def native_spot_step(config, state, transport, now, submit_room=100, active=None
     # Only for a peer the inventory sees asking for work (`active`; None: not known): a unit
     # assigned to a host that has gone away is never sent (#1919). The others stay queued until
     # their peer is back or they are given up at NATIVE_SPOT_MAX_AGE.
+    # A third reading queued before the resolution rule has no first host: it comes from the page's
+    # gated record, so its check is also compared with the first replay.
+    for job_id, entry in pending.items():
+        if entry.get("third") and not entry.get("first"):
+            entry["first"] = (spot.get("gated", {}).get(job_id, {}).get("first") or {}).get("target")
     queued = [(j, e) for j, e in pending.items() if e["stage"] == "queued"
               and (active is None or e["target"] in active)][:max(0, min(100, submit_room))]
     # The 100 least recently polled, so every replay is looked at in turn, however many are out.
@@ -3573,11 +3579,16 @@ def native_spot_trip(state, host, now):
 def loc_page_text(page):
     """LoC's text of `page` for the controller's low-F1 scoring: boinc/scripts/native_spot_loc.py,
     which reads the bulk OCR archives on the controller's own host (CT 211) and never the BOINC
-    server's. None when it has none."""
-    spec = importlib.util.spec_from_file_location("native_spot_loc", Path(__file__).with_name("native_spot_loc.py"))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.page_text(page)
+    server's. It runs as a child with a wall-clock limit, so a stalled read can't hold the tick.
+    None when it has none."""
+    script = Path(__file__).with_name("native_spot_loc.py")
+    done = subprocess.run([sys.executable, "-I", str(script), "--page", page,
+                           "--timeout-secs", str(NATIVE_SPOT_LOC_TIMEOUT_SECS)],
+                          capture_output=True, text=True, timeout=NATIVE_SPOT_LOC_TIMEOUT_SECS + 30, check=False)
+    if done.returncode == 1 and not done.stdout:
+        return None
+    require(done.returncode == 0, "native_spot_loc.py failed")
+    return done.stdout
 
 
 def word_f1(a, b):
@@ -3607,7 +3618,8 @@ def native_spot_score_low(config, state, loc_text, now, limit=NATIVE_SPOT_LOC_PE
         if loc_text is not None:
             try:
                 text = loc_text(item["page"])
-            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            except Exception:
+                # Whatever goes wrong at the provider (a timeout, a bad archive or ALTO) is no text.
                 text = None
         scores = None
         if text is not None and text.strip():

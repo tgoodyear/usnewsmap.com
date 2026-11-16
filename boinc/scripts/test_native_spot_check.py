@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import random
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -855,6 +856,45 @@ class CrossBuildRulingTests(unittest.TestCase):
 
         batch.native_spot_score_low(self.config, self.state, broken, NOW)
         self.assertEqual(self.state["native_spot"]["low_f1"][-1]["verdict"], "unavailable")
+
+    def test_a_provider_that_raises_anything_is_no_text(self):
+        import xml.etree.ElementTree as ET
+        for error in (ET.ParseError("bad alto"), tarfile.ReadError("bad archive"), KeyError("x")):
+            with self.subTest(type(error).__name__):
+                self.state = {}
+                job = f"{1:064x}"
+                outcome = {"job": job, "status": "outside", "detail": "test", "pair": pair(f1=0.2, cer=0.5),
+                           "texts": {"original": "a b", "replay": "c d"}}
+                batch.native_spot_pair(self.config, self.state, job, self.pair_entry(job), outcome, NOW)
+
+                def broken(page):
+                    raise error
+
+                batch.native_spot_score_low(self.config, self.state, broken, NOW)
+                self.assertEqual(self.state["native_spot"]["window"]["16"][0]["loc"], "unavailable")
+                self.assertNotIn("loc_queue", self.state["native_spot"])
+
+    def test_a_third_reading_queued_before_the_resolution_rule_gets_its_first_host(self):
+        job = self.third_pending()
+        entry = self.state["native_spot"]["pending"][job]
+        del entry["first"]
+        entry["stage"] = "submitted"
+        del self.fake.verdicts[job]
+        self.tick()
+        self.assertEqual(self.state["native_spot"]["pending"][job]["first"], 9)
+        self.assertTrue(any(f"{job}=16:13:{LINUX[7:]}:/project/usnmocr/results/7:9" in check
+                            for _, check in self.fake.spot_calls))
+
+    def test_the_bridge_wrapper_takes_a_third_readings_check_with_its_first_host(self):
+        text = (Path(__file__).parents[1] / "images/server/bridge-job.sh").read_text()
+        line = next(l for l in text.splitlines() if l.strip().startswith('check="$item:'))
+        item = "[0-9a-f]{64}=[1-9][0-9]{0,9}:[1-9][0-9]{0,9}:[0-9a-f]{64}"
+        base = f"{'a' * 64}=16:13:{'b' * 64}:/p/results/0"
+        script = (f"item='{item}'\nPROJ=/p\n{line.strip()}\n"
+                  'for v in "$@"; do [[ "$v" =~ ^($check(,$check){0,99})?$ ]] && echo ok || echo no; done')
+        done = subprocess.run(["bash", "-c", script, "x", base, base + ":9", base + ":9," + base,
+                               base + ":x", base + ":9:9"], capture_output=True, text=True, check=True)
+        self.assertEqual(done.stdout.split(), ["ok", "ok", "ok", "no", "no"])
 
     def test_only_a_few_pairs_are_scored_a_tick_and_the_rest_wait_in_the_state(self):
         for n in range(5):
