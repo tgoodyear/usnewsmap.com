@@ -3045,28 +3045,50 @@ def pair_key(record):
     return (record.get("job"), record.get("peer_host"), bool(record.get("third_reading")))
 
 
-def append_pair_log(path, record):
-    """One compared pair, as a line in the plan's pair store (`native-spot-pairs.jsonl` in its state
-    directory), which `boinc/scripts/native_spot_pair_report.py` reads. Append only, and
-    idempotent: a pair the store already holds (the controller stopped between the write and its
-    state) is not written again. Returns whether it wrote."""
-    try:
-        for line in Path(path).read_text().splitlines():
+class PairStore:
+    """The plan's pair store (`native-spot-pairs.jsonl` in its state directory), which
+    `boinc/scripts/native_spot_pair_report.py` reads. Append only, and idempotent: a pair it already
+    holds (the controller stopped between the write and its state) is not written again. The
+    identities in the file are read once, on the first append, so a flush of n records costs one
+    pass over the history and not n."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.keys = None
+
+    def load(self):
+        self.keys = set()
+        try:
+            lines = self.path.read_text().splitlines()
+        except FileNotFoundError:
+            return
+        for line in lines:
             try:
-                if pair_key(json.loads(line)) == pair_key(record):
-                    return False
+                self.keys.add(pair_key(json.loads(line)))
             except ValueError:
                 continue
-    except FileNotFoundError:
-        pass
-    line = json.dumps(record, sort_keys=True) + "\n"
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-    try:
-        os.write(fd, line.encode())
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    return True
+
+    def append(self, record):
+        """Write `record` unless the store has it; whether it wrote."""
+        if self.keys is None:
+            self.load()
+        key = pair_key(record)
+        if key in self.keys:
+            return False
+        line = json.dumps(record, sort_keys=True) + "\n"
+        fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            os.write(fd, line.encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        self.keys.add(key)
+        return True
+
+
+def append_pair_log(path, record):
+    """One pair into the store at `path`, once: see PairStore."""
+    return PairStore(path).append(record)
 
 
 def native_spot_cross(config, image):
@@ -4414,8 +4436,16 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # counting the units this tick just submitted, and none while the plan is paused: a
         # failed native submit may have made units `submitted` doesn't count. Comparisons go on.
         spot_cap = max_global_pending if max_global_pending is not None else config.get("max_global_pending")
+        # The cap counts the results held back too (retained_backlog), except the ones kept out by
+        # a cross-build pair: those are what the replays settle, so counting them would leave a
+        # full cap with no room for the reading that lets them go.
+        kept_out_now = native_spot_kept_out(config, state)
+        retained, reserved = retained_backlog(config, records, owned, selected, pending_jobs, conflicts)
+        spot_retained = max(0, retained + len(reserved)
+                            - sum(not settled(record) and record["job"]["id"] in kept_out_now
+                                  and record["job"]["id"] not in pending_jobs for record in records))
         spot_room = 0 if drain or state.get("native_paused") else (
-            100 if spot_cap is None else spot_cap - snapshot["pending_workunits"] - submitted)
+            100 if spot_cap is None else spot_cap - snapshot["pending_workunits"] - submitted - spot_retained)
         try:
             spot_step = native_spot_step(config, state, transport, now, submit_room=spot_room,
                                          active=spot_active)
@@ -4835,7 +4865,7 @@ def main(argv=None):
             )
             tick_kwargs = {"drain": args.drain, "dead_letter_failed": args.dead_letter_failed}
             if config.get("app") == NATIVE_APP_NAME and NATIVE_SPOT_KEY in config:
-                tick_kwargs["pair_log"] = lambda record: append_pair_log(args.state_dir / NATIVE_SPOT_PAIR_LOG, record)
+                tick_kwargs["pair_log"] = PairStore(args.state_dir / NATIVE_SPOT_PAIR_LOG).append
             if args.resume_native:
                 tick_kwargs["resume_native"] = True
             if args.release_native_spot_hold is not None:

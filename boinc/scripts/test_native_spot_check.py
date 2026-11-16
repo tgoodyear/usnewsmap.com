@@ -782,6 +782,53 @@ class CrossBuildRulingTests(unittest.TestCase):
         self.tick()
         self.assertEqual(self.state["native_spot"]["gated"][one]["phase"], "third_wait")
 
+    def test_replays_count_retained_results_but_not_the_ones_they_settle(self):
+        self.config["native_spot_check"]["canary_pages_per_host"] = 3
+        self.fake.cpus.pop(13)
+        self.tick()
+        one = sorted(self.fake.jobs)[0]
+        self.fake.jobs[one]["spool"] = "/project/usnmocr/results/7"
+        rooms = []
+        real = batch.native_spot_step
+
+        def step(config, state, transport, now, submit_room=100, **kwargs):
+            rooms.append(submit_room)
+            return real(config, state, transport, now, submit_room=submit_room, **kwargs)
+
+        retained = batch.retained_backlog
+        with patch.object(batch, "native_spot_step", step):
+            self.tick(max_global_pending=50)
+            self.assertEqual(list(self.state["native_spot"]["gated"]), [one])
+            # The kept-out result is in the cap (retained_backlog) but not in the replay budget.
+            with_gated = rooms[-1]
+            self.tick(max_global_pending=50)
+            self.assertEqual(rooms[-1], with_gated)
+            # Two other retained results are.
+            with patch.object(batch, "retained_backlog",
+                              lambda *args, **kwargs: (retained(*args, **kwargs)[0] + 2, retained(*args, **kwargs)[1])):
+                self.tick(max_global_pending=50)
+            self.assertEqual(rooms[-1], with_gated - 2)
+
+    def test_the_pair_store_reads_its_history_once_for_a_whole_flush(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / batch.NATIVE_SPOT_PAIR_LOG
+            for n in range(5):
+                batch.append_pair_log(path, {"event": "native_spot_pair", "job": f"{n:064x}", "peer_host": 9})
+            store = batch.PairStore(path)
+            reads = []
+            real = Path.read_text
+
+            def counting(self, *args, **kwargs):
+                reads.append(self)
+                return real(self, *args, **kwargs)
+
+            with patch.object(Path, "read_text", counting):
+                wrote = [store.append({"event": "native_spot_pair", "job": f"{n:064x}", "peer_host": 9})
+                         for n in range(3, 9)]
+            self.assertEqual(wrote, [False, False, True, True, True, True])
+            self.assertEqual(len(reads), 1)
+            self.assertEqual(len(path.read_text().splitlines()), 9)
+
     def native_submitted(self):
         return [unit for action in self.fake.actions if action[0] == "submit-native" for unit in action[1]]
 
