@@ -36,10 +36,15 @@ pub struct Replay {
     /// For a check: the assimilator results directory that holds the original result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_spool: Option<PathBuf>,
+    /// For the check of a third reading: the host of the page's first replay, whose reading the
+    /// third is also compared with (the resolution rule, 16 Nov 2026).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_host: Option<u64>,
 }
 
 impl Replay {
-    /// Parses `<job>=<source>:<target>:<target image hex>[:<original spool>]`, comma-separated.
+    /// Parses `<job>=<source>:<target>:<target image hex>[:<original spool>[:<first host>]]`,
+    /// comma-separated. The first host, only in a check, makes it the third reading of a page.
     pub fn parse_list(text: &str, spool: bool) -> anyhow::Result<Vec<Self>> {
         if text.trim().is_empty() {
             return Ok(Vec::new());
@@ -59,9 +64,13 @@ impl Replay {
         let (job, rest) = item
             .split_once('=')
             .context("a native spot item is <job>=<source>:<target>:<image>")?;
-        let parts: Vec<_> = rest.splitn(4, ':').collect();
+        let parts: Vec<_> = rest.splitn(5, ':').collect();
         ensure!(
-            parts.len() == if spool { 4 } else { 3 },
+            if spool {
+                parts.len() == 4 || parts.len() == 5
+            } else {
+                parts.len() == 3
+            },
             "invalid native spot item {item}"
         );
         let replay = Self {
@@ -70,6 +79,10 @@ impl Replay {
             target_host: parts[1].parse().context("invalid target host")?,
             target_image: format!("sha256:{}", parts[2]),
             original_spool: spool.then(|| PathBuf::from(parts[3])),
+            first_host: parts
+                .get(4)
+                .map(|host| host.parse().context("invalid first host"))
+                .transpose()?,
         };
         replay.validate()?;
         Ok(replay)
@@ -86,6 +99,12 @@ impl Replay {
                 .strip_prefix("sha256:")
                 .is_some_and(boinc::is_sha256),
             "invalid target image"
+        );
+        ensure!(
+            self.first_host.is_none_or(|first| first > 0
+                && first != self.source_host
+                && first != self.target_host),
+            "a third reading's first host is a third host"
         );
         if let Some(spool) = &self.original_spool {
             let text = spool.to_string_lossy();
@@ -145,6 +164,43 @@ pub struct Outcome {
     /// mismatch): the pair log's numbers (Science Coordinator, 16 Nov 2026).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pair: Option<Pair>,
+    /// For a third reading: how it compares with the page's first replay (the resolution rule,
+    /// 16 Nov 2026), beside `pair`, which is against the original.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first: Option<FirstPair>,
+    /// The two texts of a pair whose word F1 is under [`LOW_F1`], as the controller scores them
+    /// against LoC's text (16 Nov 2026 ruling): the original's and the replay's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texts: Option<Texts>,
+}
+
+/// The word F1 under which a pair's two readings are scored against LoC's text.
+pub const LOW_F1: f64 = 0.50;
+
+/// The longest text, in characters, a pair's `texts` carries. A page past it leaves the texts out,
+/// and the controller then has none to score.
+pub const MAX_TEXT_CHARS: usize = 100_000;
+
+/// The most bytes of `texts` one call's report carries in all (the controller reads the report
+/// as one JSON file of at most 16 MiB). Pairs past it have none.
+pub const MAX_REPORT_TEXT_BYTES: usize = 8 << 20;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Texts {
+    pub original: String,
+    pub replay: String,
+}
+
+/// A third reading against the first replay's: the same measures and limits as its pair with the
+/// original.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FirstPair {
+    pub host: u64,
+    pub image: String,
+    pub cer: f64,
+    pub word_f1: f64,
+    /// Within the cross-build limits (CER and word F1) of the third reading.
+    pub agrees: bool,
 }
 
 /// One compared pair, as the pair log keeps it. The peer is the replay's host. Measures are
@@ -513,11 +569,29 @@ fn outcome(r: &Replay, status: Status, detail: impl Into<String>) -> Outcome {
         status,
         detail: detail.into(),
         pair: None,
+        first: None,
+        texts: None,
     }
 }
 
 fn with_pair(mut o: Outcome, pair: &Pair) -> Outcome {
     o.pair = Some(pair.clone());
+    o
+}
+
+/// The pair's texts for the controller's LoC scoring, when its word F1 is under [`LOW_F1`] and
+/// both fit.
+fn with_texts(mut o: Outcome, original: &Returned, replay: &Returned) -> Outcome {
+    let low = o.pair.as_ref().is_some_and(|pair| pair.word_f1 < LOW_F1);
+    if low
+        && original.text.chars().count() <= MAX_TEXT_CHARS
+        && replay.text.chars().count() <= MAX_TEXT_CHARS
+    {
+        o.texts = Some(Texts {
+            original: original.text.clone(),
+            replay: replay.text.clone(),
+        });
+    }
     o
 }
 
@@ -919,13 +993,31 @@ async fn check_one(
                 ),
             ),
         };
-        return finish(
-            p,
-            &path,
-            &mut journal,
-            with_pair(outcome(r, status, detail), &measures),
-            execute,
-        );
+        let mut verdict = with_pair(outcome(r, status, detail), &measures);
+        if let Some(first) = r.first_host {
+            // A third reading is also measured against the page's first replay, by the same
+            // limits, so the controller can tell which of the two it agrees with.
+            match first_reading(p, r, first, &job) {
+                Ok((image, reading)) => {
+                    let m = usnm_ocr_quality::align::pair(&reading.text, &replay.text);
+                    verdict.first = Some(FirstPair {
+                        host: first,
+                        image,
+                        cer: m.cer_sym,
+                        word_f1: m.dice,
+                        agrees: outside(&limits, &reading.text, &replay.text).is_none(),
+                    });
+                }
+                Err(error) => {
+                    verdict.status = Status::Unverified;
+                    verdict.detail = format!("the first replay on host {first}: {error:#}");
+                }
+            }
+        }
+        // The texts go to the caller only: the journal stays small, and a verdict read back from
+        // it later has none.
+        let verdict = finish(p, &path, &mut journal, verdict, execute)?;
+        return Ok(with_texts(verdict, &original, &replay));
     }
     if agree(builds, &original, &replay, true)? {
         return finish(
@@ -1009,6 +1101,40 @@ async fn check_one(
         (detail, Some(measures)),
         execute,
     )
+}
+
+/// The first replay's reading of a page, from its kept files, with the build that made it.
+fn first_reading(
+    p: &Paths,
+    r: &Replay,
+    first: u64,
+    job: &boinc::Job,
+) -> anyhow::Result<(String, Returned)> {
+    let first_replay = Replay {
+        target_host: first,
+        first_host: None,
+        ..r.clone()
+    };
+    let path = journal_path(&p.root, &first_replay);
+    let journal: Journal = serde_json::from_slice(&read(&path, 64 << 10)?)
+        .with_context(|| format!("journal {}", path.display()))?;
+    ensure!(
+        journal.replay.job == r.job && journal.replay.source_host == r.source_host,
+        "journal is for another page"
+    );
+    ensure!(
+        journal.stage == "compared",
+        "the first replay is not compared yet"
+    );
+    let image = journal.replay.target_image.clone();
+    let target = target_job(job, &image)?;
+    let dir = path
+        .parent()
+        .context("a journal has a directory")?
+        .join("replay");
+    let files = fetch(&dir, &journal.workunit)
+        .with_context(|| format!("replay files in {}", dir.display()))?;
+    Ok((image, judge(&target, files)?))
 }
 
 /// The differing words by the confidence of their line, for a verdict's detail.
@@ -1155,6 +1281,17 @@ pub async fn native_spot(
             .submitted
             .push(submit_one(p, &trust, builds, versions, r, execute).await?);
     }
+    let mut room = MAX_REPORT_TEXT_BYTES;
+    for checked in &mut report.checked {
+        if let Some(texts) = &checked.texts {
+            let size = texts.original.len() + texts.replay.len();
+            if size > room {
+                checked.texts = None;
+            } else {
+                room -= size;
+            }
+        }
+    }
     Ok(report)
 }
 
@@ -1281,6 +1418,7 @@ mod tests {
             target_host: target,
             target_image: image.into(),
             original_spool: spool.then(|| f.paths.spool.parent().unwrap().join("7")),
+            first_host: None,
         }
     }
 
@@ -1337,14 +1475,23 @@ mod tests {
             checks[0].original_spool.as_deref(),
             Some(Path::new("/p/results/7"))
         );
+        let third = Replay::parse_list(
+            &format!("{id}=13:240:{}:/p/results/7:9", "b".repeat(64)),
+            true,
+        )
+        .unwrap();
+        assert_eq!(third[0].first_host, Some(9));
+        assert_eq!(checks[0].first_host, None);
         for bad in [
+            format!("{id}=13:240:{}:/p/results/7:240", "b".repeat(64)),
+            format!("{id}=13:240:{}:/p/results/7:x", "b".repeat(64)),
             format!("{id}=13:13:{}", "b".repeat(64)),
             format!("{id}=13:240:xyz"),
             format!("{id}=13:240:{}:/p/../results/7", "b".repeat(64)),
             "x=1:2:3".into(),
         ] {
             assert!(
-                Replay::parse_list(&bad, bad.matches(':').count() == 3).is_err(),
+                Replay::parse_list(&bad, bad.matches(':').count() >= 3).is_err(),
                 "{bad}"
             );
         }
@@ -1896,6 +2043,117 @@ mod tests {
 
     fn replay_of(f: &Fixture) -> Replay {
         replay(f, 301, &xbuild(), true)
+    }
+
+    /// `page()` with the words `from..to` read differently (`w012x` as `w012<suffix>`).
+    fn varied(from: usize, to: usize, suffix: char) -> String {
+        let mut text = page();
+        for i in from..to {
+            text = text.replacen(&format!("w{i:03}x "), &format!("w{i:03}{suffix} "), 1);
+        }
+        text
+    }
+
+    /// The first replay of `original` on host 301 and a third reading on host 302 (both of the
+    /// cross-build, hosts of `xbuild()`), the third checked against both. The outcomes of the
+    /// first and of the third.
+    fn third_reading(first_text: &str, third_text: &str) -> (Outcome, Outcome) {
+        let original = page();
+        let mut f = fixture();
+        with_cross_build(&mut f, "5.5.0");
+        let mut list: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&f.paths.trust).unwrap()).unwrap();
+        list["hosts"][&xbuild()] = serde_json::json!([301, 302]);
+        std::fs::write(&f.paths.trust, serde_json::to_vec(&list).unwrap()).unwrap();
+        let target = target_job(&f.job, &xbuild()).unwrap();
+        let first = replay(&f, 301, &xbuild(), true);
+        submitted(&f, &first);
+        returned(
+            &f.job,
+            first.original_spool.as_deref().unwrap(),
+            &f.job.workunit(),
+            &original,
+        );
+        returned(&target, &f.paths.spool, &first.workunit(), first_text);
+        let first_outcome =
+            block(check_one(&f.paths, &trust(&f), &f.builds, &first, true)).unwrap();
+        let mut third = replay(&f, 302, &xbuild(), true);
+        submitted(&f, &third);
+        returned(&target, &f.paths.spool, &third.workunit(), third_text);
+        third.first_host = Some(301);
+        let third_outcome =
+            block(check_one(&f.paths, &trust(&f), &f.builds, &third, true)).unwrap();
+        (first_outcome, third_outcome)
+    }
+
+    #[test]
+    fn a_third_reading_is_measured_against_the_original_and_the_first_replay() {
+        // The first replay differs from the original in 60 of 400 words: outside (F1 0.85).
+        let first_text = varied(0, 60, 'y');
+        // Identical to the original: agrees with it and not with the first replay.
+        let (first, third) = third_reading(&first_text, &page());
+        assert_eq!(first.status, Status::Outside, "{first:?}");
+        assert_eq!(third.status, Status::Match, "{third:?}");
+        assert_eq!(
+            third.first.as_ref().map(|p| (p.host, p.agrees)),
+            Some((301, false))
+        );
+        // Identical to the first replay: outside the original, within the first.
+        let (_, third) = third_reading(&first_text, &first_text);
+        assert_eq!(third.status, Status::Outside, "{third:?}");
+        let pair = third.first.expect("a third reading carries its first pair");
+        assert!(
+            pair.agrees && pair.cer == 0.0 && pair.word_f1 == 1.0,
+            "{pair:?}"
+        );
+        assert_eq!(pair.image, xbuild());
+        // Halfway between the two: within the limits of both.
+        let (_, third) = third_reading(&first_text, &varied(0, 30, 'y'));
+        assert_eq!(third.status, Status::Match, "{third:?}");
+        assert!(third.first.unwrap().agrees);
+        // Different from both: outside the original and the first replay.
+        let (_, third) = third_reading(&first_text, &varied(200, 260, 'z'));
+        assert_eq!(third.status, Status::Outside, "{third:?}");
+        assert!(!third.first.unwrap().agrees);
+    }
+
+    #[test]
+    fn a_third_reading_whose_first_replay_is_gone_is_unverified() {
+        let original = page();
+        let mut f = fixture();
+        with_cross_build(&mut f, "5.5.0");
+        let mut third = replay(&f, 301, &xbuild(), true);
+        submitted(&f, &third);
+        returned(
+            &f.job,
+            third.original_spool.as_deref().unwrap(),
+            &f.job.workunit(),
+            &original,
+        );
+        let target = target_job(&f.job, &xbuild()).unwrap();
+        returned(&target, &f.paths.spool, &third.workunit(), &original);
+        third.first_host = Some(302);
+        let o = block(check_one(&f.paths, &trust(&f), &f.builds, &third, true)).unwrap();
+        assert_eq!(o.status, Status::Unverified, "{o:?}");
+        assert!(
+            o.detail.contains("first replay on host 302"),
+            "{}",
+            o.detail
+        );
+    }
+
+    #[test]
+    fn a_pair_under_f1_half_carries_both_texts_for_the_loc_scoring() {
+        let original = page();
+        let (o, _, _) = cross_build_compared(&original, "something else entirely\n", "5.5.0");
+        let texts = o.texts.expect("a pair under F1 0.50 carries its texts");
+        // The texts are the ALTO's, so line ends are the result's, not the fixture's.
+        assert_eq!(texts.original.trim(), original.trim());
+        assert_eq!(texts.replay.trim(), "something else entirely");
+        // A pair at 0.85 does not, nor does a match.
+        let (o, _, _) = cross_build_compared(&original, &varied(0, 60, 'y'), "5.5.0");
+        assert_eq!(o.status, Status::Outside);
+        assert!(o.texts.is_none());
     }
 
     #[test]
