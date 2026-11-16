@@ -43,7 +43,7 @@
         {
           "char_edits": 5957,
           "crops": 30,
-          "evidence": "Run on a GitHub macos-15 runner (Apple Silicon), one thread, in a slot of soft_link files, by boinc-native-challenge.yml: macOS 15.8.2, Apple M1 (Virtual), challenge workflow run 43854926823; 5957 edits in 82794 characters, 143 s (issue 1418)",
+          "evidence": "Run on a GitHub macos-15 runner (Apple Silicon), one thread, in a slot of soft_link files, by native-challenge-macos.yml: macOS 15.8.2, Apple M1 (Virtual), challenge workflow run 43854926823; 5957 edits in 82794 characters, 143 s (issue 1418)",
           "manifest_sha256": "d8cd7279090a6427c0cc6f0e82573e3771c27f90df6500bf5a44b268f6e0f05f",
           "max_cer": 0.08734328574534386,
           "ref_chars": 82794

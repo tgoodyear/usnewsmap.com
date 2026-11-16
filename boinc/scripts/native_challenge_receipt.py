@@ -67,7 +67,7 @@ def receipt(result: dict, identity: dict, prepared: dict, *, platform: str, run:
     chars = sum(row["ref_chars"] for row in rows.values())
     cer = edits / chars
     evidence = (f"Run on a GitHub macos-15 runner (Apple Silicon), one thread, in a slot of soft_link files, "
-                f"by boinc-native-challenge.yml: {machine}; {edits} edits in {chars} characters, "
+                f"by native-challenge-macos.yml: {machine}; {edits} edits in {chars} characters, "
                 f"{identity['elapsed_secs']} s (issue 1418)")
     entry = {
         "challenges": [{

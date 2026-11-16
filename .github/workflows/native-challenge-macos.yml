@@ -1,4 +1,4 @@
-name: boinc-native-challenge
+name: native-challenge-macos
 # The calibrated challenge for a native macOS build (#1418, docs/boinc/apps/native-ocr.md, "The
 # challenge gate"). It takes the arm64-apple-darwin artifact of one boinc-ocr-native.yml run,
 # runs the 30 English crops of challenge d8cd7279 through that exact build on a GitHub macos-15
@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: boinc-native-challenge-${{ inputs.run_id }}
+  group: native-challenge-macos-${{ inputs.run_id }}
   cancel-in-progress: false
 
 jobs:
