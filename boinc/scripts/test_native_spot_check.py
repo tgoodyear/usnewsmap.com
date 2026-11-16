@@ -42,6 +42,16 @@ class Always:
         return self.value
 
 
+class Sequence:
+    """A draw that gives these values in turn, then the last one for good."""
+
+    def __init__(self, values):
+        self.values = list(values)
+
+    def random(self):
+        return self.values.pop(0) if len(self.values) > 1 else self.values[0]
+
+
 class SpotFake(tbs.NativeFake):
     """A native plan's BOINC side with the bridge's native-spot step: each replay is made unless
     named in `refused`, and a check returns its job's entry in `verdicts` (pending by default)."""
@@ -640,7 +650,7 @@ class CrossBuildRulingTests(unittest.TestCase):
     def feed(self, status, f1, job, gate=True, now=NOW):
         outcome = {"job": job, "status": status, "detail": "test",
                    "pair": pair(f1=f1, gate=gate, cer=0.3 if status == "outside" else 0.01)}
-        batch.native_spot_pair(self.config, self.state, job, self.pair_entry(job), outcome, now, self.log.append)
+        batch.native_spot_pair(self.config, self.state, job, self.pair_entry(job), outcome, now)
 
     def test_more_than_a_quarter_of_the_last_pairs_outside_holds_the_feed_and_alerts_with_details(self):
         for n in range(15):
@@ -711,6 +721,96 @@ class CrossBuildRulingTests(unittest.TestCase):
             self.assertEqual((record["peer_gate"], record["peer_gate_pass"]), ("unweighed", True))
             self.assertEqual((record["peer_damage_rate"], record["peer_confidence"]), (0.02, 91.0))
             self.assertEqual(record["page"], self.state["native_spot"]["gated"].get(job, {"page": record["page"]})["page"])
+
+    def test_a_third_peer_must_be_another_build_than_the_plans(self):
+        listed = {"host": 13, "image": LINUX}
+        with patch.object(batch, "native_cross_build", lambda a, b, registry=None: LINUX in (a, b) and a != b):
+            validate(spot_config(hosts=(16,), cross_build=True, peers=[{"host": 9, "image": LINUX}],
+                                 third_peers=[listed]))
+            same = spot_config(hosts=(16,), cross_build=True, peers=[{"host": 9, "image": LINUX}],
+                               third_peers=[{"host": 14, "image": tbs.native_config()["image"]}])
+            with self.assertRaisesRegex(ValueError, "third peer 14's build .* cross-build pair"):
+                validate(same)
+            with self.assertRaisesRegex(ValueError, "cross_build is off"):
+                validate(spot_config(hosts=(16,), peers=[], third_peers=[listed]))
+        # And a third peer that is a host of the plan's own build is never used for a reading.
+        self.config["native_spot_check"]["third_peers"] = [{"host": 14, "image": tbs.native_config()["image"]}]
+        self.fake.cpus[14] = 6
+        job = self.gated_job()
+        self.fake.verdicts[job] = "outside"
+        self.tick()
+        del self.fake.verdicts[job]
+        self.tick()
+        self.assertNotIn(job, self.state["native_spot"]["pending"])
+        self.assertEqual(self.state["native_spot"]["gated"][job]["phase"], "third_wait")
+
+    def test_a_drain_publishes_a_page_without_a_cross_build_pair(self):
+        self.tick()
+        self.results_in()
+        self.tick(drain=True)
+        self.assertEqual(self.state["native_spot"].get("pending", {}), {})
+        self.assertEqual(self.state["native_spot"].get("counts", {}).get("no_peer"), 1)
+
+    def test_removing_the_setting_does_not_release_a_withheld_page(self):
+        job = self.gated_job()
+        self.fake.verdicts[job] = "outside"
+        self.tick()
+        self.assertEqual(self.state["native_spot"]["gated"][job]["phase"], "third_wait")
+        del self.config["native_spot_check"]
+        self.tick()
+        self.tick()
+        self.assertNotIn(job, self.collected())
+        self.assertNotIn(job, self.published())
+
+    def test_a_kept_out_page_does_not_stop_the_refill(self):
+        self.config["native_spot_check"]["canary_pages_per_host"] = 3
+        self.fake.cpus.pop(13)
+        self.tick()
+        one, two = sorted(self.fake.jobs)[:2]
+        for job in (one, two):
+            self.fake.jobs[job]["spool"] = "/project/usnmocr/results/7"
+        # The first result is drawn for the Linux peer and kept out; the second is passed over.
+        batch.SPOT_RANDOM = Sequence([0.0, 1.0])
+        before = len(self.native_submitted())
+        self.tick()
+        self.assertEqual(list(self.state["native_spot"]["gated"]), [one])
+        self.assertIn(two, self.published())
+        # The slot the published page freed is filled in the same tick, while the other result is
+        # kept out: it is not a held result, which would stop every claim and submit.
+        self.assertGreater(len(self.native_submitted()), before)
+        self.fake.verdicts[one] = "outside"
+        self.tick()
+        self.assertEqual(self.state["native_spot"]["gated"][one]["phase"], "third_wait")
+
+    def native_submitted(self):
+        return [unit for action in self.fake.actions if action[0] == "submit-native" for unit in action[1]]
+
+    def test_a_pair_the_store_cannot_take_is_kept_and_tried_again_without_a_duplicate(self):
+        self.feed("match", 0.97, f"{1:064x}")
+        queue = self.state["native_spot"]["pair_log"]
+        self.assertEqual(len(queue), 1)
+
+        def broken(record):
+            raise OSError("disk full")
+
+        batch.native_spot_flush_pairs(self.state, broken, NOW)
+        self.assertEqual(len(self.state["native_spot"]["pair_log"]), 1)
+        self.assertEqual(self.state["native_spot"]["pair_log_failing"]["queued"], 1)
+        alerts = batch.native_spot_alerts(self.config, self.state)
+        self.assertIn("native_spot_pair_log_failing", [a["code"] for a in alerts])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / batch.NATIVE_SPOT_PAIR_LOG
+            batch.native_spot_flush_pairs(self.state, lambda r: batch.append_pair_log(path, r), NOW)
+            self.assertNotIn("pair_log", self.state["native_spot"])
+            self.assertNotIn("pair_log_failing", self.state["native_spot"])
+            # The controller stopped between the write and its state: the same pair comes again.
+            record = json.loads(path.read_text())
+            self.assertFalse(batch.append_pair_log(path, record))
+            self.assertEqual(len(path.read_text().splitlines()), 1)
+            self.assertEqual(len(REPORT.read_pairs(path)), 1)
+            # A raw duplicate line, as an older writer could leave, counts once in the report.
+            path.write_text(path.read_text() * 2)
+            self.assertEqual(len(REPORT.read_pairs(path)), 1)
 
     def test_the_pair_store_appends_one_line_a_pair_and_the_report_reads_it(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -24,14 +24,20 @@ PERCENTILES = (("min", 0), ("p10", 10), ("p50", 50), ("p90", 90), ("p99", 99), (
 
 
 def read_pairs(path):
-    """The `native_spot_pair` records in `path`, in order. A line that isn't one is skipped."""
-    pairs = []
+    """The `native_spot_pair` records in `path`, in order, one for each replay: a line that isn't
+    one is skipped, and so is a repeat of a pair (the same job, peer host and reading), which a
+    controller stopped between the store and its state can write again."""
+    pairs, seen = [], set()
     for line in Path(path).read_text().splitlines():
         try:
             record = json.loads(line)
         except ValueError:
             continue
-        if isinstance(record, dict) and record.get("event") == "native_spot_pair":
+        if not (isinstance(record, dict) and record.get("event") == "native_spot_pair"):
+            continue
+        key = (record.get("job"), record.get("peer_host"), bool(record.get("third_reading")))
+        if key not in seen:
+            seen.add(key)
             pairs.append(record)
     return pairs
 

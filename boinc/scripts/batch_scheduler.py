@@ -2889,6 +2889,8 @@ NATIVE_SPOT_TRIPS = 100
 NATIVE_SPOT_THIRD_ATTEMPTS = 3
 # Compared pair statuses, for the pair log.
 NATIVE_SPOT_PAIR_STATUSES = ("match", "outside", "mismatch")
+# Pair records waiting for the store (a failing disk): the newest are kept.
+NATIVE_SPOT_PAIR_QUEUE = 5000
 NATIVE_BUILD_TRUST = REPO / "boinc/project/native-build-trust.json"
 # Sampling draws from the OS: chosen after the result came back, so a host can't tell at dispatch
 # which of its units will be checked. Tests replace it.
@@ -2969,10 +2971,11 @@ def _validate_native_spot(config):
                 f"a {NATIVE_SPOT_KEY} third peer is {{host, image}}")
         require(peer["host"] not in config["native_hosts"] and peer["host"] not in seen,
                 f"a {NATIVE_SPOT_KEY} third peer is not a native host or a peer, and is listed once")
-        require(native_comparable(config["image"], peer["image"]) or
-                (cross_build and native_cross_build(config["image"], peer["image"])),
-                f"third peer {peer['host']}'s build {peer['image']} is not listed as identical to the plan's, "
-                "nor (with cross_build) as a cross-build pair, in boinc/project/native-build-trust.json")
+        # The second reading of a page the plan's build read badly is another build's: a host of the
+        # plan's own build would only repeat it. So a cross-build pair is required.
+        require(cross_build and native_cross_build(config["image"], peer["image"]),
+                f"third peer {peer['host']}'s build {peer['image']} is not listed as a cross-build pair of "
+                "the plan's in boinc/project/native-build-trust.json, or cross_build is off")
         seen.add(peer["host"])
 
 
@@ -3037,9 +3040,25 @@ def native_spot_slots(config, state, slots, now, active=None):
 NATIVE_SPOT_PAIR_LOG = "native-spot-pairs.jsonl"
 
 
+def pair_key(record):
+    """A pair's identity: the replay (job, peer host), and whether it is the third reading."""
+    return (record.get("job"), record.get("peer_host"), bool(record.get("third_reading")))
+
+
 def append_pair_log(path, record):
     """One compared pair, as a line in the plan's pair store (`native-spot-pairs.jsonl` in its state
-    directory), which `boinc/scripts/native_spot_pair_report.py` reads. Append only."""
+    directory), which `boinc/scripts/native_spot_pair_report.py` reads. Append only, and
+    idempotent: a pair the store already holds (the controller stopped between the write and its
+    state) is not written again. Returns whether it wrote."""
+    try:
+        for line in Path(path).read_text().splitlines():
+            try:
+                if pair_key(json.loads(line)) == pair_key(record):
+                    return False
+            except ValueError:
+                continue
+    except FileNotFoundError:
+        pass
     line = json.dumps(record, sort_keys=True) + "\n"
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     try:
@@ -3047,6 +3066,7 @@ def append_pair_log(path, record):
         os.fsync(fd)
     finally:
         os.close(fd)
+    return True
 
 
 def native_spot_cross(config, image):
@@ -3083,6 +3103,11 @@ def native_spot_sample(config, state, slots, published, now, rng=None, active=No
             for entry in pending.values():
                 out[entry["target"]] = out.get(entry["target"], 0) + 1
             candidates = native_spot_peers(config, state, slots, host, active)
+            if not gate and native_spot_gate_applies(config):
+                # A page already published (a drain's, or one passed over before it was drawn)
+                # can't be kept out by a cross-build pair, so it takes none: the gate is the only
+                # way a cross-build pair is made.
+                candidates = [(peer, image) for peer, image in candidates if not native_spot_cross(config, image)]
             peers = [(out.get(peer, 0), peer, image) for peer, image in candidates if out.get(peer, 0) < per_peer]
             if not peers:
                 reason = "no_peer" if not candidates else "peer_busy"
@@ -3109,7 +3134,7 @@ def _spot_item(job_id, entry, spool):
     return item + (f":{entry['spool']}" if spool else "")
 
 
-def native_spot_step(config, state, transport, now, submit_room=100, active=None, pair_log=None):
+def native_spot_step(config, state, transport, now, submit_room=100, active=None):
     """Run the bridge's native-spot step for the queued replays and the submitted ones, and act on
     what it reports: a match refreshes the host's checks and settles its unchecked pages up to
     that one; a mismatch holds both hosts (here and, already, in trust.json) with the pages each
@@ -3193,7 +3218,7 @@ def native_spot_step(config, state, transport, now, submit_room=100, active=None
         del pending[job_id]
         counts[status] = counts.get(status, 0) + 1
         source, target = str(entry["source"]), str(entry["target"])
-        native_spot_pair(config, state, job_id, entry, outcome, now, pair_log)
+        native_spot_pair(config, state, job_id, entry, outcome, now)
         unchecked = spot.setdefault("unchecked", {})
         gated = spot.get("gated", {}).get(job_id)
         if gated and entry.get("third"):
@@ -3301,7 +3326,8 @@ def native_spot_queue_third(config, state, now, active=None):
             out[entry["target"]] = out.get(entry["target"], 0) + 1
         for peer in spec.get("third_peers", []):
             host = peer["host"]
-            if (host == gated["source"] or host in gated["tried"] or str(host) in held
+            if (not native_spot_cross(config, peer["image"])
+                    or host == gated["source"] or host in gated["tried"] or str(host) in held
                     or (active is not None and host not in active) or out.get(host, 0) >= per_peer):
                 continue
             pending[job_id] = {"source": gated["source"], "target": host, "image": peer["image"],
@@ -3311,7 +3337,7 @@ def native_spot_queue_third(config, state, now, active=None):
             break
 
 
-def native_spot_pair(config, state, job_id, entry, outcome, now, pair_log=None):
+def native_spot_pair(config, state, job_id, entry, outcome, now):
     """Log one compared pair, passes included: a `native_spot_pair` line on stderr (the journal)
     and, when the controller has one, a line in its pair store. A first reading's pair goes in
     its source host's rolling window of NATIVE_SPOT_WINDOW pairs, which can trip the host's feed
@@ -3334,11 +3360,11 @@ def native_spot_pair(config, state, job_id, entry, outcome, now, pair_log=None):
         print(json.dumps(record, sort_keys=True), file=sys.stderr, flush=True)
     except (OSError, ValueError):
         pass
-    if pair_log is not None:
-        try:
-            pair_log(record)
-        except (OSError, ValueError):
-            pass
+    # Kept in the state until the store has it (native_spot_flush_pairs): a failed append is tried
+    # again, and the store's writer skips a pair it already holds.
+    queue = _spot(state).setdefault("pair_log", [])
+    queue.append(record)
+    del queue[:-NATIVE_SPOT_PAIR_QUEUE]
     counts = _spot(state).setdefault("counts", {})
     counts["pairs"] = counts.get("pairs", 0) + 1
     if entry.get("third") or not native_spot_cross(config, entry["image"]):
@@ -3348,6 +3374,34 @@ def native_spot_pair(config, state, job_id, entry, outcome, now, pair_log=None):
                                            "peer_gate", "peer_gate_pass")})
     del window[:-NATIVE_SPOT_WINDOW]
     native_spot_trip(state, str(entry["source"]), now)
+
+
+def native_spot_flush_pairs(state, pair_log, now):
+    """Write the queued pair records to the store, oldest first. A record the store has is dropped
+    from the queue; one it can't take stays for the next tick, and `pair_log_failing` raises an
+    alert until the store takes them. With no store configured nothing is kept."""
+    spot = _spot(state)
+    queue = spot.get("pair_log")
+    if not queue:
+        spot.pop("pair_log_failing", None)
+        return
+    if pair_log is None:
+        spot.pop("pair_log", None)
+        return
+    done = 0
+    for record in queue:
+        try:
+            pair_log(record)
+        except (OSError, ValueError) as error:
+            spot["pair_log_failing"] = {"at": int(now), "queued": len(queue) - done,
+                                        "reason": f"{type(error).__name__}: {error}"[:300]}
+            break
+        done += 1
+    else:
+        spot.pop("pair_log_failing", None)
+    del queue[:done]
+    if not queue:
+        spot.pop("pair_log")
 
 
 def native_spot_trip(state, host, now):
@@ -3429,6 +3483,14 @@ def native_spot_draw(config, state, persist, now, owned, server, slots, rng=None
     persist()
 
 
+def native_spot_kept_out(config, state):
+    """The jobs a cross-build spot pair keeps out of collection (16 Nov 2026 ruling). Whether or
+    not the plan still has native_spot_check: removing the setting must not release them."""
+    if config.get("app") != NATIVE_APP_NAME:
+        return set()
+    return set(state.get("native_spot", {}).get("gated", {}))
+
+
 def native_spot_gate_applies(config):
     """Whether the plan has a peer on a cross-build tier, so a result is drawn before it is
     collected: otherwise nothing a pair finds can keep a page out, and the draw stays after
@@ -3472,6 +3534,10 @@ def native_spot_alerts(config, state):
                        "message": "a native spot check found different bytes; the host gets no work. Look at "
                                   "the mismatch record, then release with host-trust release-hold on the BOINC "
                                   "host and --release-native-spot-hold here"})
+    if spot.get("pair_log_failing"):
+        alerts.append({"code": "native_spot_pair_log_failing", "app": NATIVE_APP_NAME, **spot["pair_log_failing"],
+                       "message": "the pair store (native-spot-pairs.jsonl in the state directory) can't take "
+                                  "pair records; they are kept in the state and tried again each tick"})
     withheld = sorted(job for job, gated in spot.get("gated", {}).items()
                       if gated["phase"] in ("rejected", "unresolved", "held"))
     waiting = sorted(job for job, gated in spot.get("gated", {}).items()
@@ -3923,9 +3989,12 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     selected = state.setdefault("selected", {})
     for page in owned:
         selected.setdefault(page, now)
+    # A result a cross-build spot pair keeps out of collection is not a held one: it must not stop
+    # the refill, though it still counts against the cap (retained_backlog).
     held_jobs = {record["job"]["id"] for record in owned.values()
                  if not settled(record)
-                 and server.get(record["job"]["id"], {}).get("spool")}
+                 and server.get(record["job"]["id"], {}).get("spool")
+                 and record["job"]["id"] not in native_spot_kept_out(config, state)}
 
     def settle_failed(owned):
         """A page whose BOINC workunit failed for good stops the tick, naming it, unless
@@ -3994,7 +4063,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # out of it until its pair, and if need be a third reading, settles the page. A drain
         # draws none, since it makes no replays and nothing would let the page through.
         native_spot_draw(config, state, persist, now, owned, server, native_room, active=spot_active, gate=True)
-    kept_out = set(state.get("native_spot", {}).get("gated", {})) if native and NATIVE_SPOT_KEY in config else set()
+    kept_out = native_spot_kept_out(config, state)
     to_collect = []
     # A gold tick collects one step's worth (STEP_IDS): a slow collect on top of gold (615 s on
     # 10 Nov, with blob-store timeouts) would take it past 15 minutes. The next tick takes the rest.
@@ -4159,7 +4228,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
 
     uncertain = any(job["stage"] == "submitting" for job in server.values())
     require(not uncertain, "uncertain server submission blocks fresh allocation")
-    held = sum(not settled(record) and
+    kept_out = native_spot_kept_out(config, state)
+    held = sum(not settled(record) and record["job"]["id"] not in kept_out and
                bool(server.get(record["job"]["id"], {}).get("spool")) for record in owned.values())
 
     if high_target == 0:
@@ -4348,7 +4418,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             100 if spot_cap is None else spot_cap - snapshot["pending_workunits"] - submitted)
         try:
             spot_step = native_spot_step(config, state, transport, now, submit_room=spot_room,
-                                         active=spot_active, pair_log=pair_log)
+                                         active=spot_active)
         except Exception as error:
             # The tick's submit is done: whatever went wrong here is the spot check's, recorded
             # and alerted on as a failing step, and the tick goes on to report.
@@ -4356,6 +4426,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             spot.pop("lock_busy", None)
             spot["failing"] = {"at": int(now), "reason": f"{type(error).__name__}: {error}"[:500]}
             spot_step = "failed"
+        # The state has the pairs (queued) before the store does, so a stop in between loses none.
+        persist()
+        native_spot_flush_pairs(state, pair_log, now)
         persist()
         native_slots = native_spot_slots(config, state, native_room, now, spot_active)
 
