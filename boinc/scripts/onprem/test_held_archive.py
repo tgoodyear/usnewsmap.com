@@ -85,6 +85,14 @@ case "$1" in
   stop) echo inactive > "$FAKE_TIMER" ;;
   start)
     [ -z "$FAKE_START_FAILS" ] || exit 1
+    if [ -n "$FAKE_PROBE" ]; then
+      [ ! -e "$USNM_HELD_ARCHIVE_LOCK.gap" ] || echo "gap file present" >> "$FAKE_LOG"
+      if flock -n "$USNM_HELD_ARCHIVE_LOCK" true; then echo "archive lock free" >> "$FAKE_LOG"; else echo "archive lock held" >> "$FAKE_LOG"; fi
+      if flock -n "$USNM_HELD_ARCHIVE_LOCK.run" true; then echo "run lock free" >> "$FAKE_LOG"; else echo "run lock held" >> "$FAKE_LOG"; fi
+      if [ -n "$FAKE_TICK_LOCK" ]; then
+        if flock -n "$FAKE_TICK_LOCK" true; then echo "tick lock free" >> "$FAKE_LOG"; else echo "tick lock held" >> "$FAKE_LOG"; fi
+      fi
+    fi
     case "$2" in *.timer) echo active > "$FAKE_TIMER" ;; esac ;;
 esac
 '''
@@ -388,6 +396,83 @@ class HeldArchive(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         summary = self.summary(done)
         self.assertEqual((summary["batches"], summary["eligible_left"]), (["0001", "0002"], 3000))
+
+    def test_max_minutes_starts_no_batch_after_the_budget(self):
+        (self.root / "left").write_text("5")
+        # bash starts SECONDS at the value in its environment: the run is 2 minutes old already.
+        done = self.run_archive("--max-batches", "5", "--max-minutes", "1", SECONDS="120")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        # The first batch always runs: the budget only keeps another from starting.
+        self.assertEqual(self.summary(done)["batches"], ["0001"])
+        self.assertEqual((self.root / "timer").read_text().strip(), "active")
+
+    def test_max_minutes_is_read_again_after_the_gap(self):
+        (self.root / "left").write_text("5")
+        # 59 seconds old at the first check, under the minute; the gap (up to 2 s here) ends past it.
+        done = self.run_archive("--max-batches", "5", "--max-minutes", "1", "--gap-mins", "1",
+                                SECONDS="59", USNM_HELD_ARCHIVE_TICK_START_SECS="3")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.summary(done)["batches"], ["0001"])
+        self.assertEqual(len([line for line in self.log() if line.startswith("tool ") and "--apply" in line]), 1)
+        self.assertEqual((self.root / "timer").read_text().strip(), "active")
+        self.assertFalse(Path(f"{self.root / 'lock'}.gap").exists())
+
+    def test_gap_lets_the_controller_tick_between_batches(self):
+        (self.root / "left").write_text("5")
+        tick = self.root / "tick.lock"
+        done = self.run_archive("--max-batches", "3", "--gap-mins", "1", "--tick-lock", str(tick),
+                                FAKE_PROBE="1", FAKE_TICK_LOCK=str(tick), USNM_HELD_ARCHIVE_TICK_START_SECS="1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.summary(done)["batches"], ["0001", "0002", "0003"])
+        log = self.log()
+        timer, service = ("systemctl stop usnm-boinc-priority-controller@main.timer",
+                          "systemctl start --no-block usnm-boinc-priority-controller@main.service")
+        # One pause per batch, one start between two batches and one at the end.
+        self.assertEqual(log.count(timer), 3, log)
+        self.assertEqual(log.count(service), 3, log)
+        applies = [i for i, line in enumerate(log) if line.startswith("tool ") and "--apply" in line]
+        steps = [i for i, line in enumerate(log) if line.startswith("step ")]
+        stops = [i for i, line in enumerate(log) if line == timer]
+        starts = [i for i, line in enumerate(log) if line == service]
+        # Every batch is dispatched and bridged inside its own pause, and the controller starts
+        # between them.
+        for n in range(3):
+            self.assertLess(stops[n], applies[n], log)
+            self.assertLess(applies[n], steps[n], log)
+            self.assertLess(steps[n], starts[n], log)
+            if n < 2:
+                self.assertLess(starts[n], stops[n + 1], log)
+        # While the controller ticks between batches nothing is held but the run lock, and the
+        # gap file tells the plans' ticks so; at the end the tick lock is still held while it starts.
+        # The fake probes at each of a start's two commands (the timer, then the tick): the two
+        # between batches see only the run lock, and the closing pair still the whole pause.
+        self.assertEqual(log.count("gap file present"), 4, log)
+        self.assertEqual(log.count("archive lock free"), 4, log)
+        self.assertEqual(log.count("archive lock held"), 2, log)
+        self.assertEqual(log.count("run lock held"), 6, log)
+        self.assertEqual(log.count("tick lock free"), 4, log)
+        self.assertEqual(log.count("tick lock held"), 2 + 4, log)  # + the tool's check in each dispatch and in the closing dry run
+        self.assertFalse(Path(f"{self.root / 'lock'}.gap").exists())
+        self.assertEqual((self.root / "timer").read_text().strip(), "active")
+        self.assertEqual(subprocess.run(["flock", "-n", str(tick), "true"]).returncode, 0)
+
+    def test_a_gap_batch_failure_resumes_and_clears_the_gap(self):
+        (self.root / "left").write_text("5")
+        done = self.run_archive("--max-batches", "3", "--gap-mins", "1", USNM_HELD_ARCHIVE_TICK_START_SECS="1",
+                                FAKE_DISPATCH_FAILS="1")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertFalse(Path(f"{self.root / 'lock'}.gap").exists())
+        self.assertEqual((self.root / "timer").read_text().strip(), "active")
+
+    def test_two_archives_never_overlap_even_in_a_gap(self):
+        lock = self.root / "lock"
+        holder = subprocess.Popen(["flock", f"{lock}.run", "sleep", "30"], start_new_session=True)
+        self.addCleanup(self.end_group, holder)
+        time.sleep(0.3)
+        done = self.run_archive()
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("another held-page archive is running", done.stderr)
+        self.assertNotIn("systemctl stop", "\n".join(self.log()) if (self.root / "log").exists() else "")
 
 
 if __name__ == "__main__":

@@ -549,6 +549,26 @@ class Tick(Fixture):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(len(self.runs()), 2)
 
+    def test_a_plan_ticks_between_batches_of_a_gap_run_but_not_during_one(self):
+        # held-archive.sh --gap-mins (#2012) lets its lock go between batches and leaves <lock>.gap.
+        self.flags("native-feed-4", NATIVE_FLAGS)
+        self.flags("queue-feed-10", DRAIN_FLAGS)
+        gap = self.root / "archive.lock.gap"
+        gap.write_text("")
+        for plan in ("native-feed-4", "queue-feed-10"):
+            with self.subTest(plan=plan):
+                self.assertEqual(self.tick(plan, FAKE_ARCHIVE_STATE="active").returncode, 0)
+                self.assertEqual(self.tick(
+                    plan, FAKE_ARCHIVE_UNITS="usnm-held-archive-queue-feed-11.service").returncode, 0)
+        self.assertEqual(len(self.runs()), 4)
+        # A batch is under way again: the lock is held, whatever the file says.
+        holder = self.hold(self.root / "archive.lock", 2)
+        self.skipped(self.tick("native-feed-4"), "held_archive_running")
+        holder.wait(timeout=30)
+        gap.unlink()
+        self.skipped(self.tick("native-feed-4", FAKE_ARCHIVE_STATE="active"), "held_archive_running")
+        self.assertEqual(len(self.runs()), 4)
+
     def test_a_drain_plan_skips_while_mains_timer_is_stopped(self):
         # As the shared drain service's ExecCondition: an operator's pause of main pauses the drains.
         self.flags("queue-feed-10", DRAIN_FLAGS)
