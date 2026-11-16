@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import random
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -62,6 +63,10 @@ class SpotFake(tbs.NativeFake):
         self.verdicts = {}
         # A compared pair's measures by job, as the bridge reports them (`pair`).
         self.pairs = {}
+        # A third reading's agreement with the first replay (`first.agrees`) by job: False by default.
+        self.agrees_first = {}
+        # The two texts of a pair under word F1 0.50, by job, as the bridge reports them (`texts`).
+        self.texts = {}
         self.refused = set()
         self.spot_error = None
         # The BOINC host's step lock stays held past the step's wait: onprem-step.sh refuses
@@ -83,6 +88,12 @@ class SpotFake(tbs.NativeFake):
                      "detail": "test"}
             if status in ("match", "outside", "mismatch"):
                 found["pair"] = self.pairs.get(job, pair())
+                if job in self.texts:
+                    found["texts"] = self.texts[job]
+            parts = rest.split(":")
+            if len(parts) == 5:
+                found["first"] = {"host": int(parts[4]), "image": LINUX, "cer": 0.02, "word_f1": 0.97,
+                                  "agrees": self.agrees_first.get(job, False)}
             return found
 
         return {"submitted": [outcome(i, "refused" if i.split("=")[0] in self.refused else "submitted")
@@ -501,10 +512,11 @@ class CrossBuildRulingTests(unittest.TestCase):
         batch.SPOT_RANDOM = Always(0.0)
         self.addCleanup(setattr, batch, "SPOT_RANDOM", self.saved)
         self.log = []
+        self.stored = []
 
     def tick(self, now=NOW, **kwargs):
         return batch.tick(self.config, self.state, self.fake, lambda: None, now,
-                          pair_log=self.log.append, **kwargs)
+                          pair_log=self.log.append, resolution_log=self.stored.append, **kwargs)
 
     def results_in(self):
         for job in self.fake.jobs.values():
@@ -555,37 +567,92 @@ class CrossBuildRulingTests(unittest.TestCase):
         self.assertNotIn("mismatches", spot)
         self.assertEqual(spot["counts"]["outside"], 1)
 
-    def test_a_third_reading_within_the_limits_settles_the_page_and_it_is_imported(self):
+    def third_pending(self, first_pair=None):
+        """A page whose first pair was outside and whose third reading is out on host 13."""
         job = self.gated_job()
         self.fake.verdicts[job] = "outside"
+        self.fake.pairs[job] = first_pair or pair(cer=0.05, f1=0.85)
         self.tick()
         self.tick()
         entry = self.state["native_spot"]["pending"][job]
-        self.assertEqual((entry["target"], entry["third"]), (13, True))
-        self.assertTrue(any(f"{job}=16:13:{LINUX[7:]}" in submit for submit, _ in self.fake.spot_calls))
-        self.fake.verdicts[job] = "match"
+        self.assertEqual((entry["target"], entry["third"], entry["first"]), (13, True, 9))
+        return job
+
+    def resolved(self, job, status, agrees_first, third_pair=None):
+        self.fake.verdicts[job] = status
+        self.fake.agrees_first[job] = agrees_first
+        self.fake.pairs[job] = third_pair or pair(cer=0.04, f1=0.93 if status == "match" else 0.8)
         self.tick()
-        self.assertEqual(self.state["native_spot"]["gated"], {})
-        self.assertEqual(self.state["native_spot"]["last_released"]["why"], "third reading matched")
+        return self.state["native_spot"]
+
+    def test_a_third_reading_is_checked_against_the_first_replay_as_well_as_the_original(self):
+        job = self.third_pending()
+        self.assertTrue(any(f"{job}=16:13:{LINUX[7:]}:/project/usnmocr/results/7:9" in check
+                            for _, check in self.fake.spot_calls) or job in self.state["native_spot"]["pending"])
+        self.assertEqual(batch._spot_item(job, self.state["native_spot"]["pending"][job], True),
+                         f"{job}=16:13:{LINUX[7:]}:/project/usnmocr/results/7:9")
+
+    def test_a_third_reading_agreeing_with_the_original_only_imports_the_original(self):
+        job = self.third_pending()
+        spot = self.resolved(job, "match", False)
+        self.assertEqual(spot["gated"], {})
+        self.assertEqual(spot["last_released"]["why"], "third reading agreed with the original")
         self.tick()
         self.assertIn(job, self.published())
+        (record,) = self.stored
+        self.assertEqual((record["outcome"], record["imported"]), ("original", "original"))
+        # The first replay was the wrong one: host 9, on the Linux build.
+        self.assertEqual(spot["wrong_tally"], {"by_host": {"9": 1}, "by_build": {LINUX: 1}, "unsettled": 0})
 
-    def test_a_third_reading_outside_the_limits_withholds_the_page_and_alerts(self):
-        job = self.gated_job()
-        self.fake.verdicts[job] = "outside"
-        self.tick()
-        self.tick()
-        self.tick()
-        event = self.tick()
-        self.assertEqual(self.state["native_spot"]["gated"][job]["phase"], "rejected")
+    def test_a_third_reading_agreeing_with_the_first_replay_only_keeps_the_page_out_and_names_the_original_wrong(self):
+        job = self.third_pending()
+        spot = self.resolved(job, "outside", True)
+        self.assertEqual(spot["gated"][job]["phase"], "first_wins")
         self.assertNotIn(job, self.published())
-        alert = next(a for a in event["alerts"] if a["code"] == "native_spot_page_withheld")
-        self.assertEqual(alert["jobs"], [job])
-        # It is not read a third time, and never collected.
-        calls = len(self.fake.spot_calls)
-        self.tick()
-        self.assertEqual(len(self.fake.spot_calls), calls)
+        self.assertEqual(spot["wrong_tally"]["by_host"], {"16": 1})
+        self.assertEqual(self.stored[-1]["outcome"], "first")
+        self.assertIsNone(self.stored[-1]["imported"])
+        event = self.tick()
+        self.assertIn("native_spot_first_reading_wins", [a["code"] for a in event["alerts"]])
         self.assertNotIn(job, self.collected())
+
+    def test_a_third_reading_agreeing_with_both_or_neither_leaves_the_page_with_its_current_text(self):
+        for status, agrees, outcome in (("match", True, "both"), ("outside", False, "neither")):
+            with self.subTest(outcome):
+                self.setUp()
+                job = self.third_pending()
+                spot = self.resolved(job, status, agrees)
+                self.assertEqual(spot["gated"][job]["phase"], "rejected")
+                self.tick()
+                self.assertNotIn(job, self.published())
+                self.assertNotIn(job, self.collected())
+                self.assertEqual(self.stored[-1]["outcome"], outcome)
+                self.assertEqual(spot["wrong_tally"], {"by_host": {}, "by_build": {}, "unsettled": 1})
+                alerts = [a["code"] for a in batch.native_spot_alerts(self.config, self.state)]
+                self.assertIn("native_spot_page_withheld", alerts)
+                # It is not read a fourth time.
+                calls = len(self.fake.spot_calls)
+                self.tick()
+                self.assertEqual(len(self.fake.spot_calls), calls)
+
+    def test_every_resolution_is_logged_with_its_readings_pairs_and_outcome(self):
+        job = self.third_pending(pair(cer=0.05, f1=0.85))
+        with patch("sys.stderr") as err:
+            self.resolved(job, "match", False, pair(cer=0.04, f1=0.93))
+        lines = [json.loads(call.args[0]) for call in err.write.call_args_list
+                 if call.args and call.args[0].startswith("{") and "native_spot_resolution" in call.args[0]]
+        self.assertEqual(len(lines), 1)
+        for record in (lines[0], self.stored[0]):
+            self.assertEqual((record["job"], record["outcome"]), (job, "original"))
+            self.assertEqual(record["readings"], {"original": {"host": 16, "build": WINDOWS},
+                                                  "first": {"host": 9, "build": LINUX},
+                                                  "third": {"host": 13, "build": LINUX}})
+            self.assertEqual(record["pairs"], {"original_first": {"cer": 0.05, "word_f1": 0.85},
+                                               "original_third": {"cer": 0.04, "word_f1": 0.93},
+                                               "first_third": {"cer": 0.02, "word_f1": 0.97}})
+            self.assertEqual(record["wrong"], [{"host": 9, "build": LINUX}])
+        self.tick()
+        self.assertEqual(len(self.stored), 1)
 
     def test_a_page_waits_for_a_third_reading_when_no_host_can_take_it(self):
         del self.config["native_spot_check"]["third_peers"]
@@ -687,22 +754,185 @@ class CrossBuildRulingTests(unittest.TestCase):
             self.feed("outside", 0.7, f"{n:064x}")
         self.assertNotIn("holds", self.state["native_spot"])
 
-    def test_a_pair_under_half_word_f1_where_the_peer_passes_the_gate_holds_the_feed(self):
+    LOC_WORDS = [f"w{n}" for n in range(10)]
+
+    def reading(self, right):
+        """A ten-word text with `right` of LoC's words and the rest not."""
+        return " ".join(self.LOC_WORDS[:right] + [f"x{n}" for n in range(10 - right)])
+
+    def low_pair(self, job, host_right, peer_right, loc=True, now=NOW):
+        """A first pair under word F1 0.50, as the bridge reports it with its texts, then scored
+        against LoC's text (the ten words, or none)."""
+        outcome = {"job": job, "status": "outside", "detail": "test", "pair": pair(f1=0.3, cer=0.4),
+                   "texts": {"original": self.reading(host_right), "replay": self.reading(peer_right)}}
+        batch.native_spot_pair(self.config, self.state, job, self.pair_entry(job), outcome, now)
+        asked = []
+
+        def loc_text(page):
+            asked.append(page)
+            return " ".join(self.LOC_WORDS) if loc else None
+
+        batch.native_spot_score_low(self.config, self.state, loc_text, now)
+        return asked
+
+    def hold(self):
+        return self.state["native_spot"].get("holds", {}).get("16")
+
+    def test_a_low_f1_pair_where_the_hosts_reading_is_far_below_the_peers_against_loc_holds_the_feed(self):
         self.feed("match", 0.97, f"{1:064x}")
-        # The peer is incomplete (gate fails): a bad pair is the peer's, not the host's.
-        self.feed("outside", 0.4, f"{2:064x}", gate=False)
-        self.assertNotIn("holds", self.state["native_spot"])
-        self.feed("outside", 0.49, f"{3:064x}", gate=True)
-        hold = self.state["native_spot"]["holds"]["16"]
-        self.assertIn("word F1 under 0.5", hold["reasons"][0])
-        self.assertEqual([p["job"] for p in hold["pairs"]], [f"{3:064x}"])
+        asked = self.low_pair(f"{2:064x}", host_right=1, peer_right=10)
+        self.assertEqual(asked, [f"p/{2:064x}"])
+        hold = self.hold()
+        self.assertEqual(hold["kind"], "cross_build_trip")
+        self.assertIn("0.2 or more below the peer's against LoC's text", hold["reasons"][0])
+        self.assertEqual([p["job"] for p in hold["pairs"]], [f"{2:064x}"])
+        self.assertEqual(hold["pairs"][0]["loc"], "host_worse")
+        record = self.state["native_spot"]["low_f1"][-1]
+        self.assertEqual((record["verdict"], record["host"], record["peer_host"]), ("host_worse", 16, 9))
+        self.assertAlmostEqual(record["loc_f1"]["host"], 0.1)
+        self.assertEqual(record["loc_f1"]["peer"], 1.0)
+        alert = next(a for a in batch.native_spot_alerts(self.config, self.state)
+                     if a["code"] == "native_spot_cross_build_trip")
+        self.assertEqual(alert["host"], 16)
+
+    def test_a_gap_of_exactly_point_two_is_a_fault_and_a_smaller_one_is_not(self):
+        self.low_pair(f"{1:064x}", host_right=7, peer_right=9)
+        self.assertIsNotNone(self.hold())
+        self.setUp()
+        self.state = {}
+        self.low_pair(f"{2:064x}", host_right=8, peer_right=9)
+        self.assertIsNone(self.hold())
+
+    def test_a_low_f1_pair_where_both_readings_are_far_from_loc_is_a_hard_page_and_no_trip(self):
+        self.low_pair(f"{1:064x}", host_right=2, peer_right=3)
+        self.assertIsNone(self.hold())
+        record = self.state["native_spot"]["low_f1"][-1]
+        self.assertEqual(record["verdict"], "similar")
+        self.assertEqual(self.state["native_spot"]["window"]["16"][0]["loc"], "similar")
+        self.assertNotIn("native_spot_low_f1_unscored", [a["code"] for a in batch.native_spot_alerts(self.config, self.state)])
+        # A host that read the page better than the peer is no fault either.
+        self.low_pair(f"{2:064x}", host_right=9, peer_right=1)
+        self.assertIsNone(self.hold())
+        self.assertEqual(self.state["native_spot"]["counts"]["low_f1_similar"], 2)
+
+    def test_with_no_loc_text_the_first_low_f1_pair_only_alerts_and_a_second_in_the_window_holds(self):
+        self.feed("match", 0.97, f"{1:064x}")
+        self.low_pair(f"{2:064x}", host_right=1, peer_right=10, loc=False)
+        self.assertIsNone(self.hold())
+        alerts = batch.native_spot_alerts(self.config, self.state)
+        (alert,) = [a for a in alerts if a["code"] == "native_spot_low_f1_unscored"]
+        self.assertEqual((alert["host"], [p["job"] for p in alert["pairs"]]), (16, [f"{2:064x}"]))
+        self.assertEqual(self.state["native_spot"]["low_f1"][-1]["verdict"], "unavailable")
+        # Another pair in the window, however it is scored, is not a second unscored one.
+        self.low_pair(f"{3:064x}", host_right=2, peer_right=3)
+        self.assertIsNone(self.hold())
+        self.low_pair(f"{4:064x}", host_right=1, peer_right=10, loc=False)
+        hold = self.hold()
+        self.assertIn("2 pairs under word F1 0.5 in the last 4 with no LoC text", hold["reasons"][0])
+        alerts = batch.native_spot_alerts(self.config, self.state)
+        self.assertNotIn("native_spot_low_f1_unscored", [a["code"] for a in alerts])
+        self.assertIn("native_spot_cross_build_trip", [a["code"] for a in alerts])
+
+    def test_the_second_unscored_pair_must_fall_in_the_same_window(self):
+        self.low_pair(f"{1:064x}", host_right=1, peer_right=10, loc=False)
+        for n in range(2, 60):
+            self.feed("match", 0.97, f"{n:064x}")
+        self.low_pair(f"{99:064x}", host_right=1, peer_right=10, loc=False)
+        self.assertIsNone(self.hold())
+
+    def test_a_pair_with_no_texts_has_none_to_score_and_waits_for_nothing(self):
+        outcome = {"job": f"{1:064x}", "status": "outside", "detail": "test", "pair": pair(f1=0.2, cer=0.5)}
+        batch.native_spot_pair(self.config, self.state, f"{1:064x}", self.pair_entry(f"{1:064x}"), outcome, NOW)
+        self.assertEqual(self.state["native_spot"]["window"]["16"][0]["loc"], "unavailable")
+        self.assertNotIn("loc_queue", self.state["native_spot"])
+
+    def test_loc_text_that_fails_to_come_is_no_text(self):
+        outcome = {"job": f"{1:064x}", "status": "outside", "detail": "test", "pair": pair(f1=0.2, cer=0.5),
+                   "texts": {"original": "a b", "replay": "c d"}}
+        batch.native_spot_pair(self.config, self.state, f"{1:064x}", self.pair_entry(f"{1:064x}"), outcome, NOW)
+
+        def broken(page):
+            raise TimeoutError("archive not read in time")
+
+        batch.native_spot_score_low(self.config, self.state, broken, NOW)
+        self.assertEqual(self.state["native_spot"]["low_f1"][-1]["verdict"], "unavailable")
+
+    def test_a_provider_that_raises_anything_is_no_text(self):
+        import xml.etree.ElementTree as ET
+        for error in (ET.ParseError("bad alto"), tarfile.ReadError("bad archive"), KeyError("x")):
+            with self.subTest(type(error).__name__):
+                self.state = {}
+                job = f"{1:064x}"
+                outcome = {"job": job, "status": "outside", "detail": "test", "pair": pair(f1=0.2, cer=0.5),
+                           "texts": {"original": "a b", "replay": "c d"}}
+                batch.native_spot_pair(self.config, self.state, job, self.pair_entry(job), outcome, NOW)
+
+                def broken(page):
+                    raise error
+
+                batch.native_spot_score_low(self.config, self.state, broken, NOW)
+                self.assertEqual(self.state["native_spot"]["window"]["16"][0]["loc"], "unavailable")
+                self.assertNotIn("loc_queue", self.state["native_spot"])
+
+    def test_a_third_reading_queued_before_the_resolution_rule_gets_its_first_host(self):
+        job = self.third_pending()
+        entry = self.state["native_spot"]["pending"][job]
+        del entry["first"]
+        entry["stage"] = "submitted"
+        del self.fake.verdicts[job]
+        self.tick()
+        self.assertEqual(self.state["native_spot"]["pending"][job]["first"], 9)
+        self.assertTrue(any(f"{job}=16:13:{LINUX[7:]}:/project/usnmocr/results/7:9" in check
+                            for _, check in self.fake.spot_calls))
+
+    def test_the_bridge_wrapper_takes_a_third_readings_check_with_its_first_host(self):
+        text = (Path(__file__).parents[1] / "images/server/bridge-job.sh").read_text()
+        line = next(l for l in text.splitlines() if l.strip().startswith('check="$item:'))
+        item = "[0-9a-f]{64}=[1-9][0-9]{0,9}:[1-9][0-9]{0,9}:[0-9a-f]{64}"
+        base = f"{'a' * 64}=16:13:{'b' * 64}:/p/results/0"
+        script = (f"item='{item}'\nPROJ=/p\n{line.strip()}\n"
+                  'for v in "$@"; do [[ "$v" =~ ^($check(,$check){0,99})?$ ]] && echo ok || echo no; done')
+        done = subprocess.run(["bash", "-c", script, "x", base, base + ":9", base + ":9," + base,
+                               base + ":x", base + ":9:9"], capture_output=True, text=True, check=True)
+        self.assertEqual(done.stdout.split(), ["ok", "ok", "ok", "no", "no"])
+
+    def test_only_a_few_pairs_are_scored_a_tick_and_the_rest_wait_in_the_state(self):
+        for n in range(5):
+            outcome = {"job": f"{n:064x}", "status": "outside", "detail": "test", "pair": pair(f1=0.2, cer=0.5),
+                       "texts": {"original": "a b", "replay": "c d"}}
+            batch.native_spot_pair(self.config, self.state, f"{n:064x}", self.pair_entry(f"{n:064x}"), outcome, NOW + n)
+        asked = []
+        batch.native_spot_score_low(self.config, self.state, lambda page: asked.append(page) or "a b", NOW)
+        self.assertEqual(len(asked), batch.NATIVE_SPOT_LOC_PER_TICK)
+        self.assertEqual(len(self.state["native_spot"]["loc_queue"]), 3)
+        pending = [r for r in self.state["native_spot"]["window"]["16"] if r["loc"] == "pending"]
+        self.assertEqual(len(pending), 3)
+
+    def test_a_tick_scores_a_low_pair_with_the_loc_text_it_is_given(self):
+        job = self.gated_job()
+        self.fake.verdicts[job] = "outside"
+        self.fake.pairs[job] = pair(cer=0.5, f1=0.2)
+        self.fake.texts[job] = {"original": self.reading(1), "replay": self.reading(10)}
+        self.tick(loc_text=lambda page: " ".join(self.LOC_WORDS))
+        self.assertEqual(self.state["native_spot"]["holds"]["16"]["kind"], "cross_build_trip")
+        self.assertNotIn("loc_queue", self.state["native_spot"])
+        # No texts ride in the state once scored.
+        self.assertNotIn("texts", json.dumps(self.state))
 
     def test_a_release_starts_a_new_window(self):
-        self.feed("outside", 0.4, f"{1:064x}")
+        self.low_pair(f"{1:064x}", host_right=1, peer_right=10)
         self.assertIn("16", self.state["native_spot"]["holds"])
         batch.release_native_spot_hold(self.state, 16, "looked at the pair", NOW)
         self.assertNotIn("16", self.state["native_spot"]["holds"])
         self.assertNotIn("16", self.state["native_spot"]["window"])
+
+    def test_the_word_f1_is_the_word_bag_dice_after_gold_normalisation(self):
+        self.assertEqual(batch.word_f1("", ""), 1.0)
+        self.assertEqual(batch.word_f1("a b c d", "a b c d"), 1.0)
+        self.assertEqual(batch.word_f1("a b", "c d"), 0.0)
+        self.assertAlmostEqual(batch.word_f1("Claremont is far", "claremont is\nclose"), 2 * 2 / 6)
+        self.assertEqual(batch.word_f1("Clare-\nmont", "Claremont"), 1.0)
+        self.assertEqual(batch.word_f1("a, b. c", "a b c"), 1.0)
 
     def test_every_pair_is_logged_passes_included(self):
         job = self.gated_job()

@@ -337,6 +337,8 @@ fn outcome(
         status,
         detail: detail.into(),
         pair: None,
+        first: None,
+        texts: None,
     }
 }
 

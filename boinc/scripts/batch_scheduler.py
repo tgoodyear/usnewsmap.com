@@ -11,6 +11,7 @@ import fcntl
 import stat
 import functools
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -23,6 +24,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
 import uuid
@@ -2888,6 +2890,20 @@ NATIVE_SPOT_TRIP_MIN_PAIRS = 20
 NATIVE_SPOT_TRIPS = 100
 NATIVE_SPOT_THIRD_ATTEMPTS = 3
 # Compared pair statuses, for the pair log.
+# A first-reading pair under NATIVE_SPOT_TRIP_MIN_F1 is no trip on its own (16 Nov 2026, second
+# ruling): the controller scores both readings against LoC's text for the page (server side, from
+# the bulk OCR archives on CT 211), and the host is at fault only when its reading is at least
+# NATIVE_SPOT_LOC_GAP below the peer's in word F1. Both far from LoC is a hard page: logged, no
+# trip. With no LoC text the first such pair only alerts, and a second one in the host's window
+# of NATIVE_SPOT_WINDOW pairs holds the feed. At most NATIVE_SPOT_LOC_PER_TICK pages are scored a
+# tick (each may read a bulk archive), and NATIVE_SPOT_LOC_QUEUE wait at most.
+NATIVE_SPOT_LOC_GAP = 0.20
+NATIVE_SPOT_LOC_PER_TICK = 2
+NATIVE_SPOT_LOC_QUEUE = 20
+NATIVE_SPOT_LOC_TIMEOUT_SECS = 600
+NATIVE_SPOT_LOW_F1_LOG = 100
+NATIVE_SPOT_RESOLUTIONS = 100
+NATIVE_SPOT_RESOLUTION_LOG = "native-spot-resolutions.jsonl"
 NATIVE_SPOT_PAIR_STATUSES = ("match", "outside", "mismatch")
 # Pair records waiting for the store (a failing disk): the newest are kept.
 NATIVE_SPOT_PAIR_QUEUE = 5000
@@ -3045,6 +3061,11 @@ def pair_key(record):
     return (record.get("job"), record.get("peer_host"), bool(record.get("third_reading")))
 
 
+def resolution_key(record):
+    """A resolution's identity: the page's job, which a third reading settles once."""
+    return record.get("job")
+
+
 class PairStore:
     """The plan's pair store (`native-spot-pairs.jsonl` in its state directory), which
     `boinc/scripts/native_spot_pair_report.py` reads. Append only, and idempotent: a pair it already
@@ -3052,8 +3073,9 @@ class PairStore:
     identities in the file are read once, on the first append, so a flush of n records costs one
     pass over the history and not n."""
 
-    def __init__(self, path):
+    def __init__(self, path, key=pair_key):
         self.path = Path(path)
+        self.key = key
         self.keys = None
 
     def load(self):
@@ -3064,7 +3086,7 @@ class PairStore:
             return
         for line in lines:
             try:
-                self.keys.add(pair_key(json.loads(line)))
+                self.keys.add(self.key(json.loads(line)))
             except ValueError:
                 continue
 
@@ -3072,7 +3094,7 @@ class PairStore:
         """Write `record` unless the store has it; whether it wrote."""
         if self.keys is None:
             self.load()
-        key = pair_key(record)
+        key = self.key(record)
         if key in self.keys:
             return False
         line = json.dumps(record, sort_keys=True) + "\n"
@@ -3153,7 +3175,11 @@ def native_spot_sample(config, state, slots, published, now, rng=None, active=No
 
 def _spot_item(job_id, entry, spool):
     item = f"{job_id}={entry['source']}:{entry['target']}:{entry['image'].removeprefix('sha256:')}"
-    return item + (f":{entry['spool']}" if spool else "")
+    if not spool:
+        return item
+    item += f":{entry['spool']}"
+    # A third reading's check also compares it with the first replay (the resolution rule).
+    return item + (f":{entry['first']}" if entry.get("third") and entry.get("first") else "")
 
 
 def native_spot_step(config, state, transport, now, submit_room=100, active=None):
@@ -3184,6 +3210,11 @@ def native_spot_step(config, state, transport, now, submit_room=100, active=None
     # Only for a peer the inventory sees asking for work (`active`; None: not known): a unit
     # assigned to a host that has gone away is never sent (#1919). The others stay queued until
     # their peer is back or they are given up at NATIVE_SPOT_MAX_AGE.
+    # A third reading queued before the resolution rule has no first host: it comes from the page's
+    # gated record, so its check is also compared with the first replay.
+    for job_id, entry in pending.items():
+        if entry.get("third") and not entry.get("first"):
+            entry["first"] = (spot.get("gated", {}).get(job_id, {}).get("first") or {}).get("target")
     queued = [(j, e) for j, e in pending.items() if e["stage"] == "queued"
               and (active is None or e["target"] in active)][:max(0, min(100, submit_room))]
     # The 100 least recently polled, so every replay is looked at in turn, however many are out.
@@ -3244,9 +3275,9 @@ def native_spot_step(config, state, transport, now, submit_room=100, active=None
         unchecked = spot.setdefault("unchecked", {})
         gated = spot.get("gated", {}).get(job_id)
         if gated and entry.get("third"):
-            native_spot_third_result(spot, job_id, gated, entry, status, now)
+            native_spot_third_result(config, spot, job_id, gated, entry, outcome, now)
         elif gated:
-            native_spot_first_result(spot, job_id, gated, entry, status, now)
+            native_spot_first_result(spot, job_id, gated, entry, outcome, now)
         if status == "match":
             spot.setdefault("last_match", {})[source] = int(now)
             mine = unchecked.get(source, {"pages": [], "overflow": 0})
@@ -3302,33 +3333,93 @@ def native_spot_release(spot, job_id, gated, why, now):
     spot["last_released"] = {"job": job_id, "page": gated["page"], "at": int(now), "why": why}
 
 
-def native_spot_first_result(spot, job_id, gated, entry, status, now):
+def native_spot_first_result(spot, job_id, gated, entry, outcome, now):
     """What the pair with the first peer does to a kept-out page: a match lets it through,
     `outside` keeps it out for a third reading, and no verdict (refused, failed, unverified)
     lets it through as it always did. A mismatch (an invalid replay result) holds both hosts as
     before, and the page stays out."""
+    status = outcome["status"]
     if status == "match":
         native_spot_release(spot, job_id, gated, "match", now)
     elif status == "outside":
+        pair = outcome.get("pair") or {}
         gated["phase"] = "third_wait"
-        gated["first"] = {"target": entry["target"], "at": int(now)}
+        gated["first"] = {"target": entry["target"], "at": int(now), "image": entry["image"],
+                          "cer": pair.get("cer"), "word_f1": pair.get("word_f1")}
     elif status == "mismatch":
         gated["phase"] = "held"
     else:
         native_spot_release(spot, job_id, gated, "no verdict", now)
 
 
-def native_spot_third_result(spot, job_id, gated, entry, status, now):
-    """The third reading of a kept-out page, on a second host: within the limits of the original
-    it settles the page (two of three readings agree) and it is let through; outside, the page
-    is withheld and keeps its current text; anything else tries another host."""
-    if status == "match":
-        native_spot_release(spot, job_id, gated, "third reading matched", now)
-    elif status == "outside":
-        gated["phase"] = "rejected"
-        gated["third"] = {"target": entry["target"], "at": int(now)}
-    else:
+def native_spot_third_result(config, spot, job_id, gated, entry, outcome, now):
+    """The third reading of a kept-out page, on a second host, settles it by which of the two
+    earlier readings it agrees with (the cross-build limits, 16 Nov 2026 resolution rule):
+
+    - the original only: the original is imported (the page is let through);
+    - the first replay only: its reading is the right one, but the collect path imports only a
+      job's own result, so the page keeps its current text and `native_spot_first_reading_wins`
+      raises (phase `first_wins`);
+    - both or neither: the page keeps its current text (phase `rejected`).
+
+    Every resolution is logged (`native_spot_resolution`) and counted in the who-was-wrong tally.
+    A reading that can't be measured against both tries another host."""
+    status = outcome["status"]
+    first = outcome.get("first")
+    if status not in ("match", "outside") or first is None:
         gated["phase"] = "third_wait" if len(gated["tried"]) < NATIVE_SPOT_THIRD_ATTEMPTS else "unresolved"
+        return
+    with_original, with_first = status == "match", bool(first.get("agrees"))
+    third = {"target": entry["target"], "at": int(now)}
+    gated["third"] = third
+    if with_original and not with_first:
+        resolved = "original"
+        native_spot_release(spot, job_id, gated, "third reading agreed with the original", now)
+    elif with_first and not with_original:
+        resolved = "first"
+        gated["phase"] = "first_wins"
+    else:
+        resolved = "both" if with_original else "neither"
+        gated["phase"] = "rejected"
+    native_spot_resolution(config, spot, job_id, gated, entry, outcome, resolved, now)
+
+
+def native_spot_resolution(config, spot, job_id, gated, entry, outcome, resolved, now):
+    """Log a settled page: its three readings' builds and hosts, the pairwise CER and word F1,
+    and the outcome, to stderr and the resolution store, and count which reading was wrong."""
+    first_info = gated.get("first") or {}
+    pair, first = outcome.get("pair") or {}, outcome.get("first") or {}
+    source = {"host": gated["source"], "build": pair.get("source_image") or config["image"]}
+    peer = {"host": first_info.get("target", first.get("host")),
+            "build": first_info.get("image") or first.get("image")}
+    third = {"host": entry["target"], "build": pair.get("target_image") or entry["image"]}
+    wrong = {"original": [peer], "first": [source]}.get(resolved, [])
+    record = {"event": "native_spot_resolution", "schema_version": 1, "at": int(now), "plan": config["plan"],
+              "job": job_id, "page": gated["page"], "outcome": resolved,
+              "imported": "original" if resolved == "original" else None,
+              "readings": {"original": source, "first": peer, "third": third},
+              "pairs": {"original_first": {"cer": first_info.get("cer"), "word_f1": first_info.get("word_f1")},
+                        "original_third": {"cer": pair.get("cer"), "word_f1": pair.get("word_f1")},
+                        "first_third": {"cer": first.get("cer"), "word_f1": first.get("word_f1")}},
+              "wrong": wrong}
+    try:
+        print(json.dumps(record, sort_keys=True), file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
+    queue = spot.setdefault("resolution_log", [])
+    queue.append(record)
+    del queue[:-NATIVE_SPOT_PAIR_QUEUE]
+    spot.setdefault("counts", {})["resolved_" + resolved] = spot["counts"].get("resolved_" + resolved, 0) + 1
+    tally = spot.setdefault("wrong_tally", {"by_host": {}, "by_build": {}, "unsettled": 0})
+    for reading in wrong:
+        host, build = str(reading["host"]), str(reading["build"])
+        tally["by_host"][host] = tally["by_host"].get(host, 0) + 1
+        tally["by_build"][build] = tally["by_build"].get(build, 0) + 1
+    if not wrong:
+        tally["unsettled"] += 1
+    recent = spot.setdefault("resolutions", [])
+    recent.append({k: record[k] for k in ("job", "page", "at", "outcome", "wrong")})
+    del recent[:-NATIVE_SPOT_RESOLUTIONS]
 
 
 def native_spot_queue_third(config, state, now, active=None):
@@ -3354,7 +3445,8 @@ def native_spot_queue_third(config, state, now, active=None):
                 continue
             pending[job_id] = {"source": gated["source"], "target": host, "image": peer["image"],
                                "page": gated["page"], "spool": gated.get("spool"), "at": int(now),
-                               "stage": "queued", "third": True, "gated": True}
+                               "stage": "queued", "third": True, "gated": True,
+                               "first": (gated.get("first") or {}).get("target")}
             gated["tried"].append(host)
             break
 
@@ -3392,45 +3484,69 @@ def native_spot_pair(config, state, job_id, entry, outcome, now):
     if entry.get("third") or not native_spot_cross(config, entry["image"]):
         return
     window = _spot(state).setdefault("window", {}).setdefault(str(entry["source"]), [])
-    window.append({k: record[k] for k in ("job", "page", "at", "peer_host", "status", "cer", "word_f1",
-                                           "peer_gate", "peer_gate_pass")})
+    row = {k: record[k] for k in ("job", "page", "at", "peer_host", "status", "cer", "word_f1",
+                                  "peer_gate", "peer_gate_pass")}
+    word_f1 = record["word_f1"]
+    if word_f1 is not None and word_f1 < NATIVE_SPOT_TRIP_MIN_F1:
+        # Not a trip yet: the readings are scored against LoC's text (native_spot_score_low). A
+        # pair that brought no texts, or that has no room in the queue, has none to score.
+        texts = outcome.get("texts")
+        queue = _spot(state).get("loc_queue", {})
+        if texts and len(queue) < NATIVE_SPOT_LOC_QUEUE:
+            row["loc"] = "pending"
+            queue = _spot(state).setdefault("loc_queue", queue)
+            queue[job_id] = {"page": entry["page"], "source": entry["source"], "peer": entry["target"],
+                             "at": int(now), "original": texts["original"], "replay": texts["replay"]}
+        else:
+            row["loc"] = "unavailable"
+    window.append(row)
     del window[:-NATIVE_SPOT_WINDOW]
     native_spot_trip(state, str(entry["source"]), now)
 
 
-def native_spot_flush_pairs(state, pair_log, now):
+def native_spot_flush_pairs(state, pair_log, now, queue_key="pair_log"):
     """Write the queued pair records to the store, oldest first. A record the store has is dropped
     from the queue; one it can't take stays for the next tick, and `pair_log_failing` raises an
-    alert until the store takes them. With no store configured nothing is kept."""
+    alert until the store takes them. With no store configured nothing is kept. The resolution
+    store takes the same way (`queue_key` resolution_log, failing `resolution_log_failing`)."""
     spot = _spot(state)
-    queue = spot.get("pair_log")
+    failing = queue_key + "_failing"
+    queue = spot.get(queue_key)
     if not queue:
-        spot.pop("pair_log_failing", None)
+        spot.pop(failing, None)
         return
     if pair_log is None:
-        spot.pop("pair_log", None)
+        spot.pop(queue_key, None)
         return
     done = 0
     for record in queue:
         try:
             pair_log(record)
         except (OSError, ValueError) as error:
-            spot["pair_log_failing"] = {"at": int(now), "queued": len(queue) - done,
-                                        "reason": f"{type(error).__name__}: {error}"[:300]}
+            spot[failing] = {"at": int(now), "queued": len(queue) - done,
+                             "reason": f"{type(error).__name__}: {error}"[:300]}
             break
         done += 1
     else:
-        spot.pop("pair_log_failing", None)
+        spot.pop(failing, None)
     del queue[:done]
     if not queue:
-        spot.pop("pair_log")
+        spot.pop(queue_key)
 
 
 def native_spot_trip(state, host, now):
     """Hold `host`'s native feed (a spot hold: no room, an alert, released by hand) when, over
-    its last NATIVE_SPOT_WINDOW first-reading pairs, more than NATIVE_SPOT_TRIP_OUTSIDE_SHARE are
-    `outside`, or any has word F1 under NATIVE_SPOT_TRIP_MIN_F1 on a page whose peer passes the
-    completeness gate. The alert carries the pair details."""
+    its last NATIVE_SPOT_WINDOW first-reading pairs:
+
+    - more than NATIVE_SPOT_TRIP_OUTSIDE_SHARE are `outside` (with NATIVE_SPOT_TRIP_MIN_PAIRS);
+    - a pair under NATIVE_SPOT_TRIP_MIN_F1 on a page whose peer passes the completeness gate was
+      scored against LoC's text and the host's reading was NATIVE_SPOT_LOC_GAP or more below the
+      peer's (`loc` host_worse);
+    - two such pairs had no LoC text to score against (`loc` unavailable): the first only alerts
+      (native_spot_alerts).
+
+    A pair whose scoring is still `pending` counts for none of the last two. The alert carries the
+    pair details."""
     spot = _spot(state)
     window = spot.get("window", {}).get(host, [])
     reasons = []
@@ -3439,22 +3555,99 @@ def native_spot_trip(state, host, now):
             and len(outside_pairs) / len(window) > NATIVE_SPOT_TRIP_OUTSIDE_SHARE):
         reasons.append(f"{len(outside_pairs)} of the last {len(window)} pairs are outside "
                        f"(more than {NATIVE_SPOT_TRIP_OUTSIDE_SHARE:.0%})")
-    low = [pair for pair in window if pair.get("word_f1") is not None
-           and pair["word_f1"] < NATIVE_SPOT_TRIP_MIN_F1 and pair.get("peer_gate_pass")]
-    if low:
-        reasons.append(f"{len(low)} pair(s) with word F1 under {NATIVE_SPOT_TRIP_MIN_F1} on a page the "
-                       "peer passes the completeness gate on")
+    worse = [pair for pair in window if pair.get("loc") == "host_worse" and pair.get("peer_gate_pass")]
+    if worse:
+        reasons.append(f"{len(worse)} pair(s) with word F1 under {NATIVE_SPOT_TRIP_MIN_F1} where the host's "
+                       f"reading is {NATIVE_SPOT_LOC_GAP} or more below the peer's against LoC's text")
+    unscored = [pair for pair in window if pair.get("loc") == "unavailable" and pair.get("peer_gate_pass")]
+    if len(unscored) >= 2:
+        reasons.append(f"{len(unscored)} pairs under word F1 {NATIVE_SPOT_TRIP_MIN_F1} in the last "
+                       f"{len(window)} with no LoC text to score them against")
     if not reasons or host in spot.get("holds", {}):
         return
     holds = spot.setdefault("holds", {})
     last = window[-1]
-    shown = low or outside_pairs
+    shown = worse or unscored or outside_pairs
     holds[host] = {"at": int(now), "job": last["job"], "peer": last["peer_host"], "kind": "cross_build_trip",
                    "reasons": reasons, "pairs": shown[-10:], "window_pairs": len(window),
                    "window_outside": len(outside_pairs)}
     trips = spot.setdefault("trips", [])
     trips.append({"host": int(host), **holds[host]})
     del trips[:-NATIVE_SPOT_TRIPS]
+
+
+def loc_page_text(page):
+    """LoC's text of `page` for the controller's low-F1 scoring: boinc/scripts/native_spot_loc.py,
+    which reads the bulk OCR archives on the controller's own host (CT 211) and never the BOINC
+    server's. It runs as a child with a wall-clock limit, so a stalled read can't hold the tick.
+    None when it has none."""
+    script = Path(__file__).with_name("native_spot_loc.py")
+    done = subprocess.run([sys.executable, "-I", str(script), "--page", page,
+                           "--timeout-secs", str(NATIVE_SPOT_LOC_TIMEOUT_SECS)],
+                          capture_output=True, text=True, timeout=NATIVE_SPOT_LOC_TIMEOUT_SECS + 30, check=False)
+    if done.returncode == 1 and not done.stdout:
+        return None
+    require(done.returncode == 0, "native_spot_loc.py failed")
+    return done.stdout
+
+
+def word_f1(a, b):
+    """The word-bag Dice of two texts, as `usnm_ocr_quality::align::dice` has it after gold.py's
+    normalisation: NFC, line-end hyphens joined, lower case, words split on anything that is not
+    a letter or digit; 1.0 for two empty texts."""
+    def bag(text):
+        text = re.sub(r"-[ \t]*\r?\n[ \t]*", "", unicodedata.normalize("NFC", text))
+        return collections.Counter(w for w in re.split(r"[\W_]+", text.lower()) if w)
+    wa, wb = bag(a), bag(b)
+    total = sum(wa.values()) + sum(wb.values())
+    return 1.0 if total == 0 else 2.0 * sum((wa & wb).values()) / total
+
+
+def native_spot_score_low(config, state, loc_text, now, limit=NATIVE_SPOT_LOC_PER_TICK):
+    """Score the queued pairs under NATIVE_SPOT_TRIP_MIN_F1 against LoC's text for their page
+    (`loc_text(page)`: the text, or None when LoC's text isn't to be had; it may be slow, so at
+    most `limit` pages a tick), then judge the host: its reading NATIVE_SPOT_LOC_GAP or more below
+    the peer's is `host_worse` (a trip); otherwise both are far from LoC, a hard page: logged,
+    no trip (`similar`); no text is `unavailable` (the fallback of native_spot_trip). Each
+    verdict is a `native_spot_low_f1` line and a record in the state."""
+    spot = _spot(state)
+    queue = spot.get("loc_queue", {})
+    for job_id in sorted(queue, key=lambda j: queue[j].get("at", 0))[:max(0, limit)]:
+        item = queue.pop(job_id)
+        text = None
+        if loc_text is not None:
+            try:
+                text = loc_text(item["page"])
+            except Exception:
+                # Whatever goes wrong at the provider (a timeout, a bad archive or ALTO) is no text.
+                text = None
+        scores = None
+        if text is not None and text.strip():
+            scores = {"host": word_f1(item["original"], text), "peer": word_f1(item["replay"], text)}
+            verdict = "host_worse" if scores["peer"] - scores["host"] >= NATIVE_SPOT_LOC_GAP - 1e-9 else "similar"
+        else:
+            verdict = "unavailable"
+        host = str(item["source"])
+        row = next((r for r in spot.get("window", {}).get(host, []) if r["job"] == job_id), None)
+        record = {"event": "native_spot_low_f1", "schema_version": 1, "at": int(now), "plan": config["plan"],
+                  "job": job_id, "page": item["page"], "host": item["source"], "peer_host": item["peer"],
+                  "verdict": verdict, "loc_f1": scores,
+                  "pair_word_f1": row.get("word_f1") if row else None}
+        try:
+            print(json.dumps(record, sort_keys=True), file=sys.stderr, flush=True)
+        except (OSError, ValueError):
+            pass
+        log = spot.setdefault("low_f1", [])
+        log.append(record)
+        del log[:-NATIVE_SPOT_LOW_F1_LOG]
+        counts = spot.setdefault("counts", {})
+        counts["low_f1_" + verdict] = counts.get("low_f1_" + verdict, 0) + 1
+        if row is not None:
+            row["loc"] = verdict
+            row["loc_f1"] = scores
+            native_spot_trip(state, host, now)
+    if not queue:
+        spot.pop("loc_queue", None)
 
 
 def _spot_targets(state, owned):
@@ -3556,6 +3749,21 @@ def native_spot_alerts(config, state):
                        "message": "a native spot check found different bytes; the host gets no work. Look at "
                                   "the mismatch record, then release with host-trust release-hold on the BOINC "
                                   "host and --release-native-spot-hold here"})
+    if spot.get("resolution_log_failing"):
+        alerts.append({"code": "native_spot_resolution_log_failing", "app": NATIVE_APP_NAME,
+                       **spot["resolution_log_failing"],
+                       "message": "the resolution store (native-spot-resolutions.jsonl in the state directory) can't "
+                                  "take resolution records; they are kept in the state and tried again each tick"})
+    for host, rows in sorted(spot.get("window", {}).items()):
+        # The first pair under word F1 0.50 with no LoC text to score it only alerts; a second in
+        # the window trips the host (native_spot_trip), and its alert says so.
+        unscored = [row for row in rows if row.get("loc") == "unavailable"]
+        if unscored and host not in spot.get("holds", {}):
+            alerts.append({"code": "native_spot_low_f1_unscored", "app": NATIVE_APP_NAME, "host": int(host),
+                           "pairs": unscored[-10:],
+                           "message": "a cross-build pair has word F1 under 0.50 and no LoC text to score it "
+                                      "against; nobody is held. A second one in the host's window of "
+                                      f"{NATIVE_SPOT_WINDOW} pairs holds its feed"})
     if spot.get("pair_log_failing"):
         alerts.append({"code": "native_spot_pair_log_failing", "app": NATIVE_APP_NAME, **spot["pair_log_failing"],
                        "message": "the pair store (native-spot-pairs.jsonl in the state directory) can't take "
@@ -3570,6 +3778,13 @@ def native_spot_alerts(config, state):
                        "message": "pages whose cross-build pair was outside the limits and whose third reading "
                                   "did not settle them: neither reading is imported, and each keeps its current "
                                   "text"})
+    first_wins = sorted(job for job, gated in spot.get("gated", {}).items() if gated["phase"] == "first_wins")
+    if first_wins:
+        alerts.append({"code": "native_spot_first_reading_wins", "app": NATIVE_APP_NAME, "pages": len(first_wins),
+                       "jobs": first_wins[:5],
+                       "message": "pages whose third reading agreed with the first replay only: its reading is the "
+                                  "right one, but the collect path imports only a job's own result, so each page "
+                                  "keeps its current text until the first replay's reading is imported by hand"})
     if waiting:
         alerts.append({"code": "native_spot_third_reading_waiting", "app": NATIVE_APP_NAME, "pages": len(waiting),
                        "jobs": waiting[:5],
@@ -3603,6 +3818,7 @@ def native_spot_summary(config, state, slots, now, active=None, step=None):
             "gated": dict(sorted(collections.Counter(g["phase"] for g in spot.get("gated", {}).values()).items())),
             "window": {host: {"pairs": len(rows), "outside": sum(r["status"] == "outside" for r in rows)}
                        for host, rows in sorted(spot.get("window", {}).items())},
+            "loc_queue": len(spot.get("loc_queue", {})), "wrong_tally": spot.get("wrong_tally"),
             "counts": spot.get("counts", {}), "failing": spot.get("failing"),
             "lock_busy": spot.get("lock_busy"), "step": step}
 
@@ -3869,7 +4085,8 @@ def container_spot_summary(config, state, step=None):
 def tick(config, state, transport, persist, now=None, *, drain=False, dead_letter_failed=False,
          low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None,
          refill_cap=None, other_app_budget=None, sibling_archived=None, sibling_claims=None,
-         resume_native=False, release_spot_hold=None, release_container_hold=None, pair_log=None):
+         resume_native=False, release_spot_hold=None, release_container_hold=None, pair_log=None,
+         resolution_log=None, loc_text=None):
     if config.get("app") == SURYA_APP_NAME:
         require(refill_cap is None, "--refill-cap is for OCR plans")
         require(other_app_budget is None, "--other-app-budget is for OCR plans")
@@ -4460,6 +4677,15 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # The state has the pairs (queued) before the store does, so a stop in between loses none.
         persist()
         native_spot_flush_pairs(state, pair_log, now)
+        native_spot_flush_pairs(state, resolution_log, now, "resolution_log")
+        persist()
+        try:
+            native_spot_score_low(config, state, loc_text, now)
+        except Exception as error:
+            # LoC's text is the scoring's, never the tick's: what is queued is scored on a later tick.
+            _spot(state)["loc_failing"] = {"at": int(now), "reason": f"{type(error).__name__}: {error}"[:300]}
+        else:
+            _spot(state).pop("loc_failing", None)
         persist()
         native_slots = native_spot_slots(config, state, native_room, now, spot_active)
 
@@ -4867,6 +5093,9 @@ def main(argv=None):
             tick_kwargs = {"drain": args.drain, "dead_letter_failed": args.dead_letter_failed}
             if config.get("app") == NATIVE_APP_NAME and NATIVE_SPOT_KEY in config:
                 tick_kwargs["pair_log"] = PairStore(args.state_dir / NATIVE_SPOT_PAIR_LOG).append
+                tick_kwargs["resolution_log"] = PairStore(args.state_dir / NATIVE_SPOT_RESOLUTION_LOG,
+                                                          resolution_key).append
+                tick_kwargs["loc_text"] = loc_page_text
             if args.resume_native:
                 tick_kwargs["resume_native"] = True
             if args.release_native_spot_hold is not None:
