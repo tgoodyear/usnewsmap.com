@@ -575,6 +575,7 @@ fn kind(e: &ApiError) -> &'static str {
         ApiError::Unsupported(_) => "unsupported",
         ApiError::NotFound(_) => "not_found",
         ApiError::TooBroad(_) => "too_broad",
+        ApiError::PageTooLarge(_) => "page_too_large",
         ApiError::Timeout => "timeout",
         ApiError::Busy => "busy",
         ApiError::Backend(_) => "backend",

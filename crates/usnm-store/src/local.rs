@@ -413,6 +413,34 @@ impl ObjectStore for LocalStore {
         }
     }
 
+    async fn list_stem(&self, stem: &str) -> Result<Vec<String>, StoreError> {
+        validate_path(stem)?;
+        let (dir, name) = stem.rsplit_once('/').unwrap_or(("", stem));
+        let mut out = Vec::new();
+        let read = self.root.join(dir);
+        let mut entries = match tokio::fs::read_dir(&read).await {
+            Ok(e) => e,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(out),
+            Err(e) => return Err(io(&read, e)),
+        };
+        while let Some(entry) = entries.next_entry().await.map_err(|e| io(&read, e))? {
+            let file = entry.file_name().to_string_lossy().into_owned();
+            let path = if dir.is_empty() {
+                file.clone()
+            } else {
+                format!("{dir}/{file}")
+            };
+            if file.starts_with(name)
+                && validate_path(&path).is_ok()
+                && !entry.file_type().await.map_err(|e| io(&read, e))?.is_dir()
+            {
+                out.push(path);
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
     async fn list_info(&self, prefix: &str) -> Result<Vec<ObjectInfo>, StoreError> {
         let mut out = Vec::new();
         for path in self.list(prefix).await? {
@@ -547,6 +575,24 @@ impl ObjectStore for LocalStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn list_stem_matches_a_name_prefix_not_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalStore::new(dir.path());
+        for name in ["a_seq-3.n1.1.xml", "a_seq-3.n2.2.xml", "a_seq-30.n1.1.xml"] {
+            store
+                .put_new(&format!("alto/{name}"), b"x".to_vec(), "text/xml")
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            store.list_stem("alto/a_seq-3.").await.unwrap(),
+            ["alto/a_seq-3.n1.1.xml", "alto/a_seq-3.n2.2.xml"]
+        );
+        assert!(store.list_stem("alto/b.").await.unwrap().is_empty());
+        assert!(store.list_stem("nodir/a.").await.unwrap().is_empty());
+    }
 
     #[test]
     fn concurrent_first_writes_recover_removed_initialization_markers() {

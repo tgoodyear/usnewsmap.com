@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#">
+  <Description>
+    <MeasurementUnit>pixel</MeasurementUnit>
+    <sourceImageInformation>
+      <fileName>fixture.jp2</fileName>
+    </sourceImageInformation>
+  </Description>
+  <Layout>
+    <Page ID="P1" PHYSICAL_IMG_NR="1" WIDTH="1000" HEIGHT="1400">
+      <PrintSpace HPOS="0" VPOS="0" WIDTH="1000" HEIGHT="1400">
+        <TextBlock ID="TB0" HPOS="100" VPOS="100" WIDTH="800" HEIGHT="140">
+          <TextLine ID="TL0" HPOS="100" VPOS="100" WIDTH="800" HEIGHT="60">
+            <String ID="ST0" HPOS="100" VPOS="100" WIDTH="300" HEIGHT="60" CONTENT="Fixture" WC="0.93"/>
+            <SP WIDTH="20"/>
+            <String ID="ST1" HPOS="420" VPOS="100" WIDTH="480" HEIGHT="60" CONTENT="Gazette" WC="0.5"/>
+          </TextLine>
+          <TextLine ID="TL1" HPOS="100" VPOS="180" WIDTH="400" HEIGHT="60">
+            <String ID="ST2" HPOS="100" VPOS="180" WIDTH="400" HEIGHT="60" CONTENT="gold"/>
+          </TextLine>
+        </TextBlock>
+        <Illustration ID="IL1" HPOS="100" VPOS="300" WIDTH="800" HEIGHT="400"/>
+        <TextBlock ID="TB2" HPOS="100" VPOS="800" WIDTH="800" HEIGHT="60">
+          <TextLine ID="TL2" HPOS="100" VPOS="800" WIDTH="800" HEIGHT="60">
+            <String ID="ST3" HPOS="100" VPOS="800" WIDTH="800" HEIGHT="60" CONTENT="silver" WC="1"/>
+          </TextLine>
+        </TextBlock>
+      </PrintSpace>
+    </Page>
+  </Layout>
+</alto>
