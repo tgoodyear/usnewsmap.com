@@ -118,6 +118,9 @@ if [ "$(stat -c %u "$SRV/cache" 2> /dev/null || true)" != "$CACHE_UID" ]; then
   run chown "$CACHE_UID:$CACHE_UID" "$SRV/cache"
 fi
 run chmod 750 "$SRV/cache"
+# The mount point for the OCR ALTO copy, which the API unit binds in; the
+# host's bind mount covers it, so nothing here changes its owner or mode.
+run mkdir -p "$R/srv/usnm-lake/ocr-local"
 run mkdir -p "$SRV/sitemap-state"
 run chown "$CACHE_UID:$CACHE_UID" "$SRV/sitemap-state"
 run chmod 750 "$SRV/sitemap-state"
