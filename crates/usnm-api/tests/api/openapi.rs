@@ -13,15 +13,13 @@ use serde_json::{json, Value};
 use usnm_api::{app, v1_routes, AppState};
 
 use crate::american_stories::{american_stories_state, original_only_phrase, original_text_state};
-use crate::common::{config, fixture_backend, get, header_str, ja_state, refdata};
+use crate::common::{
+    config, fixture_backend, get, header_str, ja_state, layout_state, refdata, LAYOUT_DOC,
+};
 use crate::congress::congress_state;
 
 async fn fixture() -> Arc<AppState> {
-    Arc::new(AppState::new(
-        config(),
-        Arc::new(fixture_backend()),
-        refdata().await,
-    ))
+    layout_state().await
 }
 
 async fn document(s: &Arc<AppState>) -> Value {
@@ -43,6 +41,9 @@ async fn document(s: &Arc<AppState>) -> Value {
 /// The documented route a request goes to.
 fn template(uri: &str) -> String {
     let path = uri.split('?').next().unwrap();
+    if path.starts_with("/v1/pages/") && path.ends_with("/layout") {
+        return "/v1/pages/{doc_id}/layout".into();
+    }
     match path.strip_prefix("/v1/titles/") {
         Some(_) => "/v1/titles/{lccn}".into(),
         None => path.into(),
@@ -73,7 +74,9 @@ async fn the_document_names_every_public_route_and_no_other() {
         let ops: Vec<&String> = item.as_object().unwrap().keys().collect();
         assert_eq!(ops, ["get"], "{path}");
         // Answered by the route, not the fallback's `no such endpoint`.
-        let uri = path.replace("{lccn}", "sn99000001");
+        let uri = path
+            .replace("{lccn}", "sn99000001")
+            .replace("{doc_id}", LAYOUT_DOC);
         let (status, _, body) = get(&s, &uri).await;
         assert_ne!(status, StatusCode::METHOD_NOT_ALLOWED, "{uri}");
         assert_ne!(body["detail"], "no such endpoint", "{uri}");
@@ -110,7 +113,9 @@ async fn each_route_documents_the_parameters_its_handler_accepts() {
     let doc = document(&s).await;
     for (path, item) in doc["paths"].as_object().unwrap() {
         let op = &item["get"];
-        let base = path.replace("{lccn}", "sn99000001");
+        let base = path
+            .replace("{lccn}", "sn99000001")
+            .replace("{doc_id}", LAYOUT_DOC);
         let names: Vec<&str> = op["parameters"]
             .as_array()
             .map(|ps| {
@@ -190,6 +195,11 @@ async fn exchanges() -> Vec<(Arc<AppState>, Vec<String>)> {
         "/v1/days?q=gold&place=P00001,P00006",
         "/v1/days?q=gold&place=P99999",
         "/v1/days?q=gold",
+        "/v1/pages/sn99000001_1896-05-04_ed-1_seq-1/layout",
+        "/v1/pages/loc:sn99000001_1896-05-04_ed-1_seq-1/layout",
+        "/v1/pages/sn99000001_1896-05-04_ed-1_seq-2/layout",
+        "/v1/pages/ghn:sn99000001_1896-05-04_ed-1_seq-1/layout",
+        "/v1/pages/not-a-page/layout",
         "/v1/coverage",
         "/v1/coverage?from=1896-01-01&to=1896-12-31&bucket=month&state=IL&lang=eng",
         "/v1/coverage?from=1896",

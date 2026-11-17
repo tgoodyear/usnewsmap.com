@@ -242,6 +242,9 @@ pub struct AppState {
     /// Page ids from qualifying hit responses, for on-prem OCR. `None`
     /// disables the request path.
     pub ocr_requests: Option<Arc<ocr_requests::OcrRequests>>,
+    /// The curated store, read for `/v1/pages/{doc_id}/layout`. `None`
+    /// makes every page's layout a 404.
+    pub alto: Option<Arc<dyn ObjectStore>>,
     /// `/v1/openapi.json`'s body, built on its first request.
     pub(crate) openapi: std::sync::OnceLock<Arc<Vec<u8>>>,
     pub(crate) sitemap: site::sitemap::Service,
@@ -289,6 +292,7 @@ impl AppState {
             warm_ups: WarmUps::default(),
             search_log: None,
             ocr_requests: None,
+            alto: None,
             openapi: std::sync::OnceLock::new(),
             sitemap: site::sitemap::Service::default(),
             previews: site::social::Service::default(),
@@ -308,6 +312,12 @@ impl AppState {
 
     pub fn with_ocr_requests(mut self, requests: Arc<ocr_requests::OcrRequests>) -> Self {
         self.ocr_requests = Some(requests);
+        self
+    }
+
+    /// Serve page layouts (`/v1/pages/{doc_id}/layout`) from the ALTO in `store`.
+    pub fn with_alto_store(mut self, store: Arc<dyn ObjectStore>) -> Self {
+        self.alto = Some(store);
         self
     }
 
@@ -345,6 +355,7 @@ pub fn v1_routes() -> Vec<(&'static str, MethodRouter<Arc<AppState>>)> {
         ("/status", get(routes::status)),
         ("/versions", get(routes::versions)),
         ("/openapi.json", get(openapi::openapi)),
+        ("/pages/{doc_id}/layout", get(routes::layout)),
         ("/beacon", post(routes::beacon)),
         ("/search-report", post(routes::search_report)),
     ]

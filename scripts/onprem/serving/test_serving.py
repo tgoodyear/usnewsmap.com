@@ -786,9 +786,12 @@ class Static(unittest.TestCase):
         self.assertEqual(sorted(re.findall(r'"([^"]+)"', match.group(1))),
                          ["/api/v1/aggregate", "/api/v1/hits", "/api/v1/search-report",
                           "/mcp", "/mcp/", "/v1/aggregate", "/v1/hits", "/v1/search-report"])
+        # The page layout's path has the page id in it, so it is a pattern beside the set (#2026).
+        self.assertIn(r'export const LIMITED_PATTERN = /^(?:\/api)?\/v1\/pages\/[^/]+\/layout$/;', worker)
         with open(os.path.join(ROOT, "crates", "usnm-api", "src", "lib.rs")) as f:
             api = f.read()
         for route in ('("/aggregate", get(routes::aggregate))', '("/hits", get(routes::hits))',
+                      '("/pages/{doc_id}/layout", get(routes::layout))',
                       '("/search-report", post(routes::search_report))',
                       '.nest("/v1", v1.clone())', '.nest("/api/v1", v1)'):
             self.assertIn(route, api)

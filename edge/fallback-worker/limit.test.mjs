@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import worker, { LIMITED_PATHS, clientKey } from "./worker.mjs";
+import worker, { LIMITED_PATHS, LIMITED_PATTERN, clientKey } from "./worker.mjs";
 
 const SITE = "https://usnewsmap.com";
 const IP = "203.0.113.7";
@@ -87,6 +87,25 @@ test("every search and MCP path counts, under both prefixes and every method but
     const preflight = await run(search(path, { method: "OPTIONS" }), { SEARCH_LIMIT: limit });
     assert.equal(preflight.response.status, 200);
     assert.deepEqual(limit.keys, []);
+  }
+});
+
+test("a page's layout counts under both prefixes, whatever the page id", async () => {
+  assert.ok(LIMITED_PATTERN.test("/v1/pages/loc:sn99000001_1896-05-04_ed-1_seq-1/layout"));
+  for (const path of [
+    "/v1/pages/sn99000001_1896-05-04_ed-1_seq-1/layout",
+    "/api/v1/pages/loc:sn99000001_1896-05-04_ed-1_seq-1/layout",
+    "/v1/pages/loc%3Asn99000001_1896-05-04_ed-1_seq-1/layout",
+  ]) {
+    const { response, calls } = await run(search(path), { SEARCH_LIMIT: binding(0) });
+    assert.equal(response.status, 429, path);
+    assert.deepEqual(calls, []);
+  }
+  for (const path of ["/v1/pages/layout", "/v1/pages//layout", "/v1/pages/a/b/layout", "/v1/pages/a/layout/x"]) {
+    const limit = binding(0);
+    const { response } = await run(search(path), { SEARCH_LIMIT: limit });
+    assert.equal(response.status, 200, path);
+    assert.deepEqual(limit.keys, [], path);
   }
 });
 

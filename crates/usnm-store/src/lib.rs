@@ -152,6 +152,17 @@ pub trait ObjectStore: Send + Sync + std::fmt::Debug {
     /// without a trailing `/`), sorted. Only the search log (`usnm-api`) uses this.
     async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError>;
 
+    /// The paths of the objects whose path starts with `stem`, sorted: a
+    /// name prefix, not a directory (`list` takes a directory). One listing
+    /// request on Blob Storage, so it finds an object whose name ends in
+    /// parts the caller doesn't know (`ocr-local/alto/<doc_id>.`) without
+    /// reading the directory. `stem` is a valid path whose last segment may
+    /// be cut short.
+    async fn list_stem(&self, stem: &str) -> Result<Vec<String>, StoreError> {
+        let _ = stem;
+        Err(unsupported("list_stem"))
+    }
+
     /// The objects under `prefix` with their size, ETag and creation time,
     /// sorted by path. The OCR pickup (`usnm-ingest ocr-sync`) checks sizes
     /// before it reads anything.

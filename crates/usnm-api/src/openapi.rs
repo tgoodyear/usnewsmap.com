@@ -209,6 +209,22 @@ fn ops(config: &Config, gen: &mut SchemaGenerator) -> Vec<Op> {
             cache: day,
         },
         Op {
+            path: "/pages/{doc_id}/layout",
+            id: "page_layout",
+            summary: "A page's words and their boxes",
+            description: "The words of a page that we read ourselves, each with its box in pixels of \
+                          the scan's IIIF full image, grouped in lines in reading order. `doc_id` is \
+                          a LoC page id, bare (`sn85055101_1917-04-03_ed-1_seq-3`) or source-qualified \
+                          (`loc:sn85055101_1917-04-03_ed-1_seq-3`). A word's id is `{stamp}:{b}:{l}:{i}`. \
+                          A page with no stored reading of ours is a 404; the route doesn't \
+                          fetch LoC's text. Not version-scoped: the `ETag` is the file's node and stamp.",
+            kind: Kind::Plain,
+            keys: Vec::new(),
+            body: spec::layout(gen).to_value(),
+            errors: &[400, 404, 422],
+            cache: "public, max-age=86400",
+        },
+        Op {
             path: "/status",
             id: "status",
             summary: "The dataset and the ingest pipeline",
@@ -509,12 +525,15 @@ fn responses(problem_schema: &Value) -> Value {
         },
         "BadRequest": problem(
             "A parameter is invalid, unknown or repeated (`/errors/bad-parameter`), or `q` doesn't \
-             parse (`/errors/query-syntax`, with the `position`)."
+             parse (`/errors/query-syntax`, with the `position`), or a page id isn't one."
         ),
-        "NotFound": problem("An unknown place or newspaper (`/errors/not-found`)."),
+        "NotFound": problem(
+            "An unknown place or newspaper, or a page with no stored layout (`/errors/not-found`)."
+        ),
         "Unprocessable": problem(
-            "An option this version or backend doesn't support (`/errors/unsupported`), or a \
-             search too broad to answer (`/errors/query-too-broad`)."
+            "An option this version or backend doesn't support (`/errors/unsupported`), a \
+             search too broad to answer (`/errors/query-too-broad`), or a page with more words \
+             than a layout holds (`/errors/page-too-large`)."
         ),
         "RateLimited": with_retry_after(problem(
             "Too many requests from this client (`/errors/rate-limited`)."
@@ -540,11 +559,30 @@ fn operation(op: &Op, config: &Config) -> Value {
             }),
         );
     }
+    if op.path == "/pages/{doc_id}/layout" {
+        parameters.insert(
+            0,
+            json!({
+                "name": "doc_id",
+                "in": "path",
+                "required": true,
+                "description": "A LoC page id: `{lccn}_{yyyy-mm-dd}_ed-{n}_seq-{n}`, with or without the \
+                                `loc:` prefix. Another source's id is a 404, a malformed one a 400.",
+                "schema": { "type": "string", "maxLength": 164 },
+            }),
+        );
+    }
     let mut ok_headers = Map::new();
     ok_headers.insert(
         "Cache-Control".into(),
         json!({ "description": op.cache, "schema": { "type": "string" } }),
     );
+    if op.path == "/pages/{doc_id}/layout" {
+        ok_headers.insert(
+            "ETag".into(),
+            json!({ "description": "`\"{node}.{stamp}\"` of the ALTO file served.", "schema": { "type": "string" } }),
+        );
+    }
     if op.kind == Kind::Versioned {
         ok_headers.insert(
             "ETag".into(),
@@ -565,6 +603,18 @@ fn operation(op: &Op, config: &Config) -> Value {
         }),
     );
     let refer = |name: &str| json!({ "$ref": format!("#/components/responses/{name}") });
+    if op.path == "/pages/{doc_id}/layout" {
+        responses.insert(
+            "304".into(),
+            json!({
+                "description": "`If-None-Match` names the file's `ETag`.",
+                "headers": {
+                    "Cache-Control": { "description": op.cache, "schema": { "type": "string" } },
+                    "ETag": { "schema": { "type": "string" } },
+                },
+            }),
+        );
+    }
     if op.kind == Kind::Versioned {
         responses.insert("202".into(), refer("Computing"));
         responses.insert("307".into(), refer("OtherVersion"));
@@ -572,6 +622,7 @@ fn operation(op: &Op, config: &Config) -> Value {
     }
     for code in op.errors {
         let name = match code {
+            400 => "BadRequest",
             404 => "NotFound",
             422 => "Unprocessable",
             other => panic!("no response for {other}"),

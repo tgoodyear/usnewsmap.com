@@ -32,6 +32,23 @@ pub(crate) fn load_docs(index_id: &str) -> Vec<PageDoc> {
         .collect()
 }
 
+/// The synthetic curated store: one page's ALTO under `ocr-local/alto/`.
+pub(crate) fn curated_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/curated")
+}
+
+/// The page whose ALTO the curated fixture holds, as a bare id.
+pub(crate) const LAYOUT_DOC: &str = "sn99000001_1896-05-04_ed-1_seq-1";
+
+/// The fixture state with the curated fixture store attached, so page
+/// layouts (`/v1/pages/{doc_id}/layout`) are served.
+pub(crate) async fn layout_state() -> Arc<AppState> {
+    Arc::new(
+        AppState::new(config(), Arc::new(fixture_backend()), refdata().await)
+            .with_alto_store(Arc::new(LocalStore::new(curated_dir()))),
+    )
+}
+
 pub(crate) fn config() -> Config {
     let mut c = Config::from_lookup(|_| None).unwrap();
     c.data_dir = data_dir();
