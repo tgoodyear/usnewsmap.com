@@ -8,7 +8,11 @@
 # running tick renews (#1698); this closes the gap until then.
 #
 #   break-stale-lease.sh [--account NAME] [--container NAME] [--blob NAME]
-#                        [--lock FILE] [--attempts N] [--delay SECONDS]
+#                        [--lock FILE] [--attempts N] [--delay SECONDS] [--plan-leases]
+#
+# --plan-leases (#1836): also every plan's own lease, scheduler/plans/<plan>/controller.lock, that
+# is still leased; plans that tick side by side (batch_scheduler.py --plan-scope) take those. Each
+# tick holds the tick lock shared and this script takes it exclusively, so none is live.
 #
 # Exits 0 when the blob is not leased or the lease was broken, 1 when a batch_scheduler process
 # is running (nothing is touched) or the break still fails after every attempt. Azure sign-in
@@ -20,9 +24,11 @@ BLOB=scheduler/controller.lock
 LOCK=/run/usnm-boinc-controller-tick.lock
 ATTEMPTS=16
 DELAY=15
+PLAN_LEASES=false
 die() { echo "error: $*" >&2; exit 2; }
 log() { echo "break-stale-lease: $*"; }
 while [ $# -gt 0 ]; do
+  if [ "$1" = --plan-leases ]; then PLAN_LEASES=true; shift; continue; fi
   [ $# -ge 2 ] || die "$1 needs a value"
   case $1 in
     --account) ACCOUNT=$2 ;;
@@ -49,21 +55,48 @@ if pgrep -f batch_scheduler >/dev/null; then
   exit 1
 fi
 
+# break_lease BLOB: 0 when it is not leased or was broken, 1 when every attempt failed.
+break_lease() {
+  local blob=$1 attempt out rc
+  for attempt in $(seq 1 "$ATTEMPTS"); do
+    out=$(az storage blob lease break --auth-mode login --account-name "$ACCOUNT" \
+      --container-name "$CONTAINER" --blob-name "$blob" --lease-break-period 0 2>&1)
+    rc=$?
+    if [ $rc -eq 0 ]; then
+      log "broke the lease on $CONTAINER/$blob (attempt $attempt)"
+      return 0
+    fi
+    # Azure answers 409 LeaseNotPresentWithLeaseOperation for an unleased blob: nothing to do.
+    if grep -q -E "LeaseNotPresent|There is currently no lease" <<<"$out"; then
+      log "no lease on $CONTAINER/$blob; nothing to break (attempt $attempt)"
+      return 0
+    fi
+    log "attempt $attempt of $ATTEMPTS failed: $(tr '\n' ' ' <<<"$out" | cut -c1-300)"
+    [ "$attempt" -lt "$ATTEMPTS" ] && sleep "$DELAY"
+  done
+  log "gave up on $CONTAINER/$blob; the lease may still be held (#1698)"
+  return 1
+}
+
+break_lease "$BLOB" || exit 1
+$PLAN_LEASES || exit 0
+names=""
+listed=false
 for attempt in $(seq 1 "$ATTEMPTS"); do
-  out=$(az storage blob lease break --auth-mode login --account-name "$ACCOUNT" \
-    --container-name "$CONTAINER" --blob-name "$BLOB" --lease-break-period 0 2>&1)
-  rc=$?
-  if [ $rc -eq 0 ]; then
-    log "broke the lease on $CONTAINER/$BLOB (attempt $attempt)"
-    exit 0
+  if names=$(az storage blob list --auth-mode login --account-name "$ACCOUNT" \
+    --container-name "$CONTAINER" --prefix scheduler/plans/ --num-results "*" \
+    --query "[?ends_with(name, '/controller.lock') && properties.lease.state == 'leased'].name" -o tsv 2>&1); then
+    listed=true
+    break
   fi
-  # Azure answers 409 LeaseNotPresentWithLeaseOperation for an unleased blob: nothing to do.
-  if grep -q -E "LeaseNotPresent|There is currently no lease" <<<"$out"; then
-    log "no lease on $CONTAINER/$BLOB; nothing to break (attempt $attempt)"
-    exit 0
-  fi
-  log "attempt $attempt of $ATTEMPTS failed: $(tr '\n' ' ' <<<"$out" | cut -c1-300)"
+  log "listing the plans' leases, attempt $attempt of $ATTEMPTS failed: $(tr '\n' ' ' <<<"$names" | cut -c1-300)"
   [ "$attempt" -lt "$ATTEMPTS" ] && sleep "$DELAY"
 done
-log "gave up on $CONTAINER/$BLOB; the lease may still be held (#1698)"
-exit 1
+$listed || { log "gave up listing the plans' leases; they may still be held (#1836)"; exit 1; }
+failed=0
+while IFS= read -r name; do
+  [ -n "$name" ] || continue
+  [[ $name =~ ^scheduler/plans/[a-z0-9][a-z0-9-]{0,62}/controller\.lock$ ]] || { log "skipped unexpected blob $name"; continue; }
+  break_lease "$name" || failed=1
+done <<<"$names"
+exit "$failed"
