@@ -217,7 +217,7 @@ fn ops(config: &Config, gen: &mut SchemaGenerator) -> Vec<Op> {
                           a LoC page id, bare (`sn85055101_1917-04-03_ed-1_seq-3`) or source-qualified \
                           (`loc:sn85055101_1917-04-03_ed-1_seq-3`). A word's id is `{stamp}:{b}:{l}:{i}`. \
                           A page with no stored reading of ours is a 404; the route doesn't \
-                          fetch LoC's text. Not version-scoped: the `ETag` is the file's node and stamp.",
+                          fetch LoC's text. Not version-scoped, but the `ETag` is the file's node, its stamp and the served index version (the engine comes from it).",
             kind: Kind::Plain,
             keys: Vec::new(),
             body: spec::layout(gen).to_value(),

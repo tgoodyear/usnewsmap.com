@@ -8,7 +8,8 @@
 //! single request, with no read of the directory), and the newest stamp is
 //! the one served. Everything after the listing is keyed on that blob's
 //! path, which never changes content, so the parsed body is cached by path
-//! and the ETag is the node and stamp.
+//! and the served version (the engine comes from it), and the ETag is the
+//! node, stamp and version.
 
 use std::sync::Arc;
 
@@ -209,11 +210,15 @@ pub async fn layout(
     let Some((path, node, stamp)) = newest(&paths, &doc_id) else {
         return Err(not_found());
     };
-    let etag = format!("\"{node}.{stamp}\"");
+    // One snapshot for the whole request: the engine below comes from it,
+    // so its version is part of both identities.
+    let snap = state.snapshot.load_full();
+    let version = snap.refdata.version();
+    let etag = format!("\"{node}.{stamp}.{version}\"");
     if not_modified(&request_headers, &etag) {
         return Ok(with_cache(StatusCode::NOT_MODIFIED.into_response(), &etag));
     }
-    let key = format!("layout|{path}");
+    let key = format!("layout|{version}|{path}");
     let body = match state.cache.get(&key).await {
         Some(body) => body,
         None => {
@@ -222,7 +227,6 @@ pub async fn layout(
                 return Err(not_found());
             };
             let engine = {
-                let snap = state.snapshot.load();
                 let ocr = &snap.refdata.ocr_local;
                 ocr.get(&doc_id)
                     .and_then(|e| ocr.engine(e))

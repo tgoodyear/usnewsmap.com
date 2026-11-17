@@ -16,6 +16,8 @@ use crate::common::{
 };
 
 const STAMP: &str = "20261101T120000Z";
+/// The fixture reference data's index version, the last part of every ETag.
+const VERSION: &str = "fixture-v1";
 
 fn uri(doc: &str) -> String {
     format!("/v1/pages/{doc}/layout")
@@ -59,7 +61,7 @@ async fn a_page_with_stored_alto_has_its_words_and_boxes() {
     );
     assert_eq!(
         header_str(&headers, header::ETAG),
-        format!("\"node1.{STAMP}\"")
+        format!("\"node1.{STAMP}.{VERSION}\"")
     );
     assert_eq!(
         body,
@@ -175,14 +177,14 @@ async fn the_newest_stamp_is_served_and_old_ones_are_left_alone() {
     assert_eq!(body["lines"][0]["words"][0]["t"], "Reread");
     assert_eq!(
         header_str(&headers, header::ETAG),
-        "\"node1.20270101T000000Z\""
+        format!("\"node1.20270101T000000Z.{VERSION}\"")
     );
 }
 
 #[tokio::test]
 async fn the_etag_answers_a_conditional_request_with_a_304() {
     let s = layout_state().await;
-    let etag = format!("\"node1.{STAMP}\"");
+    let etag = format!("\"node1.{STAMP}.{VERSION}\"");
     let (status, headers, bytes) = raw_bytes(&s, &uri(LAYOUT_DOC), Some(&etag)).await;
     assert_eq!(status, StatusCode::NOT_MODIFIED);
     assert!(bytes.is_empty());
@@ -218,6 +220,88 @@ async fn the_engine_is_the_one_the_served_version_holds() {
     let (status, _, body) = get(&s, &uri(LAYOUT_DOC)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["engine"], "usnm-tesseract");
+}
+
+#[tokio::test]
+async fn a_new_version_gets_its_own_cache_entry_and_etag() {
+    use usnm_api::Snapshot;
+    use usnm_state::ocr_local::{doc_hash, Engine, Entry, OcrLocalPages};
+    let s = layout_state().await;
+    let (_, headers, body) = get(&s, &uri(LAYOUT_DOC)).await;
+    assert_eq!(body["engine"], Value::Null);
+    let old = header_str(&headers, header::ETAG);
+    // A reload publishes the page's OCR under a new version, with the ALTO
+    // file unchanged.
+    let mut rd = refdata().await;
+    rd.current.index_version = "fixture-v2".into();
+    rd.ocr_local = OcrLocalPages {
+        engines: vec![Engine {
+            source: "usnm-tesseract".into(),
+            engine: "tesseract/5 fixture".into(),
+        }],
+        entries: vec![Entry {
+            hash: doc_hash(LAYOUT_DOC),
+            engine: 0,
+            batch: 0,
+        }],
+    };
+    s.snapshot.store(Arc::new(Snapshot {
+        refdata: rd,
+        backend: Arc::new(fixture_backend()),
+        congress_dropped: false,
+    }));
+    // The old ETag no longer matches, and the body has the engine.
+    let (status, headers, bytes) = raw_bytes(&s, &uri(LAYOUT_DOC), Some(old)).await;
+    assert_eq!(status, StatusCode::OK);
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["engine"], "usnm-tesseract");
+    let new = header_str(&headers, header::ETAG);
+    assert_ne!(new, old);
+    assert_eq!(new, format!("\"node1.{STAMP}.fixture-v2\""));
+    let (status, ..) = raw_bytes(&s, &uri(LAYOUT_DOC), Some(new)).await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+}
+
+#[tokio::test]
+async fn a_line_level_stored_file_reports_its_granularity() {
+    use usnm_alto::{Block, BlockKind, Description, Granularity, Line, Page, Rect, Step, Word};
+    let line = Rect::new(10.0, 10.0, 90.0, 30.0);
+    let word = |t: &str| Word {
+        rect: line,
+        text: t.into(),
+        conf: None,
+    };
+    let page = Page {
+        width: 100.0,
+        height: 100.0,
+        granularity: Granularity::Line,
+        blocks: vec![Block {
+            kind: BlockKind::Text,
+            rect: line,
+            lang: None,
+            lines: vec![Line {
+                rect: line,
+                words: vec![word("one"), word("two")],
+                hyphen: None,
+            }],
+        }],
+    };
+    let desc = Description {
+        ocr: Step {
+            settings: vec![("granularity".into(), "line".into())],
+            ..Step::default()
+        },
+        ..Description::default()
+    };
+    let xml = usnm_alto::write(&page, &desc, "eng");
+    let s = state_over(
+        "line-level",
+        &[(format!("{LAYOUT_DOC}.node1.{STAMP}.xml"), xml.into_bytes())],
+    )
+    .await;
+    let (status, _, body) = get(&s, &uri(LAYOUT_DOC)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["granularity"], "line");
 }
 
 #[tokio::test]
