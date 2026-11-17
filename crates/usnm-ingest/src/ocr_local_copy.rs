@@ -417,24 +417,37 @@ async fn copy_with(
     };
     let total = listed.len();
     let mut done = 0usize;
-    let mut runs = futures::stream::iter(listed.chunks(RUN))
-        .map(|run| check_run(source, o, &previous, &root, sync, run))
-        .buffered(o.jobs.max(1));
+    let mut parts: Vec<Option<Report>> = vec![None; total.div_ceil(RUN)];
+    // Unordered, so a slow run never holds a finished one back or leaves a slot idle; the runs
+    // are merged in listing order below, so the report's lists are the same as one at a time.
+    let mut runs = futures::stream::iter(listed.chunks(RUN).enumerate())
+        .map(|(i, run)| async move {
+            check_run(source, o, &previous, &root, sync, run)
+                .await
+                .map(|(part, n)| (i, part, n))
+        })
+        .buffer_unordered(o.jobs.max(1));
+    let (mut copied, mut missing, mut mismatched) = (0, 0, 0);
     while let Some(part) = runs.next().await {
-        let (part, n) = part?;
+        let (i, part, n) = part?;
         done += n;
-        report.merge(part);
+        copied += part.copied_this_run;
+        missing += part.missing_objects;
+        mismatched += part.mismatched_objects;
+        parts[i] = Some(part);
         tracing::info!(
             done,
             total,
-            copied_objects = report.copied_objects,
-            copied_this_run = report.copied_this_run,
-            missing = report.missing_objects,
-            mismatched = report.mismatched_objects,
+            copied_this_run = copied,
+            missing,
+            mismatched,
             "OCR output copy progress"
         );
     }
     drop(runs);
+    for part in parts.into_iter().flatten() {
+        report.merge(part);
+    }
     report.ok = report.overdue_objects == 0;
     let caught_up = report.missing_objects == 0
         && report.mismatched_objects == 0
