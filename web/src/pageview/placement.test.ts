@@ -12,16 +12,19 @@ import {
   percentBox,
   placeWords,
   scaleXFor,
+  viewerSite,
   wordId,
 } from "./placement";
 
 const layout: PageLayout = {
   doc_id: "loc:sn85055101_1917-04-03_ed-1_seq-3",
   engine: "usnm-tesseract",
+  stamp: "20261101T120000Z",
+  node: "n1",
   width: 5000,
   height: 7000,
   granularity: "word",
-  image: { iiif_base: null, full: null },
+  image: null,
   lines: [
     {
       b: 2,
@@ -29,7 +32,7 @@ const layout: PageLayout = {
       rect: [500, 700, 2000, 100],
       words: [
         { i: 0, t: "Liberty", rect: [500, 700, 700, 90], c: 0.93 },
-        { i: 1, t: "bell", rect: [1300, 705, 300, 95] },
+        { i: 1, t: "bell", rect: [1300, 705, 300, 95], c: null },
       ],
     },
     { b: 2, l: 2, rect: [500, 800, 1000, 0], words: [{ i: 0, t: "rung", rect: [500, 800, 500, 80], c: null }] },
@@ -65,6 +68,30 @@ describe("placeWords", () => {
     expect(placeWords(layout).map((w) => w.conf)).toEqual([0.93, null, null]);
   });
 
+  it("keys words by the stamp", () => {
+    expect(placeWords(layout).map((w) => w.id)).toEqual([
+      "20261101T120000Z:2:1:0",
+      "20261101T120000Z:2:1:1",
+      "20261101T120000Z:2:2:0",
+    ]);
+  });
+
+  it("places one span per line, in the line's rect, when boxes are coarser than words", () => {
+    const coarse: PageLayout = {
+      ...layout,
+      granularity: "line",
+      lines: layout.lines.map((l) => ({ ...l, words: l.words.map((w) => ({ ...w, rect: l.rect })) })),
+    };
+    const placed = placeWords(coarse);
+    expect(placed.map((w) => w.text)).toEqual(["Liberty bell", "rung"]);
+    expect(placed.map((w) => w.index)).toEqual([0, 1]);
+    expect(placed[0]!.left).toBeCloseTo(10);
+    expect(placed[0]!.width).toBeCloseTo(40);
+    expect(placed[0]!.fontCqw).toBeCloseTo(fontCqw(100, 5000));
+    expect(placed[0]!.conf).toBe(0.93);
+    expect(placed[1]!.conf).toBeNull();
+  });
+
   it("returns nothing for a page without a size", () => {
     expect(placeWords({ ...layout, width: 0 })).toEqual([]);
   });
@@ -83,9 +110,20 @@ describe("placement helpers", () => {
     expect(scaleXFor(2, 10, 0)).toBe(1);
   });
 
-  it("wordId uses the stamp, else the engine", () => {
-    expect(wordId({ engine: "e", stamp: "20261101" }, 2, 3, 4)).toBe("20261101:2:3:4");
-    expect(wordId({ engine: "e" }, 0, 0, 0)).toBe("e:0:0:0");
+  it("wordId is stamp:block:line:word", () => {
+    expect(wordId({ stamp: "20261101" }, 2, 3, 4)).toBe("20261101:2:3:4");
+  });
+
+  it("names the archive from the viewer link's host", () => {
+    expect(viewerSite("https://www.loc.gov/resource/x/?sp=3")).toEqual({
+      name: "the Library of Congress",
+      host: "www.loc.gov",
+    });
+    expect(viewerSite("https://panewsarchive.psu.edu/lccn/sn1/")).toEqual({
+      name: "Penn State",
+      host: "panewsarchive.psu.edu",
+    });
+    expect(viewerSite("https://example.org/x")).toEqual({ name: "example.org", host: "example.org" });
   });
 
   it("confidenceHue runs red to green", () => {

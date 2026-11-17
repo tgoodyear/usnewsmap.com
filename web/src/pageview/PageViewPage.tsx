@@ -14,7 +14,9 @@ import {
   MAX_ZOOM,
   MIN_ZOOM,
   nextIndex,
+  hasWordBoxes,
   placeWords,
+  viewerSite,
   ZOOM_STEP,
   type PlacedWord,
 } from "./placement";
@@ -43,6 +45,7 @@ export default function PageViewPage({ docId }: { docId: string }) {
     : null;
   const viewer =
     given ?? (scanHost && !(scanHost === "loc.gov" || scanHost.endsWith(".loc.gov")) ? null : locViewerUrl(docId));
+  const site = viewer ? viewerSite(viewer) : null;
   return (
     <div className="app pv-app">
       <header className="topbar">
@@ -57,7 +60,7 @@ export default function PageViewPage({ docId }: { docId: string }) {
               <>
                 {" · "}
                 <a href={viewer} {...ext}>
-                  View page at the Library of Congress
+                  View page at {site?.name}
                 </a>
               </>
             )}
@@ -77,7 +80,7 @@ export default function PageViewPage({ docId }: { docId: string }) {
                   <>
                     You can read it at{" "}
                     <a href={viewer} {...ext}>
-                      the Library of Congress
+                      {site?.name}
                     </a>
                     .
                   </>
@@ -107,7 +110,9 @@ export default function PageViewPage({ docId }: { docId: string }) {
 function Viewer({ layout, docId: urlId, viewer }: { layout: PageLayout; docId: string; viewer: string | null }) {
   // The bare and `loc:` forms are one page: marks and feedback use the id the API returns.
   const docId = layout.doc_id || urlId;
-  const scan = layout.image?.full ?? null;
+  const scan = layout.image?.full || null;
+  const wordLevel = hasWordBoxes(layout);
+  const site = viewer ? viewerSite(viewer) : null;
   const [mode, setMode] = useState<Mode>(scan ? "overlay" : "text");
   const [conf, setConf] = useState(false);
   const [zoom, setZoom] = useState(1);
@@ -147,6 +152,7 @@ function Viewer({ layout, docId: urlId, viewer }: { layout: PageLayout; docId: s
   useEffect(() => {
     // A new layout's buttons are reused by index: drop the last layout's marks first.
     wordsRef.current?.querySelectorAll("[data-verdict]").forEach((n) => n.removeAttribute("data-verdict"));
+    if (!wordLevel) return;
     const known = new Map(words.map((w) => [w.id, w.index]));
     for (const [id, verdict] of Object.entries(marks)) {
       const i = known.get(id);
@@ -155,7 +161,7 @@ function Viewer({ layout, docId: urlId, viewer }: { layout: PageLayout; docId: s
         node?.setAttribute("data-verdict", verdict);
       }
     }
-  }, [marks, words]);
+  }, [marks, words, wordLevel]);
 
   const indexOf = (target: EventTarget | null): number | null => {
     const node = (target as HTMLElement | null)?.closest?.("[data-i]") as HTMLElement | null;
@@ -180,7 +186,7 @@ function Viewer({ layout, docId: urlId, viewer }: { layout: PageLayout; docId: s
 
   const onClick = (e: React.MouseEvent) => {
     const i = indexOf(e.target);
-    if (i === null) return;
+    if (i === null || !wordLevel) return;
     const box = el(i)?.getBoundingClientRect();
     if (box) setPopover({ words, index: i, x: box.left, y: box.bottom });
   };
@@ -254,14 +260,23 @@ function Viewer({ layout, docId: urlId, viewer }: { layout: PageLayout; docId: s
         </p>
       )}
       <p className="pv-hint">
-        {words.length.toLocaleString("en-US")} words read by {layout.engine}. Tab to the page, move between words with
-        the arrow keys, and press Enter on a word to mark it right or wrong.
-        {marked > 0 && ` You have marked ${marked} on this page.`}
-        {viewer && (
+        {wordLevel ? (
+          <>
+            {words.length.toLocaleString("en-US")} words{layout.engine ? ` read by ${layout.engine}` : ""}. Tab to the
+            page, move between words with the arrow keys, and press Enter on a word to mark it right or wrong.
+            {marked > 0 && ` You have marked ${marked} on this page.`}
+          </>
+        ) : (
+          <>
+            {words.length.toLocaleString("en-US")} lines{layout.engine ? ` read by ${layout.engine}` : ""}. This page's
+            OCR has line-level boxes only, so words can't be marked right or wrong.
+          </>
+        )}
+        {viewer && site && (
           <>
             {" "}
             <a href={viewer} {...ext}>
-              Open at loc.gov
+              Open at {site.host || site.name}
             </a>
             .
           </>

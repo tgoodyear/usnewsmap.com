@@ -35,8 +35,8 @@ export interface PlacedWord {
 }
 
 /** `{stamp}:{block}:{line}:{word}`, stable within one ALTO file (#2026). */
-export function wordId(layout: Pick<PageLayout, "engine" | "stamp">, b: number, l: number, i: number): string {
-  return `${layout.stamp || layout.engine}:${b}:${l}:${i}`;
+export function wordId(layout: Pick<PageLayout, "stamp">, b: number, l: number, i: number): string {
+  return `${layout.stamp}:${b}:${l}:${i}`;
 }
 
 /** A rect as percentages of the page. */
@@ -84,11 +84,39 @@ export function canvasMeasure(): Measure {
   return (text) => ctx.measureText(text).width / REF;
 }
 
-/** Every word of the page in reading order (lines as given, words left to right), placed. */
+/** True when words have their own boxes; below that a word's rect is its line's. */
+export function hasWordBoxes(layout: Pick<PageLayout, "granularity">): boolean {
+  return layout.granularity === "word";
+}
+
+/**
+ * Every word of the page in reading order (lines as given, words left to right), placed. When the
+ * boxes are coarser than words, each line is placed once, its words joined with spaces, in the
+ * line's rect: words that share a rect would otherwise be drawn on top of each other.
+ */
 export function placeWords(layout: PageLayout, measure: Measure = roughMeasure): PlacedWord[] {
   const out: PlacedWord[] = [];
   const { width, height } = layout;
   if (!(width > 0) || !(height > 0)) return out;
+  if (!hasWordBoxes(layout)) {
+    for (const line of layout.lines) {
+      if (line.words.length === 0) continue;
+      const text = line.words.map((w) => w.t).join(" ");
+      const box = percentBox(line.rect, width, height);
+      const font = fontCqw(line.rect[3], width);
+      const confs = line.words.map((w) => w.c).filter((c): c is number => typeof c === "number");
+      out.push({
+        index: out.length,
+        id: `${layout.stamp}:${line.b}:${line.l}`,
+        text,
+        ...box,
+        fontCqw: font,
+        scaleX: scaleXFor(measure(text), font, box.width),
+        conf: confs.length ? Math.min(...confs) : null,
+      });
+    }
+    return out;
+  }
   for (const line of layout.lines) {
     for (const word of line.words) {
       out.push(placeWord(layout, line, word, out.length, measure));
@@ -184,6 +212,19 @@ export const ZOOM_STEP = 0.5;
 
 export function clampZoom(z: number): number {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(z * 100) / 100));
+}
+
+/** The archive a viewer link points to, named from its host (the host itself for an unknown one). */
+export function viewerSite(viewer: string): { name: string; host: string } {
+  let host: string;
+  try {
+    host = new URL(viewer).hostname;
+  } catch {
+    return { name: "the archive", host: "" };
+  }
+  if (host === "loc.gov" || host.endsWith(".loc.gov")) return { name: "the Library of Congress", host };
+  if (host === "psu.edu" || host.endsWith(".psu.edu")) return { name: "Penn State", host };
+  return { name: host, host };
 }
 
 /** Hosts a page's viewer link may point to (the sources' own archives). */

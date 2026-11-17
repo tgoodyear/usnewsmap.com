@@ -13,22 +13,25 @@ const SCAN = `data:image/svg+xml,${encodeURIComponent(
 
 const WORDS = ["Liberty", "bell", "rung", "out", "from", "the", "old", "tower", "today"];
 
-function layout(full: string | null = SCAN) {
+function layout(full: string | null = SCAN, granularity = "word", engine: string | null = "usnm-tesseract") {
+  const line = (l: number) => [500, 700 + l * 300, 4000, 200];
   return {
     doc_id: DOC,
-    engine: "usnm-tesseract",
+    engine,
+    stamp: "20261101T120000Z",
+    node: "n1",
     width: 5000,
     height: 7000,
-    granularity: "word",
-    image: { iiif_base: "https://tile.loc.gov/image-services/iiif/example", full },
+    granularity,
+    image: full ? { iiif_base: "https://tile.loc.gov/image-services/iiif/example", full } : null,
     lines: [0, 1, 2].map((l) => ({
       b: 0,
       l,
-      rect: [500, 700 + l * 300, 4000, 200],
+      rect: line(l),
       words: WORDS.slice(l * 3, l * 3 + 3).map((t, i) => ({
         i,
         t,
-        rect: [500 + i * 1300, 700 + l * 300, 1200, 200],
+        rect: granularity === "word" ? [500 + i * 1300, 700 + l * 300, 1200, 200] : line(l),
         c: [0.95, 0.4, 0.7][i],
       })),
     })),
@@ -142,6 +145,30 @@ test("a page without a scan offers text only", async ({ page }) => {
   await expect(page.getByLabel("Text", { exact: true })).toBeChecked();
   await expect(page.getByLabel("Scan", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Text over scan")).toHaveCount(0);
+});
+
+test("a page with null image and null engine still renders, with no scan modes", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await mockLayout(page, layout(null, "word", null));
+  await page.goto(PATH);
+  await expect(wordButtons(page)).toHaveCount(9);
+  await expect(page.getByLabel("Scan", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".pv-hint")).toContainText("9 words.");
+  await expect(page.locator(".pv-hint")).not.toContainText("read by");
+  expect(errors).toEqual([]);
+});
+
+test("line-level boxes draw one span per line and turn word marking off", async ({ page }) => {
+  await mockLayout(page, layout(SCAN, "line"));
+  await page.goto(PATH);
+  const words = wordButtons(page);
+  await expect(words).toHaveCount(3);
+  await expect(words.first()).toHaveText("Liberty bell rung");
+  await expect(page.locator(".pv-hint")).toContainText("line-level boxes only");
+  await words.first().click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expectAccessible(page);
 });
 
 test("a page with no layout yet says so and links to loc.gov", async ({ page }) => {
