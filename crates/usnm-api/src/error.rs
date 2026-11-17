@@ -39,6 +39,8 @@ pub enum ApiError {
     TooLarge(String),
     /// The request body's media type isn't one the endpoint accepts.
     MediaType(String),
+    /// A page's layout is larger than `/v1/pages/{doc_id}/layout` serves.
+    PageTooLarge(String),
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -98,6 +100,7 @@ impl IntoResponse for ApiError {
                 Some("bad_beacon")
             }
             ApiError::NotFound(_)
+            | ApiError::PageTooLarge(_)
             | ApiError::Timeout
             | ApiError::Busy
             | ApiError::Backend(_)
@@ -148,6 +151,14 @@ impl IntoResponse for ApiError {
                 StatusCode::NOT_FOUND,
                 "/errors/not-found",
                 "Not found",
+                msg,
+                None,
+                None,
+            ),
+            ApiError::PageTooLarge(msg) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "/errors/page-too-large",
+                "Page too large",
                 msg,
                 None,
                 None,

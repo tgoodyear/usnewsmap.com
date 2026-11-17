@@ -107,6 +107,10 @@ export const LIMITED_PATHS = new Set([
   "/api/v1/aggregate", "/api/v1/hits", "/api/v1/search-report",
   "/mcp", "/mcp/",
 ]);
+// A page's layout (/v1/pages/{doc_id}/layout, #2026) counts too: each request lists the
+// store's blobs, so a flood of made-up page ids would cost the origin even when it answers 404.
+// It shares the searches' budget, and has a pattern because its path carries the page id.
+export const LIMITED_PATTERN = /^(?:\/api)?\/v1\/pages\/[^/]+\/layout$/;
 const MCP_ORIGINS = ["https://usnewsmap.com", "https://api.usnewsmap.com"];
 // Both bindings count over 10 seconds (wrangler.jsonc), so a limited client waits that long.
 const LIMIT_PERIOD_SECS = 10;
@@ -120,7 +124,7 @@ async function edgeLimit(request, env) {
     ? env.SEARCH_EDGE_LIMIT : "normal";
   if (mode === "off" || request.method === "OPTIONS") return null;
   const url = new URL(request.url);
-  if (!LIMITED_PATHS.has(url.pathname)) return null;
+  if (!LIMITED_PATHS.has(url.pathname) && !LIMITED_PATTERN.test(url.pathname)) return null;
   const limiter = mode === "strict" ? env.SEARCH_LIMIT_STRICT : env.SEARCH_LIMIT;
   const address = clientKey(request.headers.get("cf-connecting-ip"));
   if (typeof limiter?.limit !== "function" || address === null) return null;

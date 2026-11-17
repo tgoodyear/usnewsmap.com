@@ -522,6 +522,17 @@ impl ObjectStore for BlobStore {
         Ok(names)
     }
 
+    async fn list_stem(&self, stem: &str) -> Result<Vec<String>, StoreError> {
+        let mut names: Vec<String> = self
+            .list_blobs_at(stem, "")
+            .await?
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
     async fn list_info(&self, prefix: &str) -> Result<Vec<ObjectInfo>, StoreError> {
         let mut out = Vec::new();
         for (path, xml) in self.list_blobs(prefix).await? {
@@ -602,6 +613,16 @@ impl BlobStore {
     /// List Blobs under `prefix`, following continuation markers: each
     /// blob's path (relative to the store) and its `<Blob>` element.
     async fn list_blobs(&self, prefix: &str) -> Result<Vec<(String, String)>, StoreError> {
+        self.list_blobs_at(prefix, "/").await
+    }
+
+    /// [`BlobStore::list_blobs`] for every blob whose path starts with
+    /// `prefix` followed by `tail`: `/` for a directory, empty for a name stem.
+    async fn list_blobs_at(
+        &self,
+        prefix: &str,
+        tail: &str,
+    ) -> Result<Vec<(String, String)>, StoreError> {
         validate_path(prefix)?;
         // `base` is `{origin}/{container}[/{store prefix}]`.
         let (container, store_prefix) = match self.base.split_once("://") {
@@ -613,9 +634,9 @@ impl BlobStore {
             None => return Err(StoreError::InvalidLocation(self.base.clone())),
         };
         let full = if store_prefix.is_empty() {
-            format!("{prefix}/")
+            format!("{prefix}{tail}")
         } else {
-            format!("{store_prefix}/{prefix}/")
+            format!("{store_prefix}/{prefix}{tail}")
         };
         let strip = if store_prefix.is_empty() {
             String::new()

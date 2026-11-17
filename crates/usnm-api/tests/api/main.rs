@@ -7,6 +7,7 @@ mod congress;
 mod days;
 mod hits;
 mod languages;
+mod layout;
 #[path = "../../../../fixtures/loc_original.rs"]
 mod loc_original;
 mod mcp;

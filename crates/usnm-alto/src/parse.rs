@@ -122,7 +122,8 @@ struct OpenBlock {
 /// LANG attributes are ignored: the stored ALTO's languages come from the
 /// page (13 §13.8.2). A String, line or block without a full box inherits
 /// its parent's; the page's granularity is the finest level at which every
-/// element had its own.
+/// element had its own, or the `granularity` its `processingStepSettings`
+/// declare if that is coarser (stored ALTO writes a box on every String).
 pub fn parse(xml: &[u8], opts: &ParseOptions) -> Result<Page, ParseError> {
     parse_inner(xml, opts, false)
 }
@@ -157,6 +158,10 @@ fn parse_inner(xml: &[u8], opts: &ParseOptions, languages: bool) -> Result<Page,
     let mut block: Option<OpenBlock> = None;
     let mut line: Option<OpenLine> = None;
     let mut strings = 0usize;
+    // The text of `processingStepSettings`, where stored ALTO declares its
+    // granularity.
+    let mut in_settings = false;
+    let mut settings = String::new();
     loop {
         let (ns, event) = reader
             .read_resolved_event()
@@ -168,6 +173,10 @@ fn parse_inner(xml: &[u8], opts: &ParseOptions, languages: bool) -> Result<Page,
                 let name = e.local_name();
                 match name.as_ref() {
                     "MeasurementUnit" => in_unit = !empty,
+                    "processingStepSettings" => {
+                        in_settings = !empty;
+                        settings.push('\n');
+                    }
                     "Page" => {
                         pages += 1;
                         if pages > 1 {
@@ -243,6 +252,7 @@ fn parse_inner(xml: &[u8], opts: &ParseOptions, languages: bool) -> Result<Page,
             }
             Event::End(e) if ours => match e.local_name().as_ref() {
                 "MeasurementUnit" => in_unit = false,
+                "processingStepSettings" => in_settings = false,
                 "TextLine" => {
                     if let (Some(l), Some(b)) = (line.take(), block.as_mut()) {
                         b.lines.push((l.rect, l.words, l.hyphen));
@@ -259,6 +269,10 @@ fn parse_inner(xml: &[u8], opts: &ParseOptions, languages: bool) -> Result<Page,
                 let s = t.xml_content(quick_xml::XmlVersion::Implicit1_0);
                 unit = Some(s.trim().to_owned());
             }
+            Event::Text(t) if in_settings => {
+                settings.push_str(&t.xml_content(quick_xml::XmlVersion::Implicit1_0));
+            }
+            Event::GeneralRef(_) if in_settings => settings.push('&'),
             Event::Eof => break,
             _ => {}
         }
@@ -349,6 +363,20 @@ fn parse_inner(xml: &[u8], opts: &ParseOptions, languages: bool) -> Result<Page,
     } else {
         Granularity::Page
     };
+    // A stored file says at which level its engine gave real boxes, though
+    // its writer put a rectangle on every String; the coarser of the two
+    // is the truth.
+    let declared = settings
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("granularity="))
+        .and_then(|g| match g.trim() {
+            "word" => Some(Granularity::Word),
+            "line" => Some(Granularity::Line),
+            "block" => Some(Granularity::Block),
+            "page" => Some(Granularity::Page),
+            _ => None,
+        });
+    let granularity = declared.map_or(granularity, |d| d.max(granularity));
     Ok(Page {
         width: page_rect.x1,
         height: page_rect.y1,
@@ -408,6 +436,68 @@ mod tests {
         let mm = KRAKEN.replace("inch1200", "mm10");
         let p = parse(mm.as_bytes(), &opts).unwrap();
         assert!((p.width - 2400.0 * 300.0 / 254.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_declared_granularity_is_kept_when_coarser() {
+        let doc = |settings: &str| {
+            format!(
+                r#"<alto xmlns="http://www.loc.gov/standards/alto/ns-v4#"><Description><MeasurementUnit>pixel</MeasurementUnit>
+<Processing ID="p"><processingStep><processingStepSettings>{settings}</processingStepSettings></processingStep></Processing></Description>
+<Layout><Page ID="p" WIDTH="100" HEIGHT="100"><PrintSpace><TextBlock HPOS="0" VPOS="0" WIDTH="100" HEIGHT="50">
+<TextLine HPOS="0" VPOS="0" WIDTH="100" HEIGHT="10"><String CONTENT="a" HPOS="0" VPOS="0" WIDTH="100" HEIGHT="10"/><SP/><String CONTENT="b" HPOS="0" VPOS="0" WIDTH="100" HEIGHT="10"/></TextLine>
+</TextBlock></PrintSpace></Page></Layout></alto>"#
+            )
+        };
+        let g = |settings: &str| {
+            parse(doc(settings).as_bytes(), &ParseOptions::default())
+                .unwrap()
+                .granularity
+        };
+        assert_eq!(
+            g("ocr_engine=x&amp;y\ngranularity=line\ndpi=300"),
+            Granularity::Line
+        );
+        assert_eq!(g("granularity=block"), Granularity::Block);
+        assert_eq!(g("granularity=word"), Granularity::Word);
+        assert_eq!(g("granularity=bogus"), Granularity::Word);
+        assert_eq!(g("ocr_engine=x"), Granularity::Word);
+    }
+
+    #[test]
+    fn written_line_level_pages_read_back_as_line_level() {
+        let r = |x0, x1| Rect::new(x0, 0.0, x1, 10.0);
+        let page = Page {
+            width: 100.0,
+            height: 100.0,
+            granularity: Granularity::Line,
+            blocks: vec![Block {
+                kind: BlockKind::Text,
+                rect: r(0.0, 100.0),
+                lang: None,
+                lines: vec![Line {
+                    rect: r(0.0, 100.0),
+                    words: ["a", "b"]
+                        .map(|t| Word {
+                            rect: r(0.0, 100.0),
+                            text: t.into(),
+                            conf: None,
+                        })
+                        .to_vec(),
+                    hyphen: None,
+                }],
+            }],
+        };
+        let desc = crate::Description {
+            ocr: crate::Step {
+                settings: vec![("granularity".into(), "line".into())],
+                ..crate::Step::default()
+            },
+            ..crate::Description::default()
+        };
+        let xml = crate::write(&page, &desc, "eng");
+        let back = parse(xml.as_bytes(), &ParseOptions::default()).unwrap();
+        assert_eq!(back.granularity, Granularity::Line);
     }
 
     #[test]

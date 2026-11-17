@@ -126,6 +126,11 @@ async fn serve(
                 &opentelemetry::global::meter(telemetry::SERVICE.name),
             )
         });
+    let alto = config
+        .alto_url
+        .as_deref()
+        .map(usnm_store::open)
+        .transpose()?;
     let bind = config.bind.clone();
     let mut state = AppState::with_loader(config, snapshot, Some(loader))
         .with_pipeline(pipeline)
@@ -133,6 +138,10 @@ async fn serve(
     if let Some(store) = responses {
         tracing::info!(store = ?store, "persistent response cache enabled");
         state = state.with_response_store(store);
+    }
+    if let Some(store) = alto {
+        tracing::info!(store = ?store, "page layouts enabled");
+        state = state.with_alto_store(store);
     }
     if let Some(log) = &search_log {
         state = state.with_search_log(log.clone());
