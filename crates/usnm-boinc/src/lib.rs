@@ -25,7 +25,10 @@ use usnm_ocr_worker::{
     prefetch,
 };
 use usnm_state::state::State;
-use usnm_store::ObjectStore;
+use usnm_store::{
+    retry::{retryable, retrying, Retry},
+    ObjectStore,
+};
 
 pub mod assess;
 pub mod bundle;
@@ -1293,13 +1296,36 @@ pub fn published_alto(record: &Record, alto: &[u8]) -> anyhow::Result<String> {
     checks::check_alto(alto.as_bytes()).map_err(|r| anyhow::anyhow!("{}", r.code()))?;
     Ok(alto)
 }
+/// Publish `bytes` at `path` unless an object is there, and fail if the one there differs.
+///
+/// A try that fails the way a passing outage does (a connect timeout, a reset connection, 408,
+/// 429 or a 5xx: [`usnm_store::retry::retryable`]) is made again after a wait, [`Retry::PUT`]
+/// (5 tries, 116 s of waits), and every failed try is logged (`store request failed; trying
+/// again`, with the path, try, wait and error). A refusal, an auth failure or anything else
+/// fails at once, as does an exhausted schedule. A try that fails may have written the object
+/// with its answer lost, so a later "already exists" is read, and only equal bytes count as
+/// published: differing bytes still fail the page ("published object conflicts with retry").
 async fn put_same(
     store: &dyn ObjectStore,
     path: &str,
     bytes: Vec<u8>,
     mime: &str,
 ) -> anyhow::Result<()> {
-    if !store.put_new(path, bytes.clone(), mime).await? {
+    put_same_with(store, path, bytes, mime, Retry::PUT).await
+}
+
+async fn put_same_with(
+    store: &dyn ObjectStore,
+    path: &str,
+    bytes: Vec<u8>,
+    mime: &str,
+    retry: Retry,
+) -> anyhow::Result<()> {
+    let created = retrying("put_new", path, retry, retryable, |_| {
+        store.put_new(path, bytes.clone(), mime)
+    })
+    .await?;
+    if !created {
         ensure!(
             store.get(path).await? == Some(bytes),
             "published object conflicts with retry"
@@ -1510,4 +1536,199 @@ pub async fn collect(
         out,
     )
     .await
+}
+
+#[cfg(test)]
+mod put_same_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+    use usnm_store::{local::LocalStore, StoreError};
+
+    const FAST: Retry = Retry {
+        tries: 4,
+        first_wait: Duration::from_millis(1),
+        max_wait: Duration::from_millis(2),
+    };
+
+    /// A store whose first `fail` `put_new` calls fail with `error` (the first
+    /// `lose` of them after writing the object, as a lost answer does).
+    #[derive(Debug)]
+    struct Flaky {
+        inner: LocalStore,
+        fail: u32,
+        lose: u32,
+        error: fn() -> StoreError,
+        calls: Arc<AtomicU32>,
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for Flaky {
+        async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
+            self.inner.get(path).await
+        }
+        async fn put_new(&self, path: &str, body: Vec<u8>, ct: &str) -> Result<bool, StoreError> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if n <= self.fail {
+                if n <= self.lose {
+                    self.inner.put_new(path, body, ct).await?;
+                }
+                return Err((self.error)());
+            }
+            self.inner.put_new(path, body, ct).await
+        }
+        async fn put(&self, path: &str, body: Vec<u8>, ct: &str) -> Result<(), StoreError> {
+            self.inner.put(path, body, ct).await
+        }
+        async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
+            self.inner.list(prefix).await
+        }
+    }
+
+    fn timeout() -> StoreError {
+        StoreError::Io("put `alto/x.xml`: error sending request (timed out): client error (Connect): operation timed out".into())
+    }
+
+    fn flaky(
+        fail: u32,
+        lose: u32,
+        error: fn() -> StoreError,
+    ) -> (Flaky, Arc<AtomicU32>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicU32::new(0));
+        let store = Flaky {
+            inner: LocalStore::new(dir.path()),
+            fail,
+            lose,
+            error,
+            calls: calls.clone(),
+        };
+        (store, calls, dir)
+    }
+
+    #[tokio::test]
+    async fn a_connect_timeout_is_tried_again_and_the_object_published() {
+        let (store, calls, _dir) = flaky(2, 0, timeout);
+        put_same_with(
+            &store,
+            "alto/x.xml",
+            b"alto".to_vec(),
+            "application/xml",
+            FAST,
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            store.get("alto/x.xml").await.unwrap(),
+            Some(b"alto".to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lost_answer_is_read_as_published_when_the_bytes_are_the_same() {
+        let (store, calls, _dir) = flaky(1, 1, timeout);
+        put_same_with(
+            &store,
+            "alto/x.xml",
+            b"alto".to_vec(),
+            "application/xml",
+            FAST,
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn different_bytes_at_the_path_still_fail_after_a_retry() {
+        let (store, _calls, _dir) = flaky(1, 0, timeout);
+        store
+            .inner
+            .put_new("alto/x.xml", b"other".to_vec(), "application/xml")
+            .await
+            .unwrap();
+        let e = put_same_with(
+            &store,
+            "alto/x.xml",
+            b"alto".to_vec(),
+            "application/xml",
+            FAST,
+        )
+        .await
+        .unwrap_err();
+        assert!(e.to_string().contains("conflicts with retry"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn the_tries_are_bounded() {
+        let (store, calls, _dir) = flaky(100, 0, timeout);
+        let e = put_same_with(&store, "alto/x.xml", b"a".to_vec(), "x", FAST)
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("timed out"), "{e}");
+        assert_eq!(calls.load(Ordering::SeqCst), FAST.tries);
+    }
+
+    #[tokio::test]
+    async fn auth_and_refusals_fail_at_once() {
+        for error in [
+            (|| StoreError::Credential("no token".into())) as fn() -> StoreError,
+            || StoreError::Http {
+                op: "put",
+                path: "p".into(),
+                status: 403,
+            },
+            || StoreError::Http {
+                op: "put",
+                path: "p".into(),
+                status: 400,
+            },
+        ] {
+            let (store, calls, _dir) = flaky(100, 0, error);
+            put_same_with(&store, "alto/x.xml", b"a".to_vec(), "x", FAST)
+                .await
+                .unwrap_err();
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn busy_and_throttled_responses_are_tried_again() {
+        for status in [408, 429, 500, 503] {
+            let (store, calls, _dir) = flaky(
+                1,
+                0,
+                match status {
+                    408 => || StoreError::Http {
+                        op: "put",
+                        path: "p".into(),
+                        status: 408,
+                    },
+                    429 => || StoreError::Http {
+                        op: "put",
+                        path: "p".into(),
+                        status: 429,
+                    },
+                    500 => || StoreError::Http {
+                        op: "put",
+                        path: "p".into(),
+                        status: 500,
+                    },
+                    _ => || StoreError::Http {
+                        op: "put",
+                        path: "p".into(),
+                        status: 503,
+                    },
+                },
+            );
+            put_same_with(&store, "alto/x.xml", b"a".to_vec(), "x", FAST)
+                .await
+                .unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 2, "{status}");
+        }
+    }
 }
