@@ -40,6 +40,9 @@ pub(crate) struct OcrLocalCopyArgs {
     /// real copy.
     #[arg(long)]
     allow_unmounted: bool,
+    /// How many runs of objects are checked or copied at once.
+    #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u64).range(1..=64))]
+    jobs: u64,
 }
 
 pub(crate) async fn ocr_local_copy_command(
@@ -52,6 +55,7 @@ pub(crate) async fn ocr_local_copy_command(
         alert_after_hours,
         verify,
         allow_unmounted,
+        jobs,
     } = args;
     let report = ocr_local_copy::copy_objects(
         usnm_store::open(from)?.as_ref(),
@@ -62,6 +66,7 @@ pub(crate) async fn ocr_local_copy_command(
             alert_after: Duration::from_secs(alert_after_hours * 3600),
             verify: *verify,
             require_mount: !allow_unmounted,
+            jobs: usize::try_from(*jobs)?,
         },
     )
     .await?;

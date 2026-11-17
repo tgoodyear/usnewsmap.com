@@ -48,6 +48,8 @@ The command is `crates/usnm-ingest/src/cli/ocr_local_copy.rs` and the logic `cra
 
    This runs through the service so it has the Arc identity, and systemd creates the state directory. Objects the seed didn't cover are reported as missing, and fail this check once they're older than 48 hours. The timer's run copies them; `systemctl start usnm-ocr-local-copy.service` does it sooner. Read `mismatched_objects` in the status file: only those need a person.
 
+   The run checks and copies 8 runs of objects at once (`--jobs`) and logs a progress line as each run of 250 ends. A seeded dataset on a busy spinning pool read one file at a time at under 1 MB/s, so one at a time is not enough there.
+
 ## The alert
 
 A run fails, and the unit with it, when an object is still missing, different or unverified more than 48 hours after it was written. Only `--verify` reports unverified objects: those listed with no Content-MD5, which it can't check. `/var/lib/usnm-ocr-local-copy/status.json` has `ok`, the counts, the first overdue paths and every path that differs. home-infra's watcher reads it each hour.

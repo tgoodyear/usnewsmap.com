@@ -56,6 +56,9 @@ const PARTIAL: &str = ".partial";
 const CHUNK: usize = 1024 * 1024;
 /// How many paths of overdue objects the status file names.
 const SAMPLE: usize = 20;
+/// Objects in one run handed to one worker: sorted neighbours share a directory, and a progress
+/// line is logged as each run ends.
+const RUN: usize = 250;
 
 /// What a run is told.
 #[derive(Debug, Clone)]
@@ -74,6 +77,9 @@ pub struct Options<'a> {
     pub verify: bool,
     /// Refuse a destination that is not a mount point.
     pub require_mount: bool,
+    /// How many runs of objects are checked or copied at once (at least 1). One at a time leaves
+    /// a spinning pool idle between its small reads and costs a round trip per object to copy.
+    pub jobs: usize,
 }
 
 /// What a run found and did, as logged and as written to the status file.
@@ -409,12 +415,82 @@ async fn copy_with(
         checked_at: o.now,
         ..Report::default()
     };
+    let total = listed.len();
+    let mut done = 0usize;
+    let mut runs = futures::stream::iter(listed.chunks(RUN))
+        .map(|run| check_run(source, o, &previous, &root, sync, run))
+        .buffered(o.jobs.max(1));
+    while let Some(part) = runs.next().await {
+        let (part, n) = part?;
+        done += n;
+        report.merge(part);
+        tracing::info!(
+            done,
+            total,
+            copied_objects = report.copied_objects,
+            copied_this_run = report.copied_this_run,
+            missing = report.missing_objects,
+            mismatched = report.mismatched_objects,
+            "OCR output copy progress"
+        );
+    }
+    drop(runs);
+    report.ok = report.overdue_objects == 0;
+    let caught_up = report.missing_objects == 0
+        && report.mismatched_objects == 0
+        && report.unverified_objects == 0;
+    report.last_success = if caught_up {
+        Some(o.now)
+    } else {
+        previous.last_success
+    };
+    if let Some(path) = o.status {
+        write_status_file(path, &report)
+            .with_context(|| format!("writing the status file {}", path.display()))?;
+    }
+    if let Err(error) = rustix::fs::flock(&root, FlockOperation::Unlock) {
+        tracing::warn!(%error, "releasing the OCR output copy lock failed");
+    }
+    Ok(report)
+}
+
+impl Report {
+    /// Add what one run of objects found: counts add, and the lists keep their order.
+    fn merge(&mut self, part: Report) {
+        self.source_objects += part.source_objects;
+        self.copied_objects += part.copied_objects;
+        self.copied_this_run += part.copied_this_run;
+        self.bytes_copied += part.bytes_copied;
+        self.missing_objects += part.missing_objects;
+        self.mismatched_objects += part.mismatched_objects;
+        self.unverified_objects += part.unverified_objects;
+        self.overdue_objects += part.overdue_objects;
+        self.ignored_objects += part.ignored_objects;
+        self.no_md5_objects += part.no_md5_objects;
+        let room = SAMPLE.saturating_sub(self.overdue_sample.len());
+        self.overdue_sample
+            .extend(part.overdue_sample.into_iter().take(room));
+        self.mismatched_paths.extend(part.mismatched_paths);
+    }
+}
+
+/// Check, or copy, one run of listed objects with its own directory handles. Returns what it
+/// found and how many objects it was given.
+async fn check_run(
+    source: &dyn ObjectStore,
+    o: &Options<'_>,
+    previous: &Previous,
+    root: &OwnedFd,
+    sync: SyncDir,
+    run: &[ObjectInfo],
+) -> anyhow::Result<(Report, usize)> {
+    let mut report = Report::default();
     let mut dirs = Dirs {
-        root,
+        root: rustix::io::dup(root).context("duplicating the destination handle")?,
         parent: None,
         sync,
     };
-    for info in &listed {
+    for info in run {
         let Some((parts, name)) = split(info) else {
             report.ignored_objects += 1;
             continue;
@@ -468,23 +544,7 @@ async fn copy_with(
             }
         }
     }
-    report.ok = report.overdue_objects == 0;
-    let caught_up = report.missing_objects == 0
-        && report.mismatched_objects == 0
-        && report.unverified_objects == 0;
-    report.last_success = if caught_up {
-        Some(o.now)
-    } else {
-        previous.last_success
-    };
-    if let Some(path) = o.status {
-        write_status_file(path, &report)
-            .with_context(|| format!("writing the status file {}", path.display()))?;
-    }
-    if let Err(error) = rustix::fs::flock(&dirs.root, FlockOperation::Unlock) {
-        tracing::warn!(%error, "releasing the OCR output copy lock failed");
-    }
-    Ok(report)
+    Ok((report, run.len()))
 }
 
 /// What the last run recorded, or nothing if there's no status file yet. Any other failure is an

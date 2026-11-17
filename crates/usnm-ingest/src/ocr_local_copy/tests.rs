@@ -89,6 +89,7 @@ fn options(dest: &Path) -> Options<'_> {
         alert_after: Duration::from_secs(3600),
         verify: false,
         require_mount: false,
+        jobs: 4,
     }
 }
 
@@ -347,4 +348,32 @@ async fn the_status_file_keeps_the_last_success() {
     let saved: Report = serde_json::from_slice(&std::fs::read(&status).unwrap()).unwrap();
     assert_eq!(saved.last_success, report.last_success);
     assert!(saved.ok);
+}
+
+#[tokio::test]
+async fn many_objects_are_copied_and_verified_across_runs_at_once() {
+    let f = fixture(false);
+    for i in 0..(RUN * 2 + 40) {
+        let full = f
+            .root
+            .join(format!("ocr-local/alto/d{}/f{i:04}.xml", i % 7));
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, format!("body {i}")).unwrap();
+    }
+    let wide = Options {
+        jobs: 6,
+        ..options(&f.dest)
+    };
+    let copied = copy_objects(f.store.as_ref(), &wide).await.unwrap();
+    assert_eq!(copied.copied_this_run, (RUN * 2 + 40 + 2) as u64);
+    assert_eq!(copied.missing_objects, 0);
+    let verify = Options {
+        verify: true,
+        ..wide
+    };
+    let checked = copy_objects(f.store.as_ref(), &verify).await.unwrap();
+    assert_eq!(checked.copied_objects, (RUN * 2 + 40 + 2) as u64);
+    assert_eq!(checked.copied_this_run, 0);
+    assert_eq!(checked.mismatched_objects, 0);
+    assert!(checked.ok);
 }
