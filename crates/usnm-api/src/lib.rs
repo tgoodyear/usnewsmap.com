@@ -245,6 +245,8 @@ pub struct AppState {
     /// The curated store, read for `/v1/pages/{doc_id}/layout`. `None`
     /// makes every page's layout a 404.
     pub alto: Option<Arc<dyn ObjectStore>>,
+    /// The layout builds in flight and the permits that bound them.
+    pub(crate) layouts: routes::layout::Builds,
     /// `/v1/openapi.json`'s body, built on its first request.
     pub(crate) openapi: std::sync::OnceLock<Arc<Vec<u8>>>,
     pub(crate) sitemap: site::sitemap::Service,
@@ -293,6 +295,7 @@ impl AppState {
             search_log: None,
             ocr_requests: None,
             alto: None,
+            layouts: routes::layout::Builds::default(),
             openapi: std::sync::OnceLock::new(),
             sitemap: site::sitemap::Service::default(),
             previews: site::social::Service::default(),

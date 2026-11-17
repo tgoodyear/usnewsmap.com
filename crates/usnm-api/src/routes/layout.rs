@@ -11,14 +11,19 @@
 //! and the served version (the engine comes from it), and the ETag is the
 //! node, stamp and version.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use crate::telemetry::ServedVersion;
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use futures::future::{BoxFuture, FutureExt, Shared};
 use futures::StreamExt;
 use schemars::JsonSchema;
 use serde::Serialize;
+use tokio::sync::Semaphore;
 use usnm_alto::{Granularity, ParseOptions};
 use usnm_core::page_id::{PageId, Source};
 use usnm_store::ObjectStore;
@@ -33,6 +38,16 @@ const MAX_ALTO_BYTES: usize = 16 * 1024 * 1024;
 /// The most words a response holds. A dense page has some 30,000 to 50,000.
 const MAX_WORDS: usize = 150_000;
 
+/// How many ALTO files are read and parsed at once, across all requests. A
+/// file is read whole (up to `MAX_ALTO_BYTES`) and parsed into a tree, so
+/// this bounds the memory layout builds take within the replica's 0.5 GiB
+/// budget (06 §6.6).
+const MAX_CONCURRENT_BUILDS: usize = 2;
+
+/// How long a build waits for one of those permits before the request is
+/// refused as busy.
+const BUILD_WAIT: Duration = Duration::from_secs(2);
+
 /// Where the pickup stores our OCR's ALTO.
 const ALTO_DIR: &str = "ocr-local/alto";
 
@@ -40,6 +55,39 @@ const ALTO_DIR: &str = "ocr-local/alto";
 /// the layout a visitor has stays consistent with itself (its word ids
 /// carry its stamp), and the ETag lets a client check it cheaply.
 const CACHE_CONTROL: &str = "public, max-age=86400";
+
+type Build = Shared<BoxFuture<'static, Result<Arc<Vec<u8>>, ApiError>>>;
+
+/// The layout builds in flight, by cache key, and the permits that bound
+/// them. Requests that miss the cache for the same page share one build.
+pub struct Builds {
+    permits: Arc<Semaphore>,
+    wait: Duration,
+    running: Mutex<HashMap<String, Build>>,
+}
+
+impl Default for Builds {
+    fn default() -> Self {
+        Self::new(MAX_CONCURRENT_BUILDS, BUILD_WAIT)
+    }
+}
+
+impl Builds {
+    fn new(permits: usize, wait: Duration) -> Self {
+        Self {
+            permits: Arc::new(Semaphore::new(permits)),
+            wait,
+            running: Mutex::new(HashMap::new()),
+        }
+    }
+
+    async fn acquire(&self) -> Result<tokio::sync::OwnedSemaphorePermit, ApiError> {
+        match tokio::time::timeout(self.wait, self.permits.clone().acquire_owned()).await {
+            Ok(Ok(permit)) => Ok(permit),
+            _ => Err(ApiError::Busy),
+        }
+    }
+}
 
 /// A page's layout from one ALTO file.
 #[derive(Serialize, JsonSchema)]
@@ -172,7 +220,10 @@ fn not_modified(headers: &HeaderMap, etag: &str) -> bool {
         })
 }
 
-fn with_cache(mut resp: Response, etag: &str) -> Response {
+fn with_cache(mut resp: Response, etag: &str, version: &str) -> Response {
+    // The snapshot's version, which the ETag carries: telemetry records it.
+    resp.extensions_mut()
+        .insert(ServedVersion(version.to_owned()));
     let headers = resp.headers_mut();
     headers.insert(
         header::CACHE_CONTROL,
@@ -216,29 +267,49 @@ pub async fn layout(
     let version = snap.refdata.version();
     let etag = format!("\"{node}.{stamp}.{version}\"");
     if not_modified(&request_headers, &etag) {
-        return Ok(with_cache(StatusCode::NOT_MODIFIED.into_response(), &etag));
+        return Ok(with_cache(
+            StatusCode::NOT_MODIFIED.into_response(),
+            &etag,
+            version,
+        ));
     }
     let key = format!("layout|{version}|{path}");
     let body = match state.cache.get(&key).await {
         Some(body) => body,
         None => {
-            let Some(xml) = read_capped(store.as_ref(), path, MAX_ALTO_BYTES).await? else {
-                // Gone since the listing.
-                return Err(not_found());
-            };
             let engine = {
                 let ocr = &snap.refdata.ocr_local;
                 ocr.get(&doc_id)
                     .and_then(|e| ocr.engine(e))
                     .map(|e| e.source.clone())
             };
-            let (doc, node, stamp) = (id.to_string(), node.to_owned(), stamp.to_owned());
-            let built = tokio::task::spawn_blocking(move || build(&xml, doc, engine, stamp, node))
-                .await
-                .map_err(|e| ApiError::Backend(e.to_string()))??;
-            let body = Arc::new(built);
-            state.cache.insert(key, body.clone()).await;
-            body
+            let job = Job {
+                state: state.clone(),
+                store,
+                key: key.clone(),
+                path: path.to_owned(),
+                doc: id.to_string(),
+                engine,
+                stamp: stamp.to_owned(),
+                node: node.to_owned(),
+            };
+            let build = {
+                let mut running = state
+                    .layouts
+                    .running
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                running
+                    .entry(key)
+                    .or_insert_with(|| {
+                        let task = tokio::spawn(job.run());
+                        async move { task.await.map_err(|e| ApiError::Backend(e.to_string()))? }
+                            .boxed()
+                            .shared()
+                    })
+                    .clone()
+            };
+            build.await?
         }
     };
     let mut resp = body.as_ref().clone().into_response();
@@ -246,7 +317,70 @@ pub async fn layout(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/json"),
     );
-    Ok(with_cache(resp, &etag))
+    Ok(with_cache(resp, &etag, version))
+}
+
+/// One layout build: it runs in a task of its own, so it finishes (and
+/// frees its permit) even if every request waiting on it goes away.
+struct Job {
+    state: Arc<AppState>,
+    store: Arc<dyn ObjectStore>,
+    key: String,
+    path: String,
+    doc: String,
+    engine: Option<String>,
+    stamp: String,
+    node: String,
+}
+
+impl Job {
+    async fn run(self) -> Result<Arc<Vec<u8>>, ApiError> {
+        let result = self.build().await;
+        // The body is cached before the entry goes, so a request finds the
+        // build or its result.
+        if let Ok(body) = &result {
+            self.state
+                .cache
+                .insert(self.key.clone(), body.clone())
+                .await;
+        }
+        self.state
+            .layouts
+            .running
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
+        result
+    }
+
+    async fn build(&self) -> Result<Arc<Vec<u8>>, ApiError> {
+        let permit = self.state.layouts.acquire().await?;
+        // A build that finished while this one waited.
+        if let Some(body) = self.state.cache.get(&self.key).await {
+            return Ok(body);
+        }
+        let Some(xml) = read_capped(self.store.as_ref(), &self.path, MAX_ALTO_BYTES).await? else {
+            // Gone since the listing.
+            return Err(ApiError::NotFound(format!(
+                "no layout for page `{}`",
+                self.doc
+            )));
+        };
+        let (doc, engine, stamp, node) = (
+            self.doc.clone(),
+            self.engine.clone(),
+            self.stamp.clone(),
+            self.node.clone(),
+        );
+        // The permit stays with the parse until it ends.
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            build(&xml, doc, engine, stamp, node)
+        })
+        .await
+        .map_err(|e| ApiError::Backend(e.to_string()))?
+        .map(Arc::new)
+    }
 }
 
 /// The response body for one ALTO file.
@@ -313,6 +447,24 @@ fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn builds_past_the_permits_are_refused_as_busy() {
+        let builds = Builds::new(1, Duration::from_millis(50));
+        let held = builds.acquire().await.unwrap();
+        assert!(matches!(builds.acquire().await, Err(ApiError::Busy)));
+        drop(held);
+        assert!(builds.acquire().await.is_ok());
+    }
+
+    #[test]
+    fn both_responses_carry_the_served_version() {
+        for resp in [StatusCode::OK, StatusCode::NOT_MODIFIED] {
+            let resp = with_cache(resp.into_response(), "\"n.s.v9\"", "v9");
+            let served = resp.extensions().get::<ServedVersion>();
+            assert_eq!(served.map(|v| v.0.as_str()), Some("v9"));
+        }
+    }
 
     fn paths(names: &[&str]) -> Vec<String> {
         names

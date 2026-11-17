@@ -357,6 +357,102 @@ async fn a_stored_file_that_does_not_parse_is_a_503_not_a_page() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
 }
 
+/// A store that counts reads of each path and how many run at once.
+#[derive(Debug)]
+struct CountingStore {
+    inner: LocalStore,
+    reads: std::sync::Mutex<Vec<String>>,
+    now: std::sync::atomic::AtomicUsize,
+    peak: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl usnm_store::ObjectStore for CountingStore {
+    async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+        self.inner.get(path).await
+    }
+    async fn put_new(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<bool, usnm_store::StoreError> {
+        self.inner.put_new(path, body, content_type).await
+    }
+    async fn put(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        content_type: &str,
+    ) -> Result<(), usnm_store::StoreError> {
+        self.inner.put(path, body, content_type).await
+    }
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+        self.inner.list(prefix).await
+    }
+    async fn list_stem(&self, stem: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+        self.inner.list_stem(stem).await
+    }
+    async fn get_stream(
+        &self,
+        path: &str,
+    ) -> Result<Option<usnm_store::ByteStream>, usnm_store::StoreError> {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.reads.lock().unwrap().push(path.to_owned());
+        let now = self.now.fetch_add(1, SeqCst) + 1;
+        self.peak.fetch_max(now, SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        self.now.fetch_sub(1, SeqCst);
+        self.inner.get_stream(path).await
+    }
+}
+
+async fn counting_state(name: &str, docs: &[String]) -> (Arc<AppState>, Arc<CountingStore>) {
+    let dir = std::env::temp_dir().join(format!("usnm-layout-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let alto = dir.join("ocr-local/alto");
+    std::fs::create_dir_all(&alto).unwrap();
+    for doc in docs {
+        std::fs::write(alto.join(format!("{doc}.node1.{STAMP}.xml")), fixture_xml()).unwrap();
+    }
+    let store = Arc::new(CountingStore {
+        inner: LocalStore::new(dir),
+        reads: Default::default(),
+        now: Default::default(),
+        peak: Default::default(),
+    });
+    let state = Arc::new(
+        AppState::new(config(), Arc::new(fixture_backend()), refdata().await)
+            .with_alto_store(store.clone()),
+    );
+    (state, store)
+}
+
+#[tokio::test]
+async fn concurrent_misses_for_one_page_share_one_read() {
+    let (s, store) = counting_state("single-flight", &[LAYOUT_DOC.to_owned()]).await;
+    let calls = (0..8).map(|_| async { get(&s, &uri(LAYOUT_DOC)).await });
+    for (status, ..) in futures::future::join_all(calls).await {
+        assert_eq!(status, StatusCode::OK);
+    }
+    assert_eq!(store.reads.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn builds_of_different_pages_run_a_few_at_a_time() {
+    let docs: Vec<String> = (1..=6)
+        .map(|n| format!("sn99000001_1896-05-04_ed-1_seq-{n}"))
+        .collect();
+    let (s, store) = counting_state("bounded", &docs).await;
+    let calls = docs.iter().map(|d| async { get(&s, &uri(d)).await });
+    for (status, ..) in futures::future::join_all(calls).await {
+        assert_eq!(status, StatusCode::OK);
+    }
+    assert_eq!(store.reads.lock().unwrap().len(), 6);
+    let peak = store.peak.load(std::sync::atomic::Ordering::SeqCst);
+    assert!((1..=2).contains(&peak), "{peak} reads at once");
+}
+
 async fn raw(
     s: &Arc<AppState>,
     uri: &str,
