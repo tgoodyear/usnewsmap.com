@@ -26,7 +26,7 @@ async function call(token, method, path, body) {
 }
 
 /** Sets `script`'s routes in `zone` to fail open; returns their patterns, read back. */
-export async function failOpen(token, zone, script) {
+export async function failOpen(token, zone, script, { attempts = 6, delayMs = 2000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
   const zones = await call(token, "GET", `/zones?name=${encodeURIComponent(zone)}`);
   if (zones.length !== 1) throw new Error(`zone ${zone}: found ${zones.length}`);
   const routesPath = `/zones/${zones[0].id}/workers/routes`;
@@ -37,9 +37,20 @@ export async function failOpen(token, zone, script) {
       pattern: r.pattern, script: r.script, request_limit_fail_open: true,
     });
   }
-  const after = (await call(token, "GET", routesPath)).filter((r) => r.script === script);
-  const closed = after.filter((r) => r.request_limit_fail_open !== true).map((r) => r.pattern);
-  if (closed.length) throw new Error(`still fail closed after the update: ${closed.join(", ")}`);
+  // The routes list can lag behind a successful PUT, so read back a few times
+  // with a growing wait before calling the update lost.
+  let after = [];
+  let closed = [];
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    after = (await call(token, "GET", routesPath)).filter((r) => r.script === script);
+    closed = after.filter((r) => r.request_limit_fail_open !== true);
+    if (closed.length === 0) break;
+    if (attempt < attempts) await sleep(delayMs * 2 ** (attempt - 1));
+  }
+  if (closed.length) {
+    const seen = closed.map((r) => `${r.pattern} (request_limit_fail_open=${r.request_limit_fail_open})`);
+    throw new Error(`still fail closed after the update and ${attempts} read-backs: ${seen.join(", ")}`);
+  }
   return after.map((r) => r.pattern);
 }
 
