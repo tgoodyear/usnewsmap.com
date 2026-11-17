@@ -506,10 +506,11 @@ class Tick(Fixture):
         # Released when the tick ends.
         self.assertEqual(subprocess.run(["flock", "-n", str(self.lock), "true"]).returncode, 0)
 
-    def hold(self, path, seconds, then=""):
+    def hold(self, path, seconds, then="", shared=False):
         ready = self.root / "held"
         ready.unlink(missing_ok=True)
-        holder = subprocess.Popen(["flock", str(path), "sh", "-c", f'touch "{ready}"; sleep {seconds}; {then}'])
+        holder = subprocess.Popen(["flock", *(["-s"] if shared else []), str(path), "sh", "-c",
+                                   f'touch "{ready}"; sleep {seconds}; {then}'])
         for _ in range(100):
             if ready.exists():
                 break
@@ -532,6 +533,57 @@ class Tick(Fixture):
         error = self.failure(self.tick("native-feed-4"))
         self.assertEqual(feed_collect.failure_reason(error), "lock_busy")
         self.assertEqual(self.runs(), [])
+
+    def side_by_side(self):
+        switch = self.root / "etc/boinc-priority-controller.side-by-side"
+        switch.write_text("")
+        return switch
+
+    def test_side_by_side_ticks_share_the_tick_lock(self):
+        # #1836: another plan's tick holds the lock shared; this one runs beside it.
+        self.flags("native-feed-4", NATIVE_FLAGS)
+        self.side_by_side()
+        self.hold(self.lock, 30, shared=True)
+        done = self.tick("native-feed-4", "--admission-lock", str(self.root / "admission.lock"))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        (run,) = self.runs()
+        self.assertTrue(run["lock_held"])
+        self.assertEqual(run["argv"][-3:], ["--plan-scope", "--admission-lock", str(self.root / "admission.lock")])
+
+    def test_side_by_side_ticks_still_wait_for_an_archive(self):
+        # The archive and the boot lease break hold it alone.
+        self.flags("main", MAIN_FLAGS)
+        self.side_by_side()
+        self.hold(self.lock, 30)
+        error = self.failure(self.tick("main"))
+        self.assertEqual(feed_collect.failure_reason(error), "lock_busy")
+        self.assertEqual(self.runs(), [])
+
+    def test_without_the_switch_a_tick_still_takes_the_lock_alone(self):
+        self.flags("native-feed-4", NATIVE_FLAGS)
+        self.hold(self.lock, 30, shared=True)
+        error = self.failure(self.tick("native-feed-4"))
+        self.assertEqual(feed_collect.failure_reason(error), "lock_busy")
+        self.assertEqual(self.runs(), [])
+
+    def test_the_switch_sets_the_scope_flags_and_the_files_may_not(self):
+        self.flags("main", MAIN_FLAGS)
+        self.assertNotIn("--plan-scope", self.command("main"))
+        switch = self.side_by_side()
+        command = self.command("main")
+        self.assertEqual(command[-3:], ["--plan-scope", "--admission-lock", "/run/usnm-boinc-controller-admission.lock"])
+        for flag in ("--plan-scope", "--plan-sc", "--admission-lock=/tmp/x", "--admission-l"):
+            with self.subTest(flag=flag):
+                self.flags("main", MAIN_FLAGS + flag + "\n")
+                self.assertIn("sets itself", self.failure(self.tick("main", "--print-command")))
+                self.flags("main", MAIN_FLAGS)
+                self.assertIn("sets it itself", self.failure(self.tick("main", "--print-command", "--add-flag", flag)))
+        # A tunable wait is the plan's.
+        self.flags("main", MAIN_FLAGS + "--admission-wait-secs 600\n")
+        self.assertIn("--admission-wait-secs", self.command("main"))
+        switch.unlink()
+        switch.mkdir()
+        self.assertIn("not a regular file", self.failure(self.tick("main", "--print-command")))
 
     def test_a_dry_run_takes_no_lock_and_never_applies(self):
         self.flags("main", MAIN_FLAGS)
