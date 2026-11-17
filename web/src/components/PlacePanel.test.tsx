@@ -43,7 +43,9 @@ describe("Hit", () => {
     expect(screen.queryByText(/^American Stories OCR/)).toBeNull();
     expect(screen.getByRole("link", { name: "View page at the Library of Congress" })).toBeTruthy();
     // Our own view of the page, from its stored OCR (#2026), next to LoC's.
-    expect(screen.getByRole("link", { name: "View page" }).getAttribute("href")).toBe(`/page/${page.doc_id}`);
+    expect(screen.getByRole("link", { name: "View page" }).getAttribute("href")).toBe(
+      `/page/${page.doc_id}?viewer=${encodeURIComponent(page.links.viewer!)}`,
+    );
   });
 
   it("marks a page that matched only in American Stories' text, with the note in its text too", () => {

@@ -1415,6 +1415,7 @@ select {
   min-height: 100dvh;
   overflow: visible;
 }
+.app.pv-app,
 .app.privacy-page {
   height: auto;
   min-height: 100vh;

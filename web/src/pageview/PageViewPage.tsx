@@ -10,6 +10,7 @@ import {
   confidenceHue,
   docParts,
   locViewerUrl,
+  viewerFromSearch,
   MAX_ZOOM,
   MIN_ZOOM,
   nextIndex,
@@ -34,7 +35,13 @@ export default function PageViewPage({ docId }: { docId: string }) {
   useEffect(() => {
     document.title = `${label} · US News Map`;
   }, [label]);
-  const viewer = locViewerUrl(docId);
+  // The hit's own link knows its archive (LoC, Penn State); a direct visit can only guess LoC from
+  // the id, so that guess is dropped once the layout shows the scan is not LoC's.
+  const given = viewerFromSearch(window.location.search);
+  const scanHost = layout.data?.image?.iiif_base
+    ? new URL(layout.data.image.iiif_base, "https://x.invalid").hostname
+    : null;
+  const viewer = given ?? (scanHost && !scanHost.endsWith("loc.gov") ? null : locViewerUrl(docId));
   return (
     <div className="app pv-app">
       <header className="topbar">
@@ -131,6 +138,8 @@ function Viewer({ layout, docId, viewer }: { layout: PageLayout; docId: string; 
     setActive(0, false);
   }, [words, setActive]);
   useEffect(() => {
+    // A new layout's buttons are reused by index: drop the last layout's marks first.
+    wordsRef.current?.querySelectorAll("[data-verdict]").forEach((n) => n.removeAttribute("data-verdict"));
     const known = new Map(words.map((w) => [w.id, w.index]));
     for (const [id, verdict] of Object.entries(marks)) {
       const i = known.get(id);

@@ -7,6 +7,7 @@ import { AMERICAN_STORIES_BADGE, LOC_ORIGINAL_BADGE, americanStoriesNote, locOri
 import { snippetSegments } from "../lib/snippet";
 import { formatDate } from "../lib/time";
 import { placeHitsQuery } from "./placeHits";
+import { pageHref } from "../pageview/placement";
 import { pagePath } from "../route";
 import { skewSentence, type SkewInfo } from "../lib/skewText";
 
@@ -162,7 +163,7 @@ export function Hit({ h, synthetic }: { h: HitItem; synthetic: boolean }) {
           {!site && (
             <>
               {h.links.viewer && " · "}
-              <a href={pagePath(h.doc_id)}>View page</a>
+              <a href={pageHref(pagePath(h.doc_id), h.links.viewer)}>View page</a>
             </>
           )}
         </>

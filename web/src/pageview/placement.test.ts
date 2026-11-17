@@ -7,6 +7,8 @@ import {
   fontCqw,
   locViewerUrl,
   nextIndex,
+  pageHref,
+  viewerFromSearch,
   percentBox,
   placeWords,
   scaleXFor,
@@ -123,5 +125,18 @@ describe("placement helpers", () => {
     expect(clampZoom(0.2)).toBe(1);
     expect(clampZoom(9)).toBe(4);
     expect(clampZoom(1.5)).toBe(1.5);
+  });
+});
+
+describe("viewer link", () => {
+  it("takes a hit's archive link only from a known https host", () => {
+    const psu = "https://panewsarchive.psu.edu/lccn/sn1/1900-01-01/ed-1/seq-2/";
+    expect(viewerFromSearch(`?viewer=${encodeURIComponent(psu)}`)).toBe(psu);
+    expect(viewerFromSearch(`?viewer=${encodeURIComponent("https://evil.example/x")}`)).toBeNull();
+    expect(viewerFromSearch(`?viewer=${encodeURIComponent("http://www.loc.gov/x")}`)).toBeNull();
+    expect(viewerFromSearch(`?viewer=${encodeURIComponent("javascript:alert(1)")}`)).toBeNull();
+    expect(viewerFromSearch("")).toBeNull();
+    expect(pageHref("/page/a", null)).toBe("/page/a");
+    expect(pageHref("/page/a", psu)).toBe(`/page/a?viewer=${encodeURIComponent(psu)}`);
   });
 });

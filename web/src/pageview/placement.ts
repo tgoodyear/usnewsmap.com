@@ -185,3 +185,26 @@ export const ZOOM_STEP = 0.5;
 export function clampZoom(z: number): number {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(z * 100) / 100));
 }
+
+/** Hosts a page's viewer link may point to (the sources' own archives). */
+const VIEWER_HOSTS = ["www.loc.gov", "loc.gov", "panewsarchive.psu.edu"];
+
+/**
+ * The viewer link a hit passed in `?viewer=`, if it is https on a known archive. A link is never
+ * taken from the address otherwise, so the page can't be made to point anywhere else.
+ */
+export function viewerFromSearch(search: string): string | null {
+  const raw = new URLSearchParams(search).get("viewer");
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" && VIEWER_HOSTS.includes(url.hostname) ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** A page's own path, carrying the hit's source-aware viewer link when it has one. */
+export function pageHref(path: string, viewer: string | null): string {
+  return viewer ? `${path}?viewer=${encodeURIComponent(viewer)}` : path;
+}
