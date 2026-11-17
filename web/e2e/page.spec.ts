@@ -191,6 +191,35 @@ test("a mark that can't be sent stays on the page, says so, and is not retried",
   await expect(words.nth(3)).toHaveAttribute("data-verdict", "wrong");
 });
 
+test("only the latest send decides the failure notice when sends finish out of order", async ({ page }) => {
+  await mockLayout(page, layout());
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let calls = 0;
+  await page.route("**/v1/word-feedback", async (route) => {
+    // The first send fails, but only after the second has succeeded.
+    if (++calls === 1) {
+      await held;
+      return route.fulfill({
+        status: 503,
+        contentType: "application/problem+json",
+        body: JSON.stringify({ type: "/errors/unavailable", title: "Not available", status: 503 }),
+      });
+    }
+    return route.fulfill({ status: 204 });
+  });
+  await page.goto(PATH);
+  const words = wordButtons(page);
+  await words.first().click();
+  await page.getByRole("dialog").getByRole("button", { name: "Wrong" }).click();
+  await words.nth(1).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Right" }).click();
+  await expect.poll(() => calls).toBe(2);
+  release();
+  await page.waitForTimeout(500);
+  await expect(page.locator(".pv-notice")).toHaveCount(0);
+});
+
 test("a network failure is shown the same way", async ({ page }) => {
   await mockLayout(page, layout());
   await page.route("**/v1/word-feedback", (route) => route.abort());

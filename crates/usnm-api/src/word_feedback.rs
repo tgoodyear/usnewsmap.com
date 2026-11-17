@@ -8,6 +8,7 @@
 //! same [`close_day`]). Queues are bounded: a full one refuses the mark.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -104,6 +105,11 @@ pub struct WordFeedback {
     stop: watch::Sender<bool>,
     worker: std::sync::Mutex<Option<JoinHandle<()>>>,
     metrics: Metrics,
+    /// Marks held anywhere: in the channel, pending, or in a retry batch. A
+    /// mark is counted before `record` answers and released when it is
+    /// written or dropped, so a full buffer is a refusal, not a silent loss.
+    held: Arc<AtomicUsize>,
+    capacity: usize,
 }
 
 impl std::fmt::Debug for WordFeedback {
@@ -114,9 +120,16 @@ impl std::fmt::Debug for WordFeedback {
 
 impl WordFeedback {
     pub fn start(store: Arc<dyn ObjectStore>, meter: &Meter) -> Arc<Self> {
+        let (this, worker) = Self::new(store, meter, MAX_PENDING);
+        *this.worker.lock().expect("not poisoned") = Some(tokio::spawn(worker.run()));
+        this
+    }
+
+    fn new(store: Arc<dyn ObjectStore>, meter: &Meter, capacity: usize) -> (Arc<Self>, Writer) {
         let (tx, rx) = mpsc::channel(QUEUE);
         let (stop, stopped) = watch::channel(false);
         let metrics = Metrics::new(meter);
+        let held = Arc::new(AtomicUsize::new(0));
         let worker = Writer {
             store,
             rx,
@@ -125,28 +138,45 @@ impl WordFeedback {
             batches: Vec::new(),
             closed: BTreeSet::new(),
             metrics: metrics.clone(),
+            held: held.clone(),
         };
-        Arc::new(Self {
+        let this = Arc::new(Self {
             tx,
             stop,
-            worker: std::sync::Mutex::new(Some(tokio::spawn(worker.run()))),
+            worker: std::sync::Mutex::new(None),
             metrics,
-        })
+            held,
+            capacity,
+        });
+        (this, worker)
     }
 
-    /// Queue a mark without waiting for storage. `false` when the queue is
-    /// full, so the caller can say the mark was not kept.
+    /// Queue a mark without waiting for storage. `false` when the buffer
+    /// (queue, pending marks and retry batches together) is full, so the
+    /// caller can say the mark was not kept, as during a storage outage.
     pub fn record(&self, day: NaiveDate, mark: Mark) -> bool {
-        match self.tx.try_send((day, mark)) {
-            Ok(()) => {
-                self.metrics.marks("queued", 1);
-                true
+        let mut n = self.held.load(Ordering::Acquire);
+        let reserved = loop {
+            if n >= self.capacity {
+                break false;
             }
-            Err(_) => {
-                self.metrics.marks("dropped", 1);
-                false
+            match self
+                .held
+                .compare_exchange_weak(n, n + 1, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => break true,
+                Err(now) => n = now,
             }
+        };
+        if reserved && self.tx.try_send((day, mark)).is_ok() {
+            self.metrics.marks("queued", 1);
+            return true;
         }
+        if reserved {
+            self.held.fetch_sub(1, Ordering::AcqRel);
+        }
+        self.metrics.marks("dropped", 1);
+        false
     }
 
     pub async fn shutdown(&self, limit: Duration) {
@@ -175,9 +205,14 @@ struct Writer {
     batches: Vec<Batch>,
     closed: BTreeSet<NaiveDate>,
     metrics: Metrics,
+    held: Arc<AtomicUsize>,
 }
 
 impl Writer {
+    fn release(&self, count: usize) {
+        self.held.fetch_sub(count, Ordering::AcqRel);
+    }
+
     async fn run(mut self) {
         let mut flush = tokio::time::interval(Duration::from_secs(300));
         flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -208,12 +243,8 @@ impl Writer {
     }
 
     fn admit(&mut self, day: NaiveDate, mark: Mark) {
-        let retries: usize = self.batches.iter().map(|b| b.marks).sum();
-        if self.pending.len() < MAX_PENDING.saturating_sub(retries) {
-            self.pending.push((day, mark));
-        } else {
-            self.metrics.marks("dropped", 1);
-        }
+        // `record` reserved this mark's place, so there is always room.
+        self.pending.push((day, mark));
     }
 
     async fn flush(&mut self) {
@@ -227,6 +258,7 @@ impl Writer {
         for (day, mut marks) in by_day {
             if !stageable(day, Utc::now()) || self.closed.contains(&day) {
                 self.metrics.marks("lost", marks.len());
+                self.release(marks.len());
                 continue;
             }
             shuffle(&mut marks);
@@ -247,6 +279,7 @@ impl Writer {
         for batch in std::mem::take(&mut self.batches) {
             if !stageable(batch.day, Utc::now()) || self.closed.contains(&batch.day) {
                 self.metrics.marks("lost", batch.marks);
+                self.release(batch.marks);
                 continue;
             }
             let write = self
@@ -264,6 +297,7 @@ impl Writer {
                 Ok(_) => {
                     self.metrics.write("stage", true);
                     self.metrics.marks("written", batch.marks);
+                    self.release(batch.marks);
                 }
                 Err(e) => {
                     self.metrics.write("stage", false);
@@ -304,6 +338,74 @@ impl Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    #[derive(Debug, Default)]
+    struct SwitchStore {
+        down: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for SwitchStore {
+        async fn get(&self, _: &str) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+            Ok(None)
+        }
+        async fn put_new(
+            &self,
+            _: &str,
+            _: Vec<u8>,
+            _: &str,
+        ) -> Result<bool, usnm_store::StoreError> {
+            if self.down.load(Ordering::Acquire) {
+                Err(usnm_store::StoreError::Io("down".into()))
+            } else {
+                Ok(true)
+            }
+        }
+        async fn put(&self, _: &str, _: Vec<u8>, _: &str) -> Result<(), usnm_store::StoreError> {
+            Ok(())
+        }
+        async fn list(&self, _: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn mark() -> Mark {
+        Mark::new("a".into(), "w".into(), Verdict::Right)
+    }
+
+    #[tokio::test]
+    async fn a_full_buffer_refuses_even_while_writes_fail_and_recovers_after() {
+        let store = Arc::new(SwitchStore::default());
+        store.down.store(true, Ordering::Release);
+        let meter = opentelemetry::global::meter("test");
+        let (feedback, mut writer) = WordFeedback::new(store.clone(), &meter, 3);
+        let day = Utc::now().date_naive();
+        for _ in 0..3 {
+            assert!(feedback.record(day, mark()));
+        }
+        assert!(!feedback.record(day, mark()), "the buffer is full");
+        while let Ok((d, m)) = writer.rx.try_recv() {
+            writer.admit(d, m);
+        }
+        writer.flush().await;
+        assert_eq!(
+            writer.batches.len(),
+            1,
+            "the failed batch is kept for retry"
+        );
+        assert!(
+            !feedback.record(day, mark()),
+            "a retry batch still holds its place"
+        );
+        store.down.store(false, Ordering::Release);
+        writer.flush().await;
+        assert!(writer.batches.is_empty());
+        assert!(
+            feedback.record(day, mark()),
+            "written marks free their places"
+        );
+    }
 
     #[test]
     fn a_mark_has_only_its_version_page_word_and_verdict() {

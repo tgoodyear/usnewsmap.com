@@ -133,6 +133,8 @@ function Viewer({ layout, docId: urlId, viewer }: { layout: PageLayout; docId: s
   const [marks, setMarks] = useState(() => loadMarks(docId));
   // Whether the last mark couldn't be sent. The mark itself stays in this browser.
   const [sendFailed, setSendFailed] = useState(false);
+  // Sends can finish out of order: only the latest one decides the notice.
+  const sendSeq = useRef(0);
 
   const el = (i: number) => wordsRef.current?.children[i] as HTMLButtonElement | undefined;
 
@@ -199,9 +201,14 @@ function Viewer({ layout, docId: urlId, viewer }: { layout: PageLayout; docId: s
     setMarks((m) => ({ ...m, [word.id]: verdict }));
     saveMark(docId, word.id, verdict);
     // One try, no retry: a failure keeps the local mark and says so, without blocking the page.
+    const seq = ++sendSeq.current;
     submitWordFeedback(docId, word.id, verdict).then(
-      () => setSendFailed(false),
-      () => setSendFailed(true),
+      () => {
+        if (seq === sendSeq.current) setSendFailed(false);
+      },
+      () => {
+        if (seq === sendSeq.current) setSendFailed(true);
+      },
     );
     closePopover();
   };

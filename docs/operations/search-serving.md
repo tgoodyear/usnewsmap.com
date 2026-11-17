@@ -12,7 +12,7 @@ The authoritative public contract is
 3.1 by `crates/usnm-api/src/openapi.rs`.
 
 The upload lists both public hosts and both `/v1` and `/api/v1` prefixes, including
-the two internal POST routes omitted from the public document. Its `x-source`
+the three internal POST routes (beacon, search-report, word-feedback) omitted from the public document. Its `x-source`
 records the source checkout revision, router hash, source URL and SHA-256 of the
 source JSON serialized with sorted keys and compact separators. The revision is
 the code used to check route coverage, **not** an attestation of the deployed
