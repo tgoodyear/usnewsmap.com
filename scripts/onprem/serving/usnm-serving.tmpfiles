@@ -13,3 +13,5 @@ d /srv/usnm-serving/cache/blue 0750 1000 1000 mM:14d
 d /srv/usnm-serving/cache/green 0750 1000 1000 mM:14d
 # Durable lastmod checkpoints are shared across colors and must never expire.
 d /srv/usnm-serving/sitemap-state 0750 1000 1000 -
+# Readers' word marks (#2026): create-only day files, never expired or cleaned.
+d /srv/usnm-serving/word-feedback 0750 1000 1000 -

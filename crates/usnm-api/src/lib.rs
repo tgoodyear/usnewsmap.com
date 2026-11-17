@@ -42,6 +42,7 @@ pub mod status;
 pub mod telemetry;
 pub mod version;
 pub mod versions;
+pub mod word_feedback;
 
 use config::Config;
 use error::ApiError;
@@ -242,6 +243,8 @@ pub struct AppState {
     /// Page ids from qualifying hit responses, for on-prem OCR. `None`
     /// disables the request path.
     pub ocr_requests: Option<Arc<ocr_requests::OcrRequests>>,
+    /// Readers' per-word marks (`/v1/word-feedback`). `None` answers 503.
+    pub word_feedback: Option<Arc<word_feedback::WordFeedback>>,
     /// The curated store, read for `/v1/pages/{doc_id}/layout`. `None`
     /// makes every page's layout a 404.
     pub alto: Option<Arc<dyn ObjectStore>>,
@@ -294,6 +297,7 @@ impl AppState {
             warm_ups: WarmUps::default(),
             search_log: None,
             ocr_requests: None,
+            word_feedback: None,
             alto: None,
             layouts: routes::layout::Builds::default(),
             openapi: std::sync::OnceLock::new(),
@@ -315,6 +319,12 @@ impl AppState {
 
     pub fn with_ocr_requests(mut self, requests: Arc<ocr_requests::OcrRequests>) -> Self {
         self.ocr_requests = Some(requests);
+        self
+    }
+
+    /// Accept readers' per-word marks (`/v1/word-feedback`) into `feedback`.
+    pub fn with_word_feedback(mut self, feedback: Arc<word_feedback::WordFeedback>) -> Self {
+        self.word_feedback = Some(feedback);
         self
     }
 
@@ -361,6 +371,7 @@ pub fn v1_routes() -> Vec<(&'static str, MethodRouter<Arc<AppState>>)> {
         ("/pages/{doc_id}/layout", get(routes::layout)),
         ("/beacon", post(routes::beacon)),
         ("/search-report", post(routes::search_report)),
+        ("/word-feedback", post(routes::word_feedback)),
     ]
 }
 

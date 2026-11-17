@@ -44,6 +44,7 @@ ExecStart=/usr/bin/podman run --rm --name usnm-api-%i --network host --pull neve
   --env-file /etc/usnm-serving/api.env -e USNM_BIND=${USNM_BIND} \
   -v /srv/usnm-serving/cache/shared:/srv/usnm-serving/cache \
   -v /srv/usnm-serving/sitemap-state:/srv/usnm-serving/sitemap-state \
+  -v /srv/usnm-serving/word-feedback:/srv/usnm-serving/word-feedback \
   -v /srv/usnm-lake/ocr-local:/srv/usnm-lake/ocr-local:ro --group-add 2101 \
   -v /var/opt/azcmagent/tokens:/var/opt/azcmagent/tokens:ro --group-add ${HIMDS_GID} \
   --read-only --tmpfs /tmp:rw,size=64m --cap-drop all --security-opt no-new-privileges \

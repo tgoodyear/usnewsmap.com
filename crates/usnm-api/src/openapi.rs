@@ -23,9 +23,10 @@ use crate::config::Config;
 use crate::routes::spec;
 use crate::AppState;
 
-/// The `/v1` routes the document leaves out: the site's page views.
+/// The `/v1` routes the document leaves out: the site's page views, searches
+/// it reports, and word marks.
 /// `/healthz` and `/readyz`, outside `/v1`, are left out too.
-pub const INTERNAL: &[&str] = &["/beacon", "/search-report"];
+pub const INTERNAL: &[&str] = &["/beacon", "/search-report", "/word-feedback"];
 
 /// Where the API answers: its own host, and the site's, which serves the
 /// same routes (ADR-0010).

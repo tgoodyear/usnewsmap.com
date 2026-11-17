@@ -48,6 +48,27 @@ async function mockLayout(page: Page, body: unknown, status = 200) {
   );
 }
 
+type Sent = { body: unknown; contentType: string };
+
+/** Answers `POST /v1/word-feedback` with `status` and records what was sent. */
+async function mockFeedback(page: Page, status = 204): Promise<Sent[]> {
+  const sent: Sent[] = [];
+  await page.route("**/v1/word-feedback", (route) => {
+    const req = route.request();
+    sent.push({ body: JSON.parse(req.postData() ?? "null"), contentType: req.headers()["content-type"] ?? "" });
+    return route.fulfill(
+      status === 204
+        ? { status }
+        : {
+            status,
+            contentType: "application/problem+json",
+            body: JSON.stringify({ type: "/errors/unavailable", title: "Not available", status }),
+          },
+    );
+  });
+  return sent;
+}
+
 async function expectAccessible(page: Page) {
   const results = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
@@ -102,6 +123,7 @@ test("keyboard: one tab stop, arrows move between words, Enter marks a word and 
   page,
 }) => {
   await mockLayout(page, layout());
+  const sent = await mockFeedback(page);
   await page.goto(PATH);
   const words = wordButtons(page);
   await expect(words).toHaveCount(9);
@@ -133,9 +155,51 @@ test("keyboard: one tab stop, arrows move between words, Enter marks a word and 
   await expect(words.nth(1)).toHaveAttribute("data-verdict", "wrong");
   await expect(page.getByText("You have marked 1 on this page.")).toBeVisible();
 
-  // Nothing is sent; the mark is this browser's own.
+  // One POST with the page id, the word id and the verdict, and nothing else; the mark is
+  // also this browser's own.
+  await expect.poll(() => sent.length).toBe(1);
+  expect(sent[0]).toEqual({
+    body: { v: 1, doc_id: DOC, word_id: "20261101T120000Z:0:0:1", verdict: "wrong" },
+    contentType: "text/plain;charset=UTF-8",
+  });
+  await expect(page.locator(".pv-notice")).toHaveCount(0);
   await page.reload();
   await expect(words.nth(1)).toHaveAttribute("data-verdict", "wrong");
+});
+
+test("a mark that can't be sent stays on the page, says so, and is not retried", async ({ page }) => {
+  await mockLayout(page, layout());
+  const sent = await mockFeedback(page, 503);
+  await page.goto(PATH);
+  const words = wordButtons(page);
+  await words.nth(2).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Right" }).click();
+  await expect(words.nth(2)).toHaveAttribute("data-verdict", "right");
+  const notice = page.locator(".pv-notice");
+  await expect(notice).toContainText("could not be sent");
+  await expectAccessible(page);
+  // The page still works: a second mark is tried once on its own.
+  await words.nth(3).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Wrong" }).click();
+  await expect(words.nth(3)).toHaveAttribute("data-verdict", "wrong");
+  await expect.poll(() => sent.length).toBe(2);
+  await page.waitForTimeout(500);
+  expect(sent).toHaveLength(2);
+  // Both marks are kept for the reader.
+  await page.reload();
+  await expect(words.nth(2)).toHaveAttribute("data-verdict", "right");
+  await expect(words.nth(3)).toHaveAttribute("data-verdict", "wrong");
+});
+
+test("a network failure is shown the same way", async ({ page }) => {
+  await mockLayout(page, layout());
+  await page.route("**/v1/word-feedback", (route) => route.abort());
+  await page.goto(PATH);
+  const words = wordButtons(page);
+  await words.first().click();
+  await page.getByRole("dialog").getByRole("button", { name: "Wrong" }).click();
+  await expect(words.first()).toHaveAttribute("data-verdict", "wrong");
+  await expect(page.locator(".pv-notice")).toContainText("could not be sent");
 });
 
 test("a page without a scan offers text only", async ({ page }) => {

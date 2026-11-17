@@ -126,6 +126,18 @@ async fn serve(
                 &opentelemetry::global::meter(telemetry::SERVICE.name),
             )
         });
+    let word_feedback = config
+        .word_feedback_url
+        .as_deref()
+        .map(usnm_store::open)
+        .transpose()?
+        .map(|store| {
+            tracing::info!(store = ?store, "word feedback enabled");
+            usnm_api::word_feedback::WordFeedback::start(
+                store,
+                &opentelemetry::global::meter(telemetry::SERVICE.name),
+            )
+        });
     let alto = config
         .alto_url
         .as_deref()
@@ -148,6 +160,9 @@ async fn serve(
     }
     if let Some(requests) = &ocr_requests {
         state = state.with_ocr_requests(requests.clone());
+    }
+    if let Some(feedback) = &word_feedback {
+        state = state.with_word_feedback(feedback.clone());
     }
     let state = Arc::new(state);
     {
@@ -202,6 +217,9 @@ async fn serve(
     }
     if let Some(requests) = ocr_requests {
         requests.shutdown(std::time::Duration::from_secs(10)).await;
+    }
+    if let Some(feedback) = word_feedback {
+        feedback.shutdown(std::time::Duration::from_secs(10)).await;
     }
     served?;
     Ok(())

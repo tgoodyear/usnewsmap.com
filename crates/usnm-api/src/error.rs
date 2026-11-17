@@ -41,6 +41,9 @@ pub enum ApiError {
     MediaType(String),
     /// A page's layout is larger than `/v1/pages/{doc_id}/layout` serves.
     PageTooLarge(String),
+    /// The endpoint isn't enabled on this deployment, or can't take the
+    /// request now (`/v1/word-feedback` with no store, or a full queue).
+    Unavailable(String),
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -101,6 +104,7 @@ impl IntoResponse for ApiError {
             }
             ApiError::NotFound(_)
             | ApiError::PageTooLarge(_)
+            | ApiError::Unavailable(_)
             | ApiError::Timeout
             | ApiError::Busy
             | ApiError::Backend(_)
@@ -159,6 +163,14 @@ impl IntoResponse for ApiError {
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "/errors/page-too-large",
                 "Page too large",
+                msg,
+                None,
+                None,
+            ),
+            ApiError::Unavailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "/errors/unavailable",
+                "Not available",
                 msg,
                 None,
                 None,

@@ -131,6 +131,8 @@ function Viewer({ layout, docId: urlId, viewer }: { layout: PageLayout; docId: s
   const active = useRef(0);
   // This reader's marks on this page: a Viewer is mounted per page, so read once.
   const [marks, setMarks] = useState(() => loadMarks(docId));
+  // Whether the last mark couldn't be sent. The mark itself stays in this browser.
+  const [sendFailed, setSendFailed] = useState(false);
 
   const el = (i: number) => wordsRef.current?.children[i] as HTMLButtonElement | undefined;
 
@@ -196,7 +198,11 @@ function Viewer({ layout, docId: urlId, viewer }: { layout: PageLayout; docId: s
     const word = words[popover.index]!;
     setMarks((m) => ({ ...m, [word.id]: verdict }));
     saveMark(docId, word.id, verdict);
-    void submitWordFeedback(docId, word.id, verdict);
+    // One try, no retry: a failure keeps the local mark and says so, without blocking the page.
+    submitWordFeedback(docId, word.id, verdict).then(
+      () => setSendFailed(false),
+      () => setSendFailed(true),
+    );
     closePopover();
   };
 
@@ -282,6 +288,11 @@ function Viewer({ layout, docId: urlId, viewer }: { layout: PageLayout; docId: s
           </>
         )}
       </p>
+      {sendFailed && (
+        <p className="pv-notice" role="status">
+          Your last mark is saved in this browser, but it could not be sent. Marks are not sent again on their own.
+        </p>
+      )}
       {shown === "scan" && <p className="visually-hidden">{transcript}</p>}
       <div className="pv-scroll" tabIndex={0} role="region" aria-label="Page">
         <div className={`pv-sizer pv--${shown}${conf ? " pv--conf" : ""}`} style={sizerStyle(layout, zoom)}>

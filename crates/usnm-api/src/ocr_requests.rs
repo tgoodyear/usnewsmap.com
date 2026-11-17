@@ -295,7 +295,7 @@ pub fn staging_dir(day: NaiveDate) -> String {
     format!("staging/{day}")
 }
 
-fn staging_path(day: NaiveDate) -> String {
+pub(crate) fn staging_path(day: NaiveDate) -> String {
     let keys = RandomState::new();
     format!(
         "{}/{:016x}{:016x}.jsonl",
@@ -313,7 +313,7 @@ pub fn completed_path(day: NaiveDate) -> String {
     format!("completed/{day}.json")
 }
 
-fn shuffle<T>(items: &mut [T]) {
+pub(crate) fn shuffle<T>(items: &mut [T]) {
     let keys = RandomState::new();
     for i in (1..items.len()).rev() {
         let j = (keys.hash_one(i) % (i as u64 + 1)) as usize;
