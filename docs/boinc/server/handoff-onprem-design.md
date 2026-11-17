@@ -232,4 +232,4 @@ The maintainer decided the earlier open questions (PR #1884 comment):
 
 Still noted: `put_new` is not retried in #1883 because a retried create reads
 as "already exists". That is moot after this change, but applies to any step
-that stays on Azure meanwhile.
+that stays on Azure meanwhile. The collect step's ALTO and part puts to `ocr-out` do retry (`put_same_with` in `crates/usnm-boinc/src/lib.rs`): a retried create that reads "already exists" is compared with the bytes it meant to write, and only equal bytes count as published. See `docs/boinc/apps/native-ocr.md`.
