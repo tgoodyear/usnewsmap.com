@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pageFor, queryForPath, searchPath } from "./route";
+import { docIdForPath, pageFor, pagePath, queryForPath, searchPath } from "./route";
 
 describe("pageFor", () => {
   it("knows the app's pages, with or without a trailing slash", () => {
@@ -20,6 +20,31 @@ describe("pageFor", () => {
     expect(pageFor("/examples/whigs")).toBe("search");
     expect(pageFor("/examples/whigs/")).toBe("search");
     expect(pageFor("/search/%22cross%20of%20gold%22/")).toBe("search");
+    expect(pageFor("/page/loc:sn85055101_1917-04-03_ed-1_seq-3")).toBe("page");
+    expect(pageFor("/page/loc%3Asn85055101_1917-04-03_ed-1_seq-3/")).toBe("page");
+  });
+
+  it("reads a page's document id from /page/<doc_id>", () => {
+    const id = "loc:sn85055101_1917-04-03_ed-1_seq-3";
+    expect(docIdForPath(`/page/${id}`)).toBe(id);
+    expect(docIdForPath(`/page/${encodeURIComponent(id)}/`)).toBe(id);
+    expect(docIdForPath("/page/sn85055101_1917-04-03_ed-1_seq-3")).toBe("sn85055101_1917-04-03_ed-1_seq-3");
+    for (const path of [
+      "/page",
+      "/page/",
+      "/page/a/b",
+      "/page/a%2Fb",
+      "/page/a%20b",
+      "/page/%FF",
+      "/page/..",
+      "/pages/x",
+    ]) {
+      expect(docIdForPath(path), path).toBeNull();
+      expect(pageFor(path), path).toBe("not-found");
+    }
+    expect(docIdForPath(`/page/${"a".repeat(201)}`)).toBeNull();
+    expect(pagePath(id)).toBe(`/page/${id}`);
+    expect(docIdForPath(pagePath(id))).toBe(id);
   });
 
   it("finds nothing anywhere else", () => {

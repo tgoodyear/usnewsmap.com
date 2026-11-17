@@ -30,12 +30,13 @@ pub const MAX_UTM: usize = 64;
 pub const MAX_ORIGIN: usize = 253;
 
 /// The app's pages (`web/src/route.ts`) and the path each is served at.
-/// `not-found` is any other path, so it has no URL.
-pub const ROUTES: [(&str, Option<&str>); 5] = [
+/// `page` is `/page/<doc_id>` and `not-found` is any other path, so neither has one URL.
+pub const ROUTES: [(&str, Option<&str>); 6] = [
     ("search", Some("/")),
     ("datasets", Some("/datasets")),
     ("privacy", Some("/privacy")),
     ("credits", Some("/credits")),
+    ("page", None),
     ("not-found", None),
 ];
 

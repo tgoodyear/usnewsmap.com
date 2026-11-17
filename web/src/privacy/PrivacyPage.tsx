@@ -19,11 +19,17 @@ export default function PrivacyPage() {
       </header>
       <main className="privacy">
         <h1>Privacy</h1>
-        <p className="privacy-updated">Last updated 4 November 2026.</p>
+        <p className="privacy-updated">Last updated 17 November 2026.</p>
         <p>
-          US News Map has no accounts, sets no cookies and saves nothing in your browser's storage. It shows no ads and
-          runs no analytics or tracking scripts from other companies. Your browser's ordinary cache keeps copies of the
-          site's files, as it does for any website.
+          US News Map has no accounts and sets no cookies. It shows no ads and runs no analytics or tracking scripts
+          from other companies. Your browser's ordinary cache keeps copies of the site's files, as it does for any
+          website.
+        </p>
+        <p>
+          The site does keep two things in your browser's local storage. One is whether the place lists in the side
+          panel are shown or hidden. The other is the words you mark right or wrong on a page's text view, saved per
+          page. Both stay in your browser: the site never sends them to its server, and nothing else reads them. Clear
+          the site's data in your browser's settings to remove them.
         </p>
 
         <h2>Page views</h2>
@@ -128,7 +134,8 @@ export default function PrivacyPage() {
           The site uses this data for aggregate statistics, such as visits per day and which sites send visitors, and to
           keep the service working. That is a legitimate interest, and the site's anonymous reports keep no IP address,
           cookie or identifier. The same legitimate interest covers using Cloudflare to deliver and protect the site.
-          The site doesn't ask for consent because it stores nothing on your device.
+          The site doesn't ask for consent because the only things it stores on your device are the two settings
+          described at the top of this page, which you set yourself and which never leave your browser.
         </p>
 
         <h2>Other sites</h2>

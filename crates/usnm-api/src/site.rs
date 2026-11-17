@@ -180,10 +180,51 @@ fn decoded_len(segment: &str) -> usize {
 fn is_app_page(path: &str) -> bool {
     examples::for_path(path).is_some()
         || search_query(path).is_some()
+        || page_doc_id(path)
         || matches!(
             path.trim_end_matches('/'),
             "" | "/datasets" | "/privacy" | "/credits" | "/index.html"
         )
+}
+
+/// Whether `path` is `/page/<doc_id>` (#2026): one segment, at most 200
+/// characters, no space or reserved character once decoded. The API answers
+/// for ids it has no layout for, so this is only the shape. Mirrors
+/// `docIdForPath` in web/src/route.ts.
+fn page_doc_id(path: &str) -> bool {
+    let Some(segment) = path.strip_prefix("/page/") else {
+        return false;
+    };
+    let segment = segment.strip_suffix('/').unwrap_or(segment);
+    if segment.is_empty() || segment.contains('/') {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    let mut chars = segment.bytes();
+    while let Some(b) = chars.next() {
+        let byte = if b == b'%' {
+            let (Some(hi), Some(lo)) = (chars.next(), chars.next()) else {
+                return false;
+            };
+            let (Some(hi), Some(lo)) = (char::from(hi).to_digit(16), char::from(lo).to_digit(16))
+            else {
+                return false;
+            };
+            u8::try_from(hi * 16 + lo).unwrap_or(0)
+        } else {
+            b
+        };
+        bytes.push(byte);
+    }
+    let Ok(id) = String::from_utf8(bytes) else {
+        return false;
+    };
+    id.encode_utf16().count() <= 200
+        && id != "."
+        && id != ".."
+        && !id
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '/' | '\\' | '?' | '#'))
 }
 
 /// The readable path segment for a plain exact-phrase search: lowercase
@@ -1156,6 +1197,9 @@ mod tests {
             "/search/gold",
             "/search/%22cross%20of%20gold%22/",
             "/search/a%2Fb",
+            "/page/loc:sn85055101_1917-04-03_ed-1_seq-3",
+            "/page/loc%3Asn85055101_1917-04-03_ed-1_seq-3/",
+            "/page/sn85055101_1917-04-03_ed-1_seq-3",
         ] {
             assert!(is_app_page(path), "{path}");
         }
@@ -1173,6 +1217,14 @@ mod tests {
             "/privacy/x",
             "/index.html/x",
             "/favicon.svg/",
+            "/page",
+            "/page/",
+            "/page/a/b",
+            "/page/a%2Fb",
+            "/page/a%20b",
+            "/page/%FF",
+            "/page/%",
+            "/page/..",
         ] {
             assert!(!is_app_page(path), "{path}");
         }

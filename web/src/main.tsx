@@ -5,7 +5,7 @@ import { App } from "./App";
 import { isRetryable, VersionChangedError } from "./api/client";
 import { NotFound } from "./components/NotFound";
 import { trackPageView } from "./pageview";
-import { DATASETS_PATH, OLD_DATASETS_PATH, pageFor } from "./route";
+import { DATASETS_PATH, docIdForPath, OLD_DATASETS_PATH, pageFor } from "./route";
 import "./styles.css";
 import { preloadBasemap } from "./lib/preloadBasemap";
 import { enhanceSearchLanding } from "./searchLanding";
@@ -18,6 +18,7 @@ import type { Meta } from "./api/types";
 const DatasetsPage = lazy(() => import("./status/StatusPage"));
 const CreditsPage = lazy(() => import("./credits/CreditsPage"));
 const PrivacyPage = lazy(() => import("./privacy/PrivacyPage"));
+const PageViewPage = lazy(() => import("./pageview/PageViewPage"));
 const searchNavigation = document.getElementById("common-searches");
 const searchLinks = searchNavigation
   ? [...searchNavigation.querySelectorAll<HTMLAnchorElement>("a")].map((link) => ({
@@ -72,6 +73,10 @@ function mount() {
         ) : page === "privacy" ? (
           <Suspense fallback={<p role="status">Loading…</p>}>
             <PrivacyPage />
+          </Suspense>
+        ) : page === "page" ? (
+          <Suspense fallback={<p role="status">Loading…</p>}>
+            <PageViewPage docId={docIdForPath(window.location.pathname)!} />
           </Suspense>
         ) : page === "not-found" ? (
           <NotFound />

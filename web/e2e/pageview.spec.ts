@@ -101,7 +101,7 @@ test("other origins (development, these tests) send no page views", async ({ pag
   expect(sent).toEqual([]);
 });
 
-test("the site stores nothing in the browser", async ({ page, baseURL }) => {
+test("the site stores nothing in the browser until the reader sets or marks something", async ({ page, baseURL }) => {
   await asProduction(page, baseURL);
   await page.goto(`${SITE}/?q=%22cross+of+gold%22&from=1896-01-01&to=1897-12-31`);
   await expect(page.getByText("places ·")).toBeVisible();

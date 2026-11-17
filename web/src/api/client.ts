@@ -5,11 +5,13 @@ import type {
   HitSort,
   HitsResponse,
   Meta,
+  PageLayout,
   PlacesResponse,
   Problem,
   Status,
   TitlesResponse,
   Versions,
+  WordVerdict,
 } from "./types";
 
 /** API origin: same-origin (the API serves the site; the dev server proxies) unless configured. */
@@ -420,4 +422,19 @@ export const api = {
     s.set("place", places.join(","));
     return getPinned<DaysResponse>(`/v1/days?${s}`, version, { signal });
   },
+  /**
+   * One page's words and their boxes in the scan's layout (#2026). Never pinned to an index
+   * version: it reads stored OCR, not the index. A 404 problem means no layout yet.
+   */
+  pageLayout: (docId: string, signal?: AbortSignal) =>
+    getJson<PageLayout>(`/v1/pages/${encodeURIComponent(docId)}/layout`, { signal }),
 };
+
+/**
+ * Sends a reader's verdict on one word. A no-op until the endpoint exists.
+ * TODO(#2026 PR 3): POST /v1/word-feedback `{v, doc_id, word_id, verdict}`. Nothing about the
+ * reader is sent; the page keeps their own marks in localStorage.
+ */
+export async function submitWordFeedback(docId: string, wordId: string, verdict: WordVerdict): Promise<void> {
+  void [docId, wordId, verdict];
+}

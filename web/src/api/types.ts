@@ -683,3 +683,46 @@ export interface DaysResponse {
   index_version: string;
   places: { id: string; days: number[]; hits: number[] }[];
 }
+
+/** A box on the page's scan, in pixels of the scan: `[x, y, width, height]`. */
+export type LayoutRect = [number, number, number, number];
+
+/** One word of `GET /v1/pages/{doc_id}/layout` (#2026). */
+export interface LayoutWord {
+  /** Index within its line. */
+  i: number;
+  t: string;
+  rect: LayoutRect;
+  /** The engine's confidence, 0 to 1; null when it gave none. */
+  c: number | null;
+}
+
+export interface LayoutLine {
+  /** Block and line index within the ALTO file. */
+  b: number;
+  l: number;
+  rect: LayoutRect;
+  words: LayoutWord[];
+}
+
+/** A page redrawn from its stored ALTO. Coordinates are pixels of `width` by `height`. */
+export interface PageLayout {
+  doc_id: string;
+  /** Who read the page, as `/v1/hits` names it; null when the served index version has no text for it. */
+  engine: string | null;
+  /** The ALTO file's stamp. A word's id is `{stamp}:{b}:{l}:{i}`, naming that word in this file only. */
+  stamp: string;
+  /** The OCR node that wrote the file. */
+  node: string;
+  width: number;
+  height: number;
+  /** The finest level with real boxes. Below `word`, a word's rect is its line's. */
+  granularity: LayoutGranularity;
+  /** The scan; null when the API holds no image address for the page. */
+  image: { iiif_base: string; full: string } | null;
+  lines: LayoutLine[];
+}
+
+export type LayoutGranularity = "word" | "line" | "block" | "page";
+
+export type WordVerdict = "right" | "wrong";
