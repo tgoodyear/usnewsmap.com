@@ -483,3 +483,90 @@ async fn raw_bytes(
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     (status, headers, bytes.to_vec())
 }
+
+const HITS: &str =
+    "/v1/hits?q=%22cross+of+gold%22&from=1896-01-01&to=1896-12-31&place=P00001&limit=5";
+
+/// The `links.layout` of each item of the hits, by doc id.
+async fn layout_links(s: &Arc<AppState>) -> Vec<(String, Option<String>)> {
+    let (status, _, body) = get(s, HITS).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["doc_id"].as_str().unwrap().to_owned(),
+                i["links"]["layout"].as_str().map(str::to_owned),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_hit_links_its_layout_only_when_the_page_has_stored_alto() {
+    // The ids the fixture's search finds; the store gets the first one's ALTO.
+    let plain = crate::common::state_with(None).await;
+    let ids = layout_links(&plain).await;
+    assert!(ids.len() > 1);
+    let doc = ids[0].0.clone();
+
+    let s = state_over(
+        "links",
+        &[(format!("{doc}.node1.{STAMP}.xml"), fixture_xml())],
+    )
+    .await;
+    // Nothing is listed yet: no page has a link.
+    assert!(layout_links(&s).await.iter().all(|(_, l)| l.is_none()));
+    // The response above is cached without links, so ask a state that lists first.
+    let s = state_over(
+        "links",
+        &[(format!("{doc}.node1.{STAMP}.xml"), fixture_xml())],
+    )
+    .await;
+    s.layout_ids
+        .refresh(s.alto.as_deref().unwrap())
+        .await
+        .unwrap();
+    let with: Vec<_> = layout_links(&s)
+        .await
+        .into_iter()
+        .filter(|(_, l)| l.is_some())
+        .collect();
+    assert_eq!(
+        with,
+        [(doc.clone(), Some(format!("/v1/pages/{doc}/layout")))]
+    );
+}
+
+#[tokio::test]
+async fn without_a_curated_store_no_hit_has_a_layout_link() {
+    let s = crate::common::state_with(None).await;
+    assert!(s.alto.is_none());
+    assert!(layout_links(&s).await.iter().all(|(_, l)| l.is_none()));
+    assert!(!s.layout_ids.loaded());
+}
+
+#[tokio::test]
+async fn a_refresh_picks_up_a_new_file_and_drops_a_removed_one() {
+    let s = state_over("refresh", &[]).await;
+    let store = s.alto.clone().unwrap();
+    assert_eq!(s.layout_ids.refresh(store.as_ref()).await.unwrap(), 0);
+    assert!(s.layout_ids.loaded());
+    assert!(!s.layout_ids.has(LAYOUT_DOC));
+
+    let dir = std::env::temp_dir().join(format!("usnm-layout-refresh-{}", std::process::id()));
+    let file = dir
+        .join("ocr-local/alto")
+        .join(format!("{LAYOUT_DOC}.node1.{STAMP}.xml"));
+    std::fs::write(&file, fixture_xml()).unwrap();
+    // Still the old listing until the next refresh.
+    assert!(!s.layout_ids.has(LAYOUT_DOC));
+    assert_eq!(s.layout_ids.refresh(store.as_ref()).await.unwrap(), 1);
+    assert!(s.layout_ids.has(LAYOUT_DOC));
+
+    std::fs::remove_file(&file).unwrap();
+    s.layout_ids.refresh(store.as_ref()).await.unwrap();
+    assert!(!s.layout_ids.has(LAYOUT_DOC));
+}

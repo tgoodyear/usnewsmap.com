@@ -6,6 +6,8 @@ import { CONGRESS_SITES, hitTitle } from "../lib/congress";
 import { AMERICAN_STORIES_BADGE, LOC_ORIGINAL_BADGE, americanStoriesNote, locOriginalNote } from "../lib/matchSource";
 import { snippetSegments } from "../lib/snippet";
 import { formatDate } from "../lib/time";
+import { pageHref } from "../pageview/placement";
+import { pagePath } from "../route";
 import { placeHitsQuery } from "./placeHits";
 import { skewSentence, type SkewInfo } from "../lib/skewText";
 
@@ -156,6 +158,13 @@ export function Hit({ h, synthetic }: { h: HitItem; synthetic: boolean }) {
                   ? "View the page image at the Library of Congress"
                   : "View page at the Library of Congress"}
             </a>
+          )}
+          {/* The page view needs our stored layout, which the API says it has (#2026). */}
+          {h.links.layout && (
+            <>
+              {h.links.viewer && " · "}
+              <a href={pageHref(pagePath(h.doc_id), h.links.viewer)}>View page</a>
+            </>
           )}
         </>
       )}

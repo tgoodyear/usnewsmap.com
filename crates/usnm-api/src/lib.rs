@@ -28,6 +28,7 @@ pub mod config;
 pub(crate) mod edge;
 pub mod error;
 pub mod flights;
+pub mod layout_index;
 mod mcp;
 pub mod ocr_requests;
 pub mod openapi;
@@ -245,6 +246,8 @@ pub struct AppState {
     /// The curated store, read for `/v1/pages/{doc_id}/layout`. `None`
     /// makes every page's layout a 404.
     pub alto: Option<Arc<dyn ObjectStore>>,
+    /// Which pages have stored ALTO, listed in the background (`links.layout`).
+    pub layout_ids: layout_index::LayoutIndex,
     /// The layout builds in flight and the permits that bound them.
     pub(crate) layouts: routes::layout::Builds,
     /// `/v1/openapi.json`'s body, built on its first request.
@@ -295,6 +298,7 @@ impl AppState {
             search_log: None,
             ocr_requests: None,
             alto: None,
+            layout_ids: layout_index::LayoutIndex::default(),
             layouts: routes::layout::Builds::default(),
             openapi: std::sync::OnceLock::new(),
             sitemap: site::sitemap::Service::default(),
@@ -655,6 +659,7 @@ pub fn spawn_searcher_warm_up(state: Arc<AppState>) -> Option<tokio::task::JoinH
 /// Poll `current.json` every `refresh_interval` (no-op without a loader), and
 /// prune idle rate-limit buckets.
 pub fn spawn_background(state: Arc<AppState>) {
+    layout_index::spawn(state.clone());
     site::sitemap::spawn(state.clone());
     site::social::spawn(state.clone());
     tokio::spawn(async move {

@@ -21,6 +21,7 @@ use usnm_search::{BrowseKey, Hit, HitSort, HitsPage, HitsQuery};
 
 use super::{cached_body, uses_fuzzy, with_timeout, Job};
 use crate::error::ApiError;
+use crate::layout_index::LayoutIndex;
 use crate::refdata::{RefData, CONGRESS_PLACE, CONGRESS_PLACE_NAME};
 use crate::searchlog::{self, Admission};
 use crate::{version, AppState};
@@ -215,18 +216,25 @@ pub(crate) fn ocr_for_hit(h: &Hit, rd: &RefData) -> Option<Ocr> {
 #[schemars(rename = "PageLinks")]
 struct Links {
     viewer: Option<String>,
+    /// The page's layout (`/v1/pages/{doc_id}/layout`), only when we have
+    /// stored ALTO for it (#2026).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    layout: Option<String>,
 }
 
 impl Item {
     /// `highlight` is the query's highlight terms, for the LoC viewer link.
-    pub(crate) fn new(h: Hit, rd: &RefData, highlight: &str) -> Self {
+    pub(crate) fn new(h: Hit, rd: &RefData, layouts: &LayoutIndex, highlight: &str) -> Self {
         if let Some(series) = h.congress.series.clone() {
             let c = h.congress;
             return Item {
                 date: date_from_day(h.day).to_string(),
                 title: c.title,
                 // Its source's viewer can't highlight our words either.
-                links: Links { viewer: c.link },
+                links: Links {
+                    viewer: c.link,
+                    layout: None,
+                },
                 // Who made its text goes with the citation (#229).
                 ocr: None,
                 congress: Some(CongressOut {
@@ -265,6 +273,9 @@ impl Item {
                 viewer: PageKey::from_doc_id(&h.doc_id)
                     .ok()
                     .map(|k| k.source_viewer_url(&h.batch, ocr.is_none().then_some(highlight))),
+                layout: layouts
+                    .has(&h.doc_id)
+                    .then(|| format!("/v1/pages/{}/layout", h.doc_id)),
             },
             ocr,
             congress: None,
@@ -401,6 +412,7 @@ pub async fn hits(
         let next_cursor = offset_cursor(offset, &result, st.config.max_offset);
         Ok::<_, ApiError>(respond(
             rd,
+            &st.layout_ids,
             place,
             title.as_deref(),
             result,
@@ -538,6 +550,7 @@ fn offset_cursor(offset: usize, result: &HitsPage, max_offset: usize) -> Option<
 /// The response for a page of `result`, with `next_cursor`.
 fn respond(
     rd: &RefData,
+    layouts: &LayoutIndex,
     place: Option<PlaceOut>,
     title: Option<&str>,
     result: HitsPage,
@@ -557,7 +570,7 @@ fn respond(
         items: result
             .hits
             .into_iter()
-            .map(|h| Item::new(h, rd, highlight))
+            .map(|h| Item::new(h, rd, layouts, highlight))
             .collect(),
         next_cursor,
     }
@@ -661,7 +674,15 @@ async fn browse(
             .filter(|_| (result.hits.len() as u64) < result.total)
             .map(|last| BrowseCursor::encode(BrowseKey::of(last), sort));
         // No words to highlight: the viewer links have no `q`.
-        Ok::<_, ApiError>(respond(rd, None, Some(&title), result, next_cursor, ""))
+        Ok::<_, ApiError>(respond(
+            rd,
+            &st.layout_ids,
+            None,
+            Some(&title),
+            result,
+            next_cursor,
+            "",
+        ))
     };
     let (response, body) = cached_body(
         &state,

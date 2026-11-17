@@ -265,7 +265,8 @@ export interface HitItem {
    * viewer, and it has no `ocr`.
    */
   congress?: HitCongress;
-  links: { viewer: string | null };
+  /** `layout` is present only when we have the page's stored layout (#2026). */
+  links: { viewer: string | null; layout?: string };
 }
 
 /** A Congress page's series and citation in `/v1/hits` (#229). */

@@ -356,6 +356,7 @@ async fn compute(
         .collect();
 
     let highlight = highlight_terms(&req.query).join(" ");
+    let layout_ids = &state.layout_ids;
     let f = &req.filters;
     // Without `lang`, the baseline is the pages in the query's language when
     // the query says what that is (#237): a Japanese query searches only
@@ -416,8 +417,8 @@ async fn compute(
             baseline_pages: baseline.as_ref().map(|b| b.iter().sum()),
             first_day: agg.summary.first_day,
             last_day: agg.summary.last_day,
-            first: agg.first.map(|h| Item::new(h, rd, &highlight)),
-            last: agg.last.map(|h| Item::new(h, rd, &highlight)),
+            first: agg.first.map(|h| Item::new(h, rd, layout_ids, &highlight)),
+            last: agg.last.map(|h| Item::new(h, rd, layout_ids, &highlight)),
             american_stories_only: agg.american_stories_only,
         },
         series: Series {

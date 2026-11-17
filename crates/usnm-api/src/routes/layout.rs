@@ -48,8 +48,7 @@ const MAX_CONCURRENT_BUILDS: usize = 2;
 /// refused as busy.
 const BUILD_WAIT: Duration = Duration::from_secs(2);
 
-/// Where the pickup stores our OCR's ALTO.
-const ALTO_DIR: &str = "ocr-local/alto";
+use crate::layout_index::ALTO_DIR;
 
 /// How long a response may be reused: a re-read page gets a new blob, so
 /// the layout a visitor has stays consistent with itself (its word ids
