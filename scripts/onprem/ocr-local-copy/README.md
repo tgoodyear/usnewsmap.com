@@ -31,9 +31,11 @@ The command is `crates/usnm-ingest/src/cli/ocr_local_copy.rs` and the logic `cra
 5. **Seed.** On the host holding `tank`, copy what's already there, so only the gap crosses the network:
 
    ```sh
-   rsync -a --ignore-existing --chmod=F440,D750 --chown=102100:102101 \
+   rsync -a --ignore-existing --chmod=F440,D2750 --chown=102100:102101 \
      --exclude requests/ <existing ocr-local copy>/ /tank/azure/lake-alto/
    ```
+
+   `D2750` keeps the group on directories, so a file the copy writes later is in `searchlog-readers` like the seeded ones. Without it the copy's files are in its own group and the serving container can't read them.
 
 6. **First run.** Check the seeded bytes against the lake's Content-MD5, then enable the timer. `--verify` lists the lake, reads only the local copy, and copies nothing:
 
