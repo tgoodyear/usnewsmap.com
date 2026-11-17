@@ -76,6 +76,8 @@ test("redraws the page, switches views, colours by confidence and zooms", async 
   await expect(page.locator(".pv-scan")).toHaveCount(1);
   await page.getByLabel("Scan", { exact: true }).check();
   await expect(words.first()).toBeHidden();
+  // The words stay readable as plain text when the buttons are hidden.
+  await expect(page.locator("p.visually-hidden")).toContainText("Liberty bell rung");
   await page.getByLabel("Text", { exact: true }).check();
   await expect(page.locator(".pv-scan")).toHaveCount(0);
   await expect(words.first()).toBeVisible();

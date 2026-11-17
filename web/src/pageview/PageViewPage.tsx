@@ -41,7 +41,8 @@ export default function PageViewPage({ docId }: { docId: string }) {
   const scanHost = layout.data?.image?.iiif_base
     ? new URL(layout.data.image.iiif_base, "https://x.invalid").hostname
     : null;
-  const viewer = given ?? (scanHost && !scanHost.endsWith("loc.gov") ? null : locViewerUrl(docId));
+  const viewer =
+    given ?? (scanHost && !(scanHost === "loc.gov" || scanHost.endsWith(".loc.gov")) ? null : locViewerUrl(docId));
   return (
     <div className="app pv-app">
       <header className="topbar">
@@ -103,18 +104,24 @@ export default function PageViewPage({ docId }: { docId: string }) {
   );
 }
 
-function Viewer({ layout, docId, viewer }: { layout: PageLayout; docId: string; viewer: string | null }) {
+function Viewer({ layout, docId: urlId, viewer }: { layout: PageLayout; docId: string; viewer: string | null }) {
+  // The bare and `loc:` forms are one page: marks and feedback use the id the API returns.
+  const docId = layout.doc_id || urlId;
   const scan = layout.image?.full ?? null;
   const [mode, setMode] = useState<Mode>(scan ? "overlay" : "text");
   const [conf, setConf] = useState(false);
   const [zoom, setZoom] = useState(1);
-  const [popover, setPopover] = useState<{ index: number; x: number; y: number } | null>(null);
+  const [popoverRaw, setPopover] = useState<{ words: PlacedWord[]; index: number; x: number; y: number } | null>(null);
   const [scanFailed, setScanFailed] = useState(false);
   const hasScan = scan !== null && !scanFailed;
   const shown: Mode = hasScan ? mode : "text";
 
   // Measured once per layout, with a canvas: no DOM layout for 10,000 words.
   const words = useMemo(() => placeWords(layout, canvasMeasure()), [layout]);
+  // A selection belongs to the layout it was made on: a refetch that replaces it drops the popover.
+  const popover = popoverRaw && popoverRaw.words === words ? popoverRaw : null;
+  // In Scan view the buttons are hidden, so the words stay readable to a screen reader as text.
+  const transcript = useMemo(() => layout.lines.map((l) => l.words.map((w) => w.t).join(" ")).join("\n"), [layout]);
   const wordsRef = useRef<HTMLDivElement>(null);
   const active = useRef(0);
   // This reader's marks on this page: a Viewer is mounted per page, so read once.
@@ -175,7 +182,7 @@ function Viewer({ layout, docId, viewer }: { layout: PageLayout; docId: string; 
     const i = indexOf(e.target);
     if (i === null) return;
     const box = el(i)?.getBoundingClientRect();
-    if (box) setPopover({ index: i, x: box.left, y: box.bottom });
+    if (box) setPopover({ words, index: i, x: box.left, y: box.bottom });
   };
 
   const choose = (verdict: WordVerdict) => {
@@ -260,6 +267,7 @@ function Viewer({ layout, docId, viewer }: { layout: PageLayout; docId: string; 
           </>
         )}
       </p>
+      {shown === "scan" && <p className="visually-hidden">{transcript}</p>}
       <div className="pv-scroll" tabIndex={0} role="region" aria-label="Page">
         <div className={`pv-sizer pv--${shown}${conf ? " pv--conf" : ""}`} style={sizerStyle(layout, zoom)}>
           <div
