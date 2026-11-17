@@ -758,6 +758,9 @@ MAX_TICK_PAGES = 500
 # before it takes one az download-batch of all of them (at this rate, a minute's work).
 JOURNAL_REQUESTS = 16
 JOURNAL_DELTA_REST = 2000
+# Plans side by side (#1836): how many times a tick fetches the journals that changed while it
+# downloaded (another plan's collect or export) and lists again, before it fails.
+JOURNAL_SETTLE_TRIES = 5
 # --rest-journals lists each digit's journals with this delimiter (#308). A job's directory
 # holds record.json, request.json and accepted/*, and only record.json is read. Each listed
 # blob costs about 760 bytes of the account's egress, a grouped prefix about 110. A name
@@ -1537,13 +1540,40 @@ class Transport:
                     "--account-name", self.config["account"], "--auth-mode", "login",
                     "--only-show-errors", "-o", "none",
                 ], "batch journal inventory")
+                if self.plan_scope:
+                    # A journal another plan created after the listing came down too: left for the
+                    # next listing below, which fetches it.
+                    for path in list(cache.rglob("record.json")):
+                        if str(path.relative_to(cache)) not in snapshot and not path.is_symlink():
+                            path.unlink()
+                            with contextlib.suppress(OSError):
+                                path.parent.rmdir()
         expected = stored["files"] if reusable else {}
         if delta is not None:
             expected = {name: stored["files"][name] for name in names if name not in delta}
         records, checksums = self.read_journal_cache(cache, names, expected)
         if not reusable:
-            require(self.journal_inventory() == snapshot,
-                    "journal ETags changed during download; retry under the owner lock")
+            again = self.journal_inventory()
+            settled = 0
+            while again != snapshot:
+                # Plans side by side (#1836): another plan's collect or export changed journals
+                # while these came down. Fetch the changed ones and list again, a few times; every
+                # unchanged one keeps its checked digest. A plan alone still fails at once.
+                settled += 1
+                require(self.plan_scope and settled <= JOURNAL_SETTLE_TRIES,
+                        "journal ETags changed during download; retry under the owner lock")
+                changed = [name for name in again if snapshot.get(name) != again[name]]
+                for name in set(snapshot) - set(again):
+                    path = cache / name
+                    path.unlink(missing_ok=True)
+                    with contextlib.suppress(OSError):
+                        path.parent.rmdir()
+                self.download_journals(cache, changed)
+                kept = {name: checksums[name] for name in again if name not in changed}
+                snapshot, names = again, list(again)
+                identity = {**base, "entries": snapshot}
+                records, checksums = self.read_journal_cache(cache, names, kept)
+                again = self.journal_inventory()
             save(manifest, {**identity, "files": checksums})
         self._journal_snapshot = snapshot
         self._journal_records = copy.deepcopy(records)
