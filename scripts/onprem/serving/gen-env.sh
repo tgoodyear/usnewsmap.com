@@ -32,6 +32,9 @@
 #   independent of visitor search logging.
 # - USNM_SITEMAP_GENERATE: unset, so on-prem generates. An Azure app at zero
 #   replicas sets it false and serves its last checkpoint.
+# - USNM_ALTO_URL: the host's OCR ALTO copy, mounted read-only at
+#   /srv/usnm-lake/ocr-local (the store root is /srv/usnm-lake), where the
+#   Azure app has no setting: it serves no page layout from the lake.
 # - USNM_SEARCH_LOG_URL and USNM_OCR_REQUESTS_URL: unset until the public
 #   cutover (#955 Phase 3), because the API records same-origin searches on
 #   any hostname.
@@ -109,6 +112,7 @@ trap 'rm -f "$API_ENV"' EXIT
   echo "USNM_REFERENCE_URL=https://$STORAGE.blob.core.windows.net/reference"
   echo "USNM_RESPONSE_CACHE_URL=/srv/usnm-serving/cache"
   echo "USNM_SITEMAP_STATE_URL=/srv/usnm-serving/sitemap-state"
+  echo "USNM_ALTO_URL=/srv/usnm-lake"
   if $PRODUCTION; then
     echo "USNM_SEARCH_LOG_URL=https://$STORAGE.blob.core.windows.net/searches"
     if [ "$(get USNM_OCR_NODES false)" = true ] && [ "$(get USNM_USE_ACR false)" = true ] &&
@@ -192,7 +196,7 @@ if $CHECK_APP; then
     | ($onprem | split("\n") | map(select(length > 0) | capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): .v}) | add) as $o
     | ["USNM_QUICKWIT_URL", "USNM_RESPONSE_CACHE_URL", "USNM_SITEMAP_STATE_URL", "USNM_COMPUTE_CONCURRENCY", "USNM_TRUSTED_PROXY_HOPS", "USNM_PREWARM_STARTUP_BUDGET_SECS", "USNM_READY_CAP_SECS"] as $differ
     | (["AZURE_CLIENT_ID", "USNM_SITEMAP_GENERATE"] + (if $production then [] else ["USNM_SEARCH_LOG_URL", "USNM_OCR_REQUESTS_URL"] end)) as $azure_only
-    | ["IDENTITY_ENDPOINT", "IMDS_ENDPOINT", "USNM_SITEMAP_STATE_URL", "USNM_TRUST_CF_CONNECTING_IP", "USNM_READY_REQUIRES_PUBLISHED_INDEXES", "USNM_API_HOST", "USNM_SITE_HOST"] as $onprem_only
+    | ["IDENTITY_ENDPOINT", "IMDS_ENDPOINT", "USNM_SITEMAP_STATE_URL", "USNM_ALTO_URL", "USNM_TRUST_CF_CONNECTING_IP", "USNM_READY_REQUIRES_PUBLISHED_INDEXES", "USNM_API_HOST", "USNM_SITE_HOST"] as $onprem_only
     | ($a | keys) as $ak | ($o | keys) as $ok
     | [($ak - $ok - $azure_only)[] as $k | "\($k): only in the Azure app (\($a[$k]))"]
     + [($ok - $ak - $onprem_only)[] as $k | "\($k): only here (\($o[$k]))"]

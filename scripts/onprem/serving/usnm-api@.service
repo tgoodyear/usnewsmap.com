@@ -17,6 +17,12 @@
 # Sitemap checkpoints instead share a durable directory across colors. Their
 # create-only store uses process-unique temporary names and atomic appends.
 #
+# The OCR ALTO copy (scripts/onprem/ocr-local-copy) is mounted read-only from
+# the host, where home-infra's serving-ct.sh --alto-dir binds the dataset in.
+# Its files are readable by group 2101 only, the copy's searchlog-readers
+# group, which is why the unit adds that group. USNM_ALTO_URL=/srv/usnm-lake
+# makes ocr-local/alto/ the store's path for /v1/pages/{doc_id}/layout.
+#
 # Host network, as on the BOINC host (docs/boinc/server/onprem.md), so the API
 # reaches the searcher and the Arc agent's identity endpoint on loopback.
 # The himds group reads the agent's challenge files. The stop timeout
@@ -38,6 +44,7 @@ ExecStart=/usr/bin/podman run --rm --name usnm-api-%i --network host --pull neve
   --env-file /etc/usnm-serving/api.env -e USNM_BIND=${USNM_BIND} \
   -v /srv/usnm-serving/cache/shared:/srv/usnm-serving/cache \
   -v /srv/usnm-serving/sitemap-state:/srv/usnm-serving/sitemap-state \
+  -v /srv/usnm-lake/ocr-local:/srv/usnm-lake/ocr-local:ro --group-add 2101 \
   -v /var/opt/azcmagent/tokens:/var/opt/azcmagent/tokens:ro --group-add ${HIMDS_GID} \
   --read-only --tmpfs /tmp:rw,size=64m --cap-drop all --security-opt no-new-privileges \
   --memory 2g --stop-timeout 40 ${API_IMAGE}
