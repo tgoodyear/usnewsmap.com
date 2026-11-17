@@ -41,7 +41,9 @@ describe("Hit", () => {
     );
     expect(screen.queryByText(/^Our OCR/)).toBeNull();
     expect(screen.queryByText(/^American Stories OCR/)).toBeNull();
-    expect(screen.getByRole("link").textContent).toBe("View page at the Library of Congress");
+    expect(screen.getByRole("link", { name: "View page at the Library of Congress" })).toBeTruthy();
+    // Our own view of the page, from its stored OCR (#2026), next to LoC's.
+    expect(screen.getByRole("link", { name: "View page" }).getAttribute("href")).toBe(`/page/${page.doc_id}`);
   });
 
   it("marks a page that matched only in American Stories' text, with the note in its text too", () => {
@@ -57,7 +59,7 @@ describe("Hit", () => {
     );
     expect(badge.getAttribute("title")).toMatch(/The snippet comes from that text\./);
     expect(badge.textContent).toBe(`American Stories OCR. ${badge.getAttribute("title")}`);
-    expect(screen.getByRole("link").textContent).toBe("View page at the Library of Congress");
+    expect(screen.getByRole("link", { name: "View page at the Library of Congress" })).toBeTruthy();
   });
 
   it("shows a Congress page with its title and its source's viewer, without the OCR badge (#229)", () => {

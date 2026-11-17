@@ -683,3 +683,40 @@ export interface DaysResponse {
   index_version: string;
   places: { id: string; days: number[]; hits: number[] }[];
 }
+
+/** A box on the page's scan, in pixels of the scan: `[x, y, width, height]`. */
+export type LayoutRect = [number, number, number, number];
+
+/** One word of `GET /v1/pages/{doc_id}/layout` (#2026). */
+export interface LayoutWord {
+  /** Index within its line. */
+  i: number;
+  t: string;
+  rect: LayoutRect;
+  /** The engine's confidence, 0 to 1. Absent when the engine gives none. */
+  c?: number | null;
+}
+
+export interface LayoutLine {
+  /** Block and line index within the ALTO file. */
+  b: number;
+  l: number;
+  rect: LayoutRect;
+  words: LayoutWord[];
+}
+
+/** A page redrawn from its stored ALTO. Coordinates are pixels of `width` by `height`. */
+export interface PageLayout {
+  doc_id: string;
+  engine: string;
+  /** The ALTO file's stamp, when the API sends it; word ids use it in place of the engine. */
+  stamp?: string | null;
+  width: number;
+  height: number;
+  granularity: "word";
+  /** The scan: `full` is null when no image can be shown. */
+  image: { iiif_base: string | null; full: string | null };
+  lines: LayoutLine[];
+}
+
+export type WordVerdict = "right" | "wrong";

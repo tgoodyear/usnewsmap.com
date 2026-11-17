@@ -1,6 +1,7 @@
 /**
  * The page for a path. `/`, `/search/<query>` and known `/examples/<id>` are search, `/datasets`
- * the dataset details, `/privacy` the privacy notice, `/credits` the OCR credits, and anything else not
+ * the dataset details, `/privacy` the privacy notice, `/credits` the OCR credits, `/page/<doc_id>` one
+ * page redrawn in its scan layout (#2026), and anything else not
  * found. The API answers the same paths with 200 and the rest with 404
  * (`is_app_page` in crates/usnm-api/src/site.rs). `/index.html` is the home
  * page's file, which the API serves with a 200, with or without a trailing
@@ -11,7 +12,7 @@
  */
 import { exampleForPath } from "./examples";
 
-export type Page = "search" | "datasets" | "privacy" | "credits" | "not-found";
+export type Page = "search" | "datasets" | "privacy" | "credits" | "page" | "not-found";
 
 /** The dataset details page's path, and its old one (#294). */
 export const DATASETS_PATH = "/datasets";
@@ -69,8 +70,32 @@ export function queryForPath(pathname: string, mode = "phrase"): string | null {
   return q.length > 0 && q.length <= 256 && q !== "." && q !== ".." ? q : null;
 }
 
+/**
+ * The document id in a `/page/<doc_id>` path, decoded, or null. A source-qualified id
+ * (`loc:sn85055101_1917-04-03_ed-1_seq-3`) and the bare form are both accepted; nothing
+ * else is checked here, since the API answers 404 for an id it has no layout for.
+ * Mirrored by `page_doc_id` in crates/usnm-api/src/site.rs.
+ */
+export function docIdForPath(pathname: string): string | null {
+  const match = /^\/page\/([^/]+)\/?$/.exec(pathname);
+  if (!match) return null;
+  let id: string;
+  try {
+    id = decodeURIComponent(match[1]!);
+  } catch {
+    return null;
+  }
+  return id.length > 0 && id.length <= 200 && id !== "." && id !== ".." && !/[\s/\\?#]/.test(id) ? id : null;
+}
+
+/** The path of one page's view. A colon is legal in a path segment, so it stays readable. */
+export function pagePath(docId: string): string {
+  return `/page/${encodeURIComponent(docId).replace(/%3A/gi, ":")}`;
+}
+
 export function pageFor(pathname: string): Page {
   if (exampleForPath(pathname) || queryForPath(pathname) !== null) return "search";
+  if (docIdForPath(pathname) !== null) return "page";
   switch (pathname.replace(/\/+$/, "")) {
     case "":
     case "/index.html":
@@ -93,5 +118,6 @@ export const TITLES: Record<Page, string> = {
   datasets: "Dataset details and index status · US News Map",
   privacy: "Privacy and data handling · US News Map",
   credits: "OCR engine and model credits · US News Map",
+  page: "Newspaper page · US News Map",
   "not-found": "Page not found · US News Map",
 };
