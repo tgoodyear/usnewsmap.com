@@ -293,3 +293,26 @@ async fn a_client_over_the_rate_limit_is_refused() {
     assert_eq!(problem["type"], "/errors/rate-limited");
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[tokio::test]
+async fn a_mark_from_another_site_is_refused_and_one_without_origin_is_accepted() {
+    let root = dir("origin");
+    let fb = feedback(&root);
+    let s = state_with(Some(fb.clone())).await;
+    let own = format!("https://{}", s.config.site_host);
+    let post = |origin: Option<&str>| {
+        let mut req = Request::post("/v1/word-feedback").header(header::CONTENT_TYPE, "text/plain");
+        if let Some(o) = origin {
+            req = req.header(header::ORIGIN, o);
+        }
+        req.body(Body::from(mark(DOC, WORD, "right"))).unwrap()
+    };
+    let (status, _, _) = send(&s, post(Some("https://evil.example"))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, _) = send(&s, post(Some(&own))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, _) = send(&s, post(None)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    // Only the two accepted marks were stored.
+    assert_eq!(stored(&root, &fb).await.len(), 2);
+}

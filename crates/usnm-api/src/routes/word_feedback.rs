@@ -8,6 +8,9 @@
 //! as [`crate::ocr_requests`] stores page ids (see [`crate::word_feedback`]):
 //! no address, user agent or time beyond the UTC day.
 //!
+//! A request whose `Origin` is another site is refused with 403; one with no
+//! `Origin` is accepted, as for `/v1/beacon`.
+//!
 //! `DNT` and `Sec-GPC` are not read. They opt a visitor out of tracking and
 //! analytics, and a mark carries no identity; the reader marks a word on
 //! purpose. Declining to mark is the opt-out.
@@ -27,7 +30,7 @@ use serde::Deserialize;
 use usnm_core::ids::PageKey;
 use usnm_core::page_id::{PageId, Source};
 
-use super::beacon::read_body;
+use super::beacon::{is_other_origin, read_body};
 use crate::error::ApiError;
 use crate::word_feedback::{Mark, Verdict};
 use crate::AppState;
@@ -54,6 +57,13 @@ struct Body {
 
 pub async fn word_feedback(State(state): State<Arc<AppState>>, req: Request) -> Response {
     let (parts, body) = req.into_parts();
+    // text/plain is CORS-safelisted, so another site's page can post a mark
+    // from a visitor's browser without a preflight. Browsers always send
+    // Origin on a cross-site POST; refuse it before reading the body. A
+    // request with no Origin (a script, curl) is accepted, as `/v1/beacon` does.
+    if is_other_origin(&state, &parts.headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     let bytes = match read_body(&parts.headers, body, "the word mark", MAX_BODY).await {
         Ok(bytes) => bytes,
         Err(e) => return e.into_response(),
