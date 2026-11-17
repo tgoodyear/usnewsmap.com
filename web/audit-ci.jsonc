@@ -1,0 +1,10 @@
+// Settings for `npx audit-ci` (see the web job in .github/workflows/ci.yml).
+{
+  "high": true,
+  "allowlist": [
+    // picomatch ReDoS. No patched release exists; picomatch <= 4.0.7 comes in through
+    // vite, vitest, tinyglobby and fdir (build and test only, never shipped to browsers).
+    // Remove once a fix is published: https://github.com/tgoodyear/usnewsmap.com/issues/2040
+    "GHSA-fc5q-39xc-vjpf",
+  ],
+}

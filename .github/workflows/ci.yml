@@ -1094,7 +1094,8 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-node-web
       - run: npm ci
-      - run: npm audit --audit-level=high
+      # audit-ci: same as `npm audit --audit-level=high`, minus the allowlist in web/audit-ci.jsonc.
+      - run: npx --yes audit-ci@7.1.0 --config audit-ci.jsonc
       - run: npm run lint
       # Prettier: web/ and Markdown anywhere in the repository.
       - run: npm run format:check
