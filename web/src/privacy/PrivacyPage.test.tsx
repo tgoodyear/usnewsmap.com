@@ -30,6 +30,16 @@ describe("PrivacyPage", () => {
     expect(text).not.toContain("copied from the search engine's own log");
   });
 
+  it("says a word mark sends only the page id, the word id and the verdict (#2026)", () => {
+    const { container } = render(<PrivacyPage />);
+    const text = container.textContent ?? "";
+    expect(screen.getByRole("heading", { name: "Word marks" })).toBeTruthy();
+    expect(text).toContain("the page's id, the word's id on that page and your verdict");
+    expect(text).toContain("It sends no identity, no search and no text");
+    expect(text).toContain("never the time, and never with your IP address");
+    expect(text).not.toContain("the site never sends them to its server");
+  });
+
   it("discloses primary/fallback serving, operational logs and Cloudflare caching", () => {
     const { container } = render(<PrivacyPage />);
     const text = container.textContent ?? "";

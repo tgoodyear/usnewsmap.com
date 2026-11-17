@@ -1,20 +1,20 @@
 openapi: 3.0.3
 info:
   title: US News Map API (Cloudflare Schema Validation)
-  version: '1.8'
+  version: '1.9'
   description: 'OpenAPI 3.0.3 request-validation profile derived from the public 3.1 document and checked
-    against the versioned router at da930a82. Both /v1 and /api/v1 are explicit paths. Validation is partial:
+    against the versioned router at 8a293716. Both /v1 and /api/v1 are explicit paths. Validation is partial:
     origin checks remain authoritative for query grammar, cross-parameter rules, repeated/unknown keys,
     and POST bodies. Responses are omitted because Cloudflare does not validate them. Root health probes,
     static pages, implicit HEAD, and CORS OPTIONS are outside this inventory. Review Profile Analysis
     before enforcement; do not use this as a whole-host fallthrough allowlist.'
 x-source:
   repository: https://github.com/tgoodyear/usnewsmap.com
-  referenceRevision: da930a82aab152b0e100dcca0c6a9aea91e476ee
+  referenceRevision: 8a29371619df6047bfd4a70a54c176a2117610eb
   router: crates/usnm-api/src/lib.rs
-  routerSha256: c27b08b07ddcfee7c5029b6ef8aa4fcb2f1bd221a24262343b203025e92322e0
+  routerSha256: 245b5ca8c71719e5ea63e108835555a68d09b05ef0991ca6b3b1e9982d08f693
   openapiSource: https://api.usnewsmap.com/v1/openapi.json
-  openapiCanonicalSha256: 3e0412511d2af7f02105a0fd0b2478965e2acd7eb9c10be2a042cebc132fe09f
+  openapiCanonicalSha256: b36dd5ce68766c2ada09946becf360454708fa62a8052fdfe8a43c21afda091a
 servers:
 - url: https://api.usnewsmap.com
 - url: https://usnewsmap.com
@@ -554,6 +554,21 @@ paths:
       responses:
         default:
           description: See /v1/openapi.json for response schemas.
+  /api/v1/pages/{doc_id}/layout:
+    get:
+      operationId: page_layoutAlias1
+      summary: A page's words and their boxes
+      parameters:
+      - name: doc_id
+        in: path
+        required: true
+        description: 'A LoC page id: `{lccn}_{yyyy-mm-dd}_ed-{n}_seq-{n}`, with or without the `loc:`
+          prefix. Another source''s id is a 404, a malformed one a 400.'
+        schema:
+          type: string
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
   /api/v1/places:
     get:
       operationId: placesAlias1
@@ -638,6 +653,16 @@ paths:
       responses:
         default:
           description: See /v1/openapi.json for response schemas.
+  /api/v1/word-feedback:
+    post:
+      operationId: wordFeedbackAlias1
+      summary: Reader's verdict on one word of a page view (internal)
+      description: 'Endpoint inventory only: request body validation is left to the origin. It accepts
+        JSON as application/json or text/plain; legitimate bodies can exceed Cloudflare''s Free-plan 1
+        KiB validation limit.'
+      responses:
+        default:
+          description: No content.
   /v1/aggregate:
     get:
       operationId: aggregate
@@ -1173,6 +1198,21 @@ paths:
       responses:
         default:
           description: See /v1/openapi.json for response schemas.
+  /v1/pages/{doc_id}/layout:
+    get:
+      operationId: page_layout
+      summary: A page's words and their boxes
+      parameters:
+      - name: doc_id
+        in: path
+        required: true
+        description: 'A LoC page id: `{lccn}_{yyyy-mm-dd}_ed-{n}_seq-{n}`, with or without the `loc:`
+          prefix. Another source''s id is a 404, a malformed one a 400.'
+        schema:
+          type: string
+      responses:
+        default:
+          description: See /v1/openapi.json for response schemas.
   /v1/places:
     get:
       operationId: places
@@ -1257,3 +1297,13 @@ paths:
       responses:
         default:
           description: See /v1/openapi.json for response schemas.
+  /v1/word-feedback:
+    post:
+      operationId: wordFeedback
+      summary: Reader's verdict on one word of a page view (internal)
+      description: 'Endpoint inventory only: request body validation is left to the origin. It accepts
+        JSON as application/json or text/plain; legitimate bodies can exceed Cloudflare''s Free-plan 1
+        KiB validation limit.'
+      responses:
+        default:
+          description: No content.

@@ -262,6 +262,17 @@ fn same_site(origin: &str, site_host: &str) -> bool {
             .is_some_and(|sub| sub.ends_with('.'))
 }
 
+/// Whether the request names an `Origin` that is neither the site nor one of
+/// `USNM_ALLOWED_ORIGINS`. A request with no `Origin` (not a browser) is not
+/// "other": the header is a guard against other sites' pages, not a login.
+pub(super) fn is_other_origin(state: &AppState, headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    let own = format!("https://{}", state.config.site_host);
+    origin != own && !state.config.allowed_origins.iter().any(|o| o == origin)
+}
+
 /// Forward a valid page view unless the client opted out, looks like a bot
 /// or came from another site. Returns the outcome for `api.beacons`.
 fn forward(
@@ -277,11 +288,8 @@ fn forward(
     }
     // Browsers send Origin with a POST; a page on another site posting here
     // doesn't count as a visit.
-    if let Some(origin) = header("origin") {
-        let own = format!("https://{}", state.config.site_host);
-        if origin != own && !state.config.allowed_origins.iter().any(|o| o == origin) {
-            return "other_origin";
-        }
+    if is_other_origin(state, headers) {
+        return "other_origin";
     }
     let ua = header("user-agent").unwrap_or_default();
     if is_bot(ua) {

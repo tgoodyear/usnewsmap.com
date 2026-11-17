@@ -530,6 +530,7 @@ class GenEnv(unittest.TestCase):
         self.assertEqual(api["USNM_QUICKWIT_URL"], "http://127.0.0.1:7280")
         self.assertEqual(api["USNM_RESPONSE_CACHE_URL"], "/srv/usnm-serving/cache")
         self.assertEqual(api["USNM_SITEMAP_STATE_URL"], "/srv/usnm-serving/sitemap-state")
+        self.assertEqual(api["USNM_WORD_FEEDBACK_URL"], "/srv/usnm-serving/word-feedback")
         self.assertEqual(api["USNM_ALTO_URL"], "/srv/usnm-lake")
         self.assertNotIn("USNM_SITEMAP_GENERATE", api)
         self.assertEqual(api["USNM_ALLOWED_ORIGINS"], "https://usnewsmap.com,https://www.usnewsmap.com")
@@ -580,7 +581,8 @@ class GenEnv(unittest.TestCase):
 
     def azure_app(self, **changes):
         api = dict(line.split("=", 1) for line in self.files(self.gen("--dry-run").stdout)["api.env"].splitlines())
-        for k in ("IDENTITY_ENDPOINT", "IMDS_ENDPOINT", "USNM_SITEMAP_STATE_URL", "USNM_ALTO_URL", "USNM_TRUST_CF_CONNECTING_IP",
+        for k in ("IDENTITY_ENDPOINT", "IMDS_ENDPOINT", "USNM_SITEMAP_STATE_URL", "USNM_ALTO_URL", "USNM_WORD_FEEDBACK_URL",
+                  "USNM_TRUST_CF_CONNECTING_IP",
                   "USNM_READY_REQUIRES_PUBLISHED_INDEXES"):
             del api[k]
         api.update({"USNM_QUICKWIT_URL": "http://usnm-search-ca-prod", "USNM_RESPONSE_CACHE_URL": "https://x/cache",
@@ -666,6 +668,7 @@ class Install(Stubbed):
         self.assertTrue(os.path.isfile(os.path.join(etc, "systemd/journald.conf.d/usnm-serving.conf")))
         self.assertIn("chown 1000:1000 %s/srv/usnm-serving/cache" % self.root, self.calls())
         self.assertIn("chown 1000:1000 %s/srv/usnm-serving/sitemap-state" % self.root, self.calls())
+        self.assertIn("chown 1000:1000 %s/srv/usnm-serving/word-feedback" % self.root, self.calls())
         # The ALTO mount point exists before the host mounts the dataset on it, so a color still starts.
         self.assertTrue(os.path.isdir(os.path.join(self.root, "srv/usnm-lake/ocr-local")))
         open(self.log, "w").close()
@@ -787,8 +790,8 @@ class Static(unittest.TestCase):
         match = re.search(r"export const LIMITED_PATHS = new Set\(\[([^\]]*)\]\);", worker)
         self.assertIsNotNone(match)
         self.assertEqual(sorted(re.findall(r'"([^"]+)"', match.group(1))),
-                         ["/api/v1/aggregate", "/api/v1/hits", "/api/v1/search-report",
-                          "/mcp", "/mcp/", "/v1/aggregate", "/v1/hits", "/v1/search-report"])
+                         ["/api/v1/aggregate", "/api/v1/hits", "/api/v1/search-report", "/api/v1/word-feedback",
+                          "/mcp", "/mcp/", "/v1/aggregate", "/v1/hits", "/v1/search-report", "/v1/word-feedback"])
         # The page layout's path has the page id in it, so it is a pattern beside the set (#2026).
         self.assertIn(r'export const LIMITED_PATTERN = /^(?:\/api)?\/v1\/pages\/[^/]+\/layout$/;', worker)
         with open(os.path.join(ROOT, "crates", "usnm-api", "src", "lib.rs")) as f:
@@ -796,6 +799,7 @@ class Static(unittest.TestCase):
         for route in ('("/aggregate", get(routes::aggregate))', '("/hits", get(routes::hits))',
                       '("/pages/{doc_id}/layout", get(routes::layout))',
                       '("/search-report", post(routes::search_report))',
+                      '("/word-feedback", post(routes::word_feedback))',
                       '.nest("/v1", v1.clone())', '.nest("/api/v1", v1)'):
             self.assertIn(route, api)
         with open(os.path.join(ROOT, "crates", "usnm-api", "src", "mcp.rs")) as f:
@@ -825,6 +829,9 @@ class Static(unittest.TestCase):
         self.assertIn("-v /srv/usnm-serving/sitemap-state:/srv/usnm-serving/sitemap-state",
                       self.read("usnm-api@.service"))
         self.assertIn("d /srv/usnm-serving/sitemap-state 0750 1000 1000 -", tmpfiles)
+        self.assertIn("-v /srv/usnm-serving/word-feedback:/srv/usnm-serving/word-feedback",
+                      self.read("usnm-api@.service"))
+        self.assertIn("d /srv/usnm-serving/word-feedback 0750 1000 1000 -", tmpfiles)
 
     def test_alto_copy_is_mounted_read_only_for_the_api(self):
         unit = self.read("usnm-api@.service")

@@ -164,6 +164,9 @@ pub struct Config {
     pub search_log_flush: Duration,
     /// Where qualifying hit page ids are staged for on-prem OCR.
     pub ocr_requests_url: Option<String>,
+    /// Where readers' per-word marks are staged (`USNM_WORD_FEEDBACK_URL`).
+    /// Unset, `POST /v1/word-feedback` answers 503.
+    pub word_feedback_url: Option<String>,
     /// The curated store (`USNM_ALTO_URL`), where `/v1/pages/{doc_id}/layout`
     /// reads our OCR's ALTO under `ocr-local/alto/`. Unset, the route answers
     /// 404 for every page.
@@ -342,6 +345,7 @@ impl Config {
             sitemap_state_url: var("USNM_SITEMAP_STATE_URL"),
             search_log_flush: Duration::from_secs(num("USNM_SEARCH_LOG_FLUSH_SECS", 300)?.max(1)),
             ocr_requests_url: var("USNM_OCR_REQUESTS_URL"),
+            word_feedback_url: var("USNM_WORD_FEEDBACK_URL"),
             alto_url: var("USNM_ALTO_URL"),
             searcher_metrics_interval: Duration::from_secs(num("USNM_SEARCHER_METRICS_SECS", 60)?),
             american_stories_search: flag("USNM_AMERICAN_STORIES_SEARCH", true)?,
@@ -418,6 +422,7 @@ mod tests {
         assert!(c.sitemap_generate);
         assert_eq!(c.search_log_flush, Duration::from_secs(300));
         assert!(c.ocr_requests_url.is_none());
+        assert!(c.word_feedback_url.is_none());
         assert!(c.alto_url.is_none());
         assert_eq!(c.compute_cap, Duration::from_secs(120));
         assert_eq!(c.compute_concurrency, 2);

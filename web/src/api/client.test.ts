@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, isPlain, isRetryable, MAX_COMPUTE_WAIT_MS, searchQuery, VersionChangedError } from "./client";
+import {
+  api,
+  ApiError,
+  isPlain,
+  isRetryable,
+  MAX_COMPUTE_WAIT_MS,
+  searchQuery,
+  submitWordFeedback,
+  VersionChangedError,
+} from "./client";
 
 function respond(body: unknown, status = 200, type = "application/json") {
   vi.stubGlobal(
@@ -291,5 +300,48 @@ describe("searchQuery and the Congress source (#229)", () => {
     expect(q({ q: "gold", mode: "all", source: "congress", series: ["globe", "serialset"] })).toBe(
       "q=gold&source=congress&series=globe%2Cserialset&v=v",
     );
+  });
+});
+
+describe("submitWordFeedback (#2026)", () => {
+  it("posts only the page id, the word id and the verdict, once, with no credentials", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(submitWordFeedback("loc:sn1_1900-01-01_ed-1_seq-1", "20261101T120000Z:0:1:2", "wrong")).resolves.toBe(
+      undefined,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toMatch(/\/v1\/word-feedback$/);
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("omit");
+    // text/plain needs no CORS preflight.
+    expect(init.headers).toEqual({ "content-type": "text/plain;charset=UTF-8" });
+    expect(JSON.parse(init.body as string)).toEqual({
+      v: 1,
+      doc_id: "loc:sn1_1900-01-01_ed-1_seq-1",
+      word_id: "20261101T120000Z:0:1:2",
+      verdict: "wrong",
+    });
+  });
+
+  it("rejects with the problem on a refusal and does not retry", async () => {
+    const fetchMock = sequence(() => problem(429, "/errors/rate-limited", "10"));
+    const err = await submitWordFeedback("a", "b", "right").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).problem.status).toBe(429);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    sequence(() => problem(503, "/errors/unavailable"));
+    await expect(submitWordFeedback("a", "b", "right")).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("rejects when the network fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("offline");
+      }),
+    );
+    await expect(submitWordFeedback("a", "b", "right")).rejects.toThrow("offline");
   });
 });

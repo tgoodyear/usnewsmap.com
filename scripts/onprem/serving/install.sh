@@ -124,6 +124,10 @@ run mkdir -p "$R/srv/usnm-lake/ocr-local"
 run mkdir -p "$SRV/sitemap-state"
 run chown "$CACHE_UID:$CACHE_UID" "$SRV/sitemap-state"
 run chmod 750 "$SRV/sitemap-state"
+# Readers' word marks (USNM_WORD_FEEDBACK_URL): durable like the sitemap state.
+run mkdir -p "$SRV/word-feedback"
+run chown "$CACHE_UID:$CACHE_UID" "$SRV/word-feedback"
+run chmod 750 "$SRV/word-feedback"
 
 # The index the searcher reads must be there, as the config names it.
 index=$(sed -n 's|^default_index_root_uri: file://||p' "$CONFIG/searcher.yaml")

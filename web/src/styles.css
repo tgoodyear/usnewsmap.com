@@ -1967,6 +1967,12 @@ details.status-error > summary {
 .pv-state {
   margin: 1.5rem 0;
 }
+.pv-notice {
+  margin: 0.25rem 0 0.75rem;
+  padding: 0.4rem 0.6rem;
+  border-left: 3px solid var(--danger);
+  background: var(--panel);
+}
 .pv-toolbar {
   display: flex;
   flex-wrap: wrap;

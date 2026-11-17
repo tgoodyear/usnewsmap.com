@@ -28,8 +28,9 @@ export default function PrivacyPage() {
         <p>
           The site does keep two things in your browser's local storage. One is whether the place lists in the side
           panel are shown or hidden. The other is the words you mark right or wrong on a page's text view, saved per
-          page. Both stay in your browser: the site never sends them to its server, and nothing else reads them. Clear
-          the site's data in your browser's settings to remove them.
+          page so you can see what you marked. The place-list setting never leaves your browser. A mark is sent to the
+          server only at the moment you make it, as described under Word marks below. Nothing else reads either one.
+          Clear the site's data in your browser's settings to remove them.
         </p>
 
         <h2>Page views</h2>
@@ -56,6 +57,18 @@ export default function PrivacyPage() {
         <p>
           If your browser sends Do Not Track or Global Privacy Control, the site sends no page views, and the server
           discards any that arrive with either signal.
+        </p>
+
+        <h2>Word marks</h2>
+        <p>
+          When you mark a word right or wrong on a page's text view, your browser sends the server three things: the
+          page's id, the word's id on that page and your verdict (right or wrong). It sends no identity, no search and
+          no text, and nothing is sent unless you press Right or Wrong. The server stores each mark with only the day it
+          arrived, never the time, and never with your IP address, browser details, location or any identifier. Marks
+          are stored in random order, so their order says nothing about who made them. Do Not Track and Global Privacy
+          Control do not stop a mark, because you send it yourself and it carries nothing about you. Mark nothing and
+          nothing is sent. Only the site's maintainer can read the stored marks. As with every request, Cloudflare sees
+          the request itself, as described below.
         </p>
 
         <h2>Searches</h2>
@@ -124,9 +137,9 @@ export default function PrivacyPage() {
         <p>
           Microsoft Azure processes and stores the site's reports in its East US 2 region (Virginia, United States).
           Page views, request records and the server's error reports are deleted after 90 days, and its other logs after
-          30 days. The search words described above are kept indefinitely. The on-prem servers also keep published
-          search data, response caches and operational service journals; Cloudflare's records are separate as described
-          above.
+          30 days. The search words and word marks described above are kept indefinitely. The on-prem servers also keep
+          published search data, response caches, stored word marks and operational service journals; Cloudflare's
+          records are separate as described above.
         </p>
 
         <h2>Legal basis</h2>
@@ -135,7 +148,7 @@ export default function PrivacyPage() {
           keep the service working. That is a legitimate interest, and the site's anonymous reports keep no IP address,
           cookie or identifier. The same legitimate interest covers using Cloudflare to deliver and protect the site.
           The site doesn't ask for consent because the only things it stores on your device are the two settings
-          described at the top of this page, which you set yourself and which never leave your browser.
+          described at the top of this page, which you set yourself. A word mark is sent only when you make it.
         </p>
 
         <h2>Other sites</h2>

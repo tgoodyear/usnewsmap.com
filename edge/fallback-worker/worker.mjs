@@ -103,13 +103,14 @@ export default {
 // them against the API's routes. Every method but OPTIONS counts, so MCP's POST tool
 // calls do, and a browser's preflight doesn't count twice.
 export const LIMITED_PATHS = new Set([
-  "/v1/aggregate", "/v1/hits", "/v1/search-report",
-  "/api/v1/aggregate", "/api/v1/hits", "/api/v1/search-report",
+  "/v1/aggregate", "/v1/hits", "/v1/search-report", "/v1/word-feedback",
+  "/api/v1/aggregate", "/api/v1/hits", "/api/v1/search-report", "/api/v1/word-feedback",
   "/mcp", "/mcp/",
 ]);
 // A page's layout (/v1/pages/{doc_id}/layout, #2026) counts too: each request lists the
 // store's blobs, so a flood of made-up page ids would cost the origin even when it answers 404.
 // It shares the searches' budget, and has a pattern because its path carries the page id.
+// The word-feedback POST (#2026) is in LIMITED_PATHS: it writes to the origin's store.
 export const LIMITED_PATTERN = /^(?:\/api)?\/v1\/pages\/[^/]+\/layout$/;
 const MCP_ORIGINS = ["https://usnewsmap.com", "https://api.usnewsmap.com"];
 // Both bindings count over 10 seconds (wrangler.jsonc), so a limited client waits that long.

@@ -73,8 +73,8 @@ test("a client over the limit gets the API's 429 at the edge, and the tunnel is 
 
 test("every search and MCP path counts, under both prefixes and every method but OPTIONS", async () => {
   assert.deepEqual([...LIMITED_PATHS].sort(), [
-    "/api/v1/aggregate", "/api/v1/hits", "/api/v1/search-report",
-    "/mcp", "/mcp/", "/v1/aggregate", "/v1/hits", "/v1/search-report",
+    "/api/v1/aggregate", "/api/v1/hits", "/api/v1/search-report", "/api/v1/word-feedback",
+    "/mcp", "/mcp/", "/v1/aggregate", "/v1/hits", "/v1/search-report", "/v1/word-feedback",
   ]);
   for (const path of LIMITED_PATHS) {
     for (const method of ["GET", "POST", "HEAD"]) {

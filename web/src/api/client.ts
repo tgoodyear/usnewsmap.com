@@ -430,11 +430,22 @@ export const api = {
     getJson<PageLayout>(`/v1/pages/${encodeURIComponent(docId)}/layout`, { signal }),
 };
 
+/** How long a word mark may take before it counts as not sent. */
+const FEEDBACK_TIMEOUT_MS = 10_000;
+
 /**
- * Sends a reader's verdict on one word. A no-op until the endpoint exists.
- * TODO(#2026 PR 3): POST /v1/word-feedback `{v, doc_id, word_id, verdict}`. Nothing about the
- * reader is sent; the page keeps their own marks in localStorage.
+ * Sends a reader's verdict on one word: `POST /v1/word-feedback` with the page id, the word
+ * id and the verdict, and nothing else (#2026). No cookies, and no retry: a mark that fails
+ * stays in the reader's own localStorage and the caller says it wasn't sent. The body goes as
+ * text/plain, which needs no CORS preflight, as the beacon does. Rejects on any failure.
  */
 export async function submitWordFeedback(docId: string, wordId: string, verdict: WordVerdict): Promise<void> {
-  void [docId, wordId, verdict];
+  const res = await fetch(`${API_BASE}/v1/word-feedback`, {
+    method: "POST",
+    body: JSON.stringify({ v: 1, doc_id: docId, word_id: wordId, verdict }),
+    credentials: "omit",
+    headers: { "content-type": "text/plain;charset=UTF-8" },
+    signal: AbortSignal.timeout(FEEDBACK_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new ApiError(await problemOf(res));
 }

@@ -18,3 +18,4 @@ mod page_languages;
 mod reference;
 mod serving;
 mod snapshots;
+mod word_feedback;

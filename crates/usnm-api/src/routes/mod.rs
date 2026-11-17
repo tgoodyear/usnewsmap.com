@@ -8,6 +8,7 @@ pub(crate) use hits::ocr_for_hit;
 mod meta;
 mod search_report;
 mod titles;
+mod word_feedback;
 
 pub use aggregate::aggregate;
 pub(crate) use aggregate::{aggregate_in, cache_key as aggregate_key};
@@ -22,6 +23,7 @@ pub use meta::{meta, places, readyz};
 pub(crate) use meta::{meta_body, places_in};
 pub use search_report::search_report;
 pub use titles::{title, titles};
+pub use word_feedback::word_feedback;
 
 /// The response schemas and accepted parameters `/v1/openapi.json` describes.
 pub(crate) mod spec {

@@ -26,6 +26,7 @@ METHODS = {"get", "head", "post", "put", "patch", "delete", "options", "trace"}
 INTERNAL_POSTS = {
     "/beacon": ("beacon", "Page-view report from the site (internal)"),
     "/search-report": ("searchReport", "Edge-served search report from the site (internal)"),
+    "/word-feedback": ("wordFeedback", "Reader's verdict on one word of a page view (internal)"),
 }
 WS = r"(?:\s|\+|%20|%09)*"
 SEP = r"(?:,|%2[Cc])"
