@@ -184,6 +184,39 @@ case $TARGET in
 esac
 [[ $STEP =~ ^[a-z][a-z-]{0,40}$ ]] || die "--step is a bridge step name, such as register-apps or submit"
 
+# A plan's scope (#1836): PLAN_SCOPE=<plan> from a controller whose plans tick side by side. It
+# is the runner's, never the container's. The controller's hand-off steps, spool-out and
+# batch-inventory then share the hand-off lock with the other plans' steps and take a lock of
+# their own plan's: one step per plan at a time, any number of plans at once, and a caller
+# without a scope (the held-page archive's bridge step, an operator) still waits for them all and
+# keeps them all out. batch-inventory, native-spot and container-spot get it as BATCH_SCOPE and
+# write their report to scheduler/plans/<plan>/ (bridge-job.sh). Steps on the step lock
+# (submit-remote, native-spot, container-spot, gold) keep it: they create workunits and change
+# the trust list, which every plan shares.
+PLAN_SCOPE=""
+if [ "$TARGET" = handoff ] || [ "$TARGET" = bridge ]; then
+  unscoped=()
+  for v in ${VARS[@]+"${VARS[@]}"}; do
+    case $v in
+      PLAN_SCOPE=*)
+        [ -z "$PLAN_SCOPE" ] || die "PLAN_SCOPE is given twice"
+        PLAN_SCOPE=${v#*=}
+        [[ $PLAN_SCOPE =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] ||
+          die "PLAN_SCOPE is a plan name: lower-case letters, digits and dashes" ;;
+      *) unscoped+=("$v") ;;
+    esac
+  done
+  VARS=(${unscoped[@]+"${unscoped[@]}"})
+  if [ -n "$PLAN_SCOPE" ]; then
+    case $TARGET:$STEP in
+      handoff:claim | handoff:release | handoff:dead-letter | handoff:collect | handoff:export | \
+        bridge:spool-out | bridge:batch-inventory | bridge:submit-remote | bridge:native-spot | \
+        bridge:container-spot) ;;
+      *) die "--step $STEP takes no PLAN_SCOPE" ;;
+    esac
+  fi
+fi
+
 # The controller's local expiring lock (#1367, boinc/scripts/handoff_lock.py), kept in the
 # hand-off root. lock-* steps run on the host with no container. A mutating hand-off step given
 # LOCK_HOLDER and LOCK_GENERATION first checks that the stored record is still that holder's
@@ -606,6 +639,12 @@ if [ "$TARGET" = handoff ]; then
   fi
 fi
 
+# The report steps' scope (#1836), set by the runner after the inputs are checked.
+case $TARGET:$STEP in
+  bridge:batch-inventory | bridge:native-spot | bridge:container-spot)
+    [ -z "$PLAN_SCOPE" ] || VARS+=("BATCH_SCOPE=$PLAN_SCOPE") ;;
+esac
+
 # An archive or evidence copy of a failed page's journal (#1938): a real directory under one
 # of the roots below (colon-separated, USNM_BOINC_RETRY_JOURNAL_ROOTS), mounted read-only.
 RETRY_JOURNAL_HOST=""
@@ -663,16 +702,33 @@ lock_wait=$((10#$lock_wait))
 step_timeout=$((WAIT_MINS * 60))
 [ "$lock_wait" -lt "$step_timeout" ] || die "lock wait must be shorter than --wait-mins"
 lock_file=usnm-boinc-step.lock
+plan_lock=""
 case $TARGET:$STEP in
   bridge:quality-stage) lock_file=usnm-boinc-stage.lock ;;
-  handoff:* | bridge:spool-out | bridge:batch-inventory) lock_file=usnm-boinc-handoff.lock ;;
+  handoff:* | bridge:spool-out | bridge:batch-inventory)
+    lock_file=usnm-boinc-handoff.lock
+    # A scoped step (#1836): the hand-off lock shared, then its plan's own lock.
+    [ -z "$PLAN_SCOPE" ] || plan_lock=usnm-boinc-handoff.plan-$PLAN_SCOPE.lock ;;
 esac
-exec 9> "$RUN_DIR/$lock_file"
 lock_started=$SECONDS
-if [ "$lock_wait" -eq 0 ]; then
-  flock -n 9 || die "another bridge step is running on this host - wait for it to end first"
+# take_lock FD [FLOCK OPTION]: waits for the lock on FD for what is left of the lock wait.
+take_lock() {
+  local left
+  if [ "$lock_wait" -eq 0 ]; then
+    flock -n ${2:+"$2"} "$1" || die "another bridge step is running on this host - wait for it to end first"
+  else
+    left=$((lock_wait - (SECONDS - lock_started)))
+    [ "$left" -gt 0 ] || left=0
+    flock -w "$left" ${2:+"$2"} "$1" || die "another bridge step still holds the lock after ${lock_wait}s"
+  fi
+}
+exec 9> "$RUN_DIR/$lock_file"
+if [ -n "$plan_lock" ]; then
+  take_lock 9 -s
+  exec 7> "$RUN_DIR/$plan_lock"
+  take_lock 7
 else
-  flock -w "$lock_wait" 9 || die "another bridge step still holds the lock after ${lock_wait}s"
+  take_lock 9
 fi
 step_timeout=$((step_timeout - (SECONDS - lock_started)))
 [ "$step_timeout" -gt 0 ] || die "step deadline expired while waiting for the bridge lock"

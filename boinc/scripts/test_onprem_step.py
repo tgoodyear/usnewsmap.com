@@ -784,6 +784,128 @@ class OnpremStep(unittest.TestCase):
             self.assertIn("another bridge step is running", done.stderr)
             self.assertIsNone(captured)
 
+    @unittest.skipUnless(shutil.which("flock"), "native flock is required")
+    def test_plan_scoped_steps_share_the_handoff_lock_and_take_their_plans_own(self):
+        # #1836: plans that tick side by side run their hand-off steps at once, one per plan,
+        # and a step without a scope (the archive's, an operator's) still excludes them all.
+        import fcntl
+        import shlex
+
+        self.write_handoff_env()
+        directory = Path(self.conf.name, "run")
+        directory.mkdir()
+        script = f'exec {shlex.quote(shutil.which("flock"))} "$@"\n'
+        job = "JOB_IDS=" + "a" * 64
+
+        def collect(*scope):
+            Path(self.conf.name, "envfile").unlink(missing_ok=True)
+            argv = ["--env", "prod", "--target", "handoff", "--step", "collect", "--wait-mins", "1",
+                    "--var", job] + [arg for plan in scope for arg in ("--var", f"PLAN_SCOPE={plan}")]
+            return self.run_for_real(*argv, flock_script=script)
+
+        def inventory(plan):
+            Path(self.conf.name, "envfile").unlink(missing_ok=True)
+            return self.run_for_real("--env", "prod", "--step", "batch-inventory", "--wait-mins", "1",
+                                     "--var", "BATCH_NONCE=" + "b" * 32, "--var", f"PLAN_SCOPE={plan}",
+                                     flock_script=script)
+
+        with (directory / "usnm-boinc-handoff.lock").open("w") as other:
+            # Another plan's scoped step holds the hand-off lock shared.
+            fcntl.flock(other, fcntl.LOCK_SH)
+            done, captured = collect("native-feed-9")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("HANDOFF_STEP=collect", captured)
+            self.assertNotIn("PLAN_SCOPE", captured)
+            done, captured = inventory("native-feed-9")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("BATCH_SCOPE=native-feed-9", captured.splitlines())
+            self.assertNotIn("PLAN_SCOPE", captured)
+            # A step without a scope wants the lock to itself.
+            done, captured = collect()
+            self.assertIn("another bridge step is running", done.stderr)
+            self.assertIsNone(captured)
+        with (directory / "usnm-boinc-handoff.plan-native-feed-9.lock").open("w") as same:
+            fcntl.flock(same, fcntl.LOCK_EX)
+            for run in (lambda: collect("native-feed-9"), lambda: inventory("native-feed-9")):
+                done, captured = run()
+                self.assertIn("another bridge step is running", done.stderr)
+                self.assertIsNone(captured)
+            done, captured = collect("native-feed-8")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("HANDOFF_STEP=collect", captured)
+        with (directory / "usnm-boinc-handoff.lock").open("w") as archive:
+            # The archive's bridge step, or an operator's, holds it alone.
+            fcntl.flock(archive, fcntl.LOCK_EX)
+            done, captured = collect("native-feed-9")
+            self.assertIn("another bridge step is running", done.stderr)
+            self.assertIsNone(captured)
+            done, captured = inventory("native-feed-8")
+            self.assertIn("another bridge step is running", done.stderr)
+            self.assertIsNone(captured)
+        # The wait is shared by the two locks: shared hand-off lock, then the plan's.
+        done, _ = collect("native-feed-9")
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    @unittest.skipUnless(shutil.which("flock"), "native flock is required")
+    def test_plan_scope_leaves_the_step_lock_alone(self):
+        # Submits, spot checks and gold create workunits and change the trust list: one at a
+        # time on the step lock, whatever the plan.
+        import fcntl
+        import shlex
+
+        directory = Path(self.conf.name, "run")
+        directory.mkdir()
+        script = f'exec {shlex.quote(shutil.which("flock"))} "$@"\n'
+        with (directory / "usnm-boinc-step.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            done, captured = self.run_for_real(
+                "--env", "prod", "--step", "native-spot", "--wait-mins", "1",
+                "--var", "BATCH_NONCE=" + "b" * 32, "--var", "PLAN_SCOPE=native-feed-9",
+                flock_script=script)
+            self.assertIn("another bridge step is running", done.stderr)
+            self.assertIsNone(captured)
+        done, captured = self.run_for_real(
+            "--env", "prod", "--step", "native-spot", "--wait-mins", "1",
+            "--var", "BATCH_NONCE=" + "b" * 32, "--var", "PLAN_SCOPE=native-feed-9", flock_script=script)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("BATCH_SCOPE=native-feed-9", captured.splitlines())
+        Path(self.conf.name, "envfile").unlink()
+        done, captured = self.run_for_real(
+            "--env", "prod", "--step", "submit-remote", "--wait-mins", "1",
+            "--var", "JOB_IDS=" + "a" * 64, "--var", "PLAN_SCOPE=native-feed-9", flock_script=script)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("SCOPE", captured)
+
+    def test_plan_scope_refusals(self):
+        self.write_handoff_env()
+        nonce = "BATCH_NONCE=" + "b" * 32
+        ssh = "--env prod --step batch-inventory --wait-mins 5 --what-if --var " + nonce
+        done = self.run_step(ssh=ssh + " --var PLAN_SCOPE=native-feed-9")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("BATCH_SCOPE=native-feed-9", done.stdout)
+        self.assertNotIn("PLAN_SCOPE", done.stdout)
+        for bad, why in ((" --var PLAN_SCOPE=Native_9", "PLAN_SCOPE is a plan name"),
+                         (" --var PLAN_SCOPE=", "PLAN_SCOPE is a plan name"),
+                         (" --var PLAN_SCOPE=../x", "PLAN_SCOPE is a plan name"),
+                         (" --var PLAN_SCOPE=a --var PLAN_SCOPE=b", "PLAN_SCOPE is given twice"),
+                         # Only the runner sets the container's scope.
+                         (" --var BATCH_SCOPE=native-feed-9", "BATCH_SCOPE is not a controller bridge-step input")):
+            done = self.run_step(ssh=ssh + bad)
+            self.assertNotEqual(done.returncode, 0, bad)
+            self.assertIn(why, done.stderr, bad)
+        for step in ("register-apps", "gold-onboard", "quality-stage"):
+            done = self.run_step("--env", "prod", "--step", step, "--wait-mins", "5", "--what-if",
+                                 "--var", "PLAN_SCOPE=native-feed-9")
+            self.assertNotEqual(done.returncode, 0, step)
+            self.assertIn(f"--step {step} takes no PLAN_SCOPE", done.stderr)
+        done = self.run_step("--env", "prod", "--target", "handoff", "--step", "deadline-retry",
+                             "--wait-mins", "5", "--what-if", "--var", "PLAN_SCOPE=native-feed-9")
+        self.assertIn("takes no PLAN_SCOPE", done.stderr)
+        done = self.run_step(ssh="--env prod --target handoff --step collect --wait-mins 5 --what-if "
+                                 "--var JOB_IDS=" + "a" * 64 + " --var PLAN_SCOPE=main")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("SCOPE", done.stdout)
+
     def test_handoff_image_applies_to_handoff_steps_only(self):
         self.write_handoff_env()
         image = "sha256:" + "b" * 64

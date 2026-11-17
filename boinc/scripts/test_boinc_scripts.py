@@ -2191,6 +2191,61 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
                 self.assertEqual(run(**extra).returncode, 1)
                 self.assertEqual(self.calls(), [])
 
+    def test_bridge_batch_inventory_goes_to_its_plans_own_prefix_with_a_scope(self):
+        # #1836: with BATCH_SCOPE a plan's inventory is written and put apart from every other
+        # plan's, so two plans ticking at once never read each other's; without it, as before.
+        text = open(BRIDGE_JOB_SCRIPT).read()
+        helpers = "report_dir() {" + text.split("report_dir() {", 1)[1].split("validate_handoff_location() {", 1)[0]
+        block = text.split('  elif [ "$step" = batch-inventory ]; then\n', 1)[1].split("  else\n", 1)[0]
+        for name in ("native-spot", "container-spot"):
+            self.assertIn(f'--out "$out/{name}.json"', text)
+        self.assertEqual(text.count('handoff put --from "$out" --to-url "$HANDOFF_URL" --prefix "$(report_prefix)"'), 3)
+        bindir = os.path.join(self.tmp, "inv-bin")
+        templates = os.path.join(self.tmp, "inv-templates")
+        handoff = os.path.join(self.tmp, "inv-handoff")
+        for d in (bindir, templates, handoff):
+            os.makedirs(d)
+        with open(os.path.join(bindir, "usnm-boinc"), "w") as f:
+            f.write('#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_LOG"\n')
+        os.chmod(os.path.join(bindir, "usnm-boinc"), 0o755)
+        with open(os.path.join(templates, "batch-inventory.py"), "w") as f:
+            f.write("import json, sys\nargs = sys.argv[1:]\n"
+                    "json.dump({'nonce': args[args.index('--nonce') + 1]}, open(args[args.index('--out') + 1], 'w'))\n")
+        script = ('fail() { echo "error: $*" >&2; exit 1; }\nvalidate_handoff_location() { :; }\n'
+                  'mycnf=/dev/null\nDB_NAME=usnmocr\nPROJ=/project/usnmocr\n' + helpers +
+                  "if true; then :\n" + block + "fi\n")
+        env = {**self.env, "PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log,
+               "TEMPLATES": templates, "HANDOFF_DIR": handoff, "HANDOFF_URL": "/handoff-state",
+               "BATCH_NONCE": "c" * 32}
+
+        def run(**extra):
+            open(self.log, "w").close()
+            return subprocess.run(["bash", "-euo", "pipefail", "-c", script], env={**env, **extra},
+                                  capture_output=True, text=True)
+
+        r = run(BATCH_SCOPE="native-feed-9")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        scoped = os.path.join(handoff, "scheduler-plans", "native-feed-9")
+        with open(os.path.join(scoped, "inventory.json")) as f:
+            self.assertEqual(json.load(f)["nonce"], "c" * 32)
+        self.assertFalse(os.path.exists(os.path.join(handoff, "scheduler", "inventory.json")))
+        with open(self.log) as f:
+            self.assertEqual(f.read().splitlines(),
+                             [f"handoff put --from {scoped} --to-url /handoff-state --prefix scheduler/plans/native-feed-9"])
+        r = run()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.path.exists(os.path.join(handoff, "scheduler", "inventory.json")))
+        with open(self.log) as f:
+            self.assertEqual(f.read().splitlines(),
+                             [f"handoff put --from {handoff}/scheduler --to-url /handoff-state --prefix scheduler"])
+        for bad in ("Native-9", "../x", "a/b", "-x"):
+            with self.subTest(scope=bad):
+                r = run(BATCH_SCOPE=bad)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn("BATCH_SCOPE is a plan name", r.stderr)
+                with open(self.log) as f:
+                    self.assertEqual(f.read(), "")
+
     def test_bridge_wu_terminal_reads_the_database_and_writes_one_proof(self):
         # #1938: the step names its workunits and nonce, reads only, and puts one file.
         text = open(BRIDGE_JOB_SCRIPT).read()
