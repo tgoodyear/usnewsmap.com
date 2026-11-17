@@ -7,8 +7,6 @@ import { AMERICAN_STORIES_BADGE, LOC_ORIGINAL_BADGE, americanStoriesNote, locOri
 import { snippetSegments } from "../lib/snippet";
 import { formatDate } from "../lib/time";
 import { placeHitsQuery } from "./placeHits";
-import { pageHref } from "../pageview/placement";
-import { pagePath } from "../route";
 import { skewSentence, type SkewInfo } from "../lib/skewText";
 
 interface Props {
@@ -158,13 +156,6 @@ export function Hit({ h, synthetic }: { h: HitItem; synthetic: boolean }) {
                   ? "View the page image at the Library of Congress"
                   : "View page at the Library of Congress"}
             </a>
-          )}
-          {/* The layout comes from our stored OCR, for newspaper pages only (#2026). */}
-          {!site && (
-            <>
-              {h.links.viewer && " · "}
-              <a href={pageHref(pagePath(h.doc_id), h.links.viewer)}>View page</a>
-            </>
           )}
         </>
       )}
