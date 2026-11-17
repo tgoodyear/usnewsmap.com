@@ -539,6 +539,7 @@ class GenEnv(unittest.TestCase):
         self.assertEqual(api["USNM_INGEST_CRON"], "0 6 * * 1")
         self.assertEqual(api["USNM_COMPUTE_CONCURRENCY"], "2")
         self.assertEqual((api["USNM_PREWARM_STARTUP_BUDGET_SECS"], api["USNM_READY_CAP_SECS"]), ("300", "360"))
+        self.assertEqual(api["USNM_PREWARM_BUDGET_SECS"], "0")
         self.assertEqual(api["IDENTITY_ENDPOINT"], "http://localhost:40342/metadata/identity/oauth2/token")
         self.assertEqual(api["USNM_TRUST_CF_CONNECTING_IP"], "true")
         self.assertEqual(api["USNM_READY_REQUIRES_PUBLISHED_INDEXES"], "true")
@@ -556,10 +557,19 @@ class GenEnv(unittest.TestCase):
         self.assertNotIn("__STORAGE_ACCOUNT__", yaml)
         with open(os.path.join(ROOT, "infra/quickwit/searcher.yaml")) as f:
             source = f.read()
+        onprem = ("fast_field_cache_capacity", "partial_request_cache_capacity", "max_num_concurrent_split_searches")
         for line in source.splitlines():
             if line.startswith("  ") and not line.lstrip().startswith("#") and line.strip() not in ("azure:",) \
-                    and "account:" not in line:
+                    and "account:" not in line and not line.lstrip().startswith(onprem):
                 self.assertIn(line + "\n", yaml)
+
+    def test_searcher_yaml_carries_the_hosts_values_and_no_comments(self):
+        yaml = self.files(self.gen("--dry-run").stdout)["searcher.yaml"]
+        for line in ("cluster_id: usnm-isolated-benchmark", "node_id: benchmark",
+                     "  fast_field_cache_capacity: 6GB", "  partial_request_cache_capacity: 1GB",
+                     "  max_num_concurrent_split_searches: 32", "  request_timeout_secs: 125"):
+            self.assertIn(line + "\n", yaml)
+        self.assertNotRegex(yaml, r"(?m)^\s*#")
 
     def test_searcher_env_matches_the_azure_sidecar(self):
         env = dict(line.split("=", 1) for line in self.files(self.gen("--dry-run").stdout)["searcher.env"].splitlines())
@@ -568,6 +578,8 @@ class GenEnv(unittest.TestCase):
         block = bicep[bicep.index("var quickwitContainer = {"):]
         block = block[block.index("env: ["):block.index("probes:")]
         azure = dict(re.findall(r"name: '([A-Z_]+)'\s*,?\s*value: '([^']*)'", block))
+        # On-prem runs the binary, not the image whose QW_LISTEN_ADDRESS this overrides.
+        self.assertEqual(azure.pop("QW_LISTEN_ADDRESS"), "127.0.0.1")
         self.assertEqual(env, azure)
 
     def test_out_writes_private_files_once(self):
@@ -582,7 +594,7 @@ class GenEnv(unittest.TestCase):
     def azure_app(self, **changes):
         api = dict(line.split("=", 1) for line in self.files(self.gen("--dry-run").stdout)["api.env"].splitlines())
         for k in ("IDENTITY_ENDPOINT", "IMDS_ENDPOINT", "USNM_SITEMAP_STATE_URL", "USNM_ALTO_URL", "USNM_WORD_FEEDBACK_URL",
-                  "USNM_TRUST_CF_CONNECTING_IP",
+                  "USNM_PREWARM_BUDGET_SECS", "USNM_TRUST_CF_CONNECTING_IP",
                   "USNM_READY_REQUIRES_PUBLISHED_INDEXES"):
             del api[k]
         api.update({"USNM_QUICKWIT_URL": "http://usnm-search-ca-prod", "USNM_RESPONSE_CACHE_URL": "https://x/cache",
