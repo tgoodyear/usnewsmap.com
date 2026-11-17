@@ -109,6 +109,7 @@ retain `Content-Length`/`Content-Range` without `Content-Encoding`.
 2. The host mounts the index read-only at the path the release wrote into its metastore (the release's run directory plus `/qw`), and the NVMe pool's cache dataset at `/srv/usnm-serving/cache`. The installer also creates `/srv/usnm-serving/sitemap-state`, writable by the API image's user and bind-mounted into both API colors. `USNM_SITEMAP_STATE_URL` points there independently of visitor search logging, which remains disabled before cutover. Unlike the response cache, these durable sitemap checkpoints never expire; preserve this directory across upgrades and restores.
 
    The host also mounts the OCR ALTO copy (`tank/azure/lake-alto`, from [`scripts/onprem/ocr-local-copy`](../ocr-local-copy/README.md)) read-only at `/srv/usnm-lake/ocr-local`, with home-infra's `serving-ct.sh --alto-dir`. `USNM_ALTO_URL=/srv/usnm-lake` points `GET /v1/pages/{doc_id}/layout` at it, so the route needs no Azure access. The dataset's files are readable by group 2101 only, so the API unit adds that group (`--group-add 2101`). The installer creates the empty mount point, so a color starts without the mount; the route then answers 404.
+
 3. On the operator's machine:
 
    ```bash
