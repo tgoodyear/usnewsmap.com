@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import urllib.parse
@@ -5636,6 +5637,372 @@ class StepChunkingTests(unittest.TestCase):
             found, missing, truncated = t.push_pages(bases)
         self.assertEqual(calls, [100, 100, 10])
         self.assertEqual((len(found), len(missing), truncated), (207, 3, {}))
+
+
+
+def scoped_config(plan="native-feed-9"):
+    value = queue_config()
+    value.update(plan=plan, step_command=["ssh", "root@boinc.example", "--"])
+    return value
+
+
+class PlanScopeTransportTests(unittest.TestCase):
+    """--plan-scope (#1836): the plan's own lease and reports, and PLAN_SCOPE on its host steps."""
+
+    def transport(self, config=None, **kwargs):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        return batch.Transport(config or scoped_config(), directory,
+                               onprem_handoff=("claim", "collect", "export"), plan_scope=True, **kwargs)
+
+    def test_scoped_steps_carry_the_plan_and_others_do_not(self):
+        transport = self.transport()
+        for target, step in sorted(batch.SCOPED_STEPS):
+            argv, _, route = transport._step_argv(target, step, {})
+            self.assertTrue(route.startswith("onprem/"), (target, step))
+            self.assertIn("PLAN_SCOPE=native-feed-9", argv, (target, step))
+        for target, step in (("bridge", "gold-onboard"), ("bridge", "gold-promote"), ("bridge", "wu-terminal"),
+                             ("handoff", "deadline-retry")):
+            argv, _, _ = transport._step_argv(target, step, {})
+            self.assertFalse([a for a in argv if a.startswith("PLAN_SCOPE=")], (target, step))
+        unscoped = batch.Transport(scoped_config(), transport.directory,
+                                   onprem_handoff=("claim", "collect", "export"))
+        argv, _, _ = unscoped._step_argv("handoff", "collect", {})
+        self.assertFalse([a for a in argv if a.startswith("PLAN_SCOPE=")])
+        self.assertEqual(unscoped.report_name("inventory.json"), "scheduler/inventory.json")
+
+    def test_reports_and_lease_are_the_plans_own(self):
+        transport = self.transport()
+        self.assertEqual(transport.report_name("inventory.json"), "scheduler/plans/native-feed-9/inventory.json")
+        read = []
+
+        def blob(name):
+            read.append(name)
+            return {"nonce": nonce[0], "schema_version": 1}
+
+        nonce = [None]
+
+        def step(target, name, **variables):
+            nonce[0] = variables["BATCH_NONCE"]
+            return ""
+
+        with patch.object(transport, "step", side_effect=step), patch.object(transport, "blob", side_effect=blob):
+            transport.inventory()
+            transport.native_spot("x", "")
+            transport.container_spot("x", "", None, 60)
+        self.assertEqual(read, ["scheduler/plans/native-feed-9/inventory.json",
+                                "scheduler/plans/native-feed-9/native-spot.json",
+                                "scheduler/plans/native-feed-9/container-spot.json"])
+        calls = []
+
+        def az(*args):
+            calls.append(args)
+            return "true" if args[0] == "exists" else ""
+
+        with patch.object(transport, "az", side_effect=az):
+            with transport.lock():
+                pass
+        names = {args[args.index("--blob-name") + 1] for args in calls if args[0] == "lease"}
+        self.assertEqual(names, {"scheduler/plans/native-feed-9/controller.lock"})
+        self.assertEqual([args[1] for args in calls if args[0] == "lease"], ["acquire", "release"])
+
+    def test_refusals(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        for config, kwargs in (
+                (scoped_config("Native_9"), {}),
+                (scoped_config("../x"), {}),
+                ({**scoped_config(), "step_command": None}, {}),
+                (scoped_config(), {"onprem_handoff": ("claim", "collect")}),
+                (scoped_config(), {"local_lock": True, "ssh_reads": True})):
+            with self.subTest(plan=config["plan"], kwargs=kwargs):
+                options = {"onprem_handoff": ("claim", "collect", "export"), **kwargs}
+                with self.assertRaisesRegex(ValueError, "--plan-scope needs|--local-lock|--ssh-reads"):
+                    batch.Transport(config, directory, plan_scope=True, **options)
+
+
+class AdmissionLockTests(unittest.TestCase):
+    def test_one_holder_at_a_time_and_a_bounded_wait(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        path = directory / "admission.lock"
+        first = batch.Admission(path, 0)
+        second = batch.Admission(path, 0.3, poll_secs=0.05)
+        self.assertTrue(first.acquire())
+        started = time.monotonic()
+        self.assertFalse(second.acquire())
+        self.assertGreaterEqual(time.monotonic() - started, 0.3)
+        self.assertFalse(second.held)
+        first.release()
+        self.assertTrue(second.acquire())
+        self.assertTrue(second.held)
+        with self.assertRaisesRegex(ValueError, "already held"):
+            second.acquire()
+        second.release()
+        second.release()  # releasing twice is harmless
+        with self.assertRaisesRegex(ValueError, "admission-wait-secs"):
+            batch.Admission(path, batch.MAX_ADMISSION_WAIT_SECS + 1)
+
+
+class World:
+    """One hand-off container, queue and BOINC server that two plans' ticks share (#1836)."""
+
+    def __init__(self, waiting):
+        self.mutex = threading.Lock()
+        self.rows = []
+        self.jobs = {}
+        self.waiting = list(waiting)
+        self.exports = []
+        self.next_job = 1
+        # Other apps' pending workunits, by the server's per-app count.
+        self.other = 0
+
+
+class PlanView(QueueFake):
+    """One plan's transport onto a World: every plan's journals, one queue, one server. Claims and
+    exports take a while, as the real steps do, so two ticks without the admission lock overlap."""
+
+    def __init__(self, world, plan, *, claim_barrier=None):
+        super().__init__([])
+        self.world = world
+        self.plan = plan
+        self.rows = world.rows
+        self.jobs = world.jobs
+        self.claim_barrier = claim_barrier
+
+    def records(self):
+        with self.world.mutex:
+            return copy.deepcopy(self.world.rows)
+
+    def inventory(self):
+        with self.world.mutex:
+            self.other = self.world.other
+            return super().inventory()
+
+    def claim(self, count):
+        if self.claim_barrier is not None:
+            with contextlib.suppress(threading.BrokenBarrierError):
+                self.claim_barrier.wait(timeout=2)
+        time.sleep(0.05)
+        with self.world.mutex:
+            taken, self.world.waiting = self.world.waiting[:count], self.world.waiting[count:]
+        self.actions.append(("claim", count))
+        return copy.deepcopy(taken)
+
+    def export(self, pages, job_ids=()):
+        time.sleep(0.05)
+        with self.world.mutex:
+            for page in pages:
+                job_id = f"{self.world.next_job:064x}"
+                self.world.next_job += 1
+                self.world.exports.append((self.plan, page["page"]))
+                self.world.rows.append({
+                    "stage": "reserved", "plan": self.plan,
+                    "job": {"id": job_id, "message": {"page": page["page"], "batch": page["batch"]},
+                            "engine": {"image": "sha256:" + "a" * 64}}})
+
+    def submit(self, job_id):
+        time.sleep(0.02)
+        with self.world.mutex:
+            self.actions.append(("submit", job_id))
+            self.world.jobs[job_id] = {"stage": "submitted", "spool": None}
+
+
+def duplicate(number):
+    """Another queue message for the same page: one re-queued after its lease, say."""
+    value = message(number)
+    value["message_sha256"] = f"{number + 1000:064x}"
+    return value
+
+
+class SideBySidePlanTests(unittest.TestCase):
+    """Two plans' ticks at the same moment (#1836): with the admission lock, no page is exported by
+    both, no journal is lost or duplicated, and the global cap holds across them."""
+
+    def run_pair(self, world, *, admission=True, barrier=False, **tick_kwargs):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        gate = threading.Barrier(2) if barrier else None
+        plans = {}
+        for plan in ("plan-a", "plan-b"):
+            config = queue_config()
+            config["plan"] = plan
+            plans[plan] = (config, {}, PlanView(world, plan, claim_barrier=gate))
+        events, errors = {}, []
+
+        def run(plan):
+            config, state, view = plans[plan]
+            lock = batch.Admission(directory / "admission.lock", 30, poll_secs=0.01) if admission else None
+            try:
+                events[plan] = batch.tick(config, state, view, lambda: None, NOW, admission=lock,
+                                          refresh_sibling_claims=(lambda: {}) if admission else None,
+                                          **tick_kwargs)
+            except Exception as error:  # reported below, in the test's thread
+                errors.append((plan, error))
+            finally:
+                if lock is not None:
+                    lock.release()
+
+        threads = [threading.Thread(target=run, args=(plan,)) for plan in plans]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+        self.assertEqual(errors, [])
+        return plans, events
+
+    def exported_by(self, world):
+        by_page = {}
+        for plan, page in world.exports:
+            by_page.setdefault(page, set()).add(plan)
+        return by_page
+
+    def test_a_page_with_two_messages_is_exported_by_one_plan_only(self):
+        for round_ in range(5):
+            with self.subTest(round=round_):
+                world = World([message(1), duplicate(1), message(2), duplicate(2)])
+                plans, events = self.run_pair(world, barrier=True, refill_cap=1)
+                twice = {page: owners for page, owners in self.exported_by(world).items() if len(owners) > 1}
+                self.assertEqual(twice, {})
+                # Every journal once, with its own job id, and nothing submitted for a passed-over page.
+                ids = [row["job"]["id"] for row in world.rows]
+                self.assertEqual(len(ids), len(set(ids)))
+                submitted_pages = [row["job"]["message"]["page"] for row in world.rows
+                                   if row["job"]["id"] in world.jobs]
+                self.assertEqual(len(submitted_pages), len(set(submitted_pages)))
+                for event in events.values():
+                    self.assertTrue(event["admission"]["held"])
+
+    def test_without_the_lock_the_same_ticks_export_a_page_twice(self):
+        # The race the admission lock closes: both claim at once, and each exports its message.
+        world = World([message(1), duplicate(1)])
+        self.run_pair(world, admission=False, barrier=True, refill_cap=1)
+        self.assertIn({"plan-a", "plan-b"}, self.exported_by(world).values())
+
+    def test_the_global_cap_holds_across_plans(self):
+        # Each plan alone has room for two; together the cap leaves room for three.
+        world = World([message(number) for number in range(1, 9)])
+        _, events = self.run_pair(world, max_global_pending=3)
+        self.assertLessEqual(len(world.jobs), 3)
+        self.assertEqual(sum(1 for row in world.rows if row["job"]["id"] in world.jobs), len(world.jobs))
+
+    def test_a_busy_lock_skips_claims_exports_and_submits_but_not_the_tick(self):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        world = World([message(number) for number in range(1, 5)])
+        config = queue_config()
+        config["plan"] = "plan-a"
+        view = PlanView(world, "plan-a")
+        holder = batch.Admission(directory / "admission.lock", 0)
+        self.assertTrue(holder.acquire())
+        try:
+            lock = batch.Admission(directory / "admission.lock", 0.2, poll_secs=0.05)
+            event = batch.tick(config, {}, view, lambda: None, NOW, admission=lock)
+        finally:
+            holder.release()
+        self.assertEqual(event["admission"]["held"], False)
+        self.assertFalse(lock.held)
+        self.assertEqual([a for a in view.actions if a[0] in ("claim", "export", "submit")], [])
+        self.assertEqual(world.rows, [])
+        # The next tick, with the lock free, claims as before.
+        event = batch.tick(config, {}, view, lambda: None, NOW, admission=lock)
+        self.assertTrue(event["admission"]["held"])
+        self.assertTrue([a for a in view.actions if a[0] == "claim"])
+        self.assertFalse(lock.held)
+
+    def test_workunits_made_meanwhile_count_against_the_cap(self):
+        # Another plan's units, created after this tick's inventory and before its admission,
+        # leave no room for this one's submits.
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        world = World([message(number) for number in range(1, 5)])
+        config = queue_config()
+        config["plan"] = "plan-a"
+        view = PlanView(world, "plan-a")
+        lock = batch.Admission(directory / "admission.lock", 5)
+        real_acquire = lock.acquire
+
+        def acquire():
+            with world.mutex:
+                for number in range(3):
+                    world.jobs[f"{0xb000 + number:064x}"] = {"stage": "submitted", "spool": None}
+            return real_acquire()
+
+        lock.acquire = acquire
+        event = batch.tick(config, {}, view, lambda: None, NOW, admission=lock, max_global_pending=3)
+        self.assertEqual(event["admission"]["extra_workunits"], 3)
+        self.assertEqual([a for a in view.actions if a[0] == "submit"], [])
+
+
+    def admitted_after(self, change, before=None, **tick_kwargs):
+        """One plan-a tick whose admission lock is taken just after `change(world)` runs: another
+        plan's work landing while this tick waits for the lock."""
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        world = World([message(number) for number in range(1, 5)])
+        if before is not None:
+            before(world)
+        config = queue_config()
+        config["plan"] = "plan-a"
+        view = PlanView(world, "plan-a")
+        lock = batch.Admission(directory / "admission.lock", 5)
+        real_acquire = lock.acquire
+
+        def acquire():
+            with world.mutex:
+                change(world)
+            return real_acquire()
+
+        lock.acquire = acquire
+        event = batch.tick(config, {}, view, lambda: None, NOW, admission=lock, **tick_kwargs)
+        return event, view
+
+    @staticmethod
+    def sibling_journal(world, number, stage="reserved"):
+        job_id = f"{0xc000 + number:064x}"
+        world.rows.append({"stage": stage, "plan": "plan-b",
+                           "job": {"id": job_id, "message": {"page": f"sn87654321/1900-01-01/ed-1/seq-{number}",
+                                                             "batch": "test_batch"},
+                                   "engine": {"image": "sha256:" + "a" * 64}}})
+        return job_id
+
+    def test_another_plans_unsubmitted_exports_count_against_the_cap(self):
+        # Reservations another plan exported and left unsubmitted take room though no workunit
+        # exists yet.
+        def change(world):
+            for number in range(3):
+                self.sibling_journal(world, number)
+
+        event, view = self.admitted_after(change, max_global_pending=3)
+        self.assertEqual(event["admission"]["extra_workunits"], 3)
+        self.assertEqual([a for a in view.actions if a[0] in ("export", "submit")], [])
+
+    def test_another_plans_submit_counts_once(self):
+        # Cap two, one sibling unit submitted meanwhile (a journal and a pending workunit): one
+        # submit's room is left, not none.
+        def change(world):
+            job_id = self.sibling_journal(world, 1, stage="submitted")
+            world.jobs[job_id] = {"stage": "submitted", "spool": None}
+
+        event, view = self.admitted_after(change, max_global_pending=2)
+        self.assertEqual(event["admission"]["extra_workunits"], 1)
+        self.assertEqual(len([a for a in view.actions if a[0] == "submit"]), 1)
+
+    def test_the_other_apps_share_is_counted_from_the_same_inventory(self):
+        # Budget 0 and cap 2: two other-app units count for nothing. While this tick waits, they
+        # finish and another plan submits two OCR units: the cap is full, though the total of
+        # pending workunits is the same.
+        def before(world):
+            world.other = 2
+
+        def change(world):
+            world.other = 0
+            for number in range(2):
+                job_id = self.sibling_journal(world, number, stage="submitted")
+                world.jobs[job_id] = {"stage": "submitted", "spool": None}
+
+        event, view = self.admitted_after(change, before, max_global_pending=2, other_app_budget=0)
+        self.assertEqual([a for a in view.actions if a[0] in ("export", "submit")], [])
 
 
 if __name__ == "__main__":

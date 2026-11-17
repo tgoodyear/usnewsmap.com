@@ -666,6 +666,18 @@ NATIVE_SPOT_STEP = ("bridge", "native-spot")
 # skips the tick when the lock stays held, and a time budget of its own.
 CONTAINER_SPOT_STEP = ("bridge", "container-spot")
 MAX_STEP_LOCK_WAIT_SECS = 1200
+# Plans that tick side by side (#1836, --plan-scope): the BOINC host's steps that take the plan's
+# scope (onprem-step.sh PLAN_SCOPE). Its hand-off steps, spool-out and batch-inventory then share
+# the host's hand-off lock with other plans' and take one of the plan's own; batch-inventory,
+# native-spot and container-spot write their report under scheduler/plans/<plan>/.
+SCOPED_STEPS = frozenset({("handoff", step) for step in ("claim", "release", "dead-letter", "collect", "export")}
+                         | {("bridge", step) for step in ("spool-out", "batch-inventory", "submit-remote",
+                                                          "native-spot", "container-spot")})
+PLAN_SCOPE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+# How long a scoped tick waits for the admission lock before it skips its claims, exports,
+# submits and spot replays for this tick (--admission-wait-secs).
+DEFAULT_ADMISSION_WAIT_SECS = 900
+MAX_ADMISSION_WAIT_SECS = 3600
 # A native plan retries a submit that only timed out on the step lock this many ticks in a row
 # before it pauses like any other failed submit.
 NATIVE_LOCK_RETRY_LIMIT = 6
@@ -782,13 +794,82 @@ def held_pages_stem(plan):
     return plan if plan[:1].isalnum() else f"p_{plan}"
 
 
+class Admission:
+    """The controller host's admission lock (#1836, --admission-lock): one plan at a time
+    publishes its held pages, claims, exports, submits, runs gold and makes spot replays, while
+    the rest of every plan's tick (inventory, collect, spool-out, reports) runs side by side.
+
+    Each of those reads every plan's journals, claims or workunits and adds to them: under this
+    lock a plan sees every other plan's claims and exports as they stand (no page exported by
+    two plans) and every workunit they created (no cap passed by two plans each filling the same
+    room). acquire() waits up to `wait_secs` and returns whether it holds the lock; a plan that
+    doesn't get it does none of those things this tick, which is always safe."""
+
+    def __init__(self, path, wait_secs=DEFAULT_ADMISSION_WAIT_SECS, *, poll_secs=1.0, clock=time.monotonic,
+                 sleep=time.sleep):
+        require(0 <= wait_secs <= MAX_ADMISSION_WAIT_SECS, "invalid --admission-wait-secs")
+        self.path = Path(path)
+        self.wait_secs = wait_secs
+        self.poll_secs = poll_secs
+        self.clock = clock
+        self.sleep = sleep
+        self._file = None
+        # Seconds the last acquire() waited, for the tick's event.
+        self.waited = 0.0
+
+    @property
+    def held(self):
+        return self._file is not None
+
+    def acquire(self):
+        require(self._file is None, "the admission lock is already held")
+        handle = self.path.open("a")
+        started = self.clock()
+        try:
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if self.clock() - started >= self.wait_secs:
+                        handle.close()
+                        self.waited = self.clock() - started
+                        return False
+                    self.sleep(self.poll_secs)
+        except BaseException:
+            handle.close()
+            raise
+        self.waited = self.clock() - started
+        self._file = handle
+        return True
+
+    def release(self):
+        if self._file is not None:
+            try:
+                fcntl.flock(self._file, fcntl.LOCK_UN)
+            finally:
+                self._file.close()
+                self._file = None
+
+
 class Transport:
     def __init__(self, config, directory, *, status_url=None, status_file=None,
                  batch_submit=False, batch_spool_out=False, batch_collect=False, batch_export=False,
                  onprem_handoff=(), timings=None, rest_journals=False, collect_parallel=1,
                  skip_truncated=False, extra_claim_languages=(), step_lock_wait_secs=0,
-                 local_lock=False, ssh_reads=False):
+                 local_lock=False, ssh_reads=False, plan_scope=False):
         self.config = config
+        # --plan-scope (#1836): the plan's own controller lease and reports, and PLAN_SCOPE on
+        # its BOINC host steps, so plans tick side by side. Only for an Azure-backed hand-off
+        # plan whose hand-off steps all run on-prem; the admission lock in main() goes with it.
+        require(not plan_scope or (
+            config.get("step_command") and set(onprem_handoff) == set(ONPREM_HANDOFF)
+            and not local_lock and not ssh_reads and "handoff_root" not in config
+            and config.get("app") != SURYA_APP_NAME
+            and isinstance(config.get("plan"), str) and PLAN_SCOPE_NAME.fullmatch(config["plan"])),
+            "--plan-scope needs a hand-off plan named in lower-case letters, digits and dashes, with "
+            "step_command, every hand-off step on-prem and the Azure hand-off container")
+        self.plan_scope = plan_scope
         # --local-lock: the controller lock is a record on the BOINC host with a heartbeat, not
         # an Azure lease or a local flock. Off by default.
         require(not local_lock or (config.get("step_command") and set(onprem_handoff) == set(ONPREM_HANDOFF)),
@@ -869,6 +950,13 @@ class Transport:
         self.last_claim_summary = None
         self._journal_snapshot = None
         self._journal_records = None
+
+    def report_name(self, name):
+        """A scheduler blob of this plan's: scheduler/plans/<plan>/<name> with --plan-scope, where
+        the bridge's scoped steps write it, otherwise scheduler/<name>."""
+        if self.plan_scope:
+            return f"scheduler/plans/{self.config['plan']}/{name}"
+        return f"scheduler/{name}"
 
     @property
     def handoff_url(self):
@@ -1005,6 +1093,8 @@ class Transport:
         if onprem and self.config.get("step_command"):
             command = self.config["step_command"]
         variables = dict(variables)
+        if self.plan_scope and onprem and self.config.get("step_command") and (target, step) in SCOPED_STEPS:
+            variables["PLAN_SCOPE"] = self.config["plan"]
         if target == "handoff" and onprem and (not lock_step or step == "write-held-pages"):
             variables["EXPECTED_HANDOFF_URL"] = self.handoff_url
         if (((target == "handoff" and step in FENCED_HANDOFF_STEPS)
@@ -1120,7 +1210,9 @@ class Transport:
             # one-step-at-a-time lock of the bridge host are its guards.
             yield
             return
-        name = "scheduler/controller.lock"
+        # A scoped plan's own lease (#1836): two plans' ticks run side by side, and a second tick of
+        # the same plan, or one left by a tick that died, still fails it at once.
+        name = self.report_name("controller.lock")
         lease = None
         failure = None
         try:
@@ -1167,7 +1259,7 @@ class Transport:
         nonce = uuid.uuid4().hex
         self.step("bridge", "batch-inventory", BATCH_NONCE=nonce,
                   HANDOFF_URL=self.handoff_url)
-        result = self.blob("scheduler/inventory.json")
+        result = self.blob(self.report_name("inventory.json"))
         require(result.get("nonce") == nonce, "stale/concurrent inventory; another controller may be active")
         return result
 
@@ -1182,7 +1274,7 @@ class Transport:
         if check:
             variables["NATIVE_SPOT_CHECK"] = check
         self.step("bridge", "native-spot", **variables)
-        result = self.blob("scheduler/native-spot.json")
+        result = self.blob(self.report_name("native-spot.json"))
         require(result.get("nonce") == nonce and result.get("schema_version") == 1,
                 "stale native-spot report; another controller may be active")
         return result
@@ -1203,7 +1295,7 @@ class Transport:
         if active is not None:
             variables["CONTAINER_SPOT_ACTIVE"] = active
         self.step("bridge", "container-spot", **variables)
-        result = self.blob("scheduler/container-spot.json")
+        result = self.blob(self.report_name("container-spot.json"))
         require(result.get("nonce") == nonce and result.get("schema_version") == 1,
                 "stale container-spot report; another controller may be active")
         return result
@@ -4086,8 +4178,13 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
          low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None,
          refill_cap=None, other_app_budget=None, sibling_archived=None, sibling_claims=None,
          resume_native=False, release_spot_hold=None, release_container_hold=None, pair_log=None,
-         resolution_log=None, loc_text=None):
+         resolution_log=None, loc_text=None, admission=None, refresh_sibling_claims=None):
+    """One tick. `admission` (an Admission, #1836) is the lock of a plan that ticks beside others:
+    gold, and publishing held pages through claims, exports, submits and spot replays, run only
+    while it is held, after reading every plan's journals, claims (`refresh_sibling_claims`) and
+    workunits again."""
     if config.get("app") == SURYA_APP_NAME:
+        require(admission is None, "--plan-scope is for hand-off plans")
         require(refill_cap is None, "--refill-cap is for OCR plans")
         require(other_app_budget is None, "--other-app-budget is for OCR plans")
         return surya_tick(config, state, transport, persist, now, drain=drain,
@@ -4127,6 +4224,26 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         warn_near_cap("archived_held", len(feed.archived_held), MAX_ARCHIVED_HELD, now)
     for key in ("pending_workunits", "active_hosts"):
         require(type(snapshot[key]) is int and snapshot[key] >= 0, "invalid capacity inventory")
+
+    def fresh_room():
+        # Taken just after the admission lock (#1836): every plan's work under the global cap as
+        # it stands now, from a fresh inventory and fresh journals, counted as global_pending is:
+        # other plans' submits, gold units and spot replays, and their exports not yet submitted.
+        # Returns (that total, the workunits in flight, the pending job ids, the journals, the
+        # inventory, whose per-app counts go with the total). Each piece of work counts once: in
+        # flight, or as a journal not pending.
+        fresh = transport.inventory()
+        require(fresh.get("schema_version") == 1 and type(fresh.get("pending_workunits")) is int
+                and fresh["pending_workunits"] >= 0 and isinstance(fresh.get("pending_jobs"), list),
+                "invalid capacity inventory")
+        fresh_pending = set(fresh["pending_jobs"])
+        fresh_records = read_records()
+        passed = {} if feed else None
+        fresh_owned = owned_records(config, fresh_records, state.get("deadline_retries"), passed)
+        in_flight = max(fresh["pending_workunits"], ocr_workunit_counts(fresh, fresh_pending)[0])
+        uncollected, missing = retained_backlog(config, fresh_records, fresh_owned, selected, fresh_pending,
+                                                passed or {})
+        return in_flight + uncollected + len(missing), in_flight, fresh_pending, fresh_records, fresh
     # A native plan's room before and after its spot checks' limit (#1863).
     native_room = native_capacity(config, snapshot) if native else None
     spot_active = native_spot_active(snapshot) if native else None
@@ -4271,7 +4388,15 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # Saved now: a collect that fails on a held result would otherwise leave the marker on
         # disk, and every later run would skip gold, the one thing that can admit the host.
         persist()
-    if not drain and not after_gold and config.get("gold_onboarding"):
+    gold_demand = gold_inventory = None
+    gold_admitted = admission is None
+    if admission is not None and not drain and not after_gold and config.get("gold_onboarding"):
+        # Gold units take room under the global cap as a refill does: one plan at a time (#1836),
+        # counted from every plan's work as it stands once the lock is held.
+        gold_admitted = admission.acquire()
+        if gold_admitted:
+            gold_demand, _, _, _, gold_inventory = fresh_room()
+    if gold_admitted and not drain and not after_gold and config.get("gold_onboarding"):
         # The same caps and the same retained backlog the refill below counts, from the same
         # status. Without status there is no room for gold units (promotion still runs); the
         # status read after collection fails the tick as it always has.
@@ -4283,8 +4408,11 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                                       other_app_budget=other_app_budget)
             uncollected, missing = retained_backlog(config, records, owned, selected, pending_jobs, conflicts)
             in_flight = max(snapshot["pending_workunits"], ocr_workunit_counts(snapshot, pending_jobs)[0])
-            room = global_room(caps, in_flight + uncollected + len(missing),
-                               other_app_workunits(snapshot, caps["app"]) or 0)
+            if gold_demand is None:
+                demand, counted = in_flight + uncollected + len(missing), snapshot
+            else:
+                demand, counted = gold_demand, gold_inventory
+            room = global_room(caps, demand, other_app_workunits(counted, caps["app"]) or 0)
         except (ValueError, KeyError, TypeError, OSError, RuntimeError):
             room = 0
         gold_runs, reserved = gold_onboarding(config, state, transport, persist, now,
@@ -4297,6 +4425,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         if gold_ran:
             state["gold_tick"] = True
             persist()
+    if admission is not None:
+        admission.release()
     if native and NATIVE_SPOT_KEY in config and not drain and native_spot_gate_applies(config):
         # Before the collect (16 Nov 2026 ruling): a result drawn for a cross-build peer is kept
         # out of it until its pair, and if need be a third reading, settles the page. A drain
@@ -4484,11 +4614,34 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     global_free = max(0, global_room(cohort_info, global_pending, budgeted_other))
     free = min(cohort_free, global_free)
     submitted = 0
-    if feed:
+    # A plan beside others (#1836): from here to the spot checks, one plan at a time. With the lock,
+    # this tick reads every plan's journals, claims and workunits again, so what another plan
+    # claimed, exported or submitted since this tick began is counted; without it, it claims,
+    # exports, submits and replays nothing this tick.
+    admitted = True
+    admission_extra = 0
+    # The global cap's view for submits and spot replays: this tick's inventory, or the fresh one
+    # taken with the admission lock, with the journals read alongside it.
+    room_in_flight, room_pending, room_workunits = global_in_flight, pending_jobs, snapshot["pending_workunits"]
+    room_other = budgeted_other
+    if admission is not None:
+        admitted = admission.acquire()
+        if admitted:
+            demand, room_in_flight, room_pending, records, fresh = fresh_room()
+            room_workunits = room_in_flight
+            # The other apps' share as the fresh inventory has it, with the total it goes with.
+            room_other = other_app_workunits(fresh, ocr_app) or 0
+            owned = own(records)
+            admission_extra = max(0, demand - global_pending)
+            if refresh_sibling_claims is not None:
+                sibling_claims = refresh_sibling_claims()
+            global_free = max(0, global_room(cohort_info, global_pending + admission_extra, room_other))
+            free = min(cohort_free, global_free)
+    if feed and admitted:
         # Every tick, so the list stays current when this one claims nothing (#1754).
         feed.settled_messages = settled_messages(records, claimed_messages(state.get("claims"), sibling_claims))
         feed.publish_settled()
-    if target and not held and not drain and not gold_ran and not native_paused:
+    if admitted and target and not held and not drain and not gold_ran and not native_paused:
         if free > 0:
             if feed:
                 feed.settled_messages = settled_messages(
@@ -4552,7 +4705,11 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                                  for record in owned.values())
             cohort_backlog += sum(page not in owned and page not in conflicts for page in selected)
         cohort_submit_room = max(0, target - ocr_in_flight - cohort_backlog)
-        global_submit_room = max(0, global_room(cohort_info, global_in_flight + backlog, budgeted_other))
+        # Every plan's unsettled journals not pending in the inventory the room is counted from.
+        global_backlog = (sum(not settled(record) and record["job"]["id"] not in room_pending | candidates
+                              for record in records)
+                          + sum(page not in owned and page not in conflicts for page in selected))
+        global_submit_room = max(0, global_room(cohort_info, room_in_flight + global_backlog, room_other))
         submit_limit = min(refill, cohort_submit_room, global_submit_room)
         to_submit = []
         for record in owned.values():
@@ -4658,12 +4815,12 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # full cap with no room for the reading that lets them go. The units this tick submitted
         # are in it already: their journals are unsettled and not in BOINC's pending snapshot.
         kept_out_now = native_spot_kept_out(config, state)
-        retained, reserved = retained_backlog(config, records, owned, selected, pending_jobs, conflicts)
+        retained, reserved = retained_backlog(config, records, owned, selected, room_pending, conflicts)
         spot_retained = max(0, retained + len(reserved)
                             - sum(not settled(record) and record["job"]["id"] in kept_out_now
-                                  and record["job"]["id"] not in pending_jobs for record in records))
-        spot_room = 0 if drain or state.get("native_paused") else (
-            100 if spot_cap is None else spot_cap - snapshot["pending_workunits"] - spot_retained)
+                                  and record["job"]["id"] not in room_pending for record in records))
+        spot_room = 0 if drain or not admitted or state.get("native_paused") else (
+            100 if spot_cap is None else spot_cap - room_workunits - spot_retained)
         try:
             spot_step = native_spot_step(config, state, transport, now, submit_room=spot_room,
                                          active=spot_active)
@@ -4697,9 +4854,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # counting the units this tick just submitted. Comparisons go on.
         # Retained work as the pre-submit inventory has it: what this tick submitted was part of it,
         # so it is counted once, and a tick that submitted nothing still counts what waits.
-        uncollected, missing = retained_backlog(config, records, owned, selected, pending_jobs, conflicts)
-        room = 0 if drain else max(0, global_room(cohort_info, global_in_flight + uncollected + len(missing),
-                                                  budgeted_other))
+        uncollected, missing = retained_backlog(config, records, owned, selected, room_pending, conflicts)
+        room = 0 if drain or not admitted else max(0, global_room(
+            cohort_info, room_in_flight + uncollected + len(missing), room_other))
         try:
             container_step = container_spot_step(config, state, transport, now, submit_room=room,
                                                  active=native_spot_active(snapshot))
@@ -4711,6 +4868,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             spot["failing"] = {"at": int(now), "reason": f"{type(error).__name__}: {error}"[:500]}
             container_step = "failed"
         persist()
+    if admission is not None:
+        admission.release()
 
     post_uncollected_not_pending = sum(
         not settled(record) and record["job"]["id"] not in pending_jobs
@@ -4881,6 +5040,11 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                                                                 spot_step)
     if not native and CONTAINER_SPOT_KEY in config:
         event["spot_check"] = container_spot_summary(config, state, container_step)
+    if admission is not None:
+        # Whether this tick held the admission lock (#1836); without it, it claimed, exported,
+        # submitted and replayed nothing.
+        event["admission"] = {"held": admitted, "waited_seconds": round(admission.waited, 1),
+                              "extra_workunits": admission_extra}
     return with_timings(event, transport)
 
 
@@ -4965,6 +5129,18 @@ def main(argv=None):
     parser.add_argument("--ssh-reads", action="store_true",
                         help="read the hand-off inventory, journals and objects from the BOINC host through "
                              "step_command read steps instead of a local directory; needs --local-lock (#1367)")
+    parser.add_argument("--plan-scope", action="store_true",
+                        help="tick beside other plans (#1836): this plan's own controller lease and reports "
+                             "(scheduler/plans/<plan>/) and PLAN_SCOPE on its BOINC host steps; needs "
+                             "--admission-lock and a step runner that takes PLAN_SCOPE")
+    parser.add_argument("--admission-lock", type=Path, metavar="FILE",
+                        help="with --plan-scope: the controller host's lock every plan holds, one at a time, "
+                             "for gold and from publishing held pages through claims, exports, submits and "
+                             "spot replays (#1836)")
+    parser.add_argument("--admission-wait-secs", type=int, default=DEFAULT_ADMISSION_WAIT_SECS, metavar="SECONDS",
+                        help="how long to wait for --admission-lock before this tick claims, exports, submits "
+                             f"and replays nothing (0 to {MAX_ADMISSION_WAIT_SECS}; default "
+                             f"{DEFAULT_ADMISSION_WAIT_SECS})")
     parser.add_argument("--onprem-handoff", action="append", choices=sorted(ONPREM_HANDOFF), default=[],
                         help="run this hand-off step (claim, with its release, or collect) on the on-prem BOINC "
                              "host through step_command instead of the Azure hand-off job; repeat for both (#967)")
@@ -5015,6 +5191,9 @@ def main(argv=None):
                 "--ssh-reads needs --local-lock and a hand-off plan")
         require(not args.onprem_handoff or (config.get("step_command") and not surya),
                 "--onprem-handoff needs a hand-off plan with step_command")
+        require(args.plan_scope == (args.admission_lock is not None),
+                "--plan-scope and --admission-lock go together")
+        require(0 <= args.admission_wait_secs <= MAX_ADMISSION_WAIT_SECS, "invalid --admission-wait-secs")
         if not args.apply and surya:
             # What-if: the steps a tick would run when the queue is empty, with the largest
             # SURYA_MAX the submit step can get. Nothing is read or run.
@@ -5038,6 +5217,7 @@ def main(argv=None):
                 "max_pending": config["max_pending"], "config_sha256": digest(config),
                 "onprem_handoff": sorted(set(args.onprem_handoff)),
                 "local_lock": args.local_lock, "ssh_reads": args.ssh_reads,
+                "plan_scope": args.plan_scope,
                 "batch_size": config["batch_size"],
                 "refill_cap": (config["batch_size"] if args.refill_cap is None
                                else min(config["batch_size"], args.refill_cap)),
@@ -5088,7 +5268,7 @@ def main(argv=None):
                 skip_truncated=args.skip_truncated_scans,
                 extra_claim_languages=tuple(args.claim_language),
                 step_lock_wait_secs=args.step_lock_wait_secs, local_lock=args.local_lock,
-                ssh_reads=args.ssh_reads,
+                ssh_reads=args.ssh_reads, plan_scope=args.plan_scope,
             )
             tick_kwargs = {"drain": args.drain, "dead_letter_failed": args.dead_letter_failed}
             if config.get("app") == NATIVE_APP_NAME and NATIVE_SPOT_KEY in config:
@@ -5112,13 +5292,24 @@ def main(argv=None):
                 tick_kwargs["refill_cap"] = args.refill_cap
             if args.other_app_budget is not None:
                 tick_kwargs["other_app_budget"] = args.other_app_budget
-            with transport.lock():
-                # Read under the lock the archive takes too, so the other plans' archives agree
-                # with the journals this tick lists.
+            admission = None
+            if args.plan_scope:
+                admission = tick_kwargs["admission"] = Admission(args.admission_lock, args.admission_wait_secs)
                 if args.check_state_dir:
-                    tick_kwargs["sibling_archived"] = sibling_archived_held(args.state_dir, args.check_state_dir)
-                    tick_kwargs["sibling_claims"] = sibling_claim_messages(args.state_dir, args.check_state_dir)
-                event = tick(config, state, transport, lambda: save(path, state), **tick_kwargs)
+                    # Read again under the admission lock, before any claim (#1836).
+                    tick_kwargs["refresh_sibling_claims"] = functools.partial(
+                        sibling_claim_messages, args.state_dir, args.check_state_dir)
+            try:
+                with transport.lock():
+                    # Read under the lock the archive takes too, so the other plans' archives agree
+                    # with the journals this tick lists.
+                    if args.check_state_dir:
+                        tick_kwargs["sibling_archived"] = sibling_archived_held(args.state_dir, args.check_state_dir)
+                        tick_kwargs["sibling_claims"] = sibling_claim_messages(args.state_dir, args.check_state_dir)
+                    event = tick(config, state, transport, lambda: save(path, state), **tick_kwargs)
+            finally:
+                if admission is not None:
+                    admission.release()
             # Again after the lease is released, so the line counts the release too.
             event["timings"] = timings.summary()
             print(json.dumps(event, sort_keys=True))

@@ -123,6 +123,29 @@ class LeaseBreak(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertEqual(len(calls), 2)
 
+    def test_plan_leases_breaks_every_leased_plan_lease_too(self):
+        # #1836: plans ticking side by side hold scheduler/plans/<plan>/controller.lock.
+        script = ('[ "$3" = list ] && printf "%s\\n" scheduler/plans/native-feed-9/controller.lock '
+                  'scheduler/plans/main/controller.lock "scheduler/plans/x/../controller.lock"; exit 0')
+        done, calls = self.run_break(script, "--plan-leases")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("--prefix scheduler/plans/", calls[1])
+        self.assertIn("properties.lease.state == 'leased'", calls[1])
+        breaks = [call.split("--blob-name ")[1].split()[0] for call in calls if " lease break " in f" {call} "]
+        self.assertEqual(breaks, ["scheduler/controller.lock", "scheduler/plans/native-feed-9/controller.lock",
+                                  "scheduler/plans/main/controller.lock"])
+        self.assertIn("skipped unexpected blob", done.stdout)
+        # Without the flag, only the shared lease, as before.
+        done, calls = self.run_break(script)
+        self.assertEqual(len(calls), 1)
+
+    def test_plan_leases_fails_when_they_cannot_be_listed(self):
+        done, calls = self.run_break('[ "$3" = list ] && { echo "not signed in" >&2; exit 1; }; exit 0',
+                                     "--plan-leases")
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(len(calls), 4)
+        self.assertIn("gave up listing", done.stdout)
+
     def test_a_held_tick_lock_is_left_alone(self):
         with tempfile.TemporaryDirectory() as folder:
             holder = subprocess.Popen(["flock", str(Path(folder) / "tick.lock"), "sleep", "30"])
