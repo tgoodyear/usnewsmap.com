@@ -7,6 +7,7 @@
 #                      [--config-dir DIR] [--state-parent DIR] [--scheduler FILE]
 #                      [--tick-lock FILE] [--lock-wait-secs N] [--lock-recheck-secs N]
 #                      [--held-archive-unit UNIT] [--held-archive-lock FILE] [--add-flag ARG]...
+#                      [--side-by-side-file FILE] [--admission-lock FILE]
 #
 # The plan named `main` is the live plan in the unsuffixed paths the shared service used:
 #   /etc/usnm/boinc-priority-controller.json, /var/lib/usnm-priority-controller and
@@ -41,6 +42,17 @@
 # (#1690)" in docs/boinc/server/batch-scheduler.md. A wait that runs out fails the tick with a
 # boinc_batch_failure line feed_collect.py classes as lock_busy.
 #
+# Plans side by side (#1836): while --side-by-side-file (default
+# /etc/usnm/boinc-priority-controller.side-by-side) exists, every plan's tick takes the tick lock
+# shared, not exclusively, and runs batch_scheduler.py with --plan-scope --admission-lock FILE
+# (default /run/usnm-boinc-controller-admission.lock): its own lease and reports, and one plan at a
+# time for claims, exports, submits, gold and spot replays. held-archive.sh and the boot lease
+# break still take the tick lock exclusively, so they wait for every running tick and none starts
+# while they hold it. The file is the host's switch for all plans at once: a plan holding the lock
+# exclusively beside plans holding it shared could wait for ever. Change it only with every plan
+# paused (see "Pausing every plan" in docs/boinc/server/batch-scheduler.md). It needs a BOINC host
+# step runner that takes PLAN_SCOPE (#2038).
+#
 # A plan other than main skips its tick (exit 0, one boinc_batch_skipped line) while a held-page
 # archive runs: the scheduled unit (--held-archive-unit), a hand-run usnm-held-archive-* unit, or
 # any run holding held-archive.sh's lock (--held-archive-lock). A run with --gap-mins lets that
@@ -74,6 +86,8 @@ RECHECK=30
 HELD_ARCHIVE_UNIT=usnm-boinc-held-archive.service
 HELD_ARCHIVE_LOCK=/run/usnm-boinc-held-archive.lock
 MAIN_TIMER=usnm-boinc-priority-controller@main.timer
+SIDE_BY_SIDE_FILE=""
+ADMISSION_LOCK=/run/usnm-boinc-controller-admission.lock
 DRY_RUN=false PRINT=false PRINT_TIMER=false
 ADDED=()
 while [ $# -gt 0 ]; do
@@ -88,6 +102,8 @@ while [ $# -gt 0 ]; do
     --held-archive-unit) [ $# -ge 2 ] || usage; HELD_ARCHIVE_UNIT=$2; shift 2 ;;
     --held-archive-lock) [ $# -ge 2 ] || usage; HELD_ARCHIVE_LOCK=$2; shift 2 ;;
     --add-flag) [ $# -ge 2 ] || usage; ADDED+=("$2"); shift 2 ;;
+    --side-by-side-file) [ $# -ge 2 ] || usage; SIDE_BY_SIDE_FILE=$2; shift 2 ;;
+    --admission-lock) [ $# -ge 2 ] || usage; ADMISSION_LOCK=$2; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     --print-command) PRINT=true; shift ;;
     --print-timer) PRINT_TIMER=true; shift ;;
@@ -108,15 +124,22 @@ else
 fi
 CONFIG=$CONFIG_DIR/boinc-priority-controller$suffix.json
 FLAGS_FILE=$CONFIG_DIR/boinc-priority-controller$suffix.flags
+SIDE_BY_SIDE_FILE=${SIDE_BY_SIDE_FILE:-$CONFIG_DIR/boinc-priority-controller.side-by-side}
+SIDE_BY_SIDE=false
+if [ -e "$SIDE_BY_SIDE_FILE" ] || [ -L "$SIDE_BY_SIDE_FILE" ]; then
+  [ -f "$SIDE_BY_SIDE_FILE" ] && [ ! -L "$SIDE_BY_SIDE_FILE" ] || die "$SIDE_BY_SIDE_FILE is not a regular file"
+  SIDE_BY_SIDE=true
+fi
 STATE_DIR=$STATE_PARENT/usnm-priority-controller$suffix
 [ -f "$FLAGS_FILE" ] || die "plan $PLAN has no flags file $FLAGS_FILE"
 
-# True for --config, --state-dir or --apply, with or without =VALUE, and for any abbreviation
-# of them: batch_scheduler.py's argparse takes a unique prefix (--appl) as the full option.
+# True for --config, --state-dir, --apply, --plan-scope or --admission-lock, with or without
+# =VALUE, and for any abbreviation of them: batch_scheduler.py's argparse takes a unique prefix
+# (--appl) as the full option. The last two follow the host's side-by-side switch (#1836).
 own_flag() {
   local name=${1%%=*} own
   [[ $name == --?* ]] || return 1
-  for own in --config --state-dir --apply; do
+  for own in --config --state-dir --apply --plan-scope --admission-lock; do
     [ "${own#"$name"}" != "$own" ] && return 0
   done
   return 1
@@ -213,6 +236,7 @@ done
 COMMAND=(python3 "$SCHEDULER" --config "$CONFIG" --state-dir "$STATE_DIR")
 $DRY_RUN || COMMAND+=(--apply)
 COMMAND+=(${FLAGS[@]+"${FLAGS[@]}"})
+! $SIDE_BY_SIDE || COMMAND+=(--plan-scope --admission-lock "$ADMISSION_LOCK")
 
 if $PRINT; then
   printf '%s\n' "${COMMAND[@]}"
@@ -259,8 +283,11 @@ if reason=$(skip_reason); then skipped "$reason"; exit 0; fi
 # It is waited for in steps of at most --lock-recheck-secs, so a tick queued behind another plan's
 # skips as soon as an archive starts, instead of waiting out the whole wait and failing.
 exec 8> "$TICK_LOCK"
+# Shared beside other plans (#1836): only an archive or the boot lease break holds it alone.
+LOCK_MODE=()
+! $SIDE_BY_SIDE || LOCK_MODE=(-s)
 deadline=$((SECONDS + LOCK_WAIT))
-until flock -w "$(( deadline - SECONDS < RECHECK ? deadline - SECONDS : RECHECK ))" 8; do
+until flock ${LOCK_MODE[@]+"${LOCK_MODE[@]}"} -w "$(( deadline - SECONDS < RECHECK ? deadline - SECONDS : RECHECK ))" 8; do
   if reason=$(skip_reason); then skipped "$reason"; exit 0; fi
   [ "$SECONDS" -lt "$deadline" ] ||
     die "the tick lock is busy after $LOCK_WAIT seconds: another controller may be active"

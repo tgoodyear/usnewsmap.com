@@ -16,7 +16,8 @@ RemainAfterExit=yes
 User=root
 Environment=HOME=/root
 WorkingDirectory=/opt/usnm
-ExecStart=/usr/bin/bash /opt/usnm/boinc/scripts/onprem/controller/break-stale-lease.sh
+# --plan-leases: plans ticking side by side (#1836) hold leases of their own.
+ExecStart=/usr/bin/bash /opt/usnm/boinc/scripts/onprem/controller/break-stale-lease.sh --plan-leases
 # Retries for up to 4 minutes (16 x 15 s) while Azure sign-in comes up; never blocks boot.
 TimeoutStartSec=300
 

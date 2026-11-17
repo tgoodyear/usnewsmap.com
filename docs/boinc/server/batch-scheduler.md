@@ -169,7 +169,17 @@ Ticking plans side by side needs a lease and an inventory blob per plan (a `batc
 - Its `batch-inventory`, `native-spot` and `container-spot` reports are read from `scheduler/plans/<plan>/`, and its hand-off steps, `spool-out`, `batch-inventory`, `submit-remote` and the spot steps carry `PLAN_SCOPE=<plan>`. On the BOINC host one plan's hand-off steps then run beside another's; `submit-remote`, the spot steps and gold still take the step lock one at a time.
 - The admission lock (`--admission-lock`, a file on the controller host that every such plan names) is held by one plan at a time around gold and around everything from publishing held pages through claims, exports, submits and spot replays. On taking it, the tick reads every plan's journals and the `--check-state-dir` plans' claims again, and a fresh inventory: workunits other plans created since this tick's own inventory count against every cap (`extra_workunits` in the tick's `admission`). So a page two plans claimed is exported by the first and passed over by the second (`ownership_conflict`, as before), and two plans never fill the same room under the global cap. Inventory, collect, spool-out, dead letters and reports run outside it.
 - A tick that doesn't get the lock in `--admission-wait-secs` (default 900, at most 3600) claims, exports, submits and replays nothing that tick and ends normally, with `"admission": {"held": false}`. The next tick tries again.
-- The held-page archive still runs alone: it takes the tick lock exclusively, and `controller-tick.sh` is to hold it shared for side-by-side ticks (the next part of #1836), so an archive waits for the running ticks and none starts while it runs. Until then every tick still takes it exclusively.
+- The held-page archive still runs alone: it takes the tick lock exclusively and side-by-side ticks hold it shared, so an archive waits for the running ticks and none starts while it runs.
+
+`controller-tick.sh` runs every plan this way while `/etc/usnm/boinc-priority-controller.side-by-side` exists: it takes the tick lock shared and adds `--plan-scope --admission-lock /run/usnm-boinc-controller-admission.lock`, which a flags file may not set (`--admission-wait-secs` may go in one). It is one switch for every plan: a plan holding the lock alone beside plans holding it shared could wait for ever. The boot lease break runs with `--plan-leases`. To turn it on, with a step runner from #2038 or later on the BOINC host and a checkout with this change installed (`install.sh`, for the lease-break unit):
+
+```sh
+# pause every plan as in "Pausing every plan", then:
+touch /etc/usnm/boinc-priority-controller.side-by-side
+xargs -r systemctl start < /root/controller-timers.txt
+```
+
+To turn it off, pause every plan the same way, `rm /etc/usnm/boinc-priority-controller.side-by-side`, and start the timers. Each plan's lease under `scheduler/plans/` is released at the end of its tick; one a dead tick left is broken at the next boot, or by `break-stale-lease.sh --plan-leases` run by hand with every plan paused.
 
 Without `--plan-scope` nothing changes. `test_batch_scheduler.py` (`SideBySidePlanTests`) runs two plans' ticks at once against one queue and one hand-off container: a page with two queue messages is exported by one plan only, every journal is written once, and the global cap holds across both; without the admission lock the same ticks export the page twice.
 
