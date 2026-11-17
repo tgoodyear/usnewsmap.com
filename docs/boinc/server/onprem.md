@@ -637,6 +637,18 @@ storage, Cosmos and the queues, and the controller runs one at a time. `spool-ou
 `batch-inventory` take it too: they only read the project and the database. A collect of 100 jobs
 doesn't keep publishing or submits waiting, and a publish doesn't fail a claim or a spool-out.
 
+A controller whose plans tick side by side (#1836) sends `PLAN_SCOPE=<plan>` with each step. The
+runner keeps it to itself. A scoped hand-off step, `spool-out` or `batch-inventory` takes
+`/run/usnm-boinc-handoff.lock` shared and then `/run/usnm-boinc-handoff.plan-<plan>.lock`, inside the
+same lock wait: one such step per plan, several plans at once. A step without a scope still takes
+the hand-off lock to itself, so the held-page archive's bridge step and an operator's step wait for
+every plan's and keep them all out. `batch-inventory`, `native-spot` and `container-spot` get the
+scope as `BATCH_SCOPE` and write their report under `scheduler/plans/<plan>/` in the hand-off
+container (from `$HANDOFF_DIR/scheduler-plans/<plan>/`) instead of `scheduler/`, so no plan reads or
+uploads another's. `submit-remote`, `native-spot`, `container-spot` and the gold steps stay on the
+step lock whatever the scope: they create workunits and change the trust list, which every plan
+shares. Without `PLAN_SCOPE` nothing changes.
+
 Every `usnm-boinc` process of a hand-off step needs access tokens from the Arc agent, and a
 collect runs several processes for each job. Four collects at once drew HTTP 429 from the agent
 (#1447). So `handoff-job.sh` gives an execution's processes one token cache (`USNM_TOKEN_CACHE`, a

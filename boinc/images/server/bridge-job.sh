@@ -183,7 +183,9 @@
 #                               container, which `usnm-boinc controller-retry` (#1938) takes as proof
 #                               that a page failed for good and has no canonical result
 #   BRIDGE_STEP=batch-inventory BATCH_NONCE=<32 hex> HANDOFF_URL=<container URL>; writes the
-#                               read-only queue/host/journal/spool inventory to scheduler/
+#                               read-only queue/host/journal/spool inventory to scheduler/, or
+#                               with BATCH_SCOPE=<plan> to scheduler/plans/<plan>/ (#1836), as
+#                               native-spot and container-spot do their reports
 #   BRIDGE_STEP=native-spot     BATCH_NONCE HANDOFF_URL, NATIVE_SPOT_SUBMIT and/or NATIVE_SPOT_CHECK
 #                               (#1863): usnm-boinc host-trust native-spot creates the native
 #                               replays and compares the ones back, holding both hosts in
@@ -211,6 +213,22 @@ set -euo pipefail
 . /usr/local/lib/usnm-boinc/lib.sh
 [ -e "$PROJ/.usnm-initialised" ] || fail "project is not initialised"
 step="${BRIDGE_STEP:-submit}"
+# A controller report's directory and container prefix (#1836). BATCH_SCOPE, which the step
+# runner sets from the controller's PLAN_SCOPE, is the plan the report is for: batch-inventory,
+# native-spot and container-spot then write $HANDOFF_DIR/scheduler-plans/<plan>/ and put only that
+# directory under scheduler/plans/<plan>/, so plans that tick side by side never read or upload
+# each other's report. Without it the report goes to scheduler/ as before.
+report_dir() {
+  if [ -n "${BATCH_SCOPE:-}" ]; then
+    [[ $BATCH_SCOPE =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || fail "BATCH_SCOPE is a plan name: lower-case letters, digits and dashes"
+    echo "$HANDOFF_DIR/scheduler-plans/$BATCH_SCOPE"
+  else
+    echo "$HANDOFF_DIR/scheduler"
+  fi
+}
+report_prefix() {
+  if [ -n "${BATCH_SCOPE:-}" ]; then echo "scheduler/plans/$BATCH_SCOPE"; else echo scheduler; fi
+}
 validate_handoff_location() {
   [[ "${HANDOFF_URL:-}" =~ ^https://[a-z0-9]{3,24}\.blob\.core\.windows\.net/boinc-handoff$ ||
     ( "${HANDOFF_URL:-}" = /handoff-state && -d /handoff-state ) ]] ||
@@ -720,11 +738,12 @@ PY
   elif [ "$step" = batch-inventory ]; then
     validate_handoff_location
     [[ "${BATCH_NONCE:-}" =~ ^[0-9a-f]{32}$ ]] || fail "BATCH_NONCE must be 32 hex"
-    mkdir -p "$HANDOFF_DIR/scheduler"
+    out=$(report_dir)
+    mkdir -p "$out"
     python3 "$TEMPLATES/batch-inventory.py" --mysql-defaults-file "$mycnf" --database "$DB_NAME" \
       --root "$HANDOFF_DIR" --results "$PROJ/results" --nonce "$BATCH_NONCE" \
-      --out "$HANDOFF_DIR/scheduler/inventory.json"
-    usnm-boinc handoff put --from "$HANDOFF_DIR/scheduler" --to-url "$HANDOFF_URL" --prefix scheduler
+      --out "$out/inventory.json"
+    usnm-boinc handoff put --from "$out" --to-url "$HANDOFF_URL" --prefix "$(report_prefix)"
   else
     python3 "$TEMPLATES/work-volume.py" --mysql-defaults-file "$mycnf" --database "$DB_NAME"
   fi
@@ -932,18 +951,19 @@ case "$step" in
       --ssl-ca=/usr/local/share/usnm/mysql-ca.pem --batch --skip-column-names "$DB_NAME" \
       -e "SELECT COALESCE(GROUP_CONCAT(v.version_num ORDER BY v.version_num), '') FROM app_version v JOIN app a ON a.id = v.appid WHERE a.name = 'usnm_ocr_native' AND v.deprecated = 0 AND ((a.min_version > 0 AND v.version_num >= a.min_version) OR (a.min_version = 0 AND v.version_num = (SELECT MAX(w.version_num) FROM app_version w WHERE w.appid = v.appid AND w.platformid = v.platformid AND w.plan_class = v.plan_class AND w.deprecated = 0)))") ||
       fail "could not read the usnm_ocr_native versions"
-    mkdir -p "$HANDOFF_DIR/scheduler"
+    out=$(report_dir)
+    mkdir -p "$out"
     stamp="$(mktemp)"
     rc=0
     usnm-boinc host-trust native-spot --root "$SHARE_DIR/host-trust" --project "$PROJ" \
       --jobs-root "$HANDOFF_DIR" --trust "$SHARE_DIR/gold/trust.json" --spool "$PROJ/results/0" \
       --mysql-defaults "$mycnf" --mysql-ca /usr/local/share/usnm/mysql-ca.pem --database "$DB_NAME" \
       --native-versions "$versions" --submit "${NATIVE_SPOT_SUBMIT:-}" --check "${NATIVE_SPOT_CHECK:-}" \
-      --out "$HANDOFF_DIR/scheduler/native-spot.json" --nonce "$BATCH_NONCE" --execute || rc=$?
+      --out "$out/native-spot.json" --nonce "$BATCH_NONCE" --execute || rc=$?
     share_readable "$stamp" "$PROJ/download"
     rm -f "$stamp"
     [ "$rc" -eq 0 ] || exit "$rc"
-    usnm-boinc handoff put --from "$HANDOFF_DIR/scheduler" --to-url "$HANDOFF_URL" --prefix scheduler
+    usnm-boinc handoff put --from "$out" --to-url "$HANDOFF_URL" --prefix "$(report_prefix)"
     exit 0 ;;
   container-spot)
     # Container spot checks (#1934, docs/boinc/server/batch-scheduler.md): the controller names
@@ -963,7 +983,8 @@ case "$step" in
     [ -f "$SHARE_DIR/gold/trust.json" ] || fail "container spot checks need the trust list $SHARE_DIR/gold/trust.json"
     validate_handoff_location
     write_mycnf
-    mkdir -p "$HANDOFF_DIR/scheduler"
+    out=$(report_dir)
+    mkdir -p "$out"
     stamp="$(mktemp)"
     rc=0
     active_args=()
@@ -973,11 +994,11 @@ case "$step" in
       --mysql-defaults "$mycnf" --mysql-ca /usr/local/share/usnm/mysql-ca.pem --database "$DB_NAME" \
       --submit "${CONTAINER_SPOT_SUBMIT:-}" --check "${CONTAINER_SPOT_CHECK:-}" \
       ${active_args[@]+"${active_args[@]}"} --budget-secs "${CONTAINER_SPOT_BUDGET_SECS:-60}" \
-      --out "$HANDOFF_DIR/scheduler/container-spot.json" --nonce "$BATCH_NONCE" --execute || rc=$?
+      --out "$out/container-spot.json" --nonce "$BATCH_NONCE" --execute || rc=$?
     share_readable "$stamp" "$PROJ/download"
     rm -f "$stamp"
     [ "$rc" -eq 0 ] || exit "$rc"
-    usnm-boinc handoff put --from "$HANDOFF_DIR/scheduler" --to-url "$HANDOFF_URL" --prefix scheduler
+    usnm-boinc handoff put --from "$out" --to-url "$HANDOFF_URL" --prefix "$(report_prefix)"
     exit 0 ;;
   gold-onboard | gold-promote)
     # gold-onboard: one bounded host-trust onboard pass, a targeted gold unit for each untrusted
