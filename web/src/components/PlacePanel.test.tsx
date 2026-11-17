@@ -42,8 +42,23 @@ describe("Hit", () => {
     expect(screen.queryByText(/^Our OCR/)).toBeNull();
     expect(screen.queryByText(/^American Stories OCR/)).toBeNull();
     expect(screen.getByRole("link", { name: "View page at the Library of Congress" })).toBeTruthy();
-    // No link to our own page view until the API says a layout exists (#2026).
+    // No link to our own page view unless the API says a layout exists (#2026).
     expect(screen.queryByRole("link", { name: "View page" })).toBeNull();
+  });
+
+  it("links our own page view only for a page the API gives a layout link", () => {
+    const withLayout: HitItem = {
+      ...page,
+      links: { ...page.links, layout: `/v1/pages/${page.doc_id}/layout` },
+    };
+    render(
+      <ul>
+        <Hit h={withLayout} synthetic={false} />
+      </ul>,
+    );
+    expect(screen.getByRole("link", { name: "View page" }).getAttribute("href")).toBe(
+      `/page/${page.doc_id}?viewer=${encodeURIComponent(page.links.viewer!)}`,
+    );
   });
 
   it("marks a page that matched only in American Stories' text, with the note in its text too", () => {
