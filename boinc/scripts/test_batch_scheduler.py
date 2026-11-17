@@ -6005,5 +6005,79 @@ class SideBySidePlanTests(unittest.TestCase):
         self.assertEqual([a for a in view.actions if a[0] in ("export", "submit")], [])
 
 
+
+class JournalSettleTests(unittest.TestCase):
+    """#1836: journals another plan changes while a scoped plan downloads them are fetched again."""
+
+    def transport(self, scoped):
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        config = scoped_config()
+        return batch.Transport(config, directory, onprem_handoff=("claim", "collect", "export"),
+                               plan_scope=scoped), directory
+
+    def run_records(self, scoped):
+        transport, directory = self.transport(scoped)
+        rows = {number: record(f"page-{number}", number) for number in (1, 2, 3)}
+        name = lambda number: f'dispatch/jobs/{rows[number]["job"]["id"]}/record.json'
+        first = {name(1): '"a"', name(2): '"a"'}
+        # During the download plan-b's collect publishes 2 and its export adds 3.
+        second = {name(1): '"a"', name(2): '"b"', name(3): '"a"'}
+        listings = [first, second, second]
+        fetched = []
+
+        def write(number, stage="reserved"):
+            path = directory / "journal-cache" / name(number)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({**rows[number], "stage": stage}))
+
+        def run(argv, label):
+            self.assertIn("download-batch", argv)
+            write(1)
+            write(2)
+            write(3)  # created after the listing, downloaded all the same
+            return ""
+
+        def download(cache, names):
+            fetched.append(sorted(names))
+            for job_name in names:
+                number = next(n for n in rows if name(n) == job_name)
+                write(number, "published" if number == 2 else "reserved")
+
+        with patch.object(transport, "journal_inventory", side_effect=lambda: dict(listings.pop(0))), \
+                patch.object(transport, "run", side_effect=run), \
+                patch.object(transport, "download_journals", side_effect=download):
+            return transport.records(), fetched
+
+    def test_a_scoped_plan_fetches_what_changed_and_lists_again(self):
+        found, fetched = self.run_records(True)
+        stages = {row["job"]["message"]["page"]: row["stage"] for row in found}
+        self.assertEqual(stages, {"page-1": "reserved", "page-2": "published", "page-3": "reserved"})
+        self.assertEqual(len(fetched), 1)
+        self.assertEqual(len(fetched[0]), 2)
+
+    def test_a_plan_alone_still_fails_at_once(self):
+        with self.assertRaisesRegex(ValueError, "changed during download"):
+            self.run_records(False)
+
+    def test_journals_that_never_settle_fail_the_tick(self):
+        transport, directory = self.transport(True)
+        row = record("page-1", 1)
+        name = f'dispatch/jobs/{row["job"]["id"]}/record.json'
+        etags = iter(f'"{n}"' for n in range(100))
+
+        def run(argv, label):
+            path = directory / "journal-cache" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(row))
+            return ""
+
+        with patch.object(transport, "journal_inventory", side_effect=lambda: {name: next(etags)}), \
+                patch.object(transport, "run", side_effect=run), \
+                patch.object(transport, "download_journals", side_effect=lambda cache, names: None):
+            with self.assertRaisesRegex(ValueError, "changed during download"):
+                transport.records()
+
+
 if __name__ == "__main__":
     unittest.main()
