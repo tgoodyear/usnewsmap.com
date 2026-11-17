@@ -93,7 +93,7 @@ enum Commands {
     QueueMove(migrate::QueueMoveArgs),
 }
 
-/// Export and claim log to stderr (stdout carries their output): warnings,
+/// Export, collect and claim log to stderr (stdout carries their output): warnings,
 /// and the `ocr-sync` lock waits from `usnm_ocr_local` at info (#1133).
 /// `RUST_LOG` overrides it. The other commands keep their own output.
 fn log_to_stderr() {
@@ -111,6 +111,8 @@ async fn main() -> anyhow::Result<()> {
     if matches!(
         command,
         Commands::Export(_)
+            | Commands::Collect(_)
+            | Commands::Ndlocr(_)
             | Commands::Retry(_)
             | Commands::ControllerRetry(_)
             | Commands::Claim(_)
