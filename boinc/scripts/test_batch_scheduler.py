@@ -5754,6 +5754,8 @@ class World:
         self.waiting = list(waiting)
         self.exports = []
         self.next_job = 1
+        # Other apps' pending workunits, by the server's per-app count.
+        self.other = 0
 
 
 class PlanView(QueueFake):
@@ -5774,6 +5776,7 @@ class PlanView(QueueFake):
 
     def inventory(self):
         with self.world.mutex:
+            self.other = self.world.other
             return super().inventory()
 
     def claim(self, count):
@@ -5931,12 +5934,14 @@ class SideBySidePlanTests(unittest.TestCase):
         self.assertEqual([a for a in view.actions if a[0] == "submit"], [])
 
 
-    def admitted_after(self, change, **tick_kwargs):
+    def admitted_after(self, change, before=None, **tick_kwargs):
         """One plan-a tick whose admission lock is taken just after `change(world)` runs: another
         plan's work landing while this tick waits for the lock."""
         directory = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory)
         world = World([message(number) for number in range(1, 5)])
+        if before is not None:
+            before(world)
         config = queue_config()
         config["plan"] = "plan-a"
         view = PlanView(world, "plan-a")
@@ -5982,6 +5987,23 @@ class SideBySidePlanTests(unittest.TestCase):
         event, view = self.admitted_after(change, max_global_pending=2)
         self.assertEqual(event["admission"]["extra_workunits"], 1)
         self.assertEqual(len([a for a in view.actions if a[0] == "submit"]), 1)
+
+    def test_the_other_apps_share_is_counted_from_the_same_inventory(self):
+        # Budget 0 and cap 2: two other-app units count for nothing. While this tick waits, they
+        # finish and another plan submits two OCR units: the cap is full, though the total of
+        # pending workunits is the same.
+        def before(world):
+            world.other = 2
+
+        def change(world):
+            world.other = 0
+            for number in range(2):
+                job_id = self.sibling_journal(world, number, stage="submitted")
+                world.jobs[job_id] = {"stage": "submitted", "spool": None}
+
+        event, view = self.admitted_after(change, before, max_global_pending=2, other_app_budget=0)
+        self.assertEqual([a for a in view.actions if a[0] in ("export", "submit")], [])
+
 
 if __name__ == "__main__":
     unittest.main()
