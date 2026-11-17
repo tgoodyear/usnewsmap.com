@@ -100,12 +100,13 @@ impl Ctx {
 /// 9: a Cherokee word also finds the words OCR makes of it in the first
 /// Cherokee type (ᎾᏍᎩ finds ᏩᏍᎩ), so the same request returns other pages
 /// (#1620).
+/// 10: hits say which pages have a stored layout (`links.layout`, #2026).
 /// Also bump it when `usnm_core::query_language`'s rule or word lists change:
 /// they decide a search's baselines from its canonical request, so a body
 /// cached under the old rule would be wrong under the new one. The same goes
 /// for a change to which pages a canonical request finds: the cache key holds
 /// the index version, not the API's.
-pub(crate) const RESPONSE_FORMAT: u32 = 9;
+pub(crate) const RESPONSE_FORMAT: u32 = 10;
 
 /// A persistent-cache read slower than this is abandoned and the response computed.
 const PERSISTED_READ_TIMEOUT: Duration = Duration::from_secs(2);

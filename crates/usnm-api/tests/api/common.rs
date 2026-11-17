@@ -148,7 +148,7 @@ pub(crate) fn temp_data_dir(name: &str) -> PathBuf {
 }
 
 pub(crate) fn persisted_files(dir: &std::path::Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f9")) else {
+    let Ok(entries) = std::fs::read_dir(dir.join("fixture-v1/f10")) else {
         return Vec::new();
     };
     entries

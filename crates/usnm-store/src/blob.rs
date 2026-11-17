@@ -513,7 +513,7 @@ impl ObjectStore for BlobStore {
 
     async fn list(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
         let mut names: Vec<String> = self
-            .list_blobs(prefix)
+            .list_blobs(prefix, false)
             .await?
             .into_iter()
             .map(|(path, _)| path)
@@ -524,7 +524,7 @@ impl ObjectStore for BlobStore {
 
     async fn list_stem(&self, stem: &str) -> Result<Vec<String>, StoreError> {
         let mut names: Vec<String> = self
-            .list_blobs_at(stem, "")
+            .list_blobs_at(stem, "", false)
             .await?
             .into_iter()
             .map(|(path, _)| path)
@@ -535,7 +535,7 @@ impl ObjectStore for BlobStore {
 
     async fn list_info(&self, prefix: &str) -> Result<Vec<ObjectInfo>, StoreError> {
         let mut out = Vec::new();
-        for (path, xml) in self.list_blobs(prefix).await? {
+        for (path, xml) in self.list_blobs(prefix, true).await? {
             let info = blob_info(&xml)
                 .ok_or_else(|| StoreError::Io(format!("list `{prefix}`: no size for `{path}`")))?;
             out.push(ObjectInfo { path, ..info });
@@ -612,8 +612,12 @@ impl BlobStore {
 
     /// List Blobs under `prefix`, following continuation markers: each
     /// blob's path (relative to the store) and its `<Blob>` element.
-    async fn list_blobs(&self, prefix: &str) -> Result<Vec<(String, String)>, StoreError> {
-        self.list_blobs_at(prefix, "/").await
+    async fn list_blobs(
+        &self,
+        prefix: &str,
+        keep_xml: bool,
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        self.list_blobs_at(prefix, "/", keep_xml).await
     }
 
     /// [`BlobStore::list_blobs`] for every blob whose path starts with
@@ -622,6 +626,7 @@ impl BlobStore {
         &self,
         prefix: &str,
         tail: &str,
+        keep_xml: bool,
     ) -> Result<Vec<(String, String)>, StoreError> {
         validate_path(prefix)?;
         // `base` is `{origin}/{container}[/{store prefix}]`.
@@ -658,7 +663,15 @@ impl BlobStore {
                 };
                 if let Some(path) = name.strip_prefix(&strip) {
                     if validate_path(path).is_ok() {
-                        blobs.push((path.to_owned(), blob.to_owned()));
+                        // Only a caller that reads the metadata keeps it: a
+                        // listing of a million names must not hold a million
+                        // `<Blob>` elements.
+                        let xml = if keep_xml {
+                            blob.to_owned()
+                        } else {
+                            String::new()
+                        };
+                        blobs.push((path.to_owned(), xml));
                     }
                 }
             }
