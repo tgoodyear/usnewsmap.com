@@ -845,6 +845,12 @@ class OnpremStep(unittest.TestCase):
         # The wait is shared by the two locks: shared hand-off lock, then the plan's.
         done, _ = collect("native-feed-9")
         self.assertEqual(done.returncode, 0, done.stderr)
+        # Two plans' steps started in the same second get different container names.
+        argv = Path(self.conf.name, "podman-args").read_text().splitlines()
+        self.assertRegex(argv[argv.index("--name") + 1], r"^usnm-boinc-step-[0-9TZ]+-collect-native-feed-9-[0-9]+$")
+        collect()
+        argv = Path(self.conf.name, "podman-args").read_text().splitlines()
+        self.assertRegex(argv[argv.index("--name") + 1], r"^usnm-boinc-step-[0-9TZ]+-collect$")
 
     @unittest.skipUnless(shutil.which("flock"), "native flock is required")
     def test_plan_scope_leaves_the_step_lock_alone(self):

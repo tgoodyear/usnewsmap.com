@@ -673,6 +673,9 @@ if [ "$TARGET:$STEP" = handoff:retry ]; then
 fi
 
 name="usnm-boinc-step-$(date -u +%Y%m%dT%H%M%SZ)-$STEP"
+# Scoped steps of two plans may start in the same second (#1836): the plan and this runner's pid
+# keep their container names apart.
+[ -z "$PLAN_SCOPE" ] || name+="-$PLAN_SCOPE-$$"
 if $WHAT_IF; then
   if [ "$TARGET" = publish ]; then
     echo "would run $APPVER_IMAGE's publish-appver.sh as $name with $CONF/bridge.env and:"
