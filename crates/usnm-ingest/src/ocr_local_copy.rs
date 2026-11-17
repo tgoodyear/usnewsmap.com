@@ -420,9 +420,10 @@ async fn copy_with(
     let mut parts: Vec<Option<Report>> = vec![None; total.div_ceil(RUN)];
     // Unordered, so a slow run never holds a finished one back or leaves a slot idle; the runs
     // are merged in listing order below, so the report's lists are the same as one at a time.
+    let (previous_ref, root_ref) = (&previous, &root);
     let mut runs = futures::stream::iter(listed.chunks(RUN).enumerate())
         .map(|(i, run)| async move {
-            check_run(source, o, &previous, &root, sync, run)
+            check_run(source, o, previous_ref, root_ref, sync, run)
                 .await
                 .map(|(part, n)| (i, part, n))
         })
