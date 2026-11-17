@@ -4225,14 +4225,24 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     for key in ("pending_workunits", "active_hosts"):
         require(type(snapshot[key]) is int and snapshot[key] >= 0, "invalid capacity inventory")
 
-    def admitted_extra():
-        # Taken just after the admission lock (#1836): the workunits other plans created since this
-        # tick's inventory (their submits, gold units and spot replays), which every cap below
-        # counts as in flight. Never less than none: one collected meanwhile frees no room here.
+    def fresh_room():
+        # Taken just after the admission lock (#1836): every plan's work under the global cap as
+        # it stands now, from a fresh inventory and fresh journals, counted as global_pending is:
+        # other plans' submits, gold units and spot replays, and their exports not yet submitted.
+        # Returns (that total, the workunits in flight, the pending job ids, the journals). Each
+        # piece of work counts once: in flight, or as a journal not pending.
         fresh = transport.inventory()
         require(fresh.get("schema_version") == 1 and type(fresh.get("pending_workunits")) is int
-                and fresh["pending_workunits"] >= 0, "invalid capacity inventory")
-        return max(0, fresh["pending_workunits"] - snapshot["pending_workunits"])
+                and fresh["pending_workunits"] >= 0 and isinstance(fresh.get("pending_jobs"), list),
+                "invalid capacity inventory")
+        fresh_pending = set(fresh["pending_jobs"])
+        fresh_records = read_records()
+        passed = {} if feed else None
+        fresh_owned = owned_records(config, fresh_records, state.get("deadline_retries"), passed)
+        in_flight = max(fresh["pending_workunits"], ocr_workunit_counts(fresh, fresh_pending)[0])
+        uncollected, missing = retained_backlog(config, fresh_records, fresh_owned, selected, fresh_pending,
+                                                passed or {})
+        return in_flight + uncollected + len(missing), in_flight, fresh_pending, fresh_records
     # A native plan's room before and after its spot checks' limit (#1863).
     native_room = native_capacity(config, snapshot) if native else None
     spot_active = native_spot_active(snapshot) if native else None
@@ -4377,13 +4387,14 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # Saved now: a collect that fails on a held result would otherwise leave the marker on
         # disk, and every later run would skip gold, the one thing that can admit the host.
         persist()
-    gold_extra = 0
+    gold_demand = None
     gold_admitted = admission is None
     if admission is not None and not drain and not after_gold and config.get("gold_onboarding"):
-        # Gold units take room under the global cap as a refill does: one plan at a time (#1836).
+        # Gold units take room under the global cap as a refill does: one plan at a time (#1836),
+        # counted from every plan's work as it stands once the lock is held.
         gold_admitted = admission.acquire()
         if gold_admitted:
-            gold_extra = admitted_extra()
+            gold_demand = fresh_room()[0]
     if gold_admitted and not drain and not after_gold and config.get("gold_onboarding"):
         # The same caps and the same retained backlog the refill below counts, from the same
         # status. Without status there is no room for gold units (promotion still runs); the
@@ -4396,8 +4407,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                                       other_app_budget=other_app_budget)
             uncollected, missing = retained_backlog(config, records, owned, selected, pending_jobs, conflicts)
             in_flight = max(snapshot["pending_workunits"], ocr_workunit_counts(snapshot, pending_jobs)[0])
-            room = global_room(caps, in_flight + uncollected + len(missing) + gold_extra,
-                               other_app_workunits(snapshot, caps["app"]) or 0)
+            demand = in_flight + uncollected + len(missing) if gold_demand is None else gold_demand
+            room = global_room(caps, demand, other_app_workunits(snapshot, caps["app"]) or 0)
         except (ValueError, KeyError, TypeError, OSError, RuntimeError):
             room = 0
         gold_runs, reserved = gold_onboarding(config, state, transport, persist, now,
@@ -4605,17 +4616,20 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     # exports, submits and replays nothing this tick.
     admitted = True
     admission_extra = 0
+    # The global cap's view for submits and spot replays: this tick's inventory, or the fresh one
+    # taken with the admission lock, with the journals read alongside it.
+    room_in_flight, room_pending, room_workunits = global_in_flight, pending_jobs, snapshot["pending_workunits"]
     if admission is not None:
         admitted = admission.acquire()
         if admitted:
-            admission_extra = admitted_extra()
-            records = read_records()
+            demand, room_in_flight, room_pending, records = fresh_room()
+            room_workunits = room_in_flight
             owned = own(records)
+            admission_extra = max(0, demand - global_pending)
             if refresh_sibling_claims is not None:
                 sibling_claims = refresh_sibling_claims()
-            if admission_extra:
-                global_free = max(0, global_room(cohort_info, global_pending + admission_extra, budgeted_other))
-                free = min(cohort_free, global_free)
+            global_free = max(0, global_room(cohort_info, global_pending + admission_extra, budgeted_other))
+            free = min(cohort_free, global_free)
     if feed and admitted:
         # Every tick, so the list stays current when this one claims nothing (#1754).
         feed.settled_messages = settled_messages(records, claimed_messages(state.get("claims"), sibling_claims))
@@ -4684,8 +4698,11 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                                  for record in owned.values())
             cohort_backlog += sum(page not in owned and page not in conflicts for page in selected)
         cohort_submit_room = max(0, target - ocr_in_flight - cohort_backlog)
-        global_submit_room = max(0, global_room(cohort_info, global_in_flight + backlog + admission_extra,
-                                                budgeted_other))
+        # Every plan's unsettled journals not pending in the inventory the room is counted from.
+        global_backlog = (sum(not settled(record) and record["job"]["id"] not in room_pending | candidates
+                              for record in records)
+                          + sum(page not in owned and page not in conflicts for page in selected))
+        global_submit_room = max(0, global_room(cohort_info, room_in_flight + global_backlog, budgeted_other))
         submit_limit = min(refill, cohort_submit_room, global_submit_room)
         to_submit = []
         for record in owned.values():
@@ -4791,13 +4808,12 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # full cap with no room for the reading that lets them go. The units this tick submitted
         # are in it already: their journals are unsettled and not in BOINC's pending snapshot.
         kept_out_now = native_spot_kept_out(config, state)
-        retained, reserved = retained_backlog(config, records, owned, selected, pending_jobs, conflicts)
+        retained, reserved = retained_backlog(config, records, owned, selected, room_pending, conflicts)
         spot_retained = max(0, retained + len(reserved)
                             - sum(not settled(record) and record["job"]["id"] in kept_out_now
-                                  and record["job"]["id"] not in pending_jobs for record in records))
+                                  and record["job"]["id"] not in room_pending for record in records))
         spot_room = 0 if drain or not admitted or state.get("native_paused") else (
-            100 if spot_cap is None
-            else spot_cap - snapshot["pending_workunits"] - spot_retained - admission_extra)
+            100 if spot_cap is None else spot_cap - room_workunits - spot_retained)
         try:
             spot_step = native_spot_step(config, state, transport, now, submit_room=spot_room,
                                          active=spot_active)
@@ -4831,9 +4847,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # counting the units this tick just submitted. Comparisons go on.
         # Retained work as the pre-submit inventory has it: what this tick submitted was part of it,
         # so it is counted once, and a tick that submitted nothing still counts what waits.
-        uncollected, missing = retained_backlog(config, records, owned, selected, pending_jobs, conflicts)
+        uncollected, missing = retained_backlog(config, records, owned, selected, room_pending, conflicts)
         room = 0 if drain or not admitted else max(0, global_room(
-            cohort_info, global_in_flight + uncollected + len(missing) + admission_extra, budgeted_other))
+            cohort_info, room_in_flight + uncollected + len(missing), budgeted_other))
         try:
             container_step = container_spot_step(config, state, transport, now, submit_room=room,
                                                  active=native_spot_active(snapshot))

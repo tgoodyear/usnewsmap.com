@@ -5639,9 +5639,6 @@ class StepChunkingTests(unittest.TestCase):
         self.assertEqual((len(found), len(missing), truncated), (207, 3, {}))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 def scoped_config(plan="native-feed-9"):
     value = queue_config()
@@ -5932,3 +5929,59 @@ class SideBySidePlanTests(unittest.TestCase):
         event = batch.tick(config, {}, view, lambda: None, NOW, admission=lock, max_global_pending=3)
         self.assertEqual(event["admission"]["extra_workunits"], 3)
         self.assertEqual([a for a in view.actions if a[0] == "submit"], [])
+
+
+    def admitted_after(self, change, **tick_kwargs):
+        """One plan-a tick whose admission lock is taken just after `change(world)` runs: another
+        plan's work landing while this tick waits for the lock."""
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        world = World([message(number) for number in range(1, 5)])
+        config = queue_config()
+        config["plan"] = "plan-a"
+        view = PlanView(world, "plan-a")
+        lock = batch.Admission(directory / "admission.lock", 5)
+        real_acquire = lock.acquire
+
+        def acquire():
+            with world.mutex:
+                change(world)
+            return real_acquire()
+
+        lock.acquire = acquire
+        event = batch.tick(config, {}, view, lambda: None, NOW, admission=lock, **tick_kwargs)
+        return event, view
+
+    @staticmethod
+    def sibling_journal(world, number, stage="reserved"):
+        job_id = f"{0xc000 + number:064x}"
+        world.rows.append({"stage": stage, "plan": "plan-b",
+                           "job": {"id": job_id, "message": {"page": f"sn87654321/1900-01-01/ed-1/seq-{number}",
+                                                             "batch": "test_batch"},
+                                   "engine": {"image": "sha256:" + "a" * 64}}})
+        return job_id
+
+    def test_another_plans_unsubmitted_exports_count_against_the_cap(self):
+        # Reservations another plan exported and left unsubmitted take room though no workunit
+        # exists yet.
+        def change(world):
+            for number in range(3):
+                self.sibling_journal(world, number)
+
+        event, view = self.admitted_after(change, max_global_pending=3)
+        self.assertEqual(event["admission"]["extra_workunits"], 3)
+        self.assertEqual([a for a in view.actions if a[0] in ("export", "submit")], [])
+
+    def test_another_plans_submit_counts_once(self):
+        # Cap two, one sibling unit submitted meanwhile (a journal and a pending workunit): one
+        # submit's room is left, not none.
+        def change(world):
+            job_id = self.sibling_journal(world, 1, stage="submitted")
+            world.jobs[job_id] = {"stage": "submitted", "spool": None}
+
+        event, view = self.admitted_after(change, max_global_pending=2)
+        self.assertEqual(event["admission"]["extra_workunits"], 1)
+        self.assertEqual(len([a for a in view.actions if a[0] == "submit"]), 1)
+
+if __name__ == "__main__":
+    unittest.main()
