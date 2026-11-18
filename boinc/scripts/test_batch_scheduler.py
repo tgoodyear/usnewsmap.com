@@ -6093,9 +6093,50 @@ class JournalSettleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "changed during download"):
             self.run_records(False)
 
+    def churning(self, plan):
+        """A transport whose one journal, plan `plan`'s, has a new ETag at every listing."""
+        transport, directory = self.transport(True)
+        row = {**record("page-1", 1), "plan": plan}
+        name = f'dispatch/jobs/{row["job"]["id"]}/record.json'
+        etags = iter(f'"{n}"' for n in range(100))
+        listings = []
+
+        def run(argv, label):
+            path = directory / "journal-cache" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(row))
+            return ""
+
+        def inventory():
+            listings.append(1)
+            return {name: next(etags)}
+
+        return transport, directory, row, inventory, run, listings
+
+    def test_other_plans_churn_that_never_settles_is_read_after_the_last_round(self):
+        # #2051: native-feed-9 and -10 failed ticks at 17-22 UTC on 18 Nov, six listings in a row
+        # each differing from the one before, every moved journal another plan's.
+        transport, directory, row, inventory, run, listings = self.churning("native-feed-4")
+        with patch.object(transport, "journal_inventory", side_effect=inventory), \
+                patch.object(transport, "run", side_effect=run), \
+                patch.object(transport, "download_journals", side_effect=lambda cache, names: None), \
+                contextlib.redirect_stderr(io.StringIO()) as log:
+            self.assertEqual(transport.records(), [row])
+        # Seven listings, as the failed ticks' timings show; the sixth fetch round is not listed again.
+        self.assertEqual(len(listings), batch.JOURNAL_SETTLE_TRIES + 2)
+        self.assertIn("boinc_journal_settle_tolerated", log.getvalue())
+
+    def test_an_own_journal_that_never_settles_fails_the_tick(self):
+        transport, directory, row, inventory, run, listings = self.churning("native-feed-9")
+        with patch.object(transport, "journal_inventory", side_effect=inventory), \
+                patch.object(transport, "run", side_effect=run), \
+                patch.object(transport, "download_journals", side_effect=lambda cache, names: None):
+            with self.assertRaisesRegex(ValueError, "changed during download"):
+                transport.records()
+
     def test_journals_that_never_settle_fail_the_tick(self):
         transport, directory = self.transport(True)
-        row = record("page-1", 1)
+        row = {**record("page-1", 1), "plan": "native-feed-9"}
         name = f'dispatch/jobs/{row["job"]["id"]}/record.json'
         etags = iter(f'"{n}"' for n in range(100))
 
