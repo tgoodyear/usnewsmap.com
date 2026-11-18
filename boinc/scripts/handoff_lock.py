@@ -9,7 +9,7 @@ steps. The clock is this host's, so controller and host clock skew cannot shorte
     handoff_lock.py --root DIR [--plan NAME] acquire --holder ID --host H --pid N [--ttl 300]
                     [--drain-dir DIR --drain-wait SECS]
     handoff_lock.py --root DIR renew   --holder ID --generation N [--ttl 300]
-    handoff_lock.py --root DIR release --holder ID --generation N
+    handoff_lock.py --root DIR release --holder ID --generation N [--clean]
     handoff_lock.py --root DIR fence   --holder ID --generation N
     handoff_lock.py --root DIR status
 """
@@ -229,6 +229,9 @@ def main(argv=None):
             one.add_argument("--drain-wait", type=int, default=0)
         else:
             one.add_argument("--generation", type=int, required=True)
+        if name == "release":
+            one.add_argument("--clean", action="store_true",
+                             help="every fenced step of this holder is known to have ended")
         if name in ("acquire", "renew"):
             one.add_argument("--ttl", type=int, default=DEFAULT_TTL)
     sub.add_parser("status")
@@ -250,7 +253,7 @@ def main(argv=None):
         elif args.command == "renew":
             result = renew(args.root, args.holder, args.generation, args.ttl, args.plan)
         elif args.command == "release":
-            result = release(args.root, args.holder, args.generation, args.plan)
+            result = release(args.root, args.holder, args.generation, args.plan, clean=args.clean)
         elif args.command == "fence":
             fence(args.root, args.holder, args.generation, args.plan)
             result = {"fenced": "ok"}

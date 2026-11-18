@@ -233,6 +233,7 @@ if [ "$TARGET" = handoff ] || [ "$TARGET" = bridge ]; then
       LOCK_PLAN=*)
         [[ ${v#*=} =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || die "LOCK_PLAN is a plan name: lower-case letters, digits and dashes"
         fence_plan=(--plan "${v#*=}") ;;
+      LOCK_CLEAN=1) [ "$STEP" = lock-release ] && lock_args+=(--clean) || die "LOCK_CLEAN is for --step lock-release" ;;
       LOCK_HOST=*) lock_args+=(--host "${v#*=}") ;;
       LOCK_PID=*) lock_args+=(--pid "${v#*=}") ;;
       LOCK_TTL=*) lock_args+=(--ttl "${v#*=}") ;;
@@ -241,7 +242,7 @@ if [ "$TARGET" = handoff ] || [ "$TARGET" = bridge ]; then
   done
   case $TARGET/$STEP in
     handoff/lock-*)
-      [ ${#kept[@]} -eq 0 ] || die "--step $STEP takes only LOCK_HOLDER, LOCK_GENERATION, LOCK_HOST, LOCK_PID, LOCK_TTL and LOCK_PLAN"
+      [ ${#kept[@]} -eq 0 ] || die "--step $STEP takes only LOCK_HOLDER, LOCK_GENERATION, LOCK_HOST, LOCK_PID, LOCK_TTL, LOCK_PLAN and LOCK_CLEAN"
       [ -f "$LOCK_TOOL" ] || die "no $LOCK_TOOL: install handoff_lock.py beside this script"
       [ -d "$HANDOFF_LOCK_ROOT" ] && [ ! -L "$HANDOFF_LOCK_ROOT" ] || die "no local hand-off root $HANDOFF_LOCK_ROOT"
       [ -z "$fence_holder" ] || lock_args+=(--holder "$fence_holder")

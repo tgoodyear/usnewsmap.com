@@ -266,8 +266,10 @@ plan's own lock with `--plan-scope`; exclusive without it) and the step lock, wh
 holds. The wait is the call's `--wait-mins` less 10 s, so the controller's 120 s call waits about
 110 s. If a lock is still held, the new generation is let go again and the call fails with the
 reason; the record stays marked as a takeover, so the next tick drains again before it proceeds,
-and the old holder stays fenced out meanwhile. After a clean
-`lock-release` nothing is drained, so an ordinary tick never waits.
+and the old holder stays fenced out meanwhile. A `lock-release`
+that the controller marks clean (`LOCK_CLEAN=1`, sent only when every fenced step of the tick is
+known to have ended) leaves nothing to drain, so an ordinary tick never waits. A tick with a
+fenced step that failed, timed out or lost its ssh releases unmarked, and the next acquire drains.
 
 **Cutover order, updated from the 17 Nov survey (section 2.3).** Steps 1 to 5 stand as written
 there: refresh the staged copies, mount the lake and hand-off root on CT 230, install

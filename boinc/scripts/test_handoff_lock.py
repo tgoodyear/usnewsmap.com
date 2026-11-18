@@ -233,6 +233,7 @@ class StepTests(unittest.TestCase):
         # a-1 is gone without a release: its record lapsed.
         record = lock.read(self.state)
         record["expires_at"] = "2020-01-01T00:00:00Z"
+        record.pop("released", None)
         lock.write(self.state, record)
         with open(self.root / "usnm-boinc-handoff.lock", "a") as held:
             fcntl.flock(held, fcntl.LOCK_EX)
@@ -242,6 +243,16 @@ class StepTests(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(json.loads(second.stdout)["generation"], 2)
         self.assertGreaterEqual(time.monotonic() - started, 1.5)
+
+    def test_clean_release_is_marked_and_an_unclean_one_is_not(self):
+        self.step("lock-acquire", "LOCK_HOLDER=a-1", "LOCK_HOST=h", "LOCK_PID=5")
+        self.assertEqual(self.step("lock-release", "LOCK_HOLDER=a-1", "LOCK_GENERATION=1").returncode, 0)
+        self.assertNotIn("released", lock.read(self.state))
+        self.step("lock-acquire", "LOCK_HOLDER=a-2", "LOCK_HOST=h", "LOCK_PID=5")
+        done = self.step("lock-release", "LOCK_HOLDER=a-2", "LOCK_GENERATION=2", "LOCK_CLEAN=1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue(lock.read(self.state)["released"])
+        self.assertIn("LOCK_CLEAN is for", self.step("lock-status", "LOCK_CLEAN=1").stderr)
 
     def test_lock_plan_selects_the_plans_own_record(self):
         done = self.step("lock-acquire", "LOCK_PLAN=plan-a", "LOCK_HOLDER=a-1", "LOCK_HOST=h", "LOCK_PID=5")
@@ -404,6 +415,42 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(any(v.startswith("EXPECTED_HANDOFF_URL=") for v in calls[1]))
         self.assertIn("LOCK_GENERATION=7", calls[3])
         self.assertIsNone(transport.lock_fence)
+
+    def test_release_says_clean_only_when_every_fenced_step_ended(self):
+        transport = self.transport(local_lock=True, onprem_handoff=("claim", "collect", "export"))
+        calls = []
+
+        def run(argv, label, **kwargs):
+            calls.append(argv)
+            if label == "handoff/collect" and fail[0]:
+                raise RuntimeError("handoff/collect failed; inspect")
+            return json.dumps({"generation": 7}) if label == "handoff/lock-acquire" else ""
+
+        for fail_it in (False, True):
+            fail = [fail_it]
+            calls.clear()
+            with patch.object(transport, "run", side_effect=run), patch.object(batch, "LOCK_HEARTBEAT_SECS", 3600):
+                try:
+                    with transport.lock():
+                        transport.step("handoff", "collect", JOB_ID="1" * 64)
+                except RuntimeError:
+                    self.assertTrue(fail_it)
+            self.assertEqual("LOCK_CLEAN=1" in calls[-1], not fail_it, calls[-1])
+        # A step that never started (the host's step lock stayed held) leaves nothing running.
+        calls.clear()
+        fail = [False]
+
+        def busy(argv, label, **kwargs):
+            calls.append(argv)
+            if label == "handoff/collect":
+                raise batch.StepLockTimeout("nothing ran")
+            return json.dumps({"generation": 7}) if label == "handoff/lock-acquire" else ""
+
+        with patch.object(transport, "run", side_effect=busy), patch.object(batch, "LOCK_HEARTBEAT_SECS", 3600):
+            with self.assertRaises(batch.StepLockTimeout):
+                with transport.lock():
+                    transport.step("handoff", "collect", JOB_ID="1" * 64)
+        self.assertIn("LOCK_CLEAN=1", calls[-1])
 
     def test_unfenced_without_the_flag(self):
         transport = self.transport(onprem_handoff=("claim", "collect", "export"))
