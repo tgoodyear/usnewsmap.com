@@ -90,9 +90,13 @@ class RecordTests(unittest.TestCase):
         # The old holder stays fenced out, and once its step ends the next acquire goes through.
         with self.assertRaises(lock.LockError):
             lock.fence(self.root, "a-1", 1)
-        held.close()
+        # The next try drains again: the old step still runs, so it may not skip the wait.
         with patch.object(lock, "now", return_value=lock.now() + timedelta(seconds=302)):
-            self.assertEqual(lock.acquire(self.root, "c-3", "h", 3, 300, self.root, 0)["generation"], 3)
+            with self.assertRaisesRegex(lock.LockError, "earlier step still holds"):
+                lock.acquire(self.root, "c-3", "h", 3, 300, self.root, 0)
+        held.close()
+        with patch.object(lock, "now", return_value=lock.now() + timedelta(seconds=303)):
+            self.assertEqual(lock.acquire(self.root, "d-4", "h", 4, 300, self.root, 0)["generation"], 4)
 
     def test_a_released_lock_has_nothing_to_drain(self):
         lock.acquire(self.root, "a-1", "h", 1)
@@ -130,10 +134,8 @@ class RecordTests(unittest.TestCase):
                 with self.assertRaisesRegex(lock.LockError, "earlier step", msg=name):
                     lock.acquire(self.root, "n", "h", 2, 300, self.root, 0, "plan-a")
             held.close()
-            # The failed takeover released its own generation: back to a holder that lapsed.
-            record = lock.read(self.root, "plan-a")
-            record.pop("released")
-            lock.write(self.root, record, "plan-a")
+            # The failed takeover let its own generation go, still needing a drain.
+            self.assertNotIn("released", lock.read(self.root, "plan-a"))
 
     def test_bad_plan_is_refused(self):
         done = lock.main(["--root", str(self.root), "--plan", "../x", "status"])

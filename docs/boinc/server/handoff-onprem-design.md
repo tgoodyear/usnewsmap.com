@@ -264,8 +264,9 @@ When the new generation follows a record its holder never released (a lapsed lea
 host lock a fenced step runs under, once, before it returns: the hand-off lock (shared, then the
 plan's own lock with `--plan-scope`; exclusive without it) and the step lock, which `submit-remote`
 holds. The wait is the call's `--wait-mins` less 10 s, so the controller's 120 s call waits about
-110 s. If a lock is still held, the new generation is released again and the call fails with the
-reason; the next tick retries, and the old holder stays fenced out meanwhile. After a clean
+110 s. If a lock is still held, the new generation is let go again and the call fails with the
+reason; the record stays marked as a takeover, so the next tick drains again before it proceeds,
+and the old holder stays fenced out meanwhile. After a clean
 `lock-release` nothing is drained, so an ordinary tick never waits.
 
 **Cutover order, updated from the 17 Nov survey (section 2.3).** Steps 1 to 5 stand as written

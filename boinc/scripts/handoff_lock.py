@@ -146,14 +146,15 @@ def drain(directory, wait, plan=None):
 def acquire(root, holder, host, pid, ttl=DEFAULT_TTL, drain_dir=None, drain_wait=0, plan=None):
     """Take the lock. A takeover, which is a new generation over a record its holder never released,
     then drains the host's step locks when drain_dir is given; if that times out, the new
-    generation is released again so the next tick can try, and the error is raised. After a
+    generation is let go again (still marked as needing a drain) so the next tick can try, and
+    the error is raised. After a
     release there is nothing to drain, so the usual tick never waits."""
     fresh, takeover = _acquire(root, holder, host, pid, ttl, plan)
     if drain_dir is not None and takeover:
         try:
             drain(drain_dir, drain_wait, plan)
         except (LockError, OSError):
-            release(root, holder, fresh["generation"], plan)
+            release(root, holder, fresh["generation"], plan, clean=False)
             raise
     return fresh
 
@@ -190,7 +191,7 @@ def renew(root, holder, generation, ttl=DEFAULT_TTL, plan=None):
         return record
 
 
-def release(root, holder, generation, plan=None):
+def release(root, holder, generation, plan=None, clean=True):
     with exclusive(root, plan):
         at = now()
         record = read(root, plan)
@@ -199,7 +200,10 @@ def release(root, holder, generation, plan=None):
         # Kept, expired now, so the generation keeps counting up. "released" tells the next
         # acquire the holder ended on purpose, so it has no step of this holder to drain.
         record["expires_at"] = stamp(at)
-        record["released"] = True
+        # Not for a takeover that failed to drain: the old holder's step may still run, so the next
+        # acquire must drain too.
+        if clean:
+            record["released"] = True
         write(root, record, plan)
         return record
 
