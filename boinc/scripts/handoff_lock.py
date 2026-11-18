@@ -6,7 +6,8 @@ under a short flock on a sidecar file. onprem-step.sh runs this for `--target ha
 lock-acquire|lock-renew|lock-release|lock-status` and for the fence check on mutating hand-off
 steps. The clock is this host's, so controller and host clock skew cannot shorten a lease.
 
-    handoff_lock.py --root DIR acquire --holder ID --host H --pid N [--ttl 300]
+    handoff_lock.py --root DIR [--plan NAME] acquire --holder ID --host H --pid N [--ttl 300]
+                    [--drain-dir DIR --drain-wait SECS]
     handoff_lock.py --root DIR renew   --holder ID --generation N [--ttl 300]
     handoff_lock.py --root DIR release --holder ID --generation N
     handoff_lock.py --root DIR fence   --holder ID --generation N
@@ -21,6 +22,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -28,6 +30,9 @@ DEFAULT_TTL = 300
 MAX_TTL = 3600
 RECORD = "scheduler/controller.lock.json"
 SIDECAR = "scheduler/.controller.lock.flock"
+# A plan that ticks beside others (--plan-scope, #1836) has a record of its own, so plans do not
+# hold each other out; the plan names match batch_scheduler.py's PLAN_SCOPE_NAME.
+PLAN = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 HOLDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 HOST = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}")
 
@@ -48,17 +53,25 @@ def parse(text):
     return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
 
+def record_name(plan):
+    return f"scheduler/plans/{plan}/controller.lock.json" if plan else RECORD
+
+
+def sidecar_name(plan):
+    return f"scheduler/plans/{plan}/.controller.lock.flock" if plan else SIDECAR
+
+
 @contextlib.contextmanager
-def exclusive(root):
-    directory = root / "scheduler"
-    directory.mkdir(mode=0o700, exist_ok=True)
-    with (root / SIDECAR).open("a") as sidecar:
+def exclusive(root, plan=None):
+    directory = root / sidecar_name(plan).rsplit("/", 1)[0]
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with (root / sidecar_name(plan)).open("a") as sidecar:
         fcntl.flock(sidecar, fcntl.LOCK_EX)
         yield
 
 
-def read(root):
-    path = root / RECORD
+def read(root, plan=None):
+    path = root / record_name(plan)
     if not path.exists():
         return None
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
@@ -71,8 +84,8 @@ def read(root):
     return record
 
 
-def write(root, record):
-    path = root / RECORD
+def write(root, record, plan=None):
+    path = root / record_name(plan)
     with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=".lock-", delete=False) as out:
         temporary = Path(out.name)
         json.dump(record, out, sort_keys=True)
@@ -100,18 +113,63 @@ def describe(record, at):
             f"generation {record['generation']}, {when}")
 
 
-def acquire(root, holder, host, pid, ttl=DEFAULT_TTL):
-    with exclusive(root):
+STEP_LOCK = "usnm-boinc-step.lock"
+HANDOFF_LOCK = "usnm-boinc-handoff.lock"
+
+
+def drain(directory, wait, plan=None):
+    """Take each host lock a fenced step runs under, once, and let it go (#1897). A mutating step
+    that passed its fence check holds its lock until it ends, so returning from here means no step
+    of an earlier generation is still writing. The locks, as onprem-step.sh takes them: the
+    hand-off lock (hand-off steps, spool-out, batch-inventory, write-held-pages), taken shared
+    and followed by the plan's own with a plan scope, and the step lock (submit-remote).
+    Raises LockError if one is still held after `wait` seconds in all."""
+    deadline = time.monotonic() + max(0, wait)
+    groups = [[(HANDOFF_LOCK, fcntl.LOCK_SH)] if plan else [(HANDOFF_LOCK, fcntl.LOCK_EX)]]
+    if plan:
+        groups[0].append((f"usnm-boinc-handoff.plan-{plan}.lock", fcntl.LOCK_EX))
+    groups.append([(STEP_LOCK, fcntl.LOCK_EX)])
+    for group in groups:
+        with contextlib.ExitStack() as held:
+            for name, mode in group:
+                step_lock = held.enter_context(open(Path(directory) / name, "a"))
+                while True:
+                    try:
+                        fcntl.flock(step_lock, mode | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise LockError("an earlier step still holds the step lock") from None
+                        time.sleep(0.2)
+
+
+def acquire(root, holder, host, pid, ttl=DEFAULT_TTL, drain_dir=None, drain_wait=0, plan=None):
+    """Take the lock. A takeover, which is a new generation over a record its holder never released,
+    then drains the host's step locks when drain_dir is given; if that times out, the new
+    generation is released again so the next tick can try, and the error is raised. After a
+    release there is nothing to drain, so the usual tick never waits."""
+    fresh, takeover = _acquire(root, holder, host, pid, ttl, plan)
+    if drain_dir is not None and takeover:
+        try:
+            drain(drain_dir, drain_wait, plan)
+        except (LockError, OSError):
+            release(root, holder, fresh["generation"], plan)
+            raise
+    return fresh
+
+
+def _acquire(root, holder, host, pid, ttl, plan):
+    with exclusive(root, plan):
         at = now()
-        record = read(root)
+        record = read(root, plan)
         if record is not None and not expired(record, at):
             raise LockError(f"lock is held: {describe(record, at)}")
         fresh = {"holder": holder, "host": host, "pid": pid,
                  "generation": (record["generation"] if record else 0) + 1,
                  "acquired_at": stamp(at), "renewed_at": stamp(at),
                  "expires_at": stamp(at + timedelta(seconds=ttl))}
-        write(root, fresh)
-        return fresh
+        write(root, fresh, plan)
+        return fresh, record is not None and not record.get("released")
 
 
 def check(record, holder, generation, at, *, allow_expired):
@@ -121,38 +179,41 @@ def check(record, holder, generation, at, *, allow_expired):
         raise LockError(f"lock expired: {describe(record, at)}")
 
 
-def renew(root, holder, generation, ttl=DEFAULT_TTL):
-    with exclusive(root):
+def renew(root, holder, generation, ttl=DEFAULT_TTL, plan=None):
+    with exclusive(root, plan):
         at = now()
-        record = read(root)
+        record = read(root, plan)
         check(record, holder, generation, at, allow_expired=False)
         record["renewed_at"] = stamp(at)
         record["expires_at"] = stamp(at + timedelta(seconds=ttl))
-        write(root, record)
+        write(root, record, plan)
         return record
 
 
-def release(root, holder, generation):
-    with exclusive(root):
+def release(root, holder, generation, plan=None):
+    with exclusive(root, plan):
         at = now()
-        record = read(root)
+        record = read(root, plan)
         if record is None or record["holder"] != holder or record["generation"] != generation:
             return None
-        # Kept, expired now, so the generation keeps counting up.
+        # Kept, expired now, so the generation keeps counting up. "released" tells the next
+        # acquire the holder ended on purpose, so it has no step of this holder to drain.
         record["expires_at"] = stamp(at)
-        write(root, record)
+        record["released"] = True
+        write(root, record, plan)
         return record
 
 
-def fence(root, holder, generation):
-    with exclusive(root):
+def fence(root, holder, generation, plan=None):
+    with exclusive(root, plan):
         at = now()
-        check(read(root), holder, generation, at, allow_expired=False)
+        check(read(root, plan), holder, generation, at, allow_expired=False)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--plan", help="the plan's own record, for --plan-scope controllers")
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("acquire", "renew", "release", "fence"):
         one = sub.add_parser(name)
@@ -160,6 +221,8 @@ def main(argv=None):
         if name == "acquire":
             one.add_argument("--host", required=True)
             one.add_argument("--pid", type=int, required=True)
+            one.add_argument("--drain-dir", type=Path)
+            one.add_argument("--drain-wait", type=int, default=0)
         else:
             one.add_argument("--generation", type=int, required=True)
         if name in ("acquire", "renew"):
@@ -169,6 +232,8 @@ def main(argv=None):
     try:
         if not args.root.is_dir() or args.root.is_symlink():
             raise LockError("hand-off root is not a directory")
+        if args.plan is not None and not PLAN.fullmatch(args.plan):
+            raise LockError("invalid plan")
         if args.command != "status" and not HOLDER.fullmatch(args.holder):
             raise LockError("invalid holder")
         if args.command == "acquire" and not HOST.fullmatch(args.host):
@@ -176,16 +241,17 @@ def main(argv=None):
         if args.command in ("acquire", "renew") and not 1 <= args.ttl <= MAX_TTL:
             raise LockError("invalid ttl")
         if args.command == "acquire":
-            result = acquire(args.root, args.holder, args.host, args.pid, args.ttl)
+            result = acquire(args.root, args.holder, args.host, args.pid, args.ttl,
+                             args.drain_dir, args.drain_wait, args.plan)
         elif args.command == "renew":
-            result = renew(args.root, args.holder, args.generation, args.ttl)
+            result = renew(args.root, args.holder, args.generation, args.ttl, args.plan)
         elif args.command == "release":
-            result = release(args.root, args.holder, args.generation)
+            result = release(args.root, args.holder, args.generation, args.plan)
         elif args.command == "fence":
-            fence(args.root, args.holder, args.generation)
+            fence(args.root, args.holder, args.generation, args.plan)
             result = {"fenced": "ok"}
         else:
-            record = read(args.root)
+            record = read(args.root, args.plan)
             at = now()
             result = {"lock": record, "now": stamp(at), "summary": describe(record, at),
                       "expired": record is None or expired(record, at)}

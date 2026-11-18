@@ -4,6 +4,7 @@ The controller's local expiring lock (#1367): the record helper, onprem-step.sh'
 fencing (all stopped before podman), and the controller's use of them.
 """
 
+import fcntl
 import json
 import os
 import subprocess
@@ -54,6 +55,94 @@ class RecordTests(unittest.TestCase):
         with patch.object(lock, "now", return_value=lock.now() + timedelta(seconds=301)):
             record = lock.acquire(self.root, "b-2", "h", 2)
         self.assertEqual((record["holder"], record["generation"]), ("b-2", 2))
+
+    def hold_step_lock(self, path, seconds=None):
+        """An old holder's running step: the host's step lock, held (until `seconds` pass, if given)."""
+        held = open(path, "a")
+        fcntl.flock(held, fcntl.LOCK_EX)
+        if seconds is not None:
+            def later():
+                time.sleep(seconds)
+                held.close()
+            threading.Thread(target=later, daemon=True).start()
+        return held
+
+    def test_takeover_waits_for_a_running_step_of_the_old_generation(self):
+        lock.acquire(self.root, "a-1", "h", 1, 300, self.root, 5)
+        self.assertFalse((self.root / "usnm-boinc-handoff.lock").exists(), "a first lock has nothing to drain")
+        self.hold_step_lock(self.root / "usnm-boinc-handoff.lock", seconds=1)
+        started = time.monotonic()
+        with patch.object(lock, "now", return_value=lock.now() + timedelta(seconds=301)):
+            record = lock.acquire(self.root, "b-2", "h", 2, 300, self.root, 10)
+        self.assertGreaterEqual(time.monotonic() - started, 0.8)
+        self.assertEqual(record["generation"], 2)
+        self.assertEqual(lock.read(self.root)["holder"], "b-2")
+
+    def test_takeover_that_cannot_drain_fails_and_frees_the_new_generation(self):
+        lock.acquire(self.root, "a-1", "h", 1, 300)
+        held = self.hold_step_lock(self.root / "usnm-boinc-step.lock")
+        with patch.object(lock, "now", return_value=lock.now() + timedelta(seconds=301)):
+            with self.assertRaisesRegex(lock.LockError, "earlier step still holds the step lock"):
+                lock.acquire(self.root, "b-2", "h", 2, 300, self.root, 0)
+        record = lock.read(self.root)
+        self.assertEqual((record["holder"], record["generation"]), ("b-2", 2))
+        self.assertEqual(record["expires_at"], record["acquired_at"], "released for the next tick")
+        # The old holder stays fenced out, and once its step ends the next acquire goes through.
+        with self.assertRaises(lock.LockError):
+            lock.fence(self.root, "a-1", 1)
+        held.close()
+        with patch.object(lock, "now", return_value=lock.now() + timedelta(seconds=302)):
+            self.assertEqual(lock.acquire(self.root, "c-3", "h", 3, 300, self.root, 0)["generation"], 3)
+
+    def test_a_released_lock_has_nothing_to_drain(self):
+        lock.acquire(self.root, "a-1", "h", 1)
+        lock.release(self.root, "a-1", 1)
+        held = self.hold_step_lock(self.root / "usnm-boinc-handoff.lock")
+        self.assertEqual(lock.acquire(self.root, "b-2", "h", 2, 300, self.root, 0)["generation"], 2)
+        held.close()
+
+    def test_plans_have_records_of_their_own_and_take_over_without_holding_each_other(self):
+        lock.acquire(self.root, "a-1", "h", 1, 300, plan="plan-a")
+        self.assertEqual(lock.acquire(self.root, "b-1", "h", 2, 300, plan="plan-b")["generation"], 1)
+        self.assertEqual(lock.acquire(self.root, "c-1", "h", 3)["generation"], 1)
+        self.assertTrue((self.root / "scheduler/plans/plan-a/controller.lock.json").is_file())
+        with self.assertRaisesRegex(lock.LockError, "held: holder a-1"):
+            lock.acquire(self.root, "a-2", "h", 4, 300, plan="plan-a")
+        lock.fence(self.root, "a-1", 1, plan="plan-a")
+        with self.assertRaises(lock.LockError):
+            lock.fence(self.root, "a-1", 1)
+        # Plan b's step holds its own lock: plan a's takeover does not wait for it, plan b's does.
+        step_b = self.hold_step_lock(self.root / "usnm-boinc-handoff.plan-plan-b.lock")
+        shared = open(self.root / "usnm-boinc-handoff.lock", "a")
+        fcntl.flock(shared, fcntl.LOCK_SH)
+        with patch.object(lock, "now", return_value=lock.now() + timedelta(seconds=301)):
+            self.assertEqual(lock.acquire(self.root, "a-3", "h", 5, 300, self.root, 0, "plan-a")["generation"], 2)
+            with self.assertRaisesRegex(lock.LockError, "earlier step"):
+                lock.acquire(self.root, "b-3", "h", 6, 300, self.root, 0, "plan-b")
+        step_b.close()
+        shared.close()
+
+    def test_scoped_takeover_waits_for_a_whole_hand_off_lock_holder_and_a_submit(self):
+        lock.acquire(self.root, "a-1", "h", 1, 300, plan="plan-a")
+        for name in ("usnm-boinc-handoff.lock", "usnm-boinc-step.lock"):
+            held = self.hold_step_lock(self.root / name)
+            with patch.object(lock, "now", return_value=lock.now() + timedelta(seconds=301)):
+                with self.assertRaisesRegex(lock.LockError, "earlier step", msg=name):
+                    lock.acquire(self.root, "n", "h", 2, 300, self.root, 0, "plan-a")
+            held.close()
+            # The failed takeover released its own generation: back to a holder that lapsed.
+            record = lock.read(self.root, "plan-a")
+            record.pop("released")
+            lock.write(self.root, record, "plan-a")
+
+    def test_bad_plan_is_refused(self):
+        done = lock.main(["--root", str(self.root), "--plan", "../x", "status"])
+        self.assertEqual(done, 1)
+
+    def test_acquire_without_a_drain_lock_is_unchanged(self):
+        lock.acquire(self.root, "a-1", "h", 1)
+        lock.release(self.root, "a-1", 1)
+        self.assertEqual(lock.acquire(self.root, "b-2", "h", 2)["generation"], 2)
 
     def test_renew_extends_and_fences_the_old_holder(self):
         first = lock.acquire(self.root, "a-1", "h", 1, 60)
@@ -135,6 +224,41 @@ class StepTests(unittest.TestCase):
         self.assertNotEqual(self.step("lock-renew", "LOCK_HOLDER=a-1", "LOCK_GENERATION=9").returncode, 0)
         self.assertEqual(self.step("lock-release", "LOCK_HOLDER=a-1", "LOCK_GENERATION=1").returncode, 0)
         self.assertTrue(json.loads(self.step("lock-status").stdout)["expired"])
+
+    def test_lock_acquire_step_drains_the_step_lock_of_an_old_holder(self):
+        first = self.step("lock-acquire", "LOCK_HOLDER=a-1", "LOCK_HOST=h", "LOCK_PID=5")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        # a-1 is gone without a release: its record lapsed.
+        record = lock.read(self.state)
+        record["expires_at"] = "2020-01-01T00:00:00Z"
+        lock.write(self.state, record)
+        with open(self.root / "usnm-boinc-handoff.lock", "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            threading.Timer(2, lambda: fcntl.flock(held, fcntl.LOCK_UN)).start()
+            started = time.monotonic()
+            second = self.step("lock-acquire", "LOCK_HOLDER=b-2", "LOCK_HOST=h", "LOCK_PID=6")
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(json.loads(second.stdout)["generation"], 2)
+        self.assertGreaterEqual(time.monotonic() - started, 1.5)
+
+    def test_lock_plan_selects_the_plans_own_record(self):
+        done = self.step("lock-acquire", "LOCK_PLAN=plan-a", "LOCK_HOLDER=a-1", "LOCK_HOST=h", "LOCK_PID=5")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue((self.state / "scheduler/plans/plan-a/controller.lock.json").is_file())
+        self.assertFalse((self.state / "scheduler/controller.lock.json").exists())
+        other = self.step("lock-acquire", "LOCK_PLAN=plan-b", "LOCK_HOLDER=b-1", "LOCK_HOST=h", "LOCK_PID=6")
+        self.assertEqual(other.returncode, 0, other.stderr)
+        status = json.loads(self.step("lock-status", "LOCK_PLAN=plan-a").stdout)
+        self.assertEqual(status["lock"]["holder"], "a-1")
+        ok = self.step("claim", "LOCK_PLAN=plan-a", "LOCK_HOLDER=a-1", "LOCK_GENERATION=1", "CLAIM_MAX=1")
+        self.assertNotIn("not this controller's", ok.stderr)
+        refused = self.step("claim", "LOCK_PLAN=plan-b", "LOCK_HOLDER=a-1", "LOCK_GENERATION=1", "CLAIM_MAX=1")
+        self.assertIn("not this controller's", refused.stderr)
+        # Without the plan the unscoped record is consulted, as before.
+        unscoped = self.step("claim", "LOCK_HOLDER=a-1", "LOCK_GENERATION=1", "CLAIM_MAX=1")
+        self.assertIn("not this controller's", unscoped.stderr)
+        bad = self.step("lock-status", "LOCK_PLAN=../x")
+        self.assertIn("LOCK_PLAN is a plan name", bad.stderr)
 
     def test_bridge_writers_are_fenced_too(self):
         lock.acquire(self.state, "a-1", "h", 1)

@@ -225,11 +225,14 @@ fi
 HANDOFF_LOCK_ROOT=${USNM_BOINC_HANDOFF_ROOT:-/srv/usnm-boinc/handoff-state}
 LOCK_TOOL=$(dirname "$(readlink -f "$0")")/handoff_lock.py
 if [ "$TARGET" = handoff ] || [ "$TARGET" = bridge ]; then
-  fence_holder="" fence_generation="" kept=() lock_args=()
+  fence_holder="" fence_generation="" fence_plan=() kept=() lock_args=()
   for v in ${VARS[@]+"${VARS[@]}"}; do
     case $v in
       LOCK_HOLDER=*) fence_holder=${v#*=} ;;
       LOCK_GENERATION=*) fence_generation=${v#*=} ;;
+      LOCK_PLAN=*)
+        [[ ${v#*=} =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || die "LOCK_PLAN is a plan name: lower-case letters, digits and dashes"
+        fence_plan=(--plan "${v#*=}") ;;
       LOCK_HOST=*) lock_args+=(--host "${v#*=}") ;;
       LOCK_PID=*) lock_args+=(--pid "${v#*=}") ;;
       LOCK_TTL=*) lock_args+=(--ttl "${v#*=}") ;;
@@ -238,19 +241,27 @@ if [ "$TARGET" = handoff ] || [ "$TARGET" = bridge ]; then
   done
   case $TARGET/$STEP in
     handoff/lock-*)
-      [ ${#kept[@]} -eq 0 ] || die "--step $STEP takes only LOCK_HOLDER, LOCK_GENERATION, LOCK_HOST, LOCK_PID and LOCK_TTL"
+      [ ${#kept[@]} -eq 0 ] || die "--step $STEP takes only LOCK_HOLDER, LOCK_GENERATION, LOCK_HOST, LOCK_PID, LOCK_TTL and LOCK_PLAN"
       [ -f "$LOCK_TOOL" ] || die "no $LOCK_TOOL: install handoff_lock.py beside this script"
       [ -d "$HANDOFF_LOCK_ROOT" ] && [ ! -L "$HANDOFF_LOCK_ROOT" ] || die "no local hand-off root $HANDOFF_LOCK_ROOT"
       [ -z "$fence_holder" ] || lock_args+=(--holder "$fence_holder")
       [ -z "$fence_generation" ] || lock_args+=(--generation "$fence_generation")
+      # A takeover drains the host's step locks before it returns (#1897): a mutator of the
+      # old holder that already passed its fence holds its lock until it ends. The wait is this
+      # call's --wait-mins less a margin; past it the new generation is released and this fails.
+      if [ "$STEP" = lock-acquire ]; then
+        drain_wait=$((${WAIT_MINS:-2} * 60 - 10))
+        [ "$drain_wait" -ge 0 ] || drain_wait=0
+        lock_args+=(--drain-dir "$RUN_DIR" --drain-wait "$drain_wait")
+      fi
       $WHAT_IF && { echo "would run $LOCK_TOOL ${STEP#lock-} on $HANDOFF_LOCK_ROOT"; exit 0; }
-      exec python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" "${STEP#lock-}" ${lock_args[@]+"${lock_args[@]}"} ;;
+      exec python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" ${fence_plan[@]+"${fence_plan[@]}"} "${STEP#lock-}" ${lock_args[@]+"${lock_args[@]}"} ;;
     handoff/claim | handoff/release | handoff/dead-letter | handoff/collect | handoff/export | \
       handoff/write-held-pages | bridge/spool-out | bridge/submit-remote | bridge/batch-inventory)
       if [ -n "$fence_holder$fence_generation" ]; then
         [ -n "$fence_holder" ] && [ -n "$fence_generation" ] || die "LOCK_HOLDER and LOCK_GENERATION go together"
         if ! $WHAT_IF; then
-          python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" fence --holder "$fence_holder" \
+          python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" ${fence_plan[@]+"${fence_plan[@]}"} fence --holder "$fence_holder" \
             --generation "$fence_generation" > /dev/null || die "the controller lock is not this controller's; $STEP not run"
         fi
       fi
@@ -737,7 +748,7 @@ step_timeout=$((step_timeout - (SECONDS - lock_started)))
 [ "$step_timeout" -gt 0 ] || die "step deadline expired while waiting for the bridge lock"
 # The wait may have outlasted the controller's lock: check the fence again before launching.
 if [ -n "${fence_holder:-}" ]; then
-  python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" fence --holder "$fence_holder" \
+  python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" ${fence_plan[@]+"${fence_plan[@]}"} fence --holder "$fence_holder" \
     --generation "$fence_generation" > /dev/null || die "the controller lock expired while waiting for the step lock; $STEP not run"
 fi
 if [ -n "$held_stdin" ]; then

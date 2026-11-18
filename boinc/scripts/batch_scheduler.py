@@ -863,15 +863,18 @@ class Transport:
                  local_lock=False, ssh_reads=False, plan_scope=False):
         self.config = config
         # --plan-scope (#1836): the plan's own controller lease and reports, and PLAN_SCOPE on
-        # its BOINC host steps, so plans tick side by side. Only for an Azure-backed hand-off
-        # plan whose hand-off steps all run on-prem; the admission lock in main() goes with it.
+        # its BOINC host steps, so plans tick side by side. Only for a hand-off plan whose
+        # hand-off steps all run on-prem; the admission lock in main() goes with it. With
+        # --local-lock (and --ssh-reads) the lease is the plan's own record on the BOINC host,
+        # scheduler/plans/<plan>/controller.lock.json (LOCK_PLAN), not an Azure blob lease; it
+        # does not go with a local handoff_root, which has no plan-scoped steps to run.
         require(not plan_scope or (
             config.get("step_command") and set(onprem_handoff) == set(ONPREM_HANDOFF)
-            and not local_lock and not ssh_reads and "handoff_root" not in config
+            and "handoff_root" not in config
             and config.get("app") != SURYA_APP_NAME
             and isinstance(config.get("plan"), str) and PLAN_SCOPE_NAME.fullmatch(config["plan"])),
             "--plan-scope needs a hand-off plan named in lower-case letters, digits and dashes, with "
-            "step_command, every hand-off step on-prem and the Azure hand-off container")
+            "step_command, every hand-off step on-prem and no local handoff_root")
         self.plan_scope = plan_scope
         # --local-lock: the controller lock is a record on the BOINC host with a heartbeat, not
         # an Azure lease or a local flock. Off by default.
@@ -1100,6 +1103,12 @@ class Transport:
             variables["PLAN_SCOPE"] = self.config["plan"]
         if target == "handoff" and onprem and (not lock_step or step == "write-held-pages"):
             variables["EXPECTED_HANDOFF_URL"] = self.handoff_url
+        if self.plan_scope and self.local_lock and onprem and self.config.get("step_command") and (
+                lock_step and step.startswith("lock-")
+                or (target == "handoff" and step in FENCED_HANDOFF_STEPS)
+                or (target == "bridge" and step in FENCED_BRIDGE_STEPS)):
+            # Each plan has its own lock record on the host.
+            variables["LOCK_PLAN"] = self.config["plan"]
         if (((target == "handoff" and step in FENCED_HANDOFF_STEPS)
              or (target == "bridge" and step in FENCED_BRIDGE_STEPS)) and onprem
                 and self.lock_fence is not None):
