@@ -74,6 +74,46 @@ class HelperTests(unittest.TestCase):
         with self.assertRaisesRegex(read.ReadError, "identity mismatch"):
             read.read_journals(self.root)
 
+    def test_read_journals_starts_over_when_a_journal_changes_then_gives_up(self):
+        journal(self.root)
+        name = f"dispatch/jobs/{JOB}/record.json"
+        real, calls = read.read_bounded, []
+
+        def flaky(path, limit):
+            data = real(path, limit)
+            if path.name == "record.json" and len(calls) < 2:
+                calls.append(1)
+                (self.root / name).write_text(json.dumps({"job": {"id": JOB}, "n": len(calls)}))
+            return data
+
+        sleeps = []
+        with patch.object(read, "read_bounded", flaky):
+            out = json.loads(read.read_journals(self.root, sleep=sleeps.append))["journals"]
+        self.assertEqual(out[name]["record"]["n"], 2)
+        self.assertEqual(len(sleeps), 1)
+
+        always = []
+
+        def never_settles(path, limit):
+            data = real(path, limit)
+            if path.name == "record.json" and len(always) % 2 == 0:
+                (self.root / name).write_text(json.dumps({"job": {"id": JOB}, "n": len(always) + 10}))
+            always.append(1)
+            return data
+
+        sleeps.clear()
+        with patch.object(read, "read_bounded", never_settles), \
+                self.assertRaisesRegex(read.ReadError, "changed during read"):
+            read.read_journals(self.root, attempts=3, sleep=sleeps.append)
+        self.assertEqual(len(sleeps), 2)
+
+    def test_read_journals_does_not_retry_other_failures(self):
+        journal(self.root, "c" * 64, {"job": {"id": "d" * 64}})
+        sleeps = []
+        with self.assertRaisesRegex(read.ReadError, "identity mismatch"):
+            read.read_journals(self.root, sleep=sleeps.append)
+        self.assertEqual(sleeps, [])
+
     def test_root_must_be_runner_owned_and_mode_0700(self):
         self.root.chmod(0o700)
         read.check_root(self.root)

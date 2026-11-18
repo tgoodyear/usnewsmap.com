@@ -7,7 +7,7 @@ host. onprem-step.sh runs these for `--target handoff --step read-object|read-jo
 
 read-object prints the JSON document (at most 16 MiB), or `null` when --optional and it is absent.
 read-journals prints {"journals": {name: {"sha256": ..., "record": ...}}} for every
-dispatch/jobs/<64 hex>/record.json, listed before and after reading and refused if they changed.
+dispatch/jobs/<64 hex>/record.json, listed before and after reading; if they changed, the read starts over (4 tries in all, then refused).
 """
 
 import argparse
@@ -17,17 +17,26 @@ import os
 import re
 import stat
 import sys
+import time
 from pathlib import Path
 
 MAX_OBJECT = 16 * 1024 * 1024
 MAX_JOURNAL = 131072
 MAX_JOBS = 10000
+# A collect or export on the host rewrites a journal now and then while a snapshot is read; the
+# read starts over a few times before it gives up (#1367).
+SNAPSHOT_ATTEMPTS = 4
+SNAPSHOT_PAUSE = 0.25
 OBJECT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*")
 JOB = re.compile(r"[0-9a-f]{64}")
 
 
 class ReadError(Exception):
     pass
+
+
+class ChangedError(ReadError):
+    """The journals changed while the snapshot was read; reading again can succeed."""
 
 
 def safe(root, name):
@@ -98,7 +107,7 @@ def listing(root):
     return sorted(names)
 
 
-def read_journals(root):
+def snapshot_once(root):
     names = listing(root)
     journals = {}
     for name in names:
@@ -111,11 +120,27 @@ def read_journals(root):
             raise ReadError("journal filename/identity mismatch")
         journals[name] = {"sha256": hashlib.sha256(data).hexdigest(), "record": record}
     if listing(root) != names:
-        raise ReadError("journal inventory changed during read")
+        raise ChangedError("journal inventory changed during read")
     for name, item in journals.items():
-        if hashlib.sha256(read_bounded(root / name, MAX_JOURNAL)).hexdigest() != item["sha256"]:
-            raise ReadError("journal changed during read")
+        try:
+            again = hashlib.sha256(read_bounded(root / name, MAX_JOURNAL)).hexdigest()
+        except ReadError:
+            raise ChangedError("journal changed during read") from None
+        if again != item["sha256"]:
+            raise ChangedError("journal changed during read")
     return json.dumps({"journals": journals}, sort_keys=True, separators=(",", ":"))
+
+
+def read_journals(root, attempts=SNAPSHOT_ATTEMPTS, pause=SNAPSHOT_PAUSE, sleep=time.sleep):
+    """snapshot_once, started over when a journal changed during the read, at most `attempts`
+    times in all with a growing pause; any other failure, and the last change, is raised."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return snapshot_once(root)
+        except ChangedError:
+            if attempt == attempts:
+                raise
+            sleep(pause * attempt)
 
 
 def main(argv=None):
