@@ -125,6 +125,10 @@ def snapshot_once(root):
         try:
             again = hashlib.sha256(read_bounded(root / name, MAX_JOURNAL)).hexdigest()
         except ReadError:
+            # Only a journal that is gone changed; an oversized or unsafe one is refused as it is.
+            path = root / name
+            if path.exists() or path.is_symlink():
+                raise
             raise ChangedError("journal changed during read") from None
         if again != item["sha256"]:
             raise ChangedError("journal changed during read")

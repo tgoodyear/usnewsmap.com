@@ -107,6 +107,42 @@ class HelperTests(unittest.TestCase):
             read.read_journals(self.root, attempts=3, sleep=sleeps.append)
         self.assertEqual(len(sleeps), 2)
 
+    def test_second_pass_failures_other_than_a_vanished_journal_are_not_retried(self):
+        journal(self.root)
+        name = f"dispatch/jobs/{JOB}/record.json"
+        real, seen = read.read_bounded, []
+
+        def grows(path, limit):
+            data = real(path, limit)
+            if path.name == "record.json":
+                seen.append(1)
+                if len(seen) == 1:
+                    return data
+                raise read.ReadError("object exceeds limit")
+            return data
+
+        sleeps = []
+        with patch.object(read, "read_bounded", grows), \
+                self.assertRaisesRegex(read.ReadError, "exceeds limit"):
+            read.read_journals(self.root, sleep=sleeps.append)
+        self.assertEqual(sleeps, [])
+
+        seen.clear()
+
+        def vanishes(path, limit):
+            data = real(path, limit)
+            if path.name == "record.json":
+                seen.append(1)
+                if len(seen) == 1:
+                    return data
+                (self.root / name).unlink()
+                raise read.ReadError("missing or unsafe object")
+            return data
+
+        with patch.object(read, "read_bounded", vanishes), \
+                self.assertRaisesRegex(read.ReadError, "changed during read"):
+            read.read_journals(self.root, attempts=1, sleep=sleeps.append)
+
     def test_read_journals_does_not_retry_other_failures(self):
         journal(self.root, "c" * 64, {"job": {"id": "d" * 64}})
         sleeps = []
