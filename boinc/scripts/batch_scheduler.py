@@ -761,6 +761,7 @@ JOURNAL_DELTA_REST = 2000
 # Plans side by side (#1836): how many times a tick fetches the journals that changed while it
 # downloaded (another plan's collect or export) and lists again, before it fails.
 JOURNAL_SETTLE_TRIES = 5
+JOURNAL_CHANGED_MESSAGE = "journal ETags changed during download; retry under the owner lock"
 # --rest-journals lists each digit's journals with this delimiter (#308). A job's directory
 # holds record.json, request.json and accepted/*, and only record.json is read. Each listed
 # blob costs about 760 bytes of the account's egress, a grouped prefix about 110. A name
@@ -1579,13 +1580,14 @@ class Transport:
         if not reusable:
             again = self.journal_inventory()
             settled = 0
+            plans = {item["job"]["id"]: item.get("plan") for item in records}
             while again != snapshot:
                 # Plans side by side (#1836): another plan's collect or export changed journals
                 # while these came down. Fetch the changed ones and list again, a few times; every
                 # unchanged one keeps its checked digest. A plan alone still fails at once.
                 settled += 1
-                require(self.plan_scope and settled <= JOURNAL_SETTLE_TRIES,
-                        "journal ETags changed during download; retry under the owner lock")
+                require(self.plan_scope and settled <= JOURNAL_SETTLE_TRIES + 1, JOURNAL_CHANGED_MESSAGE)
+                moved = [name for name in set(snapshot) | set(again) if snapshot.get(name) != again.get(name)]
                 changed = [name for name in again if snapshot.get(name) != again[name]]
                 for name in set(snapshot) - set(again):
                     path = cache / name
@@ -1597,6 +1599,26 @@ class Transport:
                 snapshot, names = again, list(again)
                 identity = {**base, "entries": snapshot}
                 records, checksums = self.read_journal_cache(cache, names, kept)
+                known = plans
+                plans = {item["job"]["id"]: item.get("plan") for item in records}
+                if settled > JOURNAL_SETTLE_TRIES:
+                    # Other plans' collects keep changing journals faster than a listing comes
+                    # down (#2051). The last round is not listed again: the read stands if every
+                    # journal that moved belongs to another plan. A plan's own journals change only
+                    # in its own tick, so one moving here is a real fault and fails the tick. The
+                    # admission lock (#1836) is what keeps another plan from claiming, exporting or
+                    # submitting, so a read under it holds every other plan's journals as they
+                    # were: a journal still moving through collect counts as it stood, which can
+                    # only keep a cap fuller than it is, never emptier.
+                    own = self.config["plan"]
+                    foreign = all(
+                        (plans.get(name.split("/")[2]) or known.get(name.split("/")[2])) not in (None, own)
+                        for name in moved)
+                    require(foreign, JOURNAL_CHANGED_MESSAGE)
+                    print(json.dumps({"event": "boinc_journal_settle_tolerated", "plan": own,
+                                      "moved": len(moved), "rounds": settled - 1}, sort_keys=True),
+                          file=sys.stderr, flush=True)
+                    break
                 again = self.journal_inventory()
             save(manifest, {**identity, "files": checksums})
         self._journal_snapshot = snapshot
