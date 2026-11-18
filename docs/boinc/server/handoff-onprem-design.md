@@ -233,3 +233,58 @@ The maintainer decided the earlier open questions (PR #1884 comment):
 Still noted: `put_new` is not retried in #1883 because a retried create reads
 as "already exists". That is moot after this change, but applies to any step
 that stays on Azure meanwhile. The collect step's ALTO and part puts to `ocr-out` do retry (`put_same_with` in `crates/usnm-boinc/src/lib.rs`): a retried create that reads "already exists" is compared with the bytes it meant to write, and only equal bytes count as published. See `docs/boinc/apps/native-ocr.md`.
+
+## Addendum, 17 Nov 2026: per-plan scope and the local lock (#1836, #1897)
+
+`--plan-scope` (#1836) merged after this design. It lets several plans tick side by side, each with
+its own lease at `scheduler/plans/<plan>/controller.lock` in the Azure container, a
+`PLAN_SCOPE=<plan>` on its host steps and a controller-host admission lock. `batch_scheduler.py`
+refused it together with `--local-lock` and `--ssh-reads`, so the cutover would have forced a choice
+between one plan at a time and an Azure lease.
+
+**Resolution: the two combine, and the plan's own record replaces its Azure lease.**
+
+- With `--plan-scope --local-lock --ssh-reads` the lock is
+  `scheduler/plans/<plan>/controller.lock.json` under the host's hand-off root, with its own
+  sidecar flock, generation counter, 30 s heartbeat and 5 min TTL. Two plans never hold each other
+  out. Without `--plan-scope` the single `scheduler/controller.lock.json` is used as before.
+- The controller sends `LOCK_PLAN=<plan>` on the `lock-*` steps and on every fenced step
+  (claim, release, dead-letter, collect, export, `write-held-pages`, `spool-out`, `submit-remote`,
+  `batch-inventory`). `onprem-step.sh` passes it to `handoff_lock.py --plan`, so the fence checks
+  the plan's own record. A caller that sends no `LOCK_PLAN` still uses the single record.
+- Reports stay where #1836 put them, `scheduler/plans/<plan>/`; the controller reads them with
+  `read-object`, which already accepts that path. The admission lock is unchanged: it is a flock on
+  the controller host and does not touch Azure.
+- `--plan-scope` still refuses a local `handoff_root` (no scoped host steps there). The valid
+  combination is `--plan-scope --local-lock --ssh-reads` with every hand-off step on-prem.
+- Nothing is on by default. Plans without `--local-lock` keep the Azure lease.
+
+**Takeover drain (#1897).** `lock-acquire` now does what "Takeover drains old mutators" above says.
+When the new generation follows a record its holder never released (a lapsed lease), it takes each
+host lock a fenced step runs under, once, before it returns: the hand-off lock (shared, then the
+plan's own lock with `--plan-scope`; exclusive without it) and the step lock, which `submit-remote`
+holds. The wait is the call's `--wait-mins` less 10 s, so the controller's 120 s call waits about
+110 s. If a lock is still held, the new generation is let go again and the call fails with the
+reason; the record stays marked as a takeover, so the next tick drains again before it proceeds,
+and the old holder stays fenced out meanwhile. A `lock-release`
+that the controller marks clean (`LOCK_CLEAN=1`, sent only when every fenced step of the tick is
+known to have ended) leaves nothing to drain, so an ordinary tick never waits. A tick with a
+fenced step that failed, timed out or lost its ssh releases unmarked, and the next acquire drains.
+
+**Cutover order, updated from the 17 Nov survey (section 2.3).** Steps 1 to 5 stand as written
+there: refresh the staged copies, mount the lake and hand-off root on CT 230, install
+`handoff_lock.py`, `handoff_read.py` and `onprem-step.sh`, freeze every writer (feeders and
+producers, then every controller timer and the held-page archive, waiting for running ticks to end,
+then the CT 243 writes), settle in-flight claims, and migrate state with counts and hashes. The
+changes are in what happens at the switch:
+
+1. No Azure plan lease needs breaking: with every tick stopped, the per-plan leases are
+   unheld, and the cutover leaves their blobs in place unread.
+2. Give each plan's controller the flags `--local-lock --ssh-reads` next to its existing
+   `--plan-scope --admission-lock`, and drop nothing else. `native-feed-4` goes first, then the
+   others one at a time, each after one clean tick and a readable
+   `--step lock-status --var LOCK_PLAN=<plan>`.
+3. Verify takeover per plan: stop a tick mid-step, confirm the next tick takes over within the TTL
+   and that its `lock-acquire` waits for the stopped step's lock rather than overlapping it.
+4. Rollback per plan is removing `--local-lock --ssh-reads` after the reverse copy; the Azure lease
+   path is unchanged.

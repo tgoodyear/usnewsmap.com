@@ -5706,6 +5706,37 @@ class PlanScopeTransportTests(unittest.TestCase):
         self.assertEqual(names, {"scheduler/plans/native-feed-9/controller.lock"})
         self.assertEqual([args[1] for args in calls if args[0] == "lease"], ["acquire", "release"])
 
+    def test_local_lock_and_ssh_reads_keep_each_plans_own_lock_record(self):
+        transport = self.transport(local_lock=True, ssh_reads=True)
+        self.assertTrue(transport.plan_scope and transport.local_lock and transport.ssh_reads)
+        calls = []
+
+        def run(argv, label, **kwargs):
+            calls.append(argv)
+            return json.dumps({"generation": 4}) if label == "handoff/lock-acquire" else ""
+
+        with patch.object(transport, "run", side_effect=run), patch.object(batch, "LOCK_HEARTBEAT_SECS", 3600):
+            with transport.lock():
+                transport.step("handoff", "collect", JOB_ID="1" * 64)
+                transport.step("bridge", "batch-inventory", BATCH_NONCE="n" * 32, HANDOFF_URL="/handoff-state")
+                transport.step("handoff", "write-held-pages", HELD_PLAN="p", _stdin="{}")
+                transport.step("handoff", "lock-status")
+                transport.step("bridge", "native-spot", BATCH_NONCE="n" * 32)
+        steps = [a[a.index("--step") + 1] for a in calls]
+        self.assertEqual(steps, ["lock-acquire", "collect", "batch-inventory", "write-held-pages",
+                                 "lock-status", "native-spot", "lock-release"])
+        for argv, step in zip(calls, steps):
+            self.assertEqual("LOCK_PLAN=native-feed-9" in argv, step != "native-spot", step)
+            self.assertEqual("PLAN_SCOPE=native-feed-9" in argv,
+                             ("handoff" if step in ("collect",) else "bridge", step) in batch.SCOPED_STEPS, step)
+        # The plan's reports are read from its own directory on the host, over ssh.
+        self.assertEqual(transport.report_name("inventory.json"), "scheduler/plans/native-feed-9/inventory.json")
+
+    def test_without_the_local_lock_no_lock_plan_is_sent(self):
+        transport = self.transport()
+        argv, _, _ = transport._step_argv("handoff", "collect", {})
+        self.assertFalse([a for a in argv if a.startswith("LOCK_")])
+
     def test_refusals(self):
         directory = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory)
@@ -5714,7 +5745,9 @@ class PlanScopeTransportTests(unittest.TestCase):
                 (scoped_config("../x"), {}),
                 ({**scoped_config(), "step_command": None}, {}),
                 (scoped_config(), {"onprem_handoff": ("claim", "collect")}),
-                (scoped_config(), {"local_lock": True, "ssh_reads": True})):
+                ({**scoped_config(), "handoff_root": "/tmp/x"}, {}),
+                (scoped_config(), {"local_lock": True}),
+                (scoped_config(), {"ssh_reads": True})):
             with self.subTest(plan=config["plan"], kwargs=kwargs):
                 options = {"onprem_handoff": ("claim", "collect", "export"), **kwargs}
                 with self.assertRaisesRegex(ValueError, "--plan-scope needs|--local-lock|--ssh-reads"):

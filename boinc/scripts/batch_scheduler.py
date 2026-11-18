@@ -863,15 +863,18 @@ class Transport:
                  local_lock=False, ssh_reads=False, plan_scope=False):
         self.config = config
         # --plan-scope (#1836): the plan's own controller lease and reports, and PLAN_SCOPE on
-        # its BOINC host steps, so plans tick side by side. Only for an Azure-backed hand-off
-        # plan whose hand-off steps all run on-prem; the admission lock in main() goes with it.
+        # its BOINC host steps, so plans tick side by side. Only for a hand-off plan whose
+        # hand-off steps all run on-prem; the admission lock in main() goes with it. With
+        # --local-lock (and --ssh-reads) the lease is the plan's own record on the BOINC host,
+        # scheduler/plans/<plan>/controller.lock.json (LOCK_PLAN), not an Azure blob lease; it
+        # does not go with a local handoff_root, which has no plan-scoped steps to run.
         require(not plan_scope or (
             config.get("step_command") and set(onprem_handoff) == set(ONPREM_HANDOFF)
-            and not local_lock and not ssh_reads and "handoff_root" not in config
+            and "handoff_root" not in config
             and config.get("app") != SURYA_APP_NAME
             and isinstance(config.get("plan"), str) and PLAN_SCOPE_NAME.fullmatch(config["plan"])),
             "--plan-scope needs a hand-off plan named in lower-case letters, digits and dashes, with "
-            "step_command, every hand-off step on-prem and the Azure hand-off container")
+            "step_command, every hand-off step on-prem and no local handoff_root")
         self.plan_scope = plan_scope
         # --local-lock: the controller lock is a record on the BOINC host with a heartbeat, not
         # an Azure lease or a local flock. Off by default.
@@ -893,6 +896,7 @@ class Transport:
         self.lock_fence = None
         self.lock_lost = None
         self.lock_deadline = None
+        self.lock_unsure = False
         # --step-lock-wait-secs: how long LONG_LOCK_STEPS wait for the host's step lock (0: the host's own).
         require(0 <= step_lock_wait_secs <= MAX_STEP_LOCK_WAIT_SECS, "invalid --step-lock-wait-secs")
         self.step_lock_wait_secs = step_lock_wait_secs
@@ -1100,6 +1104,12 @@ class Transport:
             variables["PLAN_SCOPE"] = self.config["plan"]
         if target == "handoff" and onprem and (not lock_step or step == "write-held-pages"):
             variables["EXPECTED_HANDOFF_URL"] = self.handoff_url
+        if self.plan_scope and self.local_lock and onprem and self.config.get("step_command") and (
+                lock_step and step.startswith("lock-")
+                or (target == "handoff" and step in FENCED_HANDOFF_STEPS)
+                or (target == "bridge" and step in FENCED_BRIDGE_STEPS)):
+            # Each plan has its own lock record on the host.
+            variables["LOCK_PLAN"] = self.config["plan"]
         if (((target == "handoff" and step in FENCED_HANDOFF_STEPS)
              or (target == "bridge" and step in FENCED_BRIDGE_STEPS)) and onprem
                 and self.lock_fence is not None):
@@ -1148,6 +1158,7 @@ class Transport:
             raise RuntimeError("lock-acquire returned no generation") from error
         self.lock_fence = (holder, generation)
         self.lock_lost = None
+        self.lock_unsure = False
         # No dispatch after this (monotonic) time unless a renewal moved it on. It is measured
         # from when the acquire or renewal was sent, so a slow reply never lengthens it.
         self.lock_deadline = acquire_started + LOCK_TTL_SECS - LOCK_DISPATCH_MARGIN_SECS
@@ -1188,7 +1199,11 @@ class Transport:
             self.lock_deadline = None
             try:
                 with self.timings.phase("unlock"):
-                    self.step("handoff", "lock-release", LOCK_HOLDER=holder, LOCK_GENERATION=generation)
+                    # LOCK_CLEAN only when every fenced step is known to have ended: the next acquire
+                    # then has nothing to drain. Otherwise it drains, as after a lapsed lease.
+                    extra = {} if self.lock_unsure or self.lock_lost is not None else {"LOCK_CLEAN": 1}
+                    self.step("handoff", "lock-release", LOCK_HOLDER=holder, LOCK_GENERATION=generation,
+                              **extra)
             except RuntimeError as error:
                 # A killed or failed release expires by itself within the TTL.
                 print(f"warning: lock-release failed ({error}); it expires in {LOCK_TTL_SECS} s",
@@ -1255,7 +1270,16 @@ class Transport:
             self.lock_lost = f"no lock renewal inside {LOCK_TTL_SECS - LOCK_DISPATCH_MARGIN_SECS} s"
             raise RuntimeError(f"controller lock lost: {self.lock_lost}; the tick stops")
         argv, timeout, route = self._step_argv(target, step, variables)
-        return self.run(argv, f"{target}/{step}", timeout=timeout, execution_route=route, stdin=_stdin)
+        try:
+            return self.run(argv, f"{target}/{step}", timeout=timeout, execution_route=route, stdin=_stdin)
+        except StepLockTimeout:
+            raise
+        except BaseException:
+            # A fenced step that failed, timed out, lost its ssh or was interrupted (Ctrl-C) may still be running on the
+            # host: the release says so, and the next acquire drains before it proceeds (#1897).
+            if self.lock_fence is not None and "LOCK_HOLDER" in " ".join(argv):
+                self.lock_unsure = True
+            raise
 
     @timed("inventory")
     def inventory(self):
