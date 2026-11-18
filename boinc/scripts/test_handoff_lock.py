@@ -423,17 +423,19 @@ class ControllerTests(unittest.TestCase):
         def run(argv, label, **kwargs):
             calls.append(argv)
             if label == "handoff/collect" and fail[0]:
+                if fail[0] is KeyboardInterrupt:
+                    raise KeyboardInterrupt
                 raise RuntimeError("handoff/collect failed; inspect")
             return json.dumps({"generation": 7}) if label == "handoff/lock-acquire" else ""
 
-        for fail_it in (False, True):
+        for fail_it in (False, True, KeyboardInterrupt):
             fail = [fail_it]
             calls.clear()
             with patch.object(transport, "run", side_effect=run), patch.object(batch, "LOCK_HEARTBEAT_SECS", 3600):
                 try:
                     with transport.lock():
                         transport.step("handoff", "collect", JOB_ID="1" * 64)
-                except RuntimeError:
+                except (RuntimeError, KeyboardInterrupt):
                     self.assertTrue(fail_it)
             self.assertEqual("LOCK_CLEAN=1" in calls[-1], not fail_it, calls[-1])
         # A step that never started (the host's step lock stayed held) leaves nothing running.

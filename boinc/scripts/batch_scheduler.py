@@ -1274,8 +1274,8 @@ class Transport:
             return self.run(argv, f"{target}/{step}", timeout=timeout, execution_route=route, stdin=_stdin)
         except StepLockTimeout:
             raise
-        except RuntimeError:
-            # A fenced step that failed, timed out or lost its ssh may still be running on the
+        except BaseException:
+            # A fenced step that failed, timed out, lost its ssh or was interrupted (Ctrl-C) may still be running on the
             # host: the release says so, and the next acquire drains before it proceeds (#1897).
             if self.lock_fence is not None and "LOCK_HOLDER" in " ".join(argv):
                 self.lock_unsure = True
