@@ -125,6 +125,12 @@ class FetchHandoff(unittest.TestCase):
         self.assertIsInstance(F.make_source(self.args()), F.HostSource)
         self.assertIsInstance(F.make_source(self.args("azure")), F.AzureSource)
 
+    def test_auto_without_the_controller_config_or_checkout_stays_on_azure(self):
+        args = self.args()
+        args.config = Path(self.tmp.name) / "missing" / "boinc-priority-controller.json"
+        args.scripts_dir = Path(self.tmp.name) / "no-checkout"
+        self.assertIsInstance(F.make_source(args), F.AzureSource)
+
     def args(self, mode="auto"):
         import argparse
         return argparse.Namespace(handoff=mode, config=self.config, scripts_dir=SCRIPTS)

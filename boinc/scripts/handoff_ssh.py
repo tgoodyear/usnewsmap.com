@@ -14,6 +14,7 @@ A plan's controller flags decide whether the root is on the BOINC host: `--ssh-r
 the flag with which the controller's own tick reads the root over ssh. detect() reads it.
 """
 
+import base64
 import hashlib
 import json
 import os
@@ -184,8 +185,9 @@ class SshHandoff:
     def upload(self, name, data, md5=None):
         """Writes the object only where none is; False if one is already there."""
         variables = {"ARCHIVE_OBJECT": name}
-        if md5:
-            variables["ARCHIVE_MD5"] = md5
+        # Always with an md5 (the archive's, or one of these bytes): the host checks it before the
+        # file appears, so a stream cut short by a dropped ssh is refused, not published.
+        variables["ARCHIVE_MD5"] = md5 or base64.b64encode(hashlib.md5(data).digest()).decode()
         out = self.step("archive-write", variables, stdin=data, wait_mins=10, timeout=900, fenced=True)
         return bool(json.loads(out)["written"])
 

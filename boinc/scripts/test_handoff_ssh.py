@@ -305,6 +305,22 @@ class SshHandoffTests(unittest.TestCase):
         self.assertFalse(box.upload(name, b"{}"))
         box.release("x", lease)
 
+    def test_upload_always_sends_an_md5_so_a_cut_stream_is_refused(self):
+        import base64, hashlib
+        box = self.handoff()
+        lease = box.acquire("x")
+        name = f"dispatch/jobs/{JOB}/record.json"
+        self.assertTrue(box.upload(name, b"{}"))
+        sent = [call for call in self.host.calls if call[0] == "archive-write"][0]
+        self.assertEqual(sent[1]["ARCHIVE_MD5"], base64.b64encode(hashlib.md5(b"{}").digest()).decode())
+        # What the host got is shorter than what the md5 names: nothing appears.
+        real = self.host.__call__
+        box.runner = lambda argv, stdin, timeout: real(argv, stdin and stdin[:1], timeout)
+        with self.assertRaisesRegex(S.HandoffRefused, "Md5Mismatch"):
+            box.upload(f"dispatch/jobs/{JOB}/page", b"abcdef")
+        self.assertFalse((self.root / f"dispatch/jobs/{JOB}/page").exists())
+        box.release("x", lease)
+
     def test_a_config_without_a_step_command_is_refused(self):
         with self.assertRaisesRegex(S.HandoffRefused, "no step_command"):
             S.SshHandoff({"env": "prod", "plan": "x"}, runner=self.host)

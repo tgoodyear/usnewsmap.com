@@ -92,6 +92,10 @@ def make_box(args):
 
 
 def make_source(args):
+    # With no flags file beside the config, auto keeps the Azure route without touching the
+    # controller checkout or its config: an installation that has only this script and az works.
+    if args.handoff == "auto" and not args.config.with_suffix(".flags").is_file():
+        return AzureSource()
     if args.handoff != "azure":
         module, config = make_box(args)
         on_host, _ = module.detect(args.config)
