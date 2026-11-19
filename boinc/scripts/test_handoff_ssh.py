@@ -256,6 +256,40 @@ class SshHandoffTests(unittest.TestCase):
         released = [call for call in self.host.calls if call[0] == "lock-release"][0]
         self.assertNotIn("LOCK_CLEAN", released[1])
 
+    def test_an_interrupted_or_killed_change_leaves_the_lock_released_unmarked(self):
+        for outcome in (subprocess.CompletedProcess([], -15, b"", b""), subprocess.CompletedProcess([], 124, b"", b""),
+                        KeyboardInterrupt()):
+            with self.subTest(outcome=outcome):
+                self.host.calls.clear()
+                box = self.handoff()
+                lease = box.acquire("x")
+
+                def fail(step, variables, outcome=outcome):
+                    if step == "archive-delete":
+                        if isinstance(outcome, BaseException):
+                            raise outcome
+                        return outcome
+
+                self.host.fail = fail
+                with self.assertRaises((S.HandoffRefused, KeyboardInterrupt)):
+                    box.delete(self.name, "e")
+                self.host.fail = None
+                box.release("x", lease)
+                released = [call for call in self.host.calls if call[0] == "lock-release"][0]
+                self.assertNotIn("LOCK_CLEAN", released[1])
+
+    def test_a_clean_refusal_of_a_change_keeps_the_release_clean(self):
+        box = self.handoff()
+        lease = box.acquire("x")
+        self.host.fail = lambda step, variables: subprocess.CompletedProcess([], 1, b"", b"error: changed\n") \
+            if step == "archive-delete" else None
+        with self.assertRaisesRegex(S.HandoffRefused, "changed"):
+            box.delete(self.name, "e")
+        self.host.fail = None
+        box.release("x", lease)
+        released = [call for call in self.host.calls if call[0] == "lock-release"][0]
+        self.assertIn("LOCK_CLEAN", released[1])
+
     def test_a_refusal_by_the_host_is_not_retried(self):
         box = self.handoff()
         self.host.fail = lambda step, variables: subprocess.CompletedProcess([], 1, b"", b"error: nope\n")

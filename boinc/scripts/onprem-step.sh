@@ -364,8 +364,8 @@ case $TARGET:$STEP in
     VARS=(${archive_kept[@]+"${archive_kept[@]}"})
     archive_stdin=$(mktemp "$RUN_DIR/usnm-boinc-archive-io.XXXXXX")
     trap 'rm -f "$archive_stdin"' EXIT
-    head -c $((64 * 1024 * 1024 + 1)) > "$archive_stdin"
-    [ "$(wc -c < "$archive_stdin")" -le $((64 * 1024 * 1024)) ] || die "--step $STEP input is over 64 MiB" ;;
+    head -c $((128 * 1024 * 1024 + 1)) > "$archive_stdin"
+    [ "$(wc -c < "$archive_stdin")" -le $((128 * 1024 * 1024)) ] || die "--step $STEP input is over 128 MiB" ;;
 esac
 
 STAGE=${USNM_BOINC_SCAN_STAGE:-/srv/usnm-boinc/project/handoff-scans}

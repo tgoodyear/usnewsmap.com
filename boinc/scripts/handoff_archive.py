@@ -48,7 +48,8 @@ SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 JOB_NAME = re.compile(r"(?:dispatch/jobs|dispatch/quarantine|spool)/[0-9a-f]{64}(/[A-Za-z0-9][A-Za-z0-9._-]*)+")
 PREFIX = re.compile(r"(?:dispatch/jobs/|dispatch/quarantine/|spool/)[A-Za-z0-9._/-]{0,300}")
 MAX_READ = 512 * 1024 * 1024
-MAX_WRITE = 64 * 1024 * 1024
+# A dispatch page file is up to 128 MiB (usnm-ocr-contract MAX_SCAN): a restore writes it back.
+MAX_WRITE = 128 * 1024 * 1024
 MAX_ITEMS = 5000
 MAX_STDIN_JSON = 8 * 1024 * 1024
 

@@ -1011,10 +1011,11 @@ def restore_plan(manifest, batch, state, wanted):
 
 def restored_copy(container, batch, blob, there):
     """Whether the blob in the container is the archived copy: its size, and its Content-MD5 when
-    the archive has one, else its bytes against the sha256 taken when it was archived."""
+    both the archive and the store have one, else its bytes against the sha256 taken when it was
+    archived (the BOINC host's store lists no Content-MD5, #1367)."""
     if there is None or there["size"] != blob["size"]:
         return False
-    if blob.get("md5"):
+    if blob.get("md5") and there.get("md5"):
         return there["md5"] == blob["md5"]
     data, etag = container.get(blob["name"])
     digest = (batch / "handoff-sha256" / (blob["name"] + ".sha256")).read_text().strip()

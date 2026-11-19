@@ -135,15 +135,23 @@ class SshHandoff:
                 failure = type(error).__name__
                 if fenced:
                     self.unsure = True
+            except BaseException:
+                # A stop (SIGTERM raised as KeyboardInterrupt) may leave the remote change running.
+                if fenced:
+                    self.unsure = True
+                raise
             else:
                 if done.returncode == 0:
                     return done.stdout
                 text = done.stderr.decode("utf-8", errors="replace").strip().splitlines()
                 failure = (text[-1] if text else f"exit status {done.returncode}")[:300]
-                if done.returncode != SSH_FAILED:
-                    raise HandoffRefused(f"hand-off {step} failed: {failure}")
-                if fenced:
+                # Only the host's own refusal (exit 1) is known to have ended: ssh's 255, a signal
+                # (the ssh client killed by a stop, negative), a step timeout (124) or anything
+                # else may leave the remote change running, so the lock is released unmarked.
+                if fenced and done.returncode != 1:
                     self.unsure = True
+                if done.returncode not in (SSH_FAILED,):
+                    raise HandoffRefused(f"hand-off {step} failed: {failure}")
             if attempt + 1 < tries:
                 time.sleep(1 + attempt)
         raise HandoffRefused(f"hand-off {step} failed: {failure}")

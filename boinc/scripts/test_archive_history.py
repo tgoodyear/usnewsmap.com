@@ -839,6 +839,31 @@ class OnpremHeldTests(OnpremMixin, HeldTests):
     """--include-held and restore-held over the step runner."""
 
 
+class RestoredCopyTests(unittest.TestCase):
+    """An archive made from Azure has Content-MD5s; the BOINC host's store lists none (#1367)."""
+
+    def test_the_md5_decides_only_when_both_sides_have_one_else_the_sha256_does(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            batch = Path(tmp)
+            name = f"spool/{job_id(1)}/host_id"
+            (batch / "handoff-sha256" / f"spool/{job_id(1)}").mkdir(parents=True)
+            (batch / "handoff-sha256" / (name + ".sha256")).write_text(hashlib.sha256(b"13\n").hexdigest() + "\n")
+            md5 = base64.b64encode(hashlib.md5(b"13\n").digest()).decode()
+            blob = {"name": name, "size": 3, "md5": md5}
+            data = {"value": b"13\n"}
+            store = mock.Mock()
+            store.get.side_effect = lambda n: (data["value"], "etag-1")
+            there = {"size": 3, "md5": None, "etag": "etag-1"}
+            self.assertTrue(archive.restored_copy(store, batch, blob, there))
+            data["value"] = b"14\n"
+            self.assertFalse(archive.restored_copy(store, batch, blob, there))
+            # Both have an md5: it decides, without reading the bytes.
+            store.get.reset_mock()
+            self.assertTrue(archive.restored_copy(store, batch, blob, {**there, "md5": md5}))
+            self.assertFalse(archive.restored_copy(store, batch, blob, {**there, "md5": "other"}))
+            store.get.assert_not_called()
+
+
 class OpenContainerTests(unittest.TestCase):
     """Which store a plan's tools use: the flags file beside the config decides."""
 

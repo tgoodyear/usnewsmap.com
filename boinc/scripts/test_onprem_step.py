@@ -1296,8 +1296,8 @@ class ArchiveSteps(unittest.TestCase):
         done = self.step("archive-delete", "ARCHIVE_OBJECT=x", "EXPECTED_HANDOFF_URL=/handoff-state", stdin=b"{}", ssh=True)
         self.assertNotEqual(done.returncode, 0)
         done = self.step("archive-write", f"ARCHIVE_OBJECT=dispatch/jobs/{self.JOB}/big", "EXPECTED_HANDOFF_URL=/handoff-state",
-                         stdin=b"x" * (64 * 1024 * 1024 + 1), ssh=True)
-        self.assertIn("over 64 MiB", done.stderr.decode())
+                         stdin=b"x" * (128 * 1024 * 1024 + 1), ssh=True)
+        self.assertIn("over 128 MiB", done.stderr.decode())
         self.assertFalse((self.root / f"dispatch/jobs/{self.JOB}/big").exists())
 
 
