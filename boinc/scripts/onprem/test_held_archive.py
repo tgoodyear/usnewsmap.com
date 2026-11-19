@@ -626,11 +626,44 @@ class HeldArchive(unittest.TestCase):
         holder = subprocess.Popen(["flock", f"{lock}.run", "sleep", "30"], start_new_session=True)
         self.addCleanup(self.end_group, holder)
         time.sleep(0.3)
-        done = self.run_archive()
+        done = self.run_archive("--lock-wait-mins", "0")
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("another held-page archive is running", done.stderr)
         self.assertNotIn("systemctl stop", "\n".join(self.log()) if (self.root / "log").exists() else "")
 
+    def test_a_busy_archive_lock_is_waited_for_and_the_wait_logged(self):
+        lock = self.root / "lock"
+        holder = subprocess.Popen(["flock", f"{lock}.run", "sleep", "2"], start_new_session=True)
+        self.addCleanup(self.end_group, holder)
+        time.sleep(0.3)
+        done = self.run_archive("--lock-wait-mins", "1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        events = [json.loads(line) for line in done.stdout.splitlines() if "boinc_held_archive_lock_wait" in line]
+        self.assertEqual([e["waiting"] for e in events], [True, False])
+        self.assertGreaterEqual(events[1]["waited_seconds"], 1)
+        self.assertEqual(self.summary(done)["batches"], ["0001", "0002"])
+
+    def test_the_wait_for_the_archive_lock_times_out_without_pausing_the_controller(self):
+        lock = self.root / "lock"
+        holder = subprocess.Popen(["flock", f"{lock}", "sleep", "30"], start_new_session=True)
+        self.addCleanup(self.end_group, holder)
+        time.sleep(0.3)
+        started = time.monotonic()
+        done = self.run_archive("--lock-wait-mins", "1", USNM_HELD_ARCHIVE_LOCK_WAIT_SECS="1")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("another held-page archive is running", done.stderr)
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertNotIn("systemctl stop", "\n".join(self.log()) if (self.root / "log").exists() else "")
+
+    def test_the_budget_starts_once_the_locks_are_held(self):
+        lock = self.root / "lock"
+        holder = subprocess.Popen(["flock", f"{lock}.run", "sleep", "2"], start_new_session=True)
+        self.addCleanup(self.end_group, holder)
+        time.sleep(0.3)
+        # A 1 minute budget the 2 second wait does not touch: both batches still run.
+        done = self.run_archive("--lock-wait-mins", "1", "--max-minutes", "1", "--batch-mins", "0")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.summary(done)["batches"], ["0001", "0002"])
 
 if __name__ == "__main__":
     unittest.main()

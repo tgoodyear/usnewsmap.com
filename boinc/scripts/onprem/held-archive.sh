@@ -27,7 +27,14 @@
 #   held-archive.sh [--config FILE] [--state-dir DIR] [--archive-dir DIR] [--pages N]
 #                   [--min-age-hours N] [--max-batches N] [--wait-mins N] [--tool FILE]
 #                   [--check-state-dir DIR]... [--tick-lock FILE] [--gap-mins N]
-#                   [--max-minutes N] [--batch-mins N] [--pre-batch-tick]
+#                   [--max-minutes N] [--batch-mins N] [--pre-batch-tick] [--lock-wait-mins N]
+#
+# --lock-wait-mins N (#2052; default 30, 0 = fail at once) is how long the run waits for another
+# archive's locks before it gives up. Six archive units (the main plan's and the native plans')
+# share the two locks, so one starting while another runs queues behind it instead of failing and
+# losing its slot: it logs boinc_held_archive_lock_wait when it starts waiting and again when it
+# has the locks, and fails ("another held-page archive is running") only on the timeout. The
+# --max-minutes budget starts once the locks are held, so a run that waited keeps its whole budget.
 #
 # --gap-mins N (#2012; default 0, off) lets the controller tick between batches. The pause, the
 # tick lock and the archive lock (/run/usnm-boinc-held-archive.lock, which other plans' ticks
@@ -89,7 +96,7 @@ CONFIG=/etc/usnm/boinc-priority-controller.json
 STATE_DIR=/var/lib/usnm-priority-controller
 ARCHIVE=/srv/usnm-archive
 PAGES=1000 MIN_AGE=1 MAX_BATCHES=10 WAIT_MINS=60 GAP_MINS=0 MAX_MINUTES=0
-PRE_TICK=false BATCH_MINS=10
+PRE_TICK=false BATCH_MINS=10 LOCK_WAIT_MINS=30
 UNIT=${USNM_CONTROLLER_UNIT:-usnm-boinc-priority-controller@main}
 # The shared unit every plan ticked in before #1690.
 LEGACY_UNIT=usnm-boinc-priority-controller
@@ -112,6 +119,7 @@ while [ $# -gt 0 ]; do
     --max-minutes) [ $# -ge 2 ] || usage; MAX_MINUTES=$2; shift 2 ;;
     --pre-batch-tick) PRE_TICK=true; shift ;;
     --batch-mins) [ $# -ge 2 ] || usage; BATCH_MINS=$2; shift 2 ;;
+    --lock-wait-mins) [ $# -ge 2 ] || usage; LOCK_WAIT_MINS=$2; shift 2 ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
   esac
@@ -125,8 +133,8 @@ if [ ${#CHECK_DIRS[@]} -eq 0 ]; then
 fi
 CHECKS=()
 for dir in ${CHECK_DIRS[@]+"${CHECK_DIRS[@]}"}; do CHECKS+=(--check-state-dir "$dir"); done
-for n in "$PAGES" "$MIN_AGE" "$MAX_BATCHES" "$WAIT_MINS" "$GAP_MINS" "$MAX_MINUTES" "$BATCH_MINS"; do
-  [[ $n =~ ^[0-9]{1,5}$ ]] || die "--pages, --min-age-hours, --max-batches, --wait-mins, --gap-mins and --max-minutes are numbers"
+for n in "$PAGES" "$MIN_AGE" "$MAX_BATCHES" "$WAIT_MINS" "$GAP_MINS" "$MAX_MINUTES" "$BATCH_MINS" "$LOCK_WAIT_MINS"; do
+  [[ $n =~ ^[0-9]{1,5}$ ]] || die "--pages, --min-age-hours, --max-batches, --wait-mins, --gap-mins, --max-minutes, --batch-mins and --lock-wait-mins are numbers"
 done
 [ "$MAX_BATCHES" -ge 1 ] && [ "$WAIT_MINS" -ge 1 ] || die "--max-batches and --wait-mins are at least 1"
 [ -f "$TOOL" ] || die "no $TOOL"
@@ -135,11 +143,36 @@ done
 # The run lock keeps two archives from overlapping for the whole run; the archive lock (fd 9)
 # is what other plans' ticks skip on, and --gap-mins lets it go between batches.
 GAP_FILE=$LOCK.gap
+# Takes the lock open on fd $1, waiting up to what is left of --lock-wait-mins (#2052). flock
+# runs as a waited-for child, so a stop during the wait is not deferred.
+LOCK_WAIT_START=$SECONDS
+# Seconds, for tests: USNM_HELD_ARCHIVE_LOCK_WAIT_SECS replaces --lock-wait-mins.
+LOCK_WAIT_SECS=${USNM_HELD_ARCHIVE_LOCK_WAIT_SECS:-$((LOCK_WAIT_MINS * 60))}
+LOCK_WAITED=false
+take_lock() {
+  flock -n "$1" && return 0
+  local left=$((LOCK_WAIT_SECS - (SECONDS - LOCK_WAIT_START))) waiter
+  if [ "$left" -gt 0 ]; then
+    if ! $LOCK_WAITED; then
+      printf '{"event": "boinc_held_archive_lock_wait", "waiting": true, "wait_mins": %s}\n' "$LOCK_WAIT_MINS"
+      LOCK_WAITED=true
+    fi
+    flock -w "$left" "$1" &
+    waiter=$!
+    wait "$waiter" && return 0
+  fi
+  die "another held-page archive is running (waited $((SECONDS - LOCK_WAIT_START)) s, --lock-wait-mins $LOCK_WAIT_MINS)"
+}
 exec 6> "$LOCK.run"
-flock -n 6 || die "another held-page archive is running"
+take_lock 6
 exec 9> "$LOCK"
-flock -n 9 || die "another held-page archive is running"
+take_lock 9
 rm -f "$GAP_FILE"
+if $LOCK_WAITED; then
+  printf '{"event": "boinc_held_archive_lock_wait", "waiting": false, "waited_seconds": %s}\n' "$((SECONDS - LOCK_WAIT_START))"
+fi
+# The --max-minutes budget counts from here: time queued behind another archive is not the run's.
+if $LOCK_WAITED; then SECONDS=$LOCK_WAIT_START; fi
 
 # The controller's step command (ssh to the BOINC host with its forced command) and environment.
 mapfile -t STEP < <(python3 -c '
