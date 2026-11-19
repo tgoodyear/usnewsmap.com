@@ -92,6 +92,15 @@ class FetchHandoff(unittest.TestCase):
         # Only reads: the steps asked of the host are the listings and reads.
         self.assertEqual({call[0] for call in self.host.calls}, {"archive-list", "archive-read-many"})
 
+    def test_a_job_without_its_request_fails_the_fetch_and_keeps_the_old_copy(self):
+        self.result(1)
+        (self.root / "dispatch/jobs" / job(1) / "request.json").unlink()
+        self.dest.mkdir(parents=True)
+        (self.dest / "old").write_text("kept")
+        with self.assertRaisesRegex(RuntimeError, "request.json is missing"):
+            self.fetch("--handoff", "onprem")
+        self.assertEqual((self.dest / "old").read_text(), "kept")
+
     def test_newest_first_up_to_max_jobs_and_only_the_named_hosts(self):
         self.result(1, hours_ago=5, host="13")
         self.result(2, hours_ago=4, host="9")

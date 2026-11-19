@@ -76,9 +76,13 @@ class HostSource:
         self.fetch(stage, [(e["name"], e["size"]) for e in entries if SPOOL_OBJECT.fullmatch(e["name"])])
 
     def copy_job(self, new, job):
-        entries = self.box.list(f"spool/{job}/") + self.box.list(f"dispatch/jobs/{job}/request.json")
-        self.fetch(new, [(e["name"], e["size"]) for e in entries
-                         if SPOOL_OBJECT.fullmatch(e["name"]) or e["name"] == f"dispatch/jobs/{job}/request.json"])
+        request = f"dispatch/jobs/{job}/request.json"
+        requests = [e for e in self.box.list(request) if e["name"] == request]
+        # A job without its request is no sample: fail the fetch, which keeps the previous copy.
+        if not requests:
+            raise RuntimeError(f"{request} is missing from the hand-off")
+        entries = [e for e in self.box.list(f"spool/{job}/") if SPOOL_OBJECT.fullmatch(e["name"])] + requests
+        self.fetch(new, [(e["name"], e["size"]) for e in entries])
 
 
 def make_box(args):

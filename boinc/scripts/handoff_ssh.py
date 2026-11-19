@@ -102,6 +102,9 @@ class SshHandoff:
         self._stop = None
         self._thread = None
         self._lock_deadline = None
+        # At most `parallel` sessions to the host at once across every caller and pool; the lock's
+        # own steps (the heartbeat) never wait for one.
+        self._slots = threading.BoundedSemaphore(self.parallel)
 
     # --- one step -------------------------------------------------------------------------
 
@@ -135,7 +138,11 @@ class SshHandoff:
         failure = ""
         for attempt in range(tries):
             try:
-                done = self.runner(argv, stdin, timeout)
+                if step.startswith("lock-"):
+                    done = self.runner(argv, stdin, timeout)
+                else:
+                    with self._slots:
+                        done = self.runner(argv, stdin, timeout)
             except (OSError, subprocess.SubprocessError) as error:
                 failure = type(error).__name__
                 if fenced:

@@ -158,6 +158,34 @@ class SshHandoffTests(unittest.TestCase):
             box.get_many(names)
         self.assertEqual(len(self.host.calls), 3)
 
+    def test_sessions_to_the_host_never_exceed_the_limit_across_pools(self):
+        import concurrent.futures
+        for n in range(12):
+            (self.root / f"spool/{JOB}/g{n}").write_bytes(b"x")
+        box = self.handoff()
+        live = peak = 0
+        counter = threading.Lock()
+        real = self.host.__call__
+
+        def slow(argv, stdin, timeout):
+            nonlocal live, peak
+            with counter:
+                live += 1
+                peak = max(peak, live)
+            time.sleep(0.02)
+            try:
+                return real(argv, stdin, timeout)
+            finally:
+                with counter:
+                    live -= 1
+
+        box.runner = slow
+        # Six callers, each reading in its own chunks: as handoff_step's jobs do.
+        with mock.patch.object(S, "READ_MANY_NAMES", 1), concurrent.futures.ThreadPoolExecutor(6) as pool:
+            list(pool.map(lambda n: box.get_many([(f"spool/{JOB}/g{i}", 1) for i in (n, n + 6)]), range(6)))
+        self.assertGreater(peak, 1)
+        self.assertLessEqual(peak, box.parallel)
+
     def test_a_damaged_get_many_is_refused(self):
         box = self.handoff()
         real = self.host.__call__
