@@ -24,7 +24,7 @@ import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
 
-from feed_status import APP_NAMES, MAX_AGE, NO_PROVEN_CLIENTS, TICK_FAILURE_SAME_S, TICK_LIMIT_S, atomic_json
+from feed_status import APP_NAMES, MAX_AGE, NO_PROVEN_CLIENTS, TICK_FAILURE_SAME_S, atomic_json
 
 MAX_BYTES = 8 * 1024 * 1024
 MAX_ROWS = 8000
@@ -141,6 +141,8 @@ SIGNAL_FIELDS = ("caps", "ownership_conflicts", "progress", "tick_p90_s")
 PROGRESS_FIELDS = ("published_at", "first_tick_at", "pending")
 TICK_TREND_WINDOW_S = 3600
 MAX_CAPS = 16
+# A cap's rate of growth needs its first and last warning this far apart (a one-minute span is noise).
+CAP_RATE_MIN_SPAN_S = 600
 
 # Plans other than the live one (#1690): each ticks in a unit of its own, found by pattern.
 # Before the per-plan template the native plans tick in usnm-boinc-native-feed@PLAN.service and
@@ -161,10 +163,6 @@ PLAN_BUDGET_S = 25
 PLAN_MIN_WINDOW_S = 900
 PLAN_MAX_WINDOW_S = 6900
 PLAN_FALLBACK_WINDOW_S = 3900
-# A plan's finished tick counts as a failed run past this, not the live plan's 15 minutes: plans
-# queue behind each other for the tick lock for up to 30 minutes, and ticks of 16 to 21 minutes
-# happen without anything being wrong.
-PLAN_SLOW_S = 1800
 TIMESPAN_UNITS = {"us": 1e-6, "ms": 1e-3, "s": 1, "sec": 1, "min": 60, "h": 3600, "hr": 3600, "d": 86400,
                   "w": 604800}
 # What a plan is, from its unit or its last tick; and the state its last tick shows. Only these
@@ -347,8 +345,10 @@ def validate_signals(tick, now):
         raise ValueError("invalid controller caps")
     for name, cap in caps.items():
         if (not isinstance(name, str) or not NAME.fullmatch(name) or not isinstance(cap, dict)
-                or set(cap) != {"count", "limit"} or natural(cap["limit"]) == 0):
+                or not {"count", "limit"} <= set(cap) <= {"count", "limit", "per_hour"} or natural(cap["limit"]) == 0):
             raise ValueError("invalid controller cap")
+        if "per_hour" in cap and (type(cap["per_hour"]) not in (int, float) or not math.isfinite(cap["per_hour"])):
+            raise ValueError("invalid controller cap rate")
         natural(cap["count"])
     if tick["ownership_conflicts"] is not None:
         natural(tick["ownership_conflicts"])
@@ -413,6 +413,14 @@ def validate_tick(tick, now, fresh_s=900):
         # The evaluator reads both together.
         natural(tick["failed_in_a_row"])
         natural(tick.get("maintenance_failure_at"))
+    if tick.get("last_ok_at") is not None and natural(tick["last_ok_at"]) > now:
+        raise ValueError("future controller success")
+    if tick.get("tick_n") is not None:
+        natural(tick["tick_n"])
+    if tick.get("tick_p50_s") is not None and (
+            type(tick["tick_p50_s"]) not in (int, float) or not math.isfinite(tick["tick_p50_s"])
+            or tick["tick_p50_s"] < 0):
+        raise ValueError("invalid tick median")
     if "failed_last_hour" in tick:
         natural(tick["failed_last_hour"])
         if tick.get("last_hour_reason") is not None and tick["last_hour_reason"] not in FAILURE_REASONS:
@@ -1186,15 +1194,16 @@ def client(data_dir, port, session=None):
     return document
 
 
-def controller(unit, maintenance=(), fresh_s=900, slow_s=TICK_LIMIT_S):
+def controller(unit, maintenance=(), fresh_s=900):
     """The controller's last tick and last failure, from its unit's journal and systemd.
 
     `unit` is one plan's unit (usnm-boinc-priority-controller@main.service for the live plan,
     #1690): every plan ticks in a unit of its own, so a draining or native plan's failed ticks
     never count towards the live plan's failed_in_a_row.
 
-    `fresh_s` is how old a tick may be and still count (a plan on a slow timer, #1690), `slow_s` the
-    duration past which a finished tick counts as a failed run.
+    `fresh_s` is how old a tick may be and still count (a plan on a slow timer, #1690). A finished
+    tick is a good run however long it took: a slow one is tick_trend's, and plans queue behind each
+    other for the tick lock for up to 30 minutes.
 
     `maintenance` are units that pause the controller to do its upkeep, such as the daily
     held-page archive (#835): their failures count as the controller's, and while one runs, or
@@ -1219,6 +1228,8 @@ def controller(unit, maintenance=(), fresh_s=900, slow_s=TICK_LIMIT_S):
     # about in the window, each plan's latest tick, when a live plan last published, and the
     # tick durations of the last hour.
     caps, plans, published_at, first_live, recent = {}, {}, None, None, []
+    # Each cap's warnings in the window, (time, count), for its rate of growth (CAP_RATE_MIN_SPAN_S).
+    cap_points = {}
     reported = False
 
     def record(at, failed, invocation, joins=False, error=None):
@@ -1278,6 +1289,7 @@ def controller(unit, maintenance=(), fresh_s=900, slow_s=TICK_LIMIT_S):
                 worst = caps.get(cap)
                 if worst is None or count * worst["limit"] > worst["count"] * limit:
                     caps[cap] = {"count": count, "limit": limit}
+                cap_points.setdefault(cap, []).append((finished, count))
             continue
         ok = event["event"] in TICK_EVENTS
         invocation = entry.get("_SYSTEMD_INVOCATION_ID") or entry.get("INVOCATION_ID")
@@ -1306,10 +1318,10 @@ def controller(unit, maintenance=(), fresh_s=900, slow_s=TICK_LIMIT_S):
             continue
         if not math.isfinite(seconds) or seconds < 0:
             continue
-        if seconds > slow_s:
-            controller_failure = max(controller_failure, finished)
+        # A tick that finished slow is not a failure (the alert fires on failed ticks in a row, or
+        # none succeeding for 30 minutes): its duration is in `recent`, which tick_trend judges.
         if ok:  # a failure's line was recorded above
-            record(finished, seconds > slow_s, invocation)
+            record(finished, False, invocation)
         # Every tick's duration, failed ones too: a failure that runs long is part of the trend.
         if time.time() - finished <= TICK_TREND_WINDOW_S:
             recent.append(seconds)
@@ -1337,18 +1349,31 @@ def controller(unit, maintenance=(), fresh_s=900, slow_s=TICK_LIMIT_S):
     # with, so a success between failures doesn't change the alert's name.
     hour = [key for key in errors if runs[key][1] and time.time() - runs[key][0] <= TICK_TREND_WINDOW_S]
     last_hour_reason = failure_reason(errors[max(hour, key=lambda k: runs[k][0])]) if hour else None
+    # The newest run that did not fail: feed_status fires on no success for NO_SUCCESS_S while the
+    # newest runs failed. None when no run in the window succeeded.
+    ok_runs = [at for at, failed in runs.values() if not failed]
+    # Each cap's growth over the window in journals an hour, from its first warning to its last, when
+    # they are CAP_RATE_MIN_SPAN_S apart (a net rate: a held-page archive lowers it). Warnings come only
+    # past the controller's 80%, so a cap with one has no rate until a second.
+    for cap, points in cap_points.items():
+        points.sort()
+        span = points[-1][0] - points[0][0]
+        if span >= CAP_RATE_MIN_SPAN_S:
+            caps[cap]["per_hour"] = round((points[-1][1] - points[0][1]) * 3600 / span, 1)
     live = [plan for plan in plans.values() if not plan["draining"]]
     failures = {"last_failure_at": max(controller_failure, maintenance_failure),
                 "controller_failure_at": controller_failure, "maintenance_failure_at": maintenance_failure,
                 "failed_in_a_row": streak, "failed_last_hour": failed_last_hour,
-                "last_hour_reason": last_hour_reason,
+                "last_hour_reason": last_hour_reason, "last_ok_at": max(ok_runs, default=None),
                 "reason": reason, "same_error_in_a_row": repeats,
                 "caps": caps,
                 # None: no tick line in the window reports it (a scheduler from before #1685).
                 "ownership_conflicts": max((p["conflicts"] for p in live), default=0) if reported else None,
                 "progress": {"published_at": published_at, "first_tick_at": first_live,
                              "pending": max((p["pending"] for p in live), default=0) if reported else None},
-                "tick_p90_s": round(percentile(recent, 0.9), 3) if recent else None}
+                "tick_p90_s": round(percentile(recent, 0.9), 3) if recent else None,
+                "tick_p50_s": round(percentile(recent, 0.5), 3) if recent else None,
+                "tick_n": len(recent)}
     status = dict(line.split("=", 1) for line in run([
         "systemctl", "show", unit, "-p", "LoadState", "-p", "SubState", "-p", "Result",
         "-p", "ExecMainStartTimestampMonotonic", "-p", "ExecMainExitTimestampMonotonic",
@@ -1475,7 +1500,7 @@ def plan_journal(unit, now):
 
 PLAN_TICK_FIELDS = ("ok", "seconds", "finished_at", "failed_in_a_row", "failed_last_hour", "last_hour_reason",
                     "reason", "same_error_in_a_row", "last_failure_at", "controller_failure_at",
-                    "maintenance_failure_at")
+                    "maintenance_failure_at", "last_ok_at")
 
 
 def plan_ticks(main_unit):
@@ -1508,7 +1533,7 @@ def plan_ticks(main_unit):
                 kind, state, paused_at = plan_journal(unit, now)
                 entry["window_s"] = window = plan_window(unit)
                 try:
-                    tick = controller(unit, fresh_s=window, slow_s=PLAN_SLOW_S)
+                    tick = controller(unit, fresh_s=window)
                 except NoRecentTick:
                     tick = None
                 entry.update(kind=kind or entry["kind"], state=state, paused_at=paused_at, error=None,

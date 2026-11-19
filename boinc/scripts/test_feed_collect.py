@@ -31,7 +31,7 @@ def core(tick):
     """A controller tick without its failure reason and signals (#1698), which have their own tests."""
     return {key: value for key, value in tick.items()
             if key not in (*C.SIGNAL_FIELDS, "reason", "same_error_in_a_row", "failed_last_hour",
-                          "last_hour_reason")}
+                          "last_hour_reason", "last_ok_at", "tick_p50_s", "tick_n")}
 
 
 @contextlib.contextmanager
@@ -627,7 +627,9 @@ class ControllerTests(unittest.TestCase):
                 ([(NOW - 900, "a", "ok"), (NOW - 600, ("", "b"), "failed")], 1),
                 ([(NOW - 900, "a", "failed"), (NOW - 600, "b", "failed")], 2),
                 ([(NOW - 900, None, "failed"), (NOW - 600, None, "native")], 2),
-                ([(NOW - 900, "a", "slow"), (NOW - 600, "b", "failed")], 2),
+                # A slow run is not a failure (tick_trend judges durations).
+                ([(NOW - 900, "a", "slow"), (NOW - 600, "b", "failed")], 1),
+                ([(NOW - 900, "a", "slow"), (NOW - 600, "b", "slow")], 0),
                 # A good run between failures starts the count again.
                 ([(NOW - 1200, "a", "failed"), (NOW - 900, "b", "ok"), (NOW - 600, "c", "failed")], 1),
                 ([(NOW - 1200, "a", "failed"), (NOW - 900, "b", "failed"), (NOW - 600, "c", "ok")], 0)):
@@ -653,11 +655,12 @@ class ControllerTests(unittest.TestCase):
         document["tick"]["maintenance_failure_at"] = 0
         C.fresh(document, NOW, "controller")
 
-    def test_two_failures_between_observations_fire_and_a_recovery_clears(self):
+    def test_three_failures_between_observations_fire_and_a_recovery_clears(self):
         previous, states = {}, []
         for elapsed, runs in ((0, [(NOW - 900, "a", "ok")]),
-                              (60, [(NOW - 900, "a", "ok"), (NOW - 600, "b", "failed"), (NOW - 30, "c", "failed")]),
-                              (660, [(NOW - 600, "b", "failed"), (NOW - 30, "c", "failed"), (NOW + 600, "d", "ok")])):
+                              (60, [(NOW - 900, "a", "ok"), (NOW - 600, "b", "failed"), (NOW - 300, "c", "failed"),
+                                    (NOW - 30, "d", "failed")]),
+                              (660, [(NOW - 600, "b", "failed"), (NOW - 30, "d", "failed"), (NOW + 600, "e", "ok")])):
             with patch.object(C.time, "time", return_value=NOW + elapsed):
                 tick = self.observe(native=self.run_lines(*runs))
             document, previous = F.evaluate({"tick": tick}, previous, NOW + elapsed, 1000 + elapsed, "boot", "cfg")
@@ -719,8 +722,8 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.observe(events, native=[(NOW - 10, entry)])["last_failure_at"], 0)
 
     def test_running_tick_uses_systemd_clock_despite_prior_suspend(self):
-        # Past the 15-minute limit a running tick waits; past the 30-minute hang limit it fires (#1698).
-        for elapsed, expected in ((10, "healthy"), (901, "healthy"), (1800, "healthy"), (1801, "firing")):
+        # Past the 15-minute limit a running tick waits; past the hour's hang limit it fires (#1698).
+        for elapsed, expected in ((10, "healthy"), (901, "healthy"), (3600, "healthy"), (3601, "firing")):
             with self.subTest(elapsed=elapsed), \
                     patch.object(C.time, "CLOCK_BOOTTIME", -1, create=True), \
                     patch.object(C.time, "clock_gettime", side_effect=lambda clock:
@@ -739,13 +742,15 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(core(failed), {"ok": False, "seconds": 20, "finished_at": NOW, "last_failure_at": NOW - 10,
                                   "controller_failure_at": NOW - 10, "maintenance_failure_at": 0,
                                   "failed_in_a_row": 1})
+        self.assertIsNone(failed["last_ok_at"])
         events.append((NOW - 5, {"event": "boinc_batch_tick", "schema_version": 1,
                                 "at": NOW - 5, "timings": {"tick_seconds": 12}}))
         recovered = self.observe(events)
         self.assertEqual(core(recovered), {"ok": True, "seconds": 12, "finished_at": NOW - 5, "last_failure_at": NOW - 10,
                                      "controller_failure_at": NOW - 10, "maintenance_failure_at": 0,
                                      "failed_in_a_row": 0})
-        # One failed tick that the next recovers doesn't fire (two in a row do: test_feed_status).
+        self.assertEqual(recovered["last_ok_at"], NOW - 5)
+        # One failed tick that the next recovers doesn't fire (three in a row do: test_feed_status).
         previous = {}
         for elapsed, expected in ((0, "healthy"), (60, "healthy")):
             document, previous = F.evaluate({"tick": recovered}, previous, NOW + elapsed,
@@ -753,8 +758,10 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(next(c for c in document["checks"]
                                   if c["code"] == "controller_tick")["state"], expected)
 
-    def test_completed_runtime_breach_survives_a_short_or_running_successor(self):
-        for seconds in (900, 901):
+    def test_a_slow_tick_is_not_a_failure_whatever_follows_it(self):
+        # A tick over the 15-minute limit finished: it counts for tick_trend, not as a failed run, and
+        # it is a success for "no success for 30 minutes".
+        for seconds in (900, 901, 2400):
             for running in (False, True):
                 with self.subTest(seconds=seconds, running=running):
                     events = [(NOW - 10, {"event": "boinc_batch_tick", "schema_version": 1,
@@ -768,17 +775,15 @@ class ControllerTests(unittest.TestCase):
                                                 "timings": {"tick_seconds": 1}}))
                     with patch.object(C.time, "clock_gettime", return_value=1001):
                         tick = self.observe(events, **status)
-                    self.assertEqual(tick["last_failure_at"], NOW - 10 if seconds > 900 else 0)
+                    self.assertEqual((tick["last_failure_at"], tick["failed_in_a_row"]), (0, 0))
+                    self.assertEqual(tick["last_ok_at"], NOW - 5 if not running else NOW - 10)
                     previous = {}
                     for elapsed in (0, 60):
                         document, previous = F.evaluate({"tick": tick}, previous, NOW + elapsed,
                                                         1000 + elapsed, "boot", "cfg")
-                        # A slow tick is one failure; it fires as the second in a row (test_feed_status).
-                        expected = "healthy"
                         checked = next(c for c in document["checks"] if c["code"] == "controller_tick")
-                        self.assertEqual(checked["state"], expected)
+                        self.assertEqual(checked["state"], "healthy")
                         previous = json.loads(json.dumps(previous))
-                    self.assertEqual(tick["failed_in_a_row"], int(seconds > 900 and running))
 
 
 class FailureReasonTests(unittest.TestCase):
@@ -834,10 +839,10 @@ class FailureReasonTests(unittest.TestCase):
         self.assertEqual((tick["failed_in_a_row"], tick["reason"], tick["same_error_in_a_row"]),
                          (3, "ownership_conflict", 2))
         self.assertNotIn("queue-feed-10", json.dumps(tick))
-        # A slow run has no error and doesn't break the count of the failures around it.
+        # A slow run finished: it is a good run, and ends the count like any other.
         slow = {"event": "boinc_batch_tick", "timings": {"tick_seconds": 901}}
         tick = self.observe([(NOW - 900, self.failure(cap)), (NOW - 600, slow), (NOW - 300, self.failure(cap))])
-        self.assertEqual((tick["failed_in_a_row"], tick["same_error_in_a_row"]), (3, 2))
+        self.assertEqual((tick["failed_in_a_row"], tick["same_error_in_a_row"]), (1, 1))
         # A good run clears both.
         tick = self.observe([(NOW - 600, self.failure(cap)), (NOW - 300, ok)])
         self.assertEqual((tick["failed_in_a_row"], tick["reason"], tick["same_error_in_a_row"]), (0, None, 0))
@@ -898,7 +903,9 @@ class SignalTests(unittest.TestCase):
         checks = {c["code"]: c for c in F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")[0]["checks"]}
         self.assertEqual(checks["ownership_conflict"]["state"], "firing")
         self.assertEqual(checks["controller_progress"]["state"], "healthy")  # published 7,000 s ago
-        self.assertEqual(checks["tick_trend"]["state"], "pending")
+        # Four ticks in the hour, median 30 s: far under twice the baseline.
+        self.assertEqual((tick["tick_p50_s"], tick["tick_n"]), (30, 4))
+        self.assertEqual(checks["tick_trend"]["state"], "healthy")
         checks = {c["code"]: c for c in F.evaluate(facts, {}, NOW + 200, 1000, "boot", "cfg")[0]["checks"]}
         self.assertEqual(checks["controller_progress"]["state"], "firing")
         # A scheduler from before #1685 reports no conflicts: not reported, never zero.
@@ -906,10 +913,32 @@ class SignalTests(unittest.TestCase):
         tick = self.observe(old)
         self.assertEqual((tick["ownership_conflicts"], tick["progress"]["pending"]), (None, None))
 
-    def test_failures_alternating_with_good_ticks_count_in_the_trend_and_fire(self):
-        # Copilot on #1699: an 800 s failure between 30 s successes never made a streak, and the
-        # p90 of the successes alone was 30 s. Every tick's duration counts, and so do failures
-        # within the hour.
+    def test_a_median_over_twice_the_baseline_pends_the_trend_and_a_rate_comes_from_two_warnings(self):
+        lines = [(NOW - 3000, self.tick_line("queue-feed-12", seconds=1500)),
+                 (NOW - 1500, self.tick_line("queue-feed-12", seconds=1400)),
+                 (NOW - 300, self.tick_line("queue-feed-12", seconds=30)),
+                 (NOW - 3000, self.warning("dispatch_journals", 9000)),
+                 (NOW - 1200, self.warning("dispatch_journals", 9300)),
+                 (NOW - 300, self.warning("dispatch_journals", 9500)),
+                 (NOW - 3000, self.warning("claims", 8100)),
+                 (NOW - 2900, self.warning("claims", 8000))]
+        tick = self.observe(lines)
+        self.assertEqual((tick["tick_p50_s"], tick["tick_n"]), (1400, 3))
+        # 500 journals in 2,700 s; the first and last warning of the cap, whatever came between.
+        self.assertEqual(tick["caps"]["dispatch_journals"], {"count": 9500, "limit": 10000, "per_hour": 666.7})
+        # Two warnings 100 s apart are no rate.
+        self.assertNotIn("per_hour", tick["caps"]["claims"])
+        C.fresh({"schema_version": 1, "source": "controller", "observed_at": NOW, "tick": tick}, NOW, "controller")
+        facts = {"tick": tick, "controller_signals": True}
+        checks = {c["code"]: c for c in F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")[0]["checks"]}
+        self.assertEqual(checks["tick_trend"]["state"], "pending")  # 1,400 s is over 2 x 660 s; fires after an hour
+        self.assertEqual((checks["controller_cap"]["state"], checks["controller_cap"]["per_hour"],
+                          checks["controller_cap"]["hours_to_cap"]), ("firing", 666.7, 0.7))
+
+    def test_failures_alternating_with_good_ticks_never_fire(self):
+        # Copilot on #1699: an 800 s failure between 30 s successes never made a streak. They fire
+        # nothing now (#2054: three in a row, or no success for 30 minutes), but every tick's
+        # duration still counts in the trend and the hour's failures stay in the line.
         lines = []
         for i in range(12):
             at = NOW - 3300 + 300 * i
@@ -924,8 +953,8 @@ class SignalTests(unittest.TestCase):
         facts = {"tick": tick, "controller_signals": True}
         checks = {c["code"]: c for c in F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")[0]["checks"]}
         self.assertEqual((checks["controller_tick"]["state"], checks["controller_tick"]["failed_last_hour"]),
-                         ("firing", 6))
-        self.assertEqual(checks["tick_trend"]["state"], "pending")
+                         ("healthy", 6))
+        self.assertEqual(checks["tick_trend"]["state"], "healthy")
         # Three in the hour is still below the threshold.
         tick = self.observe(lines[6:])
         self.assertEqual(tick["failed_last_hour"], 3)
@@ -996,8 +1025,12 @@ class MaintenanceTests(unittest.TestCase):
                          ["usnm-boinc-priority-controller.service", self.ARCHIVE])
         self.assertEqual((tick["ok"], tick["seconds"], tick["last_failure_at"]), (True, 3, NOW - 60))
         self.assertEqual((tick["controller_failure_at"], tick["maintenance_failure_at"]), (0, NOW - 60))
-        document, _ = F.evaluate({"tick": tick}, {}, NOW, 1000, "boot", "cfg")
-        self.assertEqual(next(c for c in document["checks"] if c["code"] == "controller_tick")["state"], "firing")
+        # The controller kept ticking, so one failed archive is no alert on its own (controller_cap and
+        # the missing-tick checks watch what it leaves behind); with no success for 30 minutes it is.
+        self.assertEqual(tick["last_ok_at"], NOW - 5)
+        for last_ok, expected in ((NOW - 5, "healthy"), (NOW - 1800, "firing")):
+            document, _ = F.evaluate({"tick": {**tick, "last_ok_at": last_ok}}, {}, NOW, 1000, "boot", "cfg")
+            self.assertEqual(next(c for c in document["checks"] if c["code"] == "controller_tick")["state"], expected)
 
     def test_the_archives_own_lines_are_not_ticks(self):
         lines = [(NOW - 5, self.ARCHIVE, {"event": "boinc_batch_failure", "error": "not the controller's"}),
@@ -2509,7 +2542,7 @@ class PlanTickTests(unittest.TestCase):
     def healthy(self, **kwargs):
         return {"events": [(NOW - 20, self.tick(**kwargs))]}
 
-    def failing(self, runs=2, **kwargs):
+    def failing(self, runs=3, **kwargs):
         return {"events": [(NOW - 700, self.tick())], "entries": self.failed_runs(*[NOW - 60 * n for n in range(runs, 0, -1)]),
                 "status": {"SubState": "failed", "Result": "exit-code"}, **kwargs}
 
@@ -2530,7 +2563,7 @@ class PlanTickTests(unittest.TestCase):
         failing = {code: check for code, check in checks.items() if code.startswith("plan_tick:") and check["state"] == "firing"}
         self.assertEqual(len(failing), 1)
         (check,) = failing.values()
-        self.assertEqual((check["failed_in_a_row"], check["reason"], check["kind"]), (2, "handoff_failed", "queue"))
+        self.assertEqual((check["failed_in_a_row"], check["reason"], check["kind"]), (3, "handoff_failed", "queue"))
         healthy = [c for code, c in checks.items() if code.startswith("plan_tick:") and c["state"] == "healthy"]
         # A healthy plan is logged as its state alone: the line is one syslog message.
         self.assertEqual([(c["kind"], "failed_in_a_row" in c) for c in healthy], [("native", False)])
@@ -2541,13 +2574,13 @@ class PlanTickTests(unittest.TestCase):
         plans = lambda queue, native: self.observe({self.QUEUE: queue, self.NATIVE_AFTER: native})
         # The queue plan has failed once; then the native plan fails twice. Each has its own count.
         one = self.failing(runs=1)
-        both = plans(one, self.failing(runs=2, events=[(NOW - 700, self.tick(native=True))]))
+        both = plans(one, self.failing(runs=3, events=[(NOW - 700, self.tick(native=True))]))
         checks, state = self.evaluate(both)
         by_kind = {c["kind"]: c for code, c in checks.items() if code.startswith("plan_tick:")}
         self.assertEqual((by_kind["queue"]["state"], by_kind["native"]["state"]), ("healthy", "firing"))
-        self.assertEqual((by_kind["queue"]["failed_in_a_row"], by_kind["native"]["failed_in_a_row"]), (1, 2))
+        self.assertEqual((by_kind["queue"]["failed_in_a_row"], by_kind["native"]["failed_in_a_row"]), (1, 3))
         # The native plan recovers; the queue plan's second failure fires on its own count.
-        again = plans(self.failing(runs=2), self.healthy(native=True))
+        again = plans(self.failing(runs=3), self.healthy(native=True))
         checks, _ = self.evaluate(again, state, elapsed=60)
         by_kind = {c["kind"]: c for code, c in checks.items() if code.startswith("plan_tick:")}
         self.assertEqual((by_kind["queue"]["state"], by_kind["native"]["state"]), ("firing", "healthy"))
@@ -2577,7 +2610,7 @@ class PlanTickTests(unittest.TestCase):
 
     def test_a_paused_plan_whose_ticks_fail_still_alerts(self):
         paused = {"at": NOW - 60, "reason": "x", "jobs": []}
-        plan = self.failing(runs=2, events=[(NOW - 700, self.tick(native=True, paused=paused))])
+        plan = self.failing(runs=3, events=[(NOW - 700, self.tick(native=True, paused=paused))])
         checks, _ = self.evaluate(self.observe({self.NATIVE: plan}))
         (check,) = [c for code, c in checks.items() if code.startswith("plan_tick:")]
         self.assertEqual((check["state"], check["plan_state"]), ("firing", "paused"))
@@ -2644,7 +2677,7 @@ class PlanTickTests(unittest.TestCase):
 
     def test_a_plan_on_a_slow_timer_keeps_alerting_between_its_ticks(self):
         # A drain on a 30-minute timer, failing: the last failure is 28 minutes old, then 48.
-        drain = self.failing(runs=2, timer=TIMER_30MIN)
+        drain = self.failing(runs=3, timer=TIMER_30MIN)
         drain["entries"] = self.failed_runs(NOW - 3500, NOW - 1700)
         drain["events"] = [(NOW - 5000, self.tick(draining=True, pending=4))]
         state = {}
@@ -2671,7 +2704,7 @@ class PlanTickTests(unittest.TestCase):
         with patch.object(C, "run", side_effect=OSError):
             self.assertEqual(C.plan_window(self.DRAIN), C.PLAN_FALLBACK_WINDOW_S)
 
-    def test_a_tick_waiting_on_the_tick_lock_is_not_a_hang_and_a_slow_one_needs_thirty_minutes(self):
+    def test_a_tick_waiting_on_the_tick_lock_is_not_a_hang_and_a_slow_one_is_not_a_failure(self):
         running = {"events": [(NOW - 5000, self.tick())], "status": {
             "SubState": "running", "ExecMainStartTimestampMonotonic": 1000000000, "ExecMainExitTimestampMonotonic": 0}}
         for waited, state in ((1750, "healthy"), (F.PLAN_HANG_S, "healthy"), (F.PLAN_HANG_S + 1, "firing")):
@@ -2680,20 +2713,20 @@ class PlanTickTests(unittest.TestCase):
                 (check,) = [c for code, c in checks.items() if code.startswith("plan_tick:")]
                 self.assertEqual(check["state"], state)
         self.assertGreater(F.PLAN_HANG_S, 1800)
-        # Finished ticks of 16 and 21 minutes are not slow for a plan, one of 31 minutes is.
-        for seconds, failed in ((983, 0), (1233, 0), (1860, 1)):
+        # A finished tick is a good run however long it took (tick_trend judges durations).
+        for seconds, failed in ((983, 0), (1233, 0), (1860, 0)):
             event = {**self.tick(), "timings": {"tick_seconds": seconds}}
             plans = self.observe({self.QUEUE: {"events": [(NOW - 30, event)]}})
             self.assertEqual(plans[0]["tick"]["failed_in_a_row"], failed)
 
     def test_a_successful_surya_tick_clears_the_streak_and_sets_the_plan_state(self):
         surya = {"event": "boinc_surya_tick", "plan": "s", "draining": False, "timings": {"tick_seconds": 40}}
-        plan = self.failing(runs=2, events=[(NOW - 20, surya)])
+        plan = self.failing(runs=3, events=[(NOW - 20, surya)])
         (entry,) = self.observe({self.QUEUE: plan})
         self.assertEqual((entry["state"], entry["tick"]["failed_in_a_row"]), ("active", 0))
         slow = {**surya, "timings": {"tick_seconds": 1900}}
         (entry,) = self.observe({self.QUEUE: {"events": [(NOW - 20, slow)]}})
-        self.assertEqual(entry["tick"]["failed_in_a_row"], 1)
+        self.assertEqual(entry["tick"]["failed_in_a_row"], 0)
         (entry,) = self.observe({self.QUEUE: {"events": [(NOW - 20, {**surya, "draining": True})]}})
         self.assertEqual((entry["kind"], entry["state"]), ("drain", "draining"))
 

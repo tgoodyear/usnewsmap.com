@@ -15,15 +15,16 @@ import time
 
 REFILL_WARN_S = 6 * 3600
 TICK_LIMIT_S = 15 * 60
-# Failed or slow controller ticks in a row before controller_tick fires.
-TICK_FAILURES_TO_FIRE = 2
-# A tick still running past this may never finish, so it fires at once (#1698). One still running
-# past TICK_LIMIT_S only waits: an hourly 20-minute tick fired every hour. A tick that finishes
-# over TICK_LIMIT_S counts towards the two in a row, as a failure does.
-TICK_HANG_S = 2 * TICK_LIMIT_S
-# Failed or slow runs within the last hour that fire controller_tick even with good runs between
-# them (#1698): a third of a five-minute timer's runs. An hourly slow tick is one.
-TICK_FAILURES_PER_HOUR = 4
+# Failed ticks in a row before controller_tick and plan_tick fire. A tick that finishes slow is not a
+# failure: tick_trend judges durations. One failed tick is often a blip (a hand-off upload timing
+# out, the step lock busy) that the next tick recovers.
+TICK_FAILURES_TO_FIRE = 3
+# Or: the newest tick failed and none has succeeded for this long (feed_collect's `last_ok_at`, from
+# a two-hour journal read, so a plan with no success at all in the window counts).
+NO_SUCCESS_S = 30 * 60
+# A tick still running past this may never finish, so it fires at once (#1698). Main's ticks took up
+# to 41 minutes on 18 Nov 2026 and finished, so it is an hour, not twice TICK_LIMIT_S.
+TICK_HANG_S = 4 * TICK_LIMIT_S
 # Runs in a row that failed with the same error: a sticky failure, which the next tick won't clear.
 STICKY_FAILURES = 3
 # A plan's tick may wait up to 1800 s for the host's tick lock (controller-tick.sh --lock-wait-secs)
@@ -41,8 +42,17 @@ PROGRESS_STALL_S = 2 * 3600        # nothing published by a live plan with pendi
 # The controller source reads two hours of journal; a window that starts later than this can't
 # prove two hours without a publication (a controller that only just started, or a full journal).
 PROGRESS_COVERAGE_S = PROGRESS_STALL_S - 15 * 60
-TICK_TREND_FRACTION = 0.7          # of TICK_LIMIT_S, for the p90 of the last hour's ticks
+# tick_trend fires when the p50 of the last hour's ticks is more than TICK_TREND_FACTOR times
+# TICK_BASELINE_P50_S for TICK_TREND_HOLD_S. The baseline is the main plan's median tick on 18 Nov 2026
+# (660 s, 63 ticks; docs/boinc/server/boundaries-and-monitoring.md has the numbers), not the 7-day
+# median (62 s), which mostly predates the 16 Nov change to 150-page refills. 1,320 s is above the p90
+# of every day since 16 Nov except the 18th (1,424 s).
+TICK_BASELINE_P50_S = 660
+TICK_TREND_FACTOR = 2
 TICK_TREND_HOLD_S = 3600
+# Ticks in the last hour that a median needs (main takes 10 to 40 minutes a tick now): one slow tick
+# is controller_tick's hang rule, not a trend.
+TICK_TREND_MIN_TICKS = 2
 # Ticks are minutes apart: a failure line within a minute of a run's end, without an
 # invocation id, is that run's.
 TICK_FAILURE_SAME_S = 60
@@ -269,16 +279,26 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
         checks.append({"code": code, "state": state, "duration_s": int(duration),
                        "threshold_s": hold, **measurements})
 
+    # GPU hosts that are asking for work and have none to run: idle slots on the own hosts with fewer
+    # eligible results than slots (gpu_shortage's condition). usnm_qwen_no_work and qwen_refill_window
+    # fire only once that has held for NO_WORK_HOLD_S; None, nothing proven about the hosts, never fires.
+    gpu = facts.get("supply", {}).get("gpu")
+    gpu_idle = gpu is not None and gpu["idle"] > 0 and gpu["eligible"] < gpu["idle"]
     deadline = facts.get("enabled_until")
-    check("qwen_refill_window", None if deadline is None else deadline - now <= REFILL_WARN_S,
-          remaining_s=None if deadline is None else deadline - now)
+    check("qwen_refill_window",
+          None if deadline is None else deadline - now <= REFILL_WARN_S and gpu_idle, NO_WORK_HOLD_S,
+          remaining_s=None if deadline is None else deadline - now, gpu_idle=gpu_idle)
     for app in APP_NAMES:
         backlog = facts.get("backlogs", {}).get(app)
         latest = facts.get("last_workunits", {}).get(app)
         if app == "usnm_qwen" and facts.get("qwen_admission"):
             no_work, hold, generation, backlog, reason = qwen_admission(facts.get("cohort"), facts, now)
+            # Whatever the cohort controller's trouble (a run that didn't report, a stalled timer),
+            # it is an alert only while GPU hosts that ask for work sit idle, for an hour.
+            if no_work is True:
+                no_work, hold = gpu_idle, max(hold, NO_WORK_HOLD_S)
             check(app + "_no_work", no_work, hold, generation=generation, backlog=backlog,
-                  last_workunit_at=latest, reason=reason)
+                  last_workunit_at=latest, reason=reason, gpu_idle=gpu_idle)
             continue
         # None is unavailable, zero is a successfully queried app with no workunit yet.
         no_work = None if backlog is None or latest is None or latest > now else backlog > 0
@@ -297,27 +317,25 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
     new_failure = failure_at > previous.get("last_failure_at", 0)
     maintenance_at = previous.get("maintenance_failure_at", 0)
     streak = None if tick is None else tick.get("failed_in_a_row")
-    # Failures that alternate with good ticks never make a streak; four in an hour still fire.
-    hourly = tick is not None and tick.get("failed_last_hour", 0) >= TICK_FAILURES_PER_HOUR
     if tick is None:
         tick_condition = None
     elif streak is None:
         # A collector from before the streak: any failure fires, as it always did.
         tick_condition = new_failure or tick["ok"] is False or tick["seconds"] > TICK_LIMIT_S
     else:
-        # One failed or slow tick is often a blip (a hand-off upload timing out, the step lock
-        # busy) that the next tick recovers, so the check fires from the second in a row: the
-        # collector counts the controller's finished runs since its last good one. A tick still
-        # running past the limit may never finish, and a maintenance unit runs once a day:
-        # neither waits for a second.
+        # A failed tick is often a blip that the next recovers (a hand-off upload timing out, the
+        # step lock busy), so the check fires from the third in a row, or when the newest failed
+        # and none has succeeded for NO_SUCCESS_S (tick_fires). A tick still running past the limit
+        # may never finish: it doesn't wait for either. A maintenance unit (the held-page
+        # archive) runs every few hours, so its failure counts only when it left the controller not
+        # ticking: no success for NO_SUCCESS_S. Its other failures show in controller_cap.
         new_maintenance = tick["maintenance_failure_at"] > maintenance_at
         maintenance_at = max(maintenance_at, tick["maintenance_failure_at"])
-        tick_condition = (streak >= TICK_FAILURES_TO_FIRE or new_maintenance or hourly
+        tick_condition = (tick_fires(tick, now) or (new_maintenance and no_success(tick, now))
                           or (tick["ok"] is None and tick["seconds"] > TICK_HANG_S))
-    # The newest failure's class (feed_collect.FAILURE_REASONS), never its text (#1698). While the
-    # hourly count fires, the hour's newest class, so a good tick between failures keeps one name.
+    # The newest failure's class (feed_collect.FAILURE_REASONS), never its text (#1698).
     repeats = None if tick is None else tick.get("same_error_in_a_row")
-    reason = None if tick is None else (tick.get("last_hour_reason") if hourly else tick.get("reason"))
+    reason = None if tick is None else tick.get("reason") or tick.get("last_hour_reason")
     check("controller_tick", tick_condition,
           seconds=None if tick is None else tick["seconds"], failed_in_a_row=streak,
           failed_last_hour=None if tick is None else tick.get("failed_last_hour"),
@@ -447,6 +465,21 @@ def plan_row(check):
     return row
 
 
+def no_success(tick, now):
+    """No tick has succeeded for NO_SUCCESS_S: the newest succeeded that long ago, or none did in
+    feed_collect's two-hour read. A collector from before `last_ok_at` can't say."""
+    if "last_ok_at" not in tick:
+        return False
+    return tick["last_ok_at"] is None or now - tick["last_ok_at"] >= NO_SUCCESS_S
+
+
+def tick_fires(tick, now):
+    """controller_tick's and plan_tick's rule: TICK_FAILURES_TO_FIRE failed ticks in a row, or the
+    newest failed and none succeeded for NO_SUCCESS_S. One failed tick fires nothing."""
+    streak = tick["failed_in_a_row"]
+    return streak >= TICK_FAILURES_TO_FIRE or (streak >= 1 and no_success(tick, now))
+
+
 def plan_checks(check, facts, now):
     """Every other plan's tick (#1690), when the controller source reports them (it runs with
     --discover-plans): one `plan_tick:<id>` check per plan, listed in `plan_checks`, with the live plan's rules and its
@@ -477,12 +510,11 @@ def plan_checks(check, facts, now):
         elif tick is None:
             check(code, False, **shown)
         else:
-            hourly = tick["failed_last_hour"] >= TICK_FAILURES_PER_HOUR
-            fires = (tick["failed_in_a_row"] >= TICK_FAILURES_TO_FIRE or hourly
+            fires = (tick_fires(tick, now)
                      or (tick["ok"] is None and tick["seconds"] > PLAN_HANG_S))
             check(code, fires, seconds=tick["seconds"], failed_in_a_row=tick["failed_in_a_row"],
                   failed_last_hour=tick["failed_last_hour"],
-                  reason=tick["last_hour_reason"] if hourly else tick["reason"],
+                  reason=tick["reason"] or tick["last_hour_reason"],
                   same_error_in_a_row=tick["same_error_in_a_row"],
                   sticky=tick["same_error_in_a_row"] >= STICKY_FAILURES, **shown)
 
@@ -500,9 +532,13 @@ def controller_signals(check, tick, now):
     worst = max(caps, key=lambda cap: caps[cap]["count"] / caps[cap]["limit"], default=None)
     percent = None if worst is None else round(100 * caps[worst]["count"] / caps[worst]["limit"], 1)
     # A share under 80% isn't warned about, so no warning in the window is healthy.
+    rate = None if worst is None else caps[worst].get("per_hour")
+    # At the net rate over the last two hours, how long until the cap, when it is growing.
+    hours_to_cap = (round((caps[worst]["limit"] - caps[worst]["count"]) / rate, 1)
+                    if rate is not None and rate > 0 else None)
     check("controller_cap", worst is not None and caps[worst]["count"] * 100 >= caps[worst]["limit"] * CAP_FIRE_PERCENT,
           generation=worst,
-          cap=worst, percent=percent)
+          cap=worst, percent=percent, per_hour=rate, hours_to_cap=hours_to_cap)
     conflicts = tick["ownership_conflicts"]
     check("ownership_conflict", None if conflicts is None else conflicts > 0, ownership_conflicts=conflicts,
           reason="not_reported" if conflicts is None else None)
@@ -517,9 +553,12 @@ def controller_signals(check, tick, now):
     check("controller_progress", stalled, backlog=pending, published_at=published,
           reason="not_reported" if pending is None else None)
     p90 = tick["tick_p90_s"]
-    # No tick in the last hour is controller_tick's to report, not a trend.
-    check("tick_trend", p90 is not None and p90 > TICK_TREND_FRACTION * TICK_LIMIT_S, TICK_TREND_HOLD_S,
-          seconds=p90)
+    p50 = tick.get("tick_p50_s")
+    # No tick in the last hour is controller_tick's to report, not a trend; neither is one tick. A
+    # collector from before the median is judged on nothing (healthy), not on the p90.
+    judged = p50 is not None and tick.get("tick_n", 0) >= TICK_TREND_MIN_TICKS
+    check("tick_trend", judged and p50 > TICK_TREND_FACTOR * TICK_BASELINE_P50_S, TICK_TREND_HOLD_S,
+          seconds=p90, p50_s=p50, threshold_p50_s=TICK_TREND_FACTOR * TICK_BASELINE_P50_S)
 
 
 def metrics(document):

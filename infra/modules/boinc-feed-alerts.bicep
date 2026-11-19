@@ -47,6 +47,12 @@
 //   last 10 minutes (feed_status.py --delivery-test), the end-to-end
 //   notification check. That line never counts as a health event: it can't
 //   change the latest state or keep the missing rule quiet.
+//   Every hold is the evaluator's, not this query's (#2054): a check is firing
+//   only after its sustained condition (three failed ticks in a row or none
+//   succeeding for 30 minutes, a p50 tick time over twice its baseline for an
+//   hour, GPU hosts that ask for work idle for an hour), so this query takes
+//   any firing check as it always did. docs/boinc/server/boundaries-and-monitoring.md
+//   (Sustained conditions only) has the numbers.
 // - missing: no health event observed in the last 5 minutes
 //   (Check = collector_heartbeat): the evaluator stopped, its timer, the
 //   host, the agent or the association is gone, or the cap was reached.
@@ -178,7 +184,7 @@ resource alerts 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [for alert
   kind: 'LogAlert'
   properties: {
     displayName: alert.displayName
-    description: 'Read-only BOINC feed health (#1441). Check names the check; delivery_test is the end-to-end notification check (docs/boinc/server/boundaries-and-monitoring.md). Check the OCR dashboard BOINC feed / stale data panel. Do not start a second feed owner or automatically renew admission windows.'
+    description: 'Read-only BOINC feed health (#1441). Fires only on sustained conditions (#2054; docs/boinc/server/boundaries-and-monitoring.md, Sustained conditions only). Check names the check; delivery_test is the end-to-end notification check (docs/boinc/server/boundaries-and-monitoring.md). Check the OCR dashboard BOINC feed / stale data panel. Do not start a second feed owner or automatically renew admission windows.'
     enabled: true
     severity: 2
     evaluationFrequency: 'PT5M'
