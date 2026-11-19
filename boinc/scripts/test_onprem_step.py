@@ -1156,10 +1156,12 @@ class ArchiveSteps(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def step(self, step, *variables, stdin=b"", ssh=False, plan_scope=None):
+    def step(self, step, *variables, stdin=b"", ssh=False, lock_wait=None):
         env = {"PATH": f"{self.bin_dir}:{os.environ['PATH']}", "USNM_BOINC_CONF": str(self.conf),
                "USNM_BOINC_STEP_RUN": str(self.run_dir), "USNM_BOINC_HANDOFF_ROOT": str(self.root)}
-        words = ["--env", "prod", "--target", "handoff", "--step", step, "--wait-mins", "2"]
+        words = ["--env", "prod", "--target", "handoff", "--step", step, "--wait-mins", "10"]
+        if lock_wait is not None:
+            words += ["--lock-wait-secs", str(lock_wait)]
         for variable in variables:
             words += ["--var", variable]
         argv = ["bash", str(SCRIPT)]
@@ -1253,6 +1255,11 @@ class ArchiveSteps(unittest.TestCase):
         done = self.step("archive-write", f"ARCHIVE_OBJECT={new}", "EXPECTED_HANDOFF_URL=https://x.blob.core.windows.net/boinc-handoff",
                          stdin=b"{}", ssh=True)
         self.assertIn("backend mismatch", done.stderr.decode())
+
+    def test_a_change_waits_for_the_lock_as_long_as_the_caller_asks(self):
+        done = self.delete([{"name": self.name, "etag": self.etag(self.name)}], lock_wait=300)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertRegex(self.flock_calls.read_text(), r"^-w [0-9]+ 9$")
 
     def test_a_plan_scoped_change_shares_the_hand_off_lock_and_takes_its_plans_own(self):
         done = self.delete([{"name": self.name, "etag": self.etag(self.name)}], "PLAN_SCOPE=native-feed-7")

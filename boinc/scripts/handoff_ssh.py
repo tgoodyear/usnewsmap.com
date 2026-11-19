@@ -32,8 +32,12 @@ SIDE_BY_SIDE_FILE = "/etc/usnm/boinc-priority-controller.side-by-side"
 # Names a hand-off step on the host takes; the runner refuses anything else.
 PLAN = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 DELETE_CHUNK = 400
+# How long a change waits for the host's hand-off lock, which the archive's parallel jobs (and a
+# sibling step) hold for moments: the host's own setting is 0 or 100 s.
+LOCK_WAIT_SECS = 300
 READ_TRIES = 3
 SSH_FAILED = 255
+FENCED_STEPS = ("archive-delete", "archive-write")
 
 
 class HandoffRefused(RuntimeError):
@@ -41,13 +45,13 @@ class HandoffRefused(RuntimeError):
 
 
 def flag_lines(path):
-    """The flags a controller flags file holds, one per line (blank lines and # comments skipped).
-    A value follows its flag on the same line, as controller-tick.sh splits them."""
+    """The words of a controller flags file: each line (blank lines and # comments skipped) is split
+    on blanks, as controller-tick.sh does, so `--local-lock --ssh-reads` on one line is two flags."""
     words = []
     for line in Path(path).read_text().splitlines():
         line = line.strip()
         if line and not line.startswith("#"):
-            words.append(line)
+            words.extend(line.split())
     return words
 
 
@@ -99,6 +103,8 @@ class SshHandoff:
     def argv(self, step, variables, wait_mins):
         argv = [*self.command, "--env", self.env, "--target", "handoff", "--step", step,
                 "--wait-mins", str(wait_mins)]
+        if step in FENCED_STEPS:
+            argv += ["--lock-wait-secs", str(LOCK_WAIT_SECS)]
         for key, value in variables.items():
             argv += ["--var", f"{key}={value}"]
         return argv

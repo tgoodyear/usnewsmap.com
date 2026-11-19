@@ -40,6 +40,7 @@ class Host:
         self.root = Path(root)
         (self.root / "scheduler").mkdir(parents=True, exist_ok=True)
         self.calls = []
+        self.lock_waits = []
         self.fail = None  # a callable (step, variables) -> CompletedProcess | None
         self.lock = threading.Lock()
         # contextlib's redirects swap the process's streams: one at a time.
@@ -51,6 +52,9 @@ class Host:
         assert rest[0] == "--env" and rest[2:5] == ["--target", "handoff", "--step"], rest
         step, variables = rest[5], {}
         assert rest[6] == "--wait-mins"
+        if "--lock-wait-secs" in rest:
+            self.lock_waits.append((step, int(rest[rest.index("--lock-wait-secs") + 1])))
+            rest = rest[:rest.index("--lock-wait-secs")] + rest[rest.index("--lock-wait-secs") + 2:]
         pairs = [rest[i + 1] for i in range(8, len(rest), 2) if rest[i] == "--var"]
         for pair in pairs:
             key, _, value = pair.partition("=")
@@ -165,6 +169,15 @@ class SshHandoffTests(unittest.TestCase):
         self.assertEqual(box.lease_state("x"), "expired")
         released = [call for call in self.host.calls if call[0] == "lock-release"][0]
         self.assertIn("LOCK_CLEAN", released[1])
+
+    def test_changes_wait_for_the_hosts_lock_and_reads_and_lock_steps_do_not(self):
+        box = self.handoff()
+        entry = box.list(self.name)[0]
+        lease = box.acquire("x")
+        box.delete(self.name, entry["etag"])
+        box.upload(f"dispatch/jobs/{JOB}/record.json", b"{}")
+        box.release("x", lease)
+        self.assertEqual(self.host.lock_waits, [("archive-delete", S.LOCK_WAIT_SECS), ("archive-write", S.LOCK_WAIT_SECS)])
 
     def test_a_lock_held_by_a_tick_refuses_the_archive(self):
         L.acquire(self.root, "a-tick", "ct211", 1, 300, plan="native-feed-7")
@@ -290,6 +303,9 @@ class DetectTests(unittest.TestCase):
             self.assertEqual(S.detect(config_path, switch), (True, True))
             flags.write_text("--ssh-reads\n")
             self.assertEqual(S.detect(config_path, switch), (False, False))
+            # controller-tick.sh splits each line on blanks: two flags on one line are two flags.
+            flags.write_text("@kind native\n--local-lock --ssh-reads\n")
+            self.assertEqual(S.detect(config_path, switch), (True, True))
 
 
 if __name__ == "__main__":
