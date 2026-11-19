@@ -9,6 +9,7 @@ import os
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 SPEC = importlib.util.spec_from_file_location("handoff_archive", Path(__file__).with_name("handoff_archive.py"))
@@ -118,6 +119,31 @@ class ArchiveTool(unittest.TestCase):
         (self.root / f"spool/{JOB_B}").mkdir()
         (self.root / f"spool/{JOB_B}/host_id").symlink_to(self.root / "scheduler/inventory.json")
         self.assertEqual(call(self.root, "read", "--object", f"spool/{JOB_B}/host_id")[0], 1)
+
+    def test_read_many_gives_a_frame_for_each_name_in_order(self):
+        names = [f"spool/{JOB_A}/host_id", f"dispatch/jobs/{JOB_A}/record.json", f"spool/{JOB_0}/host_id"]
+        code, out = call(self.root, "read-many", stdin=json.dumps({"names": names}).encode())
+        self.assertEqual(code, 0)
+        pos, frames = 0, []
+        for name in names:
+            newline = out.index(b"\n", pos)
+            header = json.loads(out[pos:newline])
+            data = out[newline + 1:newline + 1 + header["size"]]
+            self.assertEqual((header["name"], header["sha256"]), (name, hashlib.sha256(data).hexdigest()))
+            frames.append(data)
+            pos = newline + 1 + header["size"]
+        self.assertEqual((pos, frames), (len(out), [b"13\n", b'{"stage": "published"}', b"9\n"]))
+
+    def test_read_many_refuses_what_read_refuses_and_is_bounded(self):
+        for names in ([], [f"spool/{JOB_B}/host_id"], ["scheduler/inventory.json"], [f"spool/{JOB_A}/host_id", 5],
+                      [f"spool/{JOB_A}/host_id"] * 1001):
+            code, _ = call(self.root, "read-many", stdin=json.dumps({"names": names}).encode())
+            self.assertEqual(code, 1, names[:2])
+        self.assertEqual(call(self.root, "read-many", stdin=b"not json")[0], 1)
+        with unittest.mock.patch.object(H, "MAX_READ_MANY_BYTES", 4):
+            code, _ = call(self.root, "read-many", stdin=json.dumps(
+                {"names": [f"spool/{JOB_A}/host_id", f"spool/{JOB_0}/host_id", f"spool/{JOB_A}/usnm_{JOB_A}__file_result.json"]}).encode())
+            self.assertEqual(code, 1)
 
     def etags(self, *names):
         return {entry["name"]: entry["etag"] for entry in json.loads(

@@ -180,7 +180,7 @@ case $TARGET in
       die "--target publish needs --image <appver image>" ;;
   handoff)
     [ -z "$APPVER_IMAGE" ] || die "--image is for --target publish"
-    case $STEP in claim | release | dead-letter | deadline-retry | retry | collect | export | line-report | lock-acquire | lock-renew | lock-release | lock-status | read-object | read-journals | write-held-pages | archive-list | archive-read | archive-delete | archive-write) ;; *) die "--target handoff runs claim, release, dead-letter, deadline-retry, retry, collect, export, line-report, lock-acquire|renew|release|status read-object|read-journals, write-held-pages or archive-list|read|delete|write on-prem; $STEP stays in Azure" ;; esac
+    case $STEP in claim | release | dead-letter | deadline-retry | retry | collect | export | line-report | lock-acquire | lock-renew | lock-release | lock-status | read-object | read-journals | write-held-pages | archive-list | archive-read | archive-read-many | archive-delete | archive-write) ;; *) die "--target handoff runs claim, release, dead-letter, deadline-retry, retry, collect, export, line-report, lock-acquire|renew|release|status read-object|read-journals, write-held-pages or archive-list|read|read-many|delete|write on-prem; $STEP stays in Azure" ;; esac
     [ "$STEP" != deadline-retry ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
       die "--step deadline-retry is an operator's, as root on the host; it isn't allowed over ssh"
     [ "$STEP" != retry ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
@@ -327,14 +327,15 @@ fi
 
 # The per-job hand-off objects for the held-page archive and the cross-build fetch on another host
 # (#1367, boinc/scripts/handoff_archive.py), standing where the Azure container's list, get, delete
-# and create-only put stood. archive-list and archive-read only read and run at once, like
+# and create-only put stood. archive-list, archive-read and archive-read-many (a JSON list of names on
+# stdin, one frame each) only read and run at once, like
 # read-object. archive-delete and archive-write change the root: their JSON or bytes come on
 # stdin, read before the step lock is waited for, and they run under the hand-off lock after the
 # controller's fence is checked, as write-held-pages does. Only the per-job prefixes are reachable.
 ARCHIVE_TOOL=$(dirname "$(readlink -f "$0")")/handoff_archive.py
 archive_stdin="" archive_args=() archive_kept=()
 case $TARGET:$STEP in
-  handoff:archive-list | handoff:archive-read | handoff:archive-delete | handoff:archive-write)
+  handoff:archive-list | handoff:archive-read | handoff:archive-read-many | handoff:archive-delete | handoff:archive-write)
     archive_name=${STEP#archive-}
     for v in ${VARS[@]+"${VARS[@]}"}; do
       case $STEP:$v in
@@ -358,7 +359,7 @@ case $TARGET:$STEP in
     esac
     $WHAT_IF && { echo "would run $ARCHIVE_TOOL $archive_name on $HANDOFF_LOCK_ROOT"; exit 0; }
     case $STEP in
-      archive-list | archive-read)
+      archive-list | archive-read | archive-read-many)
         exec python3 "$ARCHIVE_TOOL" --root "$HANDOFF_LOCK_ROOT" "$archive_name" ${archive_args[@]+"${archive_args[@]}"} ;;
     esac
     VARS=(${archive_kept[@]+"${archive_kept[@]}"})

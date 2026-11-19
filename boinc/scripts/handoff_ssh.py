@@ -15,6 +15,7 @@ the flag with which the controller's own tick reads the root over ssh. detect() 
 """
 
 import base64
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -33,6 +34,9 @@ SIDE_BY_SIDE_FILE = "/etc/usnm/boinc-priority-controller.side-by-side"
 # Names a hand-off step on the host takes; the runner refuses anything else.
 PLAN = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 DELETE_CHUNK = 400
+# One read-many call: at most this many names and (by their listed sizes) bytes.
+READ_MANY_NAMES = 200
+READ_MANY_BYTES = 64 * 1024 * 1024
 # How long a change waits for the host's hand-off lock, which the archive's parallel jobs (and a
 # sibling step) hold for moments: the host's own setting is 0 or 100 s.
 LOCK_WAIT_SECS = 300
@@ -98,6 +102,9 @@ class SshHandoff:
         self._stop = None
         self._thread = None
         self._lock_deadline = None
+        # At most `parallel` sessions to the host at once across every caller and pool; the lock's
+        # own steps (the heartbeat) never wait for one.
+        self._slots = threading.BoundedSemaphore(self.parallel)
 
     # --- one step -------------------------------------------------------------------------
 
@@ -131,7 +138,11 @@ class SshHandoff:
         failure = ""
         for attempt in range(tries):
             try:
-                done = self.runner(argv, stdin, timeout)
+                if step.startswith("lock-"):
+                    done = self.runner(argv, stdin, timeout)
+                else:
+                    with self._slots:
+                        done = self.runner(argv, stdin, timeout)
             except (OSError, subprocess.SubprocessError) as error:
                 failure = type(error).__name__
                 if fenced:
@@ -181,6 +192,45 @@ class SshHandoff:
             return data, header["etag"]
         except (ValueError, KeyError, TypeError):
             raise HandoffRefused(f"reading {name} came short or damaged") from None
+
+    def get_many(self, items):
+        """{name: (data, etag)} for (name, size) pairs, a few hundred to a call (read-many): an
+        archive reads thousands of small objects, and an ssh session each is slow on a busy host."""
+        found = {}
+        chunk, chunk_bytes = [], 0
+        batches = []
+        for name, size in items:
+            if chunk and (len(chunk) >= READ_MANY_NAMES or chunk_bytes + size > READ_MANY_BYTES):
+                batches.append(chunk)
+                chunk, chunk_bytes = [], 0
+            chunk.append(name)
+            chunk_bytes += size
+        if chunk:
+            batches.append(chunk)
+
+        def fetch(names):
+            out = self.step("archive-read-many", stdin=json.dumps({"names": names}).encode(), wait_mins=5, timeout=900)
+            pos, got = 0, {}
+            try:
+                for name in names:
+                    newline = out.index(b"\n", pos)
+                    header = json.loads(out[pos:newline])
+                    data = out[newline + 1:newline + 1 + header["size"]]
+                    if header["name"] != name or len(data) != header["size"] \
+                            or header["sha256"] != hashlib.sha256(data).hexdigest():
+                        raise ValueError
+                    got[name] = (data, header["etag"])
+                    pos = newline + 1 + header["size"]
+                if pos != len(out):
+                    raise ValueError
+            except (ValueError, KeyError, TypeError):
+                raise HandoffRefused("reading several objects came short or damaged") from None
+            return got
+
+        with concurrent.futures.ThreadPoolExecutor(self.parallel) as pool:
+            for got in pool.map(fetch, batches):
+                found.update(got)
+        return found
 
     def upload(self, name, data, md5=None):
         """Writes the object only where none is; False if one is already there."""

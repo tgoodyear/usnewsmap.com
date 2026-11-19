@@ -458,11 +458,21 @@ def list_job_blobs(container):
     return blobs
 
 
+def fetch_blobs(container, items):
+    """{name: (data, etag)} for (name, size) pairs: several to a request where the store takes
+    them (the BOINC host's), else one each."""
+    if hasattr(container, "get_many"):
+        return container.get_many(items)
+    return {name: container.get(name) for name, _ in items}
+
+
 def read_records(container, blobs):
     names = sorted(name for name in blobs if RECORD_BLOB.fullmatch(name))
+    got = fetch_blobs(container, [(name, blobs[name]["size"]) for name in names]) \
+        if hasattr(container, "get_many") else {}
 
     def read(name):
-        data, etag = container.get(name)
+        data, etag = got[name] if name in got else container.get(name)
         require(len(data) <= MAX_RECORD_BYTES, f"{name} is over its size limit")
         require(etag == blobs[name]["etag"], f"{name} changed while it was read; nothing was changed")
         record = json.loads(data)
@@ -858,12 +868,20 @@ def handoff_step(manifest, container, batch):
 
     def archive_job(names):
         doomed = []
-        for name in sorted(names, key=lambda name: (bool(RECORD_BLOB.fullmatch(name)), name)):
+        ordered = sorted(names, key=lambda name: (bool(RECORD_BLOB.fullmatch(name)), name))
+        # The blobs still to copy, read together where the store allows.
+        # Each copy is hashed once: a resume re-reads what is already archived only to check it.
+        copied = {name: verified_copy(root / name, digests / (name + ".sha256"), planned[name])
+                  for name in ordered if name in live}
+        todo = [name for name in ordered if name in live and not copied[name]]
+        got = fetch_blobs(container, [(name, planned[name]["size"]) for name in todo]) \
+            if hasattr(container, "get_many") and todo else {}
+        for name in ordered:
             blob, path = planned[name], root / name
             digest_path = digests / (name + ".sha256")
             if name in live:
-                if not verified_copy(path, digest_path, blob):
-                    data, etag = container.get(name)
+                if not copied[name]:
+                    data, etag = got[name] if name in got else container.get(name)
                     require(etag == blob["etag"], f"{name} changed while it was copied; stop and reconcile")
                     require(len(data) == blob["size"], f"{name} copy is incomplete")
                     if blob.get("md5"):

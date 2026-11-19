@@ -1197,6 +1197,18 @@ class ArchiveSteps(unittest.TestCase):
                          "ARCHIVE_MAX_AGE_SECS=86400", ssh=True)
         self.assertEqual(self.listed(done), [self.name])
 
+    def test_read_many_takes_names_as_json_on_stdin_and_no_variables(self):
+        names = [self.name, f"spool/{self.JOB}/host_id"]
+        done = self.step("archive-read-many", stdin=json.dumps({"names": names}).encode(), ssh=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        header, _, rest = done.stdout.partition(b"\n")
+        self.assertEqual((json.loads(header)["name"], rest[:3]), (self.name, b"13\n"))
+        self.assertFalse(self.flock_calls.exists())
+        done = self.step("archive-read-many", "ARCHIVE_PREFIX=spool/", stdin=b"{}", ssh=True)
+        self.assertIn("takes only its own inputs", done.stderr.decode())
+        done = self.step("archive-read-many", stdin=json.dumps({"names": ["scheduler/inventory.json"]}).encode(), ssh=True)
+        self.assertNotEqual(done.returncode, 0)
+
     def test_only_the_per_job_prefixes_and_the_steps_own_inputs_are_taken(self):
         done = self.step("archive-list", "ARCHIVE_PREFIX=scheduler/", ssh=True)
         self.assertNotEqual(done.returncode, 0)

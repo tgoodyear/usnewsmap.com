@@ -7,6 +7,7 @@ list, get, delete and create-only put stood, over the hand-off root (HANDOFF_URL
 
     handoff_archive.py --root DIR list --prefix P [--suffix S] [--max-age-secs N]
     handoff_archive.py --root DIR read --object NAME
+    handoff_archive.py --root DIR read-many < {"names": [N, ...]}
     handoff_archive.py --root DIR delete < {"items": [{"name": N, "etag": E}, ...]}
     handoff_archive.py --root DIR write --object NAME [--md5 B64] < bytes
 
@@ -22,6 +23,11 @@ gave. There is no Content-MD5: a file is not hashed to be listed.
 
 read prints one JSON header line, {"etag", "size", "sha256"}, then the file's bytes (at most
 512 MiB). The file is read from one open descriptor and refused if it changed while it was read.
+
+read-many prints that frame (the header line, then the bytes) for each name, in order, for up to 1,000
+names and 256 MiB in all: a held-page archive reads thousands of small journals and spool files, and
+one ssh session for each is slow on a busy host. A name that is missing or changed while read
+fails the call.
 
 delete removes each item in order only while it still has the ETag that was archived, and stops
 at the first that changed (nothing after it is touched); an item that is gone is counted as such.
@@ -48,6 +54,8 @@ SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 JOB_NAME = re.compile(r"(?:dispatch/jobs|dispatch/quarantine|spool)/[0-9a-f]{64}(/[A-Za-z0-9][A-Za-z0-9._-]*)+")
 PREFIX = re.compile(r"(?:dispatch/jobs/|dispatch/quarantine/|spool/)[A-Za-z0-9._/-]{0,300}")
 MAX_READ = 512 * 1024 * 1024
+MAX_READ_MANY_NAMES = 1000
+MAX_READ_MANY_BYTES = 256 * 1024 * 1024
 # A dispatch page file is up to 128 MiB (usnm-ocr-contract MAX_SCAN): a restore writes it back.
 MAX_WRITE = 128 * 1024 * 1024
 MAX_ITEMS = 5000
@@ -186,6 +194,28 @@ def read_object(root, name, out):
     out.flush()
 
 
+def read_many(root, names, out):
+    if not isinstance(names, list) or not 1 <= len(names) <= MAX_READ_MANY_NAMES \
+            or not all(isinstance(name, str) for name in names):
+        raise ArchiveError(f"read-many takes 1 to {MAX_READ_MANY_NAMES} names")
+    total = 0
+    for name in names:
+        fd, before = open_regular(root, name)
+        total += before.st_size
+        if total > MAX_READ_MANY_BYTES:
+            os.close(fd)
+            raise ArchiveError("read-many is over its byte limit")
+        with os.fdopen(fd, "rb") as handle:
+            data = handle.read(MAX_READ + 1)
+            after = os.fstat(handle.fileno())
+        if etag(before) != etag(after) or len(data) != before.st_size:
+            raise ArchiveError("object changed while it was read")
+        header = {"name": name, "etag": etag(before), "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+        out.write(json.dumps(header, sort_keys=True).encode() + b"\n")
+        out.write(data)
+    out.flush()
+
+
 def delete_objects(root, items):
     if not isinstance(items, list) or not items or len(items) > MAX_ITEMS:
         raise ArchiveError("delete takes 1 to 5000 items")
@@ -287,6 +317,7 @@ def main(argv=None, stdin=None, stdout=None):
     one.add_argument("--max-age-secs", type=int)
     two = sub.add_parser("read")
     two.add_argument("--object", required=True)
+    sub.add_parser("read-many")
     sub.add_parser("delete")
     three = sub.add_parser("write")
     three.add_argument("--object", required=True)
@@ -301,6 +332,15 @@ def main(argv=None, stdin=None, stdout=None):
             stdout.write(json.dumps({"entries": entries}, sort_keys=True, separators=(",", ":")).encode() + b"\n")
         elif args.command == "read":
             read_object(args.root, args.object, stdout)
+        elif args.command == "read-many":
+            body = stdin.read(MAX_STDIN_JSON + 1)
+            try:
+                if len(body) > MAX_STDIN_JSON:
+                    raise ValueError
+                names = json.loads(body)["names"]
+            except (ValueError, KeyError, TypeError):
+                raise ArchiveError("read-many takes {names: [...]} on stdin") from None
+            read_many(args.root, names, stdout)
         elif args.command == "delete":
             body = stdin.read(MAX_STDIN_JSON + 1)
             if len(body) > MAX_STDIN_JSON:
