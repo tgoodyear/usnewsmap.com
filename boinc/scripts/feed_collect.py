@@ -418,6 +418,11 @@ def validate_tick(tick, now, fresh_s=900):
             not isinstance(name, str) or not NAME.fullmatch(name) or type(rate) not in (int, float)
             or not math.isfinite(rate) for name, rate in rates.items()):
         raise ValueError("invalid controller cap rates")
+    latest = tick.get("cap_latest", {})
+    if not isinstance(latest, dict) or len(latest) > MAX_CAPS or any(
+            not isinstance(name, str) or not NAME.fullmatch(name) or natural(count) > 10**9
+            for name, count in latest.items()):
+        raise ValueError("invalid controller cap counts")
     if tick.get("tick_n") is not None:
         natural(tick["tick_n"])
     if tick.get("tick_p50_s") is not None and (
@@ -1359,19 +1364,20 @@ def controller(unit, maintenance=(), fresh_s=900):
     # they are CAP_RATE_MIN_SPAN_S apart (a net rate: a held-page archive lowers it). Warnings come only
     # past the controller's 80%, so a cap with one has no rate until a second.
     # In a field of their own: an evaluator from before it reads the caps as they were.
-    cap_rates = {}
+    cap_rates, cap_latest = {}, {}
     for cap, points in cap_points.items():
         points.sort()
         span = points[-1][0] - points[0][0]
         if span >= CAP_RATE_MIN_SPAN_S and cap in caps:
             cap_rates[cap] = round((points[-1][1] - points[0][1]) * 3600 / span, 1)
+            cap_latest[cap] = points[-1][1]  # the rate ends here, which the peak in `caps` may not
     live = [plan for plan in plans.values() if not plan["draining"]]
     failures = {"last_failure_at": max(controller_failure, maintenance_failure),
                 "controller_failure_at": controller_failure, "maintenance_failure_at": maintenance_failure,
                 "failed_in_a_row": streak, "failed_last_hour": failed_last_hour,
                 "last_hour_reason": last_hour_reason, "last_ok_at": max(ok_runs, default=None),
                 "reason": reason, "same_error_in_a_row": repeats,
-                "caps": caps, "cap_rates": cap_rates,
+                "caps": caps, "cap_rates": cap_rates, "cap_latest": cap_latest,
                 # None: no tick line in the window reports it (a scheduler from before #1685).
                 "ownership_conflicts": max((p["conflicts"] for p in live), default=0) if reported else None,
                 "progress": {"published_at": published_at, "first_tick_at": first_live,

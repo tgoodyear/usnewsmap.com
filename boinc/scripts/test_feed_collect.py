@@ -31,7 +31,7 @@ def core(tick):
     """A controller tick without its failure reason and signals (#1698), which have their own tests."""
     return {key: value for key, value in tick.items()
             if key not in (*C.SIGNAL_FIELDS, "reason", "same_error_in_a_row", "failed_last_hour",
-                          "last_hour_reason", "last_ok_at", "tick_p50_s", "tick_n", "cap_rates")}
+                          "last_hour_reason", "last_ok_at", "tick_p50_s", "tick_n", "cap_rates", "cap_latest")}
 
 
 @contextlib.contextmanager
@@ -926,7 +926,7 @@ class SignalTests(unittest.TestCase):
         self.assertEqual((tick["tick_p50_s"], tick["tick_n"]), (1400, 3))
         # 500 journals in 2,700 s; the first and last warning of the cap, whatever came between.
         self.assertEqual(tick["caps"]["dispatch_journals"], {"count": 9500, "limit": 10000})
-        self.assertEqual(tick["cap_rates"], {"dispatch_journals": 666.7})  # claims: two warnings 100 s apart, no rate
+        self.assertEqual((tick["cap_rates"], tick["cap_latest"]), ({"dispatch_journals": 666.7}, {"dispatch_journals": 9500}))  # claims: two warnings 100 s apart, no rate
         C.fresh({"schema_version": 1, "source": "controller", "observed_at": NOW, "tick": tick}, NOW, "controller")
         facts = {"tick": tick, "controller_signals": True}
         checks = {c["code"]: c for c in F.evaluate(facts, {}, NOW, 1000, "boot", "cfg")[0]["checks"]}

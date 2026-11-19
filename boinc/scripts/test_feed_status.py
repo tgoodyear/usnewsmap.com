@@ -527,6 +527,13 @@ class ControllerSignalsTest(unittest.TestCase):
         self.assertEqual((checked["state"], checked["per_hour"], checked["hours_to_cap"]), ("firing", 150.0, 5.3))
         # Falling, or no rate yet: no hours to the cap.
         self.tick["cap_rates"] = {"dispatch_journals": -40.0}
+        # Headroom is from the count at the rate's last warning (9,000), not the window's peak (9,210).
+        self.tick["cap_latest"] = {"dispatch_journals": 9000}
+        self.tick["cap_rates"] = {"dispatch_journals": 450.0}
+        checked = self.checks(30)["controller_cap"]
+        self.assertEqual((checked["current"], checked["hours_to_cap"]), (9000, 2.2))
+        self.tick.pop("cap_latest")
+        self.tick["cap_rates"] = {"dispatch_journals": -40.0}
         checked = self.checks(60)["controller_cap"]
         self.assertEqual((checked["per_hour"], checked["hours_to_cap"]), (-40.0, None))
         self.tick["cap_rates"] = {}

@@ -538,11 +538,13 @@ def controller_signals(check, tick, now):
     # A share under 80% isn't warned about, so no warning in the window is healthy.
     rate = None if worst is None else tick.get("cap_rates", {}).get(worst)
     # At the net rate over the last two hours, how long until the cap, when it is growing.
-    hours_to_cap = (round((caps[worst]["limit"] - caps[worst]["count"]) / rate, 1)
+    # From the count at the rate's last warning, not the window's peak that `percent` and the firing use.
+    current = None if worst is None else tick.get("cap_latest", {}).get(worst, caps[worst]["count"])
+    hours_to_cap = (round(max(caps[worst]["limit"] - current, 0) / rate, 1)
                     if rate is not None and rate > 0 else None)
     check("controller_cap", worst is not None and caps[worst]["count"] * 100 >= caps[worst]["limit"] * CAP_FIRE_PERCENT,
           generation=worst,
-          cap=worst, percent=percent, per_hour=rate, hours_to_cap=hours_to_cap)
+          cap=worst, percent=percent, per_hour=rate, current=current, hours_to_cap=hours_to_cap)
     conflicts = tick["ownership_conflicts"]
     check("ownership_conflict", None if conflicts is None else conflicts > 0, ownership_conflicts=conflicts,
           reason="not_reported" if conflicts is None else None)
@@ -573,7 +575,7 @@ def metrics(document):
             lines.append(f'boinc_feed_check{{check={label},state="{state}"}} {int(check["state"] == state)}')
         lines.append(f'boinc_feed_condition_seconds{{check={label}}} {check["duration_s"]}')
         for field in ("remaining_s", "backlog", "last_workunit_at", "idle_slots", "eligible_results", "seconds",
-                      "percent", "paused_age_s"):
+                      "percent", "paused_age_s", "p50_s", "threshold_p50_s", "per_hour", "hours_to_cap"):
             if check.get(field) is not None:
                 lines.append(f'boinc_feed_{field}{{check={label}}} {check[field]}')
     return "\n".join(lines) + "\n"
