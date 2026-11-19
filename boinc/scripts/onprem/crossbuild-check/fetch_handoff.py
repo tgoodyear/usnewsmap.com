@@ -61,25 +61,24 @@ class HostSource:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
 
-    def fetch(self, base, names):
-        def one(name):
-            self.write(base, name, self.box.get(name)[0])
-        with concurrent.futures.ThreadPoolExecutor(self.box.parallel) as pool:
-            list(pool.map(one, names))  # a failed read raises here
+    def fetch(self, base, items):
+        """Reads (name, size) pairs, several to a call, and writes each below `base`."""
+        for name, (data, _) in self.box.get_many(items).items():
+            self.write(base, name, data)
 
     def stage_results(self, stage, days, hosts):
         # A result file is written when its job is collected, after its completed_at, so a file
         # changed within the window covers every result completed in it (a day of slack).
         age = (days + 1) * 86400
-        names = [e["name"] for e in self.box.list("spool/", suffix="__file_result.json", max_age_secs=age)]
+        entries = self.box.list("spool/", suffix="__file_result.json", max_age_secs=age)
         if hosts:
-            names += [e["name"] for e in self.box.list("spool/", suffix="host_id", max_age_secs=age)]
-        self.fetch(stage, [n for n in names if SPOOL_OBJECT.fullmatch(n)])
+            entries += self.box.list("spool/", suffix="host_id", max_age_secs=age)
+        self.fetch(stage, [(e["name"], e["size"]) for e in entries if SPOOL_OBJECT.fullmatch(e["name"])])
 
     def copy_job(self, new, job):
-        names = [e["name"] for e in self.box.list(f"spool/{job}/") if SPOOL_OBJECT.fullmatch(e["name"])]
-        names.append(f"dispatch/jobs/{job}/request.json")
-        self.fetch(new, names)
+        entries = self.box.list(f"spool/{job}/") + self.box.list(f"dispatch/jobs/{job}/request.json")
+        self.fetch(new, [(e["name"], e["size"]) for e in entries
+                         if SPOOL_OBJECT.fullmatch(e["name"]) or e["name"] == f"dispatch/jobs/{job}/request.json"])
 
 
 def make_box(args):

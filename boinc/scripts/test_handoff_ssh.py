@@ -15,6 +15,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 def load(name):
@@ -41,6 +42,7 @@ class Host:
         (self.root / "scheduler").mkdir(parents=True, exist_ok=True)
         self.calls = []
         self.lock_waits = []
+        self.fail_takes_input = False
         self.fail = None  # a callable (step, variables) -> CompletedProcess | None
         self.lock = threading.Lock()
         # contextlib's redirects swap the process's streams: one at a time.
@@ -62,7 +64,7 @@ class Host:
         with self.lock:
             self.calls.append((step, variables, stdin))
         if self.fail is not None:
-            failed = self.fail(step, variables)
+            failed = self.fail(step, variables, stdin) if self.fail_takes_input else self.fail(step, variables)
             if failed is not None:
                 return failed
         plan = ["--plan", variables["LOCK_PLAN"]] if "LOCK_PLAN" in variables else []
@@ -87,6 +89,8 @@ class Host:
                 tool += ["--suffix", variables["ARCHIVE_SUFFIX"]]
             if "ARCHIVE_MAX_AGE_SECS" in variables:
                 tool += ["--max-age-secs", variables["ARCHIVE_MAX_AGE_SECS"]]
+        elif step == "archive-read-many":
+            pass
         elif step in ("archive-read", "archive-write"):
             tool += ["--object", variables["ARCHIVE_OBJECT"]]
             if "ARCHIVE_MD5" in variables:
@@ -135,6 +139,32 @@ class SshHandoffTests(unittest.TestCase):
         self.handoff().list("spool/", suffix="host_id", max_age_secs=86400)
         self.assertEqual(self.host.calls[0][1], {"ARCHIVE_PREFIX": "spool/", "ARCHIVE_SUFFIX": "host_id",
                                                  "ARCHIVE_MAX_AGE_SECS": "86400"})
+
+    def test_get_many_reads_a_few_hundred_to_a_call_and_in_order(self):
+        names = []
+        for n in range(5):
+            name = f"spool/{JOB}/f{n}"
+            (self.root / name).write_bytes(f"data {n}".encode())
+            names.append((name, 6))
+        box = self.handoff()
+        with mock.patch.object(S, "READ_MANY_NAMES", 2):
+            got = box.get_many(names)
+        self.assertEqual({name: data for name, (data, _) in got.items()}, {f"spool/{JOB}/f{n}": f"data {n}".encode() for n in range(5)})
+        self.assertEqual(sorted(c[0] for c in self.host.calls), ["archive-read-many"] * 3)
+        self.assertEqual(box.get(f"spool/{JOB}/f3")[1], got[f"spool/{JOB}/f3"][1])
+        # By their sizes too.
+        self.host.calls.clear()
+        with mock.patch.object(S, "READ_MANY_BYTES", 12):
+            box.get_many(names)
+        self.assertEqual(len(self.host.calls), 3)
+
+    def test_a_damaged_get_many_is_refused(self):
+        box = self.handoff()
+        real = self.host.__call__
+        box.runner = lambda argv, stdin, timeout: subprocess.CompletedProcess(
+            argv, 0, real(argv, stdin, timeout).stdout[:-1], b"")
+        with self.assertRaisesRegex(S.HandoffRefused, "came short or damaged"):
+            box.get_many([(self.name, 3)])
 
     def test_a_damaged_read_is_refused(self):
         box = self.handoff()

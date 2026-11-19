@@ -90,7 +90,7 @@ class FetchHandoff(unittest.TestCase):
             + [f"dispatch/jobs/{job(n)}/request.json" for n in (1, 2)]))
         self.assertEqual((self.dest / f"spool/{job(2)}/usnm_{job(2)}__file_text.txt").read_text(), "text 2")
         # Only reads: the steps asked of the host are the listings and reads.
-        self.assertEqual({call[0] for call in self.host.calls}, {"archive-list", "archive-read"})
+        self.assertEqual({call[0] for call in self.host.calls}, {"archive-list", "archive-read-many"})
 
     def test_newest_first_up_to_max_jobs_and_only_the_named_hosts(self):
         self.result(1, hours_ago=5, host="13")
@@ -114,7 +114,7 @@ class FetchHandoff(unittest.TestCase):
         self.dest.mkdir(parents=True)
         (self.dest / "old").write_text("kept")
         self.host.fail = lambda step, variables: subprocess.CompletedProcess(
-            [], 1, b"", b"error: nope\n") if step == "archive-read" else None
+            [], 1, b"", b"error: nope\n") if step == "archive-read-many" else None
         with self.assertRaises(SSH.HandoffRefused):
             self.fetch("--handoff", "onprem")
         self.assertEqual((self.dest / "old").read_text(), "kept")

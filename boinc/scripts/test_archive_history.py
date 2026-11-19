@@ -701,24 +701,28 @@ class DiskContainer:
         self.plan_scope = plan_scope
         self.fail_deletes_after = None
         self.deleted = 0
+        self.count_lock = threading.Lock()
         self.md5 = True
         self.holder = None
         self.host.fail = self.inject
+        self.host.fail_takes_input = True
         self.box = self.ssh.SshHandoff({"env": "dev", "plan": "batch-test", "step_command": self.helper.COMMAND},
                                        plan_scope=plan_scope, runner=self.host)
 
-    def inject(self, step, variables):
+    def inject(self, step, variables, stdin):
         if step != "archive-delete" or self.fail_deletes_after is None:
             return None
-        items = json.loads(self.host.calls[-1][2])["items"]
-        allowed = max(0, self.fail_deletes_after - self.deleted)
-        if allowed >= len(items):
-            self.deleted += len(items)
-            return None
-        if allowed:
-            self.tool.delete_objects(self.root, items[:allowed])
-            self.deleted += allowed
-        return subprocess.CompletedProcess([], 1, b"", b"error: hand-off storage DELETE failed: injected\n")
+        with self.count_lock:
+            # Hosts run one change at a time under the hand-off lock; so does the count.
+            items = json.loads(stdin)["items"]
+            allowed = max(0, self.fail_deletes_after - self.deleted)
+            if allowed >= len(items):
+                self.deleted += len(items)
+                return None
+            if allowed:
+                self.tool.delete_objects(self.root, items[:allowed])
+                self.deleted += allowed
+            return subprocess.CompletedProcess([], 1, b"", b"error: hand-off storage DELETE failed: injected\n")
 
     def path(self, name):
         return self.root / name
