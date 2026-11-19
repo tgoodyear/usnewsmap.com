@@ -43,6 +43,13 @@
 # HANDOFF_STEP and only the step's own inputs, mounts only the Arc agent's challenge
 # directory: no project tree, no database, no Key Vault. texts-export still runs in Azure.
 #
+# --target handoff --step archive-list|archive-read|archive-delete|archive-write (#1367) lists, reads,
+# deletes and creates the per-job hand-off objects (dispatch/jobs/<id>/, dispatch/quarantine/<id>/,
+# spool/<id>/) in the local root, for the held-page archive and the cross-build fetch on the
+# controller host (boinc/scripts/handoff_archive.py, reached through handoff_ssh.py). The two
+# reads take no lock. The two changes take the hand-off lock like collect, and the controller's
+# LOCK_HOLDER and LOCK_GENERATION fence them.
+#
 # --target scans --step receive (#1116) reads a tar of scans from stdin, as the controller's push
 # sends them over ssh: copies of the scan fetcher's files, named keep/<batch>/<lccn>/<date>/<ed>/
 # <seq>.<jp2|jpg> with their .json sidecars. A line export's staging tree (#1621, usnm-boinc
@@ -173,7 +180,7 @@ case $TARGET in
       die "--target publish needs --image <appver image>" ;;
   handoff)
     [ -z "$APPVER_IMAGE" ] || die "--image is for --target publish"
-    case $STEP in claim | release | dead-letter | deadline-retry | retry | collect | export | line-report | lock-acquire | lock-renew | lock-release | lock-status | read-object | read-journals | write-held-pages) ;; *) die "--target handoff runs claim, release, dead-letter, deadline-retry, retry, collect, export, line-report, lock-acquire|renew|release|status read-object|read-journals or write-held-pages on-prem; $STEP stays in Azure" ;; esac
+    case $STEP in claim | release | dead-letter | deadline-retry | retry | collect | export | line-report | lock-acquire | lock-renew | lock-release | lock-status | read-object | read-journals | write-held-pages | archive-list | archive-read | archive-delete | archive-write) ;; *) die "--target handoff runs claim, release, dead-letter, deadline-retry, retry, collect, export, line-report, lock-acquire|renew|release|status read-object|read-journals, write-held-pages or archive-list|read|delete|write on-prem; $STEP stays in Azure" ;; esac
     [ "$STEP" != deadline-retry ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
       die "--step deadline-retry is an operator's, as root on the host; it isn't allowed over ssh"
     [ "$STEP" != retry ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
@@ -210,7 +217,7 @@ if [ "$TARGET" = handoff ] || [ "$TARGET" = bridge ]; then
   if [ -n "$PLAN_SCOPE" ]; then
     case $TARGET:$STEP in
       handoff:claim | handoff:release | handoff:dead-letter | handoff:collect | handoff:export | \
-        bridge:spool-out | bridge:batch-inventory | bridge:submit-remote | bridge:native-spot | \
+        handoff:archive-delete | handoff:archive-write | bridge:spool-out | bridge:batch-inventory | bridge:submit-remote | bridge:native-spot | \
         bridge:container-spot) ;;
       *) die "--step $STEP takes no PLAN_SCOPE" ;;
     esac
@@ -258,7 +265,8 @@ if [ "$TARGET" = handoff ] || [ "$TARGET" = bridge ]; then
       $WHAT_IF && { echo "would run $LOCK_TOOL ${STEP#lock-} on $HANDOFF_LOCK_ROOT"; exit 0; }
       exec python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" ${fence_plan[@]+"${fence_plan[@]}"} "${STEP#lock-}" ${lock_args[@]+"${lock_args[@]}"} ;;
     handoff/claim | handoff/release | handoff/dead-letter | handoff/collect | handoff/export | \
-      handoff/write-held-pages | bridge/spool-out | bridge/submit-remote | bridge/batch-inventory)
+      handoff/write-held-pages | handoff/archive-delete | handoff/archive-write | \
+      bridge/spool-out | bridge/submit-remote | bridge/batch-inventory)
       if [ -n "$fence_holder$fence_generation" ]; then
         [ -n "$fence_holder" ] && [ -n "$fence_generation" ] || die "LOCK_HOLDER and LOCK_GENERATION go together"
         if ! $WHAT_IF; then
@@ -316,6 +324,49 @@ if [ "$TARGET:$STEP" = handoff:write-held-pages ]; then
   trap 'rm -f "$held_stdin"' EXIT
   head -c $((256 * 1024 * 1024 + 1)) > "$held_stdin"
 fi
+
+# The per-job hand-off objects for the held-page archive and the cross-build fetch on another host
+# (#1367, boinc/scripts/handoff_archive.py), standing where the Azure container's list, get, delete
+# and create-only put stood. archive-list and archive-read only read and run at once, like
+# read-object. archive-delete and archive-write change the root: their JSON or bytes come on
+# stdin, read before the step lock is waited for, and they run under the hand-off lock after the
+# controller's fence is checked, as write-held-pages does. Only the per-job prefixes are reachable.
+ARCHIVE_TOOL=$(dirname "$(readlink -f "$0")")/handoff_archive.py
+archive_stdin="" archive_args=() archive_kept=()
+case $TARGET:$STEP in
+  handoff:archive-list | handoff:archive-read | handoff:archive-delete | handoff:archive-write)
+    archive_name=${STEP#archive-}
+    for v in ${VARS[@]+"${VARS[@]}"}; do
+      case $STEP:$v in
+        archive-list:ARCHIVE_PREFIX=*) archive_args+=(--prefix "${v#*=}") ;;
+        archive-list:ARCHIVE_SUFFIX=*) archive_args+=(--suffix "${v#*=}") ;;
+        archive-list:ARCHIVE_MAX_AGE_SECS=*)
+          [[ ${v#*=} =~ ^[0-9]{1,10}$ ]] || die "ARCHIVE_MAX_AGE_SECS is a number of seconds"
+          archive_args+=(--max-age-secs "${v#*=}") ;;
+        archive-read:ARCHIVE_OBJECT=* | archive-write:ARCHIVE_OBJECT=*) archive_args+=(--object "${v#*=}") ;;
+        archive-write:ARCHIVE_MD5=*) archive_args+=(--md5 "${v#*=}") ;;
+        archive-delete:EXPECTED_HANDOFF_URL=* | archive-write:EXPECTED_HANDOFF_URL=*) archive_kept+=("$v") ;;
+        *) die "--step $STEP takes only its own inputs (ARCHIVE_PREFIX, ARCHIVE_SUFFIX, ARCHIVE_MAX_AGE_SECS, ARCHIVE_OBJECT, ARCHIVE_MD5); not $v" ;;
+      esac
+    done
+    [ -f "$ARCHIVE_TOOL" ] || die "no $ARCHIVE_TOOL: install handoff_archive.py beside this script"
+    [ -d "$HANDOFF_LOCK_ROOT" ] && [ ! -L "$HANDOFF_LOCK_ROOT" ] || die "no local hand-off root $HANDOFF_LOCK_ROOT"
+    case $STEP in
+      archive-list) [ ${#archive_args[@]} -ge 2 ] || die "--step archive-list needs ARCHIVE_PREFIX" ;;
+      archive-read) [ ${#archive_args[@]} -eq 2 ] || die "--step archive-read needs ARCHIVE_OBJECT" ;;
+      archive-write) [ ${#archive_args[@]} -ge 2 ] || die "--step archive-write needs ARCHIVE_OBJECT" ;;
+    esac
+    $WHAT_IF && { echo "would run $ARCHIVE_TOOL $archive_name on $HANDOFF_LOCK_ROOT"; exit 0; }
+    case $STEP in
+      archive-list | archive-read)
+        exec python3 "$ARCHIVE_TOOL" --root "$HANDOFF_LOCK_ROOT" "$archive_name" ${archive_args[@]+"${archive_args[@]}"} ;;
+    esac
+    VARS=(${archive_kept[@]+"${archive_kept[@]}"})
+    archive_stdin=$(mktemp "$RUN_DIR/usnm-boinc-archive-io.XXXXXX")
+    trap 'rm -f "$archive_stdin"' EXIT
+    head -c $((128 * 1024 * 1024 + 1)) > "$archive_stdin"
+    [ "$(wc -c < "$archive_stdin")" -le $((128 * 1024 * 1024)) ] || die "--step $STEP input is over 128 MiB" ;;
+esac
 
 STAGE=${USNM_BOINC_SCAN_STAGE:-/srv/usnm-boinc/project/handoff-scans}
 if [ "$TARGET" = scans ]; then
@@ -757,6 +808,13 @@ if [ -n "$held_stdin" ]; then
   rc=0
   timeout "$step_timeout" python3 "$WRITE_TOOL" --root "$HANDOFF_LOCK_ROOT" held-pages --plan="$held_plan" \
     < "$held_stdin" || rc=$?
+  exit "$rc"
+fi
+if [ -n "$archive_stdin" ]; then
+  # Still holding the hand-off lock (fd 9, and the plan's on fd 7): the change, then out.
+  rc=0
+  timeout "$step_timeout" python3 "$ARCHIVE_TOOL" --root "$HANDOFF_LOCK_ROOT" "${STEP#archive-}" \
+    ${archive_args[@]+"${archive_args[@]}"} < "$archive_stdin" || rc=$?
   exit "$rc"
 fi
 envfile=$(mktemp "$RUN_DIR/usnm-boinc-step.XXXXXX")

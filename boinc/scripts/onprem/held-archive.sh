@@ -19,6 +19,11 @@
 #      kept as receipts/bridge.json. It stops when no page is eligible, or after --max-batches.
 #   4. Starts the timer again, and a tick at once, whatever happened.
 #
+# On-prem hand-off (#1367): when the plan's flags file beside --config has --ssh-reads, the tool
+# reads and changes the hand-off root on the BOINC host through its step runner, under the
+# controller's local lock, not the Azure container (archive_history.py --handoff auto; see
+# docs/boinc/server/batch-scheduler.md "On-prem hand-off"). Nothing here changes.
+#
 # No db step (#1587). The receipts are in <archive dir>/batches/<NNNN>/receipts/. Each run ends
 # with one `boinc_held_archive` JSON line: the batches, pages and held pages it archived, and the
 # journal and state counts after. A failure exits non-zero, so the unit fails; the controller's
