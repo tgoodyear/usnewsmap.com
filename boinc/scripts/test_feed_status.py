@@ -240,9 +240,17 @@ class DurationTest(unittest.TestCase):
     def test_a_maintenance_failure_fires_only_when_the_controller_stopped_ticking(self):
         checks = self.ticks((0, {"maintenance_failure_at": NOW - 30, "last_ok_at": NOW - 120}))
         self.assertEqual(checks[0]["state"], "healthy")
-        checks = self.ticks((0, {"maintenance_failure_at": NOW - 30, "last_ok_at": NOW - 1800}),
-                            (60, {"maintenance_failure_at": NOW - 30, "last_ok_at": NOW - 1740}))
-        self.assertEqual([c["state"] for c in checks], ["firing", "healthy"])
+        # Seen first before the 30 minutes pass, it still fires when they do, and stays until a tick succeeds.
+        failure = NOW - 600
+        checks = self.ticks((0, {"maintenance_failure_at": failure, "last_ok_at": failure - 60}),
+                            (600, {"maintenance_failure_at": failure, "last_ok_at": failure - 60}),
+                            (1200, {"maintenance_failure_at": failure, "last_ok_at": failure - 60}),
+                            (1500, {"maintenance_failure_at": failure, "last_ok_at": failure - 60}),
+                            (1600, {"maintenance_failure_at": failure, "last_ok_at": NOW + 1500}))
+        self.assertEqual([c["state"] for c in checks], ["healthy", "healthy", "firing", "firing", "healthy"])
+        checks = self.ticks((0, {"maintenance_failure_at": failure, "last_ok_at": failure - 1800}),
+                            (60, {"maintenance_failure_at": failure, "last_ok_at": failure - 1800}))
+        self.assertEqual([c["state"] for c in checks], ["firing", "firing"])
 
     def test_a_tick_running_too_long_fires_at_once(self):
         checks = self.ticks((0, {"ok": None, "seconds": F.TICK_HANG_S + 1}),
@@ -513,14 +521,15 @@ class ControllerSignalsTest(unittest.TestCase):
         self.assertEqual((checked["state"], checked["reason"]), ("firing", "handoff_failed"))
 
     def test_a_cap_reports_its_rate_of_growth_and_the_hours_left(self):
-        self.tick["caps"] = {"dispatch_journals": {"count": 9210, "limit": 10000, "per_hour": 150.0}}
+        self.tick["caps"] = {"dispatch_journals": {"count": 9210, "limit": 10000}}
+        self.tick["cap_rates"] = {"dispatch_journals": 150.0}
         checked = self.checks()["controller_cap"]
         self.assertEqual((checked["state"], checked["per_hour"], checked["hours_to_cap"]), ("firing", 150.0, 5.3))
         # Falling, or no rate yet: no hours to the cap.
-        self.tick["caps"] = {"dispatch_journals": {"count": 9210, "limit": 10000, "per_hour": -40.0}}
+        self.tick["cap_rates"] = {"dispatch_journals": -40.0}
         checked = self.checks(60)["controller_cap"]
         self.assertEqual((checked["per_hour"], checked["hours_to_cap"]), (-40.0, None))
-        self.tick["caps"] = {"dispatch_journals": {"count": 9210, "limit": 10000}}
+        self.tick["cap_rates"] = {}
         checked = self.checks(120)["controller_cap"]
         self.assertEqual((checked["state"], checked["per_hour"], checked["hours_to_cap"]), ("firing", None, None))
 
@@ -949,6 +958,17 @@ class QwenAdmissionTest(unittest.TestCase):
             checks = {c["code"]: c for c in document["checks"]}
             self.assertEqual(checks["usnm_qwen_no_work"]["state"], "unknown")
             self.assertEqual(checks["collection"]["state"], "pending")
+
+    def test_the_workunit_path_is_gated_on_idle_gpu_hosts_too(self):
+        del self.facts["qwen_admission"]
+        self.facts["backlogs"]["usnm_qwen"] = 5
+        for supply, expected in (({"idle": 2, "eligible": 0}, "firing"), ({"idle": 0, "eligible": 0}, "healthy")):
+            self.facts["supply"]["gpu"] = supply
+            state = {}
+            for at in range(0, 3601, 60):
+                document, state = F.evaluate(self.facts, state, NOW + at, 10000 + at, "boot", "cfg")
+            checked = next(c for c in document["checks"] if c["code"] == "usnm_qwen_no_work")
+            self.assertEqual(checked["state"], expected, supply)
 
     def test_without_the_opt_in_the_workunit_check_is_unchanged(self):
         del self.facts["qwen_admission"]

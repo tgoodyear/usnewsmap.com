@@ -345,10 +345,8 @@ def validate_signals(tick, now):
         raise ValueError("invalid controller caps")
     for name, cap in caps.items():
         if (not isinstance(name, str) or not NAME.fullmatch(name) or not isinstance(cap, dict)
-                or not {"count", "limit"} <= set(cap) <= {"count", "limit", "per_hour"} or natural(cap["limit"]) == 0):
+                or set(cap) != {"count", "limit"} or natural(cap["limit"]) == 0):
             raise ValueError("invalid controller cap")
-        if "per_hour" in cap and (type(cap["per_hour"]) not in (int, float) or not math.isfinite(cap["per_hour"])):
-            raise ValueError("invalid controller cap rate")
         natural(cap["count"])
     if tick["ownership_conflicts"] is not None:
         natural(tick["ownership_conflicts"])
@@ -415,6 +413,11 @@ def validate_tick(tick, now, fresh_s=900):
         natural(tick.get("maintenance_failure_at"))
     if tick.get("last_ok_at") is not None and natural(tick["last_ok_at"]) > now:
         raise ValueError("future controller success")
+    rates = tick.get("cap_rates", {})
+    if not isinstance(rates, dict) or len(rates) > MAX_CAPS or any(
+            not isinstance(name, str) or not NAME.fullmatch(name) or type(rate) not in (int, float)
+            or not math.isfinite(rate) for name, rate in rates.items()):
+        raise ValueError("invalid controller cap rates")
     if tick.get("tick_n") is not None:
         natural(tick["tick_n"])
     if tick.get("tick_p50_s") is not None and (
@@ -1355,18 +1358,20 @@ def controller(unit, maintenance=(), fresh_s=900):
     # Each cap's growth over the window in journals an hour, from its first warning to its last, when
     # they are CAP_RATE_MIN_SPAN_S apart (a net rate: a held-page archive lowers it). Warnings come only
     # past the controller's 80%, so a cap with one has no rate until a second.
+    # In a field of their own: an evaluator from before it reads the caps as they were.
+    cap_rates = {}
     for cap, points in cap_points.items():
         points.sort()
         span = points[-1][0] - points[0][0]
-        if span >= CAP_RATE_MIN_SPAN_S:
-            caps[cap]["per_hour"] = round((points[-1][1] - points[0][1]) * 3600 / span, 1)
+        if span >= CAP_RATE_MIN_SPAN_S and cap in caps:
+            cap_rates[cap] = round((points[-1][1] - points[0][1]) * 3600 / span, 1)
     live = [plan for plan in plans.values() if not plan["draining"]]
     failures = {"last_failure_at": max(controller_failure, maintenance_failure),
                 "controller_failure_at": controller_failure, "maintenance_failure_at": maintenance_failure,
                 "failed_in_a_row": streak, "failed_last_hour": failed_last_hour,
                 "last_hour_reason": last_hour_reason, "last_ok_at": max(ok_runs, default=None),
                 "reason": reason, "same_error_in_a_row": repeats,
-                "caps": caps,
+                "caps": caps, "cap_rates": cap_rates,
                 # None: no tick line in the window reports it (a scheduler from before #1685).
                 "ownership_conflicts": max((p["conflicts"] for p in live), default=0) if reported else None,
                 "progress": {"published_at": published_at, "first_tick_at": first_live,

@@ -302,8 +302,10 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
             continue
         # None is unavailable, zero is a successfully queried app with no workunit yet.
         no_work = None if backlog is None or latest is None or latest > now else backlog > 0
+        if app == "usnm_qwen" and no_work is True:
+            no_work = gpu_idle  # the same gate as the cohort path: only GPU hosts asking for work, idle
         check(app + "_no_work", no_work, NO_WORK_HOLD_S, generation=latest, backlog=backlog,
-              last_workunit_at=latest)
+              last_workunit_at=latest, **({"gpu_idle": gpu_idle} if app == "usnm_qwen" else {}))
     # Own hosts left out because their running tasks can't be counted (#1698), only when there are any.
     excluded = {"excluded_hosts": facts["excluded_hosts"]} if facts.get("excluded_hosts") else {}
     for resource in ("cpu", "gpu"):
@@ -329,9 +331,11 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
         # may never finish: it doesn't wait for either. A maintenance unit (the held-page
         # archive) runs every few hours, so its failure counts only when it left the controller not
         # ticking: no success for NO_SUCCESS_S. Its other failures show in controller_cap.
-        new_maintenance = tick["maintenance_failure_at"] > maintenance_at
         maintenance_at = max(maintenance_at, tick["maintenance_failure_at"])
-        tick_condition = (tick_fires(tick, now) or (new_maintenance and no_success(tick, now))
+        # Unresolved until a controller tick succeeds after it: held across evaluations, and
+        # cleared by the next good tick, not by being seen once.
+        unresolved = tick["maintenance_failure_at"] > (tick.get("last_ok_at") or 0)
+        tick_condition = (tick_fires(tick, now) or (unresolved and no_success(tick, now))
                           or (tick["ok"] is None and tick["seconds"] > TICK_HANG_S))
     # The newest failure's class (feed_collect.FAILURE_REASONS), never its text (#1698).
     repeats = None if tick is None else tick.get("same_error_in_a_row")
@@ -532,7 +536,7 @@ def controller_signals(check, tick, now):
     worst = max(caps, key=lambda cap: caps[cap]["count"] / caps[cap]["limit"], default=None)
     percent = None if worst is None else round(100 * caps[worst]["count"] / caps[worst]["limit"], 1)
     # A share under 80% isn't warned about, so no warning in the window is healthy.
-    rate = None if worst is None else caps[worst].get("per_hour")
+    rate = None if worst is None else tick.get("cap_rates", {}).get(worst)
     # At the net rate over the last two hours, how long until the cap, when it is growing.
     hours_to_cap = (round((caps[worst]["limit"] - caps[worst]["count"]) / rate, 1)
                     if rate is not None and rate > 0 else None)
