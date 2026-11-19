@@ -192,9 +192,11 @@ class DurationTest(unittest.TestCase):
         self.facts["enabled_until"] = NOW + 21600
         self.facts["tick"] = {"ok": False, "seconds": 1}
         checks = self.tick(0)
-        self.assertEqual(checks["qwen_refill_window"]["state"], "firing")
+        # The window is closing but no GPU host asks for work idle (one slot, one result for it).
+        self.assertEqual((checks["qwen_refill_window"]["state"], checks["qwen_refill_window"]["gpu_idle"]),
+                         ("healthy", False))
         self.assertEqual(checks["controller_tick"]["state"], "firing")
-        self.facts["tick"] = {"ok": None, "seconds": 901}
+        self.facts["tick"] = {"ok": None, "seconds": F.TICK_HANG_S + 1}
         self.assertEqual(self.tick(60)["controller_tick"]["state"], "firing")
         self.facts["tick"] = {"ok": True, "seconds": 900}
         self.assertEqual(self.tick(120)["controller_tick"]["state"], "healthy")
@@ -215,31 +217,56 @@ class DurationTest(unittest.TestCase):
             self.state = json.loads(json.dumps(self.state))
         return out
 
-    def test_one_failed_tick_waits_and_two_in_a_row_fire_until_a_tick_succeeds(self):
+    def test_one_failed_tick_waits_and_three_in_a_row_fire_until_a_tick_succeeds(self):
         checks = self.ticks((0, {"ok": False, "failed_in_a_row": 1}), (60, {"ok": False, "failed_in_a_row": 1}),
-                            (600, {"ok": False, "failed_in_a_row": 2}), (660, {"ok": None, "failed_in_a_row": 2}),
-                            (1200, {"failed_in_a_row": 0}))
-        self.assertEqual([c["state"] for c in checks], ["healthy", "healthy", "firing", "firing", "healthy"])
-        self.assertEqual([c["failed_in_a_row"] for c in checks], [1, 1, 2, 2, 0])
+                            (600, {"ok": False, "failed_in_a_row": 2}), (660, {"ok": False, "failed_in_a_row": 3}),
+                            (700, {"ok": None, "failed_in_a_row": 3}), (1200, {"failed_in_a_row": 0}))
+        self.assertEqual([c["state"] for c in checks],
+                         ["healthy", "healthy", "healthy", "firing", "firing", "healthy"])
+        self.assertEqual([c["failed_in_a_row"] for c in checks], [1, 1, 2, 3, 3, 0])
 
-    def test_a_maintenance_failure_or_a_tick_running_too_long_fires_at_once(self):
-        checks = self.ticks((0, {"maintenance_failure_at": NOW - 30}), (60, {"maintenance_failure_at": NOW - 30}))
-        self.assertEqual([c["state"] for c in checks], ["firing", "healthy"])
-        checks = self.ticks((0, {"ok": None, "seconds": 1801}), (60, {"ok": None, "seconds": 1800}))
+    def test_a_failed_tick_with_no_success_for_thirty_minutes_fires(self):
+        for last_ok, state in ((NOW - 1799, "healthy"), (NOW - 1800, "firing"), (None, "firing")):
+            with self.subTest(last_ok_at=last_ok):
+                checks = self.ticks((0, {"ok": False, "failed_in_a_row": 1, "last_ok_at": last_ok}))
+                self.assertEqual(checks[0]["state"], state)
+        # A success newer than the failure leaves no streak, and nothing fires however old the last was.
+        self.assertEqual(self.ticks((0, {"failed_in_a_row": 0, "last_ok_at": NOW - 7200}))[0]["state"], "healthy")
+        # Failures that alternate with good ticks (the old four-an-hour rule) don't fire.
+        checks = self.ticks((0, {"ok": False, "failed_in_a_row": 1, "failed_last_hour": 5, "last_ok_at": NOW - 300}),
+                            (300, {"failed_in_a_row": 0, "failed_last_hour": 5, "last_ok_at": NOW + 300}))
+        self.assertEqual([c["state"] for c in checks], ["healthy", "healthy"])
+
+    def test_a_maintenance_failure_fires_only_when_the_controller_stopped_ticking(self):
+        checks = self.ticks((0, {"maintenance_failure_at": NOW - 30, "last_ok_at": NOW - 120}))
+        self.assertEqual(checks[0]["state"], "healthy")
+        # Seen first before the 30 minutes pass, it still fires when they do, and stays until a tick succeeds.
+        failure = NOW - 600
+        checks = self.ticks((0, {"maintenance_failure_at": failure, "last_ok_at": failure - 60}),
+                            (600, {"maintenance_failure_at": failure, "last_ok_at": failure - 60}),
+                            (1200, {"maintenance_failure_at": failure, "last_ok_at": failure - 60}),
+                            (1500, {"maintenance_failure_at": failure, "last_ok_at": failure - 60}),
+                            (1600, {"maintenance_failure_at": failure, "last_ok_at": NOW + 1500}))
+        self.assertEqual([c["state"] for c in checks], ["healthy", "healthy", "firing", "firing", "healthy"])
+        checks = self.ticks((0, {"maintenance_failure_at": failure, "last_ok_at": failure - 1800}),
+                            (60, {"maintenance_failure_at": failure, "last_ok_at": failure - 1800}))
+        self.assertEqual([c["state"] for c in checks], ["firing", "firing"])
+
+    def test_a_tick_running_too_long_fires_at_once(self):
+        checks = self.ticks((0, {"ok": None, "seconds": F.TICK_HANG_S + 1}),
+                            (60, {"ok": None, "seconds": F.TICK_HANG_S}))
         self.assertEqual([c["state"] for c in checks], ["firing", "healthy"])
 
     def test_a_running_tick_past_the_limit_waits_for_the_hang_limit(self):
-        # #1698: an hourly 20-minute tick fired every hour. Still running past 15 minutes waits;
-        # past 30 it may never finish and fires at once.
-        self.assertEqual(F.TICK_HANG_S, 2 * F.TICK_LIMIT_S)
-        checks = self.ticks((0, {"ok": None, "seconds": 1200}), (60, {"ok": None, "seconds": 1260}),
+        # #1698: an hourly 20-minute tick fired every hour. Main's ticks took 20 to 41 minutes on 18 Nov
+        # 2026 and finished, so a running tick waits an hour before it may be a hang.
+        self.assertEqual(F.TICK_HANG_S, 4 * F.TICK_LIMIT_S)
+        checks = self.ticks((0, {"ok": None, "seconds": 1200}), (60, {"ok": None, "seconds": 2460}),
                             (600, {"ok": None, "seconds": F.TICK_HANG_S + 1}))
         self.assertEqual([c["state"] for c in checks], ["healthy", "healthy", "firing"])
-        # A tick that finished slow counts as one of two in a row, as before.
-        checks = self.ticks((0, {"seconds": 1200, "failed_in_a_row": 1}),
-                            (300, {"ok": None, "seconds": 1200, "failed_in_a_row": 1}),
-                            (600, {"seconds": 1200, "failed_in_a_row": 2}))
-        self.assertEqual([c["state"] for c in checks], ["healthy", "healthy", "firing"])
+        # A tick that finished slow is not a failure: two in a row stay under the three.
+        checks = self.ticks((0, {"seconds": 1200, "failed_in_a_row": 0}), (600, {"seconds": 1200, "failed_in_a_row": 0}))
+        self.assertEqual([c["state"] for c in checks], ["healthy", "healthy"])
 
     def test_a_collector_without_the_streak_fires_on_any_failure(self):
         self.facts["tick"] = {"ok": False, "seconds": 1, "finished_at": NOW, "last_failure_at": NOW}
@@ -368,7 +395,7 @@ class DurationTest(unittest.TestCase):
             checks = self.tick(at, rotation=rotation)
         self.assertEqual(checks["collection"]["state"], "firing")
         self.facts["errors"] = []
-        self.facts["tick"] = {"ok": False, "seconds": 1, "maintenance_failure_at": 0, "failed_in_a_row": 2}
+        self.facts["tick"] = {"ok": False, "seconds": 1, "maintenance_failure_at": 0, "failed_in_a_row": 3}
         self.assertEqual(self.tick(900, rotation=rotation)["controller_tick"]["state"], "firing")
         # Without a window the same missing tick is unknown and collection fires as before.
         self.state = {}
@@ -466,7 +493,7 @@ class ControllerSignalsTest(unittest.TestCase):
         return {c["code"]: c for c in self.document["checks"]}
 
     def test_the_reason_and_a_sticky_failure_ride_on_controller_tick(self):
-        self.tick.update(ok=False, failed_in_a_row=2, reason="cap_reached", same_error_in_a_row=2)
+        self.tick.update(ok=False, failed_in_a_row=3, reason="cap_reached", same_error_in_a_row=2)
         checked = self.checks()["controller_tick"]
         self.assertEqual((checked["state"], checked["reason"], checked["same_error_in_a_row"], checked["sticky"]),
                          ("firing", "cap_reached", 2, False))
@@ -478,21 +505,40 @@ class ControllerSignalsTest(unittest.TestCase):
         checked = self.checks(120)["controller_tick"]
         self.assertEqual((checked["state"], checked["reason"], checked["sticky"]), ("firing", None, False))
 
-    def test_alternating_failures_keep_one_reason_across_a_good_tick(self):
-        # Copilot on #1699: a good tick cleared the streak's reason, so the alert switched between
-        # controller_tick:<reason> and controller_tick. The hourly count names the hour's newest class.
-        names = []
+    def test_alternating_failures_never_fire_and_keep_the_reason_when_they_do(self):
+        # Failures that alternate with good ticks make no streak and no 30 minutes without a success:
+        # nothing fires (the four-an-hour rule is gone, #2054), and the hour's class stays in the line.
         for elapsed, ok, streak, reason in ((0, False, 1, "handoff_failed"), (300, True, 0, None),
                                             (600, False, 1, "handoff_failed"), (900, True, 0, None)):
             self.tick.update(ok=ok, failed_in_a_row=streak, reason=reason, same_error_in_a_row=streak,
-                             failed_last_hour=5, last_hour_reason="handoff_failed")
+                             failed_last_hour=5, last_hour_reason="handoff_failed", last_ok_at=NOW + elapsed - 200)
             checked = self.checks(elapsed)["controller_tick"]
-            self.assertEqual(checked["state"], "firing")
-            names.append(checked["code"] + ":" + str(checked["reason"]))
-        self.assertEqual(set(names), {"controller_tick:handoff_failed"})
-        # Below the hourly count, a good tick shows no reason, as before.
-        self.tick.update(failed_last_hour=3)
-        self.assertEqual(self.checks(960)["controller_tick"]["reason"], None)
+            self.assertEqual(checked["state"], "healthy")
+            self.assertEqual(checked["failed_last_hour"], 5)
+        # Three in a row fire, named by the newest failure's class.
+        self.tick.update(ok=False, failed_in_a_row=3, reason="handoff_failed", same_error_in_a_row=3)
+        checked = self.checks(960)["controller_tick"]
+        self.assertEqual((checked["state"], checked["reason"]), ("firing", "handoff_failed"))
+
+    def test_a_cap_reports_its_rate_of_growth_and_the_hours_left(self):
+        self.tick["caps"] = {"dispatch_journals": {"count": 9210, "limit": 10000}}
+        self.tick["cap_rates"] = {"dispatch_journals": 150.0}
+        checked = self.checks()["controller_cap"]
+        self.assertEqual((checked["state"], checked["per_hour"], checked["hours_to_cap"]), ("firing", 150.0, 5.3))
+        # Falling, or no rate yet: no hours to the cap.
+        self.tick["cap_rates"] = {"dispatch_journals": -40.0}
+        # Headroom is from the count at the rate's last warning (9,000), not the window's peak (9,210).
+        self.tick["cap_latest"] = {"dispatch_journals": 9000}
+        self.tick["cap_rates"] = {"dispatch_journals": 450.0}
+        checked = self.checks(30)["controller_cap"]
+        self.assertEqual((checked["current"], checked["hours_to_cap"]), (9000, 2.2))
+        self.tick.pop("cap_latest")
+        self.tick["cap_rates"] = {"dispatch_journals": -40.0}
+        checked = self.checks(60)["controller_cap"]
+        self.assertEqual((checked["per_hour"], checked["hours_to_cap"]), (-40.0, None))
+        self.tick["cap_rates"] = {}
+        checked = self.checks(120)["controller_cap"]
+        self.assertEqual((checked["state"], checked["per_hour"], checked["hours_to_cap"]), ("firing", None, None))
 
     def test_excused_controller_checks_stay_unknown_but_send_no_row(self):
         # #1687: a rotation pauses the controller on purpose; an unrelated outage firing collection
@@ -583,16 +629,31 @@ class ControllerSignalsTest(unittest.TestCase):
         self.assertEqual((checked["state"], checked["rotation_until"]), ("pending", NOW + 120))
         self.assertEqual(self.checks(120)["controller_progress"]["state"], "firing")
 
-    def test_a_slow_tick_trend_fires_after_an_hour(self):
-        self.tick["tick_p90_s"] = 0.7 * F.TICK_LIMIT_S
+    def test_a_tick_trend_fires_on_a_median_over_twice_the_baseline_held_for_an_hour(self):
+        limit = F.TICK_TREND_FACTOR * F.TICK_BASELINE_P50_S
+        self.assertEqual((F.TICK_BASELINE_P50_S, limit), (660, 1320))
+        self.tick.update(tick_p50_s=limit, tick_n=3)
         self.assertEqual(self.checks()["tick_trend"]["state"], "healthy")
-        self.tick["tick_p90_s"] = 0.7 * F.TICK_LIMIT_S + 1
+        self.tick.update(tick_p50_s=limit + 1, tick_n=3)
         for at in range(0, F.TICK_TREND_HOLD_S, 60):
             checked = self.checks(at)["tick_trend"]
-        self.assertEqual((checked["state"], checked["seconds"]), ("pending", 631.0))
+        self.assertEqual((checked["state"], checked["p50_s"], checked["threshold_p50_s"]),
+                         ("pending", 1321, 1320))
         self.assertEqual(self.checks(F.TICK_TREND_HOLD_S)["tick_trend"]["state"], "firing")
-        self.tick["tick_p90_s"] = None  # no tick in the hour is controller_tick's to report
-        self.assertEqual(self.checks(F.TICK_TREND_HOLD_S + 60)["tick_trend"]["state"], "healthy")
+        # One tick in the hour is no median; none is controller_tick's to report; the old p90 alone is nothing.
+        for change in ({"tick_n": 1}, {"tick_p50_s": None, "tick_n": 0}):
+            self.state = {}
+            self.tick.update({"tick_p50_s": limit + 1, "tick_n": 3, **change})
+            for at in range(0, F.TICK_TREND_HOLD_S + 60, 60):
+                checked = self.checks(at)["tick_trend"]
+            self.assertEqual(checked["state"], "healthy")
+        self.state = {}
+        for key in ("tick_p50_s", "tick_n"):
+            self.tick.pop(key, None)
+        self.tick["tick_p90_s"] = 5000.0
+        for at in range(0, F.TICK_TREND_HOLD_S + 60, 60):
+            checked = self.checks(at)["tick_trend"]
+        self.assertEqual(checked["state"], "healthy")
 
 
 class CauseTest(unittest.TestCase):
@@ -802,13 +863,24 @@ class QwenAdmissionTest(unittest.TestCase):
         self.facts = {"enabled_until": NOW + 86400, "qwen_admission": True, "cohort": self.cohort,
                       "backlogs": {"usnm_ocr": 0, "usnm_qwen": None},
                       "last_workunits": {"usnm_ocr": NOW, "usnm_qwen": NOW - 99999},
-                      "supply": {"cpu": {"idle": 0, "eligible": 0}, "gpu": {"idle": 0, "eligible": 0}},
+                      # Two idle GPU slots and nothing eligible for them: hosts asking for work and idle.
+                      "supply": {"cpu": {"idle": 0, "eligible": 0}, "gpu": {"idle": 2, "eligible": 0}},
                       "tick": {"ok": True, "seconds": 10}}
 
     def check(self, elapsed):
         self.cohort["last_completed_at"] = self.cohort["report_at"] = NOW + elapsed
         document, self.state = F.evaluate(self.facts, self.state, NOW + elapsed, 10000 + elapsed, "boot", "cfg")
         return next(c for c in document["checks"] if c["code"] == "usnm_qwen_no_work")
+
+    def evaluate_with(self, change, at, state):
+        """One evaluation `at` seconds in, with the cohort in the same trouble as at 0: its
+        timestamps move on with the clock, so a stalled run stays as stale as it was."""
+        cohort = {**self.cohort, "last_completed_at": NOW + at, "report_at": NOW + at, **change}
+        for key in ("last_completed_at", "report_at"):
+            if cohort[key] is not None and key in change:
+                cohort[key] += at
+        self.facts["cohort"] = cohort
+        return F.evaluate(self.facts, state, NOW + at, 10000 + at, "boot", "cfg")
 
     def test_backlog_and_capacity_without_an_admission_for_an_hour_fires_and_admission_resets(self):
         for at in range(0, 3600, 60):
@@ -850,10 +922,27 @@ class QwenAdmissionTest(unittest.TestCase):
                                ({"report": None}, "cohort_no_report")):
             with self.subTest(reason=reason, change=change):
                 self.setUp()
-                self.cohort.update(change)
-                document, _ = F.evaluate(self.facts, {}, NOW, 10000, "boot", "cfg")
+                # GPU hosts asking for work sit idle: pending for the hour, then firing.
+                document, state = self.evaluate_with(change, 0, {})
+                checked = next(c for c in document["checks"] if c["code"] == "usnm_qwen_no_work")
+                self.assertEqual((checked["state"], checked["reason"]), ("pending", reason))
+                for at in range(60, 3600, 60):
+                    document, state = self.evaluate_with(change, at, state)
+                document, state = self.evaluate_with(change, 3600, state)
                 checked = next(c for c in document["checks"] if c["code"] == "usnm_qwen_no_work")
                 self.assertEqual((checked["state"], checked["reason"]), ("firing", reason))
+                # The same trouble with no GPU host idle, or none proven, never fires.
+                for supply in ({"idle": 0, "eligible": 0}, {"idle": 2, "eligible": 2}, None):
+                    self.setUp()
+                    if supply is None:
+                        del self.facts["supply"]["gpu"]
+                    else:
+                        self.facts["supply"]["gpu"] = supply
+                    state = {}
+                    for at in range(0, 3601, 60):
+                        document, state = self.evaluate_with(change, at, state)
+                    checked = next(c for c in document["checks"] if c["code"] == "usnm_qwen_no_work")
+                    self.assertEqual(checked["state"], "healthy", supply)
         for streak in (1, 2):
             with self.subTest(streak=streak):
                 self.setUp()
@@ -876,6 +965,17 @@ class QwenAdmissionTest(unittest.TestCase):
             checks = {c["code"]: c for c in document["checks"]}
             self.assertEqual(checks["usnm_qwen_no_work"]["state"], "unknown")
             self.assertEqual(checks["collection"]["state"], "pending")
+
+    def test_the_workunit_path_is_gated_on_idle_gpu_hosts_too(self):
+        del self.facts["qwen_admission"]
+        self.facts["backlogs"]["usnm_qwen"] = 5
+        for supply, expected in (({"idle": 2, "eligible": 0}, "firing"), ({"idle": 0, "eligible": 0}, "healthy")):
+            self.facts["supply"]["gpu"] = supply
+            state = {}
+            for at in range(0, 3601, 60):
+                document, state = F.evaluate(self.facts, state, NOW + at, 10000 + at, "boot", "cfg")
+            checked = next(c for c in document["checks"] if c["code"] == "usnm_qwen_no_work")
+            self.assertEqual(checked["state"], expected, supply)
 
     def test_without_the_opt_in_the_workunit_check_is_unchanged(self):
         del self.facts["qwen_admission"]
