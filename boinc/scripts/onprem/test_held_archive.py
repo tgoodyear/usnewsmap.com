@@ -643,6 +643,36 @@ class HeldArchive(unittest.TestCase):
         self.assertGreaterEqual(events[1]["waited_seconds"], 1)
         self.assertEqual(self.summary(done)["batches"], ["0001", "0002"])
 
+    def test_a_stop_while_waiting_for_the_archive_lock_ends_the_waiter_too(self):
+        lock = self.root / "lock"
+        holder = subprocess.Popen(["flock", f"{lock}.run", "sleep", "30"], start_new_session=True)
+        self.addCleanup(self.end_group, holder)
+        time.sleep(0.3)
+        root = self.root
+        environment = {**os.environ, "PATH": f"{root / 'bin'}{os.pathsep}{os.environ['PATH']}",
+                       "FAKE_LOG": str(root / "log"), "FAKE_TIMER": str(root / "timer"),
+                       "FAKE_LEFT": str(root / "left"), "USNM_HELD_ARCHIVE_LOCK": str(lock)}
+        run = subprocess.Popen(
+            ["bash", str(SCRIPT), "--config", str(root / "config.json"), "--state-dir", str(root / "state"),
+             "--archive-dir", str(root / "archive"), "--tool", str(root / "tool.py"), "--lock-wait-mins", "5"],
+            env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(run.kill)
+        waiters = []
+        for _ in range(200):
+            waiters = subprocess.run(["pgrep", "-P", str(run.pid)], capture_output=True, text=True).stdout.split()
+            if waiters:
+                break
+            time.sleep(0.05)
+        self.assertTrue(waiters, "the run never started waiting")
+        run.send_signal(signal.SIGTERM)
+        out, _ = run.communicate(timeout=20)
+        self.assertEqual(run.returncode, 143)
+        self.assertIn('"waiting": true', out)
+        time.sleep(0.2)
+        for pid in waiters:
+            self.assertFalse(Path(f"/proc/{pid}").exists(), f"the flock waiter {pid} is still alive")
+        self.assertNotIn("systemctl stop", "\n".join(self.log()) if (self.root / "log").exists() else "")
+
     def test_the_wait_for_the_archive_lock_times_out_without_pausing_the_controller(self):
         lock = self.root / "lock"
         holder = subprocess.Popen(["flock", f"{lock}", "sleep", "30"], start_new_session=True)

@@ -149,6 +149,16 @@ LOCK_WAIT_START=$SECONDS
 # Seconds, for tests: USNM_HELD_ARCHIVE_LOCK_WAIT_SECS replaces --lock-wait-mins.
 LOCK_WAIT_SECS=${USNM_HELD_ARCHIVE_LOCK_WAIT_SECS:-$((LOCK_WAIT_MINS * 60))}
 LOCK_WAITED=false
+LOCK_WAITER=""
+# A stop while waiting (SIGTERM to this script only, KillMode=mixed) ends the waiter too: bash would
+# otherwise die at once and leave the flock child waiting on, holding the lock's file and the output.
+# Nothing is paused or held yet, so there is nothing to resume.
+on_lock_wait_stop() {
+  [ -z "$LOCK_WAITER" ] || kill -TERM "$LOCK_WAITER" 2> /dev/null || true
+  [ -z "$LOCK_WAITER" ] || wait "$LOCK_WAITER" 2> /dev/null || true
+  exit 143
+}
+trap on_lock_wait_stop TERM INT
 take_lock() {
   flock -n "$1" && return 0
   local left=$((LOCK_WAIT_SECS - (SECONDS - LOCK_WAIT_START))) waiter
@@ -158,8 +168,10 @@ take_lock() {
       LOCK_WAITED=true
     fi
     flock -w "$left" "$1" &
-    waiter=$!
-    wait "$waiter" && return 0
+    LOCK_WAITER=$!
+    waiter=$LOCK_WAITER
+    wait "$waiter" && { LOCK_WAITER=""; return 0; }
+    LOCK_WAITER=""
   fi
   die "another held-page archive is running (waited $((SECONDS - LOCK_WAIT_START)) s, --lock-wait-mins $LOCK_WAIT_MINS)"
 }
@@ -167,6 +179,7 @@ exec 6> "$LOCK.run"
 take_lock 6
 exec 9> "$LOCK"
 take_lock 9
+trap - TERM INT
 rm -f "$GAP_FILE"
 if $LOCK_WAITED; then
   printf '{"event": "boinc_held_archive_lock_wait", "waiting": false, "waited_seconds": %s}\n' "$((SECONDS - LOCK_WAIT_START))"
