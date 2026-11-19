@@ -34,6 +34,15 @@ Three steps, each on the host that holds its stores, in this order for every bat
 
 Each step writes an intent file before it changes anything and a receipt when it is done, so
 a step stopped half way is resumed by running it again with the same arguments.
+
+Where the hand-off is. dispatch, restore-held and reconcile work on the hand-off container in
+Azure, or, since the on-prem move (#1367), on the hand-off root on the BOINC host, which the plan's
+controller reads over ssh (`--ssh-reads` in its flags file). --handoff auto (the default) follows
+the flags file beside --config (boinc-priority-controller[.PLAN].flags); azure and onprem force
+either. On the BOINC host the same operations go through the host's step runner (handoff_ssh.py,
+`step_command` in the config): the controller's local lock stands where the container's blob lease
+did, and a blob's ETag is the file's identity, size and modification time. The tool needs
+handoff_ssh.py beside it there; the bridge step, on the BOINC host, never does.
 """
 
 import argparse
@@ -81,6 +90,8 @@ STATE_KEYS = ("claims", "selected", "held_since", "dead_lettered")
 # Pages archived while held (#835), kept in the controller state (batch_scheduler.QueueFeed).
 ARCHIVED_HELD = "archived_held"
 UNIT = "usnm-boinc-priority-controller@main"
+# The controller host's switch for plans that tick side by side (controller-tick.sh).
+SIDE_BY_SIDE_FILE = "/etc/usnm/boinc-priority-controller.side-by-side"
 # Blob lease states a new lease can be taken in.
 FREE_LEASE_STATES = ("available", "expired", "broken")
 # The bridge steps' locks on the BOINC host (boinc/scripts/onprem-step.sh).
@@ -269,6 +280,8 @@ class RestContainer:
     """The hand-off container over the storage REST API, with az's token for the identity it
     is logged in with (as the controller's --rest-journals). The token never leaves a header."""
 
+    parallel = REQUESTS
+
     def __init__(self, account):
         self.base = f"https://{account}.blob.core.windows.net/{CONTAINER}"
         self._token = None
@@ -385,10 +398,39 @@ def leased(container, name):
         container.release(name, lease)
 
 
-def in_parallel(function, items):
+def load_handoff_ssh():
+    path = Path(__file__).with_name("handoff_ssh.py")
+    require(path.is_file(), f"no {path}: the hand-off root on the BOINC host is reached through it")
+    spec = importlib.util.spec_from_file_location("handoff_ssh", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def open_container(args, config_path, config):
+    """The hand-off store the plan's controller uses: the Azure container, or the hand-off root
+    on the BOINC host over its step runner (see the module's "Where the hand-off is")."""
+    if args.handoff == "azure":
+        return RestContainer(config["account"])
+    if args.handoff == "auto" and not Path(config_path).with_suffix(".flags").is_file():
+        return RestContainer(config["account"])
+    ssh = load_handoff_ssh()
+    on_host, _ = ssh.detect(config_path, args.side_by_side_file)
+    if args.handoff == "auto" and not on_host:
+        return RestContainer(config["account"])
+    require("handoff_root" not in config, "a plan with a local handoff_root reads it from this host: not supported here")
+    return ssh.SshHandoff(config, plan_scope=Path(args.side_by_side_file).exists())
+
+
+def workers_for(container):
+    """How many requests to have in flight: the container's own limit, if it has one."""
+    return getattr(container, "parallel", REQUESTS)
+
+
+def in_parallel(function, items, workers=REQUESTS):
     errors = []
     results = [None] * len(items)
-    with concurrent.futures.ThreadPoolExecutor(REQUESTS) as pool:
+    with concurrent.futures.ThreadPoolExecutor(workers) as pool:
         index = {pool.submit(function, item): i for i, item in enumerate(items)}
         for future in concurrent.futures.as_completed(index):
             try:
@@ -405,7 +447,7 @@ def list_job_blobs(container):
     prefixes = [root + digit for root in JOB_ROOTS for digit in "0123456789abcdef"]
     if hasattr(container, "token"):
         container.token()  # before the threads, so they share one
-    listed = in_parallel(container.list, prefixes)
+    listed = in_parallel(container.list, prefixes, workers_for(container))
     blobs = {}
     for entries in listed:
         for entry in entries:
@@ -432,7 +474,7 @@ def read_records(container, blobs):
                 f"{name} is not a valid dispatch journal")
         return record
 
-    return in_parallel(read, names)
+    return in_parallel(read, names, workers_for(container))
 
 
 # --- Choosing the batch ----------------------------------------------------------------------
@@ -787,6 +829,15 @@ def verified_copy(path, digest_path, blob):
     return sha256.hexdigest() == digest_path.read_text().strip()
 
 
+def delete_blobs(container, doomed):
+    """Deletes (name, etag) pairs in order, each only while it is still the version archived; one
+    request for the lot where the store takes one (the BOINC host's), else one each. Returns how
+    many were deleted."""
+    if hasattr(container, "delete_many"):
+        return container.delete_many(doomed) if doomed else 0
+    return sum(container.delete(name, etag) for name, etag in doomed)
+
+
 def handoff_step(manifest, container, batch):
     """Copies each of the batch's blobs into the archive, checks the copy, then deletes the
     blob only while it is still the version copied (If-Match). A job's record.json goes last,
@@ -806,7 +857,7 @@ def handoff_step(manifest, container, batch):
         by_job.setdefault(JOB_BLOB.fullmatch(name)[1], []).append(name)
 
     def archive_job(names):
-        deleted = 0
+        doomed = []
         for name in sorted(names, key=lambda name: (bool(RECORD_BLOB.fullmatch(name)), name)):
             blob, path = planned[name], root / name
             digest_path = digests / (name + ".sha256")
@@ -820,13 +871,14 @@ def handoff_step(manifest, container, batch):
                                 f"{name} copy does not match its Content-MD5")
                     write_atomic(path, data)
                     write_atomic(digest_path, (sha256_bytes(data) + "\n").encode())
-                deleted += container.delete(name, blob["etag"])
+                doomed.append((name, blob["etag"]))
             else:
                 require(verified_copy(path, digest_path, blob),
                         f"{name} is gone from the container but its archived copy is missing or wrong")
-        return deleted
+        # The record is last in the list, so a job is counted until all its blobs are archived.
+        return delete_blobs(container, doomed)
 
-    deleted = sum(in_parallel(archive_job, list(by_job.values())))
+    deleted = sum(in_parallel(archive_job, list(by_job.values()), workers_for(container)))
     left = sorted(name for name, blob in list_job_blobs(container).items() if blob["job"] in jobs)
     require(not left, f"{len(left)} of the batch's blobs are still in the container")
     entries = archived_entries(root)
@@ -847,7 +899,7 @@ def dispatch(args):
     state = read_json(state_path)
     require(state.get("config_sha256") == scheduler.digest(config),
             "the state directory belongs to another allocation; give the controller's own config")
-    container = RestContainer(config["account"])
+    container = open_container(args, args.config, config)
     units = {"timer": unit_state(f"{args.controller_unit}.timer"),
              "service": unit_state(f"{args.controller_unit}.service")}
     lease = container.lease_state(LEASE_BLOB)
@@ -999,7 +1051,7 @@ def restore_held(args):
             f"batch {batch.name} was archived for another allocation")
     entries = read_json(batch / "controller/state-entries.json")
     require(entries == manifest["state"], "controller/state-entries.json no longer matches the manifest")
-    container = RestContainer(config["account"])
+    container = open_container(args, args.config, config)
     units = {"timer": unit_state(f"{args.controller_unit}.timer"),
              "service": unit_state(f"{args.controller_unit}.service")}
     lease = container.lease_state(LEASE_BLOB)
@@ -1037,7 +1089,7 @@ def restore_held(args):
                             f"{blob['name']} is in the container but isn't the archived copy; stop and reconcile")
             return written
 
-        written = sum(in_parallel(restore_job, list(blobs.values())))
+        written = sum(in_parallel(restore_job, list(blobs.values()), workers_for(container)))
         live = list_job_blobs(container)
         for items in blobs.values():
             for blob in items:
@@ -1329,7 +1381,7 @@ def reconcile(args):
         require(args.bridge_jobs is not None,
                 "--bridge-jobs is needed to find unsubmitted jobs (or leave out --kind unsubmitted)")
         bridge = read_bridge_jobs(args.bridge_jobs)
-    container = RestContainer(target.config["account"])
+    container = open_container(args, args.config, target.config)
     units = {"timer": unit_state(f"{args.controller_unit}.timer"),
              "service": unit_state(f"{args.controller_unit}.service")}
     lease = container.lease_state(LEASE_BLOB)
@@ -1943,6 +1995,15 @@ def main(argv=None):
         step.add_argument("--confirm-controller-paused", action="store_true",
                           help=f"the operator stopped {UNIT}.timer and no tick is running")
 
+    def handoff_options(step):
+        step.add_argument("--handoff", choices=("auto", "azure", "onprem"), default="auto",
+                          help="where the hand-off is: the Azure container, or the root on the BOINC host "
+                               "over its step runner; auto follows --ssh-reads in the plan's flags file "
+                               "(boinc-priority-controller[.PLAN].flags beside --config)")
+        step.add_argument("--side-by-side-file", default=SIDE_BY_SIDE_FILE,
+                          help="the controller host's switch for plans that tick side by side: while it "
+                               "exists each plan has a lock record of its own on the BOINC host")
+
     one = steps.add_parser("dispatch", help="the controller's state and the hand-off blobs (controller host)")
     one.add_argument("--config", type=Path, required=True, help="the controller's config")
     one.add_argument("--state-dir", type=Path, required=True, help="the controller's state directory")
@@ -1958,6 +2019,7 @@ def main(argv=None):
     one.add_argument("--check-state-dir", type=Path, action="append",
                      help="another plan's state directory on the same hand-off (repeatable): pages "
                           "it has claimed or selected are not archived (#1713)")
+    handoff_options(one)
     common(one)
     two = steps.add_parser("bridge", help="the bridge journals and spool outputs (BOINC host)")
     two.add_argument("--batch-dir", type=Path, required=True,
@@ -1989,6 +2051,7 @@ def main(argv=None):
     four.add_argument("--page", action="append", help="restore only this held page (repeatable; default: all)")
     four.add_argument("--controller-unit", default=UNIT,
                       help="the controller's systemd service and timer name, without the suffix")
+    handoff_options(four)
     common(four)
     five = steps.add_parser("reconcile", help="a draining plan's stranded claimed pages, given back (controller host)")
     five.add_argument("--config", type=Path, required=True, help="the draining plan's config")
@@ -2011,6 +2074,7 @@ def main(argv=None):
                       help="the plan named by --config runs with --drain, or not at all")
     five.add_argument("--controller-unit", default=UNIT,
                       help="the controller's systemd service and timer name, without the suffix")
+    handoff_options(five)
     common(five)
     args = parser.parse_args(argv)
     if args.step == "dispatch" and not 1 <= args.pages <= MAX_PAGES:

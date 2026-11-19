@@ -4,6 +4,7 @@ Every case stops before podman: --what-if, or a refusal. The host settings come 
 USNM_BOINC_CONF directory.
 """
 
+import json
 import os
 import re
 import shutil
@@ -1119,6 +1120,178 @@ class OnpremStep(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("JOB_ID=$(touch /tmp/usnm-pwned); x", done.stdout)
         self.assertFalse(Path("/tmp/usnm-pwned").exists())
+
+
+class ArchiveSteps(unittest.TestCase):
+    """--target handoff --step archive-list|archive-read|archive-delete|archive-write (#1367): the
+    per-job hand-off objects for the held-page archive and the cross-build fetch on another host,
+    over a scratch hand-off root with the real handoff_archive.py and handoff_lock.py."""
+
+    JOB = "d" * 64
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name).resolve()
+        self.conf, self.run_dir, self.root = base / "conf", base / "run", base / "root"
+        for directory in (self.conf, self.run_dir):
+            directory.mkdir()
+        self.root.mkdir(mode=0o700)
+        (self.conf / "server.env").write_text("SERVER_IMAGE=localhost/usnm-boinc-bridge:abc\n")
+        (self.conf / "bridge.env").write_text("KEY_VAULT_NAME=kv\n")
+        (self.conf / "handoff.env").write_text("".join(
+            f"{k}={v}\n" for k, v in {**HANDOFF_SETTINGS, "HANDOFF_URL": "/handoff-state"}.items()))
+        # The step lock is flock(1), absent from some development machines: it always gets the lock.
+        bin_dir = base / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "flock").write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + str(base / "flock-calls") + "\nexit 0\n")
+        (bin_dir / "timeout").write_text("#!/bin/sh\nshift\nexec \"$@\"\n")
+        for tool in ("flock", "timeout"):
+            (bin_dir / tool).chmod(0o755)
+        self.bin_dir = bin_dir
+        self.flock_calls = base / "flock-calls"
+        self.name = f"spool/{self.JOB}/host_id"
+        (self.root / f"spool/{self.JOB}").mkdir(parents=True)
+        (self.root / self.name).write_bytes(b"13\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def step(self, step, *variables, stdin=b"", ssh=False, plan_scope=None):
+        env = {"PATH": f"{self.bin_dir}:{os.environ['PATH']}", "USNM_BOINC_CONF": str(self.conf),
+               "USNM_BOINC_STEP_RUN": str(self.run_dir), "USNM_BOINC_HANDOFF_ROOT": str(self.root)}
+        words = ["--env", "prod", "--target", "handoff", "--step", step, "--wait-mins", "2"]
+        for variable in variables:
+            words += ["--var", variable]
+        argv = ["bash", str(SCRIPT)]
+        if ssh:
+            import shlex
+            env["SSH_ORIGINAL_COMMAND"] = "usnm-boinc-step " + " ".join(shlex.quote(w) for w in words)
+            argv.append("--from-ssh")
+        else:
+            argv += words
+        return subprocess.run(argv, env=env, input=stdin, capture_output=True, timeout=30)
+
+    def listed(self, done):
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return [entry["name"] for entry in json.loads(done.stdout)["entries"]]
+
+    def lock(self, *args):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("handoff_lock", SCRIPT.with_name("handoff_lock.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_list_and_read_run_at_once_over_ssh_with_no_lock_and_no_settings(self):
+        (self.conf / "handoff.env").unlink()
+        done = self.step("archive-list", "ARCHIVE_PREFIX=spool/", ssh=True)
+        self.assertEqual(self.listed(done), [self.name])
+        done = self.step("archive-read", f"ARCHIVE_OBJECT={self.name}", ssh=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        header, _, data = done.stdout.partition(b"\n")
+        self.assertEqual((json.loads(header)["size"], data), (3, b"13\n"))
+        self.assertFalse(self.flock_calls.exists())
+        done = self.step("archive-list", "ARCHIVE_PREFIX=spool/", "ARCHIVE_SUFFIX=host_id",
+                         "ARCHIVE_MAX_AGE_SECS=86400", ssh=True)
+        self.assertEqual(self.listed(done), [self.name])
+
+    def test_only_the_per_job_prefixes_and_the_steps_own_inputs_are_taken(self):
+        done = self.step("archive-list", "ARCHIVE_PREFIX=scheduler/", ssh=True)
+        self.assertNotEqual(done.returncode, 0)
+        done = self.step("archive-read", "ARCHIVE_OBJECT=scheduler/inventory.json", ssh=True)
+        self.assertNotEqual(done.returncode, 0)
+        for variable in ("HANDOFF_URL=/x", "JOB_ID=" + "a" * 64, "ARCHIVE_PREFIX=spool/ ARCHIVE_PATH=/"):
+            done = self.step("archive-list", "ARCHIVE_PREFIX=spool/", variable, ssh=True)
+            self.assertNotEqual(done.returncode, 0, variable)
+        done = self.step("archive-list", ssh=True)
+        self.assertIn("needs ARCHIVE_PREFIX", done.stderr.decode())
+        done = self.step("archive-read", "ARCHIVE_PREFIX=spool/", ssh=True)
+        self.assertNotEqual(done.returncode, 0)
+        done = self.step("archive-list", "ARCHIVE_PREFIX=spool/", "ARCHIVE_MAX_AGE_SECS=x", ssh=True)
+        self.assertIn("number of seconds", done.stderr.decode())
+
+    def test_a_missing_tool_or_root_is_refused(self):
+        shutil.rmtree(self.root)
+        done = self.step("archive-list", "ARCHIVE_PREFIX=spool/", ssh=True)
+        self.assertIn("no local hand-off root", done.stderr.decode())
+
+    def test_what_if_runs_nothing(self):
+        env = {"PATH": os.environ["PATH"], "USNM_BOINC_CONF": str(self.conf), "USNM_BOINC_HANDOFF_ROOT": str(self.root)}
+        done = subprocess.run(["bash", str(SCRIPT), "--env", "prod", "--target", "handoff", "--step", "archive-list",
+                               "--wait-mins", "1", "--var", "ARCHIVE_PREFIX=spool/", "--what-if"],
+                              env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("would run", done.stdout)
+
+    def etag(self, name):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("handoff_archive", SCRIPT.with_name("handoff_archive.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.etag((self.root / name).stat())
+
+    def delete(self, items, *variables, **kwargs):
+        return self.step("archive-delete", "EXPECTED_HANDOFF_URL=/handoff-state", *variables,
+                         stdin=json.dumps({"items": items}).encode(), ssh=True, **kwargs)
+
+    def test_delete_and_write_run_under_the_hand_off_lock_with_the_backend_checked(self):
+        done = self.delete([{"name": self.name, "etag": self.etag(self.name)}])
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {"deleted": 1, "gone": 0})
+        self.assertFalse((self.root / self.name).exists())
+        # The hand-off lock, exclusively (no plan scope): flock -n 9 (the host's lock wait is 0).
+        self.assertEqual(self.flock_calls.read_text().splitlines(), ["-n 9"])
+        new = f"dispatch/jobs/{self.JOB}/record.json"
+        done = self.step("archive-write", f"ARCHIVE_OBJECT={new}", "EXPECTED_HANDOFF_URL=/handoff-state",
+                         stdin=b"{}", ssh=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout), {"written": True})
+        self.assertEqual((self.root / new).read_bytes(), b"{}")
+        # The controller must name the backend: a local root without EXPECTED_HANDOFF_URL is refused.
+        done = self.step("archive-write", f"ARCHIVE_OBJECT={new}", stdin=b"{}", ssh=True)
+        self.assertIn("requires EXPECTED_HANDOFF_URL", done.stderr.decode())
+        done = self.step("archive-write", f"ARCHIVE_OBJECT={new}", "EXPECTED_HANDOFF_URL=https://x.blob.core.windows.net/boinc-handoff",
+                         stdin=b"{}", ssh=True)
+        self.assertIn("backend mismatch", done.stderr.decode())
+
+    def test_a_plan_scoped_change_shares_the_hand_off_lock_and_takes_its_plans_own(self):
+        done = self.delete([{"name": self.name, "etag": self.etag(self.name)}], "PLAN_SCOPE=native-feed-7")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.flock_calls.read_text().splitlines(), ["-n -s 9", "-n 7"])
+
+    def test_a_change_is_fenced_by_the_controllers_lock(self):
+        module = self.lock()
+        record = module.acquire(self.root, "archive-x", "ct211", 1, 300)
+        items = [{"name": self.name, "etag": self.etag(self.name)}]
+        done = self.delete(items, "LOCK_HOLDER=someone-else", f"LOCK_GENERATION={record['generation']}")
+        self.assertIn("controller lock is not this controller's", done.stderr.decode())
+        self.assertTrue((self.root / self.name).exists())
+        done = self.delete(items, "LOCK_HOLDER=archive-x", f"LOCK_GENERATION={record['generation']}")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertFalse((self.root / self.name).exists())
+        done = self.delete(items, "LOCK_HOLDER=archive-x")
+        self.assertIn("go together", done.stderr.decode())
+
+    def test_a_plans_fence_is_its_own_record(self):
+        module = self.lock()
+        record = module.acquire(self.root, "archive-y", "ct211", 1, 300, plan="native-feed-7")
+        items = [{"name": self.name, "etag": self.etag(self.name)}]
+        done = self.delete(items, "LOCK_HOLDER=archive-y", f"LOCK_GENERATION={record['generation']}", "PLAN_SCOPE=native-feed-7")
+        self.assertIn("controller lock is not this controller's", done.stderr.decode())  # no LOCK_PLAN: the global record
+        done = self.delete(items, "LOCK_HOLDER=archive-y", f"LOCK_GENERATION={record['generation']}",
+                           "PLAN_SCOPE=native-feed-7", "LOCK_PLAN=native-feed-7")
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def test_a_change_takes_only_its_own_inputs_and_is_size_capped(self):
+        done = self.step("archive-write", f"ARCHIVE_OBJECT={self.name}", "EXPECTED_HANDOFF_URL=/handoff-state",
+                         "ARCHIVE_PREFIX=spool/", stdin=b"x", ssh=True)
+        self.assertIn("takes only its own inputs", done.stderr.decode())
+        done = self.step("archive-delete", "ARCHIVE_OBJECT=x", "EXPECTED_HANDOFF_URL=/handoff-state", stdin=b"{}", ssh=True)
+        self.assertNotEqual(done.returncode, 0)
+        done = self.step("archive-write", f"ARCHIVE_OBJECT=dispatch/jobs/{self.JOB}/big", "EXPECTED_HANDOFF_URL=/handoff-state",
+                         stdin=b"x" * (64 * 1024 * 1024 + 1), ssh=True)
+        self.assertIn("over 64 MiB", done.stderr.decode())
+        self.assertFalse((self.root / f"dispatch/jobs/{self.JOB}/big").exists())
 
 
 if __name__ == "__main__":

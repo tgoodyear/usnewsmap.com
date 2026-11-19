@@ -11,7 +11,9 @@ import importlib.util
 import io
 import json
 import os
+import re
 import sqlite3
+import subprocess
 import tempfile
 import threading
 import time
@@ -171,7 +173,7 @@ class DispatchFixture(unittest.TestCase):
         (self.state_dir / "controller.lock").touch()  # as the controller's first tick left it
         self.archive_dir = root / "archive"
         now = time.time()
-        self.container = FakeContainer()
+        self.container = self.make_container(root)
         # Pages 1 to 7 are this plan's; page 20 is an older plan's, no longer claimed here.
         layout = [
             (1, [journal(1, page_key(1), "published")], now - 10 * DAY),
@@ -207,11 +209,19 @@ class DispatchFixture(unittest.TestCase):
         (self.state_dir / "state.json").write_text(json.dumps(self.state, sort_keys=True) + "\n")
         self.units = {"timer": "inactive", "service": "inactive"}
         self.patches = [
-            mock.patch.object(archive, "RestContainer", lambda account: self.container),
+            mock.patch.object(archive, "open_container", lambda args, path, config_: self.store()),
             mock.patch.object(archive, "unit_state", lambda unit: self.units[unit.rsplit(".", 1)[1]]),
         ]
         for patch in self.patches:
             patch.start()
+
+    def make_container(self, root):
+        """The hand-off the tests fill; OnpremMixin swaps in a root on the BOINC host."""
+        return FakeContainer()
+
+    def store(self):
+        """What the tool under test reads and changes the hand-off through."""
+        return self.container
 
     def tearDown(self):
         for patch in self.patches:
@@ -668,6 +678,207 @@ class HeldTests(DispatchFixture):
         before = self.snapshot()
         self.assertEqual(run(self.restore_argv("--apply", "--confirm-controller-paused"))[0], 1)
         self.assertEqual(before, self.snapshot())
+
+
+# --- The same tests on the hand-off root on the BOINC host (#1367) -----------------------------
+
+
+class DiskContainer:
+    """A hand-off root on disk, filled and read as FakeContainer is, and reached by the tool
+    through handoff_ssh.SshHandoff over a Host that runs the real handoff_archive.py and
+    handoff_lock.py (as onprem-step.sh does over ssh). `fail_deletes_after` cuts a batch delete
+    short the way a failed blob delete does."""
+
+    def __init__(self, root, plan_scope=False):
+        self.ssh = load("handoff_ssh")
+        self.tool = load("handoff_archive")
+        self.lock = load("handoff_lock")
+        self.helper = load("test_handoff_ssh")
+        self.root = Path(root).resolve() / "handoff-root"
+        self.root.mkdir(mode=0o700)
+        self.host = self.helper.Host(self.root)
+        self.plan = "batch-test" if plan_scope else None
+        self.plan_scope = plan_scope
+        self.fail_deletes_after = None
+        self.deleted = 0
+        self.md5 = True
+        self.holder = None
+        self.host.fail = self.inject
+        self.box = self.ssh.SshHandoff({"env": "dev", "plan": "batch-test", "step_command": self.helper.COMMAND},
+                                       plan_scope=plan_scope, runner=self.host)
+
+    def inject(self, step, variables):
+        if step != "archive-delete" or self.fail_deletes_after is None:
+            return None
+        items = json.loads(self.host.calls[-1][2])["items"]
+        allowed = max(0, self.fail_deletes_after - self.deleted)
+        if allowed >= len(items):
+            self.deleted += len(items)
+            return None
+        if allowed:
+            self.tool.delete_objects(self.root, items[:allowed])
+            self.deleted += allowed
+        return subprocess.CompletedProcess([], 1, b"", b"error: hand-off storage DELETE failed: injected\n")
+
+    def path(self, name):
+        return self.root / name
+
+    def put(self, name, data, modified):
+        if name.startswith("scheduler/"):
+            return
+        path = self.path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.unlink(missing_ok=True)
+        path.write_bytes(data)
+        os.utime(path, (modified, modified))
+
+    def files(self):
+        found = {}
+        for path in sorted(self.root.rglob("*")):
+            name = str(path.relative_to(self.root))
+            if path.is_file() and not name.startswith("scheduler/") and not path.name.startswith("."):
+                info = path.stat()
+                found[name] = {"data": path.read_bytes(), "etag": self.tool.etag(info),
+                               "modified": email.utils.formatdate(info.st_mtime, usegmt=True)}
+        return found
+
+    @property
+    def blobs(self):
+        root = self.root
+
+        class Blobs(dict):
+            def __delitem__(self, name):  # a test removes a blob as the container's dict allows
+                (root / name).unlink()
+                super().__delitem__(name)
+
+        return Blobs(self.files())
+
+    def snapshot(self):
+        return {name: (blob["etag"], blob["data"]) for name, blob in self.files().items()}, self.lease_blob_state
+
+    @property
+    def acquired(self):
+        return sum(1 for call in self.host.calls if call[0] == "lock-acquire")
+
+    @property
+    def deletes(self):
+        return self.deleted
+
+    @property
+    def uploads(self):
+        return [call[1]["ARCHIVE_OBJECT"] for call in self.host.calls if call[0] == "archive-write"]
+
+    @property
+    def lease_blob_state(self):
+        return "available" if self.box.lease_state("x") in ("available", "expired") else "leased"
+
+    @lease_blob_state.setter
+    def lease_blob_state(self, state):
+        if state == "leased":
+            self.holder = self.lock.acquire(self.root, "a-tick", "ct211", 1, 3600, plan=self.plan)
+        else:
+            self.lock.release(self.root, "a-tick", self.holder["generation"], self.plan)
+
+
+class OnpremMixin:
+    plan_scope = False
+
+    def make_container(self, root):
+        self.disk = DiskContainer(root, self.plan_scope)
+        return self.disk
+
+    def store(self):
+        return self.disk.box
+
+    def test_the_lock_is_the_controllers_record_and_is_let_go(self):
+        self.assertEqual(self.apply()[0], 0)
+        name = "scheduler/plans/batch-test/controller.lock.json" if self.plan_scope else "scheduler/controller.lock.json"
+        record = json.loads((self.disk.root / name).read_text())
+        self.assertEqual((record["generation"], record.get("released")), (1, True))
+        self.assertTrue(record["holder"].startswith("archive-batch-test-"))
+        steps = [call[0] for call in self.disk.host.calls]
+        self.assertEqual(steps.count("lock-acquire"), 1)
+        self.assertEqual(steps.count("lock-release"), 1)
+        # Every change was fenced by that holder.
+        for step, variables, _ in self.disk.host.calls:
+            if step in ("archive-delete", "archive-write"):
+                self.assertEqual(variables["LOCK_HOLDER"], record["holder"])
+                self.assertEqual("PLAN_SCOPE" in variables, self.plan_scope)
+
+    def test_a_tick_holding_the_lock_stops_the_run(self):
+        self.disk.lease_blob_state = "leased"
+        before = self.snapshot()
+        code, _, errors = self.apply()
+        self.assertEqual(code, 1)
+        self.assertIn("lease is leased", errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+
+    def test_the_etag_and_no_content_md5_come_from_the_files(self):
+        code, summary, _ = run(self.argv(pages=3))
+        self.assertEqual(code, 0)
+        manifest_blob = summary["batch"]["blobs"]
+        self.assertGreater(manifest_blob, 0)
+        code, receipt, _ = self.apply(pages=3)
+        self.assertEqual(code, 0, receipt)
+        manifest = json.loads((self.archive_dir / "batches/0001/manifest.json").read_text())
+        self.assertTrue(all(blob["md5"] is None and re.fullmatch(r"[0-9a-f]+\.[0-9a-f]+-[0-9a-f]+-[0-9a-f]+", blob["etag"])
+                            for blob in manifest["blobs"]))
+
+
+class OnpremDispatchTests(OnpremMixin, DispatchTests):
+    """Every dispatch test of the Azure container, on the root over the step runner."""
+
+
+class OnpremScopedDispatchTests(OnpremMixin, DispatchTests):
+    """The same with the plan's own lock record, as plans that tick side by side have."""
+
+    plan_scope = True
+
+
+class OnpremHeldTests(OnpremMixin, HeldTests):
+    """--include-held and restore-held over the step runner."""
+
+
+class OpenContainerTests(unittest.TestCase):
+    """Which store a plan's tools use: the flags file beside the config decides."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.config_path = self.root / "boinc-priority-controller.native-feed-7.json"
+        self.switch = self.root / "side-by-side"
+        self.cfg = {**config(), "env": "prod", "step_command": ["ssh", "root@usnm-boinc.tjg.fyi", "--"]}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def args(self, mode="auto"):
+        return argparse.Namespace(handoff=mode, side_by_side_file=str(self.switch))
+
+    def test_no_flags_file_or_no_ssh_reads_means_azure(self):
+        self.assertIsInstance(archive.open_container(self.args(), self.config_path, self.cfg), archive.RestContainer)
+        self.config_path.with_suffix(".flags").write_text("@kind native\n--local-lock\n")
+        self.assertIsInstance(archive.open_container(self.args(), self.config_path, self.cfg), archive.RestContainer)
+
+    def test_ssh_reads_means_the_hand_off_root_on_the_boinc_host(self):
+        self.config_path.with_suffix(".flags").write_text("@kind native\n--local-lock\n--ssh-reads\n")
+        box = archive.open_container(self.args(), self.config_path, self.cfg)
+        self.assertEqual(type(box).__name__, "SshHandoff")
+        self.assertFalse(box.plan_scope)
+        self.switch.write_text("")
+        self.assertTrue(archive.open_container(self.args(), self.config_path, self.cfg).plan_scope)
+
+    def test_the_option_overrides_the_flags(self):
+        self.config_path.with_suffix(".flags").write_text("--local-lock\n--ssh-reads\n")
+        self.assertIsInstance(archive.open_container(self.args("azure"), self.config_path, self.cfg),
+                              archive.RestContainer)
+        self.config_path.with_suffix(".flags").unlink()
+        self.assertEqual(type(archive.open_container(self.args("onprem"), self.config_path, self.cfg)).__name__,
+                         "SshHandoff")
+
+    def test_a_local_handoff_root_is_refused(self):
+        with self.assertRaises(archive.Refused):
+            archive.open_container(self.args("onprem"), self.config_path, {**self.cfg, "handoff_root": "/handoff-state"})
 
 
 class RestContainerTests(unittest.TestCase):
