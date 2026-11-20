@@ -121,7 +121,7 @@ COPY (
          r.est_cer AS ours_est_cer, lq.qe_lm_oov AS loc_lm_oov, rq.qe_lm_oov AS ours_lm_oov
   FROM o JOIN quality.page_summary s USING (doc_id) JOIN quality.damage d USING (doc_id)
   LEFT JOIN l USING (doc_id) LEFT JOIN r ON r.doc_id = o.doc_id AND r.reader = o.reader
-  LEFT JOIN lq USING (doc_id) LEFT JOIN rq ON rq.doc_id = o.doc_id AND rq.reader = o.reader
+  LEFT JOIN lq ON lq.doc_id = o.doc_id LEFT JOIN rq ON rq.doc_id = o.doc_id AND rq.reader = o.reader
   WHERE s.damage_rate IS NOT NULL AND s.decade IS NOT NULL
 ) TO STDOUT WITH CSV HEADER;
 COMMIT;
