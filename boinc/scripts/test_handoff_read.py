@@ -36,6 +36,14 @@ def journal(root, job=JOB, body=None):
     (directory / "record.json").write_text(json.dumps(body or {"job": {"id": job}}))
 
 
+def rewrite(root, job, body):
+    """A write as LocalStore makes one: a new file renamed into place."""
+    path = root / "dispatch/jobs" / job / "record.json"
+    partial = path.with_name("record.json.tmp")
+    partial.write_text(json.dumps(body))
+    os.replace(partial, path)
+
+
 class HelperTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -74,74 +82,117 @@ class HelperTests(unittest.TestCase):
         with self.assertRaisesRegex(read.ReadError, "identity mismatch"):
             read.read_journals(self.root)
 
-    def test_read_journals_starts_over_when_a_journal_changes_then_gives_up(self):
-        journal(self.root)
+    def test_read_journals_reads_again_only_what_changed_then_gives_up(self):
+        jobs = [c * 64 for c in "abc"]
+        for job in jobs:
+            journal(self.root, job)
         name = f"dispatch/jobs/{JOB}/record.json"
-        real, calls = read.read_bounded, []
+        real, reads = read.read_with_stat, []
 
         def flaky(path, limit):
-            data = real(path, limit)
-            if path.name == "record.json" and len(calls) < 2:
-                calls.append(1)
-                (self.root / name).write_text(json.dumps({"job": {"id": JOB}, "n": len(calls)}))
-            return data
+            found = real(path, limit)
+            reads.append(path.parent.name)
+            if path.parent.name == JOB and reads.count(JOB) < 3:
+                rewrite(self.root, JOB, {"job": {"id": JOB}, "n": reads.count(JOB)})
+            return found
 
         sleeps = []
-        with patch.object(read, "read_bounded", flaky):
+        with patch.object(read, "read_with_stat", flaky):
             out = json.loads(read.read_journals(self.root, sleep=sleeps.append))["journals"]
         self.assertEqual(out[name]["record"]["n"], 2)
-        self.assertEqual(len(sleeps), 1)
-
-        always = []
+        self.assertEqual(out[name]["sha256"], hashlib.sha256((self.root / name).read_bytes()).hexdigest())
+        self.assertEqual(len(sleeps), 2)
+        # Each of the other journals was read once; only the one that moved was read again.
+        self.assertEqual(sorted(reads), sorted(jobs + [JOB, JOB]))
 
         def never_settles(path, limit):
-            data = real(path, limit)
-            if path.name == "record.json" and len(always) % 2 == 0:
-                (self.root / name).write_text(json.dumps({"job": {"id": JOB}, "n": len(always) + 10}))
-            always.append(1)
-            return data
+            found = real(path, limit)
+            rewrite(self.root, path.parent.name, {"job": {"id": path.parent.name}, "n": len(sleeps)})
+            return found
 
         sleeps.clear()
-        with patch.object(read, "read_bounded", never_settles), \
+        with patch.object(read, "read_with_stat", never_settles), \
                 self.assertRaisesRegex(read.ReadError, "changed during read"):
             read.read_journals(self.root, attempts=3, sleep=sleeps.append)
         self.assertEqual(len(sleeps), 2)
 
-    def test_second_pass_failures_other_than_a_vanished_journal_are_not_retried(self):
+    def test_journals_that_come_and_go_between_rounds_settle(self):
         journal(self.root)
-        name = f"dispatch/jobs/{JOB}/record.json"
-        real, seen = read.read_bounded, []
+        gone, late = "b" * 64, "c" * 64
+        journal(self.root, gone)
+        real, rounds = read.listing, []
 
-        def grows(path, limit):
-            data = real(path, limit)
-            if path.name == "record.json":
-                seen.append(1)
-                if len(seen) == 1:
-                    return data
-                raise read.ReadError("object exceeds limit")
-            return data
+        def moving(root):
+            names = real(root)
+            rounds.append(1)
+            if len(rounds) == 1:
+                journal(self.root, late)
+                (self.root / f"dispatch/jobs/{gone}/record.json").unlink()
+            return names
 
         sleeps = []
-        with patch.object(read, "read_bounded", grows), \
-                self.assertRaisesRegex(read.ReadError, "exceeds limit"):
+        with patch.object(read, "listing", moving):
+            out = json.loads(read.read_journals(self.root, sleep=sleeps.append))["journals"]
+        self.assertEqual(sorted(out), [f"dispatch/jobs/{job}/record.json" for job in (JOB, late)])
+        self.assertEqual(len(sleeps), 1)
+
+    def test_failures_in_a_later_round_other_than_a_vanished_journal_are_not_retried(self):
+        journal(self.root)
+        journal(self.root, "b" * 64)
+        name = f"dispatch/jobs/{JOB}/record.json"
+        real, seen = read.read_with_stat, []
+
+        def grows(path, limit):
+            seen.append(path.parent.name)
+            if seen.count(JOB) == 1:
+                found = real(path, limit)
+                if path.parent.name == JOB:
+                    rewrite(self.root, JOB, {"job": {"id": JOB}, "pad": "x" * 64})
+                return found
+            raise read.ReadError("object exceeds limit")
+
+        sleeps = []
+        with patch.object(read, "read_with_stat", grows), \
+                self.assertRaisesRegex(read.ReadError, "invalid/oversized"):
             read.read_journals(self.root, sleep=sleeps.append)
-        self.assertEqual(sleeps, [])
+        self.assertEqual(len(sleeps), 1)
 
         seen.clear()
+        sleeps.clear()
 
         def vanishes(path, limit):
-            data = real(path, limit)
-            if path.name == "record.json":
-                seen.append(1)
-                if len(seen) == 1:
-                    return data
-                (self.root / name).unlink()
-                raise read.ReadError("missing or unsafe object")
-            return data
+            found = real(path, limit)
+            if path.parent.name == JOB:
+                (self.root / name).unlink(missing_ok=True)
+            return found
 
-        with patch.object(read, "read_bounded", vanishes), \
+        with patch.object(read, "read_with_stat", vanishes), \
                 self.assertRaisesRegex(read.ReadError, "changed during read"):
             read.read_journals(self.root, attempts=1, sleep=sleeps.append)
+        out = json.loads(read.read_journals(self.root, sleep=sleeps.append))["journals"]
+        self.assertEqual(sorted(out), [f"dispatch/jobs/{'b' * 64}/record.json"])
+
+    def test_inventory_past_the_cap_is_refused_on_every_round(self):
+        for job in ("a" * 64, "b" * 64, "c" * 64):
+            journal(self.root, job)
+        with patch.object(read, "MAX_JOBS", 2), \
+                self.assertRaisesRegex(read.ReadError, "inventory limit"):
+            read.read_journals(self.root, sleep=lambda _: self.fail("a cap is not retried"))
+        real, rounds = read.listing, []
+
+        def grows(root):
+            rounds.append(1)
+            if len(rounds) == 2:
+                journal(self.root, "d" * 64)
+            return real(root)
+
+        # A journal that takes the inventory past the cap while it is read fails the round's
+        # check listing at once, never a change to read again.
+        sleeps = []
+        with patch.object(read, "MAX_JOBS", 3), patch.object(read, "listing", grows), \
+                self.assertRaisesRegex(read.ReadError, "inventory limit"):
+            read.read_journals(self.root, sleep=sleeps.append)
+        self.assertEqual((len(rounds), sleeps), (2, []))
 
     def test_read_journals_does_not_retry_other_failures(self):
         journal(self.root, "c" * 64, {"job": {"id": "d" * 64}})

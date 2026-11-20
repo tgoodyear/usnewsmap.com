@@ -7,7 +7,9 @@ host. onprem-step.sh runs these for `--target handoff --step read-object|read-jo
 
 read-object prints the JSON document (at most 16 MiB), or `null` when --optional and it is absent.
 read-journals prints {"journals": {name: {"sha256": ..., "record": ...}}} for every
-dispatch/jobs/<64 hex>/record.json, listed before and after reading; if they changed, the read starts over (4 tries in all, then refused).
+dispatch/jobs/<64 hex>/record.json, listed and checked again after reading. A round that finds one
+changed reads again only the journals that are new or no longer the file read before (6 rounds in
+all, then refused), so thousands of journals settle while other plans' collects rewrite a few.
 """
 
 import argparse
@@ -24,8 +26,9 @@ MAX_OBJECT = 16 * 1024 * 1024
 MAX_JOURNAL = 131072
 MAX_JOBS = 10000
 # A collect or export on the host rewrites a journal now and then while a snapshot is read; the
-# read starts over a few times before it gives up (#1367).
-SNAPSHOT_ATTEMPTS = 4
+# read checks again a few times before it gives up (#1367). A round after the first reads only
+# what changed, so it costs a listing and a stat of each journal, not a read of all of them.
+SNAPSHOT_ATTEMPTS = 6
 SNAPSHOT_PAUSE = 0.25
 OBJECT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*")
 JOB = re.compile(r"[0-9a-f]{64}")
@@ -46,20 +49,41 @@ def safe(root, name):
     return path
 
 
-def read_bounded(path, limit):
-    """The bytes of a regular file, opened once without following a link and read at most
-    limit + 1 bytes, so a file swapped in after a size check cannot get past the limit."""
+def read_with_stat(path, limit):
+    """The bytes of a regular file and the stat of the file they came from, opened once without
+    following a link and read at most limit + 1 bytes, so a file swapped in after a size check
+    cannot get past the limit."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         raise ReadError("missing or unsafe object") from None
     with os.fdopen(fd, "rb") as handle:
-        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
             raise ReadError("missing or unsafe object")
         data = handle.read(limit + 1)
     if len(data) > limit:
         raise ReadError("object exceeds limit")
-    return data
+    return data, info
+
+
+def read_bounded(path, limit):
+    return read_with_stat(path, limit)[0]
+
+
+def identity(info):
+    """Which file a journal is: a write makes a new file (renamed or linked into place, as
+    LocalStore writes), and a change in place moves its size or times, so the same identity
+    is the same bytes. The archive's ETag is the same device, inode, size and mtime."""
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def current(path):
+    """The identity of the file at path now, or None when it is gone."""
+    try:
+        return identity(path.lstat())
+    except FileNotFoundError:
+        return None
 
 
 def check_root(root):
@@ -107,40 +131,49 @@ def listing(root):
     return sorted(names)
 
 
-def snapshot_once(root):
-    names = listing(root)
-    journals = {}
-    for name in names:
-        try:
-            data = read_bounded(root / name, MAX_JOURNAL)
-        except ReadError:
+def read_journal(root, name):
+    path = root / name
+    try:
+        data, info = read_with_stat(path, MAX_JOURNAL)
+    except ReadError:
+        # Only a journal that is gone changed; an oversized or unsafe one is refused as it is.
+        if path.exists() or path.is_symlink():
             raise ReadError("invalid/oversized journal metadata") from None
-        record = json.loads(data)
-        if record["job"]["id"] != name.split("/")[2]:
-            raise ReadError("journal filename/identity mismatch")
-        journals[name] = {"sha256": hashlib.sha256(data).hexdigest(), "record": record}
+        raise ChangedError("journal changed during read") from None
+    record = json.loads(data)
+    if record["job"]["id"] != name.split("/")[2]:
+        raise ReadError("journal filename/identity mismatch")
+    return {"identity": identity(info), "sha256": hashlib.sha256(data).hexdigest(), "record": record}
+
+
+def snapshot_round(root, held):
+    """One round over the journals: list them, read each that is new or no longer the file held
+    from an earlier round, then list again and check every one is still the file read. Raises
+    ChangedError when anything moved; `held` keeps what was read for the next round."""
+    names = listing(root)
+    for name in set(held) - set(names):
+        del held[name]
+    for name in names:
+        if name not in held or current(root / name) != held[name]["identity"]:
+            held[name] = read_journal(root, name)
     if listing(root) != names:
         raise ChangedError("journal inventory changed during read")
-    for name, item in journals.items():
-        try:
-            again = hashlib.sha256(read_bounded(root / name, MAX_JOURNAL)).hexdigest()
-        except ReadError:
-            # Only a journal that is gone changed; an oversized or unsafe one is refused as it is.
-            path = root / name
-            if path.exists() or path.is_symlink():
-                raise
-            raise ChangedError("journal changed during read") from None
-        if again != item["sha256"]:
+    for name in names:
+        if current(root / name) != held[name]["identity"]:
             raise ChangedError("journal changed during read")
+    journals = {name: {"sha256": held[name]["sha256"], "record": held[name]["record"]} for name in names}
     return json.dumps({"journals": journals}, sort_keys=True, separators=(",", ":"))
 
 
 def read_journals(root, attempts=SNAPSHOT_ATTEMPTS, pause=SNAPSHOT_PAUSE, sleep=time.sleep):
-    """snapshot_once, started over when a journal changed during the read, at most `attempts`
-    times in all with a growing pause; any other failure, and the last change, is raised."""
+    """snapshot_round, again while a journal changed during the read, at most `attempts` rounds
+    in all with a growing pause; any other failure, and the last change, is raised. A journal
+    unchanged since an earlier round is not read again, so a later round costs a listing and a
+    stat of each journal, and only the few another plan rewrote meanwhile are read."""
+    held = {}
     for attempt in range(1, attempts + 1):
         try:
-            return snapshot_once(root)
+            return snapshot_round(root, held)
         except ChangedError:
             if attempt == attempts:
                 raise
