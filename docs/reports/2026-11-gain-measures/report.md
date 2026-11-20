@@ -53,4 +53,4 @@ In a work directory holding the #1925 inputs (`data/968-dev2-20261112`, `data/as
 python3 scripts/gain_measures.py --metrics-dir metrics-gw --damage damage-truth.jsonl --out gain-measures.json --boot 1000
 ```
 
-Run on 20 Nov 2026 in CT 245 (usnm-dev3).
+Run on 20 Nov 2026.
