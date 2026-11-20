@@ -216,6 +216,36 @@ journals on persistent local storage at each stage; Azure Files/SMB lock and
 atomic-rename durability have not been verified. Exercise the hand-off on a
 small cohort before using the bridge's submission step on the on-prem server.
 
+## Submit to the cloud BOINC server (dev only)
+
+`usnm-boinc cloud submit` sends OCR jobs the controller has already exported to the cloud BOINC server, through its
+admin API. It is the cloud server's work generator for `usnm_ocr`: stock `create_work` and `dir_hier_path` don't run
+there, so the inputs go up over HTTPS and the server keeps them in its own bucket. It is for the dev cloud server only.
+Nothing in the running bridge, the timers or the scripts calls it, and `submit` is unchanged.
+
+```
+usnm-boinc cloud submit --root <controller root> --base-url https://<dev server> --token-file <file> (--id <job id>... | --all) [--batch-size N] [--dry-run]
+```
+
+- Records under `<root>/jobs/` are only read: no lock is taken and no record is saved, so a job's on-prem stage is
+  never changed. Run it on a copy of the root, or on jobs the on-prem server isn't given, so a page isn't computed
+  twice.
+- Only plain first-attempt single-page jobs that are reserved or submitted go, the stages `collect` takes a result in.
+  Prepared records (their reservation never finished), settled ones (held results included), retries, bundled and unbundled pages and line jobs
+  are skipped and listed. `request.json` and `page` get the checks `submit_unit` makes (the request equals the record's
+  job; the page's size and SHA-256 equal the request's).
+- Each job's inputs are put with `PUT /admin/v1/files/<name>?md5=<md5>&no_delete=1` under the names `submit_unit`
+  stages: `<id>_page` and `<id>_request_json`. The server keeps a name's contents: the same bytes again are accepted,
+  other bytes get 409 and fail only that job.
+- The jobs whose inputs uploaded are created with `POST /admin/v1/jobs`, `--batch-size` at a time (default 100), with
+  the `boinc/apps/usnm_ocr_in` and `usnm_ocr_out` templates and the numbers `submit_unit` gives `create_work`
+  (`submit::limits`, `max_error_results`, and `schedule` for the delay bound and priority). A job whose name exists
+  counts as already there, so a rerun is safe.
+- The run prints `submitted N, already there N, skipped N, failed N`, a line per skipped or failed job on stderr, and
+  exits non-zero when any job failed. `--dry-run` reads and checks everything and sends nothing.
+- Cloudflare caps a request body at 100 MB on the Free and Pro plans, below the 128 MiB `MAX_SCAN`. The scan archive's
+  largest page was 12.7 MB (ADR 0018), so only a page far outside that range would fail its upload.
+
 ## Pull from the cloud BOINC server (dev only)
 
 `usnm-boinc cloud pull` reads finished workunits from the cloud BOINC server's assimilation API (`GET /admin/v1/assimilate`

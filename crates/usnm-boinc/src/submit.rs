@@ -355,6 +355,18 @@ fn check_retry_app(
     }
 }
 
+/// The fixed `create_work` limits of an OCR unit, shared with `cloud submit`.
+pub(crate) mod limits {
+    pub const MIN_QUORUM: &str = "1";
+    pub const TARGET_NRESULTS: &str = "1";
+    pub const MAX_TOTAL_RESULTS: &str = "5";
+    pub const MAX_SUCCESS_RESULTS: &str = "3";
+    pub const RSC_FPOPS_EST: &str = "1e12";
+    pub const RSC_FPOPS_BOUND: &str = "1e14";
+    pub const RSC_MEMORY_BOUND: &str = "1610612736";
+    pub const RSC_DISK_BOUND: &str = "1073741824";
+}
+
 /// The `--max_error_results` passed to stock `create_work`. Stock `create_work` reads 0 as "not
 /// given" and refuses the unit ("no max_error_results given; can't create job"), so a unit that
 /// must fail for good cannot be created with 0. A native unit, or a controller-side retry's
@@ -366,7 +378,7 @@ fn check_retry_app(
 /// error makes the workunit fail for good (error mask 0x2) and the assimilator writes the terminal
 /// marker `collect` reads, so the page is dead-lettered and retried by hand like any other failed
 /// page. Never returns "0".
-const fn max_error_results(fails_for_good: bool) -> &'static str {
+pub(crate) const fn max_error_results(fails_for_good: bool) -> &'static str {
     if fails_for_good {
         "1"
     } else {
@@ -602,23 +614,23 @@ async fn submit_unit(
                 "--result_template",
                 "templates/usnm_ocr_out",
                 "--min_quorum",
-                "1",
+                limits::MIN_QUORUM,
                 "--target_nresults",
-                "1",
+                limits::TARGET_NRESULTS,
                 "--max_error_results",
                 max_error_results(native_unit || retry_targeted),
                 "--max_total_results",
-                "5",
+                limits::MAX_TOTAL_RESULTS,
                 "--max_success_results",
-                "3",
+                limits::MAX_SUCCESS_RESULTS,
                 "--rsc_fpops_est",
-                "1e12",
+                limits::RSC_FPOPS_EST,
                 "--rsc_fpops_bound",
-                "1e14",
+                limits::RSC_FPOPS_BOUND,
                 "--rsc_memory_bound",
-                "1610612736",
+                limits::RSC_MEMORY_BOUND,
                 "--rsc_disk_bound",
-                "1073741824",
+                limits::RSC_DISK_BOUND,
                 "--delay_bound",
                 delay_bound,
                 "--priority",
