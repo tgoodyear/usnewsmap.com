@@ -140,6 +140,9 @@ fn skip_reason(record: &Record) -> Option<&'static str> {
         Some("bundled or unbundled")
     } else if record.job.lines.is_some() {
         Some("a line job")
+    } else if record.held.is_some() {
+        // A held result is settled without a stage change (trust/gate.rs).
+        Some("its result is held")
     } else if !matches!(
         record.stage,
         Stage::Reserved | Stage::Submitting | Stage::Submitted
@@ -694,6 +697,8 @@ mod tests {
             provenance: None,
         });
         assert_eq!(skip_reason(&r), Some("a retry"));
+        let held = record(page, 1, |r| r.held = Some("scope".into()));
+        assert_eq!(skip_reason(&held), Some("its result is held"));
         for stage in [Stage::Submitting, Stage::Submitted] {
             assert_eq!(skip_reason(&record(page, 1, |r| r.stage = stage)), None);
         }
