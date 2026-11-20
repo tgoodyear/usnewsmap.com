@@ -69,6 +69,25 @@ class BoincWorkunit {
 
 
 class ConcentrateTest(unittest.TestCase):
+    def test_max_archives_flag_default_validation_and_use(self):
+        import qwen_feed
+        base = ["--campaign", "test", "--archive-host", "archive.example", "--state", "/tmp/x", "--server-host", "server.example",
+                "--scan-server", "http://scan.example"]
+        for value, ok in (("1", True), ("32", True), ("0", False), ("33", False)):
+            with self.subTest(value=value), mock.patch.object(sys, "argv", ["qwen_feed.py", *base, "--max-archives", value]):
+                with mock.patch.object(qwen_feed, "ship_subsets", return_value=None), \
+                        mock.patch.object(qwen_feed, "tick", return_value=None):
+                    try:
+                        qwen_feed.main()
+                        accepted = True
+                    except SystemExit:
+                        accepted = False
+                    self.assertEqual(accepted, ok)
+        self.assertEqual(qwen_feed.MAX_BATCHES, 4)
+        pages = [{"batch": "a", "batch_version": 1}] * 3 + [{"batch": "b", "batch_version": 1}] * 2
+        self.assertEqual([p["batch"] for p in qwen_feed.concentrate(pages, 9, 1)], list("aaa"))
+        self.assertEqual([p["batch"] for p in qwen_feed.concentrate(pages, 9, 2)], list("aaabb"))
+
     def test_a_chunk_comes_from_the_most_represented_batches_in_damage_order(self):
         # #1435: one archive scan yields every page of its batch, so few batches make a fast tick.
         from qwen_feed import concentrate
@@ -1379,7 +1398,7 @@ class SourceRequestTest(unittest.TestCase):
                     state=root, outbox=root, campaign="test", prep_ct=215, server_ct=230,
                     server_host="server", archive_host="archive", scan_server="http://scan",
                     archives="/archives", alto_export="/cache", min_free_gb=50, max_ready=1000,
-                    max_unresolved=2000, max_pending=3, chunk_pages=100, reserve_mib=64,
+                    max_unresolved=2000, max_pending=3, chunk_pages=100, max_archives=4, reserve_mib=64,
                     yiddish_budget=None, german_budget=None, german_pages=None,
                     serbian_budget=None, serbian_pages=None)
                 index = b"".join((json.dumps(p) + "\n").encode() for p in (old, fresh))
@@ -2275,7 +2294,7 @@ class SourceTest(unittest.TestCase):
                                       archive_host="archive.example", archives="/archives",
                                       alto_export="/cache", scan_server="http://scan.example",
                                       outbox=Path(folder), min_free_gb=50, max_ready=1000,
-                                      max_pending=3, chunk_pages=100, max_unresolved=2000, reserve_mib=64,
+                                      max_pending=3, chunk_pages=100, max_archives=4, max_unresolved=2000, reserve_mib=64,
                                       yiddish_budget=None, german_budget=None, german_pages=None,
                     serbian_budget=None, serbian_pages=None)
             page = {"doc_id": DOC, "damage_rate": 0.9}
@@ -2455,7 +2474,7 @@ class SourceTest(unittest.TestCase):
         args = types.SimpleNamespace(
             state=root, outbox=root, campaign="test", prep_ct=215, server_ct=230, server_host="server",
             archive_host="archive", scan_server="http://scan", archives="/archives", alto_export="/cache",
-            min_free_gb=50, max_ready=1000, max_unresolved=2000, max_pending=3, chunk_pages=100,
+            min_free_gb=50, max_ready=1000, max_unresolved=2000, max_pending=3, chunk_pages=100, max_archives=4,
             reserve_mib=64, yiddish_budget=budget, german_budget=german_budget, german_pages=german_pages,
             serbian_budget=serbian_budget, serbian_pages=serbian_pages)
         filters, prepared = [], []
