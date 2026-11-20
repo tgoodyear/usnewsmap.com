@@ -69,6 +69,25 @@ class BoincWorkunit {
 
 
 class ConcentrateTest(unittest.TestCase):
+    def test_max_archives_flag_default_validation_and_use(self):
+        import qwen_feed
+        base = ["--campaign", "test", "--archive-host", "archive.invalid", "--state", "/tmp/x", "--server-host", "example.invalid",
+                "--scan-server", "http://scan.invalid"]
+        for value, ok in (("1", True), ("32", True), ("0", False), ("33", False)):
+            with self.subTest(value=value), mock.patch.object(sys, "argv", ["qwen_feed.py", *base, "--max-archives", value, "--prep-ct", "101"]):
+                with mock.patch.object(qwen_feed, "ship_subsets", return_value=None), \
+                        mock.patch.object(qwen_feed, "tick", return_value=None):
+                    try:
+                        qwen_feed.main()
+                        accepted = True
+                    except SystemExit:
+                        accepted = False
+                    self.assertEqual(accepted, ok)
+        self.assertEqual(qwen_feed.MAX_BATCHES, 4)
+        pages = [{"batch": "a", "batch_version": 1}] * 3 + [{"batch": "b", "batch_version": 1}] * 2
+        self.assertEqual([p["batch"] for p in qwen_feed.concentrate(pages, 9, 1)], list("aaa"))
+        self.assertEqual([p["batch"] for p in qwen_feed.concentrate(pages, 9, 2)], list("aaabb"))
+
     def test_a_chunk_comes_from_the_most_represented_batches_in_damage_order(self):
         # #1435: one archive scan yields every page of its batch, so few batches make a fast tick.
         from qwen_feed import concentrate
@@ -1327,6 +1346,23 @@ class SourceRequestTest(unittest.TestCase):
             self.assertEqual((selected, request_id), (index, None))
             self.assertEqual(source.read(root / "requests" / (record["request_id"] + ".json")), record)
 
+    def test_local_prep_ct_runs_source_commands_directly(self):
+        page = {"doc_id": DOC, "batch": "xx_test", "batch_version": 1}
+        for prep_ct, prefix in ((101, ["pct", "exec", "101", "--"]), ("local", [])):
+            with self.subTest(prep_ct=prep_ct), tempfile.TemporaryDirectory() as folder:
+                args = types.SimpleNamespace(state=Path(folder), prep_ct=prep_ct, scan_server="http://scan")
+                spec = source.specification(DOC, 1, "test")
+                with mock.patch.object(source.urllib.request, "urlopen",
+                                       return_value=contextlib.closing(io.BytesIO(
+                                           (json.dumps(page) + "\n").encode()))), \
+                        mock.patch("qwen_feed.command", side_effect=[b"", b"", b"", b"",
+                                                                   json.dumps(page).encode()]) as command:
+                    source.register(args, spec)
+                commands = [call.args[0] for call in command.call_args_list]
+                self.assertEqual(commands[0][:len(prefix) + 1], prefix + ["mkdir"])
+                self.assertEqual(commands[3][len(prefix)], "/opt/usnm-quality-feed/venv/bin/python")
+                self.assertEqual(commands[0][:4] == ["pct", "exec", "101", "--"], prep_ct == 101)
+
     def test_registered_source_replays_without_rerunning_selection(self):
         with tempfile.TemporaryDirectory() as folder:
             state = Path(folder)
@@ -1362,7 +1398,7 @@ class SourceRequestTest(unittest.TestCase):
                     state=root, outbox=root, campaign="test", prep_ct=215, server_ct=230,
                     server_host="server", archive_host="archive", scan_server="http://scan",
                     archives="/archives", alto_export="/cache", min_free_gb=50, max_ready=1000,
-                    max_unresolved=2000, max_pending=3, chunk_pages=100, reserve_mib=64,
+                    max_unresolved=2000, max_pending=3, chunk_pages=100, max_archives=4, reserve_mib=64,
                     yiddish_budget=None, german_budget=None, german_pages=None,
                     serbian_budget=None, serbian_pages=None)
                 index = b"".join((json.dumps(p) + "\n").encode() for p in (old, fresh))
@@ -2258,7 +2294,7 @@ class SourceTest(unittest.TestCase):
                                       archive_host="archive.example", archives="/archives",
                                       alto_export="/cache", scan_server="http://scan.example",
                                       outbox=Path(folder), min_free_gb=50, max_ready=1000,
-                                      max_pending=3, chunk_pages=100, max_unresolved=2000, reserve_mib=64,
+                                      max_pending=3, chunk_pages=100, max_archives=4, max_unresolved=2000, reserve_mib=64,
                                       yiddish_budget=None, german_budget=None, german_pages=None,
                     serbian_budget=None, serbian_pages=None)
             page = {"doc_id": DOC, "damage_rate": 0.9}
@@ -2430,7 +2466,8 @@ class SourceTest(unittest.TestCase):
         transaction.assert_not_called()
 
     def budget_tick(self, root, budget, yiddish, others, german_budget=None, german_pages=None, retryable=(),
-                    quarantine=None, finished=(), older=(), newer=(), serbian_budget=None, serbian_pages=None):
+                    quarantine=None, finished=(), older=(), newer=(), serbian_budget=None, serbian_pages=None,
+                    max_archives=4):
         """One feed tick with a stub corpus; returns the filters each select used and the
         pages it sent to `run`. A filter's refused languages are one string when one is refused.
         With `quarantine`, the campaign's quarantine is real and kept from selection there.
@@ -2438,7 +2475,7 @@ class SourceTest(unittest.TestCase):
         args = types.SimpleNamespace(
             state=root, outbox=root, campaign="test", prep_ct=215, server_ct=230, server_host="server",
             archive_host="archive", scan_server="http://scan", archives="/archives", alto_export="/cache",
-            min_free_gb=50, max_ready=1000, max_unresolved=2000, max_pending=3, chunk_pages=100,
+            min_free_gb=50, max_ready=1000, max_unresolved=2000, max_pending=3, chunk_pages=100, max_archives=max_archives,
             reserve_mib=64, yiddish_budget=budget, german_budget=german_budget, german_pages=german_pages,
             serbian_budget=serbian_budget, serbian_pages=serbian_pages)
         filters, prepared = [], []
@@ -2517,6 +2554,14 @@ class SourceTest(unittest.TestCase):
             filters, pages = self.budget_tick(root, 30, yiddish[30:], others)
             self.assertEqual(filters, [(None, "yid", 1000)])
             self.assertEqual(pages, [p["doc_id"] for p in others])
+
+    def test_the_archive_limit_covers_a_budget_chunk(self):
+        yiddish = [{"doc_id": f"sn1_1900-01-02_ed-1_seq-{n}", "lang": "yid", "damage_rate": .9,
+                    "batch": f"batch_{n}", "batch_version": 1} for n in range(1, 4)]
+        with tempfile.TemporaryDirectory() as folder:
+            filters, pages = self.budget_tick(Path(folder), 3, yiddish, [], max_archives=1)
+        self.assertEqual(filters[0], ("yid", None, 3))
+        self.assertEqual(pages, [yiddish[0]["doc_id"]])
 
     def test_failed_budget_reservation_can_retry_without_spending_another_page(self):
         page = {**frozen_page(), "lang": "yid", "damage_rate": .9}
@@ -2848,7 +2893,7 @@ class XiaomiCampaignTest(unittest.TestCase):
                     "--archive-host", "a", "--scan-server", "http://scan"]
             argv += [str(pages) if arg == "PAGES" else arg for arg in extra]
             with mock.patch.object(sys, "argv", argv), mock.patch.object(driver, "tick") as tick, \
-                    contextlib.redirect_stderr(io.StringIO()):
+                    mock.patch.dict(os.environ, {"CTID": "101"}), contextlib.redirect_stderr(io.StringIO()):
                 try:
                     driver.main()
                 except SystemExit:

@@ -16,6 +16,32 @@ import sys
 import time
 import uuid
 
+# This file is also piped to `python -` inside containers, where no sibling module exists, so the
+# batch-container helpers live here too (the same ones as ct_exec.py).
+LOCAL_CT = "local"
+
+
+def ctid_arg(value):
+    text = str(value)
+    if text == LOCAL_CT:
+        return LOCAL_CT
+    if text.isascii() and text.isdigit() and int(text) >= 1:
+        return int(text)
+    raise argparse.ArgumentTypeError("expected a positive container id or 'local'")
+
+
+def default_ctid():
+    value = os.environ.get("CTID")
+    return ctid_arg(value) if value else None
+
+
+def ct_argv(ctid, argv):
+    return list(argv) if str(ctid) == LOCAL_CT else ["pct", "exec", str(ctid), "--", *argv]
+
+
+def ct_run(ctid, argv, **kwargs):
+    return subprocess.run(ct_argv(ctid, argv), **kwargs)
+
 FILES = ("pages.parquet", "crops.parquet", "summary.md")
 UNIT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,255}")
 SNAPSHOT = re.compile(r"[a-f0-9]{32}")
@@ -527,8 +553,7 @@ def host_pass(args):
     host_receipt = args.state_dir / args.campaign / "receipts" / (snapshot + ".json")
     atomic_json(host_receipt, {"coverage": receipt, "verified": False, "loaded": False})
     dest = f"/var/lib/usnm-quality-feed/results/{args.campaign}/partial/{snapshot}"
-    subprocess.run(["pct", "exec", str(args.ctid), "--", "install", "-d", "-m", "700", dest],
-                   check=True, timeout=30)
+    ct_run(args.ctid, ["install", "-d", "-m", "700", dest], check=True, timeout=30)
     remote_source = "/srv/usnm-boinc/project/" + receipt["snapshot_dir"].removeprefix("/project/")
     archive = subprocess.run(
         [*ssh, shlex.join(["pct", "exec", str(args.server_ct), "--",
@@ -537,15 +562,13 @@ def host_pass(args):
                           "-cf", "-", "coverage.json", *("out/" + name for name in FILES)])],
         capture_output=True, check=True, timeout=60,
     ).stdout
-    subprocess.run(["pct", "exec", str(args.ctid), "--",
-                    "timeout", "--signal=TERM", "--kill-after=5s", "45s",
-                    "tar", "-x", "--no-same-owner", "-C", dest],
-                   input=archive, check=True, timeout=60)
-    load = ["pct", "exec", str(args.ctid), "--",
-            "timeout", "--signal=TERM", "--kill-after=10s", "150s",
+    ct_run(args.ctid, ["timeout", "--signal=TERM", "--kill-after=5s", "45s",
+                       "tar", "-x", "--no-same-owner", "-C", dest],
+           input=archive, check=True, timeout=60)
+    load = ["timeout", "--signal=TERM", "--kill-after=10s", "150s",
             "/opt/usnm-quality-feed/venv/bin/python", "-", "--load", *common,
             "--snapshot-dir", dest, "--engine-image", args.engine_image]
-    result = subprocess.run(load, input=Path(__file__).read_bytes(),
+    result = ct_run(args.ctid, load, input=Path(__file__).read_bytes(),
                             capture_output=True, check=True, timeout=180)
     loaded = json.loads(result.stdout)
     if (loaded.get("snapshot") != snapshot or loaded.get("campaign") != args.campaign
@@ -625,14 +648,15 @@ def main(argv=None):
                         help="no further unit starts once a run has used this many seconds")
     parser.add_argument("--server-host", default="pve.tjg.fyi")
     parser.add_argument("--server-ct", type=int, default=230)
-    parser.add_argument("--ctid", type=int, default=215)
+    parser.add_argument("--ctid", type=ctid_arg, default=default_ctid(),
+                        help="batch container id, or 'local' when running inside it")
     parser.add_argument("--state-dir", type=Path, default=Path("/var/lib/usnm-quality-feed/partial-results"))
     parser.add_argument("--lock", type=Path, default=Path("/run/usnm-quality-results.lock"))
     args = parser.parse_args(argv)
     if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", args.campaign)
             or (args.qwen_campaign and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", args.qwen_campaign))
             or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", args.server_host)
-            or min(args.ctid, args.server_ct) < 1
+            or args.server_ct < 1
             or (args.after and not UNIT.fullmatch(args.after))
             or (args.through and not UNIT.fullmatch(args.through))
             or not re.fullmatch(r"/project/[A-Za-z0-9_./-]+", args.collector)
@@ -668,6 +692,8 @@ def main(argv=None):
         signal.signal(signal.SIGTERM, terminate)
         report = verified_load(args)
     else:
+        if args.ctid is None:
+            parser.error("set CTID or pass --ctid")
         with args.lock.open("a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

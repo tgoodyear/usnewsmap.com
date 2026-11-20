@@ -19,6 +19,7 @@ import uuid
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))  # quality_results imports its sibling ct_exec
 spec = importlib.util.spec_from_file_location("quality_results", HERE / "quality_results.py")
 results = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(results)
@@ -26,6 +27,9 @@ spec.loader.exec_module(results)
 
 class ResultsTest(unittest.TestCase):
     def setUp(self):
+        env = mock.patch.dict(os.environ, {"CTID": "101"})
+        env.start()
+        self.addCleanup(env.stop)
         fixed = mock.patch.object(results.uuid, "uuid4", return_value=types.SimpleNamespace(hex="a" * 32))
         fixed.start()
         self.addCleanup(fixed.stop)
@@ -179,6 +183,42 @@ class ResultsTest(unittest.TestCase):
             for call in calls:
                 self.assertTrue(call.kwargs["check"])
                 self.assertGreater(call.kwargs["timeout"], 0)
+
+    def test_local_ctid_runs_batch_side_directly_and_keeps_server_hop(self):
+        args = self.args()
+        args.ctid = "local"
+        args.server_host, args.server_ct = "example.invalid", 102
+        with mock.patch.object(results.subprocess, "run") as run:
+            results.run(args)
+        collect, pull, load, cleanup = [c.args[0] for c in run.call_args_list]
+        self.assertEqual(collect[:6], ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "root@example.invalid"])
+        self.assertIn("pct exec 102 --", collect[-1])
+        self.assertEqual(pull[pull.index("--ctid") + 1], "local")
+        self.assertEqual(pull[pull.index("--server-ct") + 1], "102")
+        self.assertEqual(load[:2], ["timeout", "--signal=TERM"])
+        self.assertEqual(cleanup[:3], ["rm", "-rf", "/var/lib/usnm-quality-feed/results/v1-test/snapshots/" + "a" * 32])
+        self.assertFalse(any(part == "pct" for call in (load, cleanup) for part in call))
+
+    def test_ctid_flag_accepts_local_and_rejects_junk(self):
+        with tempfile.TemporaryDirectory(dir=HERE) as folder, \
+                mock.patch.object(results, "run", return_value={}) as run:
+            results.main(["--campaign", "test", "--engine-image", "sha256:" + "a" * 64, "--ctid", "local",
+                          "--lock", str(Path(folder) / "lock")])
+            self.assertEqual(run.call_args.args[0].ctid, "local")
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CTID", None)
+            with mock.patch.object(results, "default_ctid", return_value=None), \
+                    mock.patch.object(results, "run") as run:
+                with self.assertRaises(SystemExit) as error:
+                    results.main(["--campaign", "test", "--engine-image", "sha256:" + "a" * 64])
+                self.assertEqual(error.exception.code, 2)
+                run.assert_not_called()
+        for bad in ("0", "x"):
+            with self.subTest(bad=bad), mock.patch.object(results, "run") as run:
+                with self.assertRaises(SystemExit) as error:
+                    results.main(["--campaign", "test", "--engine-image", "sha256:" + "a" * 64, "--ctid", bad])
+                self.assertEqual(error.exception.code, 2)
+                run.assert_not_called()
 
     def test_failed_or_timed_out_phase_never_advances(self):
         for phase in range(4):
@@ -453,6 +493,7 @@ class NativeCampaignsTest(unittest.TestCase):
 
     def main(self, run, *extra):
         with mock.patch.object(results, "run", side_effect=run), \
+                mock.patch.dict(os.environ, {"CTID": "101"}), \
                 contextlib.redirect_stdout(io.StringIO()) as output:
             results.main(["--engine-image", self.ENGINE, "--lock", os.devnull, *extra])
         return output.getvalue()
@@ -521,7 +562,8 @@ raise SystemExit(int(os.environ.get("SSH_EXIT", "0")))
             path.write_text(body)
             path.chmod(0o755)
         self.env = {**os.environ, "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
-                    "CALL": str(self.root / "call.json")}
+                    "CALL": str(self.root / "call.json"), "SERVER_HOST": "example.invalid",
+                    "SERVER_CT": "102", "CTID": "101"}
 
     def test_snapshot_only_requires_fresh_file_and_propagates_remote_failure(self):
         for code in (0, 1):
@@ -555,7 +597,7 @@ raise SystemExit(int(os.environ.get("SSH_EXIT", "0")))
             with mock.patch.object(results, "run") as run:
                 with self.assertRaises(BlockingIOError):
                     results.main(["--campaign", "v1-test", "--engine-image",
-                                  "sha256:" + "a" * 64, "--lock", str(path)])
+                                  "sha256:" + "a" * 64, "--ctid", "101", "--lock", str(path)])
                 run.assert_not_called()
 
     def test_invalid_native_campaign_never_reaches_a_host(self):

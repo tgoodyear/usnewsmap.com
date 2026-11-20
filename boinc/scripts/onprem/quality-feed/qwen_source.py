@@ -13,6 +13,8 @@ import tempfile
 import time
 import urllib.request
 
+from ct_exec import ct_argv, ctid_arg, default_ctid
+
 
 PAGE = re.compile(r"[a-z0-9]{1,16}_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+")
 BATCH = re.compile(r"([a-z]+_[a-zA-Z0-9]+)_ver(0[1-9]|[1-9][0-9])")
@@ -127,7 +129,7 @@ def register(args, spec):
             index = b"".join(line for line in r if matches(json.loads(line), spec))
         if not index:
             raise ValueError("source has no indexed scans; source acquisition is required")
-        ct = ["pct", "exec", str(args.prep_ct), "--"]
+        ct = ct_argv(args.prep_ct, [])
         work = "/var/lib/usnm-quality-feed/work/source-" + identity
         feed.command(ct + ["mkdir", "-p", work])
         feed.command(ct + ["tee", work + "/index.jsonl"], index)
@@ -160,7 +162,7 @@ def inspect(args, record):
     expected = {p["doc_id"] for p in pages}
     if set(native["pages"]) != expected:
         raise ValueError("native source status does not cover the exact request membership")
-    ct = ["pct", "exec", str(args.prep_ct), "--", "/opt/usnm-quality-feed/venv/bin/python"]
+    ct = ct_argv(args.prep_ct, ["/opt/usnm-quality-feed/venv/bin/python"])
     prepared = json.loads(feed.command(ct + ["-c", (
         "from pathlib import Path; import json, sys; "
         "sys.path.insert(0, '/opt/usnm-quality-feed'); from scan_quarantine import quarantined; "
@@ -257,10 +259,13 @@ def main():
     parser.add_argument("--campaign", required=True)
     parser.add_argument("--server-host", required=True)
     parser.add_argument("--server-ct", type=int, default=230)
-    parser.add_argument("--prep-ct", type=int, default=215)
+    parser.add_argument("--prep-ct", type=ctid_arg, default=default_ctid(),
+                        help="batch container id, or 'local' when running inside it")
     parser.add_argument("--scan-server", required=True)
     parser.add_argument("--archive-host", required=True)
     args = parser.parse_args()
+    if args.prep_ct is None:
+        parser.error("set CTID or pass --prep-ct")
     payload = json.loads(sys.stdin.read(65537))
     spec = specification(payload["source"], payload["max_pages"], args.campaign)
     identity = digest(spec)

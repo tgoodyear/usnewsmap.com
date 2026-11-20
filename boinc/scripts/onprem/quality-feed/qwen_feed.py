@@ -19,6 +19,8 @@ import time
 import urllib.request
 import uuid
 
+from ct_exec import ct_argv, ctid_arg, default_ctid
+
 YIDDISH = "yid"
 GERMAN = "deu"
 SERBIAN = "srp"
@@ -562,7 +564,7 @@ def _tick(a):
         print(json.dumps({"phase": name, "seconds": now - phase_started, **counts}), flush=True)
         phase_started = now
 
-    ct = ["pct", "exec", str(a.prep_ct), "--"]
+    ct = ct_argv(a.prep_ct, [])
     python = ct + ["/opt/usnm-quality-feed/venv/bin/python"]
     helper = "/opt/usnm-quality-feed/"
     inv = json.loads(remote(a.server_host, ["pct", "exec", str(a.server_ct), "--", "podman", "exec",
@@ -707,12 +709,14 @@ def _tick(a):
               source_request=request_id)
         raw, pages = select(count * CANDIDATES_PER_PAGE, *filters,
                             *(("--language", listed_language) if listed_language else ()))
-        pages = concentrate(pages, count)
-        raw = "".join(json.dumps(p) + "\n" for p in pages).encode()
         if pages or request_id is None:
             break
         phase("source_request_no_eligible_pages", source_request=request_id)
         excluded_requests.add(request_id)
+    # Every selection path ends here: the archive limit covers the language budgets and their
+    # retries as well as the ordinary selection.
+    pages = concentrate(pages, count, a.max_archives)
+    raw = "".join(json.dumps(p) + "\n" for p in pages).encode()
     phase("source_selection", selected=len(pages))
     if not pages:
         print(json.dumps({"status": "waiting_for_crop_sources", "deferred": len(deferred)}))
@@ -762,7 +766,8 @@ def main():
     ap.add_argument("--campaign", required=True)
     ap.add_argument("--state", type=Path, required=True)
     ap.add_argument("--outbox", type=Path, default=Path("/var/lib/usnm-quality-feed/outbox"))
-    ap.add_argument("--prep-ct", type=int, default=215)
+    ap.add_argument("--prep-ct", type=ctid_arg, default=default_ctid(),
+                    help="batch container id, or 'local' when running inside it")
     ap.add_argument("--server-host", required=True)
     ap.add_argument("--server-ct", type=int, default=230)
     ap.add_argument("--archive-host", required=True)
@@ -774,6 +779,8 @@ def main():
     ap.add_argument("--max-unresolved", type=int, default=2000)
     ap.add_argument("--reserve-mib", type=int, default=64)
     ap.add_argument("--chunk-pages", type=int, default=100)
+    ap.add_argument("--max-archives", type=int, default=MAX_BATCHES,
+                    help="Archives (batch and version) a chunk is drawn from, 1 to 32 (#1435)")
     ap.add_argument("--max-pending", type=int, default=3)
     ap.add_argument("--yiddish-budget", type=int,
                     help="Total Yiddish pages to prepare, as chunks of their own; the normal order leaves "
@@ -801,7 +808,8 @@ def main():
                          "takes only these pages, worst damage first")
     a = ap.parse_args()
     if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", a.campaign)
-            or not 1 <= a.chunk_pages <= 490 or a.min_free_gb < 1 or a.max_ready < 2 or a.max_pending < 1
+            or not 1 <= a.chunk_pages <= 490 or not 1 <= a.max_archives <= 32
+            or a.min_free_gb < 1 or a.max_ready < 2 or a.max_pending < 1
             or not 1 <= a.max_unresolved <= 10000 or a.reserve_mib < 64
             or (a.yiddish_budget is not None and a.yiddish_budget < 0)
             or (a.german_budget is not None and a.german_budget < 0)
@@ -812,6 +820,8 @@ def main():
             or (a.pages is not None and (not a.pages.is_file() or not re.fullmatch(r"[a-z]{3}", a.language)))
             or (a.language == "eng" and a.prompt_version != 5)):
         ap.error("invalid campaign or non-positive/out-of-range limits")
+    if a.prep_ct is None:
+        ap.error("set CTID or pass --prep-ct")
     tick(a)
 
 
