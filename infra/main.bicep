@@ -374,6 +374,9 @@ param onPremGroupId string = ''
 @description('Arc service principal object id of the scan archive uploader. Grants only the archive writer role on scans, without OCR queue access or membership in the pacing-counted OCR node group.')
 param scanArchiveUploaderId string = ''
 
+@description('Object id of an Entra security group of Arc machine identities that run the scan archive upload (scripts/ocr-node/group.sh creates groups). Grants only the archive writer role on scans (list, read, create; no delete), without OCR queue access, the on-prem group\'s other grants or membership in the pacing-counted OCR node group. Empty: no grant, and the template changes nothing until it is set and the stack is provisioned. Settings only, never in the repository.')
+param scanArchiveGroupId string = ''
+
 @description('Schedule for the OCR pickup job usnm-ocrs-caj-<env> (UTC cron; with ocrNodes and the ingest jobs, 12 §12.5 Step 8). `manual`: no schedule.')
 param ocrSyncCron string = '17 * * * *'
 
@@ -901,6 +904,7 @@ module scanArchive 'modules/scan-archive.bicep' = if (ocrNodes) {
     nodeGroupId: trim(ocrNodeGroupId)
     writerRoleLabel: n.scansWriterRole
     uploaderId: trim(scanArchiveUploaderId)
+    writerGroupId: trim(scanArchiveGroupId)
   }
 }
 
