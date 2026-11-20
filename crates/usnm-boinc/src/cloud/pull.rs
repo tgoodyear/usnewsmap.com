@@ -48,27 +48,8 @@ impl Config {
         apps: Vec<String>,
         page_size: u32,
     ) -> anyhow::Result<Config> {
-        let mut base = Url::parse(base_url).context("--base-url")?;
-        let host = base.host_str().unwrap_or("");
-        let loopback = host
-            .trim_matches(['[', ']'])
-            .parse::<std::net::IpAddr>()
-            .map_or(host.eq_ignore_ascii_case("localhost"), |a| a.is_loopback());
-        ensure!(
-            base.scheme() == "https" || (base.scheme() == "http" && loopback),
-            "--base-url must be https (plain http is allowed only for a loopback host), \
-             because every request carries the admin token"
-        );
-        // Keep a trailing slash off so segments append cleanly.
-        base.path_segments_mut()
-            .map_err(|()| anyhow!("--base-url cannot carry a path"))?
-            .pop_if_empty();
-        // No redirects: the token must go only to the server named by --base-url.
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(15))
-            .timeout(Duration::from_secs(600))
-            .build()?;
+        let base = checked_base(base_url)?;
+        let client = http_client()?;
         Ok(Config {
             base,
             token,
@@ -81,14 +62,49 @@ impl Config {
     }
 
     fn url(&self, segments: &[&str]) -> Url {
-        let mut u = self.base.clone();
-        {
-            let mut s = u.path_segments_mut().expect("checked in new");
-            s.pop_if_empty().push("admin").push("v1");
-            s.extend(segments);
-        }
-        u
+        admin_url(&self.base, segments)
     }
+}
+
+/// The server root from `--base-url`: https, or plain http for a loopback host only, because
+/// every request carries the admin token. A trailing slash is dropped.
+pub(super) fn checked_base(base_url: &str) -> anyhow::Result<Url> {
+    let mut base = Url::parse(base_url).context("--base-url")?;
+    let host = base.host_str().unwrap_or("");
+    let loopback = host
+        .trim_matches(['[', ']'])
+        .parse::<std::net::IpAddr>()
+        .map_or(host.eq_ignore_ascii_case("localhost"), |a| a.is_loopback());
+    ensure!(
+        base.scheme() == "https" || (base.scheme() == "http" && loopback),
+        "--base-url must be https (plain http is allowed only for a loopback host), \
+         because every request carries the admin token"
+    );
+    // Keep a trailing slash off so segments append cleanly.
+    base.path_segments_mut()
+        .map_err(|()| anyhow!("--base-url cannot carry a path"))?
+        .pop_if_empty();
+    Ok(base)
+}
+
+/// No redirects: the token must go only to the server named by --base-url.
+pub(super) fn http_client() -> anyhow::Result<Client> {
+    Ok(Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(600))
+        .build()?)
+}
+
+/// `<base>/admin/v1/<segments>`.
+pub(super) fn admin_url(base: &Url, segments: &[&str]) -> Url {
+    let mut u = base.clone();
+    {
+        let mut s = u.path_segments_mut().expect("checked in checked_base");
+        s.pop_if_empty().push("admin").push("v1");
+        s.extend(segments);
+    }
+    u
 }
 
 #[derive(Debug, Default)]

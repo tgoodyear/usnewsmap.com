@@ -5,5 +5,6 @@
 pub mod cli;
 pub mod pull;
 pub mod spool_out;
+pub mod submit;
 #[cfg(any(test, feature = "cloud-validatord"))]
 pub mod validatord;

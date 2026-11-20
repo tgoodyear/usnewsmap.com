@@ -1,6 +1,7 @@
 //! The `usnm-boinc cloud` command line. `main.rs` only names the group.
 use super::pull::{self, Config};
 use super::spool_out;
+use super::submit as cloud_submit;
 #[cfg(any(test, feature = "cloud-validatord"))]
 use super::validatord;
 use anyhow::{bail, Context};
@@ -15,6 +16,9 @@ pub enum CloudCommands {
     /// Hand the spool `cloud pull` wrote to the hand-off store with `handoff::put_spool`, one
     /// finished single-page job at a time. Dev cloud server only.
     SpoolOut(SpoolOutArgs),
+    /// Send usnm_ocr jobs the controller already exported (`jobs/<id>/` under --root) to the
+    /// cloud server's admin API. Reads the records, never changes them. Dev cloud server only.
+    Submit(SubmitArgs),
     /// The cloud server's validation webhook for the gold apps (POST /v1/validate/<app>). Dev
     /// only; nothing in the running bridge calls it.
     #[cfg(any(test, feature = "cloud-validatord"))]
@@ -112,7 +116,32 @@ pub struct PullArgs {
     interval_secs: u64,
 }
 
-#[cfg(any(test, feature = "cloud-validatord"))]
+#[derive(Args)]
+pub struct SubmitArgs {
+    /// The controller root; jobs are at `<root>/jobs/<id>/`.
+    #[arg(long)]
+    root: PathBuf,
+    /// Server root, e.g. https://boinc-dev.example.org (the /admin/v1 path is added).
+    #[arg(long)]
+    base_url: String,
+    /// File holding the admin bearer token, or the CBOINC_TOKEN environment variable. Never
+    /// taken from the command line and never logged. Not needed with --dry-run.
+    #[arg(long)]
+    token_file: Option<PathBuf>,
+    /// A job id (sha256) to send; repeat for several.
+    #[arg(long = "id", conflicts_with = "all", required_unless_present = "all")]
+    ids: Vec<String>,
+    /// Send every record under --root.
+    #[arg(long)]
+    all: bool,
+    /// Print what would be sent; make no request.
+    #[arg(long)]
+    dry_run: bool,
+    /// Jobs per create request (1 to 500).
+    #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=500))]
+    batch_size: u32,
+}
+
 fn read_token(file: &Option<PathBuf>, env: &str) -> anyhow::Result<String> {
     let t = match file {
         Some(p) => std::fs::read_to_string(p)
@@ -179,17 +208,25 @@ pub async fn run(command: CloudCommands) -> anyhow::Result<()> {
                 tokio::time::sleep(Duration::from_secs(a.interval_secs)).await;
             }
         }
-        CloudCommands::Pull(a) => {
-            let token = match &a.token_file {
-                Some(p) => std::fs::read_to_string(p)
-                    .with_context(|| format!("reading token file {}", p.display()))?,
-                None => std::env::var("CBOINC_TOKEN")
-                    .context("give --token-file or set CBOINC_TOKEN")?,
+        CloudCommands::Submit(a) => {
+            let token = if a.dry_run {
+                String::new()
+            } else {
+                read_token(&a.token_file, "CBOINC_TOKEN")?
             };
-            let token = token.trim().to_owned();
-            if token.is_empty() {
-                bail!("the token is empty");
+            let cfg = cloud_submit::Config::new(&a.base_url, token, a.batch_size, a.dry_run)?;
+            let report = cloud_submit::run(&cfg, &a.root, &a.ids, a.all).await?;
+            println!("{report}");
+            for line in &report.lines {
+                eprintln!("{line}");
             }
+            if report.failed > 0 {
+                bail!("{} job(s) not submitted", report.failed);
+            }
+            Ok(())
+        }
+        CloudCommands::Pull(a) => {
+            let token = read_token(&a.token_file, "CBOINC_TOKEN")?;
             let cfg = Config::new(
                 &a.base_url,
                 token,
