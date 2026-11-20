@@ -9,7 +9,6 @@ import os
 import subprocess
 
 LOCAL = "local"
-DEFAULT_CTID = 215
 
 
 def ctid_arg(value):
@@ -23,14 +22,14 @@ def ctid_arg(value):
 
 
 def default_ctid():
-    """The CTID environment variable when set and valid, else the usual id."""
+    """The CTID environment variable when set, else None; the caller then requires --ctid."""
     value = os.environ.get("CTID")
     if value:
         try:
             return ctid_arg(value)
         except argparse.ArgumentTypeError:
             raise SystemExit("CTID must be a positive container id or 'local'") from None
-    return DEFAULT_CTID
+    return None
 
 
 def ct_argv(ctid, argv):

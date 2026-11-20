@@ -32,7 +32,7 @@ def ctid_arg(value):
 
 def default_ctid():
     value = os.environ.get("CTID")
-    return ctid_arg(value) if value else 215
+    return ctid_arg(value) if value else None
 
 
 def ct_argv(ctid, argv):
@@ -692,6 +692,8 @@ def main(argv=None):
         signal.signal(signal.SIGTERM, terminate)
         report = verified_load(args)
     else:
+        if args.ctid is None:
+            parser.error("set CTID or pass --ctid")
         with args.lock.open("a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

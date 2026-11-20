@@ -4,7 +4,7 @@
 # root over the host trust; host to host, nothing passes through a workstation.
 #
 #   quality-results-pull.sh --campaign NAME [--server-host pve.tjg.fyi] [--server-ct 230]
-#     [--ctid 215|local] [--snapshot-only] [--snapshot-id <32 lowercase hex>]
+#     [--ctid N|local] [--snapshot-only] [--snapshot-id <32 lowercase hex>]
 #
 # Takes <share>/quality/<campaign>/out/pages.parquet (quality collect's output) and
 # <campaign>/collected/*.parquet (the wave runner's parts), whichever exist, into
@@ -16,7 +16,7 @@ die() { echo "error: $*" >&2; exit 1; }
 ct_run() {
   if [ "$CTID" = local ]; then "$@"; else pct exec "$CTID" -- "$@"; fi
 }
-CAMPAIGN="" SERVER=pve.tjg.fyi SCT=230 CTID=${CTID:-215} SNAPSHOT=false SNAPSHOT_ID=""
+CAMPAIGN="" SERVER=${SERVER_HOST:-} SCT=${SERVER_CT:-} CTID=${CTID:-} SNAPSHOT=false SNAPSHOT_ID=""
 while [ $# -gt 0 ]; do
   case $1 in
     --campaign) CAMPAIGN=${2:-}; shift 2 ;;
@@ -29,6 +29,9 @@ while [ $# -gt 0 ]; do
     *) die "unknown argument: $1" ;;
   esac
 done
+[ -n "$SERVER" ] || die "set --server-host or SERVER_HOST"
+[ -n "$SCT" ] || die "set --server-ct or SERVER_CT"
+[ -n "$CTID" ] || die "set --ctid or CTID"
 [[ $CAMPAIGN =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || die "--campaign: 1-41 of [a-z0-9-]"
 [[ $SERVER =~ ^[a-z0-9][a-z0-9.-]*$ && $SCT =~ ^[0-9]+$ && ( $CTID =~ ^[0-9]+$ || $CTID = local ) ]] || die "bad --server-host, --server-ct or --ctid"
 dest=/var/lib/usnm-quality-feed/results/$CAMPAIGN

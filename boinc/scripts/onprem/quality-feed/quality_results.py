@@ -357,6 +357,8 @@ def main(argv=None):
                         help="with --warm-without-lock: held for the whole run instead, since warming "
                              "needs no host lock and must not keep the partial loader from running")
     args = parser.parse_args(argv)
+    if args.ctid is None:
+        parser.error("set CTID or pass --ctid")
     if bool(args.campaign) == bool(args.native_campaign):
         parser.error("give --campaign or --native-campaign")
     if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", args.campaign or args.native_campaign[0][0])

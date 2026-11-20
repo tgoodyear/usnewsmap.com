@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -22,6 +23,9 @@ spec.loader.exec_module(partial)
 
 class PartialTest(unittest.TestCase):
     def setUp(self):
+        env = mock.patch.dict(os.environ, {"CTID": "101"})
+        env.start()
+        self.addCleanup(env.stop)
         directory = tempfile.TemporaryDirectory(dir=HERE)
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)

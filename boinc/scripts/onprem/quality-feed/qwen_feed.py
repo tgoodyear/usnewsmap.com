@@ -818,6 +818,8 @@ def main():
             or (a.pages is not None and (not a.pages.is_file() or not re.fullmatch(r"[a-z]{3}", a.language)))
             or (a.language == "eng" and a.prompt_version != 5)):
         ap.error("invalid campaign or non-positive/out-of-range limits")
+    if a.prep_ct is None:
+        ap.error("set CTID or pass --prep-ct")
     tick(a)
 
 

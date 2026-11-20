@@ -71,10 +71,10 @@ class BoincWorkunit {
 class ConcentrateTest(unittest.TestCase):
     def test_max_archives_flag_default_validation_and_use(self):
         import qwen_feed
-        base = ["--campaign", "test", "--archive-host", "archive.example", "--state", "/tmp/x", "--server-host", "server.example",
-                "--scan-server", "http://scan.example"]
+        base = ["--campaign", "test", "--archive-host", "archive.invalid", "--state", "/tmp/x", "--server-host", "example.invalid",
+                "--scan-server", "http://scan.invalid"]
         for value, ok in (("1", True), ("32", True), ("0", False), ("33", False)):
-            with self.subTest(value=value), mock.patch.object(sys, "argv", ["qwen_feed.py", *base, "--max-archives", value]):
+            with self.subTest(value=value), mock.patch.object(sys, "argv", ["qwen_feed.py", *base, "--max-archives", value, "--prep-ct", "101"]):
                 with mock.patch.object(qwen_feed, "ship_subsets", return_value=None), \
                         mock.patch.object(qwen_feed, "tick", return_value=None):
                     try:
@@ -1348,7 +1348,7 @@ class SourceRequestTest(unittest.TestCase):
 
     def test_local_prep_ct_runs_source_commands_directly(self):
         page = {"doc_id": DOC, "batch": "xx_test", "batch_version": 1}
-        for prep_ct, prefix in ((215, ["pct", "exec", "215", "--"]), ("local", [])):
+        for prep_ct, prefix in ((101, ["pct", "exec", "101", "--"]), ("local", [])):
             with self.subTest(prep_ct=prep_ct), tempfile.TemporaryDirectory() as folder:
                 args = types.SimpleNamespace(state=Path(folder), prep_ct=prep_ct, scan_server="http://scan")
                 spec = source.specification(DOC, 1, "test")
@@ -1361,7 +1361,7 @@ class SourceRequestTest(unittest.TestCase):
                 commands = [call.args[0] for call in command.call_args_list]
                 self.assertEqual(commands[0][:len(prefix) + 1], prefix + ["mkdir"])
                 self.assertEqual(commands[3][len(prefix)], "/opt/usnm-quality-feed/venv/bin/python")
-                self.assertEqual(commands[0][:4] == ["pct", "exec", "215", "--"], prep_ct == 215)
+                self.assertEqual(commands[0][:4] == ["pct", "exec", "101", "--"], prep_ct == 101)
 
     def test_registered_source_replays_without_rerunning_selection(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -2884,7 +2884,7 @@ class XiaomiCampaignTest(unittest.TestCase):
                     "--archive-host", "a", "--scan-server", "http://scan"]
             argv += [str(pages) if arg == "PAGES" else arg for arg in extra]
             with mock.patch.object(sys, "argv", argv), mock.patch.object(driver, "tick") as tick, \
-                    contextlib.redirect_stderr(io.StringIO()):
+                    mock.patch.dict(os.environ, {"CTID": "101"}), contextlib.redirect_stderr(io.StringIO()):
                 try:
                     driver.main()
                 except SystemExit:

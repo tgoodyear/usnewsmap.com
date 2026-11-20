@@ -264,6 +264,8 @@ def main():
     parser.add_argument("--scan-server", required=True)
     parser.add_argument("--archive-host", required=True)
     args = parser.parse_args()
+    if args.prep_ct is None:
+        parser.error("set CTID or pass --prep-ct")
     payload = json.loads(sys.stdin.read(65537))
     spec = specification(payload["source"], payload["max_pages"], args.campaign)
     identity = digest(spec)
