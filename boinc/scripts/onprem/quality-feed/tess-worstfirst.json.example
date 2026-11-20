@@ -1,5 +1,9 @@
 {
   "cut": {"worst_fraction": 0.30},
   "language": "eng",
-  "tracking_issue": "tgoodyear/usnewsmap.com#1999"
+  "tracking_issue": "tgoodyear/usnewsmap.com#1999",
+  "ocr_local_dir": "/srv/curated/ocr-local",
+  "scorer": "/usr/local/bin/usnm_quality",
+  "qe_dir": "/usr/local/share/usnm-qe",
+  "qe_lock_file": "/usr/local/share/usnm-qe/resources.lock.json"
 }
