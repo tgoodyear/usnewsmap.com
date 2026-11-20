@@ -42,6 +42,8 @@ on:
       - "boinc/apps/usnm_qwen_2b_benchmark_in"
       - "boinc/apps/usnm_qwen_8b_benchmark_in"
       - "boinc/apps/usnm_qwen_x08_benchmark_in"
+      - "boinc/apps/usnm_ocr_in"
+      - "boinc/apps/usnm_ocr_out"
       - "ocr/engines/engines.toml"
       - "ocr/engines/ndlocr-lite/models.lock"
       - "ocr/engines/tesseract/models.lock"
