@@ -2006,17 +2006,21 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
                 # The document's own time shows how old it is; an invalid one has none to show.
                 self.assertEqual(source.get("last_observed_at"), observed_at if reason == "stale" else None)
 
-    def test_an_expired_controller_whose_tick_finished_after_its_envelope_is_stale(self):
-        # The publisher stamps the envelope before a running tick finishes.
+    def test_an_expired_controller_valid_when_published_is_stale(self):
+        # The publisher stamps the envelope before a running tick finishes (+5), and a tick can be
+        # nearly as old as the 900 s it may be when published (-800); a future tick is invalid.
         observed = NOW - C.MAX_AGE - 1
-        document = {"schema_version": 1, "source": "controller", "observed_at": observed,
-                    "tick": {"ok": True, "seconds": 20, "finished_at": observed + 5}}
-        with patch.object(C, "read_source", return_value=document), \
-                patch.object(C.time, "time", return_value=NOW):
-            facts = C.collect({"server": "/server", "controller": "/controller"})
-        source = facts["sources"]["controller"]
-        self.assertEqual((source["state"], source["reason"], source["last_observed_at"]),
-                         ("unknown", "stale", observed))
+        for finished, reason in ((observed + 5, "stale"), (observed - 800, "stale"),
+                                 (observed + C.MAX_AGE + 60, "unavailable_or_invalid")):
+            with self.subTest(finished=finished - observed):
+                document = {"schema_version": 1, "source": "controller", "observed_at": observed,
+                            "tick": {"ok": True, "seconds": 20, "finished_at": finished}}
+                with patch.object(C, "read_source", return_value=document), \
+                        patch.object(C.time, "time", return_value=NOW):
+                    facts = C.collect({"server": "/server", "controller": "/controller"})
+                source = facts["sources"]["controller"]
+                self.assertEqual((source["state"], source["reason"]), ("unknown", reason))
+                self.assertEqual(source.get("last_observed_at"), observed if reason == "stale" else None)
 
     def test_loopback_rpc_reads_only_and_never_uses_volunteer_hosts(self):
         with client_rpc_fixture() as (root, port, answers, operations):
