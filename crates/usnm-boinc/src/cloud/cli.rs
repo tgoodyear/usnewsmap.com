@@ -33,9 +33,14 @@ pub struct ValidatordArgs {
     /// File holding the webhook bearer token the cloud server sends (its WEBHOOK_TOKEN).
     #[arg(long)]
     secret_file: PathBuf,
-    /// Verdicts by call id and scratch space.
+    /// The durable state: verdicts by call id and quality's seen copies and pair lines. A local
+    /// directory, or `r2://<bucket>[/<prefix>]` with R2_ENDPOINT, R2_ACCESS_KEY_ID and
+    /// R2_SECRET_ACCESS_KEY set (`usnm_store::open`).
     #[arg(long)]
-    state_dir: PathBuf,
+    state_url: String,
+    /// Local scratch space for each call's fetched outputs.
+    #[arg(long, default_value = "/tmp/usnm-validatord")]
+    work_dir: PathBuf,
     /// The project's gold/ directory, which `gold submit` writes.
     #[arg(long)]
     gold_dir: PathBuf,
@@ -131,10 +136,13 @@ pub async fn run(command: CloudCommands) -> anyhow::Result<()> {
             let secret = read_token(&Some(a.secret_file), "")?;
             let admin = read_token(&a.token_file, "CBOINC_TOKEN")?;
             let fetch =
-                pull::Config::new(&a.base_url, admin, a.state_dir.clone(), false, vec![], 1)?;
+                pull::Config::new(&a.base_url, admin, a.work_dir.clone(), false, vec![], 1)?;
+            let state = usnm_store::open(&a.state_url)
+                .with_context(|| format!("opening the state store {}", a.state_url))?;
             let cfg = validatord::Config {
                 secret,
-                state_dir: a.state_dir,
+                state,
+                work_dir: a.work_dir,
                 gold_dir: a.gold_dir,
                 fetch,
                 max_body: a.max_body_bytes,

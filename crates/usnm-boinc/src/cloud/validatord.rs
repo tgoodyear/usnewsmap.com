@@ -34,6 +34,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+use usnm_store::ObjectStore;
 
 /// The apps this service validates, all with the gold check.
 pub const GOLD_APPS: [&str; 2] = ["usnm_gold", "usnm_gold_native"];
@@ -45,7 +46,12 @@ const MAX_FILES: usize = 16;
 pub struct Config {
     /// The webhook bearer token the cloud server sends (its `WEBHOOK_TOKEN`).
     pub secret: String,
-    pub state_dir: PathBuf,
+    /// Where the durable state goes: the call cache (`calls/`) and quality's side effects
+    /// (`quality/seen/`, `quality/pairs/`). A local directory or R2 (`usnm_store::open`); every
+    /// write is a whole object, so several instances may share one store.
+    pub state: Arc<dyn ObjectStore>,
+    /// Local scratch space for the fetched outputs of a call, removed when the call ends.
+    pub work_dir: PathBuf,
     pub gold_dir: PathBuf,
     pub fetch: pull::Config,
     pub max_body: usize,
@@ -60,8 +66,7 @@ struct Shared {
 }
 
 pub fn router(cfg: Config) -> anyhow::Result<Router> {
-    std::fs::create_dir_all(cfg.state_dir.join("calls"))?;
-    std::fs::create_dir_all(cfg.state_dir.join("work"))?;
+    std::fs::create_dir_all(&cfg.work_dir)?;
     let max = cfg.max_body;
     let shared = Arc::new(Shared {
         cfg,
@@ -228,35 +233,41 @@ impl Request {
     }
 }
 
-/// Reads a cache entry: `None` only when it does not exist. Any other error (a directory in its
-/// place, permissions, I/O) is returned and the entry is left as it is.
-fn read_entry(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
-    match std::fs::read(path) {
-        Ok(b) => Ok(Some(b)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
-    }
-}
-
-/// The reply for a call id. The request's digest is saved under the id, durably, before any
+/// The reply for a call id. The request's digest is saved under the id, create-only, before any
 /// work, so the id belongs to that request whether or not a verdict was ever stored: the same
 /// request may run again, a different one is a `Conflict`. A verdict is stored only when every
 /// result has a final one (no `retry`), and a repeat of that request gets it with no new work.
+/// A store error (anything but "not there") is returned and the entry is left as it is.
 async fn once(cfg: &Config, req: &Request, digest: &str) -> anyhow::Result<Value> {
     let id: String = Sha256::digest(req.call_id.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    let calls = cfg.state_dir.join("calls");
-    let claim = calls.join(format!("{id}.request"));
-    match read_entry(&claim)? {
-        Some(saved) if saved == digest.as_bytes() => {}
-        Some(_) => return Err(Conflict.into()),
-        // `atomic` fsyncs the file and its directory before it returns.
-        None => crate::atomic(&claim, digest.as_bytes())?,
+    let claim = format!("calls/{id}.request");
+    if !cfg
+        .state
+        .put_new(&claim, digest.as_bytes().to_vec(), "text/plain")
+        .await
+        .with_context(|| format!("claiming {claim}"))?
+    {
+        let saved = cfg
+            .state
+            .get(&claim)
+            .await
+            .with_context(|| format!("reading {claim}"))?;
+        match saved {
+            Some(saved) if saved == digest.as_bytes() => {}
+            Some(_) => return Err(Conflict.into()),
+            None => bail!("{claim} was there and is gone"),
+        }
     }
-    let path = calls.join(format!("{id}.json"));
-    if let Some(bytes) = read_entry(&path)? {
+    let path = format!("calls/{id}.json");
+    let stored = cfg
+        .state
+        .get(&path)
+        .await
+        .with_context(|| format!("reading {path}"))?;
+    if let Some(bytes) = stored {
         let stored: Value = serde_json::from_slice(&bytes).context("stored verdict")?;
         if stored["request_sha256"] == digest {
             return Ok(stored["reply"].clone());
@@ -265,10 +276,12 @@ async fn once(cfg: &Config, req: &Request, digest: &str) -> anyhow::Result<Value
     }
     let (reply, final_) = evaluate(cfg, req).await?;
     if final_ {
-        crate::atomic(
-            &path,
-            &serde_json::to_vec(&json!({ "request_sha256": digest, "reply": reply }))?,
-        )?;
+        let body = serde_json::to_vec(&json!({ "request_sha256": digest, "reply": reply }))?;
+        // Create-only: a concurrent instance that stored first stored the same request's reply.
+        cfg.state
+            .put_new(&path, body, "application/json")
+            .await
+            .with_context(|| format!("storing {path}"))?;
     }
     Ok(reply)
 }
@@ -278,7 +291,7 @@ async fn evaluate(cfg: &Config, req: &Request) -> anyhow::Result<(Value, bool)> 
     if PAIRWISE_APPS.contains(&req.workunit.app.as_str()) {
         return pairwise::evaluate(cfg, req).await;
     }
-    let work = tempfile::tempdir_in(cfg.state_dir.join("work"))?;
+    let work = tempfile::tempdir_in(&cfg.work_dir)?;
     let mut out = Vec::new();
     let mut all_final = true;
     for r in &req.results {
@@ -419,7 +432,8 @@ mod tests {
         fn config(&self, max_body: usize) -> Config {
             Config {
                 secret: "hook".into(),
-                state_dir: self.state.path().to_owned(),
+                state: Arc::new(usnm_store::LocalStore::new(self.state.path())),
+                work_dir: self.state.path().join("work"),
                 gold_dir: self.gold.path().to_owned(),
                 fetch: pull::Config::new(
                     &self.mock_base,

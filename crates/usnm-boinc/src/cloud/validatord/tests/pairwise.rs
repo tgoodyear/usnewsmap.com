@@ -366,6 +366,22 @@ fn log_lines(path: &Path) -> Vec<Value> {
     }
 }
 
+/// The service's pair lines (one object each under `quality/pairs/`), in the order they were
+/// first computed, with the times taken out.
+fn service_lines(quality: &Path) -> Vec<Value> {
+    let mut lines: Vec<(String, Value)> = tree(&quality.join("pairs"))
+        .into_values()
+        .map(|b| {
+            let mut v: Value = serde_json::from_slice(&b).unwrap();
+            let at = v["at"].as_str().unwrap().to_owned();
+            v.as_object_mut().unwrap().remove("at");
+            (at, v)
+        })
+        .collect();
+    lines.sort_by(|a, b| a.0.cmp(&b.0));
+    lines.into_iter().map(|(_, v)| v).collect()
+}
+
 fn tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
     fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
         let Ok(rd) = std::fs::read_dir(dir) else {
@@ -455,10 +471,7 @@ impl Run<'_> {
     /// The service's side-effect files equal stock's, in the same order.
     fn same_files_as(&self, stock_dir: &Path) {
         let q = self.quality_dir();
-        assert_eq!(
-            log_lines(&q.join("pairs.jsonl")),
-            log_lines(&stock_dir.join("pairs.jsonl"))
-        );
+        assert_eq!(service_lines(&q), log_lines(&stock_dir.join("pairs.jsonl")));
         assert_eq!(tree(&q.join("seen")), tree(&stock_dir.join("seen")));
     }
 }
@@ -597,7 +610,7 @@ async fn quality_check_pair_compares_only_late_against_canonical_and_a_third_res
         .await;
     assert_eq!(matches_of(&r), BTreeSet::from([(1, 4)]));
     // Stock's log, in order: set (a,b) then pair (c,a) (d,a).
-    let log = log_lines(&run.quality_dir().join("pairs.jsonl"));
+    let log = service_lines(&run.quality_dir());
     assert_eq!(log.len(), 3);
     assert_eq!(log[0]["a"]["result"], "usnm_quality_x_a_0");
     assert_eq!(log[1]["a"]["result"], "usnm_quality_x_c_0");
@@ -619,7 +632,7 @@ async fn a_replayed_call_id_adds_nothing_and_a_new_call_appends_like_stock_does(
         .agree("wu1-rev1-check_set", "check_set", 2, None, cases)
         .await;
     let (log, seen) = (
-        std::fs::read(run.quality_dir().join("pairs.jsonl")).unwrap(),
+        tree(&run.quality_dir().join("pairs")),
         tree(&run.quality_dir().join("seen")),
     );
     let fetched = fx.mock.fetches.load(Ordering::SeqCst);
@@ -634,16 +647,13 @@ async fn a_replayed_call_id_adds_nothing_and_a_new_call_appends_like_stock_does(
         .await;
     assert_eq!(once_more, (200, first));
     assert_eq!(fx.mock.fetches.load(Ordering::SeqCst), fetched);
-    assert_eq!(
-        std::fs::read(run.quality_dir().join("pairs.jsonl")).unwrap(),
-        log
-    );
+    assert_eq!(tree(&run.quality_dir().join("pairs")), log);
     assert_eq!(tree(&run.quality_dir().join("seen")), seen);
     // The same results under a new call id (the server re-validates after a revision) are a new
     // compare and a new line, as stock would log it again.
     run.agree("wu1-rev2-check_set", "check_set", 2, None, cases)
         .await;
-    assert_eq!(log_lines(&run.quality_dir().join("pairs.jsonl")).len(), 2);
+    assert_eq!(service_lines(&run.quality_dir()).len(), 2);
 }
 
 #[tokio::test]
@@ -709,7 +719,7 @@ async fn a_transient_fetch_failure_is_a_retry_with_no_side_effect_and_the_retry_
         )
         .await;
     assert_eq!(matches_of(&reply), BTreeSet::from([(1, 2)]));
-    assert_eq!(log_lines(&run.quality_dir().join("pairs.jsonl")).len(), 1);
+    assert_eq!(service_lines(&run.quality_dir()).len(), 1);
     let (_, again) = run
         .post(
             "wu1-rev1-check_set",
@@ -721,7 +731,7 @@ async fn a_transient_fetch_failure_is_a_retry_with_no_side_effect_and_the_retry_
         )
         .await;
     assert_eq!(again, reply);
-    assert_eq!(log_lines(&run.quality_dir().join("pairs.jsonl")).len(), 1);
+    assert_eq!(service_lines(&run.quality_dir()).len(), 1);
 }
 
 #[tokio::test]
@@ -760,11 +770,11 @@ async fn a_late_result_that_cannot_be_fetched_does_not_hold_back_the_others_or_d
     let (_, first) = post_it(false).await;
     assert_eq!(first["results"][1], json!({"id": 4, "retry": true}));
     assert_eq!(matches_of(&first), BTreeSet::from([(1, 3)]));
-    assert_eq!(log_lines(&run.quality_dir().join("pairs.jsonl")).len(), 1);
+    assert_eq!(service_lines(&run.quality_dir()).len(), 1);
     // The same call again, now complete: result 3 is not logged a second time.
     let (_, second) = post_it(true).await;
     assert_eq!(matches_of(&second), BTreeSet::from([(1, 3), (1, 4)]));
-    assert_eq!(log_lines(&run.quality_dir().join("pairs.jsonl")).len(), 2);
+    assert_eq!(service_lines(&run.quality_dir()).len(), 2);
 }
 
 #[tokio::test]
@@ -942,113 +952,25 @@ async fn pairwise_requests_need_a_mode_a_quorum_and_a_canonical_result() {
     assert_eq!(post(&run.base, "usnm_ndlocr", None, &b).await.0, 401);
 }
 
-fn intent(side: &Path, key: &str, offset: u64, line: &[u8]) {
-    let dir = side.join("pairs-journal/pending");
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(
-        dir.join(format!("{key}.intent")),
-        serde_json::to_vec(
-            &json!({"offset": offset, "line": String::from_utf8(line.to_vec()).unwrap()}),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-}
-
-/// The log is valid JSON Lines and holds exactly these lines, in this order.
-fn assert_log(side: &Path, want: &[&[u8]]) {
-    let got = std::fs::read(side.join("pairs.jsonl")).unwrap();
-    assert_eq!(got, want.concat(), "{}", String::from_utf8_lossy(&got));
-    for l in String::from_utf8(got).unwrap().lines() {
-        serde_json::from_str::<Value>(l).unwrap();
-    }
-}
-
-#[test]
-fn the_pair_journal_adds_a_line_once_even_after_a_crash_between_its_steps() {
-    let dir = tempfile::tempdir().unwrap();
-    let side = dir.path();
-    let (l1, l2) = (b"{\"n\":1}\n".as_slice(), b"{\"n\":2}\n".as_slice());
-    pairwise_record(side, "k1", l1);
-    pairwise_record(side, "k1", l1);
-    pairwise_record(side, "k2", l2);
-    assert_log(side, &[l1, l2]);
-    // A crash after the append and before the mark: the line is there, the intent is pending.
-    std::fs::remove_file(side.join("pairs-journal/k2.done")).unwrap();
-    intent(side, "k2", l1.len() as u64, l2);
-    pairwise_record(side, "k2", b"{\"n\":\"a later attempt\"}\n");
-    assert_log(side, &[l1, l2]);
-}
-
-#[test]
-fn a_torn_append_is_repaired_before_another_key_writes_behind_it() {
-    let dir = tempfile::tempdir().unwrap();
-    let side = dir.path();
-    let (l1, a, b) = (
-        b"{\"n\":1}\n".as_slice(),
-        b"{\"n\":\"a\"}\n".as_slice(),
-        b"{\"n\":\"b\"}\n".as_slice(),
+#[tokio::test]
+async fn two_instances_on_one_store_record_each_line_once() {
+    // Two services over the same state store, as two container instances would be: the same
+    // call reaches both at once. Both may do the work; the stored lines and copies are the same
+    // as one service's.
+    let fx = Fx::new().await;
+    let base = quality_base().await;
+    let a = named(App::Quality, "a", base.clone());
+    let b = named(App::Quality, "b", other_host(&base));
+    let one = Run::new(&fx, App::Quality).await;
+    let two = Run::new(&fx, App::Quality).await;
+    let cases: &[(i64, &Files)] = &[(1, &a), (2, &b)];
+    let (r1, r2) = tokio::join!(
+        one.post("wu9-check_set", "check_set", 2, None, cases, true),
+        two.post("wu9-check_set", "check_set", 2, None, cases, false),
     );
-    pairwise_record(side, "k1", l1);
-    // Key A crashed in the middle of its append: its intent and the start of its line.
-    intent(side, "ka", l1.len() as u64, a);
-    std::fs::write(side.join("pairs.jsonl"), [l1, &a[..5]].concat()).unwrap();
-    // Key B runs first after the restart: A is finished before B writes.
-    pairwise_record(side, "kb", b);
-    assert_log(side, &[l1, a, b]);
-    // A's replay, and B's, add nothing.
-    pairwise_record(side, "ka", a);
-    pairwise_record(side, "kb", b);
-    assert_log(side, &[l1, a, b]);
-    // Two unfinished intents, one torn and one never started, finish in offset order.
-    let (c, d, e) = (
-        b"{\"n\":\"c\"}\n".as_slice(),
-        b"{\"n\":\"d\"}\n".as_slice(),
-        b"{\"n\":\"e\"}\n".as_slice(),
-    );
-    let end = std::fs::metadata(side.join("pairs.jsonl")).unwrap().len();
-    intent(side, "kc", end, c);
-    intent(side, "kd", end + c.len() as u64, d);
-    let mut log = std::fs::read(side.join("pairs.jsonl")).unwrap();
-    log.extend_from_slice(&c[..3]);
-    std::fs::write(side.join("pairs.jsonl"), log).unwrap();
-    pairwise_record(side, "ke", e);
-    assert_log(side, &[l1, a, b, c, d, e]);
-}
-
-#[test]
-fn an_intent_whose_offset_is_not_where_the_file_ends_is_rewritten_before_the_append() {
-    let dir = tempfile::tempdir().unwrap();
-    let side = dir.path();
-    let (l1, l2) = (b"{\"n\":1}\n".as_slice(), b"{\"n\":2}\n".as_slice());
-    pairwise_record(side, "k1", l1);
-    // The file is shorter than the intent says (or holds other bytes there): the line goes at the
-    // end, and the intent now says so, durably, before the append.
-    intent(side, "k2", 1000, l2);
-    let at = super::super::pairwise::finish(side, "k2", 1000, l2).unwrap();
-    assert_eq!(at, l1.len() as u64);
-    assert_log(side, &[l1, l2]);
-    let saved = |key: &str| -> u64 {
-        let b = std::fs::read(side.join(format!("pairs-journal/pending/{key}.intent"))).unwrap();
-        serde_json::from_slice::<Value>(&b).unwrap()["offset"]
-            .as_u64()
-            .unwrap()
-    };
-    assert_eq!(saved("k2"), at);
-    // Another line is where the intent points but is not this one: same.
-    let l3 = b"{\"n\":3}\n".as_slice();
-    intent(side, "k3", 0, l3);
-    let at = super::super::pairwise::finish(side, "k3", 0, l3).unwrap();
-    assert_eq!(at, (l1.len() + l2.len()) as u64);
-    assert_log(side, &[l1, l2, l3]);
-    assert_eq!(saved("k3"), at);
-    // A crash after the append, before the mark: the rewritten intent is what a replay reads, and
-    // the line is found there, not appended again.
-    std::fs::remove_file(side.join("pairs-journal/k3.done")).unwrap();
-    pairwise_record(side, "k3", l3);
-    assert_log(side, &[l1, l2, l3]);
-}
-
-fn pairwise_record(side: &Path, key: &str, line: &[u8]) {
-    super::super::pairwise::record_pair(side, key, line).unwrap();
+    assert_eq!(r1.0, 200, "{}", r1.1);
+    assert_eq!(r2.0, 200, "{}", r2.1);
+    assert_eq!(matches_of(&r1.1), matches_of(&r2.1));
+    let want = stock(App::Quality, cases, "check_set", 2, None);
+    one.same_files_as(want.dir.path());
 }
