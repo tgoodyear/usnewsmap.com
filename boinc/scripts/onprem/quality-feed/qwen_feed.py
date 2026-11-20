@@ -19,6 +19,8 @@ import time
 import urllib.request
 import uuid
 
+from ct_exec import ct_argv, ctid_arg, default_ctid
+
 YIDDISH = "yid"
 GERMAN = "deu"
 SERBIAN = "srp"
@@ -562,7 +564,7 @@ def _tick(a):
         print(json.dumps({"phase": name, "seconds": now - phase_started, **counts}), flush=True)
         phase_started = now
 
-    ct = ["pct", "exec", str(a.prep_ct), "--"]
+    ct = ct_argv(a.prep_ct, [])
     python = ct + ["/opt/usnm-quality-feed/venv/bin/python"]
     helper = "/opt/usnm-quality-feed/"
     inv = json.loads(remote(a.server_host, ["pct", "exec", str(a.server_ct), "--", "podman", "exec",
@@ -762,7 +764,8 @@ def main():
     ap.add_argument("--campaign", required=True)
     ap.add_argument("--state", type=Path, required=True)
     ap.add_argument("--outbox", type=Path, default=Path("/var/lib/usnm-quality-feed/outbox"))
-    ap.add_argument("--prep-ct", type=int, default=215)
+    ap.add_argument("--prep-ct", type=ctid_arg, default=default_ctid(),
+                    help="batch container id, or 'local' when running inside it")
     ap.add_argument("--server-host", required=True)
     ap.add_argument("--server-ct", type=int, default=230)
     ap.add_argument("--archive-host", required=True)

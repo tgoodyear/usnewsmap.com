@@ -180,6 +180,33 @@ class ResultsTest(unittest.TestCase):
                 self.assertTrue(call.kwargs["check"])
                 self.assertGreater(call.kwargs["timeout"], 0)
 
+    def test_local_ctid_runs_batch_side_directly_and_keeps_server_hop(self):
+        args = self.args()
+        args.ctid = "local"
+        with mock.patch.object(results.subprocess, "run") as run:
+            results.run(args)
+        collect, pull, load, cleanup = [c.args[0] for c in run.call_args_list]
+        self.assertEqual(collect[:6], ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "root@server.example"])
+        self.assertIn("pct exec 230 --", collect[-1])
+        self.assertEqual(pull[pull.index("--ctid") + 1], "local")
+        self.assertEqual(pull[pull.index("--server-ct") + 1], "230")
+        self.assertEqual(load[:2], ["timeout", "--signal=TERM"])
+        self.assertEqual(cleanup[:3], ["rm", "-rf", "/var/lib/usnm-quality-feed/results/v1-test/snapshots/" + "a" * 32])
+        self.assertFalse(any(part == "pct" for call in (load, cleanup) for part in call))
+
+    def test_ctid_flag_accepts_local_and_rejects_junk(self):
+        with tempfile.TemporaryDirectory(dir=HERE) as folder, \
+                mock.patch.object(results, "run", return_value={}) as run:
+            results.main(["--campaign", "test", "--engine-image", "sha256:" + "a" * 64, "--ctid", "local",
+                          "--lock", str(Path(folder) / "lock")])
+            self.assertEqual(run.call_args.args[0].ctid, "local")
+        for bad in ("0", "x"):
+            with self.subTest(bad=bad), mock.patch.object(results, "run") as run:
+                with self.assertRaises(SystemExit) as error:
+                    results.main(["--campaign", "test", "--engine-image", "sha256:" + "a" * 64, "--ctid", bad])
+                self.assertEqual(error.exception.code, 2)
+                run.assert_not_called()
+
     def test_failed_or_timed_out_phase_never_advances(self):
         for phase in range(4):
             for error in (subprocess.CalledProcessError(1, ["phase"]),

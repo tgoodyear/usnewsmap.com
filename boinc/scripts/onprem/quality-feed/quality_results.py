@@ -26,6 +26,8 @@ import sys
 import time
 import uuid
 
+from ct_exec import ct_run, ctid_arg, default_ctid
+
 HERE = Path(__file__).resolve().parent
 LOCK_ACQUIRED = "USNM_QUALITY_STEP_LOCK_ACQUIRED"
 LOCK_RELEASED = "USNM_QUALITY_STEP_LOCK_RELEASED"
@@ -256,8 +258,7 @@ def publish(args, root, collect_args, warm, locked_timeout):
         script = ('set -eu; mkdir -p "$1/held"; rm -rf "$1/held/latest.new"; '
                   'mv "$1/snapshots/$2" "$1/held/latest.new"; rm -rf "$1/held/latest"; '
                   'mv "$1/held/latest.new" "$1/held/latest"')
-        subprocess.run(["pct", "exec", str(args.ctid), "--", "sh", "-c", script, "sh", base, snapshot],
-                       check=True, timeout=60)
+        ct_run(args.ctid, ["sh", "-c", script, "sh", base, snapshot], check=True, timeout=60)
         return {"campaign": args.campaign, "held": f"{base}/held/latest/out/pages.parquet",
                 "loaded": False, "qwen_campaign": args.qwen_campaign}
     # Read the existing certificate-auth DSN only inside the preparation container.
@@ -269,12 +270,10 @@ def publish(args, root, collect_args, warm, locked_timeout):
     ]
     script = ('set -eu; exec ' + shlex.join(load) +
               ' --dsn "$(cat /etc/usnm/quality-db/dsn)"')
-    subprocess.run(["pct", "exec", str(args.ctid), "--",
-                    "timeout", "--signal=TERM", "--kill-after=30s", "10m",
-                    "sh", "-c", script], check=True, timeout=660)
-    subprocess.run(["pct", "exec", str(args.ctid), "--", "rm", "-rf",
-                    f"/var/lib/usnm-quality-feed/results/{args.campaign}/snapshots/{snapshot}"],
-                   check=True, timeout=30)
+    ct_run(args.ctid, ["timeout", "--signal=TERM", "--kill-after=30s", "10m", "sh", "-c", script],
+           check=True, timeout=660)
+    ct_run(args.ctid, ["rm", "-rf", f"/var/lib/usnm-quality-feed/results/{args.campaign}/snapshots/{snapshot}"],
+           check=True, timeout=30)
     return {"campaign": args.campaign, "loaded_at": time.time(),
             "snapshot": f"{root}/out/pages.parquet", "qwen_campaign": args.qwen_campaign}
 
@@ -348,7 +347,8 @@ def main(argv=None):
                         help="native collector executable inside the server (dedicated persistent path in services)")
     parser.add_argument("--server-host", default="pve.tjg.fyi")
     parser.add_argument("--server-ct", type=int, default=230)
-    parser.add_argument("--ctid", type=int, default=215)
+    parser.add_argument("--ctid", type=ctid_arg, default=default_ctid(),
+                        help="batch container id, or 'local' when running inside it")
     parser.add_argument("--lock", type=Path, default=Path("/run/usnm-quality-results.lock"),
                         help="the host lock shared with the partial loader, around collect, pull and load")
     parser.add_argument("--host-lock-wait-secs", type=int, default=300,
@@ -362,7 +362,7 @@ def main(argv=None):
     if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", args.campaign or args.native_campaign[0][0])
             or not re.fullmatch(r"sha256:[a-f0-9]{64}", args.engine_image)
             or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", args.server_host)
-            or min(args.ctid, args.server_ct, args.max_dirty_units) < 1
+            or min(args.server_ct, args.max_dirty_units) < 1
             or not 0 <= args.step_lock_wait_secs <= 60):
         parser.error("invalid campaign, engine image, server host, container id, dirty-unit or lock-wait bound")
     if args.warm_without_lock and not (args.incremental and args.step_lock_wait_secs):

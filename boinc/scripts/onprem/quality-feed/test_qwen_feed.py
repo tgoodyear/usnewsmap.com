@@ -1327,6 +1327,23 @@ class SourceRequestTest(unittest.TestCase):
             self.assertEqual((selected, request_id), (index, None))
             self.assertEqual(source.read(root / "requests" / (record["request_id"] + ".json")), record)
 
+    def test_local_prep_ct_runs_source_commands_directly(self):
+        page = {"doc_id": DOC, "batch": "xx_test", "batch_version": 1}
+        for prep_ct, prefix in ((215, ["pct", "exec", "215", "--"]), ("local", [])):
+            with self.subTest(prep_ct=prep_ct), tempfile.TemporaryDirectory() as folder:
+                args = types.SimpleNamespace(state=Path(folder), prep_ct=prep_ct, scan_server="http://scan")
+                spec = source.specification(DOC, 1, "test")
+                with mock.patch.object(source.urllib.request, "urlopen",
+                                       return_value=contextlib.closing(io.BytesIO(
+                                           (json.dumps(page) + "\n").encode()))), \
+                        mock.patch("qwen_feed.command", side_effect=[b"", b"", b"", b"",
+                                                                   json.dumps(page).encode()]) as command:
+                    source.register(args, spec)
+                commands = [call.args[0] for call in command.call_args_list]
+                self.assertEqual(commands[0][:len(prefix) + 1], prefix + ["mkdir"])
+                self.assertEqual(commands[3][len(prefix)], "/opt/usnm-quality-feed/venv/bin/python")
+                self.assertEqual(commands[0][:4] == ["pct", "exec", "215", "--"], prep_ct == 215)
+
     def test_registered_source_replays_without_rerunning_selection(self):
         with tempfile.TemporaryDirectory() as folder:
             state = Path(folder)
