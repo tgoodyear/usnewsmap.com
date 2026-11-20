@@ -511,10 +511,12 @@ def fresh(document, now, kind):
     observed = natural(document.get("observed_at"))
     if 0 <= now - observed <= MAX_AGE:
         return valid(document, now, kind)
-    # Too old or future-dated: judged as of its own time, so only a valid payload or a known
-    # error envelope reads as stale; a malformed one stays unavailable_or_invalid.
+    # Too old or future-dated: judged as at the last moment it was fresh (its own time plus
+    # MAX_AGE, when the evaluator would still have taken it, ticks written just after the
+    # envelope included), so only a valid payload or a known error envelope reads as stale;
+    # a malformed one stays unavailable_or_invalid.
     try:
-        valid(document, observed, kind)
+        valid(document, observed + MAX_AGE, kind)
     except (SupplyUnknown, SourceFailed):
         pass
     raise StaleSource(observed)

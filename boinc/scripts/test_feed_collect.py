@@ -2006,6 +2006,18 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
                 # The document's own time shows how old it is; an invalid one has none to show.
                 self.assertEqual(source.get("last_observed_at"), observed_at if reason == "stale" else None)
 
+    def test_an_expired_controller_whose_tick_finished_after_its_envelope_is_stale(self):
+        # The publisher stamps the envelope before a running tick finishes.
+        observed = NOW - C.MAX_AGE - 1
+        document = {"schema_version": 1, "source": "controller", "observed_at": observed,
+                    "tick": {"ok": True, "seconds": 20, "finished_at": observed + 5}}
+        with patch.object(C, "read_source", return_value=document), \
+                patch.object(C.time, "time", return_value=NOW):
+            facts = C.collect({"server": "/server", "controller": "/controller"})
+        source = facts["sources"]["controller"]
+        self.assertEqual((source["state"], source["reason"], source["last_observed_at"]),
+                         ("unknown", "stale", observed))
+
     def test_loopback_rpc_reads_only_and_never_uses_volunteer_hosts(self):
         with client_rpc_fixture() as (root, port, answers, operations):
             result = C.client(root, port, root / "client.session.json")
