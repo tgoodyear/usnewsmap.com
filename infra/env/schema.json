@@ -333,6 +333,11 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_SCAN_ARCHIVE_GROUP": {
+      "x-usnm-visibility": "private",
+      "description": "Private: object id of the Entra group granted only archive writer access.",
+      "not": {}
+    },
     "USNM_SCAN_ARCHIVE_UPLOADER_ID": {
       "x-usnm-visibility": "private",
       "description": "Private: scan-host Arc principal granted only archive writer access.",
