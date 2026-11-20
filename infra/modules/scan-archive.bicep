@@ -27,6 +27,8 @@ param readerIds array = []
 param nodeGroupId string = ''
 @description('Optional scan-host Arc identity; archive-only access, not OCR queue permissions.')
 param uploaderId string = ''
+@description('Object id of an Entra security group whose members run the scan archive upload. It gets the writer role only; empty grants none.')
+param writerGroupId string = ''
 @description('The scan writer role\'s name, before its scope (infra/naming.bicep).')
 param writerRoleLabel string
 
@@ -145,6 +147,16 @@ resource uploaderWrite 'Microsoft.Authorization/roleAssignments@2022-04-01' = if
   properties: {
     principalId: uploaderId
     principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', writer.name)
+  }
+}
+
+resource groupWrite 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(writerGroupId)) {
+  scope: scans
+  name: guid(scans.id, writerGroupId, 'usnm-scans-writer')
+  properties: {
+    principalId: writerGroupId
+    principalType: 'Group'
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', writer.name)
   }
 }

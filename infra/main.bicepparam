@@ -102,6 +102,7 @@ param ocrSyncAlerts = bool(readEnvironmentVariable('USNM_OCR_SYNC_ALERTS', 'fals
 param boincFeedAlerts = bool(readEnvironmentVariable('USNM_BOINC_FEED_ALERTS', 'false'))
 param boincFeedMachine = readEnvironmentVariable('USNM_BOINC_FEED_MACHINE', '')
 param scanArchiveUploaderId = readEnvironmentVariable('USNM_SCAN_ARCHIVE_UPLOADER_ID', '')
+param scanArchiveGroupId = readEnvironmentVariable('USNM_SCAN_ARCHIVE_GROUP', '')
 param ocrKeyVaultAdmins = readEnvironmentVariable('USNM_OCR_KEYVAULT_ADMINS', '')
 param ocrSyncCron = readEnvironmentVariable('USNM_OCR_SYNC_CRON', '17 * * * *')
 param ocrUserDailyMax = int(readEnvironmentVariable('USNM_OCR_USER_DAILY_MAX', '1000'))
