@@ -207,13 +207,14 @@ impl R2Store {
         &self,
         path: &str,
         if_match: Option<&str>,
+        limit: u64,
     ) -> Result<Option<Vec<u8>>, StoreError> {
         let key = self.object_key(path)?;
         let extra: Vec<(&str, String)> = if_match
             .map(|e| ("if-match", quoted(e)))
             .into_iter()
             .collect();
-        let resp = self
+        let mut resp = self
             .send(Method::GET, &key, &[], &extra, Bytes::new(), "get")
             .await?;
         match resp.status() {
@@ -221,14 +222,23 @@ impl R2Store {
             StatusCode::NOT_FOUND | StatusCode::PRECONDITION_FAILED => return Ok(None),
             s => return Err(http("get", path, s)),
         }
-        if resp.content_length().is_some_and(|n| n > MAX_OBJECT_BYTES) {
+        if resp.content_length().is_some_and(|n| n > limit) {
             return Err(StoreError::TooLarge(path.into()));
         }
-        let body = resp
-            .bytes()
+        // The length header can be missing, so the limit holds while reading too: the rest of a
+        // larger body is never read.
+        let mut body = Vec::new();
+        while let Some(chunk) = resp
+            .chunk()
             .await
-            .map_err(|e| StoreError::Io(format!("get `{path}`: {}", e.without_url())))?;
-        Ok(Some(body.to_vec()))
+            .map_err(|e| StoreError::Io(format!("get `{path}`: {}", e.without_url())))?
+        {
+            if (body.len() + chunk.len()) as u64 > limit {
+                return Err(StoreError::TooLarge(path.into()));
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(Some(body))
     }
 
     async fn head(&self, path: &str) -> Result<Option<reqwest::header::HeaderMap>, StoreError> {
@@ -294,17 +304,23 @@ impl R2Store {
                     .map_err(|e| StoreError::Io(format!("list `{stem}`: {}", e.without_url())))
             })
             .await?;
-            let page = parse_list(&xml);
+            let page = parse_list(&xml).map_err(|why| {
+                StoreError::Io(format!("list `{stem}`: malformed listing: {why}"))
+            })?;
             for mut o in page.objects {
-                // Paths are relative to the store's prefix, as the other stores give them.
+                // Paths are relative to the store's prefix, as the other stores give them. A key
+                // the other operations would refuse (one written by something else, or a
+                // directory marker) is left out, as BlobStore leaves it out.
                 if let Some(rel) = o.path.strip_prefix(&self.prefix) {
-                    o.path = rel.to_owned();
-                    out.push(o);
+                    if validate_path(rel).is_ok() {
+                        o.path = rel.to_owned();
+                        out.push(o);
+                    }
                 }
             }
             match page.next {
-                Some(t) if page.truncated => token = Some(t),
-                _ => break,
+                Some(t) => token = Some(t),
+                None => break,
             }
         }
         out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -316,7 +332,7 @@ impl R2Store {
 impl ObjectStore for R2Store {
     async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, StoreError> {
         retrying("get", path, self.retry, retryable, |_| {
-            self.get_once(path, None)
+            self.get_once(path, None, MAX_OBJECT_BYTES)
         })
         .await
     }
@@ -404,14 +420,11 @@ impl ObjectStore for R2Store {
         etag: &str,
         max_bytes: u64,
     ) -> Result<Option<Vec<u8>>, StoreError> {
-        let got = retrying("get", path, self.retry, retryable, |_| {
-            self.get_once(path, Some(etag))
+        let limit = max_bytes.min(MAX_OBJECT_BYTES);
+        retrying("get", path, self.retry, retryable, |_| {
+            self.get_once(path, Some(etag), limit)
         })
-        .await?;
-        match got {
-            Some(b) if b.len() as u64 > max_bytes => Err(StoreError::TooLarge(path.into())),
-            other => Ok(other),
-        }
+        .await
     }
 }
 
@@ -583,7 +596,6 @@ fn sign(i: &SignInput<'_>) -> Signed {
 
 struct ListPage {
     objects: Vec<ObjectInfo>,
-    truncated: bool,
     next: Option<String>,
 }
 
@@ -603,18 +615,24 @@ fn element<'a>(xml: &'a str, tag: &str) -> Option<&'a str> {
     Some(&xml[start..start + len])
 }
 
-fn parse_list(xml: &str) -> ListPage {
+/// One ListObjectsV2 page. A page that is cut short, an entry without a key or a size, or a
+/// truncated page without a continuation token is an error: a listing must never look complete
+/// when it is not. `next` is set only when there is another page.
+fn parse_list(xml: &str) -> Result<ListPage, String> {
+    if !xml.contains("</ListBucketResult>") {
+        return Err("no closing ListBucketResult".into());
+    }
     let mut objects = Vec::new();
     for part in xml.split("<Contents>").skip(1) {
         let Some((entry, _)) = part.split_once("</Contents>") else {
-            continue;
+            return Err("an unclosed Contents".into());
         };
-        let (Some(path), Some(size)) = (
-            element(entry, "Key").map(xml_text),
-            element(entry, "Size").and_then(|s| s.trim().parse().ok()),
-        ) else {
-            continue;
-        };
+        let path = element(entry, "Key")
+            .map(xml_text)
+            .ok_or("an entry without a Key")?;
+        let size = element(entry, "Size")
+            .and_then(|s| s.trim().parse().ok())
+            .ok_or_else(|| format!("{path}: no valid Size"))?;
         let modified = element(entry, "LastModified").and_then(parse_iso8601);
         objects.push(ObjectInfo {
             path,
@@ -625,11 +643,21 @@ fn parse_list(xml: &str) -> ListPage {
             content_md5: None,
         });
     }
-    ListPage {
-        objects,
-        truncated: element(xml, "IsTruncated").is_some_and(|v| v.trim() == "true"),
-        next: element(xml, "NextContinuationToken").map(xml_text),
-    }
+    let truncated = match element(xml, "IsTruncated").map(str::trim) {
+        Some("true") => true,
+        Some("false") => false,
+        _ => return Err("no valid IsTruncated".into()),
+    };
+    let next = if truncated {
+        let t = element(xml, "NextContinuationToken")
+            .map(xml_text)
+            .filter(|t| !t.is_empty())
+            .ok_or("a truncated page without a NextContinuationToken")?;
+        Some(t)
+    } else {
+        None
+    };
+    Ok(ListPage { objects, next })
 }
 
 /// `2026-11-20T14:02:01.000Z` (the listing's `LastModified`).
@@ -817,6 +845,8 @@ mod tests {
         objects: Mutex<HashMap<String, (Vec<u8>, String)>>,
         unsigned: Mutex<usize>,
         busy: Mutex<usize>,
+        /// GET bodies are streamed without a Content-Length.
+        no_length: Mutex<bool>,
     }
 
     async fn handle(
@@ -888,6 +918,13 @@ mod tests {
                 None => AxStatus::NOT_FOUND.into_response(),
                 Some((_, e)) if h.get("if-match").is_some_and(|m| m.to_str().unwrap() != e) => {
                     AxStatus::PRECONDITION_FAILED.into_response()
+                }
+                Some((b, _)) if *f.no_length.lock().unwrap() => {
+                    let chunks: Vec<Result<AxBytes, std::io::Error>> = b
+                        .chunks(4)
+                        .map(|c| Ok(AxBytes::copy_from_slice(c)))
+                        .collect();
+                    axum::body::Body::from_stream(futures::stream::iter(chunks)).into_response()
                 }
                 Some((b, _)) => (
                     AxStatus::OK,
@@ -1007,14 +1044,90 @@ mod tests {
 
     #[test]
     fn listing_entities_are_decoded() {
-        let p = parse_list("<ListBucketResult><Contents><Key>a&amp;b</Key><ETag>&quot;e&quot;</ETag><Size>3</Size></Contents><IsTruncated>false</IsTruncated></ListBucketResult>");
+        let p = parse_list("<ListBucketResult><Contents><Key>a&amp;b</Key><ETag>&quot;e&quot;</ETag><Size>3</Size></Contents><IsTruncated>false</IsTruncated></ListBucketResult>").unwrap();
         assert_eq!(
             (
                 p.objects[0].path.as_str(),
                 p.objects[0].etag.as_str(),
-                p.truncated
+                p.next
             ),
-            ("a&b", "\"e\"", false)
+            ("a&b", "\"e\"", None)
         );
+    }
+
+    #[test]
+    fn a_malformed_listing_is_an_error() {
+        let ok = "<Contents><Key>a</Key><Size>1</Size></Contents>";
+        for xml in [
+            // Cut short.
+            format!("<ListBucketResult>{ok}"),
+            format!("<ListBucketResult>{ok}<Contents><Key>b</Key>"),
+            // An entry without a size, a bad size or no key.
+            "<ListBucketResult><Contents><Key>a</Key></Contents><IsTruncated>false</IsTruncated></ListBucketResult>".to_owned(),
+            "<ListBucketResult><Contents><Key>a</Key><Size>x</Size></Contents><IsTruncated>false</IsTruncated></ListBucketResult>".to_owned(),
+            "<ListBucketResult><Contents><Size>1</Size></Contents><IsTruncated>false</IsTruncated></ListBucketResult>".to_owned(),
+            // No IsTruncated, or truncated without a token.
+            format!("<ListBucketResult>{ok}</ListBucketResult>"),
+            format!("<ListBucketResult>{ok}<IsTruncated>true</IsTruncated></ListBucketResult>"),
+            format!("<ListBucketResult>{ok}<IsTruncated>true</IsTruncated><NextContinuationToken></NextContinuationToken></ListBucketResult>"),
+        ] {
+            assert!(parse_list(&xml).is_err(), "{xml}");
+        }
+        let last = parse_list(&format!(
+            "<ListBucketResult>{ok}<IsTruncated>true</IsTruncated><NextContinuationToken>t</NextContinuationToken></ListBucketResult>"
+        ))
+        .unwrap();
+        assert_eq!(last.next.as_deref(), Some("t"));
+    }
+
+    #[tokio::test]
+    async fn keys_that_are_not_store_paths_are_left_out_of_listings() {
+        let (f, endpoint) = fake().await;
+        let s = R2Store::new("r2://bkt/p", &endpoint, key())
+            .unwrap()
+            .with_retry(FAST);
+        s.put("calls/a", b"1".to_vec(), "text/plain").await.unwrap();
+        {
+            let mut o = f.objects.lock().unwrap();
+            for k in ["p/calls/", "p/calls/a b", "p/calls/../x", "p//calls/b"] {
+                o.insert(k.to_owned(), (b"x".to_vec(), "\"e\"".to_owned()));
+            }
+        }
+        assert_eq!(s.list("calls").await.unwrap(), vec!["calls/a".to_owned()]);
+        let all: Vec<String> = s
+            .list_info("")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|o| o.path)
+            .collect();
+        assert_eq!(all, vec!["calls/a".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn reads_stop_at_the_limit_with_or_without_a_length() {
+        let (f, endpoint) = fake().await;
+        let s = R2Store::new("r2://bkt", &endpoint, key())
+            .unwrap()
+            .with_retry(FAST);
+        s.put("a", vec![7; 20], "application/octet-stream")
+            .await
+            .unwrap();
+        let etag = s.list_info("").await.unwrap()[0].etag.clone();
+        for streamed in [false, true] {
+            *f.no_length.lock().unwrap() = streamed;
+            assert!(
+                matches!(
+                    s.get_if_match("a", &etag, 19).await,
+                    Err(StoreError::TooLarge(_))
+                ),
+                "streamed {streamed}"
+            );
+            assert_eq!(
+                s.get_if_match("a", &etag, 20).await.unwrap(),
+                Some(vec![7; 20])
+            );
+            assert_eq!(s.get("a").await.unwrap(), Some(vec![7; 20]));
+        }
     }
 }
