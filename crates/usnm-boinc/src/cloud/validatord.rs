@@ -584,15 +584,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join(&name);
             std::fs::write(&path, bytes).unwrap();
-            // `check` alone calls a unit the directory lacks invalid; the service answers retry.
-            let want_verdict = if validate::check(&path, fx.gold.path()).is_ok() {
-                "valid"
-            } else if validate::knows_unit(&path, fx.gold.path()) {
-                "invalid"
-            } else {
-                "retry"
-            };
-            want.push((label, want_verdict));
+            want.push((label, validate::check(&path, fx.gold.path()).is_ok()));
             results.push(res(i as i64 + 1, vec![fx.output(&name, bytes)]));
         }
         let base = fx.serve().await;
@@ -604,14 +596,11 @@ mod tests {
         )
         .await;
         assert_eq!(status, 200, "{reply}");
-        for (i, (label, want)) in want.iter().enumerate() {
-            assert_eq!(verdict(&reply, i as i64 + 1), *want, "{label}");
+        for (i, (label, ok)) in want.iter().enumerate() {
+            let got = verdict(&reply, i as i64 + 1);
+            assert_eq!(got, if *ok { "valid" } else { "invalid" }, "{label}");
         }
-        assert!(
-            want.iter().any(|(_, w)| *w == "valid") && want.iter().any(|(_, w)| *w == "invalid")
-        );
-        let unknown = want.iter().find(|(l, _)| **l == "unknown unit").unwrap();
-        assert_eq!(unknown.1, "retry");
+        assert!(want.iter().any(|(_, ok)| *ok) && want.iter().any(|(_, ok)| !*ok));
     }
 
     #[tokio::test]

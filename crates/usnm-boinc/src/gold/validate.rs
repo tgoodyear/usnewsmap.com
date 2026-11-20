@@ -283,6 +283,11 @@ pub fn knows_unit(file: &Path, dir: &Path) -> bool {
     let Some(b) = r.boinc.as_ref() else {
         return true;
     };
+    // A report that names another unit than its file is for `check` to reject, never a unit
+    // that is still to come.
+    if workunit_job_id(file).ok().as_deref() != Some(b.job_id.as_str()) {
+        return true;
+    }
     let Ok(p) = expected_path(dir, &r.manifest_sha256) else {
         return true;
     };
@@ -402,11 +407,16 @@ pub(crate) mod tests {
         let write = |r: &Report| std::fs::write(&f, serde_json::to_vec(r).unwrap()).unwrap();
         write(&good);
         assert!(knows_unit(&f, tmp.path()));
-        // The bundle's expectations file is listed but not this unit.
+        // The bundle's expectations file is there but does not list this unit yet.
         let mut r = good.clone();
         r.boinc.as_mut().unwrap().job_id = "f".repeat(64);
+        let later = tmp.path().join(format!("usnm_gold_{}_0_0", "f".repeat(64)));
+        std::fs::write(&later, serde_json::to_vec(&r).unwrap()).unwrap();
+        assert!(!knows_unit(&later, tmp.path()));
+        assert!(check(&later, tmp.path()).is_err());
+        // The same report under another unit's file name is a mismatch for check to reject.
         write(&r);
-        assert!(!knows_unit(&f, tmp.path()));
+        assert!(knows_unit(&f, tmp.path()));
         assert!(check(&f, tmp.path()).is_err());
         // No expectations file for the report's bundle at all.
         let mut r = good.clone();
