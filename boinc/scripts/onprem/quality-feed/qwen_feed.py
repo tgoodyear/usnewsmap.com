@@ -709,12 +709,14 @@ def _tick(a):
               source_request=request_id)
         raw, pages = select(count * CANDIDATES_PER_PAGE, *filters,
                             *(("--language", listed_language) if listed_language else ()))
-        pages = concentrate(pages, count, a.max_archives)
-        raw = "".join(json.dumps(p) + "\n" for p in pages).encode()
         if pages or request_id is None:
             break
         phase("source_request_no_eligible_pages", source_request=request_id)
         excluded_requests.add(request_id)
+    # Every selection path ends here: the archive limit covers the language budgets and their
+    # retries as well as the ordinary selection.
+    pages = concentrate(pages, count, a.max_archives)
+    raw = "".join(json.dumps(p) + "\n" for p in pages).encode()
     phase("source_selection", selected=len(pages))
     if not pages:
         print(json.dumps({"status": "waiting_for_crop_sources", "deferred": len(deferred)}))

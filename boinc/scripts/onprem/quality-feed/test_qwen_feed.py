@@ -2466,7 +2466,8 @@ class SourceTest(unittest.TestCase):
         transaction.assert_not_called()
 
     def budget_tick(self, root, budget, yiddish, others, german_budget=None, german_pages=None, retryable=(),
-                    quarantine=None, finished=(), older=(), newer=(), serbian_budget=None, serbian_pages=None):
+                    quarantine=None, finished=(), older=(), newer=(), serbian_budget=None, serbian_pages=None,
+                    max_archives=4):
         """One feed tick with a stub corpus; returns the filters each select used and the
         pages it sent to `run`. A filter's refused languages are one string when one is refused.
         With `quarantine`, the campaign's quarantine is real and kept from selection there.
@@ -2474,7 +2475,7 @@ class SourceTest(unittest.TestCase):
         args = types.SimpleNamespace(
             state=root, outbox=root, campaign="test", prep_ct=215, server_ct=230, server_host="server",
             archive_host="archive", scan_server="http://scan", archives="/archives", alto_export="/cache",
-            min_free_gb=50, max_ready=1000, max_unresolved=2000, max_pending=3, chunk_pages=100, max_archives=4,
+            min_free_gb=50, max_ready=1000, max_unresolved=2000, max_pending=3, chunk_pages=100, max_archives=max_archives,
             reserve_mib=64, yiddish_budget=budget, german_budget=german_budget, german_pages=german_pages,
             serbian_budget=serbian_budget, serbian_pages=serbian_pages)
         filters, prepared = [], []
@@ -2553,6 +2554,14 @@ class SourceTest(unittest.TestCase):
             filters, pages = self.budget_tick(root, 30, yiddish[30:], others)
             self.assertEqual(filters, [(None, "yid", 1000)])
             self.assertEqual(pages, [p["doc_id"] for p in others])
+
+    def test_the_archive_limit_covers_a_budget_chunk(self):
+        yiddish = [{"doc_id": f"sn1_1900-01-02_ed-1_seq-{n}", "lang": "yid", "damage_rate": .9,
+                    "batch": f"batch_{n}", "batch_version": 1} for n in range(1, 4)]
+        with tempfile.TemporaryDirectory() as folder:
+            filters, pages = self.budget_tick(Path(folder), 3, yiddish, [], max_archives=1)
+        self.assertEqual(filters[0], ("yid", None, 3))
+        self.assertEqual(pages, [yiddish[0]["doc_id"]])
 
     def test_failed_budget_reservation_can_retry_without_spending_another_page(self):
         page = {**frozen_page(), "lang": "yid", "damage_rate": .9}
