@@ -396,6 +396,59 @@ class ResultsTest(unittest.TestCase):
         self.assertIn('"phase": "collection_deferred"', log.getvalue())
         self.assertNotIn('"phase": "collection_failed"', log.getvalue())
 
+    def test_a_locked_collection_ended_by_its_timeout_is_out_of_time_not_failed(self):
+        args = self.warm_args()
+        locked = results.LOCK_ACQUIRED + " 2026-11-12T08:00:00Z\n" + results.LOCK_RELEASED + " 2026-11-12T08:02:30Z\n"
+        replies = [(0, self.progress(False)), (124, locked)]
+        calls = []
+
+        def fake(command, **kwargs):
+            calls.append(command)
+            code, stderr = replies.pop(0)
+            return subprocess.CompletedProcess(command, code, stderr=stderr)
+
+        with mock.patch.object(results.subprocess, "run", side_effect=fake), \
+                mock.patch.object(results.sys, "stderr", new_callable=io.StringIO) as log:
+            with self.assertRaises(results.OutOfTime) as error:
+                results.run(args)
+        self.assertEqual(error.exception.step, "locked collection")
+        self.assertEqual(error.exception.returncode, 75)
+        self.assertEqual(len(calls), 2)  # nothing pulled or loaded
+        self.assertIn('"phase": "collection_out_of_time", "budget_seconds": 150', log.getvalue())
+        self.assertNotIn("collection_failed", log.getvalue())
+
+    def test_exit_124_before_the_lock_or_from_the_collector_itself_stays_a_failure(self):
+        args = self.args()
+        args.step_lock_wait_secs = 60
+        for stderr, code in (("no receipt\n", 124), (results.LOCK_ACQUIRED + " 2026-11-12T08:00:00Z\n", 1)):
+            with self.subTest(code=code), mock.patch.object(
+                    results.subprocess, "run",
+                    return_value=subprocess.CompletedProcess(["ssh"], code, stderr=stderr)), \
+                    mock.patch.object(results.sys, "stderr", new_callable=io.StringIO):
+                with self.assertRaises(subprocess.CalledProcessError) as error:
+                    results.run(args)
+                self.assertNotIsInstance(error.exception, results.OutOfTime)
+                self.assertEqual(error.exception.returncode, code)
+
+    def test_a_warm_round_or_load_ended_by_its_timeout_is_out_of_time(self):
+        args = self.warm_args()
+        with mock.patch.object(results.subprocess, "run",
+                               return_value=subprocess.CompletedProcess(["ssh"], 124, stderr="")) as run, \
+                mock.patch.object(results.sys, "stderr", new_callable=io.StringIO) as log:
+            with self.assertRaises(results.OutOfTime) as error:
+                results.run(args)
+        self.assertEqual(error.exception.step, "warm round")
+        self.assertEqual(run.call_count, 1)  # the lock is never taken
+        self.assertIn("warm_out_of_time", log.getvalue())
+        args = self.args()
+        for code, expected in ((124, results.OutOfTime), (1, subprocess.CalledProcessError)):
+            replies = [None, None, subprocess.CalledProcessError(code, ["pct"])]
+            with self.subTest(code=code), mock.patch.object(results.subprocess, "run", side_effect=replies), \
+                    mock.patch.object(results.sys, "stderr", new_callable=io.StringIO):
+                with self.assertRaises(expected) as error:
+                    results.run(args)
+                self.assertEqual(isinstance(error.exception, results.OutOfTime), code == 124)
+
     def test_a_receipt_cut_off_by_a_timeout_is_still_an_acquisition(self):
         with mock.patch.object(results.sys, "stderr", new_callable=io.StringIO) as log:
             self.assertTrue(results.replay_collection_diagnostics(results.LOCK_ACQUIRED + " \n"))
@@ -491,12 +544,40 @@ class ResultsTest(unittest.TestCase):
 class NativeCampaignsTest(unittest.TestCase):
     ENGINE = "sha256:" + "a" * 64
 
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory(dir=HERE)
+        self.addCleanup(directory.cleanup)
+        self.state = Path(directory.name)
+
     def main(self, run, *extra):
         with mock.patch.object(results, "run", side_effect=run), \
                 mock.patch.dict(os.environ, {"CTID": "101"}), \
                 contextlib.redirect_stdout(io.StringIO()) as output:
-            results.main(["--engine-image", self.ENGINE, "--lock", os.devnull, *extra])
+            results.main(["--engine-image", self.ENGINE, "--lock", os.devnull,
+                          "--state-dir", str(self.state), *extra])
         return output.getvalue()
+
+    def test_a_root_out_of_time_is_deferred_until_it_is_out_of_time_runs_in_a_row(self):
+        outcomes = []
+
+        def run(args):
+            if args.campaign == "slow" and outcomes.pop(0):
+                raise results.OutOfTime("locked collection", ["ssh"])
+            return {"campaign": args.campaign}
+
+        roots = ["--native-campaign", "slow", "--native-campaign", "other"]
+        outcomes[:] = [True, True, False]  # two out of time, then a success clears the count
+        for _ in range(3):
+            output = self.main(run, *roots)
+        self.assertIn('{"campaign": "other"}', output)
+        self.assertFalse((self.state / "slow.out-of-time.json").exists())
+        outcomes[:] = [True, True, True]
+        for runs in (1, 2):
+            output = self.main(run, *roots)
+            self.assertIn('"status": "deferred"', output)
+            self.assertIn(f'"out_of_time_runs": {runs}', output)
+        with self.assertRaisesRegex(SystemExit, "native campaigns failed: slow"):
+            self.main(run, *roots)
 
     def test_each_root_is_read_with_its_own_collector_and_named_joins_itself(self):
         seen = []

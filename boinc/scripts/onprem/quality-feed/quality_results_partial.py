@@ -62,6 +62,53 @@ INVENTORY_REFRESH_SECONDS = 3600
 UNITS_PER_RUN = 5
 RUN_BUDGET_SECONDS = 600
 UNIT_GAP_SECONDS = 5
+# A unit whose collection runs out of time is retried on a later visit (its finished digest
+# receipts make the retry cheaper), so one timeout defers the pass. This many in a row for one
+# unit fail the run instead: a unit that never fits its budget is a fault to look at.
+OUT_OF_TIME_PASSES = 3
+OUT_OF_TIME_FILE = "out-of-time.json"
+
+
+class OutOfTime(Exception):
+    """A native call inside a pass hit its time limit. Nothing was published, and the step lock is
+    let go; the host retries on a later tick. Collector errors are not this: they fail the pass."""
+
+    def __init__(self, step, unit, budget):
+        super().__init__(f"{step} for {unit or 'unselected unit'} ran out of time after {budget:.0f} s")
+        self.step, self.unit, self.budget = step, unit, budget
+
+
+def utc_now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def text_of(output):
+    if isinstance(output, bytes):
+        return output.decode("utf-8", errors="replace")
+    return output or ""
+
+
+def call_collector(command, budget, step, log=None):
+    """One native collector call, its start recorded before it runs: on stderr, which the host
+    journals, and in `log` when given. A call that runs out of time leaves that line and whatever
+    the collector had printed, rather than nothing."""
+    start = {"phase": "collector_call", "step": step, "budget_seconds": round(budget, 1), "at": utc_now()}
+    print(json.dumps(start), file=sys.stderr, flush=True)
+    if log is not None:
+        with log.open("a") as stream:
+            stream.write(json.dumps({**start, "argv": command}) + "\n")
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=budget)
+    except subprocess.TimeoutExpired as error:
+        if log is not None:
+            with log.open("a") as stream:
+                stream.write(text_of(error.stdout) + text_of(error.stderr))
+                stream.write(json.dumps({"phase": "collector_timeout", "step": step, "at": utc_now()}) + "\n")
+        raise
+    if log is not None:
+        with log.open("a") as stream:
+            stream.write(result.stdout + result.stderr)
+    return result
 
 
 def stamp(lines, receipt):
@@ -183,7 +230,8 @@ def select_frontier(inventory, state):
     return selected, names[-1], lane, updated
 
 
-def completion_inventory(args, project, base, selected=None, deadline=None, limit=CALL_SECONDS):
+def completion_inventory(args, project, base, selected=None, deadline=None, limit=CALL_SECONDS,
+                         log=None):
     qwen_root = project / "qwen" / args.qwen_campaign if args.qwen_campaign else base / "no-qwen"
     if args.qwen_campaign:
         # An unavailable configured reading source is not an empty reading campaign.
@@ -211,7 +259,7 @@ def completion_inventory(args, project, base, selected=None, deadline=None, limi
     budget = min(limit, deadline - time.monotonic()) if deadline is not None else limit
     if budget <= 0:
         raise subprocess.TimeoutExpired(command, 0)
-    result = subprocess.run(command, capture_output=True, text=True, timeout=budget)
+    result = call_collector(command, budget, "inventory-unit" if selected else "inventory", log)
     if result.returncode:
         print(result.stderr, file=sys.stderr, end="", flush=True)
     result.check_returncode()
@@ -309,7 +357,11 @@ def scoped_collect(args, project=Path("/project")):
         selected, through, lane, frontier_state = select_frontier(inventory, state)
         # The cached entry only chose the unit. Its current dependency key, read under the lock,
         # is the baseline the collection must match, and replaces the cached entry.
-        current = completion_inventory(args, project, base, selected, deadline=deadline)
+        try:
+            current = completion_inventory(args, project, base, selected, deadline=deadline)
+        except subprocess.TimeoutExpired as error:
+            # Nothing written yet: the next pass selects this unit again.
+            raise OutOfTime("inventory-unit", selected, error.timeout) from error
         if selected not in current:
             raise ValueError("selected unit missing from its completion inventory")
         validate_inventory({selected: current[selected]})
@@ -352,22 +404,31 @@ def scoped_collect(args, project=Path("/project")):
     ]
     if args.qwen_campaign:
         command += ["--qwen-xiaomi-spool", str(project / "usnmocr/results/108")]
+    # Hashed before the collection, so the time it takes counts against the pass's deadline.
+    collector_sha256 = digest(Path(args.collector))
     started = time.time()
+    log = out.parent / "collector.log"
     try:
         budget = min(CALL_SECONDS, deadline - time.monotonic()) if deadline is not None else CALL_SECONDS
         if budget <= 0:
             raise subprocess.TimeoutExpired(command, 0)
-        result = subprocess.run(command, capture_output=True, text=True, timeout=budget)
-        (out.parent / "collector.log").write_text(result.stdout + result.stderr)
+        result = call_collector(command, budget, "collect", log)
         result.check_returncode()
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         if frontier:
             # A poison canonical result must not pin either lane. This is not a load ack.
             atomic_json(frontier_path, frontier_state)
+        if isinstance(error, subprocess.TimeoutExpired):
+            raise OutOfTime("collect", selected, error.timeout) from error
         raise
     if frontier:
         # Reuse the canonical dependency key, not mtimes or a guessed completion filename.
-        current = completion_inventory(args, project, base, selected, deadline=deadline)
+        try:
+            current = completion_inventory(args, project, base, selected, deadline=deadline, log=log)
+        except subprocess.TimeoutExpired as error:
+            # The collection stored its part, so the next visit finds it cached. No progress was
+            # written: the next pass selects this unit again.
+            raise OutOfTime("inventory-recheck", selected, error.timeout) from error
         if current.get(selected) != inventory[selected]:
             raise ValueError("selected completion dependencies changed during collection")
     docs = [p["doc_id"] for p in job.get("pages", [])] or [job["doc_id"]]
@@ -378,7 +439,7 @@ def scoped_collect(args, project=Path("/project")):
         "submitted_units_observed": len(names), "unvisited_units": len(names) - 1,
         "selected_unit": selected, "selected_job": job["id"], "selected_doc_ids": docs,
         "cycle_through": through,
-        "qwen_campaign": args.qwen_campaign, "collector_sha256": digest(Path(args.collector)),
+        "qwen_campaign": args.qwen_campaign, "collector_sha256": collector_sha256,
         "started_at": started, "finished_at": time.time(),
         "files": {name: digest(out / name) for name in FILES},
         "snapshot_dir": str(out.parent),
@@ -492,6 +553,33 @@ def host_refresh_inventory(args):
     return report
 
 
+def out_of_time_report(stderr):
+    """The remote's out-of-time line, or None."""
+    for line in reversed(text_of(stderr).splitlines()):
+        if line.startswith('{"phase": "collection_out_of_time"'):
+            try:
+                event = json.loads(line)
+            except ValueError:
+                return None
+            unit = event.get("unit")
+            return event if unit is None or (isinstance(unit, str) and UNIT.fullmatch(unit)) else None
+    return None
+
+
+def count_out_of_time(args, unit, clear=False):
+    """Consecutive out-of-time passes per unit, kept on the host. Returns the new count."""
+    path = args.state_dir / args.campaign / OUT_OF_TIME_FILE
+    counts = json.loads(path.read_bytes()).get("units", {}) if path.exists() else {}
+    if clear:
+        if unit not in counts:
+            return 0
+        counts.pop(unit)
+    else:
+        counts[unit] = counts.get(unit, 0) + 1
+    atomic_json(path, {"schema": 1, "units": counts})
+    return counts.get(unit, 0)
+
+
 def host_pass(args):
     state_path = args.state_dir / args.campaign / "cursor.json"
     state = json.loads(state_path.read_bytes()) if state_path.exists() else {}
@@ -537,6 +625,18 @@ def host_pass(args):
         raise
     acquired = replay_collection_diagnostics(response.stderr)
     if response.returncode:
+        late = out_of_time_report(response.stderr) if response.returncode == 75 and acquired else None
+        if late:
+            # The remote ran out of time and let the lock go; nothing was published. Retry next
+            # tick, unless this unit keeps running out of time.
+            unit = late.get("unit") or ""
+            passes = count_out_of_time(args, unit)
+            limit = getattr(args, "out_of_time_passes", OUT_OF_TIME_PASSES)
+            print(json.dumps({"phase": "collection_deferred", "unit": unit, "step": late.get("step"),
+                              "consecutive": passes, "exit": 75}), file=sys.stderr, flush=True)
+            if passes >= limit:
+                raise SystemExit(f"{unit or 'inventory'}: out of time in {passes} passes in a row")
+            raise SystemExit(75)
         phase = ("step_lock_busy" if response.returncode == 75 and not acquired
                  else "collection_failed" if acquired else "remote_admission_failed")
         print(json.dumps({"phase": phase, "exit": response.returncode}),
@@ -577,6 +677,7 @@ def host_pass(args):
         raise ValueError("loader receipt does not match partial snapshot")
     atomic_json(host_receipt, {"coverage": receipt, "verified": True,
                                "loaded": loaded["pages"] > 0, "load": loaded})
+    count_out_of_time(args, receipt["selected_unit"], clear=True)
     cursor = {"after": receipt["selected_unit"], "through": receipt["cycle_through"],
               "last_snapshot": snapshot, "coverage": "cursor-only; no campaign freshness assertion"}
     if frontier and loaded["pages"] > 0 and receipt["frontier"]["fingerprint"]:
@@ -646,6 +747,9 @@ def main(argv=None):
                         help="most units one service run collects and loads, each under its own step lock")
     parser.add_argument("--run-budget-secs", type=int, default=RUN_BUDGET_SECONDS,
                         help="no further unit starts once a run has used this many seconds")
+    parser.add_argument("--out-of-time-passes", type=int, default=OUT_OF_TIME_PASSES,
+                        help="a unit whose collection runs out of time defers its pass; this many in a "
+                             "row for one unit fail the run")
     parser.add_argument("--server-host", default="pve.tjg.fyi")
     parser.add_argument("--server-ct", type=int, default=230)
     parser.add_argument("--ctid", type=ctid_arg, default=default_ctid(),
@@ -669,6 +773,7 @@ def main(argv=None):
             or args.inventory_refresh_secs < 60
             or not 1 <= args.units_per_run <= 50
             or not 0 <= args.run_budget_secs <= 3600
+            or not 1 <= args.out_of_time_passes <= 100
             or (args.load and args.snapshot_dir is None)):
         parser.error("invalid partial collection arguments")
     os.umask(0o077)
@@ -684,7 +789,13 @@ def main(argv=None):
                 raise SystemExit(75) from None
             report = host_refresh_inventory(args) or {"campaign": args.campaign, "phase": "inventory_not_due"}
     elif args.remote:
-        report = scoped_collect(args)
+        try:
+            report = scoped_collect(args)
+        except OutOfTime as error:
+            # Exit 75 after the lock receipt: the host defers instead of failing (see host_pass).
+            print(json.dumps({"phase": "collection_out_of_time", "step": error.step, "unit": error.unit,
+                              "budget_seconds": round(error.budget, 1)}), file=sys.stderr, flush=True)
+            raise SystemExit(75) from None
     elif args.load:
         def terminate(signum, _frame):
             raise SystemExit(128 + signum)

@@ -38,6 +38,7 @@ class PartialTest(unittest.TestCase):
             server_host="server.example", state_dir=self.root / "state",
             engine_image="sha256:" + "c" * 64, snapshot_dir=self.root / "snapshot",
         )
+        Path(self.args.collector).write_text("stand-in collector\n")
         self.receipt = {
             "schema": 1, "kind": "verified-quality-unit-partial",
             "campaign": self.campaign, "snapshot": self.snapshot, "campaign_complete": False,
@@ -539,7 +540,7 @@ class PartialTest(unittest.TestCase):
                 self.args.snapshot = f"{index:032x}"
                 failure = failures[index % 2]
                 with mock.patch.object(partial.subprocess, "run", side_effect=[failure]):
-                    with self.assertRaises((subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+                    with self.assertRaises((subprocess.CalledProcessError, partial.OutOfTime)):
                         partial.scoped_collect(self.args, self.root)
                 state = json.loads(frontier_path.read_bytes())
                 self.assertEqual(state["loaded"], {})
@@ -567,8 +568,9 @@ class PartialTest(unittest.TestCase):
                 mock.patch.object(partial, "completion_inventory", return_value=inventory), \
                 mock.patch.object(partial.subprocess, "run",
                                   side_effect=subprocess.TimeoutExpired(["collector"], 70)) as run:
-            with self.assertRaises(subprocess.TimeoutExpired):
+            with self.assertRaises(partial.OutOfTime) as raised:
                 partial.scoped_collect(self.args, self.root)
+        self.assertEqual((raised.exception.step, raised.exception.unit), ("collect", "a-ready"))
         self.assertEqual(run.call_args.kwargs["timeout"], partial.REMOTE_WORK_SECONDS - 90)
         state = json.loads((self.root / "ops/quality-results/scoped/test/frontier.json").read_bytes())
         self.assertEqual(state["priority_after"], "a-ready")
@@ -731,6 +733,109 @@ class PartialTest(unittest.TestCase):
                 mock.patch("sys.stdout", new_callable=io.StringIO):
             report = partial.host_passes(self.args, sleep=lambda _: None)
         self.assertEqual((one.call_count, report["units"]), (1, 1))
+
+    def frontier_unit(self, name="a-ready"):
+        self.args.completion_frontier = True
+        unit = self.root / "quality/test/units" / name
+        unit.mkdir(parents=True)
+        (unit / "submitted").touch()
+        (unit / "quality.json").write_text(json.dumps({"id": self.job, "doc_id": "doc-a"}))
+        inventory = {name: {"status": "canonical-present", "fingerprint": "a" * 64}}
+        self.cache_inventory(inventory)
+        return inventory
+
+    def test_a_collection_out_of_time_has_its_start_and_output_logged(self):
+        self.frontier_unit()
+        error = subprocess.TimeoutExpired(["collector"], 150, output=b"", stderr=b"keying bundle\n")
+        with mock.patch.object(partial, "completion_inventory",
+                               return_value={"a-ready": {"status": "canonical-present",
+                                                         "fingerprint": "a" * 64}}), \
+                mock.patch.object(partial.subprocess, "run", side_effect=error), \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as journal:
+            with self.assertRaises(partial.OutOfTime):
+                partial.scoped_collect(self.args, self.root)
+        log = next((self.root / "ops/quality-results/scoped/test").glob("*/snapshots/*/collector.log"))
+        lines = log.read_text().splitlines()
+        start = json.loads(lines[0])
+        self.assertEqual((start["phase"], start["step"], start["budget_seconds"]),
+                         ("collector_call", "collect", 150))
+        self.assertIn("--out-dir", start["argv"])
+        self.assertEqual(lines[1], "keying bundle")
+        self.assertEqual(json.loads(lines[2])["phase"], "collector_timeout")
+        # The start is journaled too, through the remote's stderr.
+        self.assertIn('"phase": "collector_call", "step": "collect"', journal.getvalue())
+
+    def test_an_inventory_or_recheck_out_of_time_defers_without_advancing_either_lane(self):
+        inventory = self.frontier_unit()
+        frontier = self.root / "ops/quality-results/scoped/test/frontier.json"
+        for step, effects in [("inventory-unit", [subprocess.TimeoutExpired(["inventory"], 3)]),
+                              ("inventory-recheck", [inventory, subprocess.TimeoutExpired(["inventory"], 0)])]:
+            with self.subTest(step=step), \
+                    mock.patch.object(partial, "completion_inventory", side_effect=effects), \
+                    mock.patch.object(partial.subprocess, "run",
+                                      return_value=subprocess.CompletedProcess([], 0, "", "")):
+                self.args.snapshot = ("1" if step == "inventory-unit" else "2") * 32
+                with self.assertRaises(partial.OutOfTime) as raised:
+                    partial.scoped_collect(self.args, self.root)
+                self.assertEqual((raised.exception.step, raised.exception.unit), (step, "a-ready"))
+                self.assertFalse(frontier.exists())
+
+    def test_remote_out_of_time_exits_75_with_its_unit(self):
+        error = partial.OutOfTime("collect", "a-ready", 150)
+        with mock.patch.object(partial, "scoped_collect", side_effect=error), \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as log:
+            with self.assertRaises(SystemExit) as raised:
+                partial.main(["--remote", "--campaign", "test", "--snapshot", self.snapshot])
+        self.assertEqual(raised.exception.code, 75)
+        self.assertEqual(partial.out_of_time_report(log.getvalue()),
+                         {"phase": "collection_out_of_time", "step": "collect", "unit": "a-ready",
+                          "budget_seconds": 150})
+
+    def out_of_time_response(self, unit="bundle-a"):
+        line = json.dumps({"phase": "collection_out_of_time", "step": "collect", "unit": unit,
+                           "budget_seconds": 150})
+        return subprocess.CompletedProcess(
+            ["ssh"], 75, b"", (partial.LOCK_ACQUIRED + "\n" + line + "\n").encode())
+
+    def test_an_out_of_time_pass_is_deferred_until_its_unit_keeps_running_out(self):
+        self.args.out_of_time_passes = 3
+        counts = self.args.state_dir / "test" / partial.OUT_OF_TIME_FILE
+        for attempt in (1, 2):
+            with self.subTest(attempt=attempt), \
+                    mock.patch.object(partial.subprocess, "run", return_value=self.out_of_time_response()) as run, \
+                    mock.patch.object(sys, "stderr", new_callable=io.StringIO) as log:
+                with self.assertRaises(SystemExit) as raised:
+                    partial.host_pass(self.args)
+                self.assertEqual(raised.exception.code, 75)
+                self.assertEqual(run.call_count, 1)  # nothing transferred or loaded
+                self.assertIn('"phase": "collection_deferred"', log.getvalue())
+                self.assertNotIn("collection_failed", log.getvalue())
+                self.assertEqual(json.loads(counts.read_bytes())["units"], {"bundle-a": attempt})
+        self.assertFalse((self.args.state_dir / "test/cursor.json").exists())
+        # A verified load of the unit clears its count, so only consecutive timeouts add up.
+        with mock.patch.object(partial.uuid, "uuid4", return_value=types.SimpleNamespace(hex=self.snapshot)), \
+                mock.patch.object(partial.subprocess, "run", side_effect=self.responses()):
+            partial.host_pass(self.args)
+        self.assertEqual(json.loads(counts.read_bytes())["units"], {})
+        for attempt in (1, 2, 3):
+            with mock.patch.object(partial.subprocess, "run", return_value=self.out_of_time_response()), \
+                    mock.patch.object(sys, "stderr", new_callable=io.StringIO):
+                with self.assertRaises(SystemExit) as raised:
+                    partial.host_pass(self.args)
+        self.assertNotEqual(raised.exception.code, 75)  # the third in a row is a failure
+        self.assertIn("out of time in 3 passes", str(raised.exception.code))
+
+    def test_exit_75_after_the_lock_without_an_out_of_time_line_stays_a_failure(self):
+        bogus = json.dumps({"phase": "collection_out_of_time", "unit": "../escape"})
+        for stderr in ("", "remote diagnostic\n", bogus + "\n"):
+            response = subprocess.CompletedProcess(
+                ["ssh"], 75, b"", (partial.LOCK_ACQUIRED + "\n" + stderr).encode())
+            with self.subTest(stderr=stderr), \
+                    mock.patch.object(partial.subprocess, "run", return_value=response), \
+                    mock.patch.object(sys, "stderr", new_callable=io.StringIO) as log:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    partial.host_pass(self.args)
+                self.assertIn("collection_failed", log.getvalue())
 
     def load_fixture(self, rows):
         root = self.args.snapshot_dir
