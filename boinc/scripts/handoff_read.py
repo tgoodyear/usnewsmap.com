@@ -116,7 +116,12 @@ def listing(root):
     for entry in jobs.iterdir():
         if not JOB.fullmatch(entry.name):
             continue
-        if entry.resolve() != entry or not stat.S_ISDIR(entry.stat().st_mode):
+        try:
+            info = entry.lstat()
+        except FileNotFoundError:
+            # Gone since the directory was listed (the archive removes emptied job directories).
+            raise ChangedError("job directory removed during listing") from None
+        if not stat.S_ISDIR(info.st_mode):
             raise ReadError("unsafe job directory")
         path = entry / "record.json"
         try:

@@ -6,6 +6,8 @@ the controller's --ssh-reads mode.
 
 import hashlib
 import json
+import shutil
+import pathlib
 import os
 import subprocess
 import tempfile
@@ -134,6 +136,26 @@ class HelperTests(unittest.TestCase):
         with patch.object(read, "listing", moving):
             out = json.loads(read.read_journals(self.root, sleep=sleeps.append))["journals"]
         self.assertEqual(sorted(out), [f"dispatch/jobs/{job}/record.json" for job in (JOB, late)])
+        self.assertEqual(len(sleeps), 1)
+
+    def test_a_job_directory_removed_while_listing_is_a_change(self):
+        journal(self.root)
+        gone = "d" * 64
+        journal(self.root, gone)
+        real, calls = pathlib.Path.iterdir, []
+
+        def removing(path):
+            entries = list(real(path))
+            calls.append(1)
+            if len(calls) == 1 and path.name == "jobs":
+                # The archive removes an emptied job directory after the listing saw it.
+                shutil.rmtree(self.root / f"dispatch/jobs/{gone}")
+            return iter(entries)
+
+        sleeps = []
+        with patch.object(pathlib.Path, "iterdir", removing):
+            out = json.loads(read.read_journals(self.root, sleep=sleeps.append))["journals"]
+        self.assertEqual(sorted(out), [f"dispatch/jobs/{JOB}/record.json"])
         self.assertEqual(len(sleeps), 1)
 
     def test_failures_in_a_later_round_other_than_a_vanished_journal_are_not_retried(self):
