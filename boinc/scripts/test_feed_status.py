@@ -505,6 +505,18 @@ class ControllerSignalsTest(unittest.TestCase):
         checked = self.checks(120)["controller_tick"]
         self.assertEqual((checked["state"], checked["reason"], checked["sticky"]), ("firing", None, False))
 
+    def test_the_failing_step_rides_beside_a_step_failed_reason(self):
+        self.tick.update(ok=False, failed_in_a_row=3, reason="step_failed", step="handoff/read-journals",
+                         same_error_in_a_row=1, failed_last_hour=3, last_hour_reason="step_failed",
+                         last_hour_step="handoff/read-journals")
+        checked = self.checks()["controller_tick"]
+        self.assertEqual((checked["reason"], checked["step"]), ("step_failed", "handoff/read-journals"))
+        # Another class carries none, and a collector from before the field has none to show.
+        self.tick.update(reason="cap_reached", step=None)
+        self.assertNotIn("step", self.checks(60)["controller_tick"])
+        del self.tick["step"], self.tick["last_hour_step"]
+        self.assertNotIn("step", self.checks(120)["controller_tick"])
+
     def test_alternating_failures_never_fire_and_keep_the_reason_when_they_do(self):
         # Failures that alternate with good ticks make no streak and no 30 minutes without a success:
         # nothing fires (the four-an-hour rule is gone, #2054), and the hour's class stays in the line.

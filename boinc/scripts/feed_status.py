@@ -340,10 +340,12 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
     # The newest failure's class (feed_collect.FAILURE_REASONS), never its text (#1698).
     repeats = None if tick is None else tick.get("same_error_in_a_row")
     reason = None if tick is None else tick.get("reason") or tick.get("last_hour_reason")
+    # The step a step_failed run stopped at (feed_collect.FAILURE_STEPS), from the same run as the reason.
+    step = None if tick is None else tick.get("step") if tick.get("reason") else tick.get("last_hour_step")
     check("controller_tick", tick_condition,
           seconds=None if tick is None else tick["seconds"], failed_in_a_row=streak,
           failed_last_hour=None if tick is None else tick.get("failed_last_hour"),
-          reason=reason, same_error_in_a_row=repeats,
+          reason=reason, same_error_in_a_row=repeats, **({} if step is None else {"step": step}),
           sticky=repeats is not None and repeats >= STICKY_FAILURES)
     if facts.get("controller_signals"):
         controller_signals(check, tick, now)
@@ -516,6 +518,9 @@ def plan_checks(check, facts, now):
         else:
             fires = (tick_fires(tick, now)
                      or (tick["ok"] is None and tick["seconds"] > PLAN_HANG_S))
+            step = tick.get("step") if tick["reason"] else tick.get("last_hour_step")
+            if step is not None:
+                shown["step"] = step
             check(code, fires, seconds=tick["seconds"], failed_in_a_row=tick["failed_in_a_row"],
                   failed_last_hour=tick["failed_last_hour"],
                   reason=tick["reason"] or tick["last_hour_reason"],

@@ -31,7 +31,7 @@ def core(tick):
     """A controller tick without its failure reason and signals (#1698), which have their own tests."""
     return {key: value for key, value in tick.items()
             if key not in (*C.SIGNAL_FIELDS, "reason", "same_error_in_a_row", "failed_last_hour",
-                          "last_hour_reason", "last_ok_at", "tick_p50_s", "tick_n", "cap_rates", "cap_latest")}
+                          "last_hour_reason", "step", "last_hour_step", "last_ok_at", "tick_p50_s", "tick_n", "cap_rates", "cap_latest")}
 
 
 @contextlib.contextmanager
@@ -819,6 +819,25 @@ class FailureReasonTests(unittest.TestCase):
             with self.subTest(error=error):
                 self.assertEqual(C.failure_reason(error), expected)
                 self.assertIn(expected, C.FAILURE_REASONS)
+
+    def test_failure_step_is_a_listed_label_never_the_text(self):
+        for error, expected in (
+                ("handoff/read-journals failed; inspect the execution privately before retrying", "handoff/read-journals"),
+                ("handoff/lock-acquire failed; inspect the execution privately before retrying", "handoff/lock-acquire"),
+                ("bridge/batch-inventory failed; inspect the execution privately before retrying", "bridge/batch-inventory"),
+                ("cached scan push failed; inspect the execution privately before retrying", "scan-push"),
+                ("batch journal inventory failed; inspect the execution privately before retrying", "journal-inventory"),
+                ("bridge/made-up-step failed; inspect the execution privately before retrying", "other"),
+                ("hand-off storage failed; inspect the execution privately before retrying", None),
+                ("a result is held for review", None), (None, None), (42, None)):
+            with self.subTest(error=error):
+                self.assertEqual(C.failure_step(error), expected)
+                self.assertIn(expected or "other", C.FAILURE_STEPS)
+        tick = {"ok": True, "seconds": 1, "finished_at": NOW, "step": "handoff/claim"}
+        for key, bad in (("step", "handoff/claim failed: free text"), ("last_hour_step", "x")):
+            with self.subTest(key=key):
+                with self.assertRaisesRegex(ValueError, "failure step"):
+                    C.validate_tick({**tick, key: bad}, NOW)
 
     def test_reason_and_same_error_in_a_row_without_the_text(self):
         cap = "dispatch inventory limit; reconcile drained journals"
@@ -1966,6 +1985,42 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
                     facts = C.collect({"server": "/server", "controller": "/controller"})
                 self.assertEqual(facts["sources"]["server"], {"observed_at": None, "state": "unknown",
                                                               "reason": reason})
+
+    def test_an_old_or_future_document_is_stale_and_an_invalid_one_is_not(self):
+        old, future = NOW - C.MAX_AGE - 1, NOW + 5
+        valid = {"usnm_ocr": 1, "usnm_qwen": 2}
+        for observed_at, backlogs, error, reason in (
+                (old, valid, None, "stale"), (future, valid, None, "stale"),
+                ("x", valid, None, "unavailable_or_invalid"),
+                # Malformed and expired is still malformed: age never hides a broken payload.
+                (old, [], None, "unavailable_or_invalid"),
+                (old, None, "free text", "unavailable_or_invalid")):
+            with self.subTest(observed_at=observed_at, backlogs=backlogs, error=error):
+                document = {"schema_version": 1, "source": "backlog", "observed_at": observed_at}
+                document.update({"error": error} if error else {"backlogs": backlogs})
+                with patch.object(C, "read_source", return_value=document), \
+                        patch.object(C.time, "time", return_value=NOW):
+                    facts = C.collect({"server": "/server", "backlog": "/backlog", "controller": "/controller"})
+                source = facts["sources"]["backlog"]
+                self.assertEqual((source["observed_at"], source["state"], source["reason"]), (None, "unknown", reason))
+                # The document's own time shows how old it is; an invalid one has none to show.
+                self.assertEqual(source.get("last_observed_at"), observed_at if reason == "stale" else None)
+
+    def test_an_expired_controller_valid_when_published_is_stale(self):
+        # The publisher stamps the envelope before a running tick finishes (+5), and a tick can be
+        # nearly as old as the 900 s it may be when published (-800); a future tick is invalid.
+        observed = NOW - C.MAX_AGE - 1
+        for finished, reason in ((observed + 5, "stale"), (observed - 800, "stale"),
+                                 (observed + C.MAX_AGE + 60, "unavailable_or_invalid")):
+            with self.subTest(finished=finished - observed):
+                document = {"schema_version": 1, "source": "controller", "observed_at": observed,
+                            "tick": {"ok": True, "seconds": 20, "finished_at": finished}}
+                with patch.object(C, "read_source", return_value=document), \
+                        patch.object(C.time, "time", return_value=NOW):
+                    facts = C.collect({"server": "/server", "controller": "/controller"})
+                source = facts["sources"]["controller"]
+                self.assertEqual((source["state"], source["reason"]), ("unknown", reason))
+                self.assertEqual(source.get("last_observed_at"), observed if reason == "stale" else None)
 
     def test_loopback_rpc_reads_only_and_never_uses_volunteer_hosts(self):
         with client_rpc_fixture() as (root, port, answers, operations):
