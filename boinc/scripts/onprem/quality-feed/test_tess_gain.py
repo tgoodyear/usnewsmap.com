@@ -100,15 +100,35 @@ class Gain(unittest.TestCase):
 
     def test_wave_done_follows_the_timers_test(self):
         cfg = dict(g.DEFAULTS)
-        st = {"wave_queued": 1000, "wave_started": "2026-11-15T00:00:00Z", "published": 949}
+        st = {"wave": 1, "wave_queued": 20000, "wave_started": "2026-11-15T00:00:00Z", "published": 18999}
         self.assertFalse(g.wave_done(cfg, st, at(16)))
-        self.assertTrue(g.wave_done(cfg, dict(st, published=950), at(16)))
+        self.assertTrue(g.wave_done(cfg, dict(st, published=19000), at(16)))
         self.assertTrue(g.wave_done(cfg, st, dt.datetime(2026, 12, 7, tzinfo=UTC)))
+
+    def test_an_early_chunk_is_not_a_done_wave(self):
+        cfg = dict(g.DEFAULTS)
+        st = {"wave": 1, "wave_queued": 3000, "wave_started": "2026-11-15T00:00:00Z", "published": 3000}
+        self.assertFalse(g.wave_done(cfg, st, at(16)))
+        self.assertEqual(w.decide(dict(w.DEFAULTS, rebuild_done_marker="/nonexistent/marker"),
+                                  dict(st, outstanding=0, exhausted=False, campaign="c"), at(16), 3000, None)[0], "enqueue")
+
+    def test_stopped_or_exhausted_is_not_done(self):
+        st = {"wave": 1, "wave_queued": 20000, "wave_started": "2026-11-15T00:00:00Z", "published": 20000}
+        self.assertFalse(g.wave_done(g.DEFAULTS, dict(st, exhausted=True), at(16)))
+
+    def test_hold_matches_the_reading_it_names(self):
+        tag = "tesseract/5.5.1 profile=eng image=x models=y route=r@r1 contract=1"
+        self.assertTrue(g.is_held([(None, "boinc-a")], tag, "boinc-a"))
+        self.assertFalse(g.is_held([(None, "boinc-b")], tag, "boinc-a"))
+        self.assertTrue(g.is_held([("tesseract/5.5.1 eng", None)], tag, "boinc-a"))
+        self.assertTrue(g.is_held([(tag, "boinc-a")], tag, "boinc-a"))
+        self.assertFalse(g.is_held([("tesseract/5.5.1 eng", "boinc-b")], tag, "boinc-a"))
+        self.assertFalse(g.is_held([("other/1 eng", None)], tag, "boinc-a"))
 
 
 class Contract(unittest.TestCase):
     def test_shared_settings_match_the_wave_timer(self):
-        for k in ("language", "campaign_prefix", "complete_fraction", "max_wave_days", "pause_after",
+        for k in ("language", "campaign_prefix", "wave_sizes", "complete_fraction", "max_wave_days", "pause_after",
                   "rebuild_done_marker", "dsn_file"):
             self.assertEqual(g.DEFAULTS[k], w.DEFAULTS[k], k)
 
@@ -138,6 +158,8 @@ class Run(unittest.TestCase):
         self.state.mkdir()
         self.qe.mkdir()
         (self.qe / "eng.qe").write_bytes(b"qe bytes")
+        self.lockfile = d / "resources.lock.json"
+        self.lockfile.write_text(json.dumps({"languages": {"eng": {"sha256": g.sha256(b"qe bytes")}}}))
         self.stub = d / "usnm_quality"
         self.stub.write_text(STUB)
         self.stub.chmod(self.stub.stat().st_mode | stat.S_IXUSR)
@@ -146,10 +168,11 @@ class Run(unittest.TestCase):
         self.cfg.write_text(json.dumps({
             "scorer": str(self.stub), "qe_dir": str(self.qe), "dsn_file": str(d / "dsn"),
             "rebuild_done_marker": str(d / "none"), "pause_after": "2999-01-01T00:00:00Z",
-            "unit_pages": 2, "score_pages_per_run": 100}))
+            "unit_pages": 2, "score_pages_per_run": 100, "qe_lock_file": str(self.lockfile),
+            "wave_sizes": [5], "complete_fraction": 0.8}))
         self.campaign = "tess-worstfirst-eng-w1"
         (self.state / "state.json").write_text(json.dumps({
-            "campaign": self.campaign, "wave_queued": 4, "published": 4,
+            "campaign": self.campaign, "wave": 1, "wave_queued": 5, "published": 4,
             "wave_started": g.iso(g.now_utc())}))
         ids = [doc(i) for i in range(1, 6)]
         self.queued = [{"doc_id": i, "plan": self.campaign, "queued_at": at(1)} for i in ids]
@@ -159,16 +182,18 @@ class Run(unittest.TestCase):
         self.texts = {doc(i): "x" * (10 * i) for i in range(1, 5)}
         self.loc = {doc(i): 5.0 for i in range(1, 6)}
 
-    def run_job(self, *extra, held=()):
+    def run_job(self, *extra, holds=None, loc_lock=None):
         def psql(dsn, sql):
             if "percentile_cont" in sql:
                 return "\n".join(str(x) for x in range(1, 10)) + "\n"
             raise AssertionError(sql)
         out = io.StringIO()
         with mock.patch.object(g, "ledger_rows", lambda root, kind, cols: self.queued if kind == "queued" else self.outcomes), \
-                mock.patch.object(g, "published_texts", lambda root, ids: {d: t for d, t in self.texts.items() if d in ids}), \
-                mock.patch.object(g, "held_pages", lambda dsn, ids: set(held)), \
-                mock.patch.object(g, "loc_scores", lambda dsn, ids, lang: ({d: v for d, v in self.loc.items() if d in ids}, {"b" * 64})), \
+                mock.patch.object(g, "published_readings", lambda root, ids: {
+                    d: (t, "tesseract/5.5.1 profile=eng", "boinc-" + d[-12:]) for d, t in self.texts.items() if d in ids}), \
+                mock.patch.object(g, "hold_rows", lambda dsn, ids: holds or {}), \
+                mock.patch.object(g, "loc_scores", lambda dsn, ids, lang: (
+                    {d: v for d, v in self.loc.items() if d in ids}, {loc_lock or g.sha256(self.lockfile.read_bytes())})), \
                 mock.patch.object(g, "psql", psql), contextlib.redirect_stdout(out):
             g.main(["run", "--config", str(self.cfg), "--state-dir", str(self.state), *extra])
         lines = out.getvalue().strip().splitlines()
@@ -209,15 +234,19 @@ class Run(unittest.TestCase):
         self.assertEqual(self.final()["n_paired"], 4)
 
     def test_held_page_is_out_of_the_rate_and_the_gain(self):
-        self.run_job(held=[doc(4)])
+        self.run_job(holds={doc(4): [(None, "boinc-" + doc(4)[-12:])]})
         f = self.final()
         self.assertEqual(f["ledger"]["held"], 1)
         self.assertAlmostEqual(f["pass_rate"], 3 / 5)
         self.assertEqual(f["n_paired"], 3)
 
+    def test_a_hold_on_another_reading_does_not_count(self):
+        self.run_job(holds={doc(4): [(None, "boinc-someone-else")]})
+        self.assertEqual(self.final()["ledger"]["held"], 0)
+
     def test_nothing_final_until_the_wave_is_done(self):
         (self.state / "state.json").write_text(json.dumps({
-            "campaign": self.campaign, "wave_queued": 4, "published": 1, "wave_started": g.iso(g.now_utc())}))
+            "campaign": self.campaign, "wave": 1, "wave_queued": 5, "published": 1, "wave_started": g.iso(g.now_utc())}))
         self.assertEqual(self.run_job()["status"], "progress")
         self.assertFalse(self.path(".json").exists())
         self.assertTrue(self.path(".progress.json").exists())
@@ -227,6 +256,45 @@ class Run(unittest.TestCase):
         self.assertEqual(self.run_job()["status"], "progress")
         self.assertFalse(self.path(".json").exists())
         self.assertEqual(self.run_job()["status"], "written")      # the cache holds the first two
+
+    def test_an_incomplete_ledger_copy_or_missing_text_is_not_final(self):
+        del self.queued[-1]
+        self.assertIn("ledger copy", self.run_job()["why"])
+        self.queued.append({"doc_id": doc(5), "plan": self.campaign, "queued_at": at(1)})
+        del self.texts[doc(2)]
+        self.assertIn("not in the dataset copy", self.run_job()["why"])
+        self.assertFalse(self.path(".json").exists())
+
+    def test_a_changed_resource_or_scorer_is_scored_again(self):
+        self.run_job()
+        self.stub.write_text(STUB + "\n# another build\n")
+        self.assertEqual(self.run_job()["scored_now"], 4)
+
+    def test_a_resource_file_that_is_not_the_pinned_one_fails(self):
+        (self.qe / "eng.qe").write_bytes(b"other")
+        with self.assertRaises(SystemExit):
+            self.run_job()
+        self.assertFalse(self.path(".json").exists())
+
+    def test_loc_rows_with_another_lock_fail(self):
+        with self.assertRaises(SystemExit):
+            self.run_job(loc_lock="c" * 64)
+        self.assertFalse(self.path(".json").exists())
+
+    def test_the_timer_running_blocks_the_final_file(self):
+        import fcntl
+        with open(self.state / "lock", "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            self.assertEqual(self.run_job()["status"], "progress")
+        self.assertFalse(self.path(".json").exists())
+
+    def test_units_are_packed_by_bytes_and_oversize_pages_are_not_sent(self):
+        self.cfg.write_text(json.dumps(dict(json.loads(self.cfg.read_text()), unit_pages=100, max_unit_bytes=300)))
+        self.texts[doc(1)] = "z" * (g.MAX_PAGE_TEXT + 1)
+        line = self.run_job()
+        self.assertEqual(line["scored_now"], 4)
+        self.assertEqual(self.final()["n_paired"], 3)
+        self.assertEqual(self.final()["no_words"], 1)
 
     def test_no_state_is_idle(self):
         (self.state / "state.json").unlink()

@@ -22,7 +22,8 @@ selector does).
 
 Pass rate, from the ledger and not a proxy: of the campaign's pages (queued rows with the campaign as
 `plan`), those with a latest outcome after their latest queued row. `imported` is published, unless the
-page is held (quality.boinc_page_holds); `dead_lettered` (any cause but `unroutable`, which the seeder
+page's reading is held (a quality.boinc_page_holds row whose engine and node, as set, match that
+reading's); `dead_lettered` (any cause but `unroutable`, which the seeder
 queues again) and `not_sent` are failures. A page with no outcome yet is pending and not in the rate.
   pass_rate = published / (published + held + dead_lettered + not_sent)
 
@@ -32,14 +33,20 @@ decision measure of qe-v1, higher is worse. `median_gain` is the median over the
 LoC's lm_oov over every scored page of the language (1 = best, 10 = worst, as the selector's
 `decile`) it also has the page count, median and mean.
 
-The final gain/<campaign>.json is written only once the wave is done by the timer's own test
-(published at least complete_fraction of queued, or max_wave_days old) and every published page is
-scored, so the timer never reads a partial figure. Until then gain/<campaign>.progress.json says how far
-it is. Scores are cached by page and text hash, so a rerun scores only what is new and writes the
+The text is the campaign's imported Tesseract text: the page's newest `usnm-tesseract` row at or after
+its newest queued row. The release may select another reading or normalise the text; that is not measured.
+
+The final gain/<campaign>.json is written only once the wave is done by the timer's own test (its
+target queued and complete_fraction of them published, or max_wave_days old), the ledger copy has the
+wave's queued pages and every imported text, and every published page is scored, all checked
+against the timer's state under its lock, so the timer never reads a partial or stale figure. Resources: the
+local <language>.qe must match qe_lock_file's pin, and LoC's rows must carry that lock. Until then gain/<campaign>.progress.json says how far
+it is. Scores are cached by page, text hash and resource/scorer identity, so a rerun scores only what is new and writes the
 same file; one run scores at most `score_pages_per_run` pages. One JSON line goes to stdout a run.
 Like the selector, it does nothing from `pause_after` until the rebuild marker exists.
 """
 import argparse
+import contextlib
 import datetime
 import fcntl
 import glob
@@ -61,11 +68,14 @@ DOC_RE = re.compile(r"^[a-z0-9]+_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+$")
 OURS_SOURCE = "usnm-tesseract"
 JOB_FILE, RESULT_FILE, QE_FILE = "qe_text.json", "qe_text_result.json", "qe.bin"
 UNIT_VERSION = 1
+MAX_PAGE_TEXT = 4 << 20                   # the contract: one page's text, in bytes
+MAX_UNIT_PAGES = 10000
 
 # The keys it shares with tess_worstfirst.py's DEFAULTS keep their values (a test checks that).
 DEFAULTS = {
     "language": "eng",
     "campaign_prefix": "tess-worstfirst",
+    "wave_sizes": [20000, 50000, 100000],
     "complete_fraction": 0.95,
     "max_wave_days": 21,
     "pause_after": "2026-11-18T14:00:00Z",
@@ -74,8 +84,9 @@ DEFAULTS = {
     "ocr_local_dir": "/srv/curated/ocr-local",     # a copy of the ocr-local dataset: queued/, outcomes/, pages/
     "scorer": "/usr/local/bin/usnm_quality",        # usnm_quality 1.5 or later (text-only units)
     "qe_dir": "/usr/local/share/usnm-qe",           # <language>.qe, the qe-v1 resource files
-    "qe_lock_file": None,                           # ocr/qe/resources.lock.json; its sha256 is the unit's `lock`
-    "unit_pages": 5000,
+    "qe_lock_file": None,                           # required: ocr/qe/resources.lock.json; its sha256 is the unit's `lock`
+    "unit_pages": 5000,                             # at most 10000 (the contract's MAX_PAGES)
+    "max_unit_bytes": 128 << 20,                    # of the serialized job; the contract's MAX_JOB is 256 MiB
     "score_pages_per_run": 20000,
 }
 
@@ -195,12 +206,30 @@ def gain_summary(pairs, cuts):
 
 
 def wave_done(cfg, st, now):
-    """tess_worstfirst.decide's own test that the wave is over: the queued pages published to
-    complete_fraction, or the wave timed out. `st` is the timer's state.json."""
+    """tess_worstfirst.decide's own test that the wave is over: the wave's target queued and the queued
+    pages published to complete_fraction, or the wave timed out (and not stopped or out of pages).
+    `st` is the timer's state.json."""
+    if st.get("stopped") or st.get("exhausted"):
+        return False
+    sizes = cfg["wave_sizes"]
+    target = sizes[min(st.get("wave", 1), len(sizes)) - 1]
     queued = st.get("wave_queued", 0)
-    started = parse_time(st["wave_started"])
-    timed_out = (now - started).total_seconds() / 86400 >= cfg["max_wave_days"]
-    return timed_out or st.get("published", 0) >= cfg["complete_fraction"] * max(queued, 1)
+    timed_out = (now - parse_time(st["wave_started"])).total_seconds() / 86400 >= cfg["max_wave_days"]
+    return timed_out or (queued >= target and st.get("published", 0) >= cfg["complete_fraction"] * max(queued, 1))
+
+
+@contextlib.contextmanager
+def timer_state(state_dir):
+    """The timer's state.json read under a shared hold of the timer's own lock (the timer takes it
+    exclusively for a run and reads gain/ under it), so nothing is read or published while a step
+    of the timer runs. Yields the state, or None when the timer is running or there is no state."""
+    with open(os.path.join(state_dir, "lock"), "a") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except OSError:
+            yield None
+            return
+        yield load_json(os.path.join(state_dir, "state.json"), None)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -251,31 +280,75 @@ def read_cache(path):
     return cache
 
 
-def score_pages(cfg, campaign, texts, cache_path, workdir, budget):
-    """Scores the pages in `texts` ({doc_id: text}) that the cache (page and text hash) lacks,
-    at most `budget`, a unit at a time, each appended to the cache as it is done. Returns
-    (cache, scored_now, qe_sha256, lock)."""
+def namespace(cfg, qe_sha, lock):
+    """What a cached score depends on besides the page's text: the measure, language, resource
+    file, lock and scorer binary. A change to any of them leaves old entries unused."""
+    with open(cfg["scorer"], "rb") as f:
+        scorer = sha256(f.read())
+    return sha256(json.dumps([QE_VERSION, cfg["language"], qe_sha, lock, scorer]).encode())
+
+
+def is_scored(cache, ns, texts, d):
+    r = cache.get(d)
+    return r is not None and r.get("ns") == ns and r["sha"] == sha256(texts[d].encode())
+
+
+def resources(cfg):
+    """(qe.bin bytes, its sha256, the lock's sha256), the file checked against the lock's pin."""
+    if not cfg.get("qe_lock_file"):
+        raise RuntimeError("qe_lock_file is required: the resource file is checked against it")
     with open(os.path.join(cfg["qe_dir"], cfg["language"] + ".qe"), "rb") as f:
         qe_bytes = f.read()
-    if cfg.get("qe_lock_file"):
-        with open(cfg["qe_lock_file"], "rb") as f:
-            lock = sha256(f.read())
-    else:
-        lock = sha256(qe_bytes)
+    with open(cfg["qe_lock_file"], "rb") as f:
+        lock_bytes = f.read()
+    pin = json.loads(lock_bytes)["languages"].get(cfg["language"], {}).get("sha256")
+    if pin != sha256(qe_bytes):
+        raise RuntimeError("%s.qe does not match the lock's pin" % cfg["language"])
+    return qe_bytes, sha256(qe_bytes), sha256(lock_bytes)
+
+
+def page_bytes(text):
+    return len(json.dumps(text, ensure_ascii=False).encode()) + 96
+
+
+def score_pages(cfg, campaign, texts, cache_path, workdir, budget):
+    """Scores the pages in `texts` ({doc_id: text}) that the cache lacks (for this page text and
+    namespace), at most `budget`, in units of at most unit_pages pages and max_unit_bytes serialized,
+    each unit's scores appended to the cache as it is done. A page over the contract's text limit
+    cannot be a unit's: it is cached with no score and `oversize`. Returns
+    (cache, scored_now, qe_sha256, lock, namespace)."""
+    qe_bytes, qe_sha, lock = resources(cfg)
+    ns = namespace(cfg, qe_sha, lock)
     cache = read_cache(cache_path)
-    todo = [d for d in sorted(texts) if d not in cache or cache[d]["sha"] != sha256(texts[d].encode())][:budget]
+    todo = [d for d in sorted(texts) if not is_scored(cache, ns, texts, d)][:budget]
+    limit = min(cfg["unit_pages"], MAX_UNIT_PAGES)
     scored = 0
-    for i in range(0, len(todo), cfg["unit_pages"]):
-        part = todo[i:i + cfg["unit_pages"]]
+
+    def record(rows):
+        with open(cache_path, "a") as f:
+            for r in rows:
+                cache[r["doc_id"]] = r
+                f.write(json.dumps(r, sort_keys=True) + "\n")
+
+    big = [d for d in todo if len(texts[d].encode()) > MAX_PAGE_TEXT]
+    record([{"doc_id": d, "sha": sha256(texts[d].encode()), "lm_oov": None, "ns": ns, "oversize": True} for d in big])
+    scored += len(big)
+    units, cur, size = [], [], 0
+    for d in (d for d in todo if d not in set(big)):
+        b = page_bytes(texts[d])
+        if cur and (len(cur) >= limit or size + b > cfg["max_unit_bytes"]):
+            units.append(cur)
+            cur, size = [], 0
+        cur.append(d)
+        size += b
+    if cur:
+        units.append(cur)
+    for part in units:
         got = run_unit(cfg, unit_job(campaign, cfg["language"], lock, qe_bytes, [(d, texts[d]) for d in part]),
                        qe_bytes, workdir)
-        with open(cache_path, "a") as f:
-            for d in part:
-                r = {"doc_id": d, "sha": sha256(texts[d].encode()), "lm_oov": got[d]}
-                cache[d] = r
-                f.write(json.dumps(r, sort_keys=True) + "\n")
+        record([{"doc_id": d, "sha": sha256(texts[d].encode()), "lm_oov": got[d], "ns": ns} for d in part])
         scored += len(part)
-    return cache, scored, sha256(qe_bytes), lock
+    return cache, scored, qe_sha, lock, ns
 
 
 # ---------------------------------------------------------------------------------------------
@@ -291,18 +364,36 @@ def ledger_rows(root, kind, columns):
             for r in parquet_rows(path, columns)]
 
 
-def published_texts(root, doc_ids):
-    """{doc_id: text}: the newest of our Tesseract rows of each page, from pages/<lccn>/*.parquet."""
-    want = set(doc_ids)
+def engine_key(tag):
+    """usnm_ocr_local::report::engine_key: `<family>/<version> <profile>`, or the tag as it is."""
+    fields = tag.split(" ")
+    for f in fields[1:]:
+        if f.startswith("profile="):
+            return "%s %s" % (fields[0], f[len("profile="):])
+    return tag
+
+
+def published_readings(root, queued_at):
+    """{doc_id: (text, ocr_engine, node)}: the campaign's reading of each page, the newest row of our
+    Tesseract read at or after the page's newest queued row (`queued_at`, {doc_id: time}), from
+    pages/<lccn>/*.parquet. The text is the one the campaign imported; the release may select
+    another reading of the page or normalise the text, and that is not what is measured."""
     best = {}
-    for lccn in sorted({d.split("_", 1)[0] for d in want}):
+    for lccn in sorted({d.split("_", 1)[0] for d in queued_at}):
         for path in sorted(glob.glob(os.path.join(root, "pages", lccn, "*.parquet"))):
-            for r in parquet_rows(path, ["doc_id", "ocr_source", "ocred_at", "text"]):
-                if r["doc_id"] in want and r["ocr_source"] == OURS_SOURCE and r["text"]:
-                    cur = best.get(r["doc_id"])
+            for r in parquet_rows(path, ["doc_id", "ocr_source", "ocr_engine", "node", "ocred_at", "text"]):
+                d = r["doc_id"]
+                if d in queued_at and r["ocr_source"] == OURS_SOURCE and r["text"] and r["ocred_at"] >= queued_at[d]:
+                    cur = best.get(d)
                     if cur is None or r["ocred_at"] >= cur[0]:
-                        best[r["doc_id"]] = (r["ocred_at"], r["text"])
-    return {d: t for d, (_, t) in best.items()}
+                        best[d] = (r["ocred_at"], r["text"], r["ocr_engine"] or "", r["node"] or "")
+    return {d: v[1:] for d, v in best.items()}
+
+
+def is_held(holds, engine, node):
+    """Whether a hold (engine and/or node, both that are set must match) takes this reading."""
+    return any((h_engine is None or h_engine in (engine, engine_key(engine))) and (h_node is None or h_node == node)
+               for h_engine, h_node in holds)
 
 
 def psql(dsn, sql):
@@ -320,12 +411,17 @@ def id_list_sql(ids):
     return "string_to_array('%s', ',')" % ",".join(ids)
 
 
-def held_pages(dsn, ids):
+def hold_rows(dsn, ids):
+    """{doc_id: [(engine or None, node or None)]} of quality.boinc_page_holds for the pages."""
     ids = sorted(ids)
-    out = set()
+    out = {}
     for i in range(0, len(ids), 3000):
-        sql = "SELECT DISTINCT doc_id FROM quality.boinc_page_holds WHERE doc_id = ANY(%s)" % id_list_sql(ids[i:i + 3000])
-        out.update(r for r in psql(dsn, sql).split("\n") if r)
+        sql = ("SELECT doc_id, coalesce(engine, ''), coalesce(node, '') FROM quality.boinc_page_holds "
+               "WHERE doc_id = ANY(%s)" % id_list_sql(ids[i:i + 3000]))
+        for r in psql(dsn, sql).split("\n"):
+            if r:
+                d, e, n = r.split("\t")
+                out.setdefault(d, []).append((e or None, n or None))
     return out
 
 
@@ -390,41 +486,86 @@ def cmd_run(a):
     report["campaign"] = campaign
     final = os.path.join(gain_dir, campaign + ".json")
     progress = os.path.join(gain_dir, campaign + ".progress.json")
-    wave_over = a.campaign is not None or wave_done(cfg, st, now)
-    dsn = open(cfg["dsn_file"]).read().strip()
+    forced = a.campaign is not None
+    with open(cfg["dsn_file"]) as f:
+        dsn = f.read().strip()
     try:
         queued = ledger_rows(cfg["ocr_local_dir"], "queued", ["doc_id", "plan", "queued_at"])
         outcomes = ledger_rows(cfg["ocr_local_dir"], "outcomes", ["doc_id", "outcome", "cause", "at"])
         states = ledger_outcomes(queued, outcomes, campaign)
-        held = held_pages(dsn, [d for d, s in states.items() if s != "pending"])
+        newest = {}
+        for q in queued:
+            if q["doc_id"] in states and (q["doc_id"] not in newest or q["queued_at"] > newest[q["doc_id"]]):
+                newest[q["doc_id"]] = q["queued_at"]
+        imported = {d: newest[d] for d, s_ in states.items() if s_ == "imported"}
+        readings = published_readings(cfg["ocr_local_dir"], imported)
+        holds = hold_rows(dsn, list(imported))
+        held = {d for d in imported if d in readings and d in holds and is_held(holds[d], readings[d][1], readings[d][2])}
         rate, counts, published = pass_rate(states, held)
         report.update(counts)
-        texts = published_texts(cfg["ocr_local_dir"], published)
-        report["published_text_missing"] = len(published) - len(texts)
-        cache, scored_now, qe_sha, unit_lock = score_pages(
+        texts = {d: readings[d][0] for d in published if d in readings}
+        missing = len(published) - len(texts)
+        report["published_text_missing"] = missing
+        cache, scored_now, qe_sha, unit_lock, ns = score_pages(
             cfg, campaign, texts, os.path.join(gain_dir, campaign + ".scores.jsonl"), gain_dir,
             cfg["score_pages_per_run"])
         loc, loc_locks = loc_scores(dsn, list(texts), cfg["language"])
         cuts = decile_cuts(dsn, cfg["language"])
-    except (RuntimeError, OSError, SystemExit) as e:
+        if loc_locks - {unit_lock}:
+            raise RuntimeError("LoC's rows were scored with another resource lock than ours: %s" % sorted(loc_locks))
+    except (RuntimeError, OSError, SystemExit, ValueError, KeyError) as e:
         return finish("failed", code=1, error=str(e)[:400])
     pairs = [(d, loc[d], cache[d]["lm_oov"]) for d in sorted(texts)
-             if d in cache and d in loc and cache[d]["lm_oov"] is not None]
-    unscored = sum(1 for d in texts if d not in cache or cache[d]["sha"] != sha256(texts[d].encode()))
+             if is_scored(cache, ns, texts, d) and d in loc and cache[d]["lm_oov"] is not None]
+    unscored = sum(1 for d in texts if not is_scored(cache, ns, texts, d))
     report.update(scored_now=scored_now, awaiting_score=unscored, paired=len(pairs))
     summary = gain_summary(pairs, cuts)
     body = dict(summary, campaign=campaign, language=cfg["language"], pass_rate=rate,
                 measure=QE_VERSION + " lm_oov", gain="LoC lm_oov minus ours; positive is better",
-                path="local: usnm_quality text-only unit", ours_resources_sha256=qe_sha,
-                loc_resources_locks=sorted(loc_locks), unit_lock=unit_lock, ledger=counts,
+                path="local: usnm_quality text-only unit",
+                text="the campaign's imported Tesseract text (not the release's selection)",
+                ours_resources_sha256=qe_sha, unit_lock=unit_lock, ledger=counts,
                 no_loc_score=sum(1 for d in texts if d not in loc),
-                no_words=sum(1 for d in texts if d in cache and cache[d]["lm_oov"] is None))
-    if not wave_over or unscored or rate is None or summary["median_gain"] is None:
-        why = ("wave not done" if not wave_over else "pages await a score" if unscored
-               else "no settled pages" if rate is None else "no paired pages")
+                no_words=sum(1 for d in texts if cache.get(d, {}).get("lm_oov") is None))
+
+    def not_ready(st):
+        """Why the figure cannot be final, against the timer's state `st`; None when it can."""
+        if st is None:
+            return "the timer is running or has no state"
+        if forced:
+            return "pages await a score" if unscored or missing else None
+        if st.get("campaign") != campaign:
+            return "the timer has moved to another campaign"
+        if not wave_done(cfg, st, now):
+            return "wave not done"
+        if counts["queued"] != st["wave_queued"]:
+            return "the ledger copy has %d of the wave's %d queued pages" % (counts["queued"], st["wave_queued"])
+        if counts["published"] + counts["held"] < st.get("published", 0):
+            return "the ledger copy is behind the wave's published pages"
+        if missing:
+            return "%d imported texts are not in the dataset copy yet" % missing
+        if unscored:
+            return "pages await a score"
+        if rate is None or summary["median_gain"] is None:
+            return "no settled or paired pages"
+        return None
+
+    if forced:
+        why = not_ready(True)
+        if why is None:
+            save_json(final, dict(body, computed_at=iso(now)))
+            return finish("written", pass_rate=round(rate, 5), median_gain=summary["median_gain"])
         save_json(progress, dict(body, why=why, at=iso(now)))
         return finish("progress", why=why)
-    save_json(final, dict(body, computed_at=iso(now)))
+    # Decided and written under the timer's lock, against its state now (it may have moved on).
+    with timer_state(a.state_dir) as st:
+        why = not_ready(st)
+        if why is None:
+            save_json(final, dict(body, computed_at=iso(now)))
+        elif st is not None and st.get("campaign") == campaign:
+            save_json(progress, dict(body, why=why, at=iso(now)))
+    if why is not None:
+        return finish("progress", why=why)
     if os.path.exists(progress):
         os.remove(progress)
     return finish("written", pass_rate=round(rate, 5), median_gain=summary["median_gain"])
