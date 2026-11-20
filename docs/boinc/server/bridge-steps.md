@@ -243,8 +243,8 @@ usnm-boinc cloud submit --root <controller root> --base-url https://<dev server>
   counts as already there, so a rerun is safe.
 - The run prints `submitted N, already there N, skipped N, failed N`, a line per skipped or failed job on stderr, and
   exits non-zero when any job failed. `--dry-run` reads and checks everything and sends nothing.
-- Cloudflare caps a request body at 100 MB on the Free and Pro plans, below the 128 MiB `MAX_SCAN`, so a larger page
-  fails its upload there.
+- Cloudflare caps a request body at 100 MB on the Free and Pro plans, below the 128 MiB `MAX_SCAN`. The scan archive's
+  largest page was 12.7 MB (ADR 0018), so only a page far outside that range would fail its upload.
 
 ## Pull from the cloud BOINC server (dev only)
 
