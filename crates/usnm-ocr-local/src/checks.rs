@@ -21,7 +21,47 @@ pub const MAX_ENGINE_CHARS: usize = 512;
 /// `ocr_source` values of the engines 13 lists (`usnm-<family>`, 13
 /// §13.8.1). The engine list in `ocr/engines/engines.toml` (13 §13.7.2)
 /// replaces this when it lands.
-pub const ENGINE_SOURCES: [&str; 3] = ["usnm-tesseract", "usnm-kraken", "usnm-doctr"];
+///
+/// `usnm-xiaomi` (Xiaomi-OCR-0 page mode, #1998) is accepted by this check but its engine is
+/// `production = false` in `engines.toml`, so no page is published with it until the language
+/// list in `ocr/engines/xiaomi-languages.toml` names the page's language.
+pub const ENGINE_SOURCES: [&str; 4] =
+    ["usnm-tesseract", "usnm-kraken", "usnm-doctr", "usnm-xiaomi"];
+
+/// `ocr/engines/xiaomi-languages.toml`: the languages Xiaomi-OCR-0 may replace LoC's text in
+/// (#1997). Empty until the Science Coordinator adds `eng`.
+pub const XIAOMI_LANGUAGES: &str = include_str!("../../../ocr/engines/xiaomi-languages.toml");
+
+/// The languages in [`XIAOMI_LANGUAGES`] (or in `text`, a file of the same shape): the array
+/// `languages` of ISO 639-3 codes.
+pub fn xiaomi_languages_in(text: &str) -> Result<Vec<String>, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct File {
+        schema: u32,
+        languages: Vec<String>,
+    }
+    let f: File = toml::from_str(text).map_err(|e| e.to_string())?;
+    if f.schema != 1 {
+        return Err("unknown schema".into());
+    }
+    if let Some(bad) = f
+        .languages
+        .iter()
+        .find(|l| l.len() != 3 || !l.bytes().all(|b| b.is_ascii_lowercase()))
+    {
+        return Err(format!("{bad:?} is not an ISO 639-3 code"));
+    }
+    Ok(f.languages)
+}
+
+/// Whether a `usnm-xiaomi` row of a title with `languages` may be accepted: every language the
+/// title has is on the list, so with the list empty none is. The release does not take a
+/// Xiaomi-OCR-0 page for a title it was not cleared for, whoever wrote the part.
+fn xiaomi_may_read(languages: &[String]) -> bool {
+    let allowed = xiaomi_languages_in(XIAOMI_LANGUAGES).unwrap_or_default();
+    !languages.is_empty() && languages.iter().all(|l| allowed.contains(l))
+}
 
 /// Where scans come from: tile.loc.gov's IIIF image server (the page's
 /// IIIF base, which the worker writes as `image_url`) and its storage
@@ -66,6 +106,9 @@ pub enum Reject {
     TitleUnknown,
     TitleJapanese,
     ImageUrl,
+    /// Check 5, for `usnm-xiaomi` rows: a language of the page's title is not on the engine's
+    /// language list ([`XIAOMI_LANGUAGES`]).
+    EngineLanguage,
     /// Check 6.
     Alto(usnm_alto::AltoError),
     /// Check 7: the runs record is over 1 MiB, fails the strict reader,
@@ -103,6 +146,7 @@ impl Reject {
             Reject::TitleUnknown => "title_unknown",
             Reject::TitleJapanese => "title_japanese",
             Reject::ImageUrl => "image_url",
+            Reject::EngineLanguage => "engine_language",
             Reject::Alto(e) => e.code(),
             Reject::RunsTooLarge => "runs_too_large",
             Reject::RunsUnreadable => "runs_unreadable",
@@ -329,6 +373,9 @@ pub fn check_part(name: &PartName, bytes: Vec<u8>, ctx: &Context) -> Result<Node
     if languages.iter().any(|l| l == "jpn") {
         return Err(Reject::TitleJapanese);
     }
+    if row.ocr_source == "usnm-xiaomi" && !xiaomi_may_read(languages) {
+        return Err(Reject::EngineLanguage);
+    }
     if !image_url_ok(&row.image_url) {
         return Err(Reject::ImageUrl);
     }
@@ -353,6 +400,31 @@ pub fn check_dead_letter(text: &str) -> Result<DeadLetter, Reject> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn xiaomi_language_list_is_empty_and_gates_every_title() {
+        assert_eq!(
+            xiaomi_languages_in(XIAOMI_LANGUAGES).unwrap(),
+            Vec::<String>::new()
+        );
+        assert!(!xiaomi_may_read(&["eng".to_owned()]));
+        assert!(!xiaomi_may_read(&[]));
+        let listed = "schema = 1\nlanguages = [\"eng\"]\n";
+        assert_eq!(xiaomi_languages_in(listed).unwrap(), vec!["eng".to_owned()]);
+        assert!(xiaomi_languages_in("schema = 1\nlanguages = [\"EN\"]\n").is_err());
+        assert!(xiaomi_languages_in("schema = 2\nlanguages = []\n").is_err());
+        assert!(xiaomi_languages_in("schema = 1\nlanguages = []\nx = 1\n").is_err());
+        assert_eq!(Reject::EngineLanguage.code(), "engine_language");
+    }
+
+    #[test]
+    fn xiaomi_is_an_engine_source_and_alto_v4_with_processing_refs_passes() {
+        assert!(ENGINE_SOURCES.contains(&"usnm-xiaomi"));
+        let alto = r#"<?xml version="1.0" encoding="UTF-8"?>
+<alto xmlns="http://www.loc.gov/standards/alto/ns-v4#"><Description><MeasurementUnit>pixel</MeasurementUnit><sourceImageInformation><fileName>https://tile.loc.gov/x</fileName></sourceImageInformation><Processing ID="PROC_X"><processingCategory>contentGeneration</processingCategory></Processing></Description><Layout><Page ID="P1" WIDTH="100" HEIGHT="100" PHYSICAL_IMG_NR="1"><PrintSpace><TextBlock ID="b.1" PROCESSINGREFS="PROC_X"><TextLine><String CONTENT="a"/></TextLine></TextBlock></PrintSpace></Page></Layout></alto>"#;
+        let page = check_alto(alto.as_bytes()).unwrap();
+        assert_eq!(page.version, usnm_alto::AltoVersion::V4);
+    }
 
     #[test]
     fn image_urls_are_on_tile_loc_gov() {

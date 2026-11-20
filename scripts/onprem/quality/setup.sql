@@ -56,6 +56,7 @@ INSERT INTO quality.readers (reader, kind, description) VALUES
   ('ours-surya', 'ours', 'our Surya OCR'),
   ('ours-ndlocr', 'ours', 'our NDLOCR-Lite OCR'),
   ('ours-paddle', 'ours', 'our PaddleOCR'),
+  ('ours-xiaomi', 'ours', 'our Xiaomi-OCR-0 page-mode OCR (held, not published)'),
   ('qwen', 'vlm', 'usnm_qwen crop readings')
 ON CONFLICT (reader) DO NOTHING;
 

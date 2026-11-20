@@ -3625,6 +3625,7 @@ pub(super) mod tests {
                 log: None,
                 pages: Some(&records),
                 crop_states: None,
+                guard_job: None,
             },
         )
         .unwrap();
@@ -3686,6 +3687,7 @@ pub(super) mod tests {
             log: None,
             pages: Some(&records),
             crop_states: None,
+            guard_job: None,
         };
         // The first bundle settles by its other page; ours is disagreed and joins nothing.
         compare_with(&a, &b, page_v1()).unwrap();

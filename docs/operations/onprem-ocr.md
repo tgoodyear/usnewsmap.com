@@ -322,7 +322,7 @@ scripts/onprem/ingest-env.sh --env prod | ssh root@<proxmox-host> /root/batch-ct
 pct exec 215 -- /usr/local/bin/usnm-ingest-run --command ocr-sync -- --from-quarantine --reason not_requested
 ```
 
-Reason codes: `name`, `part_too_large`, `part_unreadable`, `rows`, `issue_mismatch`, `alto_missing`, `alto_too_large` (checks 1 and 2); `not_requested`, `batch_mismatch`, `reason_mismatch` (3); `text_null`, `text_too_large`, `text_control`, `text_mismatch` (4); `engine`, `engine_tag` (an `ocr_engine` with `image=local`, or not printable), `reason`, `batch_unpublished`, `title_unknown`, `title_japanese`, `image_url` (5); `alto_*` from the ALTO reader (6); `deadletter_*` for dead letters.
+Reason codes: `name`, `part_too_large`, `part_unreadable`, `rows`, `issue_mismatch`, `alto_missing`, `alto_too_large` (checks 1 and 2); `not_requested`, `batch_mismatch`, `reason_mismatch` (3); `text_null`, `text_too_large`, `text_control`, `text_mismatch` (4); `engine`, `engine_tag` (an `ocr_engine` with `image=local`, or not printable), `reason`, `batch_unpublished`, `title_unknown`, `title_japanese`, `image_url`, `engine_language` (a `usnm-xiaomi` row for a language `ocr/engines/xiaomi-languages.toml` does not list, which is every language until it does) (5); `alto_*` from the ALTO reader (6); `deadletter_*` for dead letters.
 
 **Gain estimate.** `ocr-sync --report` applies rule v1 (Step 9) to stored scores without importing and writes `curated/ocr-local/report/<run>.json` (considered, replaced, reasons LoC's text stays, by language and engine):
 

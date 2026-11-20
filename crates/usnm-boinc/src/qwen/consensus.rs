@@ -172,6 +172,30 @@ pub fn judge_crops(
     b: &BTreeMap<&str, Side<'_>>,
     params: Params,
 ) -> (Vec<CropVerdict>, Result<(), String>) {
+    judge_with(a, b, params, false)
+}
+
+/// `page-blocks-v1` (#1998): the same states per region, but a disagreeing region does not fail
+/// the pair. A page has hundreds of regions, so "any disagreement fails" would almost never
+/// pass one (the change #1988 proposes for samples). The pair is valid when the `agree`
+/// regions are more than `params.min_share` of the regions with text (`agree`, `disagree` and
+/// `looped`) and hold at least `params.min_agreed_chars` characters; a page with no region with
+/// text at all agrees, as under v2. Which regions a page then takes is each region's own state,
+/// in the collector.
+pub fn judge_blocks(
+    a: &BTreeMap<&str, Side<'_>>,
+    b: &BTreeMap<&str, Side<'_>>,
+    params: Params,
+) -> (Vec<CropVerdict>, Result<(), String>) {
+    judge_with(a, b, params, true)
+}
+
+fn judge_with(
+    a: &BTreeMap<&str, Side<'_>>,
+    b: &BTreeMap<&str, Side<'_>>,
+    params: Params,
+    disagreement_is_not_fatal: bool,
+) -> (Vec<CropVerdict>, Result<(), String>) {
     const BLANK: Side<'static> = Side {
         text: "",
         looped: false,
@@ -196,7 +220,18 @@ pub fn judge_crops(
         .collect();
     let count = |s| verdicts.iter().filter(|v| v.state == s).count();
     let (agree, looped) = (count(CropState::Agree), count(CropState::Looped));
-    let with_text = agree + looped;
+    let with_text = agree
+        + looped
+        + if disagreement_is_not_fatal {
+            count(CropState::Disagree)
+        } else {
+            0
+        };
+    let what = if disagreement_is_not_fatal {
+        "regions"
+    } else {
+        "crops"
+    };
     let chars = |side: &BTreeMap<&str, Side<'_>>, id: &str| {
         side.get(id)
             .map_or(0, |s| comparable(s.text).chars().count())
@@ -207,15 +242,18 @@ pub fn judge_crops(
         .map(|v| chars(a, &v.id).min(chars(b, &v.id)))
         .sum();
     let verdict = if verdicts.is_empty() {
-        Err("no crop in common".to_owned())
-    } else if let Some(v) = verdicts.iter().find(|v| v.state == CropState::Disagree) {
+        Err(format!("no {} in common", what.trim_end_matches('s')))
+    } else if let Some(v) = verdicts
+        .iter()
+        .find(|v| !disagreement_is_not_fatal && v.state == CropState::Disagree)
+    {
         Err(format!(
             "{}: reading agreement {:.4}",
             v.id,
             v.score.unwrap_or(0.0)
         ))
     } else if with_text > 0 && (agree as f64) <= params.min_share * with_text as f64 {
-        Err(format!("{agree} of {with_text} crops with text agree"))
+        Err(format!("{agree} of {with_text} {what} with text agree"))
     } else if with_text > 0 && agreed_chars < params.min_agreed_chars {
         Err(format!("{agreed_chars} characters agree"))
     } else {
@@ -271,6 +309,20 @@ pub struct Judged {
     pub basis: Basis,
     pub crops: Vec<CropVerdict>,
     pub verdict: Result<(), String>,
+    /// Judged by `page-blocks-v1` (a page-mode unit's regions): the record says so, and its
+    /// `rule` stays `crop-consensus-v2`, so every collector reads it.
+    pub page_blocks: bool,
+}
+
+/// Whether a pair can be judged crop by crop: both finished, one job and engine, one reader.
+fn judgeable(a: &Loaded, b: &Loaded) -> bool {
+    let finished = a.result.outcome == Outcome::Ok && b.result.outcome == Outcome::Ok;
+    // Readings by different readers (a Xiaomi-OCR-0 reading and another model's) never
+    // vouch for each other: the strict rule has already refused the pair.
+    finished
+        && a.result.job_id == b.result.job_id
+        && a.result.engine == b.result.engine
+        && usnm_ocr_contract::qwen::reader_mismatch(&a.result, &b.result).is_none()
 }
 
 /// Judges a pair of results. A pair that did not both finish, that is for
@@ -278,18 +330,12 @@ pub struct Judged {
 /// ([`usnm_ocr_contract::qwen::reader_mismatch`]), keeps `strict`, the strict
 /// rule's verdict.
 pub fn judge(a: &Loaded, b: &Loaded, params: Params, strict: Result<(), String>) -> Judged {
-    let finished = a.result.outcome == Outcome::Ok && b.result.outcome == Outcome::Ok;
-    // Readings by different readers (a Xiaomi-OCR-0 reading and another model's) never
-    // vouch for each other: the strict rule has already refused the pair.
-    if !finished
-        || a.result.job_id != b.result.job_id
-        || a.result.engine != b.result.engine
-        || usnm_ocr_contract::qwen::reader_mismatch(&a.result, &b.result).is_some()
-    {
+    if !judgeable(a, b) {
         return Judged {
             basis: Basis::StrictV1,
             crops: Vec::new(),
             verdict: strict,
+            page_blocks: false,
         };
     }
     let (crops, verdict) = judge_crops(&sides(a), &sides(b), params);
@@ -297,6 +343,48 @@ pub fn judge(a: &Loaded, b: &Loaded, params: Params, strict: Result<(), String>)
         basis: Basis::CropConsensusV2,
         crops,
         verdict,
+        page_blocks: false,
+    }
+}
+
+/// `page-blocks-v1` for a pair of page-mode results: the empty-return guard first (a result
+/// with more than [`super::validate::MAX_EMPTY_PERCENT`] of its regions read empty is invalid
+/// on its own, whatever the other says; regions LoC has blank too are left out when `loc_blank`
+/// is known), then [`judge_blocks`]. A pair that cannot be judged region by region keeps
+/// `strict`, as [`judge`] does.
+pub fn judge_page_blocks(
+    a: &Loaded,
+    b: &Loaded,
+    params: Params,
+    strict: Result<(), String>,
+    loc_blank: Option<&BTreeMap<String, bool>>,
+) -> Judged {
+    if !judgeable(a, b) {
+        return Judged {
+            basis: Basis::StrictV1,
+            crops: Vec::new(),
+            verdict: strict,
+            page_blocks: true,
+        };
+    }
+    let (crops, mut verdict) = judge_blocks(&sides(a), &sides(b), params);
+    for l in [a, b] {
+        let c = super::validate::count_empty(l, loc_blank);
+        if c.too_empty() {
+            verdict = Err(format!(
+                "empty-return guard: {} of {} counted regions read empty, over {}%",
+                c.empty,
+                c.counted(),
+                super::validate::MAX_EMPTY_PERCENT
+            ));
+            break;
+        }
+    }
+    Judged {
+        basis: Basis::CropConsensusV2,
+        crops,
+        verdict,
+        page_blocks: true,
     }
 }
 
@@ -326,6 +414,7 @@ pub fn record(
     let record = serde_json::json!({
         "v": RECORD_VERSION,
         "rule": "crop-consensus-v2",
+        "validator": if judged.page_blocks { "page-blocks-v1" } else { "crop-consensus-v2" },
         "basis": judged.basis,
         "job_id": la.result.job_id,
         "results": names,
@@ -336,7 +425,14 @@ pub fn record(
     });
     let bytes = serde_json::to_vec_pretty(&record)?;
     usnm_ocr_contract::quality::check_doc_id(&la.result.job_id)?;
-    let pair = usnm_ocr_contract::boinc::sha256(names.join("\n").as_bytes());
+    // The page rule's record has its own key: a pair the strict or v2 rule rejected earlier
+    // keeps its record beside the page rule's verdict on the same results, and neither
+    // replaces the other (`record` never overwrites).
+    let mut key = names.join("\n");
+    if judged.page_blocks {
+        key.push_str("\npage-blocks-v1");
+    }
+    let pair = usnm_ocr_contract::boinc::sha256(key.as_bytes());
     let parent = dir.join(&la.result.job_id);
     std::fs::create_dir_all(&parent)?;
     let path = parent.join(format!("{}.json", &pair[..16]));
@@ -365,6 +461,12 @@ pub struct Record {
     pub readings_sha256: [String; 2],
     pub agree: bool,
     pub crops: Vec<CropVerdict>,
+    /// The pair's result names, sorted; absent in records written before #1998.
+    #[serde(default)]
+    pub results: Vec<String>,
+    /// `page-blocks-v1` for a page-mode unit's pair; absent otherwise.
+    #[serde(default)]
+    pub validator: Option<String>,
 }
 
 /// The crop-state records kept for a job, sorted: `<dir>/<job_id>/*.json`.
@@ -480,10 +582,72 @@ pub fn vouched(dir: &Path, job_id: &str, readings_sha256: &str) -> anyhow::Resul
     })
 }
 
+/// What an agreeing pair judged of each region of a page-mode result (#1998).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PairStates {
+    /// The verdict of each region in the one pair that supports the page.
+    pub regions: BTreeMap<String, CropVerdict>,
+    /// That pair's results, by name, sorted. Every region's text comes from this pair alone, so
+    /// the provenance names the results that agreed on it.
+    pub results: Vec<String>,
+}
+
+/// The region verdicts of the agreeing pair of `job_id` that includes the result whose readings
+/// hash to `readings_sha256`; `None` when no agreeing pair judged region by region includes it
+/// (a page-mode result is never taken on the strict rule's every-crop vouch). With several
+/// (A/B and A/C), the one with the most agreeing regions is taken, the first of equals, and
+/// the page is assembled from it alone: states are never mixed across pairs, so the result
+/// names in the provenance are the pair's. A pair that did not agree as a whole is not
+/// counted, since the result's canonical standing is from an agreeing one. A record that
+/// cannot be read fails the call.
+pub fn agreed_states(
+    dir: &Path,
+    job_id: &str,
+    readings_sha256: &str,
+) -> anyhow::Result<Option<PairStates>> {
+    let mut best: Option<(usize, PairStates)> = None;
+    for path in record_paths(dir, job_id)? {
+        let r: Record = serde_json::from_slice(&crate::read(&path, MAX_RECORD)?)
+            .with_context(|| format!("crop states {}", path.display()))?;
+        anyhow::ensure!(
+            r.v == RECORD_VERSION && r.rule == "crop-consensus-v2" && r.job_id == job_id,
+            "{}: not a version {RECORD_VERSION} crop-state record for {job_id}",
+            path.display()
+        );
+        if !r.agree
+            || r.basis != Basis::CropConsensusV2
+            || !r.readings_sha256.iter().any(|s| s == readings_sha256)
+        {
+            continue;
+        }
+        let agreeing = r
+            .crops
+            .iter()
+            .filter(|c| c.state == CropState::Agree)
+            .count();
+        if best.as_ref().is_some_and(|(n, _)| *n >= agreeing) {
+            continue;
+        }
+        let regions = r.crops.into_iter().map(|c| (c.id.clone(), c)).collect();
+        best = Some((
+            agreeing,
+            PairStates {
+                regions,
+                results: r.results,
+            },
+        ));
+    }
+    Ok(best.map(|(_, p)| p))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::qwen::validate::{compare_with, tests::write, Compare, Rule};
+    use crate::qwen::validate::{
+        compare_with,
+        tests::{write, write_crops},
+        Compare, Rule,
+    };
     use std::path::PathBuf;
 
     const P: Params = Params::IN_RULE;
@@ -719,6 +883,7 @@ mod tests {
             log: Some(&log),
             pages: None,
             crop_states: Some(&states),
+            guard_job: None,
         };
         assert!(compare_with(&a, &b, opts(Rule::StrictV1)).is_err());
         assert!(!states.exists());
@@ -751,6 +916,207 @@ mod tests {
         assert_eq!(r["readings_sha256"][1], load(&b).readings_sha256);
     }
 
+    fn side_map<'a>(v: &'a [(String, &'a str, bool)]) -> BTreeMap<&'a str, Side<'a>> {
+        v.iter()
+            .map(|(id, t, l)| {
+                (
+                    id.as_str(),
+                    Side {
+                        text: t,
+                        looped: *l,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn page_blocks_pass_a_page_with_a_few_disagreeing_regions_where_v2_fails_it() {
+        // 8 regions of which 6 agree and 2 do not: v2 fails the pair on any disagreement.
+        let line = format!("{LINE_A} {OTHER}");
+        let near = format!("{LINE_B} {OTHER}");
+        let mut a: Vec<(String, &str, bool)> = Vec::new();
+        let mut b: Vec<(String, &str, bool)> = Vec::new();
+        for i in 0..8 {
+            a.push((format!("r{i:04}"), line.as_str(), false));
+            b.push((
+                format!("r{i:04}"),
+                if i < 6 {
+                    near.as_str()
+                } else {
+                    "Quite another page about coal and iron"
+                },
+                false,
+            ));
+        }
+        let (_, v2) = judge_crops(&side_map(&a), &side_map(&b), P);
+        assert!(v2.unwrap_err().contains("reading agreement"));
+        let (states, blocks) = judge_blocks(&side_map(&a), &side_map(&b), P);
+        assert_eq!(blocks, Ok(()));
+        assert_eq!(
+            states
+                .iter()
+                .filter(|s| s.state == CropState::Agree)
+                .count(),
+            6
+        );
+        // The floors still hold: half or fewer agreeing fails, as does a page of few characters.
+        let mut c = b.clone();
+        for r in c.iter_mut().take(4) {
+            r.1 = "Quite another page about coal and iron";
+        }
+        let (_, half) = judge_blocks(&side_map(&a), &side_map(&c), P);
+        assert_eq!(half.unwrap_err(), "2 of 8 regions with text agree");
+        let short = [("r0001".to_owned(), "tiny text", false)];
+        assert!(judge_blocks(&side_map(&short), &side_map(&short), P)
+            .1
+            .unwrap_err()
+            .contains("characters agree"));
+        // A looping side counts against the page, not as agreement, and a page with no text
+        // at all agrees as under v2.
+        let mut l = b.clone();
+        for r in l.iter_mut().skip(5) {
+            r.2 = true;
+        }
+        let (states, v) = judge_blocks(&side_map(&a), &side_map(&l), P);
+        assert!(v.is_ok());
+        assert_eq!(
+            states
+                .iter()
+                .filter(|s| s.state == CropState::Looped)
+                .count(),
+            3
+        );
+        let blank = [("r0001".to_owned(), "", false)];
+        assert!(judge_blocks(&side_map(&blank), &side_map(&blank), P)
+            .1
+            .is_ok());
+        assert!(judge_blocks(&BTreeMap::new(), &BTreeMap::new(), P)
+            .1
+            .unwrap_err()
+            .contains("no region"));
+    }
+
+    #[test]
+    fn page_blocks_apply_the_empty_guard_first_and_keep_the_records_every_collector_reads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let line = format!("{LINE_A} {OTHER}");
+        let near = format!("{LINE_B} {OTHER}");
+        let ids: Vec<String> = (0..10).map(|i| format!("c{i:02}")).collect();
+        let reading = |empty: usize, text: &str| -> Vec<(&str, String)> {
+            ids.iter()
+                .enumerate()
+                .map(|(i, id)| {
+                    (
+                        id.as_str(),
+                        if i < empty {
+                            " ".to_owned()
+                        } else {
+                            text.to_owned()
+                        },
+                    )
+                })
+                .collect()
+        };
+        let write_all = |tag: &str, rows: &[(&str, String)]| {
+            let borrowed: Vec<(&str, &str)> = rows.iter().map(|(a, b)| (*a, b.as_str())).collect();
+            write_crops(tmp.path(), tag, &borrowed, Some(10))
+        };
+        let (states, log) = (tmp.path().join("states"), tmp.path().join("pairs.jsonl"));
+        let opts = |rule| Compare {
+            min_dice: 0.5,
+            rule,
+            bundle_verdict: crate::qwen::validate::BundleVerdict::Unit,
+            log: Some(&log),
+            pages: None,
+            crop_states: Some(&states),
+            guard_job: None,
+        };
+        // Both read the same text in every region but one side left 2 of 10 blank: the guard
+        // fails the pair (over 10% empty) although the rest agree.
+        let a = write_all("a", &reading(0, &line));
+        let b = write_all("b", &reading(2, &near));
+        let err = compare_with(&a, &b, opts(Rule::PageBlocksV1)).unwrap_err();
+        assert!(err.to_string().contains("empty-return guard"), "{err}");
+        // Without the empty readings the pair passes, and the record is a crop-consensus-v2
+        // record with the page rule noted.
+        let c = write_all("c", &reading(0, &near));
+        compare_with(&a, &c, opts(Rule::PageBlocksV1)).unwrap();
+        let text = std::fs::read_to_string(&log).unwrap();
+        let last: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+        assert_eq!(last["rule"], "page-blocks-v1");
+        let la = crate::qwen::validate::load(&a).unwrap();
+        let got = agreed_states(&states, &la.result.job_id, &la.result.readings_sha256)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.regions.len(), 10);
+        assert!(got.regions.values().all(|v| v.state == CropState::Agree));
+        // The strict-rule vouch never stands in: a result no agreeing pair judged has none.
+        assert!(agreed_states(&states, &la.result.job_id, &"0".repeat(64))
+            .unwrap()
+            .is_none());
+        // The existing reader takes the same record.
+        let vouch = vouched(&states, &la.result.job_id, &la.result.readings_sha256).unwrap();
+        assert!(matches!(vouch, Vouch::Crops(_)));
+        let record = std::fs::read_dir(states.join(&la.result.job_id))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        let r: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(record.path()).unwrap()).unwrap();
+        assert_eq!(
+            (r["rule"].as_str(), r["validator"].as_str()),
+            (Some("crop-consensus-v2"), Some("page-blocks-v1"))
+        );
+        // The rule needs somewhere to keep the states, as v2 does.
+        let no_states = Compare {
+            crop_states: None,
+            ..opts(Rule::PageBlocksV1)
+        };
+        assert!(compare_with(&a, &c, no_states).is_err());
+        // The same pair judged under v2 keeps its own record beside the page rule's, so
+        // neither a rejection nor an acceptance hides the other.
+        let _ = compare_with(&a, &c, opts(Rule::CropConsensusV2));
+        assert_eq!(record_paths(&states, &la.result.job_id).unwrap().len(), 3);
+        assert!(
+            agreed_states(&states, &la.result.job_id, &la.result.readings_sha256)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_page_is_judged_from_one_pair_and_never_from_states_mixed_across_pairs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job = "j1";
+        std::fs::create_dir_all(tmp.path().join(job)).unwrap();
+        let write_pair = |name: &str, other: &str, states: [&str; 2]| {
+            let record = serde_json::json!({
+                "v": RECORD_VERSION, "rule": "crop-consensus-v2", "basis": "crop-consensus-v2",
+                "job_id": job, "results": [name, other],
+                "readings_sha256": ["A", other], "agree": true,
+                "crops": [{"id": "r1", "state": states[0], "score": null},
+                          {"id": "r2", "state": states[1], "score": null}],
+            });
+            std::fs::write(
+                tmp.path().join(job).join(format!("{other}.json")),
+                serde_json::to_vec(&record).unwrap(),
+            )
+            .unwrap();
+        };
+        // A/B agrees on r1 only; A/C on both: the page comes from A/C, and says so.
+        write_pair("wu_0", "B", ["agree", "disagree"]);
+        write_pair("wu_0", "C", ["agree", "agree"]);
+        let got = agreed_states(tmp.path(), job, "A").unwrap().unwrap();
+        assert_eq!(got.results, ["wu_0", "C"]);
+        assert!(got.regions.values().all(|v| v.state == CropState::Agree));
+        // Where no pair beats another, the first stays, and a region is never mixed in.
+        write_pair("wu_0", "D", ["disagree", "agree"]);
+        let got = agreed_states(tmp.path(), job, "A").unwrap().unwrap();
+        assert_eq!(got.results, ["wu_0", "C"]);
+    }
+
     #[test]
     fn crop_states_are_required_and_a_lost_record_leaves_the_strict_verdict() {
         let tmp = tempfile::tempdir().unwrap();
@@ -771,6 +1137,7 @@ mod tests {
             log: None,
             pages: None,
             crop_states,
+            guard_job: None,
         };
         let err = compare_with(&a, &b, opts(None)).unwrap_err().to_string();
         assert!(err.contains("--crop-states"), "{err}");

@@ -35,10 +35,17 @@ pub enum Target {
     /// Xiaomi-OCR-0 GGUF + mmproj) for jobs pinned to it at request version 5 (#1776).
     #[value(name = "native-xiaomi")]
     NativeXiaomi,
+    /// The same worker and template for Xiaomi-OCR-0 page mode (#1998): regions of a page,
+    /// sent to the `_x08p` plan classes as batch 109, so a page-mode unit never reaches an
+    /// `_x08` host that does not read it, nor a region read an `_x08p` one.
+    #[value(name = "native-xiaomi-page")]
+    NativeXiaomiPage,
 }
 
 /// `workunit.batch` of Xiaomi-OCR-0 units: only the `_x08` plan classes take it.
 pub const XIAOMI_BATCH: i32 = 108;
+/// `workunit.batch` of Xiaomi-OCR-0 page-mode units: only the `_x08p` plan classes take it.
+pub const XIAOMI_PAGE_BATCH: i32 = 109;
 
 impl Target {
     /// The target's benchmark input template (the target's `wu_template` plus the
@@ -59,7 +66,7 @@ impl Target {
                 "templates/usnm_qwen_2b_benchmark_in",
                 include_bytes!("../../../../boinc/apps/usnm_qwen_2b_benchmark_in"),
             ),
-            Self::NativeXiaomi => (
+            Self::NativeXiaomi | Self::NativeXiaomiPage => (
                 "templates/usnm_qwen_x08_benchmark_in",
                 include_bytes!("../../../../boinc/apps/usnm_qwen_x08_benchmark_in"),
             ),
@@ -71,7 +78,7 @@ impl Target {
             Self::Container | Self::Container8b => "templates/usnm_qwen_in",
             Self::Native8b => "templates/usnm_qwen_8b_in",
             Self::Native2b => "templates/usnm_qwen_2b_in",
-            Self::NativeXiaomi => "templates/usnm_qwen_x08_in",
+            Self::NativeXiaomi | Self::NativeXiaomiPage => "templates/usnm_qwen_x08_in",
         }
     }
 
@@ -82,7 +89,10 @@ impl Target {
         use usnm_ocr_contract::qwen::is_xiaomi_model;
         let pin = job.model.as_deref();
         let ok = match self {
-            Self::NativeXiaomi => pin == Some(super::XIAOMI_MODEL),
+            // The two batches isolate two job formats: a page-mode job only as the page
+            // target (`_x08p` clients), and a crop job never as it.
+            Self::NativeXiaomi => pin == Some(super::XIAOMI_MODEL) && job.page_mode.is_none(),
+            Self::NativeXiaomiPage => pin == Some(super::XIAOMI_MODEL) && job.page_mode.is_some(),
             _ if pin.is_some_and(is_xiaomi_model) => false,
             // The container worker encodes request version 1 only and refuses any other
             // (`work::prepare`); a unit sent with one would only come back failed.
@@ -120,7 +130,7 @@ impl Target {
         match self {
             Self::Container | Self::Native2b => Some("qwen3-vl-2b-q8"),
             Self::Container8b | Self::Native8b => Some("qwen3-vl-8b-q4km"),
-            Self::NativeXiaomi => None,
+            Self::NativeXiaomi | Self::NativeXiaomiPage => None,
         }
     }
 
@@ -141,6 +151,7 @@ impl Target {
             Self::Native2b => 2,
             Self::Native8b => 8,
             Self::NativeXiaomi => XIAOMI_BATCH,
+            Self::NativeXiaomiPage => XIAOMI_PAGE_BATCH,
         }
     }
 
@@ -150,7 +161,7 @@ impl Target {
     /// already cached or sent (#1867).
     pub fn priority(self) -> Option<&'static str> {
         match self {
-            Self::NativeXiaomi => Some("-1"),
+            Self::NativeXiaomi | Self::NativeXiaomiPage => Some("-1"),
             _ => None,
         }
     }
@@ -162,6 +173,7 @@ impl Target {
             Self::Native2b => "2",
             Self::Native8b => "8",
             Self::NativeXiaomi => "108",
+            Self::NativeXiaomiPage => "109",
         }
     }
 
@@ -176,6 +188,9 @@ impl Target {
                     && (plan_class == "mt" || plan_class.ends_with("_2b"))
             }
             Self::NativeXiaomi => !plan_class.starts_with("docker") && plan_class.ends_with("_x08"),
+            Self::NativeXiaomiPage => {
+                !plan_class.starts_with("docker") && plan_class.ends_with("_x08p")
+            }
         }
     }
 
@@ -190,7 +205,9 @@ impl Target {
                 "Qwen3-VL-2B-Instruct-Q8_0.gguf",
                 "mmproj-Qwen3-VL-2B-Instruct-Q8_0.gguf",
             ],
-            Self::NativeXiaomi => &[super::XIAOMI_FILE, super::XIAOMI_MMPROJ],
+            Self::NativeXiaomi | Self::NativeXiaomiPage => {
+                &[super::XIAOMI_FILE, super::XIAOMI_MMPROJ]
+            }
         }
     }
 
@@ -205,7 +222,7 @@ impl Target {
             Self::Container8b => ("8b", "container_cold_bytes"),
             Self::Native2b => ("2b", "native_cold_bytes"),
             Self::Native8b => ("8b", "native_cold_bytes"),
-            Self::NativeXiaomi => ("x08", "native_cold_bytes"),
+            Self::NativeXiaomi | Self::NativeXiaomiPage => ("x08", "native_cold_bytes"),
         };
         policy["models"][model][kind].as_u64().expect("disk bound")
     }
@@ -1001,6 +1018,17 @@ mod tests {
         x.model = Some(super::super::XIAOMI_MODEL.into());
         x.id = x.identity().unwrap();
         x.validate().unwrap();
+        // The two batches isolate two job formats: a crop job is the `_x08` target's only, and
+        // a page-mode job the `_x08p` target's only.
+        assert!(Target::NativeXiaomi.check_job(&x).is_ok());
+        assert!(Target::NativeXiaomiPage.check_job(&x).is_err());
+        let mut pm = x.clone();
+        pm.page_mode = Some(usnm_ocr_contract::qwen::PageMode {
+            regions: vec![],
+            slots: None,
+        });
+        assert!(Target::NativeXiaomiPage.check_job(&pm).is_ok());
+        assert!(Target::NativeXiaomi.check_job(&pm).is_err());
 
         // A lock without Xiaomi-OCR-0's lines sends nothing.
         let qwen_only: String = EMBEDDED_WEIGHTS_LOCK
@@ -1034,6 +1062,12 @@ mod tests {
         }
         assert_eq!(Target::NativeXiaomi.batch(), XIAOMI_BATCH);
         assert_eq!(Target::NativeXiaomi.batch_str(), XIAOMI_BATCH.to_string());
+        // Page mode (#1998) is batch 109, read by the `_x08p` classes only.
+        assert_eq!(Target::NativeXiaomiPage.batch(), XIAOMI_PAGE_BATCH);
+        assert_eq!(Target::NativeXiaomiPage.batch_str(), "109");
+        assert!(Target::NativeXiaomiPage.is_plan_class_compatible("nvidia_vulkan_x08p"));
+        assert!(!Target::NativeXiaomiPage.is_plan_class_compatible("nvidia_vulkan_x08"));
+        assert!(!Target::NativeXiaomi.is_plan_class_compatible("nvidia_vulkan_x08p"));
         assert!(args
             .windows(2)
             .any(|w| w == ["--rsc_disk_bound", "12884901888"]));

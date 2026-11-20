@@ -34,6 +34,8 @@ COPY infra/quickwit ./infra/quickwit
 COPY catalog ./catalog
 # Release-frozen OCR attribution (usnm-ocr-route include_str!).
 COPY ocr/engines/engines.toml ./ocr/engines/engines.toml
+# The per-language release lock for usnm-xiaomi (usnm-ocr-local include_str!).
+COPY ocr/engines/xiaomi-languages.toml ./ocr/engines/xiaomi-languages.toml
 RUN cargo build --release --locked -p usnm-ingest
 
 FROM ${QUICKWIT_IMAGE}

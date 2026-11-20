@@ -247,6 +247,10 @@ pub enum Rule {
     /// Crop by crop; see [`super::consensus`]. Not in force until the
     /// validator wrapper passes it.
     CropConsensusV2,
+    /// `crop-consensus-v2`'s states per region of a page-mode unit (#1998), without "any
+    /// disagreeing region fails the pair", and the empty-return guard first; see
+    /// [`super::consensus::judge_page_blocks`]. Keeps the same crop-state records.
+    PageBlocksV1,
 }
 
 /// What settles a bundle unit's pair.
@@ -279,6 +283,43 @@ pub struct Compare<'a> {
     pub pages: Option<&'a Path>,
     /// Under `crop-consensus-v2`, where each pair's crop states are kept.
     pub crop_states: Option<&'a Path>,
+    /// The unit's `qwen.json`, for `page-blocks-v1`'s empty-return guard to leave out the
+    /// regions LoC's text also has blank. Without it every empty region counts.
+    pub guard_job: Option<&'a Path>,
+}
+
+/// `--page-rule page-blocks-v1` (the wrapper passes it while `<project>/qwen/page-mode-rule`
+/// holds it): the rule for a page-mode unit, found by `--job` or by `--project` and the
+/// result's job id, so a unit staged any other way keeps `rule`. Returns the rule to judge with
+/// and the unit's `qwen.json` for the guard.
+pub fn resolve_page_rule(
+    files: &[PathBuf],
+    rule: Rule,
+    page_rule: bool,
+    job: Option<&Path>,
+    project: Option<&Path>,
+) -> anyhow::Result<(Rule, Option<PathBuf>)> {
+    if !page_rule {
+        return Ok((rule, job.map(Path::to_path_buf)));
+    }
+    let job_id = load(files)?.result.job_id;
+    let found = job
+        .map(Path::to_path_buf)
+        .or_else(|| project.and_then(|p| project_job_file(p, &job_id)));
+    let is_page_mode = found.as_ref().is_some_and(|j| {
+        read(j, qwen::MAX_JOB_JSON)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<qwen::Job>(&b).ok())
+            .is_some_and(|j| j.id == job_id && j.page_mode.is_some())
+    });
+    Ok((
+        if is_page_mode {
+            Rule::PageBlocksV1
+        } else {
+            rule
+        },
+        found,
+    ))
 }
 
 /// The strict rule, as the validator wrapper runs it.
@@ -299,6 +340,7 @@ pub fn compare(
             log,
             pages,
             crop_states: None,
+            guard_job: None,
         },
     )
 }
@@ -311,6 +353,7 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
         log,
         pages,
         crop_states,
+        guard_job,
     } = opts;
     anyhow::ensure!(
         bundle_verdict == BundleVerdict::Unit || pages.is_some(),
@@ -318,9 +361,17 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
     );
     // The collector reads the kept states to learn which crops a pair vouched for.
     anyhow::ensure!(
-        rule != Rule::CropConsensusV2 || crop_states.is_some(),
-        "--rule crop-consensus-v2 needs --crop-states"
+        !matches!(rule, Rule::CropConsensusV2 | Rule::PageBlocksV1) || crop_states.is_some(),
+        "--rule crop-consensus-v2 and page-blocks-v1 need --crop-states"
     );
+    // A page-mode unit's regions are not the bundle's pages: the legacy word-bag page verdict
+    // never settles a pair the region rule failed, or `page-collect` would find its record
+    // saying `agree: false` for a settled unit.
+    let bundle_verdict = if rule == Rule::PageBlocksV1 {
+        BundleVerdict::Unit
+    } else {
+        bundle_verdict
+    };
     let (la, lb) = (load(a)?, load(b)?);
     // A benchmark pair is judged in memory only (see [`is_benchmark`]).
     let benchmark = is_benchmark(&la) || is_benchmark(&lb);
@@ -341,9 +392,25 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
             strict = Err("no crop with a word on either side".into());
         }
     }
-    let consensus = (rule == Rule::CropConsensusV2).then(|| {
-        super::consensus::judge(&la, &lb, super::consensus::Params::IN_RULE, strict.clone())
-    });
+    let consensus = match rule {
+        Rule::CropConsensusV2 => Some(super::consensus::judge(
+            &la,
+            &lb,
+            super::consensus::Params::IN_RULE,
+            strict.clone(),
+        )),
+        Rule::PageBlocksV1 => {
+            let loc = guard_job.and_then(|j| loc_blank_crops(j, &la.result.job_id));
+            Some(super::consensus::judge_page_blocks(
+                &la,
+                &lb,
+                super::consensus::Params::IN_RULE,
+                strict.clone(),
+                loc.as_ref(),
+            ))
+        }
+        _ => None,
+    };
     let mut verdict = consensus
         .as_ref()
         .map_or_else(|| strict.clone(), |j| j.verdict.clone());
@@ -453,7 +520,12 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
             line["rule"] = "strict-v2".into();
         }
         if let Some(judged) = &consensus {
-            line["rule"] = "crop-consensus-v2".into();
+            line["rule"] = if judged.page_blocks {
+                "page-blocks-v1"
+            } else {
+                "crop-consensus-v2"
+            }
+            .into();
             line["basis"] = serde_json::to_value(basis.unwrap_or(judged.basis))?;
             line["strict_reason"] = serde_json::json!(strict.as_ref().err());
             line["crop_states"] = serde_json::to_value(&judged.crops)?;
@@ -1079,6 +1151,7 @@ pub(crate) mod tests {
                         log: Some(&log),
                         pages: Some(&pages),
                         crop_states: Some(&states),
+                        guard_job: None,
                     },
                 )
                 .unwrap();
@@ -1112,6 +1185,7 @@ pub(crate) mod tests {
                         log: Some(&dir.join("pairs.jsonl")),
                         pages: Some(&dir.join("pages")),
                         crop_states: Some(&dir.join("crop-states")),
+                        guard_job: None,
                     },
                 );
                 assert_eq!(got.is_ok(), settles, "{verdict:?} {rule:?}");
@@ -1186,6 +1260,7 @@ pub(crate) mod tests {
                 log: None,
                 pages: None,
                 crop_states: Some(&states),
+                guard_job: None,
             },
         )
         .unwrap();
@@ -1250,6 +1325,7 @@ pub(crate) mod tests {
                 log: Some(&log),
                 pages: None,
                 crop_states: Some(&states),
+                guard_job: None,
             },
         )
         .unwrap_err();
@@ -1494,6 +1570,7 @@ pub(crate) mod tests {
             log: None,
             pages: None,
             crop_states: None,
+            guard_job: None,
         };
         let run = |tmp: &Path, a: &[(&str, &str)], b: &[(&str, &str)], rule| {
             let (fa, fb) = (write(tmp, "a", a), write(tmp, "b", b));
@@ -1556,6 +1633,7 @@ pub(crate) mod tests {
             log: Some(&log),
             pages: None,
             crop_states: None,
+            guard_job: None,
         };
         // c01 has words, so the pair agrees; loop flags are #1463's other question.
         compare_with(&a, &b, opts).unwrap();

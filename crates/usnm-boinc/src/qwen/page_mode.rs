@@ -230,17 +230,17 @@ pub struct PagePlan {
 
 /// A block of the ALTO as its ids see it, in the order [`usnm_alto::parse`] lists blocks.
 #[derive(Debug, PartialEq, Eq)]
-struct ScanBlock {
-    text: bool,
-    id: Option<String>,
-    lines: Vec<Option<String>>,
+pub(crate) struct ScanBlock {
+    pub(crate) text: bool,
+    pub(crate) id: Option<String>,
+    pub(crate) lines: Vec<Option<String>>,
 }
 
 /// The `ID`s of the ALTO's blocks and lines, in the order `usnm_alto::parse` lists them. The
 /// parser keeps no ids, so this follows its rules for what a block and a line are: a
 /// `TextBlock` ends the open one, a `TextLine` counts when it has an end tag inside a block,
 /// and an `Illustration` or `GraphicalElement` is a block of its own.
-fn scan_ids(xml: &[u8]) -> anyhow::Result<Vec<ScanBlock>> {
+pub(crate) fn scan_ids(xml: &[u8]) -> anyhow::Result<Vec<ScanBlock>> {
     use quick_xml::events::{BytesStart, Event};
     fn id(e: &BytesStart<'_>) -> anyhow::Result<Option<String>> {
         for a in e.attributes().with_checks(true) {
@@ -334,7 +334,7 @@ fn check_loc_id(s: &str, what: &str) -> anyhow::Result<()> {
 }
 
 /// A line's LoC text: its non-empty words, and its hyphen at the end.
-fn line_text(line: &usnm_alto::Line) -> String {
+pub(crate) fn line_text(line: &usnm_alto::Line) -> String {
     let mut s = line
         .words
         .iter()
@@ -348,7 +348,7 @@ fn line_text(line: &usnm_alto::Line) -> String {
     s
 }
 
-fn letters(text: &str) -> usize {
+pub(crate) fn letters(text: &str) -> usize {
     text.chars().filter(|c| !c.is_whitespace()).count()
 }
 

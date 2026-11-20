@@ -10,6 +10,9 @@ use crate::model::{BlockKind, Granularity, Page, Rect, Word};
 
 pub const NAMESPACE: &str = "http://www.loc.gov/standards/alto/ns-v3#";
 pub const SCHEMA_LOCATION: &str = "http://www.loc.gov/standards/alto/v3/alto-3-1.xsd";
+/// The ALTO v4 namespace and schema [`write_v4`] writes.
+pub const NAMESPACE_V4: &str = "http://www.loc.gov/standards/alto/ns-v4#";
+pub const SCHEMA_LOCATION_V4: &str = "http://www.loc.gov/standards/alto/v4/alto-4-4.xsd";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Software {
@@ -162,7 +165,109 @@ pub fn write(page: &Page, desc: &Description, language: &str) -> String {
     if let Some(p) = &desc.post {
         step(&mut out, "postProcessingStep", p);
     }
-    out.push_str("    </OCRProcessing>\n  </Description>\n  <Layout>\n");
+    out.push_str("    </OCRProcessing>\n  </Description>\n");
+    layout(&mut out, page, language, &[]);
+    out
+}
+
+/// A processing step of a [`write_v4`] page: an ALTO v4 `Processing` element, which blocks
+/// name in `PROCESSINGREFS`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Processing {
+    /// The `ID` the blocks refer to (an XML name).
+    pub id: String,
+    /// `processingCategory`: `contentGeneration`, `contentModification`, `preOperation`,
+    /// `postOperation` or `other`.
+    pub category: String,
+    pub step: Step,
+}
+
+/// A block's own `ID` and the `Processing` it came from, for [`write_v4`]. Notes are given by
+/// position in `Page::blocks`; a block with none gets `TB<n>` and no `PROCESSINGREFS`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockNote {
+    pub id: String,
+    pub processing: String,
+}
+
+/// ALTO v4 in the same pixel profile as [`write`], with per-block provenance: a `Processing`
+/// element for each of `steps` in the `Description`, and a `PROCESSINGREFS` on every block that
+/// has a note.
+pub fn write_v4(
+    page: &Page,
+    file_name: &str,
+    file_identifiers: &[(String, String)],
+    steps: &[Processing],
+    notes: &[Option<BlockNote>],
+    language: &str,
+) -> String {
+    let mut out = String::with_capacity(4096 + page.blocks.len() * 512);
+    out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    let _ = writeln!(
+        out,
+        "<alto xmlns=\"{NAMESPACE_V4}\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:schemaLocation=\"{NAMESPACE_V4} {SCHEMA_LOCATION_V4}\">"
+    );
+    out.push_str("  <Description>\n    <MeasurementUnit>pixel</MeasurementUnit>\n");
+    out.push_str("    <sourceImageInformation>\n");
+    let _ = writeln!(out, "      <fileName>{}</fileName>", esc(file_name));
+    for (loc, v) in file_identifiers {
+        let _ = writeln!(
+            out,
+            "      <fileIdentifier fileIdentifierLocation=\"{}\">{}</fileIdentifier>",
+            esc(loc),
+            esc(v)
+        );
+    }
+    out.push_str("    </sourceImageInformation>\n");
+    for p in steps {
+        let _ = writeln!(out, "    <Processing ID=\"{}\">", esc(&p.id));
+        let _ = writeln!(
+            out,
+            "      <processingCategory>{}</processingCategory>",
+            esc(&p.category)
+        );
+        if let Some(d) = &p.step.date_time {
+            let _ = writeln!(
+                out,
+                "      <processingDateTime>{}</processingDateTime>",
+                esc(d)
+            );
+        }
+        // At most one element (processingStepType), the settings as `key=value` lines.
+        if !p.step.settings.is_empty() {
+            let lines: Vec<String> = p
+                .step
+                .settings
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
+            let _ = writeln!(
+                out,
+                "      <processingStepSettings>{}</processingStepSettings>",
+                esc(&lines.join("\n"))
+            );
+        }
+        let sw = &p.step.software;
+        out.push_str("      <processingSoftware>\n");
+        for (t, v) in [
+            ("softwareCreator", &sw.creator),
+            ("softwareName", &sw.name),
+            ("softwareVersion", &sw.version),
+        ] {
+            if !v.is_empty() {
+                let _ = writeln!(out, "        <{t}>{}</{t}>", esc(v));
+            }
+        }
+        out.push_str("      </processingSoftware>\n    </Processing>\n");
+    }
+    out.push_str("  </Description>\n");
+    layout(&mut out, page, language, notes);
+    out
+}
+
+/// The `Layout`, to the end of the document.
+fn layout(out: &mut String, page: &Page, language: &str, notes: &[Option<BlockNote>]) {
+    out.push_str("  <Layout>\n");
     let full = Rect::new(0.0, 0.0, page.width, page.height);
     let (w, h) = (px(page.width), px(page.height));
     let _ = writeln!(
@@ -199,9 +304,14 @@ pub fn write(page: &Page, desc: &Description, language: &str) -> String {
             continue;
         }
         let block_lang = b.lang.as_deref().map(esc).unwrap_or_else(|| lang.clone());
+        let note = notes.get(nb - 1).and_then(Option::as_ref);
+        let id = note.map_or_else(|| format!("TB{nb}"), |n| esc(&n.id));
+        let refs = note.map_or_else(String::new, |n| {
+            format!(" PROCESSINGREFS=\"{}\"", esc(&n.processing))
+        });
         let _ = writeln!(
             out,
-            "        <TextBlock ID=\"TB{nb}\" {} LANG=\"{block_lang}\">",
+            "        <TextBlock ID=\"{id}\" {}{refs} LANG=\"{block_lang}\">",
             pos(&b.rect)
         );
         let parts = hyphen_parts(&lines);
@@ -231,7 +341,6 @@ pub fn write(page: &Page, desc: &Description, language: &str) -> String {
         out.push_str("        </TextBlock>\n");
     }
     out.push_str("      </PrintSpace>\n    </Page>\n  </Layout>\n</alto>\n");
-    out
 }
 
 /// The `SP` between two words: with its position between them when words
@@ -252,6 +361,77 @@ fn space(prev: &Word, next: &Word, g: Granularity) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn v4_names_each_block_s_processing_step() {
+        use crate::model::{Block, Line};
+        let word = |t: &str| Word {
+            rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+            text: t.to_owned(),
+            conf: None,
+        };
+        let block = |kind| Block {
+            kind,
+            rect: Rect::new(0.0, 0.0, 100.0, 20.0),
+            lang: None,
+            lines: vec![Line {
+                rect: Rect::new(0.0, 0.0, 100.0, 20.0),
+                words: vec![word("a"), word("b")],
+                hyphen: None,
+            }],
+        };
+        let page = Page {
+            width: 200.0,
+            height: 300.0,
+            granularity: Granularity::Line,
+            blocks: vec![block(BlockKind::Text), block(BlockKind::Text)],
+        };
+        let step = |name: &str| Processing {
+            id: format!("PROC_{name}"),
+            category: "contentGeneration".into(),
+            step: Step {
+                date_time: None,
+                settings: vec![("k".into(), "v".into())],
+                software: Software {
+                    creator: "c".into(),
+                    name: name.into(),
+                    version: "1".into(),
+                },
+            },
+        };
+        let notes = vec![
+            Some(BlockNote {
+                id: "B1.1".into(),
+                processing: "PROC_X".into(),
+            }),
+            None,
+        ];
+        let xml = write_v4(
+            &page,
+            "https://tile.loc.gov/x",
+            &[("sha256".into(), "ab".into())],
+            &[step("X"), step("L")],
+            &notes,
+            "eng",
+        );
+        assert!(xml.contains("ns-v4#"));
+        assert!(xml.contains("<Processing ID=\"PROC_X\">"));
+        assert!(xml.contains("<Processing ID=\"PROC_L\">"));
+        assert!(xml.contains("ID=\"B1.1\" HPOS=\"0\" VPOS=\"0\" WIDTH=\"100\" HEIGHT=\"20\" PROCESSINGREFS=\"PROC_X\""));
+        // A block with no note keeps the stored profile's id and has no reference.
+        assert!(xml.contains(
+            "<TextBlock ID=\"TB2\" HPOS=\"0\" VPOS=\"0\" WIDTH=\"100\" HEIGHT=\"20\" LANG=\"eng\">"
+        ));
+        assert_eq!(xml.matches("PROCESSINGREFS").count(), 1);
+        // The bounded reader and the parser both take it.
+        let checked = crate::check(xml.as_bytes(), &crate::Limits::default()).unwrap();
+        assert_eq!(checked.version, crate::AltoVersion::V4);
+        let parsed = crate::parse(xml.as_bytes(), &crate::ParseOptions::default()).unwrap();
+        assert_eq!(parsed.blocks.len(), 2);
+        // `write` is unchanged: same blocks, no references.
+        let v3 = write(&page, &Description::default(), "eng");
+        assert!(!v3.contains("PROCESSINGREFS") && v3.contains("ID=\"TB1\""));
+    }
 
     #[test]
     fn numbers() {
