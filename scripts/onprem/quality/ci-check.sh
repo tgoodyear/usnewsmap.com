@@ -231,7 +231,7 @@ spec = importlib.util.spec_from_file_location("quality_gain", sys.argv[1]); m = 
 print(m.export_sql(["ours-tesseract"]))
 PY
 } | psql_admin -d usnm_quality)
-[ "$(printf '%s\n' "$gain_csv" | head -1)" = "doc_id,reader,lang,decade,occurrences,loc_damage,ours_damage,loc_est_cer,ours_est_cer" ] \
+[ "$(printf '%s\n' "$gain_csv" | head -1)" = "doc_id,reader,lang,decade,occurrences,loc_damage,ours_damage,loc_est_cer,ours_est_cer,loc_lm_oov,ours_lm_oov" ] \
   || die "the gain export's columns"
 # The English pilot's draw (#1998): the worst qe-v1 tenth, the filters on language, source,
 # words, validity and version, Tesseract's fixed pages left out and its other pages kept and
