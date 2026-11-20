@@ -89,7 +89,10 @@ impl Target {
         use usnm_ocr_contract::qwen::is_xiaomi_model;
         let pin = job.model.as_deref();
         let ok = match self {
-            Self::NativeXiaomi | Self::NativeXiaomiPage => pin == Some(super::XIAOMI_MODEL),
+            // The two batches isolate two job formats: a page-mode job only as the page
+            // target (`_x08p` clients), and a crop job never as it.
+            Self::NativeXiaomi => pin == Some(super::XIAOMI_MODEL) && job.page_mode.is_none(),
+            Self::NativeXiaomiPage => pin == Some(super::XIAOMI_MODEL) && job.page_mode.is_some(),
             _ if pin.is_some_and(is_xiaomi_model) => false,
             // The container worker encodes request version 1 only and refuses any other
             // (`work::prepare`); a unit sent with one would only come back failed.
@@ -1015,6 +1018,17 @@ mod tests {
         x.model = Some(super::super::XIAOMI_MODEL.into());
         x.id = x.identity().unwrap();
         x.validate().unwrap();
+        // The two batches isolate two job formats: a crop job is the `_x08` target's only, and
+        // a page-mode job the `_x08p` target's only.
+        assert!(Target::NativeXiaomi.check_job(&x).is_ok());
+        assert!(Target::NativeXiaomiPage.check_job(&x).is_err());
+        let mut pm = x.clone();
+        pm.page_mode = Some(usnm_ocr_contract::qwen::PageMode {
+            regions: vec![],
+            slots: None,
+        });
+        assert!(Target::NativeXiaomiPage.check_job(&pm).is_ok());
+        assert!(Target::NativeXiaomi.check_job(&pm).is_err());
 
         // A lock without Xiaomi-OCR-0's lines sends nothing.
         let qwen_only: String = EMBEDDED_WEIGHTS_LOCK

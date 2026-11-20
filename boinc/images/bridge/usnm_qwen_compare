@@ -18,7 +18,7 @@
 # settles the unit, and `qwen stage --page-records` packs its disagreeing pages again. A binary
 # that does not know `--bundle-verdict` keeps the unit verdict. Removing the file restores it.
 #
-# <project>/qwen/page-mode-rule holding `page-blocks-v1` (#1998) judges a page-mode unit (Xiaomi-OCR-0
+# <project>/qwen/page-mode-rule, holding `page-blocks-v1` or empty (#1998), judges a page-mode unit (Xiaomi-OCR-0
 # page mode, batch 109) region by region: the empty-return guard first, then crop-consensus-v2's
 # states per region without "any disagreeing region fails the pair". Other units keep their rule.
 [ "$#" -eq 6 ] || { echo "usnm_qwen_compare: expected 6 files, got $#" >&2; exit 2; }
@@ -35,7 +35,11 @@ bundle=unit
 # keeps its rule. Needs crop states, so it applies only with the crop rule on. A binary that
 # does not know --page-rule keeps the rule above.
 page_rule=""
-[ -f "$dir/page-mode-rule" ] && read -r page_rule < "$dir/page-mode-rule"
+if [ -f "$dir/page-mode-rule" ]; then
+  read -r page_rule < "$dir/page-mode-rule" || :
+  # An empty file (no line to read) switches the one rule there is on.
+  [ -n "$page_rule" ] || page_rule=page-blocks-v1
+fi
 case "$page_rule" in
   page-blocks-v1)
     if [ "$rule" != crop-consensus-v2 ]; then

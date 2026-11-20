@@ -20,6 +20,7 @@ on:
       - ocr/engines/tesseract/models.lock
       - ocr/engines/tesseract/Containerfile
       - ocr/engines/engines.toml
+      - ocr/engines/xiaomi-languages.toml
       - .dockerignore
       - crates/**
       - Cargo.toml

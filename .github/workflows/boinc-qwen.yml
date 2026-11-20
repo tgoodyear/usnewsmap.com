@@ -43,6 +43,7 @@ on:
       - "boinc/apps/usnm_qwen_8b_benchmark_in"
       - "boinc/apps/usnm_qwen_x08_benchmark_in"
       - "ocr/engines/engines.toml"
+      - "ocr/engines/xiaomi-languages.toml"
       - "ocr/engines/ndlocr-lite/models.lock"
       - "ocr/engines/tesseract/models.lock"
       - "ocr/routing/routes.toml"

@@ -181,26 +181,15 @@ fn keep_reason(r: &RegionIn<'_>, loc_has_text: bool) -> Option<Keep> {
     }
 }
 
-/// A line's words with boxes cut from the line's in proportion to each word's length.
+/// A line's words, each with the line's own box: the model returns no coordinates, so none are
+/// invented (the parent-box rule of docs/design/13-ocr-engines.md), and the page declares
+/// that its geometry is no finer than a line's.
 fn split_words(rect: Rect, text: &str) -> Vec<Word> {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let lens: Vec<usize> = words.iter().map(|w| w.chars().count()).collect();
-    let total = lens.iter().sum::<usize>() + words.len().saturating_sub(1);
-    let width = rect.x1 - rect.x0;
-    let mut used = 0usize;
-    words
-        .iter()
-        .zip(&lens)
-        .map(|(w, &len)| {
-            let x0 = rect.x0 + width * used as f64 / total.max(1) as f64;
-            used += len;
-            let x1 = rect.x0 + width * used as f64 / total.max(1) as f64;
-            used += 1;
-            Word {
-                rect: Rect::new(x0, rect.y0, x1, rect.y1),
-                text: (*w).to_owned(),
-                conf: None,
-            }
+    text.split_whitespace()
+        .map(|w| Word {
+            rect,
+            text: w.to_owned(),
+            conf: None,
         })
         .collect()
 }
@@ -208,7 +197,9 @@ fn split_words(rect: Rect, text: &str) -> Vec<Word> {
 /// `words` spread over lines in proportion to `weights` (each LoC line's characters): a word
 /// goes to the line whose share of the characters its middle falls in.
 fn reflow<'a>(words: &[&'a str], weights: &[usize]) -> Vec<Vec<&'a str>> {
-    let total_chars: usize = words.iter().map(|w| w.chars().count()).sum();
+    // The characters and the spaces between the words, as `used` counts them.
+    let total_chars: usize =
+        words.iter().map(|w| w.chars().count()).sum::<usize>() + words.len().saturating_sub(1);
     let total_w: usize = weights.iter().map(|w| (*w).max(1)).sum();
     let mut out: Vec<Vec<&str>> = vec![Vec::new(); weights.len()];
     let (mut used, mut cum_w, mut line) = (0usize, 0usize, 0usize);
@@ -260,11 +251,9 @@ fn fitted(lines: &[(String, Line)], reading: &str) -> (Vec<Line>, Fit) {
         .map(|((_, loc), text)| {
             let mut line = loc.clone();
             line.words = split_words(loc.rect, &text);
-            // The model keeps a printed hyphen in the text: the end-of-line hyphen is then its
-            // own, as the Cherokee merge has it.
-            if text.ends_with(['-', '⸗', '¬', '‐']) {
-                line.hyphen = None;
-            }
+            // LoC's end-of-line hyphen belongs to its own text and breaks: any hyphen the
+            // model read is already in the new text, and a reflowed line ends elsewhere.
+            line.hyphen = None;
             line
         })
         .collect();
@@ -581,6 +570,7 @@ pub fn assemble(inputs: &Inputs<'_>) -> anyhow::Result<Assembled> {
             step: usnm_alto::Step {
                 date_time: when,
                 settings: vec![
+                    ("granularity".into(), page.granularity.as_str().into()),
                     ("regions_read".into(), read.to_string()),
                     ("regions_xiaomi".into(), xiaomi.to_string()),
                     ("loc_empty".into(), counts("empty")),
@@ -737,10 +727,17 @@ mod tests {
             usnm_alto::parse(got.alto.as_bytes(), &usnm_alto::ParseOptions::default()).unwrap();
         assert_eq!(parsed.blocks.len(), 4);
         assert!(usnm_ocr_local::checks::check_alto(got.alto.as_bytes()).is_ok());
-        // Word boxes are cut from the line's, in proportion to the words' length, with no WC.
+        // The model has no coordinates: every word has its line's box, no WC, and the page
+        // declares line granularity.
         let words: Vec<_> = parsed.blocks[0].lines[0].words.iter().collect();
         assert_eq!(words.len(), 3);
-        assert!(words[0].rect.x1 <= words[1].rect.x0 + 1.0 && words[0].conf.is_none());
+        assert!(words
+            .iter()
+            .all(|w| w.rect == parsed.blocks[0].lines[0].rect && w.conf.is_none()));
+        assert!(got.alto.contains("granularity=line"));
+        assert_eq!(parsed.granularity, usnm_alto::Granularity::Line);
+        // One processingStepSettings element a step.
+        assert_eq!(got.alto.matches("<processingStepSettings>").count(), 3);
         // 2 of 3 regions with text did not agree: the agreeing share is the first's share.
         assert_eq!(b.agree_share_regions.map(|s| (s * 3.0).round()), Some(1.0));
         assert!(b.agree_share_chars.unwrap() > 0.5);
@@ -813,6 +810,21 @@ mod tests {
         }
         let lines: Vec<&str> = got.text.lines().filter(|l| !l.is_empty()).take(3).collect();
         assert_eq!(lines, ["The ship sailed", "for Englaud", "on Tuesday"]);
+    }
+
+    #[test]
+    fn reflow_counts_the_spaces_and_a_replaced_line_loses_the_hyphen_it_inherited() {
+        // 20 one-character words over two equal lines split 10 and 10, not 5 and 15.
+        let words: Vec<&str> = vec!["a"; 20];
+        let lines = reflow(&words, &[10, 10]);
+        assert_eq!((lines[0].len(), lines[1].len()), (10, 10));
+        let line = Line {
+            rect: Rect::new(0.0, 0.0, 100.0, 10.0),
+            words: Vec::new(),
+            hyphen: Some("-".into()),
+        };
+        let (out, _) = fitted(&[("L1".into(), line)], "end of the line");
+        assert_eq!(out[0].hyphen, None);
     }
 
     #[test]

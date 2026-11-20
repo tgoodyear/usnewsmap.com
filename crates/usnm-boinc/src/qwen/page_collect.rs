@@ -136,6 +136,11 @@ pub struct Summary {
     /// whose unit has no canonical result yet, and those whose unit came back unfinished or
     /// unjudged (a page `refused` is counted by `refused`).
     pub pages: usize,
+    /// Units BOINC gave up (`_error`, `_no_output_files`): settled, invalid, no canonical result.
+    pub gave_up: usize,
+    /// Units that came back invalid (unfinished, unjudged, given up, or with a page refused):
+    /// the pilot's stop condition counts units, as #1998 defines it.
+    pub units_invalid: usize,
     pub pages_pending: usize,
     pub pages_invalid: usize,
 }
@@ -411,6 +416,21 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         ensure!((0.0..=1.0).contains(&a), "--acceptance is 0 to 1");
     }
     std::fs::create_dir_all(&opts.held)?;
+    // The destination as the filesystem has it: a relative path run from inside a forbidden
+    // tree, or a symlink into one, is refused on what it resolves to.
+    let held = std::fs::canonicalize(&opts.held)
+        .with_context(|| format!("resolving {}", opts.held.display()))?;
+    ensure!(
+        !is_held_path(&held),
+        "{} resolves to {}: held pages are never written under ocr-local, ocr-out, ocr-sync or search",
+        opts.held.display(),
+        held.display()
+    );
+    let resolved = Options {
+        held,
+        ..opts.clone()
+    };
+    let opts = &resolved;
     let dir = units(&opts.root);
     let mut unit_dirs: Vec<PathBuf> = match std::fs::read_dir(&dir) {
         Ok(e) => e
@@ -437,13 +457,16 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         let canon = canonical(&opts.spool, &job)?;
         let canon_sha = canon.as_ref().map(|c| c.result.readings_sha256.clone());
         let agreeing_shas = agreeing(&opts.crop_states, &job.id)?;
-        // Cost counts every returned result; with no `seen` directory, the canonical one.
+        // A unit is settled once it has a canonical result or BOINC gave it up.
+        let gave_up =
+            canon.is_none() && crate::quality::collect::gave_up(&opts.spool, &job.workunit());
+        // Cost counts every checked result (`--seen`, whose directory names are BOINC's result
+        // names: the key the cost table is unique on), and only for a settled unit, so a row's
+        // `validated` and `canonical` are final when it is loaded. Without `--seen` there is
+        // no result identity, and no cost row is made.
         let results = match &opts.seen {
-            Some(seen) => seen_results(seen, &job)?,
-            None => canon
-                .iter()
-                .map(|c| (job.workunit(), c.result.clone(), c.readings.clone()))
-                .collect(),
+            Some(seen) if canon.is_some() || gave_up => seen_results(seen, &job)?,
+            _ => Vec::new(),
         };
         let rows = cost_rows(
             &staged,
@@ -455,12 +478,20 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         summary.cost_rows += rows.len();
         costs.extend(rows);
         let Some(canon) = canon else {
-            summary.pending += 1;
-            summary.pages_pending += staged.len();
+            if gave_up {
+                // `_error` or `_no_output_files`: settled, and invalid.
+                summary.gave_up += 1;
+                summary.units_invalid += 1;
+                summary.pages_invalid += staged.len();
+            } else {
+                summary.pending += 1;
+                summary.pages_pending += staged.len();
+            }
             continue;
         };
         if canon.result.outcome != Outcome::Ok {
             summary.unfinished += 1;
+            summary.units_invalid += 1;
             summary.pages_invalid += staged.len();
             continue;
         }
@@ -468,6 +499,7 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
             consensus::agreed_states(&opts.crop_states, &job.id, &canon.result.readings_sha256)?
         else {
             summary.unjudged += 1;
+            summary.units_invalid += 1;
             summary.pages_invalid += staged.len();
             continue;
         };
@@ -477,6 +509,7 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
             .iter()
             .find(|(_, m, _)| Some(&m.readings_sha256) == canon_sha.as_ref())
             .map(|(n, _, _)| n.clone());
+        let refused_before = summary.refused;
         for p in &staged {
             match hold_page(
                 opts,
@@ -500,6 +533,7 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
                 }
             }
         }
+        summary.units_invalid += usize::from(summary.refused > refused_before);
     }
     pages.sort_by(|a, b| a.doc_id.cmp(&b.doc_id));
     costs.sort_by(|a, b| (&a.doc_id, &a.result_name).cmp(&(&b.doc_id, &b.result_name)));
@@ -584,6 +618,13 @@ fn hold_page(
     })?;
     let page_dir = opts.held.join(p.doc_id);
     std::fs::create_dir_all(&page_dir)?;
+    // A page directory that is a symlink out of the held root is not written through.
+    let resolved = std::fs::canonicalize(&page_dir)?;
+    ensure!(
+        resolved.starts_with(&opts.held) && !is_held_path(&resolved),
+        "{}: the page directory resolves outside the held root",
+        p.doc_id
+    );
     atomic(&page_dir.join(ALTO_OUT), assembled.alto.as_bytes())?;
     atomic(
         &page_dir.join(BLOCKS_OUT),
@@ -987,7 +1028,31 @@ mod tests {
         let mut bad = w.opts.clone();
         bad.held = w.opts.held.join("ocr-local").join("pages");
         assert!(run(&bad).is_err());
-        let _ = w.job;
+        // A symlink into a forbidden tree is refused on what it resolves to.
+        let target = w.opts.held.join("ocr-out");
+        std::fs::create_dir_all(&target).unwrap();
+        let link = w.opts.held.join("innocent");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let mut linked = w.opts.clone();
+        linked.held = link;
+        let err = run(&linked).unwrap_err().to_string();
+        assert!(err.contains("resolves to"), "{err}");
+        // BOINC giving the unit up settles it as invalid instead of leaving it pending.
+        let mut given_up = w.opts.clone();
+        given_up.spool = w.opts.held.join("gave-up-spool");
+        std::fs::create_dir_all(&given_up.spool).unwrap();
+        std::fs::write(
+            given_up.spool.join(format!("{}_error", w.job.workunit())),
+            "",
+        )
+        .unwrap();
+        let s = run(&given_up).unwrap();
+        assert_eq!((s.pending, s.gave_up, s.units_invalid), (0, 1, 1));
+        assert_eq!(s.pages_invalid, s.pages);
+        // Without --seen there is no result identity, so no cost row is made.
+        let mut unseen = w.opts.clone();
+        unseen.seen = None;
+        assert_eq!(run(&unseen).unwrap().cost_rows, 0);
     }
 
     #[test]

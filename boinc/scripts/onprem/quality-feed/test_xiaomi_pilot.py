@@ -79,13 +79,15 @@ class Pilot(unittest.TestCase):
         self.assertEqual(self.saved()["stopped"]["reason"], "all-settled")
 
     def test_too_many_invalid_stops_it_only_once_enough_have_returned(self):
-        few = {"pages": 150, "pages_pending": 0, "pages_invalid": 100}
-        self.assertIsNone(xp.decide(few, {"started_at": T0.isoformat()}, 10000, T0))
-        many = {"pages": 300, "pages_pending": 50, "pages_invalid": 40, "refused": 11}
-        self.assertEqual(xp.decide(many, {"started_at": T0.isoformat()}, 10000, T0), "invalid-share")
-        # Exactly 20% is not over it.
-        edge = {"pages": 250, "pages_pending": 50, "pages_invalid": 40}
-        self.assertIsNone(xp.decide(edge, {"started_at": T0.isoformat()}, 10000, T0))
+        st = {"started_at": T0.isoformat()}
+        # Four-page units: 150 units are 600 pages, and still under the 200-unit threshold.
+        few = {"pages": 600, "pages_pending": 0, "units": 150, "pending": 0, "units_invalid": 100}
+        self.assertIsNone(xp.decide(few, st, 10000, T0))
+        many = {"pages": 900, "pages_pending": 0, "units": 250, "pending": 0, "units_invalid": 51}
+        self.assertEqual(xp.decide(many, st, 10000, T0), "invalid-share")
+        # Exactly 20% of the returned units is not over it.
+        edge = {"pages": 900, "pages_pending": 0, "units": 250, "pending": 0, "units_invalid": 50}
+        self.assertIsNone(xp.decide(edge, st, 10000, T0))
 
     def test_no_return_for_48_hours_stops_it_and_a_return_resets_the_clock(self):
         s = {"pages": 500, "pages_pending": 500}
@@ -113,6 +115,7 @@ class Pilot(unittest.TestCase):
         fake = Fake({"pages": 0})
         xp.step(self.a, T0, fake)
         self.assertTrue(fake.cmds[0][1].endswith("pilot_select.py"))
+        self.assertEqual(fake.cmds[0][fake.cmds[0].index("--chunk") + 1], "500")
 
     def test_main_writes_one_log_line_a_run(self):
         log = Path(self.tmp.name) / "log"

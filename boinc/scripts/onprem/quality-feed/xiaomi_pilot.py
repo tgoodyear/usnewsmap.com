@@ -22,9 +22,9 @@ One run does, in order:
 Stop conditions (the first that holds is written to the state as `stopped`):
 
   all-settled    every page of the draw is staged and none is waiting for a result.
-  invalid-share  once --min-returned pages have come back, more than --max-invalid-share of
-                 them are invalid (the unit's canonical result unfinished or no agreeing
-                 pair, or the page refused at assembly).
+  invalid-share  once --min-returned units have come back, more than --max-invalid-share of
+                 them are invalid (the canonical result unfinished or no agreeing pair, BOINC
+                 gave the unit up, or a page of it was refused at assembly).
   no-return      no page has come back for --stall-hours (default 48) while some are out.
 
 Nothing here writes ocr-local, ocr-out or the search index: the pages are held, and the
@@ -86,10 +86,13 @@ def decide(summary, state, total, now, min_returned=MIN_RETURNED,
     pages = summary.get("pages", 0)
     pending = summary.get("pages_pending", 0)
     returned = pages - pending
-    invalid = summary.get("pages_invalid", 0) + summary.get("refused", 0)
+    # The safety stop counts units, as #1998 defines it: a unit packs up to four pages, so
+    # pages would trip the 200 threshold early and weigh a failure by its bundle's size.
+    units_returned = summary.get("units", 0) - summary.get("pending", 0)
+    units_invalid = summary.get("units_invalid", 0)
     if returned >= total or (staged_all and pending == 0):
         return "all-settled"
-    if returned >= min_returned and invalid > max_invalid_share * returned:
+    if units_returned >= min_returned and units_invalid > max_invalid_share * units_returned:
         return "invalid-share"
     since = parse_time(state.get("last_return_at") or state.get("started_at"))
     if pending > 0 and returned <= state.get("last_returned", 0) \
@@ -139,7 +142,8 @@ def step(a, now=None, run=run_cmd):
         if not a.dsn_file:
             sys.exit("no draw in --pilot-dir and no --dsn-file to make one")
         run([sys.executable, os.path.join(HERE, "pilot_select.py"), "--out-dir", a.pilot_dir,
-             "--dsn-file", a.dsn_file, "--n", str(a.total), "--seed", a.seed])
+             "--dsn-file", a.dsn_file, "--n", str(a.total), "--seed", a.seed,
+             "--chunk", str(a.chunk_pages)])
     names = chunks(a.pilot_dir)
     summary = collect(a, run)
     returned = summary.get("pages", 0) - summary.get("pages_pending", 0)
@@ -165,7 +169,7 @@ def step(a, now=None, run=run_cmd):
     return {"at": now.isoformat(), "action": action, "chunk": state["next_chunk"], "chunks": len(names),
             "returned": returned, "in_flight": in_flight, "held": summary.get("held", 0),
             "accepted": summary.get("accepted", 0),
-            "invalid": summary.get("pages_invalid", 0) + summary.get("refused", 0),
+            "invalid_units": summary.get("units_invalid", 0),
             "stopped": state.get("stopped", {}).get("reason")}
 
 

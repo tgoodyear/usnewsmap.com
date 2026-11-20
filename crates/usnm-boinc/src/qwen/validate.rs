@@ -364,6 +364,14 @@ pub fn compare_with(a: &[PathBuf], b: &[PathBuf], opts: Compare<'_>) -> anyhow::
         !matches!(rule, Rule::CropConsensusV2 | Rule::PageBlocksV1) || crop_states.is_some(),
         "--rule crop-consensus-v2 and page-blocks-v1 need --crop-states"
     );
+    // A page-mode unit's regions are not the bundle's pages: the legacy word-bag page verdict
+    // never settles a pair the region rule failed, or `page-collect` would find its record
+    // saying `agree: false` for a settled unit.
+    let bundle_verdict = if rule == Rule::PageBlocksV1 {
+        BundleVerdict::Unit
+    } else {
+        bundle_verdict
+    };
     let (la, lb) = (load(a)?, load(b)?);
     // A benchmark pair is judged in memory only (see [`is_benchmark`]).
     let benchmark = is_benchmark(&la) || is_benchmark(&lb);

@@ -15,6 +15,7 @@ on:
       - .github/actions/boinc-worker-build/**
       - ocr/engines/tesseract/**
       - ocr/engines/engines.toml
+      - ocr/engines/xiaomi-languages.toml
       - boinc/apps/Containerfile
       - boinc/scripts/smoke-worker.py
       - scripts/ci/tesseract-base.sh

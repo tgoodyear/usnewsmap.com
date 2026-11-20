@@ -233,11 +233,18 @@ pub fn write_v4(
                 esc(d)
             );
         }
-        for (k, v) in &p.step.settings {
+        // At most one element (processingStepType), the settings as `key=value` lines.
+        if !p.step.settings.is_empty() {
+            let lines: Vec<String> = p
+                .step
+                .settings
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
             let _ = writeln!(
                 out,
                 "      <processingStepSettings>{}</processingStepSettings>",
-                esc(&format!("{k}={v}"))
+                esc(&lines.join("\n"))
             );
         }
         let sw = &p.step.software;
