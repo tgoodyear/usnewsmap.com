@@ -13,8 +13,11 @@ damage rate (quality.page_summary) minus the re-read text's (quality.ocr_outputs
 output of that reader), page by page. A cell is (reader, band, language, decade); band is the
 campaign builder's, from LoC's rate and the page's word occurrences (head + near). Where both
 texts have an estimated CER from a usnm_quality unit (quality.reader_scores_effective, LoC as `loc` or
-`loc-hist`), the cell also gets the mean drop in estimated CER, as a second measure. It
-decides nothing.
+`loc-hist`), the cell also gets the mean drop in estimated CER, as a second measure. Where the
+same unit measured both texts with qe-v1 (`qe_lm_oov`, ocr/qe/README.md), the cell also gets the
+mean drop in `lm_oov`, a third measure. On the #968 truth sets `lm_oov` tracked real CER drops
+better than damage overall and in German (docs/reports/2026-11-gain-measures). Neither decides
+anything.
 
 Each cell gets one decision:
 
@@ -68,7 +71,9 @@ sys.path[:0] = [HERE, os.path.join(HERE, "..", "ocr-feed")]
 import quality_campaign  # noqa: E402
 
 COLUMNS = ["doc_id", "reader", "lang", "decade", "occurrences", "loc_damage", "ours_damage", "loc_est_cer",
-           "ours_est_cer"]
+           "ours_est_cer", "loc_lm_oov", "ours_lm_oov"]
+# A pages.csv written before the qe-v1 columns: replayed with no lm_oov pairs.
+COLUMNS_V1 = COLUMNS[:9]
 EXPORT_SQL = """
 BEGIN TRANSACTION READ ONLY;
 COPY (
@@ -100,12 +105,23 @@ COPY (
     SELECT r.doc_id, r.reader, r.est_cer
     FROM hat JOIN quality.reader_scores_effective r USING (campaign, doc_id)
     WHERE r.est_cer IS NOT NULL AND r.reader IN (SELECT reader FROM wanted)
+  ), lq AS (
+    -- qe-v1's lm_oov of LoC's text and of the reader's, from the same unit, so they are a pair.
+    SELECT DISTINCT ON (r.doc_id) r.doc_id, r.qe_lm_oov
+    FROM hat JOIN quality.reader_scores_effective r USING (campaign, doc_id)
+    WHERE r.reader IN ('loc', 'loc-hist') AND r.qe_lm_oov IS NOT NULL
+    ORDER BY r.doc_id, (r.reader = 'loc-hist') DESC
+  ), rq AS (
+    SELECT r.doc_id, r.reader, r.qe_lm_oov
+    FROM hat JOIN quality.reader_scores_effective r USING (campaign, doc_id)
+    WHERE r.qe_lm_oov IS NOT NULL AND r.reader IN (SELECT reader FROM wanted)
   )
   SELECT o.doc_id, o.reader, coalesce(s.lang, 'none') AS lang, s.decade, d.head + d.near AS occurrences,
          s.damage_rate AS loc_damage, o.damage_rate AS ours_damage, l.est_cer AS loc_est_cer,
-         r.est_cer AS ours_est_cer
+         r.est_cer AS ours_est_cer, lq.qe_lm_oov AS loc_lm_oov, rq.qe_lm_oov AS ours_lm_oov
   FROM o JOIN quality.page_summary s USING (doc_id) JOIN quality.damage d USING (doc_id)
   LEFT JOIN l USING (doc_id) LEFT JOIN r ON r.doc_id = o.doc_id AND r.reader = o.reader
+  LEFT JOIN lq ON lq.doc_id = o.doc_id LEFT JOIN rq ON rq.doc_id = o.doc_id AND rq.reader = o.reader
   WHERE s.damage_rate IS NOT NULL AND s.decade IS NOT NULL
 ) TO STDOUT WITH CSV HEADER;
 COMMIT;
@@ -162,13 +178,18 @@ def export(dsn_file, readers, path):
 def read_pages(path):
     with open(path, newline="") as f:
         r = csv.reader(f)
-        if next(r, None) != COLUMNS:
+        header = next(r, None)
+        if header not in (COLUMNS, COLUMNS_V1):
             sys.exit(f"{path}: expected the columns {','.join(COLUMNS)}")
-        for doc, reader, lang, decade, occ, loc, ours, loc_cer, ours_cer in r:
+        for row in r:
+            doc, reader, lang, decade, occ, loc, ours, loc_cer, ours_cer = row[:9]
+            loc_q, ours_q = row[9:11] if len(row) > 9 else ("", "")
             yield {"doc_id": doc, "reader": reader, "lang": lang, "decade": int(decade), "occurrences": int(occ),
                    "loc_damage": float(loc), "ours_damage": float(ours),
                    "loc_est_cer": float(loc_cer) if loc_cer else None,
-                   "ours_est_cer": float(ours_cer) if ours_cer else None}
+                   "ours_est_cer": float(ours_cer) if ours_cer else None,
+                   "loc_lm_oov": float(loc_q) if loc_q else None,
+                   "ours_lm_oov": float(ours_q) if ours_q else None}
 
 
 def plan_docs(paths):
@@ -219,7 +240,7 @@ def decide(n, mean, sd, min_gain, cell_pages):
 
 
 def cells_of(pages, filters, weights=None):
-    cells = collections.defaultdict(lambda: {"drop": [], "cer": [], "w": []})
+    cells = collections.defaultdict(lambda: {"drop": [], "cer": [], "qe": [], "qe_w": [], "w": []})
     for p in pages:
         band = quality_campaign.band_of(p["loc_damage"], p["occurrences"], filters) or "low"
         c = cells[(p["reader"], band, p["lang"], p["decade"])]
@@ -227,6 +248,9 @@ def cells_of(pages, filters, weights=None):
         c["w"].append(weights.get(p["doc_id"], 1.0) if weights else 1.0)
         if p["loc_est_cer"] is not None and p["ours_est_cer"] is not None:
             c["cer"].append(p["loc_est_cer"] - p["ours_est_cer"])
+        if p["loc_lm_oov"] is not None and p["ours_lm_oov"] is not None:
+            c["qe"].append(p["loc_lm_oov"] - p["ours_lm_oov"])
+            c["qe_w"].append(c["w"][-1])
     return cells
 
 
@@ -265,11 +289,14 @@ def measure(a):
         mean, sd = weighted(c["drop"], c["w"]) if only else mean_sd(c["drop"])
         half = Z95 * sd / math.sqrt(n) if sd is not None else None
         cer_mean, _ = mean_sd(c["cer"])
+        # Weighted like mean_drop under --plan, so the two columns estimate the same band.
+        qe_mean = (weighted(c["qe"], c["qe_w"])[0] if only else mean_sd(c["qe"])[0]) if c["qe"] else None
         rows.append({"reader": reader, "band": band, "lang": lang, "decade": decade, "n": n,
                      "mean_drop": r4(mean), "sd": r4(sd),
                      "low95": r4(mean - half) if half is not None else None,
                      "high95": r4(mean + half) if half is not None else None,
                      "cer_pairs": len(c["cer"]), "mean_cer_drop": r4(cer_mean),
+                     "qe_pairs": len(c["qe"]), "mean_lm_oov_drop": r4(qe_mean),
                      "decision": decide(n, mean, sd, a.min_gain, a.cell_pages)})
     with open(os.path.join(a.out_dir, "cells.csv.tmp"), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0]) if rows else ["reader"], lineterminator="\n")

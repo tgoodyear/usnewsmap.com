@@ -17,9 +17,10 @@ qg = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(qg)
 
 
-def page(i, lang="eng", decade=1900, loc=0.4, ours=0.3, occ=60, reader="ours-tesseract", cer=None):
+def page(i, lang="eng", decade=1900, loc=0.4, ours=0.3, occ=60, reader="ours-tesseract", cer=None, qe=None):
     return [f"sn{i}_1900-01-01_ed-1_seq-1", reader, lang, decade, occ, loc, ours,
-            "" if cer is None else cer[0], "" if cer is None else cer[1]]
+            "" if cer is None else cer[0], "" if cer is None else cer[1],
+            "" if qe is None else qe[0], "" if qe is None else qe[1]]
 
 
 class ExportSqlTest(unittest.TestCase):
@@ -36,11 +37,11 @@ class GainTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.d = Path(self.tmp.name)
 
-    def run_on(self, rows, *extra):
+    def run_on(self, rows, *extra, columns=None):
         src = self.d / "pages.csv"
         with open(src, "w", newline="") as f:
             w = csv.writer(f, lineterminator="\n")
-            w.writerow(qg.COLUMNS)
+            w.writerow(columns or qg.COLUMNS)
             w.writerows(rows)
         with contextlib.redirect_stdout(io.StringIO()):
             qg.main(["--input", str(src), "--out-dir", str(self.d / "out"), *extra])
@@ -100,6 +101,32 @@ class GainTest(unittest.TestCase):
         cells, _ = self.run_on([page(i, cer=(0.3, 0.25)) for i in range(3)] + [page(9)])
         self.assertEqual(int(cells[0]["cer_pairs"]), 3)
         self.assertAlmostEqual(float(cells[0]["mean_cer_drop"]), 0.05)
+
+    def test_the_lm_oov_pair_is_reported_when_both_have_one(self):
+        cells, _ = self.run_on([page(i, qe=(3.0, 2.5)) for i in range(4)] + [page(9, qe=(3.0, None))])
+        self.assertEqual(int(cells[0]["qe_pairs"]), 4)
+        self.assertAlmostEqual(float(cells[0]["mean_lm_oov_drop"]), 0.5)
+        self.assertEqual(cells[0]["decision"], "measuring")
+
+    def test_plan_weights_carry_the_lm_oov_mean_too(self):
+        rows = [page(1, qe=(3.0, 2.5)), page(2, qe=(3.0, 3.5))]
+        plan = self.d / "plan.jsonl"
+        plan.write_text(json.dumps({"doc_id": "sn1_1900-01-01_ed-1_seq-1", "weight": 100}) + "\n"
+                        + json.dumps({"doc_id": "sn2_1900-01-01_ed-1_seq-1", "weight": 1}) + "\n")
+        cells, _ = self.run_on(rows, "--plan", str(plan))
+        self.assertAlmostEqual(float(cells[0]["mean_lm_oov_drop"]), 0.4901, places=4)
+
+    def test_a_pages_csv_from_before_the_qe_columns_still_replays(self):
+        rows = [page(i)[:9] for i in range(3)]
+        cells, _ = self.run_on(rows, columns=qg.COLUMNS_V1)
+        self.assertEqual(int(cells[0]["n"]), 3)
+        self.assertEqual(int(cells[0]["qe_pairs"]), 0)
+        self.assertEqual(cells[0]["mean_lm_oov_drop"], "")
+
+    def test_the_lm_oov_pair_comes_from_the_same_unit(self):
+        sql = qg.export_sql(["ours-tesseract"])
+        self.assertIn("qe_lm_oov AS loc_lm_oov", sql)
+        self.assertEqual(sql.count("FROM hat JOIN quality.reader_scores_effective"), 4)
 
     def test_plan_restricts_the_pages(self):
         plan = self.d / "plan.jsonl"
