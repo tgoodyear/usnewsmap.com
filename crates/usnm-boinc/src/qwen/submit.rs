@@ -252,9 +252,11 @@ pub enum Models {
     Prechecked,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize)]
 pub struct Summary {
     pub submitted: usize,
+    /// Units with a `submitting` marker and no `submitted` receipt: create_work may or may
+    /// not have made their work, and they are never replayed blindly.
     pub uncertain: usize,
 }
 

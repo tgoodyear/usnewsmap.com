@@ -335,6 +335,9 @@ pub fn assemble(inputs: &Inputs<'_>) -> anyhow::Result<Assembled> {
         ensure!(known.contains(b), "region block {b} is not in this ALTO");
     }
 
+    // Every block ID in the output is unique: LoC's own are kept, and the `<id>.<n>` of a cut
+    // block avoids all of them (and each other), here, so `blocks.json` names the final ID.
+    let mut used_ids: BTreeSet<String> = known.iter().map(|s| (*s).to_owned()).collect();
     let mut blocks: Vec<Block> = Vec::new();
     let mut notes: Vec<Option<BlockNote>> = Vec::new();
     let mut entries: Vec<BlockEntry> = Vec::new();
@@ -410,7 +413,13 @@ pub fn assemble(inputs: &Inputs<'_>) -> anyhow::Result<Assembled> {
         for (k, (at, seg)) in segments.iter().enumerate() {
             let seg_lines: Vec<(String, Line)> = at.iter().map(|&i| lines[i].clone()).collect();
             let id = if cut {
-                format!("{block_id}.{}", k + 1)
+                let mut id = format!("{block_id}.{}", k + 1);
+                let mut n = 2;
+                while !used_ids.insert(id.clone()) {
+                    id = format!("{block_id}.{}_{n}", k + 1);
+                    n += 1;
+                }
+                id
             } else {
                 block_id.to_owned()
             };
@@ -488,7 +497,8 @@ pub fn assemble(inputs: &Inputs<'_>) -> anyhow::Result<Assembled> {
         entries.iter().filter(|e| e.source == "xiaomi").count(),
     );
     let mut loc_by_reason: BTreeMap<&'static str, usize> = BTreeMap::new();
-    for e in entries.iter().filter(|e| e.region.is_some()) {
+    // Every kept stretch counts, a region's and a small one LoC keeps with no region at all.
+    for e in &entries {
         if let Some(k) = e.kept {
             *loc_by_reason.entry(k.as_str()).or_default() += 1;
         }
@@ -810,6 +820,60 @@ mod tests {
         }
         let lines: Vec<&str> = got.text.lines().filter(|l| !l.is_empty()).take(3).collect();
         assert_eq!(lines, ["The ship sailed", "for Englaud", "on Tuesday"]);
+    }
+
+    #[test]
+    fn made_ids_never_collide_with_loc_s_and_blocks_json_names_the_final_ones() {
+        // LoC's blocks are called B1.2 (the id the cut B1's second part would take), TL1 and
+        // ST1 (ids the writer makes for lines and words).
+        let alto = ALTO
+            .replace("\"B2\"", "\"B1.2\"")
+            .replace("\"B3\"", "\"TL1\"")
+            .replace("<Illustration ID=\"I1\"", "<Illustration ID=\"ST1\"");
+        let r1 = region("r0001", "B1", &["B1L1"]);
+        let r2 = region("r0002", "B1", &["B1L3"]);
+        let regions = vec![
+            input(&r1, Some("The ship sailed"), Some(CropState::Agree)),
+            input(&r2, Some("on Tuesday"), Some(CropState::Agree)),
+        ];
+        let got = assemble(&Inputs {
+            doc_id: "sn1_1900-01-01_ed-1_seq-1",
+            loc_alto: alto.as_bytes(),
+            dims: (1000, 1400),
+            file_name: "https://tile.loc.gov/x",
+            language: "eng",
+            regions,
+            facts: facts(),
+            notes: vec![("usnm_job_id".into(), "j".into())],
+        })
+        .unwrap();
+        let ids: Vec<&str> = got
+            .alto
+            .split(" ID=\"")
+            .skip(1)
+            .filter_map(|t| t.split('"').next())
+            .collect();
+        let unique: std::collections::BTreeSet<&str> = ids.iter().copied().collect();
+        assert_eq!(ids.len(), unique.len(), "duplicate ids in {ids:?}");
+        // The cut B1's parts did not take B1.2 from LoC's block.
+        let names: Vec<&str> = got.blocks.blocks.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(names.iter().filter(|n| **n == "B1.2").count(), 1);
+        for e in &got.blocks.blocks {
+            assert!(got.alto.contains(&format!("ID=\"{}\"", e.id)), "{}", e.id);
+        }
+    }
+
+    #[test]
+    fn stretches_loc_keeps_with_no_region_count_as_small() {
+        let r1 = region("r0001", "B1", &["B1L1"]);
+        let r2 = region("r0002", "B1", &["B1L3"]);
+        let got = run(vec![
+            input(&r1, Some("The ship sailed"), Some(CropState::Agree)),
+            input(&r2, Some("on Tuesday"), Some(CropState::Agree)),
+        ]);
+        // B1's middle line, B2 and B3 have no region: three small stretches.
+        assert_eq!(got.blocks.loc_by_reason.get("small"), Some(&3));
+        assert!(got.alto.contains("loc_small=3"));
     }
 
     #[test]

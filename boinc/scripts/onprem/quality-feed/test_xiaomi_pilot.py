@@ -30,6 +30,8 @@ class Fake:
 
     def __call__(self, cmd):
         self.cmds.append(cmd)
+        if "submit" in cmd and "--max-units" in cmd:
+            return json.dumps({"submitted": 1, "uncertain": 0})
         return json.dumps(self.summary) if "page-collect" in cmd else ""
 
 
@@ -138,6 +140,28 @@ class Pilot(unittest.TestCase):
         self.assertEqual(rec["action"], "submitted members-000.json")
         self.assertNotIn("active_chunk", self.saved())
         self.assertEqual(self.saved()["next_chunk"], 1)
+
+    def test_a_chunk_with_units_lacking_a_receipt_is_not_advanced_or_replayed(self):
+        class Uncertain(Fake):
+            def __call__(self, cmd):
+                if "submit" in cmd:
+                    self.cmds.append(cmd)
+                    return json.dumps({"submitted": 3, "uncertain": 2})
+                return super().__call__(cmd)
+
+        rec = xp.step(self.a, T0, Uncertain({"pages": 0}))
+        self.assertEqual(rec["action"], "unresolved members-000.json")
+        st = self.saved()
+        self.assertEqual((st["next_chunk"], st["active_chunk"]), (0, "members-000.json"))
+        self.assertEqual(st["unresolved"]["uncertain"], 2)
+        # The next run collects and reports, and runs neither stage nor submit.
+        fake = Fake({"pages": 10, "pages_pending": 10})
+        rec = xp.step(self.a, hours(1), fake)
+        self.assertEqual(rec["action"], "unresolved members-000.json")
+        self.assertEqual(len(fake.cmds), 1)
+        # No summary line at all counts as unresolved too.
+        self.assertEqual(xp.submit_summary("models staged\n"), {"uncertain": -1})
+        self.assertEqual(xp.submit_summary('{"submitted": 1, "uncertain": 0}\n')["uncertain"], 0)
 
     def test_main_writes_one_log_line_a_run(self):
         log = Path(self.tmp.name) / "log"

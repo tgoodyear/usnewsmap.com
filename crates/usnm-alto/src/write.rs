@@ -2,6 +2,7 @@
 //! full image, written from parsed values, never copied from an engine's
 //! XML.
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 
 use quick_xml::escape::escape;
@@ -166,7 +167,7 @@ pub fn write(page: &Page, desc: &Description, language: &str) -> String {
         step(&mut out, "postProcessingStep", p);
     }
     out.push_str("    </OCRProcessing>\n  </Description>\n");
-    layout(&mut out, page, language, &[]);
+    layout(&mut out, page, language, &[], HashSet::new());
     out
 }
 
@@ -261,18 +262,49 @@ pub fn write_v4(
         out.push_str("      </processingSoftware>\n    </Processing>\n");
     }
     out.push_str("  </Description>\n");
-    layout(&mut out, page, language, notes);
+    // Supplied IDs (the blocks' and the steps') are kept as they are; every ID the writer
+    // makes avoids them, so no ID is used twice in the document.
+    let reserved: HashSet<String> = notes
+        .iter()
+        .flatten()
+        .map(|n| n.id.clone())
+        .chain(steps.iter().map(|p| p.id.clone()))
+        .collect();
+    layout(&mut out, page, language, notes, reserved);
     out
 }
 
+/// IDs in use in a document: a made one is the base when free, else the base with `_<n>`.
+struct Ids(HashSet<String>);
+
+impl Ids {
+    fn take(&mut self, base: String) -> String {
+        let mut id = base.clone();
+        let mut n = 2;
+        while !self.0.insert(id.clone()) {
+            id = format!("{base}_{n}");
+            n += 1;
+        }
+        id
+    }
+}
+
 /// The `Layout`, to the end of the document.
-fn layout(out: &mut String, page: &Page, language: &str, notes: &[Option<BlockNote>]) {
+fn layout(
+    out: &mut String,
+    page: &Page,
+    language: &str,
+    notes: &[Option<BlockNote>],
+    reserved: HashSet<String>,
+) {
+    let mut ids = Ids(reserved);
     out.push_str("  <Layout>\n");
     let full = Rect::new(0.0, 0.0, page.width, page.height);
     let (w, h) = (px(page.width), px(page.height));
     let _ = writeln!(
         out,
-        "    <Page ID=\"P1\" PHYSICAL_IMG_NR=\"1\" WIDTH=\"{w}\" HEIGHT=\"{h}\">"
+        "    <Page ID=\"{}\" PHYSICAL_IMG_NR=\"1\" WIDTH=\"{w}\" HEIGHT=\"{h}\">",
+        esc(&ids.take("P1".to_owned()))
     );
     let _ = writeln!(out, "      <PrintSpace {}>", pos(&full));
     let (mut nb, mut nl, mut ns) = (0usize, 0usize, 0usize);
@@ -283,7 +315,8 @@ fn layout(out: &mut String, page: &Page, language: &str, notes: &[Option<BlockNo
             BlockKind::Illustration => {
                 let _ = writeln!(
                     out,
-                    "        <Illustration ID=\"IL{nb}\" {}/>",
+                    "        <Illustration ID=\"{}\" {}/>",
+                    esc(&ids.take(format!("IL{nb}"))),
                     pos(&b.rect)
                 );
                 continue;
@@ -291,7 +324,8 @@ fn layout(out: &mut String, page: &Page, language: &str, notes: &[Option<BlockNo
             BlockKind::Separator => {
                 let _ = writeln!(
                     out,
-                    "        <GraphicalElement ID=\"GE{nb}\" {}/>",
+                    "        <GraphicalElement ID=\"{}\" {}/>",
+                    esc(&ids.take(format!("GE{nb}"))),
                     pos(&b.rect)
                 );
                 continue;
@@ -305,7 +339,8 @@ fn layout(out: &mut String, page: &Page, language: &str, notes: &[Option<BlockNo
         }
         let block_lang = b.lang.as_deref().map(esc).unwrap_or_else(|| lang.clone());
         let note = notes.get(nb - 1).and_then(Option::as_ref);
-        let id = note.map_or_else(|| format!("TB{nb}"), |n| esc(&n.id));
+        // A supplied block ID is already reserved; one the writer makes is taken fresh.
+        let id = note.map_or_else(|| esc(&ids.take(format!("TB{nb}"))), |n| esc(&n.id));
         let refs = note.map_or_else(String::new, |n| {
             format!(" PROCESSINGREFS=\"{}\"", esc(&n.processing))
         });
@@ -317,14 +352,23 @@ fn layout(out: &mut String, page: &Page, language: &str, notes: &[Option<BlockNo
         let parts = hyphen_parts(&lines);
         for (li, l) in lines.iter().enumerate() {
             nl += 1;
-            let _ = writeln!(out, "          <TextLine ID=\"TL{nl}\" {}>", pos(&l.rect));
+            let _ = writeln!(
+                out,
+                "          <TextLine ID=\"{}\" {}>",
+                esc(&ids.take(format!("TL{nl}"))),
+                pos(&l.rect)
+            );
             for (wi, wd) in l.words.iter().enumerate() {
                 ns += 1;
                 if wi > 0 {
                     out.push_str(&space(&l.words[wi - 1], wd, page.granularity));
                 }
-                out.push_str("            <String ID=\"ST");
-                let _ = write!(out, "{ns}\" {}", pos(&wd.rect));
+                let _ = write!(
+                    out,
+                    "            <String ID=\"{}\" {}",
+                    esc(&ids.take(format!("ST{ns}"))),
+                    pos(&wd.rect)
+                );
                 if let Some(c) = wd.conf {
                     let _ = write!(out, " WC=\"{}\"", conf(c));
                 }
@@ -431,6 +475,75 @@ mod tests {
         // `write` is unchanged: same blocks, no references.
         let v3 = write(&page, &Description::default(), "eng");
         assert!(!v3.contains("PROCESSINGREFS") && v3.contains("ID=\"TB1\""));
+    }
+
+    #[test]
+    fn ids_the_writer_makes_avoid_every_supplied_id() {
+        use crate::model::{Block, Line};
+        let line = || Line {
+            rect: Rect::new(0.0, 0.0, 100.0, 20.0),
+            words: vec![Word {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                text: "a".into(),
+                conf: None,
+            }],
+            hyphen: None,
+        };
+        let block = |kind| Block {
+            kind,
+            rect: Rect::new(0.0, 0.0, 100.0, 20.0),
+            lang: None,
+            lines: vec![line()],
+        };
+        let page = Page {
+            width: 200.0,
+            height: 300.0,
+            granularity: Granularity::Line,
+            blocks: vec![
+                block(BlockKind::Text),
+                block(BlockKind::Text),
+                block(BlockKind::Illustration),
+            ],
+        };
+        // Supplied block ids that the writer would otherwise make for a line, a word, the
+        // page and an illustration, and a step called like a block.
+        let notes = vec![
+            Some(BlockNote {
+                id: "TL1".into(),
+                processing: "TL2".into(),
+            }),
+            Some(BlockNote {
+                id: "ST1".into(),
+                processing: "P1".into(),
+            }),
+            Some(BlockNote {
+                id: "IL3".into(),
+                processing: "P1".into(),
+            }),
+        ];
+        let step = Processing {
+            id: "TL2".into(),
+            category: "contentGeneration".into(),
+            step: Step {
+                date_time: None,
+                settings: vec![],
+                software: Software {
+                    creator: "c".into(),
+                    name: "n".into(),
+                    version: "1".into(),
+                },
+            },
+        };
+        let xml = write_v4(&page, "f", &[], &[step], &notes, "eng");
+        let ids: Vec<&str> = xml
+            .split(" ID=\"")
+            .skip(1)
+            .filter_map(|t| t.split('"').next())
+            .collect();
+        let unique: std::collections::HashSet<&str> = ids.iter().copied().collect();
+        assert_eq!(ids.len(), unique.len(), "{ids:?}");
+        // Supplied ids stay as given.
+        assert!(xml.contains("<TextBlock ID=\"ST1\""));
     }
 
     #[test]
