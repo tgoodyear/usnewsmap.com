@@ -41,6 +41,7 @@ class Pilot(unittest.TestCase):
         self.pilot = d / "pilot"
         self.pilot.mkdir()
         (self.pilot / "pilot.csv").write_text("doc_id\n")
+        (self.pilot / "campaign.json").write_text("{}")
         for i in range(4):
             (self.pilot / f"members-{i:03d}.json").write_text("[]")
         (self.pilot / "strata.json").write_text("{}")
@@ -108,7 +109,8 @@ class Pilot(unittest.TestCase):
         self.assertEqual(self.saved()["stopped"]["reason"], "no-return")
 
     def test_the_draw_is_made_once_and_only_with_a_dsn(self):
-        (self.pilot / "pilot.csv").unlink()
+        # A draw cut short (pilot.csv, no campaign.json) is made again.
+        (self.pilot / "campaign.json").unlink()
         with self.assertRaises(SystemExit):
             xp.step(self.a, T0, Fake({"pages": 0}))
         self.a.dsn_file = "/dsn"
@@ -116,6 +118,26 @@ class Pilot(unittest.TestCase):
         xp.step(self.a, T0, fake)
         self.assertTrue(fake.cmds[0][1].endswith("pilot_select.py"))
         self.assertEqual(fake.cmds[0][fake.cmds[0].index("--chunk") + 1], "500")
+
+    def test_a_chunk_staged_but_not_submitted_resumes_without_reserving_again(self):
+        class Flaky(Fake):
+            def __call__(self, cmd):
+                if "submit" in cmd and "--max-units" in cmd and not getattr(self, "ok", False):
+                    self.cmds.append(cmd)
+                    raise SystemExit("submit failed")
+                return super().__call__(cmd)
+
+        fake = Flaky({"pages": 0})
+        with self.assertRaises(SystemExit):
+            xp.step(self.a, T0, fake)
+        self.assertEqual(self.saved()["active_chunk"], "members-000.json")
+        self.assertEqual(self.saved()["next_chunk"], 0)
+        # The staged chunk now counts in flight, and 600 + 500 would not fit: it still resumes.
+        fake = Fake({"pages": 600, "pages_pending": 600})
+        rec = xp.step(self.a, hours(1), fake)
+        self.assertEqual(rec["action"], "submitted members-000.json")
+        self.assertNotIn("active_chunk", self.saved())
+        self.assertEqual(self.saved()["next_chunk"], 1)
 
     def test_main_writes_one_log_line_a_run(self):
         log = Path(self.tmp.name) / "log"

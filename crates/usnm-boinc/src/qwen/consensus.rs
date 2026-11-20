@@ -425,7 +425,14 @@ pub fn record(
     });
     let bytes = serde_json::to_vec_pretty(&record)?;
     usnm_ocr_contract::quality::check_doc_id(&la.result.job_id)?;
-    let pair = usnm_ocr_contract::boinc::sha256(names.join("\n").as_bytes());
+    // The page rule's record has its own key: a pair the strict or v2 rule rejected earlier
+    // keeps its record beside the page rule's verdict on the same results, and neither
+    // replaces the other (`record` never overwrites).
+    let mut key = names.join("\n");
+    if judged.page_blocks {
+        key.push_str("\npage-blocks-v1");
+    }
+    let pair = usnm_ocr_contract::boinc::sha256(key.as_bytes());
     let parent = dir.join(&la.result.job_id);
     std::fs::create_dir_all(&parent)?;
     let path = parent.join(format!("{}.json", &pair[..16]));
@@ -578,29 +585,27 @@ pub fn vouched(dir: &Path, job_id: &str, readings_sha256: &str) -> anyhow::Resul
 /// What an agreeing pair judged of each region of a page-mode result (#1998).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PairStates {
-    /// The best verdict of each region over the agreeing pairs that include the result.
+    /// The verdict of each region in the one pair that supports the page.
     pub regions: BTreeMap<String, CropVerdict>,
-    /// The results of the first such pair, by name, sorted.
+    /// That pair's results, by name, sorted. Every region's text comes from this pair alone, so
+    /// the provenance names the results that agreed on it.
     pub results: Vec<String>,
 }
 
-/// The region verdicts of the agreeing pairs of `job_id` that include the result whose readings
+/// The region verdicts of the agreeing pair of `job_id` that includes the result whose readings
 /// hash to `readings_sha256`; `None` when no agreeing pair judged region by region includes it
-/// (a page-mode result is never taken on the strict rule's every-crop vouch). A pair that did
-/// not agree as a whole is not counted, since the result's canonical standing is from an
-/// agreeing one. A record that cannot be read fails the call.
+/// (a page-mode result is never taken on the strict rule's every-crop vouch). With several
+/// (A/B and A/C), the one with the most agreeing regions is taken, the first of equals, and
+/// the page is assembled from it alone: states are never mixed across pairs, so the result
+/// names in the provenance are the pair's. A pair that did not agree as a whole is not
+/// counted, since the result's canonical standing is from an agreeing one. A record that
+/// cannot be read fails the call.
 pub fn agreed_states(
     dir: &Path,
     job_id: &str,
     readings_sha256: &str,
 ) -> anyhow::Result<Option<PairStates>> {
-    let rank = |s: CropState| match s {
-        CropState::Agree => 3,
-        CropState::Looped => 2,
-        CropState::NoText => 1,
-        CropState::Disagree => 0,
-    };
-    let mut out: Option<PairStates> = None;
+    let mut best: Option<(usize, PairStates)> = None;
     for path in record_paths(dir, job_id)? {
         let r: Record = serde_json::from_slice(&crate::read(&path, MAX_RECORD)?)
             .with_context(|| format!("crop states {}", path.display()))?;
@@ -615,20 +620,24 @@ pub fn agreed_states(
         {
             continue;
         }
-        let got = out.get_or_insert_with(|| PairStates {
-            regions: BTreeMap::new(),
-            results: r.results.clone(),
-        });
-        for c in r.crops {
-            match got.regions.get(&c.id) {
-                Some(best) if rank(best.state) >= rank(c.state) => {}
-                _ => {
-                    got.regions.insert(c.id.clone(), c);
-                }
-            }
+        let agreeing = r
+            .crops
+            .iter()
+            .filter(|c| c.state == CropState::Agree)
+            .count();
+        if best.as_ref().is_some_and(|(n, _)| *n >= agreeing) {
+            continue;
         }
+        let regions = r.crops.into_iter().map(|c| (c.id.clone(), c)).collect();
+        best = Some((
+            agreeing,
+            PairStates {
+                regions,
+                results: r.results,
+            },
+        ));
     }
-    Ok(out)
+    Ok(best.map(|(_, p)| p))
 }
 
 #[cfg(test)]
@@ -1066,6 +1075,46 @@ mod tests {
             ..opts(Rule::PageBlocksV1)
         };
         assert!(compare_with(&a, &c, no_states).is_err());
+        // The same pair judged under v2 keeps its own record beside the page rule's, so
+        // neither a rejection nor an acceptance hides the other.
+        let _ = compare_with(&a, &c, opts(Rule::CropConsensusV2));
+        assert_eq!(record_paths(&states, &la.result.job_id).unwrap().len(), 3);
+        assert!(
+            agreed_states(&states, &la.result.job_id, &la.result.readings_sha256)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_page_is_judged_from_one_pair_and_never_from_states_mixed_across_pairs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job = "j1";
+        std::fs::create_dir_all(tmp.path().join(job)).unwrap();
+        let write_pair = |name: &str, other: &str, states: [&str; 2]| {
+            let record = serde_json::json!({
+                "v": RECORD_VERSION, "rule": "crop-consensus-v2", "basis": "crop-consensus-v2",
+                "job_id": job, "results": [name, other],
+                "readings_sha256": ["A", other], "agree": true,
+                "crops": [{"id": "r1", "state": states[0], "score": null},
+                          {"id": "r2", "state": states[1], "score": null}],
+            });
+            std::fs::write(
+                tmp.path().join(job).join(format!("{other}.json")),
+                serde_json::to_vec(&record).unwrap(),
+            )
+            .unwrap();
+        };
+        // A/B agrees on r1 only; A/C on both: the page comes from A/C, and says so.
+        write_pair("wu_0", "B", ["agree", "disagree"]);
+        write_pair("wu_0", "C", ["agree", "agree"]);
+        let got = agreed_states(tmp.path(), job, "A").unwrap().unwrap();
+        assert_eq!(got.results, ["wu_0", "C"]);
+        assert!(got.regions.values().all(|v| v.state == CropState::Agree));
+        // Where no pair beats another, the first stays, and a region is never mixed in.
+        write_pair("wu_0", "D", ["disagree", "agree"]);
+        let got = agreed_states(tmp.path(), job, "A").unwrap().unwrap();
+        assert_eq!(got.results, ["wu_0", "C"]);
     }
 
     #[test]

@@ -138,7 +138,9 @@ def step(a, now=None, run=run_cmd):
     state.setdefault("started_at", now.isoformat())
     state.setdefault("next_chunk", 0)
     state.setdefault("last_returned", 0)
-    if not os.path.exists(os.path.join(a.pilot_dir, "pilot.csv")):
+    # pilot_select.py writes pilot.csv first and campaign.json last: only campaign.json says
+    # the members files and strata.json are all there, so a draw cut short is made again.
+    if not os.path.exists(os.path.join(a.pilot_dir, "campaign.json")):
         if not a.dsn_file:
             sys.exit("no draw in --pilot-dir and no --dsn-file to make one")
         run([sys.executable, os.path.join(HERE, "pilot_select.py"), "--out-dir", a.pilot_dir,
@@ -159,10 +161,19 @@ def step(a, now=None, run=run_cmd):
     action = "none"
     if "stopped" in state:
         action = "stopped"
-    elif not staged_all and in_flight + a.chunk_pages <= a.max_in_flight:
+    elif not staged_all and (
+        state.get("active_chunk") == names[state["next_chunk"]]
+        or in_flight + a.chunk_pages <= a.max_in_flight
+    ):
         name = names[state["next_chunk"]]
+        # The chunk is marked before it is staged. If staging worked and submitting did not,
+        # the next run finishes this chunk: its pages are already counted in flight, so it
+        # does not reserve the allowance a second time.
+        state["active_chunk"] = name
+        save_state(a.state, state)
         submit_chunk(a, name, run)
         state["next_chunk"] += 1
+        state.pop("active_chunk", None)
         action = f"submitted {name}"
     state["last_returned"] = returned
     save_state(a.state, state)

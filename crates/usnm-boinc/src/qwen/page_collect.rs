@@ -290,54 +290,87 @@ fn diag_u32(r: &Readings, key: &str) -> Option<u32> {
     r.diag.get(key)?.parse().ok()
 }
 
-/// Every checked result of `job`, by name: `usnm_qwen_<job id>_...` under `seen`.
-fn seen_results(seen: &Path, job: &Job) -> anyhow::Result<Vec<(String, ResultManifest, Readings)>> {
-    let prefix = job.workunit();
-    let mut out = Vec::new();
-    let entries = match std::fs::read_dir(seen) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
-        Err(e) => return Err(e).context("reading the seen results"),
-    };
-    for entry in entries {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !name.starts_with(&prefix) {
-            continue;
+/// The checked results under `--seen`, listed once for the whole collection and grouped by
+/// workunit: a directory is `<workunit>_<n>`, BOINC's result name.
+struct Seen {
+    by_workunit: BTreeMap<String, Vec<(String, PathBuf)>>,
+}
+
+impl Seen {
+    fn scan(seen: &Path) -> anyhow::Result<Seen> {
+        let mut by_workunit: BTreeMap<String, Vec<(String, PathBuf)>> = BTreeMap::new();
+        let entries = match std::fs::read_dir(seen) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Seen { by_workunit }),
+            Err(e) => return Err(e).context("reading the seen results"),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some((workunit, n)) = name.rsplit_once('_') else {
+                continue;
+            };
+            if n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            by_workunit
+                .entry(workunit.to_owned())
+                .or_default()
+                .push((name, entry.path()));
         }
-        let dir = entry.path();
-        let Ok(manifest) = read(&dir.join(super::RESULT_FILE), MAX_RESULT_JSON) else {
-            continue;
-        };
-        let Ok(readings) = read(
-            &dir.join(super::READINGS_FILE),
-            usnm_ocr_contract::qwen::MAX_READINGS,
-        ) else {
-            continue;
-        };
-        let (Ok(m), Ok(r)) = (
-            serde_json::from_slice::<ResultManifest>(&manifest),
-            serde_json::from_slice::<Readings>(&readings),
-        ) else {
-            continue;
-        };
-        if m.job_id == job.id && m.readings_sha256 == sha256(&readings) {
-            out.push((name, m, r));
-        }
+        Ok(Seen { by_workunit })
     }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(out)
+
+    /// Every checked result of `job`, by name.
+    fn results(&self, job: &Job) -> Vec<(String, ResultManifest, Readings)> {
+        let mut out = Vec::new();
+        for (name, dir) in self.by_workunit.get(&job.workunit()).into_iter().flatten() {
+            let Ok(manifest) = read(&dir.join(super::RESULT_FILE), MAX_RESULT_JSON) else {
+                continue;
+            };
+            let Ok(readings) = read(
+                &dir.join(super::READINGS_FILE),
+                usnm_ocr_contract::qwen::MAX_READINGS,
+            ) else {
+                continue;
+            };
+            let (Ok(m), Ok(r)) = (
+                serde_json::from_slice::<ResultManifest>(&manifest),
+                serde_json::from_slice::<Readings>(&readings),
+            ) else {
+                continue;
+            };
+            if m.job_id == job.id && m.readings_sha256 == sha256(&readings) {
+                out.push((name.clone(), m, r));
+            }
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+}
+
+/// Which of `results` is the canonical one: the first, by result name, whose retained
+/// manifest and readings are the canonical result's. Two executions can return the same
+/// bytes; only one is marked, and its name is the one the held page cites.
+fn canonical_index(
+    results: &[(String, ResultManifest, Readings)],
+    canon: Option<&validate::Loaded>,
+) -> Option<usize> {
+    let canon = canon?;
+    results.iter().position(|(_, m, _)| {
+        m == &canon.result && m.readings_sha256 == canon.result.readings_sha256
+    })
 }
 
 fn cost_rows(
     pages: &[UnitPage<'_>],
     job: &Job,
     results: &[(String, ResultManifest, Readings)],
-    canonical_sha: Option<&str>,
+    canonical: Option<usize>,
     agreeing: &BTreeSet<String>,
 ) -> Vec<CostRow> {
     let mut rows = Vec::new();
-    for (name, m, r) in results {
+    for (i, (name, m, r)) in results.iter().enumerate() {
         let total: u64 = r.readings.iter().map(|x| u64::from(x.tokens)).sum();
         for p in pages {
             let mine: Vec<_> = r
@@ -373,7 +406,7 @@ fn cost_rows(
                 gpu_mem_peak_mib: m.gpu_mem_peak_mib,
                 outcome: m.outcome,
                 validated: agreeing.contains(&m.readings_sha256),
-                canonical: canonical_sha == Some(m.readings_sha256.as_str()),
+                canonical: canonical == Some(i),
             });
         }
     }
@@ -442,6 +475,8 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         Err(e) => return Err(e).context("reading the staging root"),
     };
     unit_dirs.sort();
+    // The checked results are listed once, not for each unit.
+    let seen = opts.seen.as_deref().map(Seen::scan).transpose()?;
     let mut summary = Summary::default();
     let mut pages: Vec<PageRow> = Vec::new();
     let mut costs: Vec<CostRow> = Vec::new();
@@ -455,7 +490,6 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         let staged = unit_pages(&unit, &job)?;
         summary.pages += staged.len();
         let canon = canonical(&opts.spool, &job)?;
-        let canon_sha = canon.as_ref().map(|c| c.result.readings_sha256.clone());
         let agreeing_shas = agreeing(&opts.crop_states, &job.id)?;
         // A unit is settled once it has a canonical result or BOINC gave it up.
         let gave_up =
@@ -465,14 +499,16 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         // `validated` and `canonical` are final when it is loaded. Without `--seen` there is
         // no result identity, and no cost row is made.
         let results = match &opts.seen {
-            Some(seen) if canon.is_some() || gave_up => seen_results(seen, &job)?,
+            Some(_) if canon.is_some() || gave_up => {
+                seen.as_ref().map(|s| s.results(&job)).unwrap_or_default()
+            }
             _ => Vec::new(),
         };
         let rows = cost_rows(
             &staged,
             &job,
             &results,
-            canon_sha.as_deref(),
+            canonical_index(&results, canon.as_ref()),
             &agreeing_shas,
         );
         summary.cost_rows += rows.len();
@@ -505,10 +541,7 @@ pub fn run(opts: &Options) -> anyhow::Result<Summary> {
         };
         let tag = engine_tag(&job.engine, &opts.weights_lock)?.to_string();
         let pair = states.results.clone();
-        let canonical_name = results
-            .iter()
-            .find(|(_, m, _)| Some(&m.readings_sha256) == canon_sha.as_ref())
-            .map(|(n, _, _)| n.clone());
+        let canonical_name = canonical_index(&results, Some(&canon)).map(|i| results[i].0.clone());
         let refused_before = summary.refused;
         for p in &staged {
             match hold_page(
@@ -999,6 +1032,28 @@ mod tests {
             run(&accepting).unwrap().accepted,
             usize::from(share + 0.01 > 1.0)
         );
+        // Another execution that returned the very same bytes is not a second canonical
+        // result: one row is marked, the first by name, and the page cites that name.
+        let seen = w.opts.seen.clone().unwrap();
+        let wu = job().workunit();
+        let twin = seen.join(format!("{wu}_2"));
+        std::fs::create_dir_all(&twin).unwrap();
+        for f in [super::super::READINGS_FILE, super::super::RESULT_FILE] {
+            std::fs::copy(seen.join(format!("{wu}_0")).join(f), twin.join(f)).unwrap();
+        }
+        run(&w.opts).unwrap();
+        let costs: Vec<serde_json::Value> = std::fs::read_to_string(w.opts.held.join(COST_FILE))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(costs.len(), 3);
+        let canonical: Vec<_> = costs
+            .iter()
+            .filter(|c| c["canonical"] == true)
+            .map(|c| c["result_name"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(canonical, [format!("{wu}_0")]);
     }
 
     #[test]
