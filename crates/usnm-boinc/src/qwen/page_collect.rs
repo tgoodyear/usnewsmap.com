@@ -1029,14 +1029,17 @@ mod tests {
         bad.held = w.opts.held.join("ocr-local").join("pages");
         assert!(run(&bad).is_err());
         // A symlink into a forbidden tree is refused on what it resolves to.
-        let target = w.opts.held.join("ocr-out");
-        std::fs::create_dir_all(&target).unwrap();
-        let link = w.opts.held.join("innocent");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        let mut linked = w.opts.clone();
-        linked.held = link;
-        let err = run(&linked).unwrap_err().to_string();
-        assert!(err.contains("resolves to"), "{err}");
+        #[cfg(unix)]
+        {
+            let target = w.opts.held.join("ocr-out");
+            std::fs::create_dir_all(&target).unwrap();
+            let link = w.opts.held.join("innocent");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            let mut linked = w.opts.clone();
+            linked.held = link;
+            let err = run(&linked).unwrap_err().to_string();
+            assert!(err.contains("resolves to"), "{err}");
+        }
         // BOINC giving the unit up settles it as invalid instead of leaving it pending.
         let mut given_up = w.opts.clone();
         given_up.spool = w.opts.held.join("gave-up-spool");
