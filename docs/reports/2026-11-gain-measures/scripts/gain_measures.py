@@ -5,7 +5,9 @@
 
 Inputs are the qe study's outputs (#1925, run_all.sh): metrics/truth-*.jsonl (per crop and reader: cer,
 ref_chars, words, oov, charlm_bpc, lm_oov) and damage-truth.jsonl (hyp_rate, hyp_known, hyp_words).
-Pages pool their crops (CER weighted by reference chars, measures by words), as validate.py does.
+Pages pool their crops as the production measures do: CER over reference chars; damage as
+sum(near) / sum(head + near) (usnm_core::damage); the unknown share as 1 - sum(known) / sum(words);
+oov over words and charlm_bpc over characters, and lm_oov from those two pooled values.
 For every pair of readers on the same page and every measure (damage, unknown, oov, lm_oov):
   - Spearman rho between the measure's drop and the CER drop, with a 95% page bootstrap;
   - a threshold for the measure that matches damage's 0.02 in selectivity (the same share of pairs passes),
@@ -31,23 +33,34 @@ for l in open(a.damage, encoding="utf-8"):
     d = json.loads(l); dmg[d["id"]] = d
 for r in rows:
     d = dmg.get(r["reader"] + "|" + r["unit"], {})
-    r["damage"] = d.get("hyp_rate")
-    r["unknown"] = (1 - d["hyp_known"] / d["hyp_words"]) if d.get("hyp_words") else None
-    if r.get("lm_oov") is None and r.get("charlm_bpc") is not None and r.get("oov") is not None:
-        r["lm_oov"] = r["charlm_bpc"] / 1.185 + r["oov"] / 0.117  # qe-v1's fixed pooled-truth scaling
+    r["d_head"], r["d_near"] = d.get("hyp_head"), d.get("hyp_near")
+    r["d_words"], r["d_known"] = d.get("hyp_words"), d.get("hyp_known")
 rows = [r for r in rows if r.get("cer") is not None and r["reader"] != "as"]
 
 # page level
 g = defaultdict(list)
 for r in rows:
     g[(r["lang"], r["page"], r["reader"])].append(r)
+def pooled(xs, key, weight):
+    v = [(x[key], x[weight]) for x in xs if x.get(key) is not None and x.get(weight)]
+    tw = sum(w for _, w in v)
+    return sum(a_ * w for a_, w in v) / tw if tw else None
+
+
 pages = {}
 for (lang, pg, rd), xs in g.items():
     rc = sum(max(x["ref_chars"], 1) for x in xs)
     o = {"cer": sum(x["cer"] * max(x["ref_chars"], 1) for x in xs) / rc}
-    for m in MEAS:
-        v = [(x[m], max(x["words"], 1)) for x in xs if x.get(m) is not None]
-        o[m] = sum(a_ * w for a_, w in v) / sum(w for _, w in v) if v else None
+    hn = [(x["d_head"], x["d_near"]) for x in xs if x.get("d_head") is not None and x.get("d_near") is not None]
+    den = sum(h + n for h, n in hn)
+    o["damage"] = sum(n for _, n in hn) / den if den else None
+    kw = [(x["d_known"], x["d_words"]) for x in xs if x.get("d_words")]
+    tw = sum(w for _, w in kw)
+    o["unknown"] = 1 - sum(k for k, _ in kw) / tw if tw else None
+    o["oov"] = pooled(xs, "oov", "words")
+    bpc = pooled(xs, "charlm_bpc", "chars")
+    # qe-v1's fixed pooled-truth scaling (ocr/qe/README.md)
+    o["lm_oov"] = bpc / 1.185 + o["oov"] / 0.117 if bpc is not None and o["oov"] is not None else None
     pages[(lang, pg, rd)] = o
 
 pairs = defaultdict(list)  # lang -> list of (page, dCER, {m: dm}); d = first minus second (positive = second better)
