@@ -31,6 +31,23 @@ from ct_exec import ct_run, ctid_arg, default_ctid
 HERE = Path(__file__).resolve().parent
 LOCK_ACQUIRED = "USNM_QUALITY_STEP_LOCK_ACQUIRED"
 LOCK_RELEASED = "USNM_QUALITY_STEP_LOCK_RELEASED"
+# coreutils `timeout` exits 124 when it ended the command at its limit.
+TIMED_OUT = 124
+# A root out of time this many runs in a row fails the run instead of deferring.
+OUT_OF_TIME_RUNS = 3
+
+
+class OutOfTime(subprocess.CalledProcessError):
+    """A remote step that `timeout` ended at its own limit: a warm round, the locked collection or
+    the load. Nothing new was published or loaded (stored parts stay, and a load is idempotent), so
+    the root is retried next tick. A step that exits with an error of its own is not this."""
+
+    def __init__(self, step, command):
+        super().__init__(75, command)
+        self.step = step
+
+    def __str__(self):
+        return f"{self.step} ran out of time"
 
 
 def stamp(lines, receipt):
@@ -94,6 +111,12 @@ def collect(args, command, limit=1260):
     if result.returncode == 75 and not acquired:
         print(json.dumps({"phase": "step_lock_timeout", "budget_seconds": wait}),
               file=sys.stderr, flush=True)
+    elif result.returncode == TIMED_OUT and acquired:
+        # The locked collection reached --locked-timeout-secs (or 20 minutes) and was ended, so
+        # the lock was held no longer than that and nothing was published.
+        print(json.dumps({"phase": "collection_out_of_time", "budget_seconds": limit - 60}),
+              file=sys.stderr, flush=True)
+        raise OutOfTime("locked collection", result.args)
     elif result.returncode:
         progress = progress_of(result.stderr) if acquired else None
         if progress and progress.get("deferred"):
@@ -160,6 +183,11 @@ def warm_parts(args, collect_args):
                                 timeout=kill_after + 60)
         if result.stderr:
             print(result.stderr, file=sys.stderr, end="", flush=True)
+        if result.returncode == TIMED_OUT:
+            # The parts the round finished are stored; the next run's warm resumes from them.
+            print(json.dumps({"phase": "warm_out_of_time", "round": rounds + 1,
+                              "kill_after_seconds": kill_after}), file=sys.stderr, flush=True)
+            raise OutOfTime("warm round", result.args)
         result.check_returncode()
         rounds += 1
         progress = progress_of(result.stderr)
@@ -270,8 +298,14 @@ def publish(args, root, collect_args, warm, locked_timeout):
     ]
     script = ('set -eu; exec ' + shlex.join(load) +
               ' --dsn "$(cat /etc/usnm/quality-db/dsn)"')
-    ct_run(args.ctid, ["timeout", "--signal=TERM", "--kill-after=30s", "10m", "sh", "-c", script],
-           check=True, timeout=660)
+    try:
+        ct_run(args.ctid, ["timeout", "--signal=TERM", "--kill-after=30s", "10m", "sh", "-c", script],
+               check=True, timeout=660)
+    except subprocess.CalledProcessError as error:
+        if error.returncode != TIMED_OUT:
+            raise
+        print(json.dumps({"phase": "load_out_of_time", "budget_seconds": 600}), file=sys.stderr, flush=True)
+        raise OutOfTime("load", error.cmd) from error
     ct_run(args.ctid, ["rm", "-rf", f"/var/lib/usnm-quality-feed/results/{args.campaign}/snapshots/{snapshot}"],
            check=True, timeout=30)
     return {"campaign": args.campaign, "loaded_at": time.time(),
@@ -286,6 +320,20 @@ def native_campaign(value):
     return name, collector
 
 
+def out_of_time_runs(state_dir, name, clear=False):
+    """Consecutive runs in which root `name` ran out of time; counts one more unless `clear`."""
+    path = state_dir / f"{name}.out-of-time.json"
+    if clear:
+        path.unlink(missing_ok=True)
+        return 0
+    runs = json.loads(path.read_bytes()).get("runs", 0) + 1 if path.exists() else 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staged = path.with_name(path.name + "." + uuid.uuid4().hex)
+    staged.write_text(json.dumps({"runs": runs}) + "\n")
+    os.replace(staged, path)
+    return runs
+
+
 def run_native(args):
     """One pass over each root. A root that fails, or is still warming its cache, doesn't stop
     the next, and the run reports it at the end."""
@@ -296,6 +344,15 @@ def run_native(args):
         one.collector = collector or args.collector
         try:
             print(json.dumps(run(one)), flush=True)
+            out_of_time_runs(args.state_dir, name, clear=True)
+        except OutOfTime as error:
+            # Out of time is retried next tick like a held lock, until it happens too often.
+            runs = out_of_time_runs(args.state_dir, name)
+            status = "deferred" if runs < args.out_of_time_runs else "failed"
+            print(json.dumps({"campaign": name, "status": status, "error": str(error),
+                              "out_of_time_runs": runs}), flush=True)
+            if status == "failed":
+                failed.append(name)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError) as error:
             # 75 is the step lock staying held: the next tick reads this root.
             status = "deferred" if getattr(error, "returncode", None) == 75 else "failed"
@@ -353,6 +410,11 @@ def main(argv=None):
                         help="the host lock shared with the partial loader, around collect, pull and load")
     parser.add_argument("--host-lock-wait-secs", type=int, default=300,
                         help="with --warm-without-lock: how long a publication waits for the host lock")
+    parser.add_argument("--state-dir", type=Path, default=Path("/var/lib/usnm-quality-feed/native-results"),
+                        help="where each --native-campaign root's run of out-of-time results is counted")
+    parser.add_argument("--out-of-time-runs", type=int, default=OUT_OF_TIME_RUNS,
+                        help="a root whose warm, locked collection or load is ended by its time limit is "
+                             "deferred; this many runs in a row fail the run")
     parser.add_argument("--warm-lock", type=Path, default=Path("/run/usnm-quality-results-warm.lock"),
                         help="with --warm-without-lock: held for the whole run instead, since warming "
                              "needs no host lock and must not keep the partial loader from running")
@@ -370,7 +432,8 @@ def main(argv=None):
     if args.warm_without_lock and not (args.incremental and args.step_lock_wait_secs):
         parser.error("--warm-without-lock needs --incremental and --step-lock-wait-secs")
     if (not 60 <= args.warm_budget_secs <= 6 * 3600 or not 30 <= args.warm_round_secs <= 3600
-            or not 10 <= args.locked_compute_secs <= 600 or not 30 <= args.locked_timeout_secs <= 600):
+            or not 10 <= args.locked_compute_secs <= 600 or not 30 <= args.locked_timeout_secs <= 600
+            or not 1 <= args.out_of_time_runs <= 100):
         parser.error("invalid warm or locked time bound")
     if args.qwen_campaign and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", args.qwen_campaign):
         parser.error("invalid native Qwen campaign")
