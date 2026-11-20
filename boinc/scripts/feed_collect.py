@@ -43,6 +43,10 @@ NAME = re.compile(r"[a-zA-Z0-9_-]{1,80}")
 SOURCE_UNKNOWN_REASONS = ("task_resource_usage_unavailable", "active_task_resource_usage_unavailable")
 # An own client reporting another BOINC host than its configured binding.
 BINDING_MISMATCH = "host_binding_mismatch"
+# A well-formed source document whose observed_at is older than MAX_AGE (or in the future): the
+# source's publisher has stopped or its clock is off, which differs from a source that can't be
+# read or isn't valid. The reason is this fixed code; the document's observed_at rides beside it.
+STALE_SOURCE = "stale"
 # feeder-slot-guard.py prints one aggregate report and exits 0 (match, maintenance), 1 (drift) or 2 (#1462).
 GUARD_STATUSES = ("match", "maintenance", "drift", "unknown")
 GUARD_UNAVAILABLE = {"status": "unknown", "reason": "guard_unavailable", "app_ids": []}
@@ -55,6 +59,14 @@ SYSTEMD_FAILURE_FIELDS = {
 
 class SupplyUnknown(ValueError):
     """A bounded model cannot prove a feasible concurrent allocation."""
+
+
+class StaleSource(ValueError):
+    """A valid source document outside MAX_AGE; `observed_at` is its own (past or future) time."""
+
+    def __init__(self, observed_at):
+        super().__init__(STALE_SOURCE)
+        self.observed_at = observed_at
 
 
 # Why the server source failed, as one fixed code naming the stage, never error text. The
@@ -136,6 +148,13 @@ FAILURE_CLASSES = (
     ("step_failed", r"^(bridge|handoff)/[a-z0-9-]+ failed|cached scan push failed|batch journal inventory failed"),
 )
 FAILURE_REASONS = tuple(name for name, _ in FAILURE_CLASSES) + ("other",)
+# Which step a step_failed run stopped at (#1698): the scheduler's own "<target>/<step>" label, or
+# one of its two other transports, from a fixed list. An unlisted label is "other", never the text.
+FAILURE_STEPS = tuple(f"{target}/{step}" for target, steps in (
+    ("bridge", ("batch-inventory", "container-spot", "native-spot", "spool-out", "submit-remote")),
+    ("handoff", ("claim", "collect", "dead-letter", "export", "lock-acquire", "lock-release", "lock-status",
+                 "read-journals", "read-object", "release", "write-held-pages"))) for step in steps
+) + ("scan-push", "journal-inventory", "other")
 # The controller's own warnings and tick fields (#1698), reported beside the tick.
 SIGNAL_FIELDS = ("caps", "ownership_conflicts", "progress", "tick_p90_s")
 PROGRESS_FIELDS = ("published_at", "first_tick_at", "pending")
@@ -182,6 +201,18 @@ def failure_reason(error):
         if re.search(pattern, error):
             return name
     return "other"
+
+
+def failure_step(error):
+    """The FAILURE_STEPS entry of a step_failed error; None for any other class."""
+    if failure_reason(error) != "step_failed":
+        return None
+    if error.startswith("cached scan push failed"):
+        return "scan-push"
+    if error.startswith("batch journal inventory failed"):
+        return "journal-inventory"
+    label = error.split(" ", 1)[0]
+    return label if label in FAILURE_STEPS else "other"
 
 
 def same_error(error):
@@ -433,6 +464,9 @@ def validate_tick(tick, now, fresh_s=900):
         natural(tick["failed_last_hour"])
         if tick.get("last_hour_reason") is not None and tick["last_hour_reason"] not in FAILURE_REASONS:
             raise ValueError("invalid controller failure reason")
+    # The failing step beside each reason (absent from an older collector): a listed step, never text.
+    if any(tick.get(key) is not None and tick[key] not in FAILURE_STEPS for key in ("step", "last_hour_step")):
+        raise ValueError("invalid controller failure step")
     if "reason" in tick or "same_error_in_a_row" in tick:
         # Read together (#1698): a class from the fixed list, never error text.
         if tick.get("reason") is not None and tick.get("reason") not in FAILURE_REASONS:
@@ -471,9 +505,11 @@ def validate_plans(plans, now):
 def fresh(document, now, kind):
     if not isinstance(document, dict):
         raise ValueError("source must be an object")
-    if (type(document.get("schema_version")) is not int or document.get("schema_version") != 1 or document.get("source") != kind
-            or not 0 <= now - natural(document.get("observed_at")) <= MAX_AGE):
-        raise ValueError("source unavailable, stale or future-dated")
+    if (type(document.get("schema_version")) is not int or document.get("schema_version") != 1
+            or document.get("source") != kind):
+        raise ValueError("source unavailable")
+    if not 0 <= now - natural(document.get("observed_at")) <= MAX_AGE:
+        raise StaleSource(document["observed_at"])
     if document.get("error"):
         if kind == "client" and document["error"] in SOURCE_UNKNOWN_REASONS:
             raise SupplyUnknown(document["error"])
@@ -1338,7 +1374,7 @@ def controller(unit, maintenance=(), fresh_s=900):
     # newest error among them names the reason, and the runs that failed with that same error
     # (numbers masked), newest first until another error, are same_error_in_a_row: three is a
     # sticky failure (#1698). A slow run or one killed without a line has no error and is skipped.
-    streak, reason, repeats, first, counting = 0, None, 0, None, True
+    streak, reason, step, repeats, first, counting = 0, None, None, 0, None, True
     for key in sorted(runs, key=lambda k: runs[k][0], reverse=True):
         if not runs[key][1]:
             break
@@ -1347,7 +1383,7 @@ def controller(unit, maintenance=(), fresh_s=900):
         if error is None or not counting:
             continue
         if first is None:
-            first, reason = error, failure_reason(errors[key])
+            first, reason, step = error, failure_reason(errors[key]), failure_step(errors[key])
         counting = error == first
         repeats += counting
     # Failed or slow runs in the last hour, good runs between them or not: failures that alternate
@@ -1356,7 +1392,8 @@ def controller(unit, maintenance=(), fresh_s=900):
     # The newest error in that hour, good runs between or not: the reason the hourly count fires
     # with, so a success between failures doesn't change the alert's name.
     hour = [key for key in errors if runs[key][1] and time.time() - runs[key][0] <= TICK_TREND_WINDOW_S]
-    last_hour_reason = failure_reason(errors[max(hour, key=lambda k: runs[k][0])]) if hour else None
+    newest = errors[max(hour, key=lambda k: runs[k][0])] if hour else None
+    last_hour_reason, last_hour_step = failure_reason(newest) if hour else None, failure_step(newest)
     # The newest run that did not fail: feed_status fires on no success for NO_SUCCESS_S while the
     # newest runs failed. None when no run in the window succeeded.
     ok_runs = [at for at, failed in runs.values() if not failed]
@@ -1375,7 +1412,8 @@ def controller(unit, maintenance=(), fresh_s=900):
     failures = {"last_failure_at": max(controller_failure, maintenance_failure),
                 "controller_failure_at": controller_failure, "maintenance_failure_at": maintenance_failure,
                 "failed_in_a_row": streak, "failed_last_hour": failed_last_hour,
-                "last_hour_reason": last_hour_reason, "last_ok_at": max(ok_runs, default=None),
+                "last_hour_reason": last_hour_reason, "step": step, "last_hour_step": last_hour_step,
+                "last_ok_at": max(ok_runs, default=None),
                 "reason": reason, "same_error_in_a_row": repeats,
                 "caps": caps, "cap_rates": cap_rates, "cap_latest": cap_latest,
                 # None: no tick line in the window reports it (a scheduler from before #1685).
@@ -1511,7 +1549,7 @@ def plan_journal(unit, now):
 
 PLAN_TICK_FIELDS = ("ok", "seconds", "finished_at", "failed_in_a_row", "failed_last_hour", "last_hour_reason",
                     "reason", "same_error_in_a_row", "last_failure_at", "controller_failure_at",
-                    "maintenance_failure_at", "last_ok_at")
+                    "maintenance_failure_at", "last_ok_at", "step", "last_hour_step")
 
 
 def plan_ticks(main_unit):
@@ -2080,9 +2118,14 @@ def collect(config):
                 elif isinstance(error, SourceFailed) and error.reason in SERVER_FAILURES:
                     # The server's own fixed code for the stage that failed, as in its document.
                     reason = error.reason
+                elif isinstance(error, StaleSource):
+                    reason = STALE_SOURCE
                 else:
                     reason = "http_protocol_error" if isinstance(error, http.client.HTTPException) else "unavailable_or_invalid"
                 facts["sources"][name] = {"observed_at": None, "state": "unknown", "reason": reason}
+                if isinstance(error, StaleSource):
+                    # How old the document is: observed_at stays None, as for every unknown source.
+                    facts["sources"][name]["last_observed_at"] = error.observed_at
                 facts["errors"].append(name)
     database = documents.get("server")
     hosts = [documents.get(name) for name in clients]
