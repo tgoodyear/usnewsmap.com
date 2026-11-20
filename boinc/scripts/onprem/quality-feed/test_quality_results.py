@@ -19,6 +19,7 @@ import uuid
 from unittest import mock
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))  # quality_results imports its sibling ct_exec
 spec = importlib.util.spec_from_file_location("quality_results", HERE / "quality_results.py")
 results = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(results)
