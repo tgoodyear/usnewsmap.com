@@ -1072,6 +1072,14 @@ class BuildInputs(unittest.TestCase):
                 self.assertEqual(self.select(path), {"edge", "code", "infra"})
         self.assertEqual(self.select("edge/boinc-feed/README.md"), {"markdown"})
 
+    def test_the_validator_container_worker_runs_in_the_edge_job(self):
+        # Its route tests run in the edge job, by path; its README is documentation.
+        for path in ["edge/validator-container/route.mjs", "edge/validator-container/route.test.mjs",
+                     "edge/validator-container/worker.mjs", "edge/validator-container/wrangler.jsonc"]:
+            with self.subTest(path=path):
+                self.assertIn("edge", self.select(path))
+        self.assertEqual(self.select("edge/validator-container/README.md"), {"markdown"})
+
     def test_the_check_site_runs_its_own_job_and_not_the_fallback_workers(self):
         # #1620: check.usnewsmap.com's Worker, page, language configurations, scripts and tools.
         for path in ["edge/check/worker.mjs", "edge/check/public/index.html", "edge/check/languages/sr.json",

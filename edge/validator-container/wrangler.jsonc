@@ -1,0 +1,41 @@
+// The validator Worker and its container (README.md). Dev only: nothing is deployed, and the
+// buckets STATE_URL and GOLD_URL name do not exist yet. Secrets are set with `wrangler secret put`:
+// WEBHOOK_TOKEN, CBOINC_TOKEN, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY.
+{
+  "name": "usnm-validator-dev",
+  "main": "worker.mjs",
+  // Pinned, so a runtime change cannot alter the Worker's behaviour unnoticed.
+  "compatibility_date": "2026-10-01",
+
+  // The cloud server calls https://usnm-validator-dev.<account>.workers.dev/v1/validate/<app>.
+  // The Worker checks the bearer token before any container wakes (route.mjs).
+  "workers_dev": true,
+  "preview_urls": false,
+
+  "vars": {
+    "CBOINC_BASE_URL": "https://boinc-dev.usnewsmap.com",
+    "STATE_URL": "r2://usnm-validatord-dev/state",
+    "GOLD_URL": "r2://usnm-validatord-dev/gold",
+    // https://<account id>.r2.cloudflarestorage.com, filled in at deploy time.
+    "R2_ENDPOINT": "",
+  },
+
+  "containers": [
+    {
+      "class_name": "Validator",
+      // Built from the repository root, so the image can compile the workspace.
+      "image": "./Dockerfile",
+      "image_build_context": "../..",
+      // INSTANCES in route.mjs spreads calls over this many.
+      "max_instances": 2,
+      "instance_type": "basic",
+    },
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "VALIDATOR", "class_name": "Validator" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Validator"] }],
+
+  // Logs stay off. validatord logs call ids and reasons, never a token or an output's bytes.
+  "observability": { "enabled": false },
+}

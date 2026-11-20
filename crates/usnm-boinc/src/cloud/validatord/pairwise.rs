@@ -14,10 +14,12 @@
 //!   in request order, each compared (candidate first) with every other usable result; the loop
 //!   stops at the first candidate with at least `min_quorum / 2` matches. `check_pair`: each late
 //!   result compared (late first) with the canonical result, and no other pair.
-//! * Side effects (quality only; ndlocr has none): `check --keep` copies and the `compare --log`
-//!   line, kept under `<state-dir>/quality/`. They are written only once the call is past every
-//!   transient failure, and the pair log is journaled by call id, so a repeated or retried call
-//!   adds nothing twice. See docs/boinc/server/bridge-steps.md, "Validate gold results for the
+//! * Side effects (quality only; ndlocr has none): `check --keep` copies, under `quality/seen/`
+//!   in the state store, and each `compare --log` line as its own object,
+//!   `quality/pairs/<key>.json`, where the key is a digest of the call id and the two results.
+//!   They are written only once the call is past every transient failure. A line is written
+//!   create-only, so a repeated or retried call adds nothing twice and keeps the first line's
+//!   `at` time; a seen copy is overwritten with the same bytes. See docs/boinc/server/bridge-steps.md, "Validate gold results for the
 //!   cloud server (dev only)".
 use super::{Config, Request, Res};
 use crate::cloud::pull::{self, OutFile};
@@ -27,17 +29,13 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
-    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 use usnm_ocr_contract::{boinc as ocr_boinc, quality as ocr_quality};
 
 /// The apps with an init script and a compare script (the `matches` reply).
 pub const PAIRWISE_APPS: [&str; 2] = ["usnm_ndlocr", "usnm_quality"];
-
-/// Serializes appends to the pair log across calls (one validatord per state directory).
-static PAIRS: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -151,7 +149,7 @@ async fn fetch(cfg: &Config, kind: Kind, r: &Res, work: &Path) -> Fetched {
 
 pub(super) async fn evaluate(cfg: &Config, req: &Request) -> anyhow::Result<(Value, bool)> {
     let kind = Kind::of(&req.workunit.app).context("not a pairwise app")?;
-    let work = Arc::new(tempfile::tempdir_in(cfg.state_dir.join("work"))?);
+    let work = Arc::new(tempfile::tempdir_in(&cfg.work_dir)?);
     let mut items = Vec::new();
     for r in &req.results {
         let fetched = fetch(cfg, kind, r, work.path()).await;
@@ -167,7 +165,6 @@ pub(super) async fn evaluate(cfg: &Config, req: &Request) -> anyhow::Result<(Val
         check_pair: req.mode == "check_pair",
         min_quorum: req.workunit.min_quorum,
         canonical: req.canonical_result_id,
-        side: cfg.state_dir.join("quality"),
         work: work.path().to_owned(),
     };
     // The blocking part owns the work directory, so a call cut off by the timeout cannot have
@@ -179,6 +176,22 @@ pub(super) async fn evaluate(cfg: &Config, req: &Request) -> anyhow::Result<(Val
     })
     .await
     .context("the validation task")??;
+    // The side effects, into the state store. A failure is an error (500), and the server calls
+    // again: the seen copies are rewritten with the same bytes and the lines already written stay.
+    if let Some(seen) = &judged.seen {
+        store_tree(&*cfg.state, seen, "quality/seen").await?;
+    }
+    for (key, line) in &judged.lines {
+        cfg.state
+            .put_new(
+                &format!("quality/pairs/{key}.json"),
+                line.clone(),
+                "application/json",
+            )
+            .await
+            .with_context(|| format!("storing pair line {key}"))?;
+    }
+    drop(work);
     let out: Vec<Value> = judged
         .verdicts
         .iter()
@@ -198,9 +211,8 @@ struct Call {
     check_pair: bool,
     min_quorum: i64,
     canonical: Option<i64>,
-    /// `<state-dir>/quality`: `seen/`, `pairs.jsonl` and the pair journal.
-    side: PathBuf,
-    /// This call's scratch directory, for the compare's own log line before it is journaled.
+    /// This call's scratch directory: the fetched files, the compare's log line, and the seen
+    /// copies before they are stored.
     work: PathBuf,
 }
 
@@ -215,6 +227,10 @@ struct Judged {
     verdicts: Vec<(i64, Verdict)>,
     /// Unordered pairs, as `(lower id, higher id)`.
     pairs: BTreeSet<(i64, i64)>,
+    /// The local directory `check --keep` filled, when the call records side effects.
+    seen: Option<PathBuf>,
+    /// The log lines to record, with their keys; empty when the call records nothing.
+    lines: Vec<(String, Vec<u8>)>,
 }
 
 /// Everything after the fetches: the init checks, the compares and the side effects.
@@ -273,20 +289,23 @@ fn judge(kind: Kind, call: &Call, items: Vec<(i64, Usable)>) -> anyhow::Result<J
         }
     }
     let (lines, pairs) = (cmp.lines, cmp.pairs);
+    let mut out = Judged {
+        verdicts: Vec::new(),
+        pairs,
+        seen: None,
+        lines: Vec::new(),
+    };
     if record && kind == Kind::Quality {
-        let seen = call.side.join("seen");
+        let seen = call.work.join("seen");
         for i in &usable {
             let files = results[*i].1.as_ref().expect("usable");
             quality_validate::check(files, Some(&seen))?;
         }
-        for (key, line) in &lines {
-            record_pair(&call.side, key, line)?;
-        }
+        out.seen = Some(seen);
+        out.lines = lines;
     }
-    Ok(Judged {
-        verdicts: results.into_iter().map(|(id, _, v)| (id, v)).collect(),
-        pairs,
-    })
+    out.verdicts = results.into_iter().map(|(id, _, v)| (id, v)).collect();
+    Ok(out)
 }
 
 struct Comparer<'a> {
@@ -327,117 +346,65 @@ impl Comparer<'_> {
     }
 }
 
-/// Appends one compare's log line to `pairs.jsonl` exactly once for its key (call id and the two
-/// results).
-///
-/// Journal, under `pairs-journal/`: `pending/<key>.intent` holds the line and the file length it
-/// goes at, saved durably before the append; `<key>.done` is written after the append is
-/// fsynced, and then the intent is removed. Before any new line is written, every unfinished
-/// intent is finished first, in offset order (`recover`), under the log lock: a torn tail left
-/// by a crash is truncated and its line appended whole before another key can write behind it.
-/// A repeat of a finished key does nothing.
-pub(super) fn record_pair(side: &Path, key: &str, line: &[u8]) -> anyhow::Result<()> {
-    let journal = side.join("pairs-journal");
-    let pending = journal.join("pending");
-    std::fs::create_dir_all(&pending)?;
-    let _guard = PAIRS.lock().unwrap_or_else(|e| e.into_inner());
-    if journal.join(format!("{key}.done")).exists() {
-        return Ok(());
+/// The store key segment for one path segment of a seen copy. A result name the quality check
+/// accepts (up to 200 characters, `_` and `-` anywhere) is not always a store segment (at most
+/// 128, starting alphanumeric); such a name is stored as `x-<sha256 of the name>`, with the
+/// name itself in that directory's `result-name.txt`.
+pub(super) fn seen_segment(seg: &str) -> (String, bool) {
+    if usnm_store::is_safe_segment(seg) && !seg.starts_with("x-") {
+        (seg.to_owned(), false)
+    } else {
+        let hex: String = Sha256::digest(seg.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        (format!("x-{hex}"), true)
     }
-    recover(side)?;
-    if journal.join(format!("{key}.done")).exists() {
-        return Ok(());
-    }
-    let log = side.join("pairs.jsonl");
-    let offset = match std::fs::metadata(&log) {
-        Ok(m) => m.len(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
-        Err(e) => return Err(e.into()),
-    };
-    let text = String::from_utf8(line.to_vec()).context("pair log line")?;
-    crate::atomic(
-        &pending.join(format!("{key}.intent")),
-        &serde_json::to_vec(&json!({ "offset": offset, "line": text }))?,
-    )?;
-    finish(side, key, offset, line)?;
-    let _ = std::fs::remove_file(pending.join(format!("{key}.intent")));
-    Ok(())
 }
 
-/// Finishes every intent that has no `.done`, lowest offset first. The caller holds the lock.
-fn recover(side: &Path) -> anyhow::Result<()> {
-    let journal = side.join("pairs-journal");
-    let mut todo = Vec::new();
-    for e in std::fs::read_dir(journal.join("pending"))? {
-        let name = e?.file_name().to_string_lossy().into_owned();
-        let Some(key) = name.strip_suffix(".intent") else {
-            continue;
+/// Stores every file under `dir` at `<prefix>/<path relative to dir>`, overwriting, with each
+/// segment made a store segment by [`seen_segment`].
+async fn store_tree(
+    store: &dyn usnm_store::ObjectStore,
+    dir: &Path,
+    prefix: &str,
+) -> anyhow::Result<()> {
+    let mut todo = vec![dir.to_owned()];
+    while let Some(d) = todo.pop() {
+        let rd = match std::fs::read_dir(&d) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).with_context(|| format!("reading {}", d.display())),
         };
-        if journal.join(format!("{key}.done")).exists() {
-            // Crashed between the mark and the clean-up.
-            let _ = std::fs::remove_file(journal.join("pending").join(&name));
-            continue;
+        for e in rd {
+            let p = e?.path();
+            if p.is_dir() {
+                todo.push(p);
+                continue;
+            }
+            let rel = p.strip_prefix(dir).context("seen path")?;
+            let rel = rel.to_str().context("seen path is not UTF-8")?;
+            let mut path = prefix.to_owned();
+            for seg in rel.split('/') {
+                let (key, hashed) = seen_segment(seg);
+                path.push('/');
+                path.push_str(&key);
+                if hashed {
+                    let name = format!("{path}/result-name.txt");
+                    store
+                        .put(&name, seg.as_bytes().to_vec(), "text/plain")
+                        .await
+                        .with_context(|| format!("storing {name}"))?;
+                }
+            }
+            let bytes = std::fs::read(&p).with_context(|| format!("reading {}", p.display()))?;
+            store
+                .put(&path, bytes, "application/octet-stream")
+                .await
+                .with_context(|| format!("storing {path}"))?;
         }
-        let bytes = std::fs::read(journal.join("pending").join(&name))?;
-        let v: Value = serde_json::from_slice(&bytes).context("pair journal entry")?;
-        let offset = v["offset"].as_u64().context("pair journal offset")?;
-        let line = v["line"].as_str().context("pair journal line")?;
-        todo.push((offset, key.to_owned(), line.as_bytes().to_vec()));
-    }
-    todo.sort();
-    for (offset, key, line) in todo {
-        finish(side, &key, offset, &line)?;
-        let _ = std::fs::remove_file(journal.join("pending").join(format!("{key}.intent")));
     }
     Ok(())
-}
-
-/// Makes sure the intent's line is in the log exactly once, then marks it done. If the line is
-/// not where the intent says (the file is shorter, or something else is there), it goes at the
-/// end, and the intent is rewritten durably with that offset first, so a crash after the append
-/// is recognized on replay. Returns the offset the line is at. The caller removes the intent.
-pub(super) fn finish(side: &Path, key: &str, offset: u64, line: &[u8]) -> anyhow::Result<u64> {
-    let journal = side.join("pairs-journal");
-    let intent = journal.join("pending").join(format!("{key}.intent"));
-    let mut f = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(side.join("pairs.jsonl"))?;
-    let len = f.metadata()?.len();
-    let mut at = offset;
-    let mut present = false;
-    if len > offset {
-        let have = (len - offset).min(line.len() as u64) as usize;
-        let mut tail = vec![0u8; have];
-        f.seek(SeekFrom::Start(offset))?;
-        f.read_exact(&mut tail)?;
-        if tail == line[..have] {
-            if have == line.len() {
-                present = true;
-            } else {
-                // Only the start of the line is there, at the end of the file: a torn write.
-                f.set_len(offset)?;
-            }
-        }
-    }
-    if !present {
-        let end = f.metadata()?.len();
-        if end != offset {
-            at = end;
-            let text = String::from_utf8(line.to_vec()).context("pair log line")?;
-            crate::atomic(
-                &intent,
-                &serde_json::to_vec(&json!({ "offset": at, "line": text }))?,
-            )?;
-        }
-        f.seek(SeekFrom::End(0))?;
-        f.write_all(line)?;
-        f.sync_all()?;
-    }
-    crate::atomic(&journal.join(format!("{key}.done")), b"")?;
-    Ok(at)
 }
 
 /// For `Request::check`: what the pairwise apps need beyond the gold apps.

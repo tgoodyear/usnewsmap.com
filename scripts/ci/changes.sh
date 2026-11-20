@@ -18,7 +18,8 @@
 # mirror CLI, and it and reviewed selections also build the bridge.
 # edge: the Cloudflare fallback Worker (edge/fallback-worker/: JavaScript, its Wrangler config
 # and deploy script), whose job runs its node:test tests and shellchecks the script (ADR-0027, #1098),
-# and the BOINC dashboard feed Worker (edge/boinc-feed/: JavaScript, fixtures and Wrangler config),
+# the BOINC dashboard feed Worker (edge/boinc-feed/: JavaScript, fixtures and Wrangler config)
+# and the validator Container's Worker (edge/validator-container/),
 # whose node:test tests run in the same job.
 # check: check.usnewsmap.com (edge/check/: its Worker, page, language configurations, scripts and
 # task-building tools; #1620), whose job tests, lints and dry-run builds them.
@@ -309,7 +310,7 @@ contrib='^(boinc/|web/public/\.well-known/|fixtures/ocr-gold/(selections/|bundle
 ocr_gold='^(scripts/ocr-survey/|fixtures/ocr-gold/|crates/usnm-ocr-survey/tests/golden/)'
 # The fallback Worker and the BOINC dashboard feed Worker: their source, tests, fixtures, Wrangler
 # configs and deploy script (their READMEs count as documentation, above).
-edge='^edge/(fallback-worker|boinc-feed)/'
+edge='^edge/(fallback-worker|boinc-feed|validator-container)/'
 # check.usnewsmap.com: everything under edge/check/ but its Markdown.
 check='^edge/check/'
 # closure_crates ROOT...: the directories of the workspace crates the roots
