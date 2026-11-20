@@ -230,7 +230,8 @@ usnm-boinc cloud submit --root <controller root> --base-url https://<dev server>
 - Records under `<root>/jobs/` are only read: no lock is taken and no record is saved, so a job's on-prem stage is
   never changed. Run it on a copy of the root, or on jobs the on-prem server isn't given, so a page isn't computed
   twice.
-- Only plain first-attempt single-page jobs go. Retries, bundled and unbundled pages, line jobs and failed records
+- Only plain first-attempt single-page jobs that are reserved or submitted go, the stages `collect` takes a result in.
+  Prepared records (their reservation never finished), settled ones, retries, bundled and unbundled pages and line jobs
   are skipped and listed. `request.json` and `page` get the checks `submit_unit` makes (the request equals the record's
   job; the page's size and SHA-256 equal the request's).
 - Each job's inputs are put with `PUT /admin/v1/files/<name>?md5=<md5>&no_delete=1` under the names `submit_unit`

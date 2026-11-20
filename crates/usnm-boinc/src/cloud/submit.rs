@@ -140,8 +140,13 @@ fn skip_reason(record: &Record) -> Option<&'static str> {
         Some("bundled or unbundled")
     } else if record.job.lines.is_some() {
         Some("a line job")
-    } else if record.stage == Stage::Failed {
-        Some("failed")
+    } else if !matches!(
+        record.stage,
+        Stage::Reserved | Stage::Submitting | Stage::Submitted
+    ) {
+        // `checked_result` takes a result only in these stages: a Prepared record's reservation
+        // never finished, and a Published or Failed one is settled.
+        Some("not reserved or submitted")
     } else {
         None
     }
@@ -689,6 +694,15 @@ mod tests {
             provenance: None,
         });
         assert_eq!(skip_reason(&r), Some("a retry"));
+        for stage in [Stage::Submitting, Stage::Submitted] {
+            assert_eq!(skip_reason(&record(page, 1, |r| r.stage = stage)), None);
+        }
+        for stage in [Stage::Prepared, Stage::Published, Stage::Failed] {
+            assert_eq!(
+                skip_reason(&record(page, 1, |r| r.stage = stage)),
+                Some("not reserved or submitted")
+            );
+        }
     }
 
     #[tokio::test]
