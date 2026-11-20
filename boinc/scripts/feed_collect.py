@@ -508,8 +508,19 @@ def fresh(document, now, kind):
     if (type(document.get("schema_version")) is not int or document.get("schema_version") != 1
             or document.get("source") != kind):
         raise ValueError("source unavailable")
-    if not 0 <= now - natural(document.get("observed_at")) <= MAX_AGE:
-        raise StaleSource(document["observed_at"])
+    observed = natural(document.get("observed_at"))
+    if 0 <= now - observed <= MAX_AGE:
+        return valid(document, now, kind)
+    # Too old or future-dated: judged as of its own time, so only a valid payload or a known
+    # error envelope reads as stale; a malformed one stays unavailable_or_invalid.
+    try:
+        valid(document, observed, kind)
+    except (SupplyUnknown, SourceFailed):
+        pass
+    raise StaleSource(observed)
+
+
+def valid(document, now, kind):
     if document.get("error"):
         if kind == "client" and document["error"] in SOURCE_UNKNOWN_REASONS:
             raise SupplyUnknown(document["error"])

@@ -1987,13 +1987,21 @@ with socket.create_connection({listener.getsockname()!r}, timeout=2) as connecti
                                                               "reason": reason})
 
     def test_an_old_or_future_document_is_stale_and_an_invalid_one_is_not(self):
-        for observed_at, reason in ((NOW - C.MAX_AGE - 1, "stale"), (NOW + 5, "stale"), ("x", "unavailable_or_invalid")):
-            with self.subTest(observed_at=observed_at):
-                document = {"schema_version": 1, "source": "server", "observed_at": observed_at}
+        old, future = NOW - C.MAX_AGE - 1, NOW + 5
+        valid = {"usnm_ocr": 1, "usnm_qwen": 2}
+        for observed_at, backlogs, error, reason in (
+                (old, valid, None, "stale"), (future, valid, None, "stale"),
+                ("x", valid, None, "unavailable_or_invalid"),
+                # Malformed and expired is still malformed: age never hides a broken payload.
+                (old, [], None, "unavailable_or_invalid"),
+                (old, None, "free text", "unavailable_or_invalid")):
+            with self.subTest(observed_at=observed_at, backlogs=backlogs, error=error):
+                document = {"schema_version": 1, "source": "backlog", "observed_at": observed_at}
+                document.update({"error": error} if error else {"backlogs": backlogs})
                 with patch.object(C, "read_source", return_value=document), \
                         patch.object(C.time, "time", return_value=NOW):
-                    facts = C.collect({"server": "/server", "controller": "/controller"})
-                source = facts["sources"]["server"]
+                    facts = C.collect({"server": "/server", "backlog": "/backlog", "controller": "/controller"})
+                source = facts["sources"]["backlog"]
                 self.assertEqual((source["observed_at"], source["state"], source["reason"]), (None, "unknown", reason))
                 # The document's own time shows how old it is; an invalid one has none to show.
                 self.assertEqual(source.get("last_observed_at"), observed_at if reason == "stale" else None)
