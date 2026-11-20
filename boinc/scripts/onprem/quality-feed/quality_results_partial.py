@@ -100,10 +100,16 @@ def call_collector(command, budget, step, log=None):
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=budget)
     except subprocess.TimeoutExpired as error:
+        printed = text_of(error.stdout) + text_of(error.stderr)
         if log is not None:
             with log.open("a") as stream:
-                stream.write(text_of(error.stdout) + text_of(error.stderr))
+                stream.write(printed)
                 stream.write(json.dumps({"phase": "collector_timeout", "step": step, "at": utc_now()}) + "\n")
+        elif printed:
+            # No file log: replay it on stderr, which the host journals, ending the line so the
+            # deferral event that follows stays on its own.
+            sys.stderr.write(printed if printed.endswith("\n") else printed + "\n")
+            sys.stderr.flush()
         raise
     if log is not None:
         with log.open("a") as stream:

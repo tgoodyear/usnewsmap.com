@@ -765,6 +765,18 @@ class PartialTest(unittest.TestCase):
         # The start is journaled too, through the remote's stderr.
         self.assertIn('"phase": "collector_call", "step": "collect"', journal.getvalue())
 
+    def test_a_call_out_of_time_without_a_log_replays_its_output_on_stderr(self):
+        error = subprocess.TimeoutExpired(["inventory"], 10, output=b"listing", stderr=b"units 40")
+        with mock.patch.object(partial.subprocess, "run", side_effect=error), \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as journal:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                partial.call_collector(["inventory"], 10, "inventory-unit")
+            print("next event", file=sys.stderr)
+        lines = journal.getvalue().splitlines()
+        self.assertEqual(json.loads(lines[0])["phase"], "collector_call")
+        # Ended with a newline, so what follows stays on its own line.
+        self.assertEqual(lines[1:], ["listingunits 40", "next event"])
+
     def test_an_inventory_or_recheck_out_of_time_defers_without_advancing_either_lane(self):
         inventory = self.frontier_unit()
         frontier = self.root / "ops/quality-results/scoped/test/frontier.json"
