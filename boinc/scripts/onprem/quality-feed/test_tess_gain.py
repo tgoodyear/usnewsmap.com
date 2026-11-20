@@ -49,7 +49,7 @@ class Ledger(unittest.TestCase):
         return {"doc_id": d, "plan": plan, "queued_at": at(day)}
 
     def o(self, d, outcome, day, cause=None):
-        return {"doc_id": d, "outcome": outcome, "cause": cause, "at": at(day)}
+        return {"doc_id": d, "outcome": outcome, "cause": cause, "source": "p-" + d, "at": at(day)}
 
     def test_pass_rate_counts_published_against_dead_lettered_and_held(self):
         queued = [self.q(doc(i), "c-w1", 1) for i in range(1, 9)] + [self.q(doc(99), "other", 1)]
@@ -76,6 +76,36 @@ class Ledger(unittest.TestCase):
 
     def test_nothing_settled_has_no_rate(self):
         self.assertIsNone(g.pass_rate({doc(1): "pending"}, set())[0])
+
+
+class Readings(unittest.TestCase):
+    def test_the_reading_is_the_one_the_imported_outcome_names_whatever_the_clocks_say(self):
+        rows = [
+            # the imported part, stamped before the queue row (clock rollback)
+            {"doc_id": doc(1), "ocr_source": g.OURS_SOURCE, "ocr_engine": "e1", "node": "n1", "source_part": "part-a",
+             "ocred_at": at(1), "text": "imported"},
+            # a later reading of the page from another part
+            {"doc_id": doc(1), "ocr_source": g.OURS_SOURCE, "ocr_engine": "e2", "node": "n2", "source_part": "part-b",
+             "ocred_at": at(9), "text": "other"},
+            {"doc_id": doc(2), "ocr_source": g.OURS_SOURCE, "ocr_engine": "e1", "node": "n1", "source_part": "part-c",
+             "ocred_at": at(1), "text": None},
+        ]
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "pages" / "sn00000001").mkdir(parents=True)
+            (Path(d) / "pages" / "sn00000001" / "r.parquet").write_text("")
+            (Path(d) / "pages" / "sn00000002").mkdir(parents=True)
+            (Path(d) / "pages" / "sn00000002" / "r.parquet").write_text("")
+            with mock.patch.object(g, "parquet_rows", lambda path, cols: rows):
+                got = g.published_readings(d, {doc(1): "part-a", doc(2): "part-c"})
+        self.assertEqual(got[doc(1)], ("imported", "e1", "n1"))
+        self.assertEqual(got[doc(2)], ("", "e1", "n1"))
+
+    def test_imported_sources_takes_the_latest_imported_outcome(self):
+        outs = [{"doc_id": doc(1), "outcome": "dead_lettered", "at": at(1), "source": "dl"},
+                {"doc_id": doc(1), "outcome": "imported", "at": at(3), "source": "p2"},
+                {"doc_id": doc(1), "outcome": "imported", "at": at(2), "source": "p1"}]
+        self.assertEqual(g.imported_sources(outs, {doc(1): "imported"}), {doc(1): "p2"})
+        self.assertEqual(g.imported_sources(outs, {doc(1): "pending"}), {})
 
 
 class Gain(unittest.TestCase):
@@ -181,8 +211,8 @@ class Run(unittest.TestCase):
             "wave_started": g.iso(g.now_utc())}))
         ids = [doc(i) for i in range(1, 6)]
         self.queued = [{"doc_id": i, "plan": self.campaign, "queued_at": at(1)} for i in ids]
-        self.outcomes = [{"doc_id": i, "outcome": "imported", "cause": None, "at": at(2)} for i in ids[:4]]
-        self.outcomes.append({"doc_id": ids[4], "outcome": "dead_lettered", "cause": "permanent", "at": at(2)})
+        self.outcomes = [{"doc_id": i, "outcome": "imported", "cause": None, "source": "part-" + i, "at": at(2)} for i in ids[:4]]
+        self.outcomes.append({"doc_id": ids[4], "outcome": "dead_lettered", "cause": "permanent", "source": "dl", "at": at(2)})
         # ours: 10 characters a page scores 1.0, 20 scores 2.0, and so on; LoC's score is a fixed 5.0
         self.texts = {doc(i): "x" * (10 * i) for i in range(1, 5)}
         self.loc = {doc(i): 5.0 for i in range(1, 6)}
@@ -244,6 +274,37 @@ class Run(unittest.TestCase):
         self.assertEqual(f["ledger"]["held"], 1)
         self.assertAlmostEqual(f["pass_rate"], 3 / 5)
         self.assertEqual(f["n_paired"], 3)
+
+    def test_a_final_file_the_figures_no_longer_support_is_removed(self):
+        self.run_job()
+        self.assertTrue(self.path(".json").exists())
+        every = {doc(i): [(None, "boinc-" + doc(i)[-12:])] for i in range(1, 5)}
+        line = self.run_job(holds=every)              # new holds: no page is published or paired
+        self.assertEqual(line["status"], "progress")
+        self.assertTrue(line["final_removed"])
+        self.assertFalse(self.path(".json").exists())
+
+    def test_the_forced_path_removes_it_too(self):
+        self.run_job()
+        self.loc = {}
+        self.assertEqual(self.run_job("--campaign", self.campaign)["status"], "progress")
+        self.assertFalse(self.path(".json").exists())
+
+    def test_a_failed_run_removes_it(self):
+        self.run_job()
+        self.stub.write_text("#!/bin/sh\nexit 3\n")
+        (self.state / "gain" / (self.campaign + ".scores.jsonl")).unlink()
+        with self.assertRaises(SystemExit):
+            self.run_job()
+        self.assertFalse(self.path(".json").exists())
+
+    def test_the_timer_running_leaves_it_for_the_next_run(self):
+        import fcntl
+        self.run_job()
+        with open(self.state / "lock", "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            self.run_job(holds={doc(i): [(None, "boinc-" + doc(i)[-12:])] for i in range(1, 5)})
+        self.assertTrue(self.path(".json").exists())
 
     def test_an_empty_imported_text_is_kept_not_missing(self):
         self.texts[doc(2)] = ""

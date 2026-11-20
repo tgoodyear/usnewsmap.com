@@ -35,8 +35,8 @@ selector's: ntile(10) over (lm_oov, doc_id) of every valid qe-v1 row of the lang
 `page`, an lm_oov and at least min_words words (doc_id compared bytewise); pages under min_words have no
 LoC row in the pairs.
 
-The text is the campaign's imported Tesseract text: the page's newest `usnm-tesseract` row at or after
-its newest queued row. The release may select another reading or normalise the text; that is not measured.
+The text is the campaign's imported Tesseract text: the `pages` row whose `source_part` is the part the
+page's imported outcome names (provenance, not timestamps). The release may select another reading or normalise the text; that is not measured.
 
 The final gain/<campaign>.json is written only once the wave is done by the timer's own test (its
 target queued and complete_fraction of them published, or max_wave_days old), the ledger copy has the
@@ -378,21 +378,47 @@ def engine_key(tag):
     return tag
 
 
-def published_readings(root, queued_at):
-    """{doc_id: (text, ocr_engine, node)}: the campaign's reading of each page, the newest row of our
-    Tesseract read at or after the page's newest queued row (`queued_at`, {doc_id: time}), from
-    pages/<lccn>/*.parquet. The text is the one the campaign imported; the release may select
-    another reading of the page or normalise the text, and that is not what is measured."""
+def published_readings(root, sources):
+    """{doc_id: (text, ocr_engine, node)}: the campaign's reading of each page, found by provenance and
+    not by time: the row of pages/<lccn>/*.parquet whose `source_part` is the part the page's imported
+    outcome names (`sources`, {doc_id: outcome source}; the outcome's source is the part's path in
+    ocr-out). Timestamps cannot choose it: ocred_at is the blob's creation time and can precede the
+    ledger's queued row after a clock rollback. The text is the one the campaign imported; the release
+    may select another reading of the page or normalise the text, and that is not what is measured."""
     best = {}
-    for lccn in sorted({d.split("_", 1)[0] for d in queued_at}):
+    for lccn in sorted({d.split("_", 1)[0] for d in sources}):
         for path in sorted(glob.glob(os.path.join(root, "pages", lccn, "*.parquet"))):
-            for r in parquet_rows(path, ["doc_id", "ocr_source", "ocr_engine", "node", "ocred_at", "text"]):
+            for r in parquet_rows(path, ["doc_id", "ocr_source", "ocr_engine", "node", "source_part", "ocred_at", "text"]):
                 d = r["doc_id"]
-                if d in queued_at and r["ocr_source"] == OURS_SOURCE and r["ocred_at"] >= queued_at[d]:
+                if d in sources and r["ocr_source"] == OURS_SOURCE and r["source_part"] == sources[d]:
                     cur = best.get(d)
                     if cur is None or r["ocred_at"] >= cur[0]:
                         best[d] = (r["ocred_at"], r["text"] or "", r["ocr_engine"] or "", r["node"] or "")
     return {d: v[1:] for d, v in best.items()}
+
+
+def imported_sources(outcomes, states):
+    """{doc_id: source} of the latest outcome of each page the campaign imported."""
+    latest = {}
+    for o in outcomes:
+        if o.get("at") and o["doc_id"] in states and (o["doc_id"] not in latest or o["at"] >= latest[o["doc_id"]]["at"]):
+            latest[o["doc_id"]] = o
+    return {d: latest[d]["source"] for d, st in states.items() if st == "imported" and d in latest}
+
+
+def drop_final(state_dir, final):
+    """Removes a final gain file that the figures no longer support, under a shared hold of the timer's
+    lock (the timer reads gain/ under it exclusively). Returns whether it removed one; when the timer
+    is running it does nothing and the next run does it."""
+    with open(os.path.join(state_dir, "lock"), "a") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except OSError:
+            return False
+        if os.path.exists(final):
+            os.remove(final)
+            return True
+    return False
 
 
 def is_held(holds, engine, node):
@@ -507,13 +533,9 @@ def cmd_run(a):
         dsn = f.read().strip()
     try:
         queued = ledger_rows(cfg["ocr_local_dir"], "queued", ["doc_id", "plan", "queued_at"])
-        outcomes = ledger_rows(cfg["ocr_local_dir"], "outcomes", ["doc_id", "outcome", "cause", "at"])
+        outcomes = ledger_rows(cfg["ocr_local_dir"], "outcomes", ["doc_id", "outcome", "cause", "source", "at"])
         states = ledger_outcomes(queued, outcomes, campaign)
-        newest = {}
-        for q in queued:
-            if q["doc_id"] in states and (q["doc_id"] not in newest or q["queued_at"] > newest[q["doc_id"]]):
-                newest[q["doc_id"]] = q["queued_at"]
-        imported = {d: newest[d] for d, s_ in states.items() if s_ == "imported"}
+        imported = imported_sources(outcomes, states)
         readings = published_readings(cfg["ocr_local_dir"], imported)
         holds = hold_rows(dsn, list(imported))
         held = {d for d in imported if d in readings and d in holds and is_held(holds[d], readings[d][1], readings[d][2])}
@@ -530,7 +552,7 @@ def cmd_run(a):
         if loc_locks - {unit_lock}:
             raise RuntimeError("LoC's rows were scored with another resource lock than ours: %s" % sorted(loc_locks))
     except (RuntimeError, OSError, SystemExit, ValueError, KeyError) as e:
-        return finish("failed", code=1, error=str(e)[:400])
+        return finish("failed", code=1, error=str(e)[:400], final_removed=drop_final(a.state_dir, final))
     pairs = [(d, loc[d], cache[d]["lm_oov"]) for d in sorted(texts)
              if is_scored(cache, ns, texts, d) and d in loc and cache[d]["lm_oov"] is not None]
     unscored = sum(1 for d in texts if not is_scored(cache, ns, texts, d))
@@ -571,14 +593,18 @@ def cmd_run(a):
             save_json(final, dict(body, computed_at=iso(now)))
             return finish("written", pass_rate=round(rate, 5), median_gain=summary["median_gain"])
         save_json(progress, dict(body, why=why, at=iso(now)))
-        return finish("progress", why=why)
+        return finish("progress", why=why, final_removed=drop_final(a.state_dir, final))
     # Decided and written under the timer's lock, against its state now (it may have moved on).
     with timer_state(a.state_dir) as st:
         why = not_ready(st)
         if why is None:
             save_json(final, dict(body, computed_at=iso(now)))
-        elif st is not None and st.get("campaign") == campaign:
-            save_json(progress, dict(body, why=why, at=iso(now)))
+        elif st is not None:
+            if os.path.exists(final):          # an earlier figure the ledger no longer supports
+                os.remove(final)
+                report["final_removed"] = True
+            if st.get("campaign") == campaign:
+                save_json(progress, dict(body, why=why, at=iso(now)))
     if why is not None:
         return finish("progress", why=why)
     if os.path.exists(progress):
