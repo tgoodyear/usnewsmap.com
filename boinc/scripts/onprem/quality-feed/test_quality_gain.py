@@ -108,6 +108,14 @@ class GainTest(unittest.TestCase):
         self.assertAlmostEqual(float(cells[0]["mean_lm_oov_drop"]), 0.5)
         self.assertEqual(cells[0]["decision"], "measuring")
 
+    def test_plan_weights_carry_the_lm_oov_mean_too(self):
+        rows = [page(1, qe=(3.0, 2.5)), page(2, qe=(3.0, 3.5))]
+        plan = self.d / "plan.jsonl"
+        plan.write_text(json.dumps({"doc_id": "sn1_1900-01-01_ed-1_seq-1", "weight": 100}) + "\n"
+                        + json.dumps({"doc_id": "sn2_1900-01-01_ed-1_seq-1", "weight": 1}) + "\n")
+        cells, _ = self.run_on(rows, "--plan", str(plan))
+        self.assertAlmostEqual(float(cells[0]["mean_lm_oov_drop"]), 0.4901, places=4)
+
     def test_a_pages_csv_from_before_the_qe_columns_still_replays(self):
         rows = [page(i)[:9] for i in range(3)]
         cells, _ = self.run_on(rows, columns=qg.COLUMNS_V1)

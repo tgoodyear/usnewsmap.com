@@ -240,7 +240,7 @@ def decide(n, mean, sd, min_gain, cell_pages):
 
 
 def cells_of(pages, filters, weights=None):
-    cells = collections.defaultdict(lambda: {"drop": [], "cer": [], "qe": [], "w": []})
+    cells = collections.defaultdict(lambda: {"drop": [], "cer": [], "qe": [], "qe_w": [], "w": []})
     for p in pages:
         band = quality_campaign.band_of(p["loc_damage"], p["occurrences"], filters) or "low"
         c = cells[(p["reader"], band, p["lang"], p["decade"])]
@@ -250,6 +250,7 @@ def cells_of(pages, filters, weights=None):
             c["cer"].append(p["loc_est_cer"] - p["ours_est_cer"])
         if p["loc_lm_oov"] is not None and p["ours_lm_oov"] is not None:
             c["qe"].append(p["loc_lm_oov"] - p["ours_lm_oov"])
+            c["qe_w"].append(c["w"][-1])
     return cells
 
 
@@ -288,7 +289,8 @@ def measure(a):
         mean, sd = weighted(c["drop"], c["w"]) if only else mean_sd(c["drop"])
         half = Z95 * sd / math.sqrt(n) if sd is not None else None
         cer_mean, _ = mean_sd(c["cer"])
-        qe_mean, _ = mean_sd(c["qe"])
+        # Weighted like mean_drop under --plan, so the two columns estimate the same band.
+        qe_mean = (weighted(c["qe"], c["qe_w"])[0] if only else mean_sd(c["qe"])[0]) if c["qe"] else None
         rows.append({"reader": reader, "band": band, "lang": lang, "decade": decade, "n": n,
                      "mean_drop": r4(mean), "sd": r4(sd),
                      "low95": r4(mean - half) if half is not None else None,
