@@ -1,0 +1,15 @@
+[Unit]
+Description=Tesseract worst-first English re-read: score the wave with qe-v1 and write its gain (tess_gain.py run)
+# Runs as root on the batch host beside usnm-tess-worstfirst.service: it needs /etc/usnm/quality-reader/dsn
+# (root only), a copy of the ocr-local dataset, the usnm_quality binary (1.5 or later) and the qe-v1 resource
+# files. Install: copy tess_gain.py to /usr/local/lib/usnm-tess-worstfirst/ (beside tess_worstfirst.py), put
+# usnm_quality at /usr/local/bin/usnm_quality and <language>.qe files in /usr/local/share/usnm-qe/ (ocr/qe/README.md),
+# add the settings it reads (ocr_local_dir, scorer, qe_dir, qe_lock_file) to /etc/usnm/tess-worstfirst.json,
+# then enable the timer. It writes gain/<campaign>.json under the same state directory as the wave timer.
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+StateDirectory=usnm-tess-worstfirst
+ExecStart=/usr/bin/python3 -I /usr/local/lib/usnm-tess-worstfirst/tess_gain.py run --config /etc/usnm/tess-worstfirst.json --state-dir /var/lib/usnm-tess-worstfirst

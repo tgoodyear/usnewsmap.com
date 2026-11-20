@@ -1,0 +1,10 @@
+[Unit]
+Description=Tesseract worst-first English re-read: qe-v1 gain, hourly
+
+[Timer]
+OnBootSec=20min
+OnUnitInactiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
