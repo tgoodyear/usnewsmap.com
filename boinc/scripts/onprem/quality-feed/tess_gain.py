@@ -551,7 +551,7 @@ def cmd_run(a):
         cuts = decile_starts(dsn, cfg["language"], cfg["min_words"])
         if loc_locks - {unit_lock}:
             raise RuntimeError("LoC's rows were scored with another resource lock than ours: %s" % sorted(loc_locks))
-    except (RuntimeError, OSError, SystemExit, ValueError, KeyError) as e:
+    except (RuntimeError, OSError, SystemExit, ValueError, KeyError, subprocess.SubprocessError) as e:
         return finish("failed", code=1, error=str(e)[:400], final_removed=drop_final(a.state_dir, final))
     pairs = [(d, loc[d], cache[d]["lm_oov"]) for d in sorted(texts)
              if is_scored(cache, ns, texts, d) and d in loc and cache[d]["lm_oov"] is not None]

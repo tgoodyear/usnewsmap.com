@@ -298,6 +298,17 @@ class Run(unittest.TestCase):
             self.run_job()
         self.assertFalse(self.path(".json").exists())
 
+    def test_a_scorer_timeout_removes_it(self):
+        import subprocess
+        self.run_job()
+        (self.state / "gain" / (self.campaign + ".scores.jsonl")).unlink()
+
+        def slow(*a, **k):
+            raise subprocess.TimeoutExpired(a[0] if a else "scorer", 3600)
+        with mock.patch.object(g.subprocess, "run", slow), self.assertRaises(SystemExit):
+            self.run_job()
+        self.assertFalse(self.path(".json").exists())
+
     def test_the_timer_running_leaves_it_for_the_next_run(self):
         import fcntl
         self.run_job()
