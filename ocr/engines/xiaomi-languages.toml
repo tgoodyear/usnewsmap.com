@@ -1,0 +1,6 @@
+# The languages Xiaomi-OCR-0 page mode (`usnm-xiaomi`) may replace LoC's text in (#1997, #1998).
+# Empty until the Science Coordinator decides from the pilot's quality_gain and blind-pick
+# results and adds `eng`; `ocr-sync` refuses a `usnm-xiaomi` row whose title has a language that
+# is not listed here (`engine_language`). `engines.toml` keeps the engine `production = false`.
+schema = 1
+languages = []

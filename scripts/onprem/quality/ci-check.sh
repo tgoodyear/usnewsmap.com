@@ -45,6 +45,8 @@ psql_admin -d usnm_quality < "$here/excluded_qwen_readings.sql" > /dev/null
 psql_admin -d usnm_quality < "$here/excluded_qwen_readings.sql" > /dev/null
 psql_admin -d usnm_quality < "$here/qe_loc_scores.sql" > /dev/null
 psql_admin -d usnm_quality < "$here/qe_loc_scores.sql" > /dev/null
+psql_admin -d usnm_quality < "$here/vlm_page_cost.sql" > /dev/null
+psql_admin -d usnm_quality < "$here/vlm_page_cost.sql" > /dev/null
 psql_admin -d usnm_quality < "$here/test_roles.sql" >&2
 # provenance_load.sql as the loader: a host with no known CPU family stays resolved, a rerun
 # changes nothing, and a later less complete row never degrades a resolved one.

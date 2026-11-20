@@ -17,6 +17,9 @@
 //! - [`tiles::merge`]: tiles read separately, as one page.
 //! - [`write()`]: the one stored ALTO profile, ALTO 3.1 in pixels of the
 //!   IIIF full image.
+//! - [`write_v4()`]: the same pixel profile as ALTO v4, with a `Processing` element per step
+//!   and a `PROCESSINGREFS` on each block that has a note (per-block provenance, #1998). It is
+//!   not the stored profile: nothing but held pages is written with it.
 //! - [`text()`]: the page text in reading order, which the worker
 //!   normalizes and stores, so text and ALTO always hold the same words.
 //! - [`columns::split_columns`]: lines an engine read across a narrow
@@ -40,7 +43,10 @@ pub use markup::Markup;
 pub use model::{default_dir, text, Block, BlockKind, Dir, Granularity, Line, Page, Rect, Word};
 pub use parse::{parse, parse_with_languages, ParseError, ParseOptions};
 pub use slivers::{drop_slivers, Slivers};
-pub use write::{write, Description, Software, Step, NAMESPACE, SCHEMA_LOCATION};
+pub use write::{
+    write, write_v4, BlockNote, Description, Processing, Software, Step, NAMESPACE, NAMESPACE_V4,
+    SCHEMA_LOCATION, SCHEMA_LOCATION_V4,
+};
 
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::name::{Namespace, ResolveResult};

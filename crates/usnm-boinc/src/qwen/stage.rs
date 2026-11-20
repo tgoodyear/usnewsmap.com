@@ -2293,6 +2293,7 @@ pub(crate) mod tests {
             log: None,
             pages: Some(&records),
             crop_states: None,
+            guard_job: None,
         };
         // Under the unit verdict the pair is inconclusive and nothing is packed again.
         assert!(compare_with(&a, &b, opts(BundleVerdict::Unit)).is_err());
@@ -2470,6 +2471,7 @@ pub(crate) mod tests {
             log: None,
             pages: Some(&records),
             crop_states: None,
+            guard_job: None,
         };
         let marker = records.join(&job.id).join(UNIT_VERDICT_FILE);
         // One worded page of three: strict-v1 passes the unit outright; strict-v2 demotes the
@@ -2557,6 +2559,7 @@ pub(crate) mod tests {
             log: None,
             pages: Some(&records),
             crop_states: None,
+            guard_job: None,
         };
         // One page of two agreed, but the two results did not read the same crops.
         assert!(compare_with(&a, &b, opts).is_err());

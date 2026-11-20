@@ -1,0 +1,21 @@
+# One step of the Xiaomi-OCR-0 page-mode English pilot (#1998): collect and hold the judged
+# pages, check the stop conditions, and stage and submit the next paced chunk. Nothing it
+# writes is published: no ocr-local, ocr-out or search.
+[Unit]
+Description=usnewsmap Xiaomi-OCR-0 page-mode pilot step (#1998)
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/usnm/xiaomi-pilot.env
+
+[Service]
+Type=oneshot
+# /etc/usnm/xiaomi-pilot.env sets every path and pin the step needs:
+#   PILOT_ARGS="--state ... --pilot-dir ... --root ... --quality-root ... --project ...
+#     --spool ... --crop-states ... --held ... --seen ... --engine-image sha256:...
+#     --engine-llama ... --engine-weights ... --dsn-file ... --log ..."
+# and, to name a collector other than usnm-boinc on the PATH, PILOT_BINARY.
+EnvironmentFile=/etc/usnm/xiaomi-pilot.env
+Environment=PILOT_BINARY=usnm-boinc
+ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/xiaomi_pilot.py --binary ${PILOT_BINARY} $PILOT_ARGS
+TimeoutStartSec=7h
+Nice=10

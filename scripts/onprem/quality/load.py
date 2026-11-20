@@ -20,6 +20,9 @@ damage   every audit/damage/v2/<batch>_verNN.parquet: the page rows (quality.pag
 results  quality collect's pages.parquet or the wave runner's collected parts (one row per
          page and reader): quality.unit_pages and quality.reader_scores.
 ocr      curated ocr-local/pages: one quality.ocr_outputs row per published run.
+xiaomi   `usnm-boinc qwen page-collect`'s ocr_outputs.jsonl (reader ours-xiaomi) into
+         quality.ocr_outputs and vlm_page_cost.jsonl into quality.vlm_page_cost (#1998).
+         Both are held rows: nothing here publishes a page. A rerun loads nothing twice.
 staging  which pages a campaign staged, with the image and ALTO they were staged from.
 agreement  the text agreement of LoC against American Stories (usnm-ingest ocr-agreement,
          #1062): every finished <batch>_verNN.parquet under DIR (its .summary.json is
@@ -49,7 +52,7 @@ import sys
 
 CAMPAIGN_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{0,63}$")
 DOC_RE = re.compile(r"^[a-z0-9]+_\d{4}-\d{2}-\d{2}_ed-\d+_seq-\d+$")
-OURS = ("ours-tesseract", "ours-surya", "ours-ndlocr", "ours-paddle")
+OURS = ("ours-tesseract", "ours-surya", "ours-ndlocr", "ours-paddle", "ours-xiaomi")
 
 UNIT_COLS = [
     "campaign", "doc_id", "job_id", "grp", "language", "outcome", "width", "height",
@@ -71,6 +74,11 @@ DAMAGE_COLS = [
     "function_share", "garbage_share", "words", "head", "near",
 ]
 OCR_COLS = ["doc_id", "reader", "engine", "source", "ocred_at", "text_chars", "damage_rate"]
+COST_COLS = [
+    "doc_id", "campaign", "job_id", "result_name", "plan_class", "gpu", "gpu_mem_total_mib",
+    "slots", "ctx_size", "load_ms", "engine_ms", "page_share", "gpu_seconds", "regions", "tokens",
+    "chars_out", "gpu_mem_peak_mib", "outcome", "validated", "canonical",
+]
 STAGING_COLS = ["campaign", "doc_id", "image_source", "alto_source"]
 LOCWC_COLS = [
     "doc_id", "batch", "batch_version", "words", "words_with_wc", "wc_mean", "wc_median", "wc_below",
@@ -107,7 +115,7 @@ def integer(v):
 
 def reader_name(engine, source):
     low = f"{engine or ''} {source or ''}".lower()
-    for name in ("surya", "ndlocr", "paddle"):
+    for name in ("surya", "ndlocr", "paddle", "xiaomi"):
         if name in low:
             return f"ours-{name}"
     return "ours-tesseract"
@@ -304,6 +312,54 @@ def cmd_ocr(a):
     log("ocr loaded", files=len(files), rows=len(rows))
 
 
+def read_jsonl(path):
+    rows = []
+    with open(path, encoding="utf-8") as f:
+        for n, line in enumerate(f, 1):
+            if line.strip():
+                try:
+                    rows.append(json.loads(line))
+                except ValueError as e:
+                    raise SystemExit(f"{path}:{n}: not JSON: {e}")
+    return rows
+
+
+def xiaomi_ocr_rows(rows):
+    """quality.ocr_outputs rows of ocr_outputs.jsonl; a row of another reader is refused."""
+    out = {}
+    for x in rows:
+        if x.get("reader") != "ours-xiaomi":
+            raise SystemExit(f"a row of reader {x.get('reader')!r}: only ours-xiaomi is loaded here")
+        if not DOC_RE.match(x.get("doc_id") or "") or not x.get("ocred_at"):
+            continue
+        out[(x["doc_id"], x["reader"], x["ocred_at"])] = (
+            x["doc_id"], x["reader"], x.get("engine"), x.get("source"), x["ocred_at"],
+            integer(x.get("text_chars")), num(x.get("damage_rate")))
+    return list(out.values())
+
+
+def xiaomi_cost_rows(rows):
+    out = {}
+    for x in rows:
+        if not DOC_RE.match(x.get("doc_id") or "") or not x.get("result_name"):
+            continue
+        out[(x["doc_id"], x["result_name"])] = tuple(
+            x.get(c) if c in ("doc_id", "campaign", "job_id", "result_name", "plan_class", "gpu",
+                              "outcome", "validated", "canonical")
+            else (num(x.get(c)) if c in ("page_share", "gpu_seconds") else integer(x.get(c)))
+            for c in COST_COLS)
+    return list(out.values())
+
+
+def cmd_xiaomi(a):
+    ocr = xiaomi_ocr_rows(read_jsonl(os.path.join(a.dir, "ocr_outputs.jsonl")))
+    cost = xiaomi_cost_rows(read_jsonl(os.path.join(a.dir, "vlm_page_cost.jsonl")))
+    psql(a.dsn, upsert_sql("ocr_outputs", OCR_COLS, ["doc_id", "reader", "ocred_at"], ocr))
+    # Append-only: a result already recorded for a page is left as it is.
+    psql(a.dsn, upsert_sql("vlm_page_cost", COST_COLS, ["doc_id", "result_name"], cost, update=False))
+    log("xiaomi loaded", ocr_rows=len(ocr), cost_rows=len(cost))
+
+
 def cmd_staging(a):
     if not CAMPAIGN_RE.match(a.campaign):
         sys.exit("--campaign: a campaign name")
@@ -478,6 +534,8 @@ def main(argv=None):
     r.add_argument("--file", action="append", required=True)
     o = sub.add_parser("ocr")
     o.add_argument("--curated", required=True)
+    x = sub.add_parser("xiaomi")
+    x.add_argument("--dir", required=True, help="the directory with ocr_outputs.jsonl and vlm_page_cost.jsonl")
     s = sub.add_parser("staging")
     s.add_argument("--campaign", required=True)
     s.add_argument("--docs", required=True)
@@ -497,14 +555,14 @@ def main(argv=None):
     v.add_argument("--file", required=True)
     v.add_argument("--state")
     f = sub.add_parser("refresh")
-    for p in (d, r, o, s, g, w, v, f):
+    for p in (d, r, o, x, s, g, w, v, f):
         p.add_argument("--dsn", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "refresh":
         psql(a.dsn, "SELECT quality.refresh_summary();\n")
         log("page_summary refreshed")
         return
-    {"damage": cmd_damage, "results": cmd_results, "ocr": cmd_ocr, "staging": cmd_staging,
+    {"damage": cmd_damage, "results": cmd_results, "ocr": cmd_ocr, "xiaomi": cmd_xiaomi, "staging": cmd_staging,
      "agreement": cmd_agreement, "locwc": cmd_locwc, "locsw": cmd_locsw}[a.cmd](a)
 
 

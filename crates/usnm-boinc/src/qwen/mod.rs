@@ -7,6 +7,8 @@
 //!   seed, so both apps agree on them) and writes one unit per page.
 //! - [`page_mode`] stages Xiaomi-OCR-0 page-mode units (#1998): every text region of a page,
 //!   from LoC's ALTO, small pages packed.
+//! - [`page_assemble`] and [`page_collect`] put a page-mode result back into LoC's ALTO, held,
+//!   with per-block provenance, and turn it into `quality.ocr_outputs` and `vlm_page_cost` rows.
 //! - [`submit`] hands staged units to stock `create_work`, two results each.
 //! - [`work`] runs one unit on a volunteer host, GPU or CPU, and always
 //!   writes the readings, a result and the diagnostics.
@@ -28,6 +30,8 @@ pub mod consensus;
 pub mod doc_id;
 pub mod grounded;
 pub mod ledger;
+pub mod page_assemble;
+pub mod page_collect;
 pub mod page_mode;
 pub mod replay;
 pub mod retain;

@@ -35,6 +35,7 @@ psql -v ON_ERROR_STOP=1 -d usnm_quality -f setup.sql
 | `boinc_page_holds`       | held reading of a page         | a reading the release leaves out, by engine tag or node, added by hand as postgres (`holds.sql`, #1956)                                                 |
 | `excluded_qwen_readings` | excluded Qwen unit or crop     | a `usnm_qwen` unit, or one crop of it, kept out of the quality tables until re-read (`excluded_qwen_readings.sql`, #1919)                               |
 | `qe_loc_scores`          | qe-v1 of LoC text, a page      | the quality measure of each page's LoC text from the `qe-loc-v1` text-only run; append-only (`qe_loc_scores.sql`, `usnm-boinc quality qe-text-collect`) |
+| `vlm_page_cost`         | VLM cost, a page and result    | the GPU time a page-mode read cost, from `usnm-boinc qwen page-collect`; append-only (`vlm_page_cost.sql`, `load.py xiaomi`) |
 
 `boinc_page_provenance` is filled from the BOINC database, not by `load.py`: run
 `boinc_provenance.py` on exports of the workunit, result, host and app version rows, then

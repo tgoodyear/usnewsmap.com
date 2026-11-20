@@ -231,6 +231,35 @@ pub enum QwenCommands {
         #[arg(long)]
         job: Option<PathBuf>,
     },
+    /// Collect a page-mode root (#1998): assemble each judged page from LoC's ALTO and the
+    /// canonical result into a HELD directory with `blocks.json`, and write the
+    /// `ours-xiaomi` `ocr_outputs.jsonl` and `vlm_page_cost.jsonl` rows. Writes nothing to
+    /// ocr-local, ocr-out or search.
+    PageCollect {
+        /// The page-mode staging root (`stage --page-mode --root`).
+        #[arg(long)]
+        root: PathBuf,
+        /// The `usnm_quality` staging root the pages were cut from (for LoC's ALTO).
+        #[arg(long)]
+        quality_root: PathBuf,
+        /// Where batch-109 canonical results land.
+        #[arg(long)]
+        spool: PathBuf,
+        /// The directory `compare --crop-states` writes.
+        #[arg(long)]
+        crop_states: PathBuf,
+        /// `check --keep`'s directory of every checked result, for cost rows.
+        #[arg(long)]
+        seen: Option<PathBuf>,
+        /// The held root. Never under ocr-local, ocr-out, ocr-sync or search.
+        #[arg(long)]
+        held: PathBuf,
+        /// The share of a page's text regions that agree, by characters, a page needs to be
+        /// marked accepted (0 to 1). Unset until the Science Coordinator sets it: then no page
+        /// is accepted.
+        #[arg(long)]
+        acceptance: Option<f64>,
+    },
     /// Every bundle page under --root with its own pair verdict (JSON Lines).
     PageLedger {
         #[arg(long)]
@@ -262,6 +291,18 @@ pub enum QwenCommands {
         /// Under `crop-consensus-v2`, keep each pair's crop states here.
         #[arg(long)]
         crop_states: Option<PathBuf>,
+        /// Judge a page-mode unit (its `qwen.json`, found by `--job` or `--project`, has
+        /// `page_mode`) by this rule instead of `--rule`: `page-blocks-v1` (#1998). Any other
+        /// unit keeps `--rule`. Needs `--crop-states` when it applies.
+        #[arg(long, value_enum)]
+        page_rule: Option<PageRule>,
+        /// The unit's `qwen.json`, for the page rule's empty-return guard and to tell a
+        /// page-mode unit.
+        #[arg(long)]
+        job: Option<PathBuf>,
+        /// The BOINC project whose download tree holds the unit's `qwen.json`.
+        #[arg(long)]
+        project: Option<PathBuf>,
     },
     /// Measure the crop-consensus-v2 floor on crops with human transcriptions, offline.
     Grounded {
@@ -316,6 +357,12 @@ pub enum QwenCommands {
         #[arg(long)]
         pairs: PathBuf,
     },
+}
+
+/// `qwen compare --page-rule`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum PageRule {
+    PageBlocksV1,
 }
 
 pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
@@ -539,18 +586,31 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             rule,
             bundle_verdict,
             crop_states,
-        } => x::validate::compare_with(
-            &files,
-            &files2,
-            x::validate::Compare {
-                min_dice,
+            page_rule,
+            job,
+            project,
+        } => {
+            let (rule, guard_job) = x::validate::resolve_page_rule(
+                &files,
                 rule,
-                bundle_verdict,
-                log: log.as_deref(),
-                pages: pages.as_deref(),
-                crop_states: crop_states.as_deref(),
-            },
-        )?,
+                page_rule.is_some(),
+                job.as_deref(),
+                project.as_deref(),
+            )?;
+            x::validate::compare_with(
+                &files,
+                &files2,
+                x::validate::Compare {
+                    min_dice,
+                    rule,
+                    bundle_verdict,
+                    log: log.as_deref(),
+                    pages: pages.as_deref(),
+                    crop_states: crop_states.as_deref(),
+                    guard_job: guard_job.as_deref(),
+                },
+            )?
+        }
         QwenCommands::Grounded {
             refs,
             readers,
@@ -584,6 +644,27 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             controls,
             out,
         } => x::replay::run(&seen, &model, seed, controls, &out)?,
+        QwenCommands::PageCollect {
+            root,
+            quality_root,
+            spool,
+            crop_states,
+            seen,
+            held,
+            acceptance,
+        } => {
+            let s = x::page_collect::run(&x::page_collect::Options {
+                root,
+                quality_root,
+                spool,
+                crop_states,
+                seen,
+                held,
+                acceptance,
+                weights_lock: x::page_collect::WEIGHTS_LOCK.to_owned(),
+            })?;
+            println!("{}", serde_json::to_string(&s)?);
+        }
         QwenCommands::PageLedger { root, pages } => {
             for p in x::ledger::run(&root, &pages)? {
                 println!("{}", serde_json::to_string(&p)?);

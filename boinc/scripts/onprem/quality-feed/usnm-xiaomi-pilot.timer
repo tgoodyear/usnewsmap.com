@@ -1,0 +1,10 @@
+[Unit]
+Description=usnewsmap Xiaomi-OCR-0 page-mode pilot, every hour (#1998)
+
+[Timer]
+OnBootSec=20min
+OnUnitInactiveSec=1h
+RandomizedDelaySec=2min
+
+[Install]
+WantedBy=timers.target
