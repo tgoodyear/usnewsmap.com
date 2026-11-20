@@ -19,10 +19,12 @@ pub mod local;
 pub mod pgmq;
 pub mod queue;
 pub mod queue_move;
+pub mod r2;
 pub mod retry;
 
 pub use blob::BlobStore;
 pub use local::LocalStore;
+pub use r2::R2Store;
 
 /// An object's chunks as they are read (`ObjectStore::get_stream`).
 pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, StoreError>> + Send>>;
@@ -195,9 +197,13 @@ pub trait ObjectStore: Send + Sync + std::fmt::Debug {
 
 /// Open a store: an `https://{account}.blob.core.windows.net/{container}[/prefix]`
 /// URL uses Blob Storage with the ambient Entra ID credential
-/// ([`credential::from_env`]); anything else is a local directory.
+/// ([`credential::from_env`]); `r2://{bucket}[/prefix]` uses Cloudflare R2
+/// with the endpoint and bucket-scoped token in the environment ([`r2`]);
+/// anything else is a local directory.
 pub fn open(location: &str) -> Result<Arc<dyn ObjectStore>, StoreError> {
-    if location.starts_with("https://") || location.starts_with("http://") {
+    if location.starts_with("r2://") {
+        Ok(Arc::new(R2Store::from_env(location)?))
+    } else if location.starts_with("https://") || location.starts_with("http://") {
         Ok(Arc::new(BlobStore::new(location, credential::from_env())?))
     } else {
         Ok(Arc::new(LocalStore::new(location)))
