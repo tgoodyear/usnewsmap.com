@@ -529,9 +529,9 @@ def cmd_run(a):
     final = os.path.join(gain_dir, campaign + ".json")
     progress = os.path.join(gain_dir, campaign + ".progress.json")
     forced = a.campaign is not None
-    with open(cfg["dsn_file"]) as f:
-        dsn = f.read().strip()
     try:
+        with open(cfg["dsn_file"]) as f:
+            dsn = f.read().strip()
         queued = ledger_rows(cfg["ocr_local_dir"], "queued", ["doc_id", "plan", "queued_at"])
         outcomes = ledger_rows(cfg["ocr_local_dir"], "outcomes", ["doc_id", "outcome", "cause", "source", "at"])
         states = ledger_outcomes(queued, outcomes, campaign)

@@ -34,7 +34,8 @@ scripts/onprem/quality/load.py xiaomi. Remove the `stopped` key from the state t
 A chunk whose `qwen submit` leaves units without a `submitted` receipt (a failed create_work
 leaves a `submitting` marker, and a retry skips it and exits 0) is not counted as submitted:
 the state gets `unresolved` and the chunk stays active. Nothing is replayed; reconcile the
-units with BOINC, then remove `unresolved`.
+units with BOINC, then remove only `unresolved` (keep `active_chunk`, so the chunk resumes
+without reserving its capacity again).
 """
 import argparse
 import datetime
@@ -181,8 +182,9 @@ def step(a, now=None, run=run_cmd):
         action = "stopped"
     elif "unresolved" in state:
         # create_work failed for some of the chunk's units: they have a `submitting` marker and
-        # no receipt, and are not replayed. Reconcile them with BOINC, then remove `unresolved`
-        # (and `active_chunk` once they are submitted or their markers cleared) to go on.
+        # no receipt, and are not replayed. Reconcile them with BOINC (clearing the markers of
+        # units BOINC never created), then remove only `unresolved`: `active_chunk` stays, so the
+        # next run resubmits the chunk without reserving its in-flight capacity a second time.
         action = "unresolved " + state["unresolved"]["chunk"]
     elif not staged_all and (
         state.get("active_chunk") == names[state["next_chunk"]]

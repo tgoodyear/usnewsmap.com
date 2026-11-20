@@ -309,6 +309,13 @@ class Run(unittest.TestCase):
             self.run_job()
         self.assertFalse(self.path(".json").exists())
 
+    def test_an_unreadable_dsn_file_removes_it(self):
+        self.run_job()
+        (Path(self.tmp.name) / "dsn").unlink()
+        with self.assertRaises(SystemExit):
+            self.run_job()
+        self.assertFalse(self.path(".json").exists())
+
     def test_the_timer_running_leaves_it_for_the_next_run(self):
         import fcntl
         self.run_job()
