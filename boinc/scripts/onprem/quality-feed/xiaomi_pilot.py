@@ -30,6 +30,12 @@ Stop conditions (the first that holds is written to the state as `stopped`):
 Nothing here writes ocr-local, ocr-out or the search index: the pages are held, and the
 collector refuses a held root under any of them. Loading the rows into usnm_quality is
 scripts/onprem/quality/load.py xiaomi. Remove the `stopped` key from the state to resume.
+
+A chunk whose `qwen submit` leaves units without a `submitted` receipt (a failed create_work
+leaves a `submitting` marker, and a retry skips it and exits 0) is not counted as submitted:
+the state gets `unresolved` and the chunk stays active. Nothing is replayed; reconcile the
+units with BOINC, then remove only `unresolved` (keep `active_chunk`, so the chunk resumes
+without reserving its capacity again).
 """
 import argparse
 import datetime
@@ -127,8 +133,21 @@ def submit_chunk(a, name, run=run_cmd):
          "--quality-root", a.quality_root, "--root", a.root, "--engine-image", a.engine_image,
          "--engine-llama", a.engine_llama, "--engine-weights", a.engine_weights,
          "--max-pages", str(a.chunk_pages), "--flush-short"])
-    run([a.binary, "qwen", "submit", "--target", "native-xiaomi-page", "--members", members,
-         "--root", a.root, "--project", a.project, "--max-units", str(a.chunk_pages)])
+    out = run([a.binary, "qwen", "submit", "--target", "native-xiaomi-page", "--members", members,
+               "--root", a.root, "--project", a.project, "--max-units", str(a.chunk_pages)])
+    return submit_summary(out)
+
+
+def submit_summary(out):
+    """`qwen submit`'s JSON summary line; a binary that prints none is treated as unresolved."""
+    for line in reversed(out.strip().splitlines()):
+        try:
+            got = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(got, dict) and "uncertain" in got:
+            return got
+    return {"uncertain": -1}
 
 
 def step(a, now=None, run=run_cmd):
@@ -161,6 +180,12 @@ def step(a, now=None, run=run_cmd):
     action = "none"
     if "stopped" in state:
         action = "stopped"
+    elif "unresolved" in state:
+        # create_work failed for some of the chunk's units: they have a `submitting` marker and
+        # no receipt, and are not replayed. Reconcile them with BOINC (clearing the markers of
+        # units BOINC never created), then remove only `unresolved`: `active_chunk` stays, so the
+        # next run resubmits the chunk without reserving its in-flight capacity a second time.
+        action = "unresolved " + state["unresolved"]["chunk"]
     elif not staged_all and (
         state.get("active_chunk") == names[state["next_chunk"]]
         or in_flight + a.chunk_pages <= a.max_in_flight
@@ -171,16 +196,22 @@ def step(a, now=None, run=run_cmd):
         # does not reserve the allowance a second time.
         state["active_chunk"] = name
         save_state(a.state, state)
-        submit_chunk(a, name, run)
-        state["next_chunk"] += 1
-        state.pop("active_chunk", None)
-        action = f"submitted {name}"
+        got = submit_chunk(a, name, run)
+        if got.get("uncertain", 0) != 0:
+            # Not every unit has a `submitted` receipt: keep the chunk active and say which.
+            state["unresolved"] = {"chunk": name, "uncertain": got.get("uncertain"), "at": now.isoformat()}
+            action = f"unresolved {name}"
+        else:
+            state["next_chunk"] += 1
+            state.pop("active_chunk", None)
+            action = f"submitted {name}"
     state["last_returned"] = returned
     save_state(a.state, state)
     return {"at": now.isoformat(), "action": action, "chunk": state["next_chunk"], "chunks": len(names),
             "returned": returned, "in_flight": in_flight, "held": summary.get("held", 0),
             "accepted": summary.get("accepted", 0),
             "invalid_units": summary.get("units_invalid", 0),
+            "unresolved": state.get("unresolved", {}).get("uncertain"),
             "stopped": state.get("stopped", {}).get("reason")}
 
 

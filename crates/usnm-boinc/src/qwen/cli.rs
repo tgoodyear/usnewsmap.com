@@ -521,6 +521,8 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             }
             let s = x::submit::run_selected(&opts, members.as_deref()).await?;
             eprintln!("{s:?}");
+            // For a step that must know whether every unit has its receipt.
+            println!("{}", serde_json::to_string(&s)?);
         }
         QwenCommands::LocalUnit {
             image,
