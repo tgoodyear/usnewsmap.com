@@ -79,12 +79,17 @@ class Ledger(unittest.TestCase):
 
 
 class Gain(unittest.TestCase):
-    cuts = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    cuts = [(float(i), "a") for i in range(0, 10)]      # bucket k starts at (k-1, "a")
 
     def test_decile_bounds(self):
-        self.assertEqual(g.decile_of(0.5, self.cuts), 1)
-        self.assertEqual(g.decile_of(5.0, self.cuts), 6)
-        self.assertEqual(g.decile_of(99, self.cuts), 10)
+        self.assertEqual(g.decile_of("b", 0.5, self.cuts), 1)
+        self.assertEqual(g.decile_of("a", 5.0, self.cuts), 6)
+        self.assertEqual(g.decile_of("a", 4.9, self.cuts), 5)
+        self.assertEqual(g.decile_of("b", 99, self.cuts), 10)
+
+    def test_ties_are_split_by_doc_id_as_ntile_splits_them(self):
+        starts = [(2.0, "d%d" % k) for k in range(10)]   # every score equal: ten buckets by doc_id
+        self.assertEqual([g.decile_of("d%d" % k, 2.0, starts) for k in (0, 1, 5, 9)], [1, 2, 6, 10])
 
     def test_gain_is_loc_minus_ours_and_median_is_over_pages(self):
         pairs = [("a", 9.5, 2.5), ("b", 9.5, 3.5), ("c", 0.5, 0.75), ("d", 0.5, 0.25), ("e", 9.5, 9.0)]
@@ -128,7 +133,7 @@ class Gain(unittest.TestCase):
 
 class Contract(unittest.TestCase):
     def test_shared_settings_match_the_wave_timer(self):
-        for k in ("language", "campaign_prefix", "wave_sizes", "complete_fraction", "max_wave_days", "pause_after",
+        for k in ("language", "campaign_prefix", "wave_sizes", "min_words", "complete_fraction", "max_wave_days", "pause_after",
                   "rebuild_done_marker", "dsn_file"):
             self.assertEqual(g.DEFAULTS[k], w.DEFAULTS[k], k)
 
@@ -184,15 +189,15 @@ class Run(unittest.TestCase):
 
     def run_job(self, *extra, holds=None, loc_lock=None):
         def psql(dsn, sql):
-            if "percentile_cont" in sql:
-                return "\n".join(str(x) for x in range(1, 10)) + "\n"
+            if "ntile" in sql:
+                return "".join("%d\t%d.0\tsn%08d_x\n" % (k, k, k) for k in range(1, 11))
             raise AssertionError(sql)
         out = io.StringIO()
         with mock.patch.object(g, "ledger_rows", lambda root, kind, cols: self.queued if kind == "queued" else self.outcomes), \
                 mock.patch.object(g, "published_readings", lambda root, ids: {
                     d: (t, "tesseract/5.5.1 profile=eng", "boinc-" + d[-12:]) for d, t in self.texts.items() if d in ids}), \
                 mock.patch.object(g, "hold_rows", lambda dsn, ids: holds or {}), \
-                mock.patch.object(g, "loc_scores", lambda dsn, ids, lang: (
+                mock.patch.object(g, "loc_scores", lambda dsn, ids, lang, min_words: (
                     {d: v for d, v in self.loc.items() if d in ids}, {loc_lock or g.sha256(self.lockfile.read_bytes())})), \
                 mock.patch.object(g, "psql", psql), contextlib.redirect_stdout(out):
             g.main(["run", "--config", str(self.cfg), "--state-dir", str(self.state), *extra])
@@ -239,6 +244,22 @@ class Run(unittest.TestCase):
         self.assertEqual(f["ledger"]["held"], 1)
         self.assertAlmostEqual(f["pass_rate"], 3 / 5)
         self.assertEqual(f["n_paired"], 3)
+
+    def test_an_empty_imported_text_is_kept_not_missing(self):
+        self.texts[doc(2)] = ""
+        line = self.run_job()
+        self.assertEqual(line["status"], "written")
+        self.assertEqual(line["published_text_missing"], 0)
+        self.assertEqual(self.final()["no_words"], 1)
+        self.assertEqual(self.final()["n_paired"], 3)
+
+    def test_forced_run_still_needs_a_gain_to_publish(self):
+        self.loc = {}
+        line = self.run_job("--campaign", self.campaign)
+        self.assertEqual(line["status"], "progress")
+        self.assertFalse(self.path(".json").exists())
+        self.loc = {doc(i): 5.0 for i in range(1, 6)}
+        self.assertEqual(self.run_job("--campaign", self.campaign)["status"], "written")
 
     def test_a_hold_on_another_reading_does_not_count(self):
         self.run_job(holds={doc(4): [(None, "boinc-someone-else")]})

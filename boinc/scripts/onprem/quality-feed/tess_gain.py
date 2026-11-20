@@ -30,8 +30,10 @@ queues again) and `not_sent` are failures. A page with no outcome yet is pending
 Gain, as quality_gain.py's drop (positive is better): the page's LoC lm_oov minus ours, for each
 page with both (LoC's row is valid, qe-v1, language_source `page`; ours has words). lm_oov is the
 decision measure of qe-v1, higher is worse. `median_gain` is the median over the paired pages; per decile of
-LoC's lm_oov over every scored page of the language (1 = best, 10 = worst, as the selector's
-`decile`) it also has the page count, median and mean.
+LoC's lm_oov (1 = best, 10 = worst) it also has the page count, median and mean. The decile is the
+selector's: ntile(10) over (lm_oov, doc_id) of every valid qe-v1 row of the language with language_source
+`page`, an lm_oov and at least min_words words (doc_id compared bytewise); pages under min_words have no
+LoC row in the pairs.
 
 The text is the campaign's imported Tesseract text: the page's newest `usnm-tesseract` row at or after
 its newest queued row. The release may select another reading or normalise the text; that is not measured.
@@ -75,6 +77,7 @@ MAX_UNIT_PAGES = 10000
 DEFAULTS = {
     "language": "eng",
     "campaign_prefix": "tess-worstfirst",
+    "min_words": 100,
     "wave_sizes": [20000, 50000, 100000],
     "complete_fraction": 0.95,
     "max_wave_days": 21,
@@ -185,21 +188,23 @@ def pass_rate(states, held):
 # ---------------------------------------------------------------------------------------------
 # The gain.
 
-def decile_of(lm_oov, cuts):
-    """1 (best) to 10 (worst): how many of the nine cut points are at or below the value, plus one."""
-    return 1 + sum(1 for c in cuts if lm_oov >= c)
+def decile_of(doc_id, lm_oov, starts):
+    """1 (best) to 10 (worst): the selector's ntile(10) over (lm_oov, doc_id). `starts` is the first
+    (lm_oov, doc_id) of each of the ten buckets, so a page's decile is the last bucket that starts at
+    or before it (ties on lm_oov split by doc_id, as ntile splits them)."""
+    return 1 + sum(1 for st in starts[1:] if (lm_oov, doc_id) >= st)
 
 
-def gain_summary(pairs, cuts):
+def gain_summary(pairs, starts):
     """`pairs` is [(doc_id, loc_lm_oov, ours_lm_oov)]. Gain is LoC's minus ours: positive is better."""
-    gains = [(loc - ours, loc) for _, loc, ours in pairs]
+    gains = [(loc - ours, d, loc) for d, loc, ours in pairs]
     by = {}
-    for g, loc in gains:
-        by.setdefault(decile_of(loc, cuts), []).append(g)
+    for g, d, loc in gains:
+        by.setdefault(decile_of(d, loc, starts), []).append(g)
     return {
         "n_paired": len(gains),
-        "median_gain": round(statistics.median(g for g, _ in gains), 6) if gains else None,
-        "mean_gain": round(statistics.fmean(g for g, _ in gains), 6) if gains else None,
+        "median_gain": round(statistics.median(g for g, _, _ in gains), 6) if gains else None,
+        "mean_gain": round(statistics.fmean(g for g, _, _ in gains), 6) if gains else None,
         "by_decile": {str(d): {"n": len(v), "median_gain": round(statistics.median(v), 6),
                                "mean_gain": round(statistics.fmean(v), 6)} for d, v in sorted(by.items())},
     }
@@ -383,10 +388,10 @@ def published_readings(root, queued_at):
         for path in sorted(glob.glob(os.path.join(root, "pages", lccn, "*.parquet"))):
             for r in parquet_rows(path, ["doc_id", "ocr_source", "ocr_engine", "node", "ocred_at", "text"]):
                 d = r["doc_id"]
-                if d in queued_at and r["ocr_source"] == OURS_SOURCE and r["text"] and r["ocred_at"] >= queued_at[d]:
+                if d in queued_at and r["ocr_source"] == OURS_SOURCE and r["ocred_at"] >= queued_at[d]:
                     cur = best.get(d)
                     if cur is None or r["ocred_at"] >= cur[0]:
-                        best[d] = (r["ocred_at"], r["text"], r["ocr_engine"] or "", r["node"] or "")
+                        best[d] = (r["ocred_at"], r["text"] or "", r["ocr_engine"] or "", r["node"] or "")
     return {d: v[1:] for d, v in best.items()}
 
 
@@ -425,15 +430,17 @@ def hold_rows(dsn, ids):
     return out
 
 
-def loc_scores(dsn, ids, language):
-    """({doc_id: lm_oov}, resource locks): LoC's valid qe-v1 rows (language_source page) for the pages."""
+def loc_scores(dsn, ids, language, min_words):
+    """({doc_id: lm_oov}, resource locks): LoC's valid qe-v1 rows (language_source page, at least
+    min_words words: the selector's population) for the pages."""
     check_language(language)
     ids = sorted(ids)
     scores, locks = {}, set()
     for i in range(0, len(ids), 3000):
         sql = ("SELECT doc_id, lm_oov, resources_lock FROM quality.qe_loc_scores "
                "WHERE NOT invalid AND qe_version = '%s' AND language = '%s' AND language_source = 'page' "
-               "AND lm_oov IS NOT NULL AND doc_id = ANY(%s)" % (QE_VERSION, language, id_list_sql(ids[i:i + 3000])))
+               "AND lm_oov IS NOT NULL AND words >= %d AND doc_id = ANY(%s)"
+               % (QE_VERSION, language, int(min_words), id_list_sql(ids[i:i + 3000])))
         for r in psql(dsn, sql).split("\n"):
             if r:
                 d, v, lk = r.split("\t")
@@ -442,16 +449,25 @@ def loc_scores(dsn, ids, language):
     return scores, locks
 
 
-def decile_cuts(dsn, language):
-    """The nine cut points of lm_oov over every scored page of the language (as the selector's ntile(10))."""
+def decile_starts(dsn, language, min_words):
+    """The first (lm_oov, doc_id) of each of the selector's ten ntile(10) buckets: over the valid qe-v1
+    rows of the language with language_source `page`, an lm_oov and at least min_words words, ordered by
+    (lm_oov, doc_id). doc_id is compared bytewise (COLLATE "C") here and in decile_of."""
     check_language(language)
-    sql = ("SELECT unnest(percentile_cont(ARRAY[0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9]) WITHIN GROUP (ORDER BY lm_oov)) "
+    sql = ("SELECT d, (array_agg(lm_oov ORDER BY lm_oov, doc_id COLLATE \"C\"))[1]::text, "
+           "(array_agg(doc_id ORDER BY lm_oov, doc_id COLLATE \"C\"))[1] FROM ("
+           "SELECT doc_id, lm_oov, ntile(10) OVER (ORDER BY lm_oov, doc_id COLLATE \"C\") AS d "
            "FROM quality.qe_loc_scores WHERE NOT invalid AND qe_version = '%s' AND language = '%s' "
-           "AND language_source = 'page' AND lm_oov IS NOT NULL" % (QE_VERSION, language))
-    cuts = [float(x) for x in psql(dsn, sql).split()]
-    if len(cuts) != 9:
-        raise SystemExit("no decile cut points: no scored pages")
-    return cuts
+           "AND language_source = 'page' AND lm_oov IS NOT NULL AND words >= %d) x GROUP BY d ORDER BY d"
+           % (QE_VERSION, language, int(min_words)))
+    starts = []
+    for r in psql(dsn, sql).split("\n"):
+        if r:
+            _, v, doc = r.split("\t")
+            starts.append((float(v), doc))
+    if len(starts) != 10:
+        raise SystemExit("no decile starts: too few scored pages")
+    return starts
 
 
 # ---------------------------------------------------------------------------------------------
@@ -509,8 +525,8 @@ def cmd_run(a):
         cache, scored_now, qe_sha, unit_lock, ns = score_pages(
             cfg, campaign, texts, os.path.join(gain_dir, campaign + ".scores.jsonl"), gain_dir,
             cfg["score_pages_per_run"])
-        loc, loc_locks = loc_scores(dsn, list(texts), cfg["language"])
-        cuts = decile_cuts(dsn, cfg["language"])
+        loc, loc_locks = loc_scores(dsn, list(texts), cfg["language"], cfg["min_words"])
+        cuts = decile_starts(dsn, cfg["language"], cfg["min_words"])
         if loc_locks - {unit_lock}:
             raise RuntimeError("LoC's rows were scored with another resource lock than ours: %s" % sorted(loc_locks))
     except (RuntimeError, OSError, SystemExit, ValueError, KeyError) as e:
@@ -530,18 +546,17 @@ def cmd_run(a):
 
     def not_ready(st):
         """Why the figure cannot be final, against the timer's state `st`; None when it can."""
-        if st is None:
-            return "the timer is running or has no state"
-        if forced:
-            return "pages await a score" if unscored or missing else None
-        if st.get("campaign") != campaign:
-            return "the timer has moved to another campaign"
-        if not wave_done(cfg, st, now):
-            return "wave not done"
-        if counts["queued"] != st["wave_queued"]:
-            return "the ledger copy has %d of the wave's %d queued pages" % (counts["queued"], st["wave_queued"])
-        if counts["published"] + counts["held"] < st.get("published", 0):
-            return "the ledger copy is behind the wave's published pages"
+        if not forced:
+            if st is None:
+                return "the timer is running or has no state"
+            if st.get("campaign") != campaign:
+                return "the timer has moved to another campaign"
+            if not wave_done(cfg, st, now):
+                return "wave not done"
+            if counts["queued"] != st["wave_queued"]:
+                return "the ledger copy has %d of the wave's %d queued pages" % (counts["queued"], st["wave_queued"])
+            if counts["published"] + counts["held"] < st.get("published", 0):
+                return "the ledger copy is behind the wave's published pages"
         if missing:
             return "%d imported texts are not in the dataset copy yet" % missing
         if unscored:
@@ -551,7 +566,7 @@ def cmd_run(a):
         return None
 
     if forced:
-        why = not_ready(True)
+        why = not_ready(None)
         if why is None:
             save_json(final, dict(body, computed_at=iso(now)))
             return finish("written", pass_rate=round(rate, 5), median_gain=summary["median_gain"])
