@@ -330,7 +330,13 @@ usnm-boinc cloud validatord --secret-file <webhook token> --state-url <dir or r2
   `--gold-dir` as its `--expected-dir`. Valid answers `fingerprint`, a failing check answers `invalid`, as the stock
   `script_validator --init_script usnm_gold_check` does. A result without exactly one file is `invalid` (the init script
   exits 2). A fetch that fails, or a body that does not match its MD5, answers `retry`: the stock validator reads local
-  files and never has that case.
+  files and never has that case. So does a result for a unit the gold directory has no expectations for yet
+  (`gold::validate::knows_unit`): the service's copy of the directory can lag behind `gold submit`, where the stock
+  check, reading the project's own directory, answers `invalid`.
+- When two instances store a verdict for the same call, the one stored first is the reply every caller gets, the
+  instance that lost the race included.
+- A `quality/seen/` copy whose result name is not a store segment (over 128 characters, or not starting with a letter
+  or digit) is stored under `x-<sha256 of the name>/`, with the name in `result-name.txt`.
 - The gold apps have no compare script, so every valid result has the same fingerprint. No `credit` is sent; the server
   computes it.
 - `call_id` makes a call idempotent. The first request seen under a call id is saved (a digest, written

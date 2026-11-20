@@ -346,7 +346,24 @@ impl Comparer<'_> {
     }
 }
 
-/// Stores every file under `dir` at `<prefix>/<path relative to dir>`, overwriting.
+/// The store key segment for one path segment of a seen copy. A result name the quality check
+/// accepts (up to 200 characters, `_` and `-` anywhere) is not always a store segment (at most
+/// 128, starting alphanumeric); such a name is stored as `x-<sha256 of the name>`, with the
+/// name itself in that directory's `result-name.txt`.
+pub(super) fn seen_segment(seg: &str) -> (String, bool) {
+    if usnm_store::is_safe_segment(seg) && !seg.starts_with("x-") {
+        (seg.to_owned(), false)
+    } else {
+        let hex: String = Sha256::digest(seg.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        (format!("x-{hex}"), true)
+    }
+}
+
+/// Stores every file under `dir` at `<prefix>/<path relative to dir>`, overwriting, with each
+/// segment made a store segment by [`seen_segment`].
 async fn store_tree(
     store: &dyn usnm_store::ObjectStore,
     dir: &Path,
@@ -367,7 +384,19 @@ async fn store_tree(
             }
             let rel = p.strip_prefix(dir).context("seen path")?;
             let rel = rel.to_str().context("seen path is not UTF-8")?;
-            let path = format!("{prefix}/{rel}");
+            let mut path = prefix.to_owned();
+            for seg in rel.split('/') {
+                let (key, hashed) = seen_segment(seg);
+                path.push('/');
+                path.push_str(&key);
+                if hashed {
+                    let name = format!("{path}/result-name.txt");
+                    store
+                        .put(&name, seg.as_bytes().to_vec(), "text/plain")
+                        .await
+                        .with_context(|| format!("storing {name}"))?;
+                }
+            }
             let bytes = std::fs::read(&p).with_context(|| format!("reading {}", p.display()))?;
             store
                 .put(&path, bytes, "application/octet-stream")

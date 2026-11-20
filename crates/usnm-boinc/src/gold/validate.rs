@@ -271,6 +271,27 @@ pub fn check_report(r: &Report, e: &Expectations) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// False when the gold directory does not have the expectations for the unit `file` reports
+/// on: no expectations file for its bundle, or one that does not list the unit yet. A copy of the
+/// directory that lags behind `gold submit` answers false for a unit submitted since, where
+/// [`check`] would call the result invalid. True for anything else, a malformed report
+/// included, which [`check`] judges.
+pub fn knows_unit(file: &Path, dir: &Path) -> bool {
+    let Ok(r) = load(file) else {
+        return true;
+    };
+    let Some(b) = r.boinc.as_ref() else {
+        return true;
+    };
+    let Ok(p) = expected_path(dir, &r.manifest_sha256) else {
+        return true;
+    };
+    if !p.exists() {
+        return false;
+    }
+    load_expected(dir, &r.manifest_sha256).map_or(true, |e| e.jobs.contains_key(&b.job_id))
+}
+
 /// script_validator's init script: exit 0 when the result is valid.
 pub fn check(file: &Path, dir: &Path) -> anyhow::Result<()> {
     let r = load(file)?;
@@ -370,6 +391,45 @@ pub(crate) mod tests {
         let _lock = crate::Lock::take(tmp.path()).unwrap();
         assert!(add_jobs(tmp.path(), &p, &[j]).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn knows_unit_is_false_only_for_a_unit_the_directory_lacks_expectations_for() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (e, id) = setup(tmp.path());
+        let good = report(&e, &id);
+        let f = tmp.path().join(format!("usnm_gold_{id}_0_0"));
+        let write = |r: &Report| std::fs::write(&f, serde_json::to_vec(r).unwrap()).unwrap();
+        write(&good);
+        assert!(knows_unit(&f, tmp.path()));
+        // The bundle's expectations file is listed but not this unit.
+        let mut r = good.clone();
+        r.boinc.as_mut().unwrap().job_id = "f".repeat(64);
+        write(&r);
+        assert!(!knows_unit(&f, tmp.path()));
+        assert!(check(&f, tmp.path()).is_err());
+        // No expectations file for the report's bundle at all.
+        let mut r = good.clone();
+        r.manifest_sha256 = "e".repeat(64);
+        write(&r);
+        assert!(!knows_unit(&f, tmp.path()));
+        // An empty directory: nothing is known.
+        let empty = tempfile::tempdir().unwrap();
+        write(&good);
+        assert!(!knows_unit(&f, empty.path()));
+        // Anything check judges itself is "known": no boinc block, a bad manifest hash, a
+        // file that does not parse, a file that is not there.
+        let mut r = good.clone();
+        r.boinc = None;
+        write(&r);
+        assert!(knows_unit(&f, tmp.path()));
+        let mut r = good;
+        r.manifest_sha256 = "not a hash".into();
+        write(&r);
+        assert!(knows_unit(&f, tmp.path()));
+        std::fs::write(&f, b"{").unwrap();
+        assert!(knows_unit(&f, tmp.path()));
+        assert!(knows_unit(&tmp.path().join("missing"), tmp.path()));
     }
 
     #[test]

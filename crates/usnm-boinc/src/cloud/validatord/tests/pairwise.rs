@@ -974,3 +974,95 @@ async fn two_instances_on_one_store_record_each_line_once() {
     let want = stock(App::Quality, cases, "check_set", 2, None);
     one.same_files_as(want.dir.path());
 }
+
+#[test]
+fn seen_segment_keeps_store_segments_and_hashes_the_rest() {
+    use crate::cloud::validatord::pairwise::seen_segment;
+    let hashed = |s: &str| {
+        let hex: String = Sha256::digest(s.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        (format!("x-{hex}"), true)
+    };
+    for ok in [
+        "usnm_quality_x_a_0",
+        "a",
+        "a-b_c.d",
+        &"a".repeat(128),
+        "X-upper",
+    ] {
+        assert_eq!(seen_segment(ok), (ok.to_owned(), false), "{ok}");
+    }
+    for bad in [
+        "_leading_underscore",
+        "-leading-dash",
+        "x-already-looks-hashed",
+        "x-",
+        &"a".repeat(129),
+        &"a".repeat(200),
+    ] {
+        assert_eq!(seen_segment(bad), hashed(bad), "{bad}");
+    }
+    // A hashed key is a store segment itself, and not hashed again.
+    let (key, _) = seen_segment("_x");
+    assert!(usnm_store::is_safe_segment(&key));
+    assert_ne!(seen_segment(&key), (key.clone(), false));
+    assert_eq!(key.len(), 66);
+}
+
+#[tokio::test]
+async fn a_quality_result_name_that_is_not_a_store_segment_is_stored_under_its_hash() {
+    let fx = Fx::new().await;
+    let base = quality_base().await;
+    // 150 characters: accepted by the quality check (up to 200), too long for a store segment.
+    let long = |tag: &str| {
+        format!(
+            "usnm_quality_{}_{tag}",
+            "l".repeat(150 - 13 - 1 - 2 - tag.len())
+        )
+    };
+    let files = |tag: &str, bytes: [Vec<u8>; 3]| -> Files {
+        bytes
+            .into_iter()
+            .enumerate()
+            .map(|(i, b)| (format!("{}_{i}", long(tag)), b))
+            .collect()
+    };
+    let (a, b) = (files("a", base.clone()), files("b", other_host(&base)));
+    assert_eq!(a[0].0.len(), 150);
+    let run = Run::new(&fx, App::Quality).await;
+    let reply = run
+        .agree(
+            "wu20-rev1-check_set",
+            "check_set",
+            2,
+            None,
+            &[(1, &a), (2, &b)],
+        )
+        .await;
+    let seen = tree(&run.quality_dir().join("seen"));
+    for (name, _) in [&a[0], &b[0]] {
+        let hex: String = Sha256::digest(name.as_bytes())
+            .iter()
+            .map(|x| format!("{x:02x}"))
+            .collect();
+        let dir = format!("x-{hex}");
+        assert_eq!(
+            seen[&format!("{dir}/result-name.txt")],
+            name.as_bytes(),
+            "{reply}"
+        );
+        assert!(
+            seen.keys()
+                .any(|k| k.starts_with(&format!("{dir}/")) && !k.ends_with("result-name.txt")),
+            "the result's files are kept under {dir}: {:?}",
+            seen.keys().collect::<Vec<_>>()
+        );
+    }
+    assert!(
+        seen.keys().all(|k| k.starts_with("x-")),
+        "nothing under the long name: {:?}",
+        seen.keys().collect::<Vec<_>>()
+    );
+}

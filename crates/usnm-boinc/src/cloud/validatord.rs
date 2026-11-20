@@ -277,11 +277,27 @@ async fn once(cfg: &Config, req: &Request, digest: &str) -> anyhow::Result<Value
     let (reply, final_) = evaluate(cfg, req).await?;
     if final_ {
         let body = serde_json::to_vec(&json!({ "request_sha256": digest, "reply": reply }))?;
-        // Create-only: a concurrent instance that stored first stored the same request's reply.
-        cfg.state
+        // Create-only. When another instance stored first, its reply is the one every later
+        // call gets, so this call answers with it too (the two can differ: each instance's
+        // gold mirror refreshes on its own).
+        let created = cfg
+            .state
             .put_new(&path, body, "application/json")
             .await
             .with_context(|| format!("storing {path}"))?;
+        if !created {
+            let bytes = cfg
+                .state
+                .get(&path)
+                .await
+                .with_context(|| format!("reading {path}"))?
+                .with_context(|| format!("{path} was there and is gone"))?;
+            let stored: Value = serde_json::from_slice(&bytes).context("stored verdict")?;
+            if stored["request_sha256"] != digest {
+                return Err(Conflict.into());
+            }
+            return Ok(stored["reply"].clone());
+        }
     }
     Ok(reply)
 }
@@ -332,11 +348,17 @@ async fn result_verdict(cfg: &Config, r: &Res, work: &Path) -> Value {
         return retry;
     }
     let gold = cfg.gold_dir.clone();
-    let verdict = tokio::task::spawn_blocking(move || validate::check(&path, &gold)).await;
+    // A unit this copy of the gold directory does not know yet was submitted after its last
+    // sync (the container mirrors it from R2): a retry, which is not stored, rather than a
+    // final invalid. The server only makes units `gold submit` recorded.
+    let verdict = tokio::task::spawn_blocking(move || {
+        validate::knows_unit(&path, &gold).then(|| validate::check(&path, &gold))
+    })
+    .await;
     match verdict {
-        Ok(Ok(())) => ok,
-        Ok(Err(_)) => invalid,
-        Err(_) => retry,
+        Ok(Some(Ok(()))) => ok,
+        Ok(Some(Err(_))) => invalid,
+        Ok(None) | Err(_) => retry,
     }
 }
 
@@ -562,7 +584,15 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join(&name);
             std::fs::write(&path, bytes).unwrap();
-            want.push((label, validate::check(&path, fx.gold.path()).is_ok()));
+            // `check` alone calls a unit the directory lacks invalid; the service answers retry.
+            let want_verdict = if validate::check(&path, fx.gold.path()).is_ok() {
+                "valid"
+            } else if validate::knows_unit(&path, fx.gold.path()) {
+                "invalid"
+            } else {
+                "retry"
+            };
+            want.push((label, want_verdict));
             results.push(res(i as i64 + 1, vec![fx.output(&name, bytes)]));
         }
         let base = fx.serve().await;
@@ -574,11 +604,14 @@ mod tests {
         )
         .await;
         assert_eq!(status, 200, "{reply}");
-        for (i, (label, ok)) in want.iter().enumerate() {
-            let got = verdict(&reply, i as i64 + 1);
-            assert_eq!(got, if *ok { "valid" } else { "invalid" }, "{label}");
+        for (i, (label, want)) in want.iter().enumerate() {
+            assert_eq!(verdict(&reply, i as i64 + 1), *want, "{label}");
         }
-        assert!(want.iter().any(|(_, ok)| *ok) && want.iter().any(|(_, ok)| !*ok));
+        assert!(
+            want.iter().any(|(_, w)| *w == "valid") && want.iter().any(|(_, w)| *w == "invalid")
+        );
+        let unknown = want.iter().find(|(l, _)| **l == "unknown unit").unwrap();
+        assert_eq!(unknown.1, "retry");
     }
 
     #[tokio::test]
@@ -798,6 +831,149 @@ mod tests {
             "valid"
         );
         assert!(fx.mock.fetches.load(Ordering::SeqCst) > before);
+    }
+
+    /// A store where another instance stores `calls/*.json` between this one's claim and its
+    /// put: `rival` is written first, so the put finds the entry there.
+    #[derive(Debug)]
+    struct Racing {
+        inner: usnm_store::LocalStore,
+        rival: Mutex<Option<Vec<u8>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for Racing {
+        async fn get(&self, path: &str) -> Result<Option<Vec<u8>>, usnm_store::StoreError> {
+            self.inner.get(path).await
+        }
+        async fn put_new(
+            &self,
+            path: &str,
+            body: Vec<u8>,
+            ct: &str,
+        ) -> Result<bool, usnm_store::StoreError> {
+            let rival = if path.ends_with(".json") {
+                self.rival.lock().unwrap().take()
+            } else {
+                None
+            };
+            if let Some(r) = rival {
+                self.inner.put_new(path, r, ct).await?;
+            }
+            self.inner.put_new(path, body, ct).await
+        }
+        async fn put(
+            &self,
+            path: &str,
+            body: Vec<u8>,
+            ct: &str,
+        ) -> Result<(), usnm_store::StoreError> {
+            self.inner.put(path, body, ct).await
+        }
+        async fn list(&self, prefix: &str) -> Result<Vec<String>, usnm_store::StoreError> {
+            self.inner.list(prefix).await
+        }
+    }
+
+    #[tokio::test]
+    async fn losing_the_race_to_store_the_verdict_answers_with_the_stored_one() {
+        let fx = Fx::new().await;
+        std::fs::create_dir_all(fx.state.path().join("work")).unwrap();
+        let good = serde_json::to_vec(&report(&fx.e, &fx.id)).unwrap();
+        let entry = fx.output(&format!("usnm_gold_{}_0_0", fx.id), &good);
+        let req = |call_id: &str| -> Request {
+            let b = body(call_id, "usnm_gold", vec![res(1, vec![entry.clone()])]);
+            serde_json::from_value(b).unwrap()
+        };
+        let (req1, req2) = (req("wu15-rev1-check_set"), req("wu15-rev2-check_set"));
+        let digest = "d".repeat(64);
+        let stored_reply = json!({"results": [{"id": 1, "invalid": true}]});
+        let run = |rival: Value| {
+            let mut cfg = fx.config(1 << 20);
+            cfg.state = Arc::new(Racing {
+                inner: usnm_store::LocalStore::new(fx.state.path()),
+                rival: Mutex::new(Some(serde_json::to_vec(&rival).unwrap())),
+            });
+            let (req1, digest) = (&req1, &digest);
+            async move { once(&cfg, req1, digest).await }
+        };
+        // This instance would answer valid; the one that stored first said invalid.
+        let got = run(json!({"request_sha256": digest, "reply": stored_reply}))
+            .await
+            .unwrap();
+        assert_eq!(got, stored_reply);
+        assert_eq!(verdict(&got, 1), "invalid");
+        // Every later call gets the stored reply too.
+        assert_eq!(run(json!(null)).await.unwrap(), stored_reply);
+
+        // A rival stored for another request under the same id is a conflict.
+        let mut cfg = fx.config(1 << 20);
+        cfg.state = Arc::new(Racing {
+            inner: usnm_store::LocalStore::new(fx.state.path()),
+            rival: Mutex::new(Some(
+                serde_json::to_vec(
+                    &json!({"request_sha256": "0".repeat(64), "reply": stored_reply}),
+                )
+                .unwrap(),
+            )),
+        });
+        let err = once(&cfg, &req2, &digest).await.unwrap_err();
+        assert!(err.downcast_ref::<Conflict>().is_some(), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn a_unit_the_gold_directory_does_not_list_is_a_retry_that_is_not_stored() {
+        let fx = Fx::new().await;
+        let p = crate::gold::submit::tests::prepared();
+        let later = crate::gold::submit::job(&p, &crate::gold::submit::tests::engine(), 1).unwrap();
+        assert_ne!(later.id, fx.id);
+        // A report for a unit submitted after this copy of the directory was synced.
+        let mut r = report(&fx.e, &fx.id);
+        r.boinc.as_mut().unwrap().job_id = later.id.clone();
+        let entry = fx.output(
+            &format!("usnm_gold_{}_0_0", later.id),
+            &serde_json::to_vec(&r).unwrap(),
+        );
+        let base = fx.serve().await;
+        let b = body(
+            "wu16-rev1-check_set",
+            "usnm_gold",
+            vec![res(1, vec![entry])],
+        );
+        let reply = post(&base, "usnm_gold", Some("hook"), &b).await;
+        assert_eq!(reply.0, 200);
+        assert_eq!(reply.1, json!({"results": [{"id": 1, "retry": true}]}));
+        let id: String = Sha256::digest(b"wu16-rev1-check_set")
+            .iter()
+            .map(|x| format!("{x:02x}"))
+            .collect();
+        let calls = fx.state.path().join("calls");
+        assert!(calls.join(format!("{id}.request")).exists());
+        assert!(
+            !calls.join(format!("{id}.json")).exists(),
+            "a retry is not stored"
+        );
+        // The same holds with no expectations file for the bundle at all.
+        let mut r2 = r.clone();
+        r2.manifest_sha256 = "e".repeat(64);
+        let entry2 = fx.output(
+            &format!("usnm_gold_{}_1_0", later.id),
+            &serde_json::to_vec(&r2).unwrap(),
+        );
+        let b2 = body(
+            "wu16-rev2-check_set",
+            "usnm_gold",
+            vec![res(1, vec![entry2])],
+        );
+        assert_eq!(
+            verdict(&post(&base, "usnm_gold", Some("hook"), &b2).await.1, 1),
+            "retry"
+        );
+        // Once the expectations include the unit, the next call gives the final verdict.
+        crate::gold::validate::add_jobs(fx.gold.path(), &p, std::slice::from_ref(&later)).unwrap();
+        let reply = post(&base, "usnm_gold", Some("hook"), &b).await;
+        assert_eq!(verdict(&reply.1, 1), "valid");
+        assert!(calls.join(format!("{id}.json")).exists());
     }
 
     #[tokio::test]
