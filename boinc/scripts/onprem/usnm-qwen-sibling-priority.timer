@@ -1,0 +1,12 @@
+[Unit]
+Description=Raise stranded usnm_qwen siblings' priority every hour
+
+[Timer]
+OnCalendar=hourly
+AccuracySec=1min
+RandomizedDelaySec=5min
+# A run missed while the host was down runs when it is back.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

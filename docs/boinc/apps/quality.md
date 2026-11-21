@@ -324,6 +324,20 @@ Run as root on the BOINC host after the #1449 server-image roll:
      < boinc/scripts/qwen-tiebreak-policy.py
    ```
 
+### Sending a stranded sibling first
+
+`usnm_qwen` has `target_nresults` 2 and one result per host per workunit. One host that takes most Qwen work takes one copy of a unit and is barred from the other, so the sibling stays UNSENT for days: every result has priority 0, and the few other hosts' requests go to fresh first copies. Stock BOINC sends the higher `result.priority` first.
+
+`boinc/scripts/qwen-sibling-priority.py` raises it. It selects `usnm_qwen` results in UNSENT whose workunit has another result that was sent (IN_PROGRESS or OVER, `sent_time` above 0), once the oldest such sibling was sent at least `--min-age-hours` ago (6 by default; 0 is allowed), and sets their `priority` to `--priority` (10) where it is lower. It never lowers a priority and never touches another app. A rerun finds nothing new. `--max` caps a run (500, oldest first) and `--dry-run` selects and reports without writing. It reaches the database as the other server-side scripts do: `config.xml`'s `db_*` settings, the DB TLS files, `MySQLdb`, and the `app` row named `usnm_qwen`, so it runs in the server container. Each run prints one JSON line: `selected`, `updated`, `oldest_age_hours`, and the settings. The feeder reads results into its cache in priority order, so a raised result is sent once the cache refills.
+
+Deploy, as root on the BOINC host (nothing is enabled by default):
+
+1. `podman exec -i usnm-boinc-server python3 - --dry-run < boinc/scripts/qwen-sibling-priority.py` and check `selected`.
+2. `install -m 0644 boinc/scripts/onprem/usnm-qwen-sibling-priority.service boinc/scripts/onprem/usnm-qwen-sibling-priority.timer /etc/systemd/system/`, with the service's `StandardInput=file:` path pointing at the checkout, then `systemctl daemon-reload`.
+3. `systemctl start usnm-qwen-sibling-priority.service` once and read `journalctl -u usnm-qwen-sibling-priority`, then `systemctl enable --now usnm-qwen-sibling-priority.timer`. The timer runs hourly at nice 10 and is `Persistent=true`.
+
+To stop, `systemctl disable --now usnm-qwen-sibling-priority.timer`. Raised results keep their priority, which is harmless: it only orders sends.
+
 ## CLI subcommands
 
 ### usnm-boinc quality
