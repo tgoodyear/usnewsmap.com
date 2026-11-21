@@ -94,7 +94,7 @@ pub enum QualityCommands {
         gap_secs: u64,
         #[arg(long, default_value_t = 20)]
         max_pages: usize,
-        /// Pack staged pages into multi-page bundle workunits of up to this many pages (1 to 20).
+        /// Pack staged pages into multi-page bundle workunits of up to this many pages (1 to 500, `MAX_BUNDLE_PAGES`).
         #[arg(long, default_value_t = 1)]
         bundle_size: usize,
         /// The scan archive's container URL (https://<account>.blob.core.windows.net/scans); read first with the job's identity.

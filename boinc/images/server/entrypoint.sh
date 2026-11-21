@@ -12,7 +12,8 @@
 #                        mysql-runtime-password and the upload key pair in Key Vault, each only
 #                        if absent. A failed lookup stops the job; it is never read as absence
 #
-# UNVERIFIED: none of this has run; see docs/boinc/apps/images.md.
+# --serve runs prod's on-prem server (usnm-boinc-server.service, docs/boinc/server/onprem.md); the
+# other modes served the retired Azure deployment (docs/boinc/apps/images.md).
 set -euo pipefail
 mode=serve keydir=""
 while [ $# -gt 0 ]; do

@@ -46,7 +46,7 @@ doc_mapping:
     - { name: front_page, type: bool, fast: true, indexed: true }
     - { name: edition, type: u64, stored: true, indexed: false }
     - { name: seq, type: u64, stored: true, indexed: false }
-    # Same-day order for hits (title << 24 | edition << 16 | seq): Quickwit 0.9
+    # Same-day order for hits (title << 32 | edition << 16 | seq): Quickwit 0.9
     # can't sort on text fields such as doc_id.
     - { name: sort_key, type: u64, fast: true, indexed: false }
     - { name: batch, type: text, tokenizer: raw }
@@ -65,7 +65,7 @@ indexing_settings:
   # (05 §5.5.1), but the writer's memory caps their size. Quickwit 0.9.1
   # uploads a split to Blob in 100 MB blocks, up to 100 at once, each read
   # into memory first: a split holds min(its size, 10 GB) of the writer's
-  # memory while it uploads, and the ingest container has 7.5 GiB. A
+  # memory while it uploads, and the Azure ingest container has 7.5 GiB. A
   # million-page split (about 23 GB) killed the writer in October 2026.
   # A merge stops taking splits once it holds this many pages, so merged
   # splits hold a little over this target and never twice it. At the
@@ -76,7 +76,8 @@ indexing_settings:
   # the 60,000-page splits before it, or the 100,000-page splits before
   # the pairs (about 2.6 GB, at most 4.6 GB; 08 §8.4). A full base can be
   # given a larger target (the release's --split-docs, which rewrites this
-  # value and needs the E4 profile; docs/operations/rebuild-and-index-storage.md). The Japanese
+  # value and, on the Azure ingest job, needs the E4 profile;
+  # docs/operations/rebuild-and-index-storage.md). The Japanese
   # pages' index (pages-ja-index.yaml) keeps the same settings: the
   # release checks every index of a version against the target it was
   # created with (crates/usnm-ingest/src/merges.rs).

@@ -41,7 +41,7 @@
 # may name another image for these steps, as sha256:<image id>, so a hand-off fix needn't wait for a
 # server image. It gets
 # HANDOFF_STEP and only the step's own inputs, mounts only the Arc agent's challenge
-# directory: no project tree, no database, no Key Vault. texts-export still runs in Azure.
+# directory: no project tree, no database, no Key Vault. texts-export runs on-prem too (texts-export-onprem.sh).
 #
 # --target handoff --step archive-list|archive-read|archive-delete|archive-write (#1367) lists, reads,
 # deletes and creates the per-job hand-off objects (dispatch/jobs/<id>/, dispatch/quarantine/<id>/,
