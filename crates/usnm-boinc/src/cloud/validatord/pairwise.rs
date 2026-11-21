@@ -1,4 +1,4 @@
-//! The pairwise apps of `cloud validatord`: `usnm_ndlocr` and `usnm_quality`. Dev only.
+//! The pairwise apps of `cloud validatord`: `usnm_ndlocr`, `usnm_quality` and `usnm_ocr`. Dev only.
 //!
 //! These apps have an init script and a compare script under stock `script_validator`, so the
 //! reply uses the server's `matches` form (cloud-boinc `cloud/docs/architecture.md`, "Webhook
@@ -14,6 +14,10 @@
 //!   in request order, each compared (candidate first) with every other usable result; the loop
 //!   stops at the first candidate with at least `min_quorum / 2` matches. `check_pair`: each late
 //!   result compared (late first) with the canonical result, and no other pair.
+//! * `usnm_ocr` has no stock script: on-prem it runs at quorum 1 with the trivial validator and
+//!   checks hosts by trust spot checks. Here its init parses `result.json` as the contract's
+//!   `ResultManifest` and requires UTF-8 `text.txt`; its compare is the spot checks' own text
+//!   measure, `host_trust::container_spot::outside`, at the limits of [`Kind::OCR_LIMITS`].
 //! * Side effects (quality only; ndlocr has none): `check --keep` copies, under `quality/seen/`
 //!   in the state store, and each `compare --log` line as its own object,
 //!   `quality/pairs/<key>.json`, where the key is a digest of the call id and the two results.
@@ -23,6 +27,7 @@
 //!   cloud server (dev only)".
 use super::{Config, Request, Res};
 use crate::cloud::pull::{self, OutFile};
+use crate::host_trust::container_spot::{self, Limits};
 use crate::quality::validate as quality_validate;
 use anyhow::{bail, ensure, Context};
 use serde_json::{json, Value};
@@ -35,19 +40,29 @@ use std::{
 use usnm_ocr_contract::{boinc as ocr_boinc, quality as ocr_quality};
 
 /// The apps with an init script and a compare script (the `matches` reply).
-pub const PAIRWISE_APPS: [&str; 2] = ["usnm_ndlocr", "usnm_quality"];
+pub const PAIRWISE_APPS: [&str; 3] = ["usnm_ndlocr", "usnm_quality", "usnm_ocr"];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Ndlocr,
     Quality,
+    Ocr,
 }
 
 impl Kind {
+    /// The limits two `usnm_ocr` results may differ by and still match: `container_spot::CROSS`,
+    /// the most lenient of the spot checks' families (`STRICT` for two hosts of one family,
+    /// `CROSS` for an arm64 host against an amd64 one). A pairwise call sees the results, not
+    /// the hosts' families, so any two hosts may be a cross-family pair; judging every pair by
+    /// `STRICT` would reject a legitimate arm64/amd64 pair that the spot checks accept. Text
+    /// within these limits is enough: `layout.xml` is not compared.
+    const OCR_LIMITS: Limits = container_spot::CROSS;
+
     fn of(app: &str) -> Option<Kind> {
         match app {
             "usnm_ndlocr" => Some(Kind::Ndlocr),
             "usnm_quality" => Some(Kind::Quality),
+            "usnm_ocr" => Some(Kind::Ocr),
             _ => None,
         }
     }
@@ -56,6 +71,12 @@ impl Kind {
     fn caps(self) -> [usize; 3] {
         match self {
             Kind::Ndlocr => [
+                ocr_boinc::MAX_TEXT,
+                ocr_boinc::MAX_ALTO,
+                ocr_boinc::MAX_JSON,
+            ],
+            // The usnm_ocr_out template: text.txt, layout.xml, result.json.
+            Kind::Ocr => [
                 ocr_boinc::MAX_TEXT,
                 ocr_boinc::MAX_ALTO,
                 ocr_boinc::MAX_JSON,
@@ -72,6 +93,15 @@ impl Kind {
     fn init(self, files: &[PathBuf]) -> anyhow::Result<()> {
         match self {
             Kind::Ndlocr => crate::ndlocr::load(files).map(|_| ()),
+            Kind::Ocr => {
+                let [text, _, result] = files else {
+                    bail!("expected text, layout and result files");
+                };
+                let bytes = read_capped(result, ocr_boinc::MAX_JSON)?;
+                serde_json::from_slice::<ocr_boinc::ResultManifest>(&bytes)
+                    .context("result.json is not a usnm_ocr result")?;
+                text_of(text).map(|_| ())
+            }
             Kind::Quality => {
                 quality_validate::check(files, None)?;
                 // `--keep` names the copy after the uploaded result.json and refuses an odd name.
@@ -91,6 +121,13 @@ impl Kind {
     ) -> anyhow::Result<(bool, Option<Vec<u8>>)> {
         match self {
             Kind::Ndlocr => Ok((crate::ndlocr::compare(a, b).is_ok(), None)),
+            Kind::Ocr => {
+                let (a, b) = (text_of(&a[0])?, text_of(&b[0])?);
+                Ok((
+                    container_spot::outside(&Self::OCR_LIMITS, &a, &b).is_none(),
+                    None,
+                ))
+            }
             Kind::Quality => {
                 let verdict = quality_validate::compare(a, b, Some(line));
                 match std::fs::read(line) {
@@ -103,6 +140,21 @@ impl Kind {
             }
         }
     }
+}
+
+fn read_capped(path: &Path, cap: usize) -> anyhow::Result<Vec<u8>> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    ensure!(
+        bytes.len() <= cap,
+        "{} is over its size limit",
+        path.display()
+    );
+    Ok(bytes)
+}
+
+/// The text of a `usnm_ocr` result: `text.txt`, which must be UTF-8.
+fn text_of(path: &Path) -> anyhow::Result<String> {
+    String::from_utf8(read_capped(path, ocr_boinc::MAX_TEXT)?).context("text.txt is not UTF-8")
 }
 
 enum Fetched {

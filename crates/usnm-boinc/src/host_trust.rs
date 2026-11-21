@@ -14,7 +14,7 @@ use usnm_ocr_contract::boinc;
 
 mod capability;
 pub mod cli;
-mod container_spot;
+pub(crate) mod container_spot;
 mod native_spot;
 mod onboard;
 mod promote;

@@ -13,6 +13,7 @@ type Files = Vec<(String, Vec<u8>)>;
 enum App {
     Ndlocr,
     Quality,
+    Ocr,
 }
 
 impl App {
@@ -20,6 +21,7 @@ impl App {
         match self {
             App::Ndlocr => "usnm_ndlocr",
             App::Quality => "usnm_quality",
+            App::Ocr => "usnm_ocr",
         }
     }
     /// What the stock init script runs (with `--keep` for quality).
@@ -27,6 +29,7 @@ impl App {
         match self {
             App::Ndlocr => crate::ndlocr::load(f).is_ok(),
             App::Quality => crate::quality::validate::check(f, Some(keep)).is_ok(),
+            App::Ocr => unreachable!("usnm_ocr has no stock init script"),
         }
     }
     /// What the stock compare script runs (with `--log` for quality).
@@ -34,6 +37,7 @@ impl App {
         match self {
             App::Ndlocr => crate::ndlocr::compare(a, b).is_ok(),
             App::Quality => crate::quality::validate::compare(a, b, Some(log)).is_ok(),
+            App::Ocr => unreachable!("usnm_ocr has no stock compare script"),
         }
     }
 }
@@ -1065,4 +1069,112 @@ async fn a_quality_result_name_that_is_not_a_store_segment_is_stored_under_its_h
         "nothing under the long name: {:?}",
         seen.keys().collect::<Vec<_>>()
     );
+}
+
+/// text.txt, layout.xml and result.json of one `usnm_ocr` result, in template order.
+fn ocr_outputs(text: &str) -> [Vec<u8>; 3] {
+    let manifest = json!({
+        "v": 1, "job_id": "j", "scan_sha256": format!("sha256:{}", "a".repeat(64)),
+        "engine": {"image": "img", "version": "1", "profile": "p", "models": "m",
+                   "psm": 1, "dpi": 300, "timeout_secs": 600},
+        "text_sha256": "t", "alto_sha256": "l", "elapsed_ms": 5,
+        "completed_at": "2026-10-18T00:00:00Z"
+    });
+    [
+        text.as_bytes().to_vec(),
+        b"<alto/>".to_vec(),
+        serde_json::to_vec(&manifest).unwrap(),
+    ]
+}
+
+fn ocr_text() -> String {
+    (0..60)
+        .map(|i| format!("Line {i}: the quick brown fox jumps over the lazy dog near the mill."))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+async fn ocr_matches_identical_and_noisy_texts_and_not_different_ones() {
+    let fx = Fx::new().await;
+    let text = ocr_text();
+    let a = named(App::Ocr, "a", ocr_outputs(&text));
+    let same = named(App::Ocr, "b", ocr_outputs(&text));
+    // One line with a few OCR slips (well under 1% of the page).
+    let noisy = named(
+        App::Ocr,
+        "c",
+        ocr_outputs(&text.replacen("quick brown", "qu1ck brovvn", 1)),
+    );
+    let other = named(
+        App::Ocr,
+        "d",
+        ocr_outputs(&"Completely different words entirely, nothing alike here.\n".repeat(60)),
+    );
+    let run = Run::new(&fx, App::Ocr).await;
+    let (s, r) = run
+        .post(
+            "w1-check_set",
+            "check_set",
+            2,
+            None,
+            &[(1, &a), (2, &same)],
+            true,
+        )
+        .await;
+    assert_eq!(s, 200, "{r}");
+    assert_eq!(matches_of(&r), BTreeSet::from([(1, 2)]));
+    let (_, r) = run
+        .post(
+            "w2-check_set",
+            "check_set",
+            2,
+            None,
+            &[(3, &a), (4, &noisy)],
+            true,
+        )
+        .await;
+    assert_eq!(matches_of(&r), BTreeSet::from([(3, 4)]));
+    let (_, r) = run
+        .post(
+            "w3-check_set",
+            "check_set",
+            2,
+            None,
+            &[(5, &a), (6, &other)],
+            true,
+        )
+        .await;
+    assert!(matches_of(&r).is_empty(), "{r}");
+    assert_eq!(r["results"][0], json!({"id": 5}));
+    // Nothing is stored: no seen copies, no pair lines.
+    assert!(!run.quality_dir().exists());
+}
+
+#[tokio::test]
+async fn ocr_init_rejects_a_malformed_result_json_and_a_non_utf8_text() {
+    let fx = Fx::new().await;
+    let text = ocr_text();
+    let a = named(App::Ocr, "a", ocr_outputs(&text));
+    let mut bad = ocr_outputs(&text);
+    bad[2] = b"{\"v\": 1".to_vec();
+    let bad = named(App::Ocr, "bad", bad);
+    let mut latin = ocr_outputs(&text);
+    latin[0] = vec![0xff, 0xfe, b'x'];
+    let latin = named(App::Ocr, "latin", latin);
+    let run = Run::new(&fx, App::Ocr).await;
+    let (s, r) = run
+        .post(
+            "w1-check_set",
+            "check_set",
+            2,
+            None,
+            &[(1, &bad), (2, &latin), (3, &a)],
+            true,
+        )
+        .await;
+    assert_eq!(s, 200, "{r}");
+    assert_eq!(r["results"][0], json!({"id": 1, "invalid": true}));
+    assert_eq!(r["results"][1], json!({"id": 2, "invalid": true}));
+    assert_eq!(r["results"][2], json!({"id": 3}));
 }
