@@ -25,7 +25,7 @@ import sys
 import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # `python3 -I` leaves the script directory off the path
-from serbian_lines import LETTER, candidates, make_parser, run  # noqa: E402
+from serbian_lines import candidates, make_parser, run  # noqa: E402
 
 THRESHOLD = 0.9
 
@@ -35,7 +35,7 @@ def is_latin(ch: str) -> bool:
 
 
 def latin_share(text: str) -> float:
-    letters = LETTER.findall(text)
+    letters = [ch for ch in text if ch.isalpha()]  # not LETTER: it also matches numeric characters such as ½
     return sum(1 for ch in letters if is_latin(ch)) / len(letters) if letters else 0.0
 
 

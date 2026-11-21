@@ -33,6 +33,10 @@ class Share(unittest.TestCase):
         self.assertFalse(gl.is_german("aaaaaaaaяя"))  # 8 of 10
         self.assertFalse(gl.is_german("1906"))
 
+    def test_fractions_are_not_letters(self):
+        self.assertEqual(gl.latin_share("Nur ½ Mark"), 1.0)
+        self.assertTrue(gl.is_german("Preis 2½ Cents"))
+
     def test_candidates_need_words_and_latin(self):
         lines = [{"words": [{"text": t} for t in words]} for words in
                  (["Die", "Stadt", "Ohio"], ["Страна", "Нови", "Сад"], ["Nr.", "22"])]
@@ -41,7 +45,10 @@ class Share(unittest.TestCase):
 
 class Run(unittest.TestCase):
     def test_end_to_end_without_network(self):
-        from PIL import Image
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow not installed")
         loc_lines = [line(10, [("Die", 0), ("Stadt", 0), ("Ohio", 0)]),
                      line(70, [("Страна", 0), ("Нови", 0), ("Сад", 0)]),
                      line(130, [("Nr.", 0), ("22", 0)])]
