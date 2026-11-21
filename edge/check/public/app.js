@@ -375,6 +375,7 @@ async function work(code) {
   catch { $("card").textContent = "We don't have this language. "; const a = document.createElement("a"); a.href = "/"; a.textContent = "See the list"; $("card").appendChild(a); return; }
   document.title = `${cfg.name}: USNewsMap letter check`;
   $("intro").textContent = cfg.intro || "";
+  $("download-link").href = "/api/export?lang=" + encodeURIComponent(code); $("download").hidden = false;
   $("neither").addEventListener("click", () => choose("neither"));
   $("unsure").addEventListener("click", () => choose("unsure"));
   $("notext").addEventListener("click", () => choose("notext"));

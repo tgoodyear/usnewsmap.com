@@ -57,4 +57,17 @@ describe("PrivacyPage", () => {
       "https://www.cloudflare.com/privacypolicy/",
     );
   });
+
+  it("describes the check site's browser id, answers and CC0 export", () => {
+    const { container } = render(<PrivacyPage />);
+    const text = container.textContent ?? "";
+    expect(screen.getByRole("heading", { name: "Check site" })).toBeTruthy();
+    expect(text).toContain("Cloudflare Turnstile");
+    expect(text).toContain("Opening a language page runs the check, even if you never answer");
+    expect(text).toContain("a random id, valid for 30 days and kept in its local storage");
+    expect(text).toContain("the time it arrived");
+    expect(text).toContain("never stored with your IP address, browser details or location");
+    expect(text).toContain("published under CC0");
+    expect(text).toContain("without the random ids");
+  });
 });

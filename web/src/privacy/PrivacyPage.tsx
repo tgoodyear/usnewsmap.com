@@ -19,7 +19,7 @@ export default function PrivacyPage() {
       </header>
       <main className="privacy">
         <h1>Privacy</h1>
-        <p className="privacy-updated">Last updated 17 November 2026.</p>
+        <p className="privacy-updated">Last updated 21 November 2026.</p>
         <p>
           US News Map has no accounts and sets no cookies. It shows no ads and runs no analytics or tracking scripts
           from other companies. Your browser's ordinary cache keeps copies of the site's files, as it does for any
@@ -71,6 +71,24 @@ export default function PrivacyPage() {
           the request itself, as described below.
         </p>
 
+        <h2>Check site</h2>
+        <p>
+          On check.usnewsmap.com you can help check OCR by saying which of two readings of a word matches the print. It
+          has no accounts and sets no cookies. Every check-site page loads Cloudflare Turnstile, a browser check, which
+          sees your IP address and browser details under the Cloudflare privacy policy linked below. Opening a language
+          page runs the check, even if you never answer, and the site then gives your browser a random id, valid for 30
+          days and kept in its local storage, so that each browser's answer to a word counts once. Local storage also
+          keeps whether you turned letter names on.
+        </p>
+        <p>
+          Each answer is stored with that random id, the time it arrived, the choice you made, whether the page's font
+          loaded and whether letter names were showing. It is never stored with your IP address, browser details or
+          location. Answers are kept indefinitely and published under CC0: each language page links a download that
+          gives every word's readings, how many people chose each answer and the outcome, without the random ids. The
+          check site runs on Cloudflare Workers, with the answers in Cloudflare D1 and the word images in Cloudflare R2,
+          and it keeps Cloudflare Worker invocation logs, with request headers including IP addresses, for up to seven
+          days, like the main site's.
+        </p>
         <h2>Searches</h2>
         <p>
           The anonymous search log described below never stores the words you search for with your IP address or
@@ -148,7 +166,9 @@ export default function PrivacyPage() {
           keep the service working. That is a legitimate interest, and the site's anonymous reports keep no IP address,
           cookie or identifier. The same legitimate interest covers using Cloudflare to deliver and protect the site.
           The site doesn't ask for consent because the only things it stores on your device are the two settings
-          described at the top of this page, which you set yourself. A word mark is sent only when you make it.
+          described at the top of this page, which you set yourself, and, on the check site, the random id and the
+          letter-names setting described above, which it needs to count each browser's answer once. A word mark is sent
+          only when you make it.
         </p>
 
         <h2>Other sites</h2>
