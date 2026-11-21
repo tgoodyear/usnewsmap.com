@@ -176,6 +176,58 @@ class T(unittest.TestCase):
         self.assertEqual(score.resume_problems(old, {**new, "gpu_study_sha256": "x"}, set()), [])
         self.assertTrue(score.resume_problems(old, {**new, "gpu_study_sha256": "y"}, set()))
 
+    def test_resume_refuses_limit_mix(self):
+        old = {"arms": {"frak2021": "aa"}, "cmd": "c", "tesseract_version": "5.5"}
+        self.assertEqual(score.resume_problems(old, {**old, "limit": 0}, set()), [])
+        self.assertTrue(score.resume_problems({**old, "limit": 1}, {**old, "limit": 0}, set()))
+        self.assertTrue(score.resume_problems({**old, "limit": 1}, {**old, "limit": 1}, set()))
+        self.assertTrue(score.resume_problems(old, {**old, "limit": 2}, set()))
+
+    def test_gpu_study_ids_normalised(self):
+        gpu = {score.gpu_norm(x) for x in (
+            "nzz/nzz_18501112_0_0_a1_p1_1\r\n", "  \ufeffnzz/0007_nzz_18501113_p2.xml ",
+            "chronicling/sn83_1900.jpg", "bare_page.gt.xml")}
+        self.assertIn("nzz/nzz_18501113_p2", gpu)
+        for set_, pid in (("nzz", "nzz_18501112_0_0_a1_p1_1"),
+                          ("nzz", "0042_nzz_18501112_0_0_a1_p1_1"),
+                          ("nzz", "nzz_18501112_0_0_a1_p1_1.gt"),
+                          ("nzz", "0003_nzz_18501113_p2"),
+                          ("chronicling", "sn83_1900"), ("reichsanzeiger", "bare_page")):
+            self.assertEqual(score.gpu_flag(set_, pid, gpu), 1, pid)
+        self.assertEqual(score.gpu_flag("nzz", "nzz_18501199_p9", gpu), 0)
+        self.assertEqual(score.gpu_flag("nzz", "sn83_1900", gpu), 0)  # set-qualified
+
+    def test_resume_keeps_missing_and_omitted_arm_expectations(self):
+        import io, contextlib
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.join(d, "root"); os.makedirs(os.path.join(root, "chronicling"))
+            out = os.path.join(d, "o.csv")
+            with open(out, "w", newline="") as f:
+                w = csv.DictWriter(f, score.FIELDS); w.writeheader()
+                w.writerow(dict(set="chronicling", page_id="c1", arm="frak2021"))
+            exp = {a: {"chronicling": ["c1"], "reichsanzeiger": ["r1"]}
+                   for a in ("frak2021", "deu_latf")}
+            with open(out + ".meta.json", "w") as f:
+                json.dump({"arms": {"frak2021": None, "deu_latf": None}, "cmd": score.DEFAULT_CMD,
+                           "tesseract_version": "v", "limit": 0, "cpu_cgroup": None,
+                           "gpu_study_sha256": score.hashlib.sha256(b"").hexdigest(),
+                           "expected": exp,
+                           "missing_images": {"reichsanzeiger": ["r2"]}}, f)
+            args = ["--data-root", root, "--sets", "chronicling", "--arms", "frak2021",
+                    "--out", out, "--version-cmd", "echo v"]
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                rc = score.main(args)                    # unresolved r2 blocks the run
+            self.assertEqual(rc, 2)
+            with contextlib.redirect_stderr(err):
+                rc = score.main(args + ["--allow-missing-images"])
+            self.assertEqual(rc, 0, err.getvalue())
+            with open(out + ".meta.json") as f:
+                m = json.load(f)
+            self.assertEqual(m["missing_images"], {"reichsanzeiger": ["r2"]})
+            self.assertEqual(m["expected"]["deu_latf"], exp["deu_latf"])
+            self.assertEqual(m["expected"]["frak2021"], exp["frak2021"])
+
     def test_missing_image_after_year_filter(self):
         with tempfile.TemporaryDirectory() as d:
             for n in ("a_1900", "b_1900", "c_1990"):    # c is out of window
@@ -287,6 +339,29 @@ class A(unittest.TestCase):
                 self.assertEqual(rc, 3, k)
                 self.assertIn("differs between", out)
                 self.assertNotIn("**LIFT**", out)
+
+    def test_separate_arm_csvs_merge(self):
+        with tempfile.TemporaryDirectory() as d:
+            rows = self.rows()
+            p1 = self.write(d, [r for r in rows if r[2] == "frak2021"], self.EXP, name="a.csv")
+            p2 = self.write(d, [r for r in rows if r[2] == "deu_latf"], self.EXP, name="b.csv")
+            for p, arms in ((p1, {"frak2021": "aa"}), (p2, {"deu_latf": "bb"})):
+                with open(p + ".meta.json") as f:
+                    m = json.load(f)
+                m.update(tesseract_version="5.5", cmd="c", arms=arms)
+                with open(p + ".meta.json", "w") as f:
+                    json.dump(m, f)
+            rc, out = self.run_two(p1, p2)
+            self.assertEqual(rc, 0, out)
+            self.assertNotIn("differs between", out)
+            with open(p2 + ".meta.json") as f:
+                m = json.load(f)
+            m["arms"] = {"deu_latf": "bb", "frak2021": "zz"}      # real conflict
+            with open(p2 + ".meta.json", "w") as f:
+                json.dump(m, f)
+            rc, out = self.run_two(p1, p2)
+            self.assertEqual(rc, 3)
+            self.assertIn("differs between", out)
 
     def run_two(self, p1, p2):
         import io, contextlib

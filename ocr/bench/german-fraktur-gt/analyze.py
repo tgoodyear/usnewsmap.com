@@ -80,12 +80,18 @@ def provenance_problems(metas, arms):
     out = []
     if len(metas) < 2:
         return out
+    seen = {}                      # arm -> (path, sha) of the first sidecar naming it
+    for p, m in metas:
+        for arm in arms:
+            o = m.get("arms") or {}
+            if arm not in o:
+                continue
+            if arm in seen and seen[arm][1] != o[arm]:
+                out.append("model %s sha256 differs between %s and %s" % (
+                    arm, seen[arm][0], p))
+            seen.setdefault(arm, (p, o[arm]))
     p0, m0 = metas[0]
     for p, m in metas[1:]:
-        for arm in arms:
-            a0, a1 = (m0.get("arms") or {}).get(arm), (m.get("arms") or {}).get(arm)
-            if a0 != a1:
-                out.append("model %s sha256 differs between %s and %s" % (arm, p0, p))
         for k, label in PROVENANCE:
             if m0.get(k) != m.get(k):
                 out.append("%s differs between %s and %s" % (label, p0, p))

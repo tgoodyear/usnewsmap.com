@@ -348,6 +348,26 @@ def prepared_image(img, tmpdir):
         im.save(out)
     return out
 
+GPU_EXT = re.compile(r"\.(xml|gt|jpe?g|png|tiff?|jp2)$", re.I)
+
+def gpu_norm(token):
+    """Normalise a GPU-study list entry or page id to `<stem>` or `<set>/<stem>`:
+    CR/BOM/whitespace stripped, extensions dropped, NZZ `<NNNN>_nzz_` prefix
+    removed."""
+    t = token.replace("\r", "").replace("\ufeff", "").strip().replace("\\", "/")
+    parts = [p for p in t.split("/") if p]
+    if not parts:
+        return ""
+    stem = parts[-1]
+    while GPU_EXT.search(stem):
+        stem = GPU_EXT.sub("", stem)
+    stem = re.sub(r"^\d+_(?=nzz_)", "", stem)
+    return stem if len(parts) == 1 else parts[0] + "/" + stem
+
+def gpu_flag(set_name, page_id, gpu):
+    stem = gpu_norm(page_id)
+    return int(stem in gpu or "%s/%s" % (set_name, stem) in gpu)
+
 def job(args):
     page, arm, template, tessdata, timeout, gpu, cgroup = args
     try:
@@ -363,8 +383,7 @@ def job(args):
     row.update(arm=arm, cpu_s=round(cpu, 3), **s)
     for k in ("cer_raw", "cer_folded", "word_f1"):
         row[k] = round(row[k], 6)
-    row["gpu_study_flag"] = int(page["page_id"] in gpu or
-                                "%s/%s" % (page["set"], page["page_id"]) in gpu)
+    row["gpu_study_flag"] = gpu_flag(page["set"], page["page_id"], gpu)
     return row, None
 
 def done_keys(path):
@@ -376,6 +395,11 @@ def done_keys(path):
 def resume_problems(old, new, csv_arms):
     """Why an existing run (its sidecar `old`) cannot be continued with `new`."""
     out = []
+    if old.get("limit"):
+        out.append("the earlier run used --limit %s (use a new --out for a "
+                   "full run)" % old["limit"])
+    elif new.get("limit"):
+        out.append("--limit now, but the earlier run had none (use a new --out)")
     oarms = old.get("arms")
     if not isinstance(oarms, dict):
         return ["sidecar has no arm provenance"]
@@ -427,7 +451,9 @@ def main(argv=None):
     gpu = set()
     if a.gpu_study_pages:
         with open(a.gpu_study_pages, encoding="utf-8") as f:
-            gpu = {l.strip() for l in f if l.strip() and not l.startswith("#")}
+            gpu = {gpu_norm(l) for l in f
+                   if l.strip().lstrip("\ufeff") and not l.lstrip().startswith("#")}
+            gpu.discard("")
     arms = [x for x in a.arms.split(",") if x]
     if a.cpu_cgroup and a.workers != 1:
         ap.error("--cpu-cgroup needs --workers 1 (a shared cgroup mixes pages)")
@@ -498,6 +524,19 @@ def main(argv=None):
                     queued.add(k)
                     jobs.append((pg, arm, a.cmd, a.tessdata, a.timeout, gpu,
                                  a.cpu_cgroup))
+    if done:        # keep earlier expectations and unresolved missing images
+        for arm, sets in (old.get("expected") or {}).items():
+            expected.setdefault(arm, {})
+            for s, ids in sets.items():
+                expected[arm][s] = sorted(set(ids) | set(expected[arm].get(s, [])))
+        found = {}
+        for sets in expected.values():
+            for s, ids in sets.items():
+                found.setdefault(s, set()).update(ids)
+        for s, ids in (old.get("missing_images") or {}).items():
+            keep = set(ids) - found.get(s, set())
+            if keep:
+                missing_all[s] = sorted(keep | set(missing_all.get(s, [])))
     if missing_all:
         listing = "; ".join("%s: %s" % (k, ", ".join(v)) for k, v in sorted(missing_all.items()))
         if not a.allow_missing_images:
@@ -508,11 +547,6 @@ def main(argv=None):
             return 2
         print("WARNING: scoring without images for: " + listing, file=sys.stderr)
     info["missing_images"] = missing_all
-    if done:                            # keep earlier expectations, add new ids
-        for arm, sets in (old.get("expected") or {}).items():
-            if arm in expected:
-                for s, ids in sets.items():
-                    expected[arm][s] = sorted(set(ids) | set(expected[arm].get(s, [])))
     info["expected"] = expected         # eligible page ids per arm and set
     with open(side, "w", encoding="utf-8") as f:
         json.dump(info, f, indent=1, sort_keys=True)

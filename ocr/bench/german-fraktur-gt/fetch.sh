@@ -181,7 +181,7 @@ fetch_chronicling() {
   local id n=0 failed=0
   while read -r id; do
     mkdir -p "$d/data/annotations" "$d/data/images"
-    [ -e "$d/data/annotations/$id.xml" ] || cp "$c/data/annotations/$id.xml" "$d/data/annotations/$id.xml" || true
+    [ -e "$d/data/annotations/$id.xml" ] || cp "$c/data/annotations/$id.xml" "$d/data/annotations/$id.xml"
     if [ -s "$d/data/images/$id.jpg" ]; then continue; fi
     nap
     if git -C "$c" lfs pull --include="data/images/$id.jpg" >&2 \
