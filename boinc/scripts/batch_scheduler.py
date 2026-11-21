@@ -2999,7 +2999,7 @@ def native_capacity(config, snapshot):
             for host in config["native_hosts"]}
 
 
-def native_trusted_hosts(config, snapshot, languages=()):
+def native_plan_hosts(config, snapshot, languages=()):
     """A native plan's hosts (#1780): its `native_hosts` list, or with "trusted" each host the
     inventory's native_trusted_hosts (`usnm-boinc host-trust native-trusted` on the BOINC host,
     as `Trust::refuse_native_job` admits) lists for the plan's `image` in every language the plan
@@ -3010,11 +3010,11 @@ def native_trusted_hosts(config, snapshot, languages=()):
     hosts = config["native_hosts"]
     if hosts != NATIVE_TRUSTED_HOSTS:
         return hosts
-    trusted = snapshot.get("native_trusted_hosts")
+    admitted = snapshot.get("native_trusted_hosts")
     cpus = snapshot.get("host_cpus")
-    if not isinstance(trusted, dict) or not isinstance(cpus, dict):
+    if not isinstance(admitted, dict) or not isinstance(cpus, dict):
         return []
-    by_language = trusted.get(config["image"], {})
+    by_language = admitted.get(config["image"], {})
     require(isinstance(by_language, dict) and all(
         isinstance(listed, list) and all(type(h) is int and h > 0 for h in listed)
         for listed in by_language.values()), "invalid native trusted host inventory")
@@ -3048,14 +3048,14 @@ def native_other_units(config, snapshot, targets):
     return others
 
 
-def native_shared_slots(slots, others, trusted):
+def native_shared_slots(slots, others, from_trust):
     """A host's room for this plan with the other plans' units on it taken off (#1780): each
     plan's own limit (units_per_cpu times CPUs, at most pages_per_host, its spot checks' limit)
     then bounds every native plan's units on the host together, not this plan's alone. With
     "trusted" and no per-host count in the inventory, no room; a listed plan keeps its own count
     (an inventory from before the count)."""
     if others is None:
-        return {host: 0 for host in slots} if trusted else slots
+        return {host: 0 for host in slots} if from_trust else slots
     return {host: max(0, room - others.get(host, 0)) for host, room in slots.items()}
 
 
@@ -4401,7 +4401,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     native_from_trust = native and config["native_hosts"] == NATIVE_TRUSTED_HOSTS
     if native_from_trust:
         # This tick's copy of the configuration; the feed fills its pages into the same one.
-        config = {**config, "native_hosts": native_trusted_hosts(
+        config = {**config, "native_hosts": native_plan_hosts(
             config, snapshot, getattr(transport, "extra_claim_languages", ()))}
         if feed:
             feed.config = config
@@ -4909,7 +4909,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                     native_spot_slots(config, state, native_room, now, spot_active), native_others, native_from_trust)
                 if native_from_trust:
                     # A hold another plan's spot check placed since this tick's inventory.
-                    still = set(native_trusted_hosts({**config, "native_hosts": NATIVE_TRUSTED_HOSTS}, room_inventory,
+                    still = set(native_plan_hosts({**config, "native_hosts": NATIVE_TRUSTED_HOSTS}, room_inventory,
                                                      getattr(transport, "extra_claim_languages", ())))
                     native_slots = {host: room if host in still else 0 for host, room in native_slots.items()}
             units = assign_native_hosts(to_submit, native_slots, outstanding)
