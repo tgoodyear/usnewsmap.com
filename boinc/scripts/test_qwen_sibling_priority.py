@@ -75,7 +75,7 @@ def sibling_pair(base, wu, *, sent_ago=10 * HOUR, state=IN_PROGRESS, appid=1, pr
 
 
 def args(**over):
-    base = dict(min_age_hours=6.0, priority=10, max=500, dry_run=False)
+    base = dict(min_age_hours=6.0, priority=10, max=500, max_raised=50, dry_run=False)
     base.update(over)
     return types.SimpleNamespace(**base)
 
@@ -163,6 +163,24 @@ class SiblingPriorityTests(unittest.TestCase):
         _, priorities, _ = go(rows, max=2, dry_run=True)
         self.assertEqual(set(priorities[i] for i in (11, 21, 31, 41, 51)), {0})
 
+    def test_negative_priority_is_never_raised(self):
+        # Batches created below 0 on purpose (Xiaomi at -1) stay behind production work.
+        rows = [*sibling_pair(10, 1, priority=-1), *sibling_pair(20, 2)]
+        report, priorities, _ = go(rows)
+        self.assertEqual((priorities[11], priorities[21]), (-1, 10))
+        self.assertEqual(report["selected"], 1)
+
+    def test_raised_backlog_is_bounded(self):
+        # Two unsent results are already raised: with --max-raised 3 only one more is.
+        rows = [*sibling_pair(10, 1, priority=10), *sibling_pair(20, 2, priority=10),
+                *[row for n in range(3) for row in sibling_pair(30 + 10 * n, 3 + n)]]
+        report, priorities, _ = go(rows, max_raised=3)
+        self.assertEqual((report["already_raised"], report["selected"], report["updated"]), (2, 1, 1))
+        self.assertEqual(sum(priorities[i] == 10 for i in (31, 41, 51)), 1)
+        # At the bound, nothing more is raised.
+        report, _, _ = go(rows, max_raised=2)
+        self.assertEqual((report["selected"], report["updated"]), (0, 0))
+
     def test_empty_run(self):
         report, _, _ = go([])
         self.assertEqual((report["selected"], report["updated"], report["oldest_age_hours"]), (0, 0, 0.0))
@@ -174,7 +192,7 @@ class SiblingPriorityTests(unittest.TestCase):
             P.run(args(), out=io.StringIO(), connect_db=lambda _a: Db(conn))
 
     def test_options(self):
-        for bad in (["--min-age-hours", "-1"], ["--max", "0"]):
+        for bad in (["--min-age-hours", "-1"], ["--max", "0"], ["--max-raised", "0"]):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 P.main(bad)
 
