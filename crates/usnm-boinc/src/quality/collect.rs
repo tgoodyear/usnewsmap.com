@@ -1527,11 +1527,40 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
         "--warm-only and --max-compute-secs need --cache"
     );
     let started = std::time::Instant::now();
-    let cache = opts
+    // A warming run's budget bounds the fingerprinting of the executable and every dependency
+    // too, which on a cold digest index is the longest part: it stops between inputs, keeps the
+    // digests it has, and leaves the rest to the next round.
+    let warm_deadline = opts
+        .warm_only
+        .then_some(opts.max_compute)
+        .flatten()
+        .map(|max| started + max);
+    let cache = match opts
         .cache
         .as_ref()
-        .map(|dir| super::collect_cache::Cache::new(dir, opts))
-        .transpose()?;
+        .map(|dir| super::collect_cache::Cache::with_deadline(dir, opts, warm_deadline))
+        .transpose()
+    {
+        Ok(cache) => cache,
+        Err(e)
+            if e.downcast_ref::<super::collect_cache::BudgetSpent>()
+                .is_some() =>
+        {
+            return Ok((
+                Collected {
+                    summary: Summary::default(),
+                    pages: Vec::new(),
+                    crops: Vec::new(),
+                },
+                Progress {
+                    deferred: true,
+                    inventory_secs: round6(started.elapsed().as_secs_f64()),
+                    ..Progress::default()
+                },
+            ));
+        }
+        Err(e) => return Err(e),
+    };
     let inventory_secs = started.elapsed().as_secs_f64();
     let qe = opts
         .qe_dir
@@ -3108,6 +3137,37 @@ pub(super) mod tests {
         .unwrap();
         assert_eq!((progress.dirty, progress.deferred), (1, false));
         assert_eq!(parts(&opts).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_spent_warming_budget_stops_cache_construction_and_defers() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, _, _) = cached_fixture(dir.path()).await;
+        let spent = Options {
+            warm_only: true,
+            out_dir: None,
+            max_compute: Some(std::time::Duration::ZERO),
+            ..opts
+        };
+        // The deadline has passed before the executable is hashed: nothing is read, and the
+        // round is deferred rather than hashing a cold digest index without bound.
+        let error = super::super::collect_cache::Cache::with_deadline(
+            spent.cache.as_ref().unwrap(),
+            &spent,
+            Some(std::time::Instant::now()),
+        )
+        .err()
+        .expect("construction past the deadline fails");
+        assert!(
+            error
+                .downcast_ref::<super::super::collect_cache::BudgetSpent>()
+                .is_some(),
+            "{error}"
+        );
+        let (collected, progress) = collect_units(&spent).unwrap();
+        assert_eq!((progress.dirty, progress.deferred), (0, true));
+        assert_eq!(collected.pages.len(), 0);
+        assert!(parts(&spent).is_empty());
     }
 
     /// A single-page `usnm_qwen` unit for the fixture's page, with a canonical

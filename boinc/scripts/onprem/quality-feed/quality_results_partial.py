@@ -13,6 +13,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 
@@ -72,6 +73,8 @@ OUT_OF_TIME_FILE = "out-of-time.json"
 # part and only re-checks the inputs' identities. Its digests are kept every 15 s, so a warm that
 # runs out of time resumes where it stopped.
 WARM_SECONDS = 600
+# A warm that stored no part because an input changed is retried after this pause.
+WARM_RETRY_SECONDS = 5
 DIGESTS_DIR = "input-digests"
 
 
@@ -408,27 +411,70 @@ def scope_command(args, project, base, scope):
     return command
 
 
+def warm_deferred(stderr):
+    """Whether the warm collector's progress record says a unit was left for another round: an
+    input changed while it was hashed and no part was stored, though the exit code is 0."""
+    for line in reversed(text_of(stderr).splitlines()):
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("phase") == "warm":
+            progress = event.get("progress")
+            return not isinstance(progress, dict) or progress.get("deferred") is not False
+    return False
+
+
 def scoped_warm(args, project=Path("/project")):
     """Without the step lock: compute and store the part of the unit the next pass will select,
     so the pass, under the lock, finds it cached. A pass that selects another unit (the inventory
-    or progress changed meanwhile) computes that one as before; the stored part is kept."""
+    or progress changed meanwhile) computes that one as before; the stored part is kept.
+    A warm that stores no part (an input changed while it was hashed) is retried within its
+    budget, then defers the pass. A warm that runs out of time, or is stopped by the caller's
+    limit, advances the completion frontier past its unit, as a failed collection does, so the
+    next pass visits another unit; that is scheduling progress, not a load acknowledgement."""
+    started = time.monotonic()
     root = project / "quality" / args.campaign
     frontier = getattr(args, "completion_frontier", False)
     names = submitted_units(root, frontier)
     base = project / "ops/quality-results/scoped" / args.campaign
+    frontier_state = None
     if frontier:
-        selected = frontier_selection(args, base, names)[0]
+        selected, _, _, frontier_state, _ = frontier_selection(args, base, names)
     else:
         selected = select_unit(names, args.after, args.through)[0]
     print(json.dumps({"phase": "warm_selected", "unit": selected}), file=sys.stderr, flush=True)
     scope = prepare_scope(base, root, selected)
     command = [*scope_command(args, project, base, scope), "--warm-only"]
+    budget = WARM_SECONDS - 20
+
+    def stop(_signum, _frame):
+        raise subprocess.TimeoutExpired(command, WARM_SECONDS)
+
+    previous = None
+    if threading.current_thread() is threading.main_thread():
+        previous = signal.signal(signal.SIGTERM, stop)
     try:
-        result = call_collector(command, WARM_SECONDS - 20, "warm")
+        while True:
+            remaining = budget - (time.monotonic() - started)
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, budget)
+            result = call_collector(command, remaining, "warm")
+            sys.stderr.write(result.stderr)
+            result.check_returncode()
+            if not warm_deferred(result.stderr):
+                break
+            print(json.dumps({"phase": "warm_retry", "unit": selected}), file=sys.stderr, flush=True)
+            time.sleep(WARM_RETRY_SECONDS)
     except subprocess.TimeoutExpired as error:
+        if frontier_state is not None:
+            atomic_json(base / "frontier.json", frontier_state)
         raise OutOfTime("warm", selected, error.timeout) from error
-    sys.stderr.write(result.stderr)
-    result.check_returncode()
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
     return {"campaign": args.campaign, "phase": "warmed", "unit": selected}
 
 

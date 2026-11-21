@@ -61,6 +61,19 @@ impl std::fmt::Display for InputChanged {
 
 impl std::error::Error for InputChanged {}
 
+/// A warming run's time ran out while its inputs were being fingerprinted: the digests computed
+/// so far are saved, and the next round resumes from them.
+#[derive(Debug)]
+pub(super) struct BudgetSpent;
+
+impl std::fmt::Display for BudgetSpent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("warming budget spent while fingerprinting inputs")
+    }
+}
+
+impl std::error::Error for BudgetSpent {}
+
 #[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct FileIdentity {
@@ -189,6 +202,9 @@ pub(super) struct Digests {
     added: RefCell<BTreeMap<String, String>>,
     used: RefCell<BTreeSet<String>>,
     flushed: Cell<Instant>,
+    /// Past this, an input that would have to be read is `BudgetSpent` instead. Kept digests are
+    /// still used.
+    deadline: Cell<Option<Instant>>,
 }
 
 fn read_index(path: &Path) -> anyhow::Result<BTreeMap<String, String>> {
@@ -226,7 +242,21 @@ impl Digests {
             added: RefCell::new(BTreeMap::new()),
             used: RefCell::new(BTreeSet::new()),
             flushed: Cell::new(Instant::now()),
+            deadline: Cell::new(None),
         })
+    }
+
+    /// Stops reading inputs once `deadline` has passed (None lifts the limit).
+    pub(super) fn limit(&self, deadline: Option<Instant>) {
+        self.deadline.set(deadline);
+    }
+
+    fn spent(&self) -> anyhow::Result<()> {
+        ensure!(
+            !self.deadline.get().is_some_and(|d| Instant::now() >= d),
+            BudgetSpent
+        );
+        Ok(())
     }
 
     /// The SHA-256 of `path`'s contents, or None when there is no such file. With `strict`, an
@@ -242,6 +272,7 @@ impl Digests {
         {
             let identity = FileIdentity::read(&input)?;
             if !identity.fine() {
+                self.spent()?;
                 return Ok(Some(contents(&mut input)?));
             }
             let settled = identity.settled();
@@ -252,6 +283,7 @@ impl Digests {
                     return Ok(Some(digest));
                 }
             }
+            self.spent()?;
             let digest = match settled.then(|| self.legacy(path, &identity)).transpose()? {
                 Some(Some(digest)) => digest,
                 _ => contents(&mut input)?,
@@ -270,6 +302,7 @@ impl Digests {
         #[cfg(not(unix))]
         {
             let _ = strict;
+            self.spent()?;
             Ok(Some(contents(&mut input)?))
         }
     }
@@ -536,8 +569,19 @@ fn surya_jobs(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
 
 impl Cache {
     pub fn new(dir: &Path, opts: &Options) -> anyhow::Result<Self> {
+        Self::with_deadline(dir, opts, None)
+    }
+
+    /// `new`, but fingerprinting stops between inputs once `deadline` has passed: the digests
+    /// already computed are saved and the error is `BudgetSpent`.
+    pub fn with_deadline(
+        dir: &Path,
+        opts: &Options,
+        deadline: Option<Instant>,
+    ) -> anyhow::Result<Self> {
         let legacy = dir.join("input-digests");
         let digests = Digests::open(opts.digest_cache.as_deref().unwrap_or(&legacy), &legacy)?;
+        digests.limit(deadline);
         let mut version = Sha256::new();
         field(&mut version, FORMAT);
         field(&mut version, opts.campaign.as_bytes());
@@ -690,6 +734,8 @@ impl Cache {
                 "reading job changed during inventory"
             );
         }
+        // Only construction is bounded; keying a unit has its own checks.
+        digests.limit(None);
         Ok(Self {
             dir: dir.to_owned(),
             version: version.finalize().to_vec(),
@@ -1090,6 +1136,31 @@ mod tests {
             serde_json::to_vec(&envelope).unwrap(),
         )
         .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_spent_budget_stops_between_inputs_and_keeps_the_digests_computed() {
+        settled();
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (first, second) = (
+            dir.path().join("first.json"),
+            dir.path().join("second.json"),
+        );
+        let memo = dir.path().join("digests");
+        std::fs::write(&first, b"one").unwrap();
+        std::fs::write(&second, b"two").unwrap();
+        let digests = Digests::open(&memo, &memo).unwrap();
+        digests.limit(Some(Instant::now() + Duration::from_secs(600)));
+        assert!(digests.digest(&first, false).unwrap().is_some());
+        digests.limit(Some(Instant::now()));
+        // The input still to be read is not; the one kept is used.
+        let error = digests.digest(&second, false).unwrap_err();
+        assert!(error.downcast_ref::<BudgetSpent>().is_some(), "{error}");
+        assert!(digests.digest(&first, false).unwrap().is_some());
+        drop(digests);
+        let again = Digests::open(&memo, &memo).unwrap();
+        assert!(kept(&again, &first) && !kept(&again, &second));
     }
 
     #[cfg(unix)]

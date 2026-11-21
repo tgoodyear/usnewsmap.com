@@ -211,6 +211,74 @@ class PartialTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, "bundle-a: out of time in 2 passes in a row")
         self.assertFalse((self.args.state_dir / "test/cursor.json").exists())
 
+    def frontier_units(self):
+        inventory = {
+            "a-ready": {"status": "canonical-present", "fingerprint": "a" * 64},
+            "b-ready": {"status": "canonical-present", "fingerprint": "b" * 64},
+        }
+        for name in inventory:
+            unit = self.root / "quality/test/units" / name
+            unit.mkdir(parents=True)
+            (unit / "submitted").touch()
+            (unit / "quality.json").write_text(json.dumps({"id": self.job, "doc_id": "doc-a"}))
+        self.cache_inventory(inventory)
+        self.args.completion_frontier = True
+        return inventory
+
+    def test_a_warm_that_runs_out_of_time_advances_the_frontier_past_its_unit(self):
+        self.frontier_units()
+        frontier = self.root / "ops/quality-results/scoped/test/frontier.json"
+        seen = []
+        for _ in range(2):
+            with mock.patch.object(partial.subprocess, "run",
+                                   side_effect=subprocess.TimeoutExpired(["collector"], 580)), \
+                    mock.patch.object(sys, "stderr", new_callable=io.StringIO) as log:
+                with self.assertRaises(partial.OutOfTime):
+                    partial.scoped_warm(self.args, self.root)
+            seen.append(json.loads(log.getvalue().splitlines()[0])["unit"])
+            state = json.loads(frontier.read_bytes())
+            self.assertEqual(state["loaded"], {})  # scheduling progress, not a load acknowledgement
+        # The next warm (and so the locked pass) visits the other ready unit.
+        self.assertEqual(seen, ["a-ready", "b-ready"])
+
+    def test_a_warm_stopped_by_the_remote_limit_advances_the_frontier_too(self):
+        self.frontier_units()
+        frontier = self.root / "ops/quality-results/scoped/test/frontier.json"
+
+        def hang(command, **_kwargs):
+            signal_handler = partial.signal.getsignal(partial.signal.SIGTERM)
+            signal_handler(partial.signal.SIGTERM, None)
+
+        with mock.patch.object(partial.subprocess, "run", side_effect=hang), \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO):
+            with self.assertRaises(partial.OutOfTime):
+                partial.scoped_warm(self.args, self.root)
+        self.assertEqual(json.loads(frontier.read_bytes())["priority_after"], "a-ready")
+        self.assertEqual(partial.signal.getsignal(partial.signal.SIGTERM), partial.signal.SIG_DFL)
+
+    def warm_run(self, deferred):
+        progress = {"phase": "warm", "progress": {"dirty": 0, "deferred": deferred}}
+        return subprocess.CompletedProcess(["collector"], 0, stdout="", stderr=json.dumps(progress) + "\n")
+
+    def test_a_warm_that_stored_no_part_is_retried_then_defers_the_pass(self):
+        unit = self.root / "quality/test/units/bundle-a"
+        unit.mkdir(parents=True)
+        (unit / "submitted").touch()
+        (unit / "quality.json").write_text(json.dumps({"id": self.job, "doc_id": "doc-a"}))
+        with mock.patch.object(partial.time, "sleep"), \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as log:
+            with mock.patch.object(partial.subprocess, "run",
+                                   side_effect=[self.warm_run(True), self.warm_run(False)]) as run:
+                warmed = partial.scoped_warm(self.args, self.root)
+            self.assertEqual((warmed["phase"], run.call_count), ("warmed", 2))
+            self.assertIn('"phase": "warm_retry"', log.getvalue())
+            # Still deferred when the budget is spent: the pass is deferred, not warmed.
+            clock = iter([0.0, 1.0, 2.0, 1000.0, 1001.0])
+            with mock.patch.object(partial.time, "monotonic", side_effect=lambda: next(clock)), \
+                    mock.patch.object(partial.subprocess, "run", return_value=self.warm_run(True)):
+                with self.assertRaises(partial.OutOfTime):
+                    partial.scoped_warm(self.args, self.root)
+
     def test_a_failed_warm_leaves_the_error_to_the_locked_pass(self):
         self.args.warm_without_lock = True
         with mock.patch.object(partial.uuid, "uuid4", return_value=types.SimpleNamespace(hex=self.snapshot)), \
