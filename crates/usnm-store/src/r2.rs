@@ -12,9 +12,13 @@
 //! What it does: `get`, `put`, `put_new` (a create with `If-None-Match: *`,
 //! which R2 answers 412 when the key exists), `exists` and `modified` (HEAD),
 //! `list`, `list_stem` and `list_info` (ListObjectsV2, every page), and
-//! `get_if_match`, `get_stream` (the body read as it arrives) and `delete_if_match` (a HEAD
-//! that must show the ETag, then a DELETE carrying `If-Match`, so the delete stays guarded
-//! even where the service ignores that header on a delete).
+//! `get_if_match`, `get_stream` (the body read as it arrives) and `delete_if_match`: a HEAD
+//! that must show the ETag, then a DELETE carrying `If-Match`. Only the service enforcing
+//! `If-Match` on the DELETE makes it atomic; if it ignores the header, an object written again
+//! between the HEAD and the DELETE is deleted. Its one user, `cloud pull-results`, deletes keys
+//! the export writes once and never again (every publication has a key of its own), so that
+//! window has nothing to race with there; check the header is honoured before relying on it
+//! for keys that are rewritten.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
