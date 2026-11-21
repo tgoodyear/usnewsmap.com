@@ -14,6 +14,7 @@ One directory per report, named `<year>-<month>-<topic>`. A report is `report.md
 | [2026-11-cherokee](2026-11-cherokee/)                       | Cherokee: searchable volume, OCR accuracy proxies, models tried, and a plan  |
 | [2026-11-gain-measures](2026-11-gain-measures/)             | Which gain measure tracks real CER: damage rate against qe-v1 `lm_oov`       |
 | [2026-11-gpu-studies](2026-11-gpu-studies/)                 | GPU OCR studies and their reproduction notes                                 |
+| [2026-11-native-ocr-macos](2026-11-native-ocr-macos/)       | Native OCR on macOS arm64: page parity and the calibrated challenge (#1418)  |
 | [2026-11-reader-comparison](2026-11-reader-comparison/)     | Protocol for the per-language reader comparison on BOINC (#968)              |
 
 ## Data

@@ -1,0 +1,8 @@
+gh api "repos/tgoodyear/usnewsmap.com/actions/workflows/boinc-ocr-native.yml/runs?branch=main&status=success&per_page=5"   -> run 43155081356 (main c622865e21d7ff6a8712cdcfb8db953866a2faa6, 2026-11-12 04:28 UTC); jobs macos arm64 and x86_64 success
+gh run download 43155081356 -n boinc-ocr-native-arm64-apple-darwin  / -n boinc-ocr-native-x86_64-apple-darwin
+check-native-ocr-build.py --platform <plat> --binary build/usnm_ocr --extra-file <every other file>   (repo at origin/main ac0843d6b; outputs in check-native-ocr-build-*.txt)
+rsync from the dev container's native-challenge-1418/ directory with rsync-filter.txt (scans, Linux outputs, campaign, gold results)
+dev container: native_fixture (published fixture binary) generated job files for the macOS image/base in macos-jobs-arm64/ (needed because job id hashes the image digest); 4 JPEG pages also run there through the Linux native build 4d6e
+run-mac.sh --arch arm64 --build artifact-arm64/build --jobs jobs-arm64 --linux-ref linux-ref --out run-arm64   (pages: 10 JP2 sequentially; gold: calibrated English challenge d8cd7279...)
+JPEG: 4 pages in parallel, same slot layout, usnm_ocr run in each slot
+analyze.py --root . --out receipts

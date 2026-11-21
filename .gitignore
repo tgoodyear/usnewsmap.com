@@ -30,8 +30,11 @@ docs/reports/**/*.jsonl
 # The lines and word boxes loaded on check.usnewsmap.com's Phoenix sets, which the scorer and `usnm-glyphs add-checked` read.
 !docs/reports/2026-11-cherokee/check-lines-manifest.jsonl
 !docs/reports/2026-11-cherokee/check-glyph-index.jsonl
+# The macOS native OCR parity receipts (#1418): counts and hashes only, no OCR text, under 100 KB.
+!docs/reports/2026-11-native-ocr-macos/*.json
 docs/reports/**/*.parquet
 docs/reports/**/*.txt
+!docs/reports/2026-11-native-ocr-macos/*.txt
 docs/reports/**/*.gz
 docs/reports/**/*.pdf
 docs/reports/**/*.tar
