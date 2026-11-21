@@ -112,6 +112,14 @@ The 7-day p50 is 62 s and the p90 552 s, but both mostly describe the days befor
 
 **Rotation window (#1687).** A planned plan rotation onto a new app version stops the controller and leaves the queue empty for a while. `feed_status.py --rotation-start --state-dir DIR --minutes N --reason TEXT` (N at most 240) writes `rotation.json` in the evaluator's state directory. Until it ends, `cpu_shortage` and `usnm_ocr_no_work` stay pending (the check carries `rotation_until`) and fire at its end if still true, and a missing controller tick doesn't count towards `collection`. The controller's checks stay unknown but carry `excused`, and the alert sends no row for them, even while another source's outage fires `collection`. Every other check, and a controller tick that fails, fires as usual. `--rotation-end --state-dir DIR` closes it early; an expired or malformed file is ignored. The order a rotation follows is in [boinc-ocr-bundles.md](../apps/ocr-bundles.md#rotating-a-plan-onto-a-new-worker-version).
 
+**Held-page archive runs (#835).** Every held-page archive unit on the controller host, the main plan's `usnm-boinc-held-archive.service` and each native plan's, holds the tick lock while it dispatches and bridges a batch: the main plan's tick waits, the drain plans skip (`held_archive_running`), and the main plan's own archive also stops `usnm-boinc-priority-controller@main.timer` for each batch. Those are the plans that make `usnm_ocr` workunits, so on 20 and 21 Nov 2026 `usnm_ocr_no_work` fired during or after nearly every run (each run stopped main 2 to 4 times, for 10 to 36 minutes, and the newest workunit came 1 to 2.6 hours apart, with a backlog of about 233,000). With `--archive-runs`, the controller source adds `archive_runs`: each archive unit's latest run as `[started_at, ended_at]` (`ended_at` null while it runs), found as the `--maintenance-unit` units and every loaded `usnm-boinc-held-archive*.service` or hand-run `usnm-held-archive-*.service`; no unit name leaves the host. The evaluator keeps the runs it has seen in its state, since systemd shows only a unit's latest, and a run it saw running that is no longer reported running counts as ended when it was last seen. `usnm_ocr_no_work` then stays pending, carrying `archive_until`, while a run lasts and for one hold (an hour) after it ends, and fires as usual:
+
+- when the check was already due before the run began (the newest workunit was an hour old at its start): a stall the archive didn't make;
+- once a run has lasted `ARCHIVE_PAUSE_MAX_S` (3 hours; a main-plan run is at most its 90-minute lock wait, its 60-minute budget and a last batch), or for a run that ended after less than a minute (`ARCHIVE_MIN_RUN_S`: a run that found main paused by an operator and skipped);
+- once the newest workunit is `ARCHIVE_WORKUNIT_MAX_AGE_S` (3 hours) old, whatever runs, so an archive delays a real stall's alert by two hours at most.
+
+Without the field (an older collector, the flag left out, the source down) nothing waits. No other check does: `controller_tick` still fires on a failed archive that left the controller without a good tick, and `controller_cap` on journals the archive didn't clear.
+
 The supply model loads app versions as the feeder does: the version installed on a host stands for its platform and plan class, so a host whose only installed version is older than the one published still counts, for the version the scheduler would send it.
 
 The source units have a 75-second start timeout, the evaluator 90 seconds, both with 256 MiB of memory. The command reader kills its whole process group on timeout, overflow, failure and success, but killing a local Podman CLI doesn't cancel an exec or query already running in the container.
@@ -183,9 +191,10 @@ SOURCE_ARGS="server --project [host-project-path] --window-env /etc/usnm-boinc/q
 # Optional feeder allocation check (#1462), after a server image that ships the guard:
 # append --feeder-guard /usr/local/lib/usnm-boinc/feeder-slot-guard.py to the server SOURCE_ARGS.
 PUSH_URL="http://[existing-dashboard]/api/feed-source/server"
-# controller: SOURCE_ARGS="controller --unit usnm-boinc-priority-controller@main.service --maintenance-unit usnm-boinc-held-archive.service"
+# controller: SOURCE_ARGS="controller --unit usnm-boinc-priority-controller@main.service --maintenance-unit usnm-boinc-held-archive.service --archive-runs"
 # (--unit is the live plan's own unit, #1690; a host still on the shared service names usnm-boinc-priority-controller.service.)
 # (--maintenance-unit, #835: the daily held-page archive pauses the controller; its failures fire `controller_tick` only when the controller then has no good tick for 30 minutes.)
+# (--archive-runs, #835: every archive unit's latest run, so `usnm_ocr_no_work` waits for the pause; see "Held-page archive runs".)
 # Add --discover-plans (#1690) to also check every other plan's tick. Before the per-plan template, --unit is usnm-boinc-priority-controller.service.
 # backlog: SOURCE_ARGS="backlog --dashboard https://[dashboard-name]/api/view.json --requests [qwen-state]/requests --outbox [outbox]/[qwen-campaign] --selection [read-only-selected.jsonl]"
 # each own client: SOURCE_ARGS="client --data-dir [existing-boinc-data-dir]"

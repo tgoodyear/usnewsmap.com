@@ -191,6 +191,15 @@ TICK_EVENTS = ("boinc_batch_tick", "boinc_surya_tick")
 PLAN_KINDS = ("queue", "native", "drain")
 PLAN_STATES = ("active", "paused", "draining", "drained", "idle", "unknown")
 PLANS_ERROR = "plans_unavailable"
+# Held-page archive runs (#835), reported with --archive-runs for usnm_ocr_no_work (feed_status
+# ARCHIVE_*): every archive unit, the main plan's and each native plan's, holds the host's tick lock
+# while it dispatches and bridges a batch, so the main plan's tick waits and the drain plans skip, and
+# the main plan's own archive stops its timer. Only each run's start and end leave the host, never a
+# unit's name. The scheduled units are usnm-boinc-held-archive*.service, the hand-run ones
+# usnm-held-archive-*.service (controller-tick.sh's skip_reason).
+ARCHIVE_UNIT_GLOBS = ("usnm-boinc-held-archive*.service", "usnm-held-archive-*.service")
+ARCHIVE_UNIT = re.compile(r"usnm-(?:boinc-held-archive|held-archive-)[A-Za-z0-9@_.-]*\.service")
+MAX_ARCHIVE_RUNS = 16
 
 
 def failure_reason(error):
@@ -541,6 +550,8 @@ def valid(document, now, kind):
             validate_plans(document["plans"], now)
         if "plans_error" in document and document["plans_error"] != PLANS_ERROR:
             raise ValueError("invalid plan discovery failure")
+        if "archive_runs" in document:
+            validate_archive_runs(document["archive_runs"], now)
     if kind == "dbbackup":
         validate_dbbackup(document, now)
     if kind == "backlog":
@@ -1488,6 +1499,51 @@ def paused_by(maintenance):
     return None
 
 
+def archive_runs(maintenance=()):
+    """Each held-page archive unit's latest run as [started_at, ended_at], Unix seconds, oldest first;
+    ended_at is None while it runs. The units are the --maintenance-unit ones and every loaded unit
+    named like an archive (ARCHIVE_UNIT_GLOBS). systemd keeps only a unit's latest run, so the
+    evaluator remembers the earlier ones (feed_status.archive_runs). A unit that never ran is left out."""
+    raw = run(["systemctl", "list-units", "--all", "--plain", "--no-legend", "--full", "--no-pager",
+               *ARCHIVE_UNIT_GLOBS]).decode()
+    units = set(maintenance)
+    for line in raw.splitlines():
+        fields = line.split()
+        if fields and ARCHIVE_UNIT.fullmatch(fields[0]):
+            units.add(fields[0])
+    runs = []
+    for unit in sorted(units):
+        status = dict(line.split("=", 1) for line in run([
+            "systemctl", "show", unit, "-p", "LoadState", "-p", "SubState",
+            "-p", "ExecMainStartTimestampMonotonic", "-p", "ExecMainExitTimestampMonotonic",
+        ]).decode().splitlines() if "=" in line)
+        if status.get("LoadState") != "loaded":
+            continue
+        start = int(status.get("ExecMainStartTimestampMonotonic", "0")) / 1e6
+        end = int(status.get("ExecMainExitTimestampMonotonic", "0")) / 1e6
+        if not start:
+            continue
+        # Monotonic times to wall-clock ones, as of now.
+        now, mono = time.time(), time.clock_gettime(time.CLOCK_MONOTONIC)
+        started = int(now - (mono - start))
+        if status.get("SubState") in ("start", "running") and start > end:
+            runs.append([started, None])
+        elif end >= start:
+            runs.append([started, max(started, int(now - (mono - end)))])
+    if len(runs) > MAX_ARCHIVE_RUNS:
+        raise ValueError("too many archive units")
+    return sorted(runs, key=lambda r: r[0])
+
+
+def validate_archive_runs(runs, now):
+    if not isinstance(runs, list) or len(runs) > MAX_ARCHIVE_RUNS:
+        raise ValueError("invalid archive runs")
+    for entry in runs:
+        if (not isinstance(entry, list) or len(entry) != 2 or natural(entry[0]) > now
+                or entry[1] is not None and not entry[0] <= natural(entry[1]) <= now):
+            raise ValueError("invalid archive run")
+
+
 def discover_plans(main_unit):
     """The other plans' tick units, from systemd (#1690): every loaded service or timer named like
     a plan's, whichever layout the host is in. Nothing is configured: a plan added with its timer
@@ -2236,8 +2292,9 @@ def collect(config):
             "feeder_allocation", {"status": "unknown", "reason": reason, "app_ids": []})
     if "controller" in documents:
         facts["tick"] = documents["controller"]["tick"]
-        # Present only when the controller source runs with --discover-plans (#1690).
-        for key in ("plans", "plans_error"):
+        # Present only when the controller source runs with --discover-plans (#1690), and
+        # archive_runs with --archive-runs (#835).
+        for key in ("plans", "plans_error", "archive_runs"):
             if key in documents["controller"]:
                 facts[key] = documents["controller"][key]
     if "backlog" in documents:
@@ -2277,6 +2334,10 @@ def main(argv=None):
     p.add_argument("--maintenance-unit", action="append", default=[],
                    help="A unit that pauses the controller for upkeep, such as the held-page archive (#835): "
                         "its failures count as the controller's, and its pause isn't a missing tick")
+    p.add_argument("--archive-runs", action="store_true",
+                   help="Also report each held-page archive unit's latest run (start and end only), so "
+                        "usnm_ocr_no_work waits for the pause it makes (#835). Without it the document is "
+                        "what it was")
     p = sub.add_parser("backlog")
     p.add_argument("--dashboard", required=True)
     p.add_argument("--requests", type=Path, required=True)
@@ -2310,6 +2371,12 @@ def main(argv=None):
                     result["plans"] = plan_ticks(args.unit)
                 except Exception:
                     result["plans_error"] = PLANS_ERROR
+            if args.archive_runs:
+                # Left out when it can't be read: usnm_ocr_no_work then waits for nothing.
+                try:
+                    result["archive_runs"] = archive_runs(tuple(args.maintenance_unit))
+                except Exception:
+                    pass
         elif args.source == "dbbackup":
             result.update(dbbackup(args.replica_cnf, args.rclone, args.bucket, args.r2_env, args.drill_file,
                                    args.output.with_name(args.output.stem + ".r2.json"), result["observed_at"]))

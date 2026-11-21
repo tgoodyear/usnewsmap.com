@@ -1099,6 +1099,65 @@ class MaintenanceTests(unittest.TestCase):
             self.assertEqual(C.main(["controller", "--output", str(Path(folder) / "controller.json")]), 0)
         controller.assert_called_once_with("usnm-boinc-priority-controller@main.service", ())
 
+    def test_archive_runs_are_each_archive_units_latest_run_without_its_name(self):
+        # #835: main's archive, a native plan's and a hand-run one. Monotonic 5000 is NOW.
+        listing = ("usnm-boinc-held-archive.service loaded inactive dead Archive\n"
+                   "usnm-boinc-held-archive-native-feed-4.service loaded activating start Archive\n"
+                   "usnm-held-archive-queue-feed-11.service loaded inactive dead Archive\n"
+                   "usnm-boinc-held-archive.timer loaded active waiting Archive\n"
+                   "usnm-boinc-archive-report.service loaded inactive dead Report\n").encode()
+
+        def show(sub, start, end, load="loaded"):
+            return (f"LoadState={load}\nSubState={sub}\nExecMainStartTimestampMonotonic={start}\n"
+                    f"ExecMainExitTimestampMonotonic={end}\n").encode()
+        outputs = {"usnm-boinc-held-archive.service": show("dead", 1000000000, 4000000000),
+                   "usnm-boinc-held-archive-native-feed-4.service": show("start", 4400000000, 0),
+                   "usnm-held-archive-queue-feed-11.service": show("dead", 0, 0)}
+
+        def run(argv, **_):
+            return listing if argv[1] == "list-units" else outputs[argv[2]]
+        with patch.object(C, "run", side_effect=run) as called, \
+                patch.object(C.time, "time", return_value=NOW), \
+                patch.object(C.time, "clock_gettime", return_value=5000):
+            runs = C.archive_runs((self.ARCHIVE,))
+        # The one that never ran is left out; neither the timer nor the report is an archive.
+        self.assertEqual(runs, [[NOW - 4000, NOW - 1000], [NOW - 600, None]])
+        self.assertEqual(sorted(c.args[0][2] for c in called.call_args_list if c.args[0][1] == "show"),
+                         sorted(outputs))
+        document = {"schema_version": 1, "source": "controller", "observed_at": NOW,
+                    "tick": {"ok": True, "seconds": 5, "finished_at": NOW}, "archive_runs": runs}
+        C.fresh(deepcopy(document), NOW, "controller")
+        for bad in ({}, [[NOW]], [[NOW + 1, None]], [[NOW - 5, NOW - 6]], [[NOW - 5, NOW + 1]], [["1", None]],
+                    [[NOW, None]] * (C.MAX_ARCHIVE_RUNS + 1)):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                C.fresh(deepcopy(document) | {"archive_runs": bad}, NOW, "controller")
+
+    def test_archive_runs_are_opt_in_and_never_replace_the_tick(self):
+        tick = {"ok": True, "seconds": 5, "finished_at": NOW}
+        with fixture() as root:
+            output = root / "controller.json"
+            for argv, runs, expected in ((["--archive-runs"], [[NOW - 60, None]], [[NOW - 60, None]]),
+                                         (["--archive-runs"], OSError("x"), None), ([], [[NOW - 60, None]], None)):
+                with self.subTest(argv=argv), patch.object(C, "controller", return_value=tick), \
+                        patch.object(C, "archive_runs", side_effect=runs if isinstance(runs, Exception) else None,
+                                     return_value=runs) as read, \
+                        patch.object(C.time, "time", return_value=NOW):
+                    self.assertEqual(C.main(["controller", *argv, "--maintenance-unit", self.ARCHIVE,
+                                             "--output", str(output)]), 0)
+                    document = json.loads(output.read_text())
+                    self.assertEqual((document["tick"], document.get("archive_runs")), (tick, expected))
+                    self.assertEqual(read.called, bool(argv))
+                    if argv:
+                        read.assert_called_once_with((self.ARCHIVE,))
+        # The evaluator gets them with the tick.
+        docs = CollectionTests.documents(self)
+        docs["/controller"]["archive_runs"] = [[NOW - 60, None]]
+        with patch.object(C, "read_source", side_effect=lambda path: deepcopy(docs[path])), \
+                patch.object(C.time, "time", return_value=NOW):
+            facts = C.collect({"server": "/server", "controller": "/controller"})
+        self.assertEqual(facts["archive_runs"], [[NOW - 60, None]])
+        self.assertEqual(F.MAX_ARCHIVE_RUNS, C.MAX_ARCHIVE_RUNS)
+
     def test_a_maintenance_unit_must_be_another_service(self):
         for maintenance in (("usnm-boinc-priority-controller.service",), ("bad unit",), ("x.timer",)):
             with self.subTest(maintenance=maintenance), self.assertRaisesRegex(ValueError, "invalid unit"):
