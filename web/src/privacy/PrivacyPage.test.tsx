@@ -63,6 +63,7 @@ describe("PrivacyPage", () => {
     const text = container.textContent ?? "";
     expect(screen.getByRole("heading", { name: "Check site" })).toBeTruthy();
     expect(text).toContain("Cloudflare Turnstile");
+    expect(text).toContain("Opening a language page runs the check, even if you never answer");
     expect(text).toContain("a random id, valid for 30 days and kept in its local storage");
     expect(text).toContain("the time it arrived");
     expect(text).toContain("never stored with your IP address, browser details or location");

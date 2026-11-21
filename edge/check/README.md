@@ -33,7 +33,7 @@ Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language, Yiddish (Ne
 
 ## Who answers, and how answers count
 
-No account is needed. The first answer from a browser runs a Turnstile check, and the Worker issues a signed session holding a random id (30 days, `localStorage`). Answers are stored against that id, so one browser's answer to a word counts once. A later answer replaces it. Nothing else about the person is kept. One id may send at most 30 answers in 10 seconds.
+No account is needed. Every page loads Cloudflare's Turnstile script, and opening a language page without a session runs the check (before any answer), and the Worker issues a signed session holding a random id (30 days, `localStorage`). Answers are stored against that id, so one browser's answer to a word counts once. A later answer replaces it. Nothing else about the person is kept. One id may send at most 30 answers in 10 seconds.
 
 A word **settles** once at least 3 answers are in and one choice has two thirds of them. That choice becomes its outcome: `a`, `b`, `neither`, `unsure` or `notext`; a tie goes to the first in that order. After 7 answers without that agreement, it closes as `disputed`. Settled words leave the queue. `/api/next` gives a person a word they haven't answered, choosing words nearest to settling first, so checked words come in steadily.
 

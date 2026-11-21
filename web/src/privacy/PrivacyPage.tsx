@@ -74,10 +74,11 @@ export default function PrivacyPage() {
         <h2>Check site</h2>
         <p>
           On check.usnewsmap.com you can help check OCR by saying which of two readings of a word matches the print. It
-          has no accounts and sets no cookies. Your first answer runs Cloudflare Turnstile, a browser check, which sees
-          your IP address and browser details under the Cloudflare privacy policy linked below. The site then gives your
-          browser a random id, valid for 30 days and kept in its local storage, so that each browser's answer to a word
-          counts once. Local storage also keeps whether you turned letter names on.
+          has no accounts and sets no cookies. Every check-site page loads Cloudflare Turnstile, a browser check, which
+          sees your IP address and browser details under the Cloudflare privacy policy linked below. Opening a language
+          page runs the check, even if you never answer, and the site then gives your browser a random id, valid for 30
+          days and kept in its local storage, so that each browser's answer to a word counts once. Local storage also
+          keeps whether you turned letter names on.
         </p>
         <p>
           Each answer is stored with that random id, the time it arrived, the choice you made, whether the page's font
