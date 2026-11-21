@@ -129,7 +129,7 @@ checkout_selected() {  # clonedir listfile : sparse-checkout exactly these files
 # Layout: data/annotations/<Title>_<YYYY-MM-DD>_<NNNN>.xml, data/images/<stem>.jpg
 # (Git LFS), data/split.csv (Filename, KoeZ, Test, Validation, OutOfDistribution,
 # Advertisements, Pictures). work_in_progress/ and models/ are never used. Held-out
-# pages (Test, Validation or OutOfDistribution) inside Y0..Y1 are selected, and
+# pages inside Y0..Y1 are selected (all splits; stratum ood, test, validation or train), and
 # meta.csv (page_id,title,year,stratum) is written for score.py.
 cg_select() {  # split.csv outcsv -> stdout: page ids; writes outcsv (meta.csv)
   Y0=$Y0 Y1=$Y1 python3 - "$1" "$2" <<'PY'
@@ -144,7 +144,7 @@ res = []
 for r in rows:
     on = lambda k: (r.get(k) or "").strip().lower() in yes
     stratum = "ood" if on("OutOfDistribution") else "test" if on("Test") else \
-              "validation" if on("Validation") else None
+              "validation" if on("Validation") else "train"
     pid = re.sub(r"\.[A-Za-z0-9]+$", "", os.path.basename((r.get("Filename") or "").strip()))
     m = re.search(r"_((?:18|19)\d\d)-\d\d-\d\d(?:_|$)", pid)
     if not (stratum and pid and m and y0 <= int(m.group(1)) <= y1):

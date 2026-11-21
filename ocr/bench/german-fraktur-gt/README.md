@@ -23,10 +23,10 @@ minimum 10); the Austrian set takes its file URLs from `AT_URLS`.
 
 Layouts: Chronicling Germany `data/annotations/<Title>_<YYYY-MM-DD>_<NNNN>.xml`,
 `data/images/<stem>.jpg` (Git LFS, pulled one image at a time with
-`git lfs pull --include`), `work_in_progress/` and `models/` never used. Pages
-flagged Test, Validation or OutOfDistribution in `data/split.csv` inside the
-year range are selected and `fetch.sh` writes `chronicling/meta.csv`
-(`page_id,title,year,stratum`; stratum `ood`, `test` or `validation`), which
+`git lfs pull --include`), `work_in_progress/` and `models/` never used. All pages
+inside the year range are selected (Tesseract never trained on this set, so
+every split is unseen by it) and `fetch.sh` writes `chronicling/meta.csv`
+(`page_id,title,year,stratum`; stratum `ood`, `test`, `validation` or `train` from `data/split.csv`), which
 `score.py` reads automatically when present (`--meta` overrides it).
 Reichsanzeiger `data/reichsanzeiger-1820-1939/GT-PAGE/<YYYY>_<issue>_<page>.xml`
 (the `with-TableRegion` duplicate is ignored). NZZ truth is
