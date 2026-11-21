@@ -535,6 +535,21 @@ def fresh(document, now, kind):
     raise StaleSource(observed)
 
 
+def error_archive_runs(document, now):
+    """The archive_runs of a fresh controller no_recent_controller_tick envelope (#835), else None. The
+    tick stays unknown; only the runs ride along, validated on their own, so a bad block is dropped
+    without changing the source's reason."""
+    try:
+        if (document.get("source") == "controller" and document.get("error") == NO_RECENT_TICK
+                and 0 <= now - natural(document.get("observed_at")) <= MAX_AGE
+                and "archive_runs" in document):
+            validate_archive_runs(document["archive_runs"], now)
+            return document["archive_runs"]
+    except (ValueError, TypeError, KeyError, AttributeError):
+        pass
+    return None
+
+
 def valid(document, now, kind):
     if document.get("error"):
         if kind == "client" and document["error"] in SOURCE_UNKNOWN_REASONS:
@@ -2196,6 +2211,11 @@ def collect(config):
                 else:
                     reason = "http_protocol_error" if isinstance(error, http.client.HTTPException) else "unavailable_or_invalid"
                 facts["sources"][name] = {"observed_at": None, "state": "unknown", "reason": reason}
+                if name == "controller" and reason == NO_RECENT_TICK:
+                    # An archive pauses the controller: its runs still count, though the tick is unknown.
+                    carried = error_archive_runs(future.result(), completed)
+                    if carried is not None:
+                        facts["archive_runs"] = carried
                 if isinstance(error, StaleSource):
                     # How old the document is: observed_at stays None, as for every unknown source.
                     facts["sources"][name]["last_observed_at"] = error.observed_at
@@ -2364,6 +2384,14 @@ def main(argv=None):
         elif args.source == "client":
             result.update(client(args.data_dir, args.port, args.output.with_name(args.output.stem + ".session.json")))
         elif args.source == "controller":
+            if args.archive_runs:
+                # Read before the tick: an archive pauses the controller, so the tick is often unknown
+                # (no_recent_controller_tick) exactly while a run needs reporting. Left out when it
+                # can't be read: usnm_ocr_no_work then waits for nothing.
+                try:
+                    result["archive_runs"] = archive_runs(tuple(args.maintenance_unit))
+                except Exception:
+                    pass
             result["tick"] = controller(args.unit, tuple(args.maintenance_unit))
             if args.discover_plans:
                 # Their own try: no plan's trouble may replace the live plan's observation.
@@ -2371,12 +2399,6 @@ def main(argv=None):
                     result["plans"] = plan_ticks(args.unit)
                 except Exception:
                     result["plans_error"] = PLANS_ERROR
-            if args.archive_runs:
-                # Left out when it can't be read: usnm_ocr_no_work then waits for nothing.
-                try:
-                    result["archive_runs"] = archive_runs(tuple(args.maintenance_unit))
-                except Exception:
-                    pass
         elif args.source == "dbbackup":
             result.update(dbbackup(args.replica_cnf, args.rclone, args.bucket, args.r2_env, args.drill_file,
                                    args.output.with_name(args.output.stem + ".r2.json"), result["observed_at"]))
