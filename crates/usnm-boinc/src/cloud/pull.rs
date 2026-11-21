@@ -17,6 +17,7 @@
 //! after a crash skips files already in place that verify, so it is safe at any point. Run one
 //! puller per spool.
 use anyhow::{anyhow, bail, ensure, Context};
+use futures::StreamExt;
 use md5::{Digest, Md5};
 use reqwest::{Client, Url};
 use serde::Deserialize;
@@ -28,6 +29,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+use usnm_store::ObjectStore;
 
 pub struct Config {
     base: Url,
@@ -144,9 +146,12 @@ struct Page {
 }
 
 #[derive(Deserialize)]
-struct Workunit {
-    id: i64,
+pub(super) struct Workunit {
+    pub(super) id: i64,
     name: String,
+    /// The application's name; absent from an older listing.
+    #[serde(default)]
+    pub(super) app: String,
     #[serde(default)]
     batch: i64,
     #[serde(default)]
@@ -253,7 +258,7 @@ pub async fn pull_once(cfg: &Config, limit: Option<usize>) -> anyhow::Result<Sta
                 }
                 left -= 1;
                 stats.workunits += 1;
-                match pull_workunit(cfg, wu, &mut stats).await {
+                match pull_workunit(&cfg.spool, &Source::Admin(cfg), wu, &mut stats).await {
                     Ok(()) => done.push(wu.id),
                     Err(e) => stats.failed.push(format!("{}: {e:#}", wu.name)),
                 }
@@ -342,15 +347,51 @@ async fn ack(cfg: &Config, ids: &[i64]) -> anyhow::Result<Acked> {
     Ok(resp.json::<Acked>().await?)
 }
 
-async fn pull_workunit(cfg: &Config, wu: &Workunit, stats: &mut Stats) -> anyhow::Result<()> {
+/// Where a workunit's output bytes come from.
+pub(super) enum Source<'a> {
+    /// The server's admin API (`GET /admin/v1/outputs/<name>`).
+    Admin(&'a Config),
+    /// A results bucket: the object `<files_prefix><stored file name>`.
+    Store {
+        store: &'a dyn ObjectStore,
+        files_prefix: &'a str,
+    },
+}
+
+impl Source<'_> {
+    /// Fetches `f` into `part`, checked and fsynced; removes `part` on any failure.
+    async fn fetch(&self, f: &OutFile, part: &Path) -> anyhow::Result<()> {
+        match self {
+            Source::Admin(cfg) => download(cfg, f, part).await,
+            Source::Store {
+                store,
+                files_prefix,
+            } => {
+                let r = download_store(*store, &format!("{files_prefix}{}", f.name), f, part).await;
+                if r.is_err() {
+                    let _ = fs::remove_file(part);
+                }
+                r
+            }
+        }
+    }
+}
+
+/// Writes one workunit into the spool under `spool`, taking file bytes from `src`.
+pub(super) async fn pull_workunit(
+    spool: &Path,
+    src: &Source<'_>,
+    wu: &Workunit,
+    stats: &mut Stats,
+) -> anyhow::Result<()> {
     ensure!(
         safe_component(&wu.name),
         "unsafe workunit name {:?}",
         wu.name
     );
     ensure!(wu.batch >= 0, "negative batch {}", wu.batch);
-    let dir = cfg.spool.join("results").join(wu.batch.to_string());
-    let incoming = cfg.spool.join(".incoming");
+    let dir = spool.join("results").join(wu.batch.to_string());
+    let incoming = spool.join(".incoming");
     // Check every name before touching the filesystem.
     let files = match (&wu.canonical_result, wu.error_mask) {
         (_, m) if m != 0 => &[][..],
@@ -386,9 +427,9 @@ async fn pull_workunit(cfg: &Config, wu: &Workunit, stats: &mut Stats) -> anyhow
     }
     // The spool root must exist already; every directory made below is synced into its parent
     // before anything is acknowledged.
-    make_dir(&cfg.spool, &incoming)?;
-    make_dir(&cfg.spool, &cfg.spool.join("results"))?;
-    make_dir(&cfg.spool.join("results"), &dir)?;
+    make_dir(spool, &incoming)?;
+    make_dir(spool, &spool.join("results"))?;
+    make_dir(&spool.join("results"), &dir)?;
     if wu.error_mask != 0 {
         let marker = format!("0x{:x}\n", wu.error_mask);
         durable_write(
@@ -417,7 +458,7 @@ async fn pull_workunit(cfg: &Config, wu: &Workunit, stats: &mut Stats) -> anyhow
             continue;
         }
         let part = staging(&incoming, wu.batch, &final_name);
-        download(cfg, f, &part).await?;
+        src.fetch(f, &part).await?;
         fs::rename(&part, &dest).with_context(|| format!("placing {final_name}"))?;
         sync_dir(&dir)?;
         stats.files_written += 1;
@@ -507,6 +548,44 @@ async fn download_inner(cfg: &Config, f: &OutFile, part: &Path) -> anyhow::Resul
         digest.eq_ignore_ascii_case(&f.md5),
         "{} md5 {digest} differs from the listed {}",
         f.name,
+        f.md5
+    );
+    out.sync_all()?;
+    Ok(())
+}
+
+/// Streams the object at `key` into `part`, checks size and MD5 against the listing, and fsyncs
+/// it. The caller removes `part` on failure.
+async fn download_store(
+    store: &dyn ObjectStore,
+    key: &str,
+    f: &OutFile,
+    part: &Path,
+) -> anyhow::Result<()> {
+    let mut stream = store
+        .get_stream(key)
+        .await
+        .with_context(|| format!("fetching {key}"))?
+        .ok_or_else(|| anyhow!("{key} is not in the results bucket"))?;
+    let mut out = File::create(part)?;
+    let mut h = Md5::new();
+    let mut got = 0u64;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.with_context(|| format!("reading {key}"))?;
+        got += chunk.len() as u64;
+        ensure!(
+            got <= f.nbytes,
+            "{key} is larger than the listed {} bytes",
+            f.nbytes
+        );
+        h.update(&chunk);
+        out.write_all(&chunk)?;
+    }
+    ensure!(got == f.nbytes, "{key} is {got} bytes, listed {}", f.nbytes);
+    let digest = hex(&h.finalize());
+    ensure!(
+        digest.eq_ignore_ascii_case(&f.md5),
+        "{key} md5 {digest} differs from the listed {}",
         f.md5
     );
     out.sync_all()?;

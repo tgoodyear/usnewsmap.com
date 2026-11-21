@@ -1,5 +1,6 @@
 //! The `usnm-boinc cloud` command line. `main.rs` only names the group.
 use super::pull::{self, Config};
+use super::pull_results;
 use super::spool_out;
 use super::submit as cloud_submit;
 #[cfg(any(test, feature = "cloud-validatord"))]
@@ -13,6 +14,9 @@ pub enum CloudCommands {
     /// Pull finished workunits from the cloud server into a stock-layout spool, then
     /// acknowledge them (unless --no-ack). Dev cloud server only.
     Pull(PullArgs),
+    /// Pull finished workunits the cloud server exported to a results bucket into the same
+    /// spool, then delete them from the bucket (unless --no-delete). Dev results bucket only.
+    PullResults(PullResultsArgs),
     /// Hand the spool `cloud pull` wrote to the hand-off store with `handoff::put_spool`, one
     /// finished single-page job at a time. Dev cloud server only.
     SpoolOut(SpoolOutArgs),
@@ -109,6 +113,31 @@ pub struct PullArgs {
     /// Workunits per request (1 to 500).
     #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=500))]
     page_size: u32,
+    /// Make one pass and exit. Without it, pass again every --interval-secs.
+    #[arg(long)]
+    once: bool,
+    #[arg(long, default_value_t = 60)]
+    interval_secs: u64,
+}
+
+#[derive(Args)]
+pub struct PullResultsArgs {
+    /// The results bucket: `r2://<bucket>[/<prefix>]` (R2_ENDPOINT, R2_ACCESS_KEY_ID and
+    /// R2_SECRET_ACCESS_KEY set, as `usnm_store::open` reads them) or a local directory.
+    #[arg(long)]
+    results_url: String,
+    /// Spool root: files go to `results/<batch>/`, staging to `.incoming/`.
+    #[arg(long)]
+    spool_dir: PathBuf,
+    /// Shadow mode: write the spool but leave the ledgers and files in the bucket.
+    #[arg(long)]
+    no_delete: bool,
+    /// Stop after this many ledgers (per pass).
+    #[arg(long)]
+    limit: Option<usize>,
+    /// Application to pull; repeat for several. Without it, every app is pulled.
+    #[arg(long = "app")]
+    apps: Vec<String>,
     /// Make one pass and exit. Without it, pass again every --interval-secs.
     #[arg(long)]
     once: bool,
@@ -224,6 +253,27 @@ pub async fn run(command: CloudCommands) -> anyhow::Result<()> {
                 bail!("{} job(s) not submitted", report.failed);
             }
             Ok(())
+        }
+        CloudCommands::PullResults(a) => {
+            let store = usnm_store::open(&a.results_url)
+                .with_context(|| format!("opening the results bucket {}", a.results_url))?;
+            let cfg = pull_results::Config {
+                store,
+                spool: a.spool_dir,
+                apps: a.apps,
+                no_delete: a.no_delete,
+            };
+            loop {
+                let report = pull_results::pull_results_once(&cfg, a.limit).await?;
+                println!("{report}");
+                if !report.failed.is_empty() {
+                    bail!("{} ledger(s) not pulled", report.failed.len());
+                }
+                if a.once {
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_secs(a.interval_secs)).await;
+            }
         }
         CloudCommands::Pull(a) => {
             let token = read_token(&a.token_file, "CBOINC_TOKEN")?;

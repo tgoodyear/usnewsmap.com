@@ -34,6 +34,7 @@ parquet.workspace = true
 quick-xml.workspace = true
 base64.workspace = true
 bytes.workspace = true
+futures.workspace = true
 bzip2.workspace = true
 tar.workspace = true
 chrono.workspace = true
