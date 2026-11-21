@@ -554,6 +554,43 @@ fn native_gold_admits_per_digest_and_never_across_platforms() {
     assert!(listed
         .refuse_native_job(&job, Some(30), super::BuildTrust::embedded().unwrap())
         .is_some());
+    // The admitted set (#1780) is exactly the hosts refuse_native_job lets through.
+    let eng = |language: &str| (language == "eng").then(|| "eng".to_string());
+    let check = |trust: &Trust, builds: &super::BuildTrust| {
+        let admitted = trust.native_admitted(builds, eng);
+        for image in [linux, macos, windows.as_str()] {
+            for host in [13, 21, 30] {
+                let listed = admitted
+                    .get(image)
+                    .and_then(|l| l.get("eng"))
+                    .is_some_and(|h| h.contains(&host));
+                let refused = trust
+                    .refuse_native_job(&self::job(image, "eng", "eng"), Some(host), builds)
+                    .is_some();
+                assert_eq!(listed, !refused, "{image} host {host}");
+            }
+        }
+        admitted
+    };
+    let admitted = check(&listed, &recorded);
+    assert_eq!(admitted[&windows]["eng"], BTreeSet::from([30]));
+    assert_eq!(admitted[linux]["eng"], BTreeSet::from([13]));
+    assert!(!check(&listed, &failed).contains_key(&windows));
+    // A held host is left out; a language routed to another profile lists nobody.
+    let mut held = listed.clone();
+    held.holds.entry(linux.to_string()).or_default().insert(
+        13,
+        super::Hold {
+            at: "2026-11-01T00:00:00Z".into(),
+            job: "e".repeat(64),
+            peer: 21,
+            reason: "spot mismatch".into(),
+        },
+    );
+    assert!(!check(&held, &recorded).contains_key(linux));
+    assert!(listed
+        .native_admitted(&recorded, |_| Some("other".into()))
+        .is_empty());
 }
 
 #[test]

@@ -422,6 +422,15 @@ pub(super) async fn inventory(c: &Config) -> anyhow::Result<Vec<Host>> {
 /// the scheduler doesn't load, or that the gold hook refuses because they don't package the
 /// job's engine, are left out.
 pub(super) async fn requirements(c: &Config, app: &str) -> anyhow::Result<Requirements> {
+    requirements_for(c, app, &c.engine).await
+}
+
+/// [`requirements`] for another engine than the campaign's: a superseded build's (#1780).
+pub(super) async fn requirements_for(
+    c: &Config,
+    app: &str,
+    engine: &crate::gold::job::Engine,
+) -> anyhow::Result<Requirements> {
     ensure!(
         crate::gold::submit::is_gold_app(app),
         "{app} is not a gold app"
@@ -443,7 +452,7 @@ pub(super) async fn requirements(c: &Config, app: &str) -> anyhow::Result<Requir
     )?)
     .into_iter()
     .filter(|r| {
-        packages_engine(&r.xml_doc, native, &c.engine.image, |name| {
+        packages_engine(&r.xml_doc, native, &engine.image, |name| {
             crate::read(&download.join(name), 1 << 20).ok()
         })
     })
@@ -461,8 +470,8 @@ pub(super) async fn requirements(c: &Config, app: &str) -> anyhow::Result<Requir
         Some(path) => Some(bound_platforms(
             &crate::read(path, 1 << 20)
                 .with_context(|| format!("reading engine_platforms {}", path.display()))?,
-            &c.engine.image,
-            &c.engine.base,
+            &engine.image,
+            &engine.base,
         )?),
         None => None,
     };

@@ -374,6 +374,57 @@ class NativeSpotTests(unittest.TestCase):
             polled |= {item.split("=")[0] for item in check.split(",")}
         self.assertEqual(len(polled), 150)
 
+    def test_a_replay_takes_a_unit_of_its_peers_shared_room(self):
+        # #1780: peer 240's limit is 4; another plan has 2 units on it and this plan 1, so only
+        # one of three queued replays goes, and the others wait, queued.
+        spot = self.state.setdefault("native_spot", {})
+        spot["pending"] = {f"{n:064x}": {"source": 13, "target": 240, "image": "sha256:" + "a" * 64, "page": "p",
+                                         "spool": "/project/usnmocr/results/7", "at": NOW, "stage": "queued"}
+                           for n in range(3)}
+        config = {**self.config, "units_per_cpu": 1, "pages_per_host": 4}
+        room = batch.native_replay_room(config, {"host_cpus": {"240": 8, "13": 2}}, {240: 2},
+                                        {"e" * 64: 240, "f" * 64: 13}, False)
+        self.assertEqual(room, {240: 1, 13: 1})
+        batch.native_spot_step(config, self.state, self.fake, NOW, target_room=room)
+        sent = [item.split("=")[0] for item in self.fake.spot_calls[0][0].split(",")]
+        self.assertEqual(sent, [f"{0:064x}"])
+        self.assertEqual(sum(e["stage"] == "queued" for e in self.state["native_spot"]["pending"].values()), 2)
+        # Without a per-host count: no limit for a listed plan, none left for one from the trust list.
+        self.assertIsNone(batch.native_replay_room(config, {}, None, {}, False))
+        self.assertEqual(batch.native_replay_room(config, {}, None, {}, True), {})
+
+    def test_a_replays_room_is_counted_from_the_admission_inventory_when_nothing_is_submitted(self):
+        # #1780 review: side by side, another plan filled peer 240 after this tick's first
+        # inventory. This tick submits no OCR unit (its target is 0), and its replay still
+        # sees 240 full in the inventory taken under the admission lock, so it stays queued.
+        # Host 13 has no CPUs reported, so the plan's target is 0 and the refill block is skipped;
+        # 240 is a configured peer.
+        self.config = spot_config(hosts=(13,), peers=[{"host": 240, "image": self.config["image"]}])
+        self.fake.cpus = {13: 0, 240: 24}
+        spot = self.state.setdefault("native_spot", {})
+        spot["pending"] = {"a" * 64: {"source": 13, "target": 240, "image": self.config["image"], "page": "p",
+                                      "spool": "/project/usnmocr/results/7", "at": NOW, "stage": "queued"}}
+        inventory = self.fake.inventory
+        calls = []
+
+        def counted():
+            calls.append(1)
+            full = {"240": {"units": 0 if len(calls) == 1 else 24, "jobs": []}}
+            return {**inventory(), "native_host_units": full}
+        self.fake.inventory = counted
+
+        class Admission:
+            waited = 0.0
+
+            def acquire(self):
+                return True
+
+            def release(self):
+                pass
+        self.tick(admission=Admission())
+        self.assertGreater(len(calls), 1)
+        self.assertEqual(spot["pending"]["a" * 64]["stage"], "queued")
+        self.assertEqual([call for call in self.fake.spot_calls if call[0]], [])
 
     def test_a_null_setting_is_refused(self):
         config = tbs.native_config((13, 240))
