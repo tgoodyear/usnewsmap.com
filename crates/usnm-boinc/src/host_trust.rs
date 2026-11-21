@@ -45,6 +45,14 @@ pub struct Config {
     /// native build suits, and nothing else limits who a campaign reaches.
     #[serde(default)]
     pub native_hosts: BTreeSet<u64>,
+    /// A native gold campaign for every host (#1780): each host BOINC has seen ask for work in
+    /// the last day that a live `usnm_gold_native` version packaging this build could be sent
+    /// to, and that isn't trusted for it, gets one unit. Trust stays the only gate: the unit is
+    /// the calibrated challenge, judged by `gold-promote` as for a named host. Excludes
+    /// `native_hosts`. Such a pass also retires the host's outstanding native gold unit of a
+    /// build no live version packages any more, so a new build's unit replaces it.
+    #[serde(default)]
+    pub native_auto: bool,
     /// The scheduler gold hook's reviewed bindings (`gold-engine-platforms.json`): onboarding
     /// skips hosts whose platforms aren't bound to this engine's base (#1418).
     #[serde(default)]
@@ -56,6 +64,11 @@ pub struct Config {
 }
 
 impl Config {
+    /// Whether this is a native gold campaign (#1418), for named hosts or every able one.
+    pub fn native(&self) -> bool {
+        self.native_auto || !self.native_hosts.is_empty()
+    }
+
     pub fn parse(path: &Path) -> anyhow::Result<Self> {
         let c: Self = serde_json::from_slice(&read(path, 16 << 10)?)?;
         ensure!(c.root.is_absolute(), "controller root must be absolute");
@@ -78,9 +91,11 @@ impl Config {
                     .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
             "invalid database"
         );
+        // 0 is a cleanup-only pass of a native campaign for every able host (#1780): it retires
+        // unreachable and superseded-build units and issues nothing.
         ensure!(
-            (1..=100).contains(&c.max_hosts),
-            "max_hosts must be 1 to 100"
+            (1..=100).contains(&c.max_hosts) || (c.max_hosts == 0 && c.native_auto),
+            "max_hosts must be 1 to 100 (0 only for a native_auto cleanup pass)"
         );
         ensure!(
             (1..=100).contains(&c.max_spots),
@@ -90,6 +105,10 @@ impl Config {
         ensure!(
             !c.native_hosts.contains(&0),
             "native_hosts must be positive ids"
+        );
+        ensure!(
+            !(c.native_auto && !c.native_hosts.is_empty()),
+            "a native campaign names its hosts or takes every able host, not both"
         );
         ensure!(
             c.engine
@@ -212,14 +231,14 @@ const MAX_ATTEMPTS: u32 = 10_000;
 /// Refuses a native campaign (#1418, docs/boinc/apps/native-ocr.md) for a build `builds` has no
 /// passing run of the scope's calibrated challenge for, or whose recorded Tesseract isn't the
 /// campaign's `engine.base`: no gold unit is issued and no host is admitted for it. A container
-/// campaign (no `native_hosts`) is unchanged.
+/// campaign (neither `native_hosts` nor `native_auto`) is unchanged.
 fn refuse_native_campaign(
     c: &Config,
     trust: &crate::trust::Trust,
     scope: &crate::trust::Scope,
     builds: &crate::trust::BuildTrust,
 ) -> anyhow::Result<()> {
-    if c.native_hosts.is_empty() {
+    if !c.native() {
         return Ok(());
     }
     let policy = trust

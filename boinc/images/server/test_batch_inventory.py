@@ -168,11 +168,11 @@ class InventoryTests(unittest.TestCase):
             (self.spool / ("usnm_ocrb_" + bundle + suffix)).write_text("ok")
         self.assertEqual(self.payload()["jobs"][self.job]["spool"], str(self.spool))
 
-    def run_main(self, stdout):
+    def run_main(self, stdout, extra=()):
         out = self.root / "inventory.json"
         argv = ["batch-inventory.py", "--root", str(self.root), "--results", str(self.results),
                 "--mysql-defaults-file", "my.cnf", "--database", "boinc", "--nonce", "b" * 32,
-                "--out", str(out)]
+                "--out", str(out), *extra]
         done = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout)
         with patch.object(inventory.subprocess, "run", return_value=done), patch("sys.argv", argv):
             inventory.main()
@@ -233,6 +233,42 @@ class InventoryTests(unittest.TestCase):
             self.run_main("2\n" + many)
         self.assertIn(f"LIMIT {inventory.MAX_HOSTS + 1};", inventory.query())
         self.assertNotIn("host_cpus", self.payload())
+
+    def test_reports_each_hosts_native_units_across_plans(self):
+        # #1780: a host's native units of every plan count against its room in each plan.
+        job, other = "c" * 64, "d" * 64
+        payload = self.run_main(f"2\nnative\t13\tusnm_{job}\nnative\t13\tusnm_{other}\n"
+                                f"native\t13\tusnm_spot_replay_1\nnative\t21\tusnm_{self.job}\n")
+        self.assertEqual(payload["native_host_units"], {
+            "13": {"units": 3, "jobs": [job, other]}, "21": {"units": 1, "jobs": [self.job]}})
+        self.assertEqual(self.run_main("0\n")["native_host_units"], {})
+        for bad in ("native\t0\tusnm_x", "native\t13\tother", f"native\t13\tusnm_{job}\nnative\t14\tusnm_{job}",
+                    "native\t13"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "native unit inventory"):
+                self.run_main(f"2\n{bad}\n")
+        # Past the limit the key is left out, and a native plan sends nothing.
+        with patch.object(inventory, "MAX_NATIVE_UNITS", 1):
+            self.assertNotIn("native_host_units",
+                             self.run_main(f"2\nnative\t13\tusnm_{job}\nnative\t13\tusnm_{other}\n"))
+        self.assertIn(f"LIMIT {inventory.MAX_NATIVE_UNITS + 1};", inventory.query())
+        self.assertIn("assignment.target_type = 1", inventory.QUERY)
+        self.assertNotIn("native_host_units", self.payload())
+
+    def test_reports_the_native_trusted_hosts_only_when_given(self):
+        # #1780: from `usnm-boinc host-trust native-trusted`, on the host that holds trust.json.
+        digest = "sha256:" + "4" * 64
+        trusted = self.root / "native-trusted.json"
+        trusted.write_text(json.dumps({digest: {"eng": [13, 21]}}))
+        payload = self.run_main("2\n", ["--native-trusted", str(trusted)])
+        self.assertEqual(payload["native_trusted_hosts"], {digest: {"eng": [13, 21]}})
+        self.assertNotIn("native_trusted_hosts", self.run_main("2\n"))
+        for bad in ({"4" * 64: {"eng": [13]}}, {digest: {"english": [13]}}, {digest: {"eng": [0]}},
+                    {digest: {"eng": [13, 13]}}, {digest: {"eng": ["13"]}}, [digest]):
+            trusted.write_text(json.dumps(bad))
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "native trusted hosts"):
+                self.run_main("2\n", ["--native-trusted", str(trusted)])
+        bridge = Path(__file__).with_name("bridge-job.sh").read_text()
+        self.assertIn('usnm-boinc host-trust native-trusted --trust "$SHARE_DIR/gold/trust.json"', bridge)
 
     def test_query_and_bridge_integration_are_read_only(self):
         bridge = Path(__file__).with_name("bridge-job.sh").read_text()
@@ -334,7 +370,9 @@ class InventorySQLTests(unittest.TestCase):
              f"--port={os.environ['USNM_WORK_VOLUME_MYSQL_PORT']}", "--user=root",
              "--database=mysql", "--batch", "--raw", "--skip-column-names"],
             input="""
-CREATE TEMPORARY TABLE workunit (assimilate_state INTEGER NOT NULL, name VARCHAR(254), appid INTEGER NOT NULL);
+CREATE TEMPORARY TABLE workunit (id INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY, assimilate_state INTEGER NOT NULL,
+ name VARCHAR(254), appid INTEGER NOT NULL);
+CREATE TEMPORARY TABLE assignment (workunitid INTEGER NOT NULL, target_type INTEGER NOT NULL, target_id INTEGER NOT NULL);
 CREATE TEMPORARY TABLE host (id INTEGER NOT NULL PRIMARY KEY, rpc_time DOUBLE NOT NULL,
  p_ncpus INTEGER NOT NULL DEFAULT 0);
 CREATE TEMPORARY TABLE app (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(254) NOT NULL,
@@ -342,19 +380,23 @@ CREATE TEMPORARY TABLE app (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(254) N
 CREATE TEMPORARY TABLE platform (id INTEGER NOT NULL PRIMARY KEY, name VARCHAR(254) NOT NULL);
 CREATE TEMPORARY TABLE app_version (appid INTEGER NOT NULL, platformid INTEGER NOT NULL,
  version_num INTEGER NOT NULL, plan_class VARCHAR(254) NOT NULL, deprecated SMALLINT NOT NULL);
-INSERT INTO app (id, name) VALUES (1,'usnm_ocr'),(2,'usnm_qwen'),(3,'usnm_idle');
+INSERT INTO app (id, name) VALUES (1,'usnm_ocr'),(2,'usnm_qwen'),(3,'usnm_idle'),(4,'usnm_ocr_native');
 INSERT INTO platform VALUES (1,'x86_64-pc-linux-gnu');
 INSERT INTO app_version VALUES (1,1,106,'docker',0),(1,1,107,'docker',1),(2,1,200,'docker',0);
-INSERT INTO workunit VALUES (0,'other-app',2),(1,'usnm_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',1),
+INSERT INTO workunit (assimilate_state, name, appid) VALUES (0,'other-app',2),(1,'usnm_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',1),
  (2,'done',2),(2,'usnm_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',1),(9,'unknown',2),
- (0,'usnm_ocrb_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',1),(0,'usnm_ocrb_short',1),(0,'orphan',7);
+ (0,'usnm_ocrb_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',1),(0,'usnm_ocrb_short',1),(0,'orphan',7),
+ (0,'usnm_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',4),(2,'usnm_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',4);
+-- The unassimilated native unit counts against its host; the assimilated one, and a host-type (2) row, don't.
+INSERT INTO assignment VALUES (9,1,13),(10,1,13),(1,2,13);
 INSERT INTO host VALUES (1,0,4),(2,UNIX_TIMESTAMP()-90000,8),(13,UNIX_TIMESTAMP(),24),(3,UNIX_TIMESTAMP()-1,2);
 """ + inventory.query() + ";",
             text=True, capture_output=True, check=True,
         )
         self.assertEqual(result.stdout.strip(),
-                         "2\nhost\t3\t2\nhost\t13\t24\nminver\t0\nversion\tx86_64-pc-linux-gnu\tdocker\t106\napp\t\t1\napp\tusnm_ocr\t3\napp\tusnm_qwen\t2\nusnm_" + "a" * 64 + "\t1\nusnm_"
-                         + "b" * 64 + "\t2\nusnm_ocrb_" + "c" * 64 + "\t0")
+                         "2\nhost\t3\t2\nhost\t13\t24\nminver\t0\nversion\tx86_64-pc-linux-gnu\tdocker\t106\napp\t\t1\napp\tusnm_ocr\t3\napp\tusnm_ocr_native\t1\napp\tusnm_qwen\t2\n"
+                         "native\t13\tusnm_" + "d" * 64 + "\nusnm_" + "a" * 64 + "\t1\nusnm_" + "b" * 64 + "\t2\nusnm_"
+                         + "d" * 64 + "\t0\nusnm_" + "e" * 64 + "\t2\nusnm_ocrb_" + "c" * 64 + "\t0")
 
 
 if __name__ == "__main__":

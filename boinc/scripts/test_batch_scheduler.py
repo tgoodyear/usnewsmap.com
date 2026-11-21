@@ -41,7 +41,7 @@ def config():
 
 def record(page, number, stage="reserved"):
     return {"stage": stage, "plan": "batch-test",
-            "job": {"id": f"{number:064x}", "message": {"page": page, "batch": "test_batch"},
+            "job": {"id": f"{number:064x}", "message": {"page": page, "batch": "test_batch", "language": "eng"},
                     "engine": {"image": "sha256:" + "a" * 64}}}
 
 
@@ -2012,6 +2012,164 @@ class NativePlanTests(unittest.TestCase):
         self.tick(resume_native=True)
         self.assertEqual([host for _, host in self.native_submissions()], [13, 13])
 
+    def trusted(self, trusted, units=None):
+        """An inventory with `native_trusted_hosts` (None: left out) and `native_host_units`."""
+        inventory = self.fake.inventory
+
+        def with_trust():
+            snapshot = inventory()
+            if trusted is not None:
+                snapshot["native_trusted_hosts"] = trusted
+            if units is not None:
+                snapshot["native_host_units"] = units
+            return snapshot
+        self.fake.inventory = with_trust
+        self.config["native_hosts"] = "trusted"
+
+    def test_trusted_hosts_are_the_trust_lists_active_hosts_for_the_build_and_every_language(self):
+        # #1780: host 9 is trusted but hasn't asked for work in a day; host 7 is trusted for
+        # another build only; host 21 for English but not German, which the plan also claims.
+        image, other = self.config["image"], "sha256:" + "7" * 64
+        self.config["claim_languages"] = ["eng", "deu"]
+        self.fake.cpus = {13: 24, 21: 8, 7: 8, 5: 2}
+        self.trusted({image: {"eng": [13, 21, 9, 5], "deu": [13, 9, 5]}, other: {"eng": [7]}}, {})
+        event = self.tick()
+        self.assertEqual(event["native"]["hosts"], [5, 13])
+        self.assertTrue(event["native"]["from_trust_list"])
+        self.assertEqual(sorted({host for _, host in self.native_submissions()}), [5, 13])
+        # The configuration on disk still says "trusted": the list is this tick's.
+        self.assertEqual(self.config["native_hosts"], "trusted")
+
+    def test_trusted_hosts_fail_closed_without_the_inventorys_trust_or_unit_count(self):
+        for trusted, units in ((None, {}), ({self.config["image"]: {"eng": [13]}}, None)):
+            with self.subTest(trusted=trusted, units=units):
+                self.setUp()
+                self.trusted(trusted, units)
+                event = self.tick()
+                self.assertEqual(self.native_submissions(), [])
+                self.assertEqual(event["target_pending"], 0)
+                self.assertEqual(event["backpressure_reason"], "no_native_hosts")
+        # A listed plan with an inventory from before the count keeps its own count.
+        self.setUp()
+        self.tick()
+        self.assertEqual(len(self.native_submissions()), 4)
+
+    def test_trusted_hosts_leave_out_the_spot_checks_peers(self):
+        peer = {"host": 21, "image": self.config["image"]}
+        self.config[batch.NATIVE_SPOT_KEY] = {"peers": [peer], "canary_pages_per_host": 4}
+        batch._validate_native_spot({**self.config, "native_hosts": "trusted"})
+        self.fake.cpus = {13: 24, 21: 8}
+        self.trusted({self.config["image"]: {"eng": [13, 21]}}, {})
+        self.assertEqual(self.tick()["native"]["hosts"], [13])
+
+    def test_a_hosts_room_is_shared_by_every_native_plan(self):
+        # #1780: host 13's room is 4. Another plan has 3 units on it, and a spot replay one, so
+        # this plan sends none; its own units in the count aren't counted twice.
+        own = "f" * 64
+        self.trusted({self.config["image"]: {"eng": [13, 5]}},
+                     {"13": {"units": 4, "jobs": ["c" * 64, "d" * 64, "e" * 64]}, "5": {"units": 1, "jobs": [own]}})
+        self.fake.cpus = {13: 24, 5: 3}
+        self.state["native_targets"] = {own: 5}
+        event = self.tick()
+        self.assertEqual(event["native"]["other_units"], {"5": 0, "13": 4})
+        self.assertEqual(event["native"]["slots"], {"5": 3, "13": 0})
+        hosts = [host for _, host in self.native_submissions()]
+        self.assertEqual(hosts, [5, 5, 5])
+        # The same holds for a listed plan whose inventory has the count.
+        self.setUp()
+        self.config["native_hosts"] = [13]
+        inventory = self.fake.inventory
+        self.fake.inventory = lambda: {**inventory(), "native_host_units": {"13": {"units": 3, "jobs": []}}}
+        self.assertEqual(self.tick()["native"]["slots"], {"13": 1})
+        self.assertEqual(len(self.native_submissions()), 1)
+
+    def test_each_job_goes_only_to_hosts_trusted_for_its_own_language(self):
+        # #1780 review: a job reserved under another tick's --claim-language (here every job
+        # is German, the plan now claims English) goes only to a host trusted for German.
+        export = self.fake.export
+
+        def german(pages, job_ids=()):
+            export(pages, job_ids)
+            for row in self.fake.rows:
+                row["job"]["message"]["language"] = "deu"
+        self.fake.export = german
+        self.fake.cpus = {13: 24, 5: 24}
+        self.trusted({self.config["image"]: {"eng": [13, 5], "deu": [5]}}, {})
+        self.tick()
+        self.assertEqual({host for _, host in self.native_submissions()}, {5})
+        self.assertEqual(len(self.native_submissions()), 4)
+
+    def test_jobs_no_host_is_admitted_for_never_hold_back_the_ones_after_them(self):
+        # #1780 review: submit_limit bounds the jobs assigned, not the jobs looked at, so the
+        # first reserved jobs being German (no host trusted for it) don't block the English ones.
+        export = self.fake.export
+
+        def mixed(pages, job_ids=()):
+            export(pages, job_ids)
+            for n, row in enumerate(self.fake.rows):
+                row["job"]["message"]["language"] = "deu" if n < 6 else "eng"
+        self.fake.export = mixed
+        self.config.update(pages_per_host=10)
+        self.fake.cpus = {13: 10}
+        self.trusted({self.config["image"]: {"eng": [13]}}, {})
+        self.tick()
+        languages = {row["job"]["id"]: row["job"]["message"]["language"] for row in self.fake.rows}
+        sent = self.native_submissions()
+        self.assertEqual((len(sent), {languages[job_id] for job_id, _ in sent}), (4, {"eng"}))
+        # The English results come in; the six German jobs stay reserved. With room for two
+        # submissions, the two new English jobs go, past the German ones ahead of them.
+        self.results_in()
+        self.fake.actions.clear()
+        self.tick(refill_cap=2)
+        languages = {row["job"]["id"]: row["job"]["message"]["language"] for row in self.fake.rows}
+        sent = self.native_submissions()
+        self.assertEqual((len(sent), {languages[job_id] for job_id, _ in sent}), (2, {"eng"}))
+
+    def test_assigning_passes_over_a_job_no_admitted_host_has_room_for(self):
+        slots = {13: 2, 5: 1}
+        admits = {"a": {5}, "b": {5}, "c": {13}, "d": set()}.get
+        self.assertEqual(batch.assign_native_hosts(["a", "b", "c", "d"], slots, {}, admits),
+                         [("a", 5), ("c", 13)])
+        self.assertEqual(batch.assign_native_hosts(["a", "b", "c"], slots, {}), [("a", 13), ("b", 5), ("c", 13)])
+        self.assertEqual(batch.assign_native_hosts(["a", "b", "c", "d"], slots, {}, admits, limit=1), [("a", 5)])
+
+    def test_a_native_gold_pass_at_the_cap_retires_then_issues_what_a_fresh_count_allows(self):
+        # #1780 review: superseded units could fill the cap for good, so at the cap a native plan
+        # still runs a cleanup-only gold-onboard (GOLD_MAX_HOSTS=0), then counts the room again.
+        steps = []
+        self.fake.step = lambda target, step, **variables: steps.append((step, variables["GOLD_MAX_HOSTS"]))
+        config = {**self.config, "gold_onboarding": [dict(GOLD, max_hosts=5)]}
+        runs, reserved = batch.gold_onboarding(config, {}, self.fake, lambda: None, NOW, held=False, room=0,
+                                               recount=lambda: 3)
+        self.assertEqual(steps, [("gold-onboard", 0), ("gold-onboard", 3), ("gold-promote", 5)])
+        self.assertEqual((runs[0]["steps"]["gold-retire"], runs[0]["max_hosts"], reserved), ("ok", 3, 3))
+        steps.clear()
+        runs, reserved = batch.gold_onboarding(config, {}, self.fake, lambda: None, NOW, held=False, room=0,
+                                               recount=lambda: 0)
+        self.assertEqual(steps, [("gold-onboard", 0), ("gold-promote", 5)])
+        self.assertEqual(runs[0]["steps"]["gold-onboard"], batch.GOLD_SKIPPED_AT_CAP)
+        # A container plan at the cap still skips gold-onboard altogether.
+        steps.clear()
+        batch.gold_onboarding({**config, "app": "usnm_ocr"}, {}, self.fake, lambda: None, NOW, held=False, room=0)
+        self.assertEqual(steps, [("gold-promote", 5)])
+
+    def test_a_native_plans_gold_onboarding_is_a_campaign_for_every_able_host(self):
+        # #1780: no host is named; GOLD_NATIVE makes gold-onboard reach every host a live
+        # usnm_gold_native version of the build could be sent to, and trust stays the gate.
+        steps = []
+        self.fake.step = lambda target, step, **variables: steps.append((step, variables))
+        self.config["gold_onboarding"] = [dict(GOLD, engine_base="sha256:" + "2" * 64)]
+        loaded = batch._validate_native_plan(self.config)
+        self.assertIsNone(loaded)
+        self.tick()
+        self.assertEqual([step for step, _ in steps], ["gold-onboard", "gold-promote"])
+        self.assertEqual(steps[0][1]["GOLD_NATIVE"], 1)
+        self.assertEqual(steps[0][1]["GOLD_ENGINE_IMAGE"], self.config["image"])
+        self.assertNotIn("GOLD_NATIVE_HOSTS", steps[0][1])
+        onprem = (Path(batch.__file__).parent / "onprem-step.sh").read_text()
+        self.assertIn(" GOLD_MAX_HOSTS GOLD_NATIVE ", onprem)
+        self.assertNotIn("GOLD_NATIVE_HOSTS", onprem.split("SSH_GOLD_ONBOARD_VARS=", 1)[1].split("\n", 1)[0])
+
     def test_a_collect_failure_that_publishes_everything_still_stops_the_tick(self):
         self.tick()
         self.results_in()
@@ -2037,6 +2195,9 @@ class NativePlanTests(unittest.TestCase):
         loaded = load(self.config)
         self.assertEqual(loaded["native_hosts"], [13])
         self.assertEqual(load(native_config(hosts=()))["native_hosts"], [])
+        self.assertEqual(load({**self.config, "native_hosts": "trusted"})["native_hosts"], "trusted")
+        self.assertEqual(batch.digest(self.config), batch.digest({**self.config, "native_hosts": "trusted"}))
+        self.assertIn("gold_onboarding", load({**self.config, "gold_onboarding": [dict(GOLD)]}))
         self.assertEqual(load({**self.config, "units_per_cpu": 4})["units_per_cpu"], 4)
         # A plan without it keeps its digest; one with it is a different allocation.
         self.assertNotEqual(batch.digest(self.config), batch.digest({**self.config, "units_per_cpu": 4}))
@@ -2047,6 +2208,8 @@ class NativePlanTests(unittest.TestCase):
             {**self.config, "native_hosts": [13, 13]},
             {**self.config, "native_hosts": [0]},
             {**self.config, "native_hosts": ["13"]},
+            {**self.config, "native_hosts": "all"},
+            {**queue_config(), "native_hosts": "trusted"},
             {**self.config, "native_hosts": list(range(1, batch.MAX_NATIVE_HOSTS + 2))},
             {k: v for k, v in self.config.items() if k != "claim_languages"},
             {**self.config, "pages_per_unit": {"ocr-bulk": 4}, "bundle_app_version": 106},

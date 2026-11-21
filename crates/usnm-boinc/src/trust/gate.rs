@@ -1,7 +1,7 @@
 use super::{PolicyView, Scope, Trust};
 use crate::{atomic, load, save, Lock, Stage};
 use anyhow::{bail, Context};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use usnm_store::ObjectStore;
 
@@ -213,6 +213,57 @@ impl Trust {
             policy.max_cer,
             true,
         )
+    }
+
+    /// Every host [`Trust::refuse_native_job`] admits, by native build digest and page
+    /// language: the hosts a native page job of that language, on that build, may be submitted
+    /// to. `profile_for` is the profile a page job of a language is routed to (the export's
+    /// route), or None for a language no Tesseract profile reads. A language is listed only when
+    /// its routed profile is a calibrated page scope at the job's PSM 3 and 300 DPI, not held,
+    /// and a build only when `builds` records its passing run of that scope's challenge, so a
+    /// controller choosing hosts from this never picks one submission would refuse (#1780).
+    /// An invalid list admits nobody.
+    pub fn native_admitted(
+        &self,
+        builds: &super::BuildTrust,
+        profile_for: impl Fn(&str) -> Option<String>,
+    ) -> BTreeMap<String, BTreeMap<String, BTreeSet<u64>>> {
+        let mut admitted: BTreeMap<String, BTreeMap<String, BTreeSet<u64>>> = BTreeMap::new();
+        let Ok(policies) = self.effective_policies() else {
+            return admitted;
+        };
+        for policy in policies {
+            let scope = &policy.scope;
+            if policy.line_basis.is_some()
+                || policy.hold.is_some()
+                || scope.psm != 3
+                || scope.dpi != 300
+                || profile_for(&scope.language).as_deref() != Some(scope.profile.as_str())
+            {
+                continue;
+            }
+            for (image, hosts) in &policy.hosts {
+                if !immutable_image(image)
+                    || builds
+                        .refuse(image, &policy.manifest_sha256, policy.max_cer, true)
+                        .is_some()
+                {
+                    continue;
+                }
+                let hosts: BTreeSet<u64> = hosts
+                    .iter()
+                    .copied()
+                    .filter(|host| *host > 0 && self.held_host(image, *host).is_none())
+                    .collect();
+                if !hosts.is_empty() {
+                    admitted
+                        .entry(image.clone())
+                        .or_default()
+                        .insert(scope.language.clone(), hosts);
+                }
+            }
+        }
+        admitted
     }
 
     /// Why `job`'s exact `(language, profile, psm, dpi)` scope is held from publication (#835),

@@ -58,6 +58,12 @@ SELECT 'app', COALESCE(app.name, ''), COUNT(*) FROM workunit LEFT JOIN app ON ap
  WHERE workunit.assimilate_state != 2
  GROUP BY app.name
  ORDER BY app.name;
+SELECT 'native', assignment.target_id, workunit.name FROM workunit
+ JOIN app ON app.id = workunit.appid
+ JOIN assignment ON assignment.workunitid = workunit.id AND assignment.target_type = 1
+ WHERE app.name = 'usnm_ocr_native' AND workunit.assimilate_state != 2
+ ORDER BY assignment.target_id, workunit.name
+ LIMIT {native_limit};
 SELECT name, assimilate_state FROM workunit
  WHERE name REGEXP '^usnm_(ocrb_)?[0-9a-f]{64}$'
  ORDER BY name
@@ -68,7 +74,7 @@ SELECT name, assimilate_state FROM workunit
 def query(limit=DEFAULT_MAX_EXISTING_WORKUNITS):
     """QUERY reading one existing workunit past `limit`, so an oversized inventory is seen."""
     return (QUERY.replace("{limit}", str(limit + 1)).replace("{version_limit}", str(MAX_VERSIONS + 1))
-            .replace("{host_limit}", str(MAX_HOSTS + 1)))
+            .replace("{host_limit}", str(MAX_HOSTS + 1)).replace("{native_limit}", str(MAX_NATIVE_UNITS + 1)))
 
 
 # Active hosts whose CPU count is reported, read one past so an oversized list is seen.
@@ -83,6 +89,62 @@ def host_cpus(rows):
     if not all(matches) or len(matches) > MAX_HOSTS or len({m[1] for m in matches}) != len(matches):
         raise ValueError("invalid host inventory")
     return {m[1]: max(0, int(m[2])) for m in matches}
+
+
+# Native OCR units not yet assimilated, by the host each is assigned to (#1780): every native
+# plan's, its spot replays' and retries' alike, so a plan counts the units other plans have on a
+# host against that host's room. Read one past; more than this leaves the key out, and a native
+# plan that needs it then sends nothing.
+MAX_NATIVE_UNITS = 20000
+NATIVE_ROW = re.compile(r"native\t([1-9][0-9]{0,9})\t(usnm_[A-Za-z0-9_.-]{1,250})")
+JOB_WORKUNIT = re.compile(r"usnm_([0-9a-f]{64})")
+
+
+def native_host_units(rows):
+    """{host id: {"units": n, "jobs": [job ids]}} from the native rows: each host's unassimilated
+    usnm_ocr_native units, and the job ids of those named usnm_<job id>. None past
+    MAX_NATIVE_UNITS. Raises on anything malformed or a repeated unit."""
+    matches = [NATIVE_ROW.fullmatch(row) for row in rows]
+    if not all(matches) or len({m[2] for m in matches}) != len(matches):
+        raise ValueError("invalid native unit inventory")
+    if len(matches) > MAX_NATIVE_UNITS:
+        return None
+    hosts = {}
+    for m in matches:
+        entry = hosts.setdefault(m[1], {"units": 0, "jobs": []})
+        entry["units"] += 1
+        job = JOB_WORKUNIT.fullmatch(m[2])
+        if job:
+            entry["jobs"].append(job[1])
+    return hosts
+
+
+# The hosts the trust list admits for native OCR (#1780), as `usnm-boinc host-trust
+# native-trusted` prints them from the BOINC host's gold/trust.json: build digest -> page
+# language -> host ids. Submission refuses any other host (Trust::refuse_native_job).
+MAX_TRUSTED_BUILDS = 64
+MAX_TRUSTED_HOSTS = 100000
+DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+LANGUAGE = re.compile(r"[a-z]{3}")
+
+
+def native_trusted_hosts(document):
+    """The checked native-trusted document. Raises on anything malformed or oversized."""
+    if not isinstance(document, dict) or len(document) > MAX_TRUSTED_BUILDS:
+        raise ValueError("invalid native trusted hosts")
+    total = 0
+    for digest, languages in document.items():
+        if not DIGEST.fullmatch(digest) or not isinstance(languages, dict) or len(languages) > 64:
+            raise ValueError("invalid native trusted hosts")
+        for language, hosts in languages.items():
+            if not LANGUAGE.fullmatch(language) or not isinstance(hosts, list) or \
+                    any(type(h) is not int or not 1 <= h <= 9999999999 for h in hosts) or \
+                    len(set(hosts)) != len(hosts):
+                raise ValueError("invalid native trusted hosts")
+            total += len(hosts)
+    if total > MAX_TRUSTED_HOSTS:
+        raise ValueError("invalid native trusted hosts")
+    return document
 
 
 # The usnm_ocr versions the feeder can load (#1687): its app's min_version and every version not
@@ -177,7 +239,8 @@ def _ids(values, message):
 
 def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
               pending_bundles=(), existing_bundles=None, pending_by_app=None,
-              existing_limit=DEFAULT_MAX_EXISTING_WORKUNITS, app_versions=None, cpus=None):
+              existing_limit=DEFAULT_MAX_EXISTING_WORKUNITS, app_versions=None, cpus=None,
+              native_units=None, native_trusted=None):
     """pending_ids/existing_ids are single-page workunits' job ids; pending_bundles and
     existing_bundles are OCR bundle workunits' bundle ids (#1059), reported as their pages,
     which the server's journals name (record["bundle"]). pending_by_app is each app's
@@ -288,6 +351,13 @@ def inventory(root, results, counts, nonce, pending_ids=(), existing_ids=None,
     if cpus is not None:
         # Host id (a string, as JSON keys are) -> its CPU count, active hosts only (#1780).
         payload["host_cpus"] = cpus
+    if native_units is not None:
+        # Host id -> its unassimilated usnm_ocr_native units and their job ids (#1780).
+        payload["native_host_units"] = native_units
+    if native_trusted is not None:
+        # Build digest -> page language -> the hosts submission would admit (#1780). Without
+        # it, a native plan with "native_hosts": "trusted" has no hosts.
+        payload["native_trusted_hosts"] = native_trusted
     return payload
 
 
@@ -299,6 +369,8 @@ def main():
     parser.add_argument("--database", required=True)
     parser.add_argument("--nonce", required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--native-trusted", type=Path,
+                        help="usnm-boinc host-trust native-trusted's output (#1780)")
     args = parser.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_]+", args.database):
         parser.error("invalid database name")
@@ -314,8 +386,14 @@ def main():
     apps = [APP_ROW.fullmatch(value) for value in output[1:] if value.startswith("app\t")]
     versioned = [value for value in output[1:] if value.startswith(("minver\t", "version\t"))]
     cpus = host_cpus([value for value in output[1:] if value.startswith("host\t")])
+    native_units = native_host_units([value for value in output[1:] if value.startswith("native\t")])
     names = [value for value in output[1:]
-             if not value.startswith(("app\t", "minver\t", "version\t", "host\t"))]
+             if not value.startswith(("app\t", "minver\t", "version\t", "host\t", "native\t"))]
+    native_trusted = None
+    if args.native_trusted is not None:
+        if args.native_trusted.stat().st_size > 16 << 20:
+            raise ValueError("invalid native trusted hosts")
+        native_trusted = native_trusted_hosts(json.loads(args.native_trusted.read_text()))
     if not hosts.isdecimal() or not all(apps) or len({app[1] for app in apps}) != len(apps) or \
             any(not re.fullmatch(r"usnm_(ocrb_)?[0-9a-f]{64}\t-?[0-9]+", value) for value in names):
         raise ValueError("invalid database inventory")
@@ -337,7 +415,7 @@ def main():
                         [name for name, _ in bundles],
                         pending_by_app={app[1]: int(app[2]) for app in apps if app[1]},
                         existing_limit=existing_limit, app_versions=ocr_app_versions(versioned),
-                        cpus=cpus)
+                        cpus=cpus, native_units=native_units, native_trusted=native_trusted)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, sort_keys=True) + "\n")
 
