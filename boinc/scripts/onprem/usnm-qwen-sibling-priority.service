@@ -1,0 +1,15 @@
+[Unit]
+Description=Raise the priority of stranded usnm_qwen siblings so they are sent first
+After=usnm-boinc-server.service
+
+[Service]
+Type=oneshot
+# The script runs in the server container (MySQLdb, config.xml and the DB TLS files are there)
+# and is read from the host's checkout on stdin, as the other BOINC-side scripts are run.
+StandardInput=file:/opt/usnm/boinc/scripts/qwen-sibling-priority.py
+# The in-container timeout ends the script itself before systemd's, so a stalled database call
+# can't outlive the run and overlap the next one.
+ExecStart=/usr/bin/podman exec -i usnm-boinc-server /usr/bin/timeout --signal=TERM --kill-after=5s 100s /usr/bin/python3 - --min-age-hours 6 --priority 10 --max 500
+SyslogIdentifier=usnm-qwen-sibling-priority
+TimeoutStartSec=120
+Nice=10
