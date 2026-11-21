@@ -7,8 +7,9 @@ copies, because every result has priority 0 and the scheduler sends the higher p
 This finds unsent results (`server_state` UNSENT) of the app whose workunit has another result
 that was sent (IN_PROGRESS or OVER, `sent_time` > 0), once the oldest such sibling was sent at
 least `--min-age-hours` ago, and sets their priority to `--priority` where it is lower. It never
-lowers a priority it did not set, and never touches another app: a journal records each boost and
-the priority it replaced, and only those are ever put back. A rerun finds nothing new.
+lowers a priority it did not set, and never touches another app: a table in the project database
+(`usnm_qwen_sibling_boost`) records each boost and the priority it replaced, and only those are
+ever put back. A rerun finds nothing new.
 
 It runs in the BOINC server container (it needs MySQLdb, the project's `config.xml` and the DB
 TLS files), and prints one JSON summary line per run:
@@ -18,7 +19,6 @@ TLS files), and prints one JSON summary line per run:
 
 import argparse
 import json
-import os
 import sys
 import xml.etree.ElementTree as ET
 
@@ -73,38 +73,34 @@ SELECT_SQL = (
 LOCK_NAME = "usnm-qwen-sibling-priority"
 
 
-def load_journal(path):
-    """This step's own boosts: result id -> the priority it had and its workunit's first send."""
-    try:
-        with open(path) as f:
-            raised = json.load(f)["raised"]
-    except FileNotFoundError:
-        return {}
-    return {int(k): {"from": int(v["from"]), "first_sent": int(v["first_sent"])} for k, v in raised.items()}
+# This step's own boosts, kept in the project database next to the rows they change, so a boost and
+# its record commit or roll back together: the priority it replaced, the one it set, and when its
+# workunit's first copy went out. Only rows listed here are ever put back.
+JOURNAL_TABLE = "usnm_qwen_sibling_boost"
+CREATE_JOURNAL_SQL = (
+    f"CREATE TABLE IF NOT EXISTS {JOURNAL_TABLE} (result_id BIGINT NOT NULL PRIMARY KEY, "
+    "from_priority INT NOT NULL, to_priority INT NOT NULL, first_sent BIGINT NOT NULL)"
+)
 
 
-def save_journal(path, raised):
-    tmp = f"{path}.tmp"
-    with open(tmp, "w") as f:
-        json.dump({"raised": {str(k): v for k, v in sorted(raised.items())}}, f, sort_keys=True)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+def load_journal(cur):
+    """result id -> {"from", "to", "first_sent"} for every boost this step has on record."""
+    cur.execute(f"SELECT result_id, from_priority, to_priority, first_sent FROM {JOURNAL_TABLE}")
+    return {int(r[0]): {"from": int(r[1]), "to": int(r[2]), "first_sent": int(r[3])} for r in cur.fetchall()}
 
 
 def run(args, out=sys.stdout, connect_db=connect):
-    """Each run, under the lock:
+    """Each run, under the lock and in one transaction:
 
-    1. Forget journal entries that were sent, or whose priority someone else changed since.
+    1. Forget boosts that were sent, or whose priority is no longer the one this step set.
     2. Give up on this step's boosts still unsent --give-up-hours after their workunit's first copy
        went out (no host takes them: no eligible plan class, say): put back the priority each had,
        only where it is still the one this step set.
     3. Raise new siblings while this step's outstanding boosts stay within --max-raised, so they
-       never crowd fresh copies out of the app's feeder share.
+       never crowd fresh copies out of the app's feeder share. Each row is raised only from the
+       priority it was selected at, and recorded only if that update took.
 
-    The journal is written before the database commit with every entry this run touches, and again
-    after it without the ones put back, so a failed commit or write leaves only entries that step 1
-    forgets or step 2 retries next run; nothing is lowered that this step did not set.
+    The record lives in a table of the same database, so it can't drift from the rows it describes.
     """
     db = connect_db(args)
     report = {"app": APP, "skipped": None, "forgotten": 0, "gave_up": 0, "restored": 0, "already_raised": 0,
@@ -116,6 +112,10 @@ def run(args, out=sys.stdout, connect_db=connect):
         if cur.fetchone()[0] != 1:
             report["skipped"] = "another run holds the lock"
             return report_out(report, out)
+        if not args.dry_run:
+            # DDL commits implicitly in MySQL, so it runs before any change of this run.
+            cur.execute(CREATE_JOURNAL_SQL)
+            db.commit()
         cur.execute("SELECT UNIX_TIMESTAMP()")
         now = int(cur.fetchone()[0])
         cur.execute("SELECT id FROM app WHERE name=%s", (APP,))
@@ -125,19 +125,22 @@ def run(args, out=sys.stdout, connect_db=connect):
         appid = row[0]
         cutoff = now - int(args.min_age_hours * 3600)
         give_up = now - int(args.give_up_hours * 3600)
-        journal = load_journal(args.journal)
-        live = {}
-        if journal:
-            ids = list(journal)
-            marks = ", ".join(["%s"] * len(ids))
-            cur.execute(f"SELECT id FROM result WHERE appid = %s AND server_state = %s AND priority = %s "
-                        f"AND id IN ({marks})", (appid, UNSENT, args.priority, *ids))
-            live = {int(r[0]) for r in cur.fetchall()}
-        report["forgotten"] = len(journal) - len(live)
+        try:
+            journal = load_journal(cur)
+        except Exception:
+            if not args.dry_run:
+                raise
+            journal = {}  # a dry run before the first real one: no table yet, so no boosts
+        live = set()
+        for rid, e in journal.items():
+            cur.execute("SELECT 1 FROM result WHERE id = %s AND appid = %s AND server_state = %s AND priority = %s",
+                        (rid, appid, UNSENT, e["to"]))
+            if cur.fetchone() is not None:
+                live.add(rid)
+        forgotten = [rid for rid in journal if rid not in live]
         stale = {rid: e for rid, e in journal.items() if rid in live and e["first_sent"] <= give_up}
-        kept = {rid: e for rid, e in journal.items() if rid in live and rid not in stale}
-        report["gave_up"] = len(stale)
-        report["already_raised"] = len(kept)
+        kept = [rid for rid in live if rid not in stale]
+        report.update(forgotten=len(forgotten), gave_up=len(stale), already_raised=len(kept))
         room = min(args.max, max(0, args.max_raised - len(kept)))
         picked = []
         if room:
@@ -146,35 +149,29 @@ def run(args, out=sys.stdout, connect_db=connect):
         report["selected"] = len(picked)
         if picked:
             report["oldest_age_hours"] = round((now - min(sent for _, _, sent in picked)) / 3600, 2)
-        if args.dry_run or not (stale or picked or report["forgotten"]):
+        if args.dry_run or not (stale or picked or forgotten):
             return report_out(report, out)
-        after = dict(kept)
-        after.update({rid: {"from": prio, "first_sent": sent} for rid, prio, sent in picked})
         try:
+            for rid in forgotten:
+                cur.execute(f"DELETE FROM {JOURNAL_TABLE} WHERE result_id = %s", (rid,))
             for rid, e in stale.items():
                 # Only where it is still this step's priority: a result sent or changed since is left alone.
                 cur.execute("UPDATE result SET priority = %s WHERE id = %s AND appid = %s AND server_state = %s "
-                            "AND priority = %s", (e["from"], rid, appid, UNSENT, args.priority))
+                            "AND priority = %s", (e["from"], rid, appid, UNSENT, e["to"]))
                 report["restored"] += cur.rowcount
-            if picked:
-                ids = [rid for rid, _, _ in picked]
-                marks = ", ".join(["%s"] * len(ids))
-                # The guards repeat the selection's, so a result sent or raised since is left alone.
-                cur.execute(
-                    f"UPDATE result SET priority = %s WHERE appid = %s AND server_state = %s "
-                    f"AND priority >= 0 AND priority < %s AND id IN ({marks})",
-                    (args.priority, appid, UNSENT, args.priority, *ids),
-                )
-                report["updated"] = cur.rowcount
-            # Before the commit, the journal lists everything this run may leave raised; after it, only
-            # what stays raised. Either way an entry that isn't at this step's priority is forgotten.
-            save_journal(args.journal, {**stale, **after})
+                cur.execute(f"DELETE FROM {JOURNAL_TABLE} WHERE result_id = %s", (rid,))
+            for rid, prio, sent in picked:
+                # Only from the priority it was selected at, so a result sent or changed since is left alone.
+                cur.execute("UPDATE result SET priority = %s WHERE id = %s AND appid = %s AND server_state = %s "
+                            "AND priority = %s", (args.priority, rid, appid, UNSENT, prio))
+                if cur.rowcount == 1:
+                    cur.execute(f"INSERT INTO {JOURNAL_TABLE} (result_id, from_priority, to_priority, first_sent) "
+                                "VALUES (%s, %s, %s, %s)", (rid, prio, args.priority, sent))
+                    report["updated"] += 1
             db.commit()
         except Exception:
             db.rollback()
             raise
-        if stale:
-            save_journal(args.journal, after)
     finally:
         db.close()
     return report_out(report, out)
@@ -194,8 +191,6 @@ def main(argv=None):
     parser.add_argument("--give-up-hours", type=non_negative_float, default=72.0,
                         help="put back the priority of this step's boosts still unsent once their workunit's first "
                              "copy is this old, and raise no siblings older than this (default 72, the delay bound)")
-    parser.add_argument("--journal", default="/project/usnmocr/qwen/sibling-priority-journal.json",
-                        help="this step's own boosts and the priority each had, so only those are ever put back")
     parser.add_argument("--max-raised", type=positive, default=50,
                         help="most unsent results to keep raised at once, so fresh copies keep their place "
                              "in the feeder (default 50)")
