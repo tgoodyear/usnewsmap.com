@@ -4,11 +4,11 @@ import io
 import itertools
 import json
 import os
-from pathlib import Path
 import sqlite3
 import tempfile
 import types
 import unittest
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("sibling_priority", ROOT / "boinc/scripts/qwen-sibling-priority.py")
