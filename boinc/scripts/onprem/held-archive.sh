@@ -45,7 +45,9 @@
 # --skip-if-busy (default off) is for units whose timers are staggered (RandomizedDelaySec with
 # FixedRandomDelay, so each plan has its own slot in the cycle): if another archive holds the run
 # lock when this one starts, it logs boinc_held_archive_busy ("busy, next slot") and exits 0
-# without waiting, as the other archive's run is the lock's only holder. A wait for the archive
+# without waiting, as the other archive's run is the lock's only holder. It skips at most one slot
+# in a row: the skip leaves held-archive.skipped in --state-dir, and the next run waits as without
+# the flag (and removes it once it holds the lock), so no plan can be starved. A wait for the archive
 # lock that follows (a controller tick holds it too) still fails on --lock-wait-mins: a tick that
 # holds it that long is a real problem.
 #
@@ -191,13 +193,18 @@ take_lock() {
 }
 exec 6> "$LOCK.run"
 # The run lock is held only by archives, so a busy one means another archive is running: skip this
-# slot instead of queueing (#2052), as the staggered timers give the next run its own.
-if $SKIP_IF_BUSY && ! flock -n 6; then
+# slot instead of queueing (#2052), as the staggered timers give the next run its own. A plan skips
+# at most one slot in a row: the marker makes its next run wait for the lock as without the flag, so
+# a plan whose slot always lands in a longer one's run can't be starved while every run exits 0.
+SKIP_MARKER=$STATE_DIR/held-archive.skipped
+if $SKIP_IF_BUSY && [ ! -e "$SKIP_MARKER" ] && ! flock -n 6; then
+  touch "$SKIP_MARKER" || die "could not write $SKIP_MARKER"
   printf '{"event": "boinc_held_archive_busy", "skipped": true, "reason": "busy, next slot"}\n'
   echo "held-page archive busy, next slot"
   exit 0
 fi
 take_lock 6
+rm -f "$SKIP_MARKER"
 exec 9> "$LOCK"
 take_lock 9
 trap - TERM INT
