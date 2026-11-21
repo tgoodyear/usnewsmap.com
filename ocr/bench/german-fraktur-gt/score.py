@@ -272,7 +272,7 @@ def find_pages(set_name, root_dir, meta, years, keep_unknown):
                         os.path.relpath(p, root_dir).split(os.sep)[:-1]:
                     continue            # only the corrected truth counts
                 xmls.append(p)
-    pages, skipped, seen = [], 0, set()
+    pages, skipped, missing, seen = [], 0, [], set()
     for x in sorted(xmls):
         pid = os.path.splitext(os.path.basename(x))[0]
         if pid in seen:                 # same page twice (e.g. a copied tree)
@@ -281,21 +281,22 @@ def find_pages(set_name, root_dir, meta, years, keep_unknown):
         if not img and set_name == "nzz":
             m = NZZ_KEY_RE.search(pid)
             img = imgs.get("key:" + m.group(0)) if m else None
-        if not img:
-            continue
         rel = os.path.relpath(x, root_dir)
         m = meta.get(pid, {})
         year = int(m["year"]) if m.get("year") else year_of(pid, rel)
         if year is None and not keep_unknown or (year is not None and
                 not years[0] <= year <= years[1]):
-            skipped += 1
+            skipped += 1                # year eligibility is decided first
             continue
         seen.add(pid)
+        if not img:                     # eligible page without an image
+            missing.append(pid)
+            continue
         pages.append({"set": set_name, "page_id": pid, "xml": x, "img": img,
                       "year": year if year is not None else "",
                       "title": m.get("title") or title_of(set_name, pid),
                       "stratum": m.get("stratum") or stratum_of(set_name, rel)})
-    return pages, skipped
+    return pages, skipped, missing
 
 # ------------------------------------------------------------- tesseract ----
 def sha256_file(p):
@@ -384,7 +385,8 @@ def resume_problems(old, new, csv_arms):
     for arm in sorted(csv_arms - set(oarms)):
         out.append("CSV has rows for arm %s that the sidecar does not record" % arm)
     for k, label in (("tesseract_version", "tesseract version"), ("cmd", "command"),
-                     ("cpu_cgroup", "cpu cgroup")):
+                     ("cpu_cgroup", "cpu cgroup"),
+                     ("gpu_study_sha256", "GPU-study exclusion list")):
         if old.get(k) != new.get(k):
             out.append("%s changed (%r -> %r)" % (label, old.get(k), new.get(k)))
     return out
@@ -413,6 +415,9 @@ def main(argv=None):
     ap.add_argument("--meta", help="CSV/TSV with page_id,title,year,stratum")
     ap.add_argument("--gpu-study-pages",
                     help="file of page ids (or set/page_id), one per line")
+    ap.add_argument("--allow-missing-images", action="store_true",
+                    help="score anyway when eligible pages have no image; they are "
+                         "recorded as missing and analyze.py reports INCOMPLETE")
     ap.add_argument("--limit", type=int, default=0, help="max pages per set")
     ap.add_argument("--timeout", type=int, default=900)
     a = ap.parse_args(argv)
@@ -428,8 +433,12 @@ def main(argv=None):
         ap.error("--cpu-cgroup needs --workers 1 (a shared cgroup mixes pages)")
     meta_all = load_meta(a.meta)
 
+    gpu_ids = sorted(gpu)
     info = {"arms": {}, "cmd": a.cmd, "years": a.years, "limit": a.limit,
             "cpu_cgroup": a.cpu_cgroup,
+            "gpu_study_ids": gpu_ids,
+            "gpu_study_sha256": hashlib.sha256(
+                "\n".join(gpu_ids).encode("utf-8")).hexdigest(),
             "keep_unknown_year": a.keep_unknown_year}
     for arm in arms:
         p = os.path.join(a.tessdata, arm + ".traineddata")
@@ -466,14 +475,16 @@ def main(argv=None):
             return 2
         info["arms"] = {**old["arms"], **info["arms"]}
 
-    jobs, queued = [], set()
+    jobs, queued, missing_all = [], set(), {}
     expected = {arm: {} for arm in arms}
     for s in a.sets.split(","):
         d = os.path.join(a.data_root, s)
         meta = dict(load_meta(os.path.join(d, "meta.csv"))) \
             if os.path.exists(os.path.join(d, "meta.csv")) else {}
         meta.update(meta_all)           # --meta wins over <set>/meta.csv
-        pages, skipped = find_pages(s, d, meta, (y0, y1), a.keep_unknown_year)
+        pages, skipped, missing = find_pages(s, d, meta, (y0, y1), a.keep_unknown_year)
+        if missing:
+            missing_all[s] = sorted(missing)
         if a.limit:
             pages = pages[:a.limit]
         print("%s: %d pages in %d-%d (%d skipped by year)" % (s, len(pages), y0, y1,
@@ -487,6 +498,21 @@ def main(argv=None):
                     queued.add(k)
                     jobs.append((pg, arm, a.cmd, a.tessdata, a.timeout, gpu,
                                  a.cpu_cgroup))
+    if missing_all:
+        listing = "; ".join("%s: %s" % (k, ", ".join(v)) for k, v in sorted(missing_all.items()))
+        if not a.allow_missing_images:
+            print("REFUSING to score: %d year-eligible pages have no image (%s). "
+                  "Fetch the images or pass --allow-missing-images (the run is then "
+                  "INCOMPLETE in analyze.py)." % (
+                      sum(len(v) for v in missing_all.values()), listing), file=sys.stderr)
+            return 2
+        print("WARNING: scoring without images for: " + listing, file=sys.stderr)
+    info["missing_images"] = missing_all
+    if done:                            # keep earlier expectations, add new ids
+        for arm, sets in (old.get("expected") or {}).items():
+            if arm in expected:
+                for s, ids in sets.items():
+                    expected[arm][s] = sorted(set(ids) | set(expected[arm].get(s, [])))
     info["expected"] = expected         # eligible page ids per arm and set
     with open(side, "w", encoding="utf-8") as f:
         json.dump(info, f, indent=1, sort_keys=True)

@@ -67,6 +67,12 @@ python3 tests_score.py
   per set. For `nzz` only XML under `NZZ_groundtruth` counts as truth (the
   archive also holds uncorrected ABBYY XML for the same pages).
 - `--gpu-study-pages`: page ids (or `set/page_id`), one per line, `#` comments.
+  The sorted ids and their sha256 go in the sidecar; a resume with a different
+  list is refused (use a new `--out`).
+- Year eligibility is decided first. If a year-eligible page has no image,
+  scoring is refused (exit 2, the missing pages are listed). `--allow-missing-images`
+  scores the rest and records the missing pages in the sidecar; `analyze.py` then
+  reports INCOMPLETE.
 - Engine: `--cmd` is a template with `{img} {imgdir} {imgname} {model} {tessdata}`.
   Image form (entrypoint `tesseract`, models baked in at `/opt/tessdata`):
   `--cmd 'podman run --rm --network=none --user 10001:10001 -v {imgdir}:/in:ro,Z IMAGE@sha256:DIGEST /in/{imgname} stdout -l {model} --psm 3 --dpi 300' --version-cmd 'podman run --rm IMAGE@sha256:DIGEST --version'`.
@@ -79,7 +85,9 @@ python3 tests_score.py
   refused (exit 2, nothing overwritten) when the existing sidecar is missing or
   differs in model sha256, `tesseract --version` or `--cmd`; use a new `--out`.
 - The sidecar also holds `expected`, the eligible page ids per arm and set, and
-  `limit`; `analyze.py` uses them to detect incomplete runs.
+  `limit`, `missing_images` and the GPU-study list hash; `analyze.py` uses them to
+  detect incomplete runs. On a resume the earlier `expected` ids are merged with
+  the newly discovered ones, never replaced.
 - CPU seconds are the `RUSAGE_CHILDREN` delta around the call (user+system). With
   `podman run` this counts the client only, not the container, so `cpu_s` is
   client-only there. `--cpu-cgroup PATH` (a cgroup directory holding `cpu.stat`,
@@ -113,12 +121,15 @@ spaces per line, a `HYP` attached to its word.
   (Chronicling Germany 1850-1920, ood stratum included, plus Reichsanzeiger
   pages not in the GPU study); page bootstrap, 10,000 resamples, seed
   20261121; lift iff upper 95% limit <= 0.179. Any set with a point estimate
-  above 0.235 is flagged (hold and investigate) and overrides a lift. A
+  above 0.235 is flagged (hold and investigate); the decision line then reads
+  HOLD, never LIFT. A
   title-clustered bootstrap is shown alongside; GPU-study pages are reported
   separately. The analyzer enforces the year window (`--years`, default
-  1850-1920) on CSV rows and drops undated ones. It prints **INCOMPLETE** (exit 3) and never LIFT unless every expected (set, page, arm) row from the sidecar
-  is present for both arms, both pool sets have scored non-GPU-study pages, and
-  no `--limit` run is involved; a `--limit` smoke run is always incomplete.
+  1850-1920) on CSV rows and drops undated ones. It prints **INCOMPLETE** (exit 3) and never LIFT unless every expected in-window
+  (set, page, arm) row from the sidecar is present for both arms, both pool sets
+  have retained non-GPU-study pages after the year filter, no page lacks an
+  image, no `--limit` run is involved, and (with several CSVs) the sidecars agree
+  on model sha256s, tesseract version, `--cmd` and the GPU-study list; a `--limit` smoke run is always incomplete.
   Duplicate (set, page_id, arm) rows are an error.
 
 ## Licences

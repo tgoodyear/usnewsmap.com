@@ -117,7 +117,7 @@ class T(unittest.TestCase):
             for base in ("data", ".clone/data"):
                 self._touch(d, base + "/1891_1_0001.xml")
                 self._touch(d, base + "/1891_1_0001.jpg", "")
-            pages, _ = score.find_pages("reichsanzeiger", d, {}, (1850, 1920), False)
+            pages, _, _ = score.find_pages("reichsanzeiger", d, {}, (1850, 1920), False)
             self.assertEqual([p["page_id"] for p in pages], ["1891_1_0001"])
             self.assertNotIn(".clone", pages[0]["xml"])
 
@@ -126,7 +126,7 @@ class T(unittest.TestCase):
             for sub in ("NZZ_groundtruth", "NZZ_abbyy"):
                 self._touch(d, sub + "/1900_a.xml")
             self._touch(d, "img/1900_a.png", "")
-            pages, _ = score.find_pages("nzz", d, {}, (1850, 1920), False)
+            pages, _, _ = score.find_pages("nzz", d, {}, (1850, 1920), False)
             self.assertEqual(len(pages), 1)
             self.assertIn("NZZ_groundtruth", pages[0]["xml"])
 
@@ -140,7 +140,7 @@ class T(unittest.TestCase):
             self._touch(d, "xml/NZZ_groundtruth/nzz_18910303_0_0_a1_p1_1.xml")
             self._touch(d, "img/0012_nzz_18910302_0_0_a1_p1_1.tif", "")
             self._touch(d, "img/nzz_18910303_0_0_a1_p1_1.tif", "")
-            pages, _ = score.find_pages("nzz", d, {}, (1850, 1920), False)
+            pages, _, _ = score.find_pages("nzz", d, {}, (1850, 1920), False)
             self.assertEqual(len(pages), 2)
             self.assertTrue(all(p["year"] == 1891 for p in pages))
 
@@ -153,7 +153,7 @@ class T(unittest.TestCase):
             self._touch(d, "meta.csv", "page_id,title,year,stratum\n"
                         "Voss_1895-03-02_0003,Voss,1895,ood\n")
             meta = score.load_meta(os.path.join(d, "meta.csv"))
-            pages, _ = score.find_pages("chronicling", d, meta, (1850, 1920), False)
+            pages, _, _ = score.find_pages("chronicling", d, meta, (1850, 1920), False)
             self.assertEqual([(p["page_id"], p["stratum"]) for p in pages],
                              [("Voss_1895-03-02_0003", "ood")])
 
@@ -172,6 +172,20 @@ class T(unittest.TestCase):
         self.assertTrue(score.resume_problems(
             old, {**new, "arms": {"frak2021": "bb"}}, set()))
         self.assertTrue(score.resume_problems(old, new, {"deu_latf"}))
+        old["gpu_study_sha256"] = "x"
+        self.assertEqual(score.resume_problems(old, {**new, "gpu_study_sha256": "x"}, set()), [])
+        self.assertTrue(score.resume_problems(old, {**new, "gpu_study_sha256": "y"}, set()))
+
+    def test_missing_image_after_year_filter(self):
+        with tempfile.TemporaryDirectory() as d:
+            for n in ("a_1900", "b_1900", "c_1990"):    # c is out of window
+                with open(os.path.join(d, n + ".xml"), "w") as f:
+                    f.write(PAGE)
+            open(os.path.join(d, "a_1900.png"), "w").close()
+            pages, skipped, missing = score.find_pages("reichsanzeiger", d, {}, (1850, 1920), False)
+            self.assertEqual([p["page_id"] for p in pages], ["a_1900"])
+            self.assertEqual(missing, ["b_1900"])
+            self.assertEqual(skipped, 1)
 
     def test_alto(self):
         with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False) as f:
@@ -249,6 +263,80 @@ class A(unittest.TestCase):
                 rc, out = self.run_analyze(self.write(d, self.rows(y), self.EXP))
                 self.assertNotIn("**LIFT**", out, y)
                 self.assertIn("Year window", out)
+
+    def test_provenance_mismatch_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            rows = self.rows()
+            p1 = self.write(d, rows[:2], self.EXP, name="a.csv")
+            p2 = self.write(d, rows[2:], self.EXP, name="b.csv")
+            for p, ver in ((p1, "5.5"), (p2, "5.5")):
+                with open(p + ".meta.json") as f:
+                    m = json.load(f)
+                m.update(tesseract_version=ver, cmd="c", arms={"frak2021": "aa"})
+                with open(p + ".meta.json", "w") as f:
+                    json.dump(m, f)
+            rc, out = self.run_two(p1, p2)
+            self.assertEqual(rc, 0)
+            with open(p2 + ".meta.json") as f:
+                m = json.load(f)
+            for k, v in (("tesseract_version", "5.4"), ("cmd", "d"),
+                         ("arms", {"frak2021": "bb"})):
+                with open(p2 + ".meta.json", "w") as f:
+                    json.dump({**m, k: v}, f)
+                rc, out = self.run_two(p1, p2)
+                self.assertEqual(rc, 3, k)
+                self.assertIn("differs between", out)
+                self.assertNotIn("**LIFT**", out)
+
+    def run_two(self, p1, p2):
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = analyze.main(["--csv", p1, p2, "--n-boot", "200"])
+        return rc, buf.getvalue()
+
+    def test_completeness_uses_year_filtered_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            # reichsanzeiger only has an out-of-window page: no retained pool rows
+            rows = [r for r in self.rows() if r[0] == "chronicling"] + \
+                   [("reichsanzeiger", "p1", arm, "1930", 0) for arm in ("frak2021", "deu_latf")]
+            rc, out = self.run_analyze(self.write(d, rows, self.EXP))
+            self.assertEqual(rc, 3)
+            self.assertIn("no retained non-GPU-study pages", out)
+            self.assertNotIn("**LIFT**", out)
+            # an expected page with no row at all is missing
+            exp = {arm: {"chronicling": ["p1", "p2"], "reichsanzeiger": ["p1"]}
+                   for arm in ("frak2021", "deu_latf")}
+            rc, out = self.run_analyze(self.write(d, self.rows(), exp))
+            self.assertEqual(rc, 3)
+            self.assertIn("expected pages missing", out)
+            # an expected page present but outside the window is not expected
+            rows = self.rows() + [("chronicling", "p2", arm, "1930", 0)
+                                  for arm in ("frak2021", "deu_latf")]
+            rc, out = self.run_analyze(self.write(d, rows, exp))
+            self.assertEqual(rc, 0)
+
+    def test_flagged_set_holds_before_decision(self):
+        with tempfile.TemporaryDirectory() as d:
+            rows = self.rows() + [("nzz", "n1", arm, "1900", 300)
+                                  for arm in ("frak2021", "deu_latf")]
+            exp = {arm: {**self.EXP[arm], "nzz": ["n1"]} for arm in self.EXP}
+            rc, out = self.run_analyze(self.write(d, rows, exp))
+            self.assertEqual(rc, 0)
+            self.assertIn("**HOLD**", out)
+            self.assertNotIn("**LIFT**", out)
+            self.assertIn("FLAG", out)
+
+    def test_missing_images_make_run_incomplete(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = self.write(d, self.rows(), self.EXP)
+            with open(p + ".meta.json", "w") as f:
+                json.dump({"expected": self.EXP, "limit": 0,
+                           "missing_images": {"chronicling": ["p9"]}}, f)
+            rc, out = self.run_analyze(p)
+            self.assertEqual(rc, 3)
+            self.assertIn("no image", out)
+            self.assertNotIn("**LIFT**", out)
 
     def test_duplicate_keys_error(self):
         with tempfile.TemporaryDirectory() as d:

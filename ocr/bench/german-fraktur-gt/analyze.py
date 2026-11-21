@@ -72,9 +72,33 @@ def in_window(rows, y0, y1):
             kept.append(r)
     return kept, undated, outside
 
-def completeness(csv_paths, rows, arms, pool_sets):
-    """Reasons the run cannot support a decision (empty list: complete)."""
-    problems, expected = [], {}
+PROVENANCE = (("tesseract_version", "tesseract version"), ("cmd", "command"),
+              ("gpu_study_sha256", "GPU-study exclusion list"))
+
+def provenance_problems(metas, arms):
+    """Sidecars of several CSVs must come from the same engine and models."""
+    out = []
+    if len(metas) < 2:
+        return out
+    p0, m0 = metas[0]
+    for p, m in metas[1:]:
+        for arm in arms:
+            a0, a1 = (m0.get("arms") or {}).get(arm), (m.get("arms") or {}).get(arm)
+            if a0 != a1:
+                out.append("model %s sha256 differs between %s and %s" % (arm, p0, p))
+        for k, label in PROVENANCE:
+            if m0.get(k) != m.get(k):
+                out.append("%s differs between %s and %s" % (label, p0, p))
+    return out
+
+def completeness(csv_paths, rows, arms, pool_sets, all_rows=None):
+    """Reasons the run cannot support a decision (empty list: complete).
+
+    rows: the rows kept by the year filter. all_rows: every CSV row; a page
+    whose row exists but fell outside the window is not expected, a page with
+    no row at all is missing."""
+    problems, expected, metas = [], {}, []
+    all_rows = rows if all_rows is None else all_rows
     for p in csv_paths:
         try:
             with open(p + ".meta.json", encoding="utf-8") as f:
@@ -85,18 +109,26 @@ def completeness(csv_paths, rows, arms, pool_sets):
         if not isinstance(meta.get("expected"), dict):
             problems.append("%s.meta.json has no expected-pages list" % p)
             continue
+        metas.append((p, meta))
         if meta.get("limit"):
             problems.append("%s was run with --limit %s" % (p, meta["limit"]))
+        gone = meta.get("missing_images")
+        if gone:
+            n = sum(len(v) for v in gone.values()) if isinstance(gone, dict) else len(gone)
+            problems.append("%s: %d eligible pages have no image "
+                            "(--allow-missing-images)" % (p, n))
         for arm, sets in meta["expected"].items():
             for s, ids in sets.items():
                 expected.setdefault(arm, {}).setdefault(s, set()).update(ids)
+    problems += provenance_problems(metas, arms)
     have = {(r["set"], r["page_id"], r["arm"]) for r in rows}
+    seen = {(r["set"], r["page_id"], r["arm"]) for r in all_rows}
     for arm in arms:
         if arm not in expected:
             problems.append("no expected pages recorded for arm %s" % arm)
             continue
         for s, ids in sorted(expected[arm].items()):
-            miss = sorted(i for i in ids if (s, i, arm) not in have)
+            miss = sorted(i for i in ids if (s, i, arm) not in seen)
             if miss:
                 problems.append("%s/%s: %d of %d expected pages missing (e.g. %s)" % (
                     arm, s, len(miss), len(ids), ", ".join(miss[:3])))
@@ -105,7 +137,8 @@ def completeness(csv_paths, rows, arms, pool_sets):
             problems.append("pool set %s has no expected pages" % s)
         if not any(r["set"] == s and r["arm"] == arms[0] and not r["gpu_study_flag"]
                    for r in rows):
-            problems.append("pool set %s has no scored non-GPU-study pages" % s)
+            problems.append("pool set %s has no retained non-GPU-study pages "
+                            "in the year window" % s)
     return problems
 
 def pooled(rows, col):
@@ -167,8 +200,8 @@ def main(argv=None):
     csv_paths = expand(a.csv)
     all_rows = load(csv_paths)
     pool_sets = set(a.pool_sets.split(","))
-    problems = completeness(csv_paths, all_rows, [a.arm, a.ref_arm], pool_sets)
     rows, undated, outside = in_window(all_rows, y0, y1)
+    problems = completeness(csv_paths, rows, [a.arm, a.ref_arm], pool_sets, all_rows)
     if undated or outside:
         print("Year window %d-%d: dropped %d undated and %d out-of-window rows."
               % (y0, y1, undated, outside))
@@ -200,11 +233,16 @@ def main(argv=None):
             if pool_o:
                 up = pool_o["page_ci"][1]
                 verdict = "LIFT" if up <= LIFT_UPPER else "HOLD"
+                why = ""
+                if flags:               # a flagged set overrides a lift
+                    verdict = "HOLD"
+                    why = " (flagged set: %s)" % ", ".join(flags)
                 if problems:
                     verdict = "INCOMPLETE"
                 print("\nDecision rule A: upper 95%% page-bootstrap limit of pooled folded CER "
-                      "= %.4f vs %.3f -> **%s**" % (
-                          up, LIFT_UPPER, verdict if not problems else "no decision, incomplete"))
+                      "= %.4f vs %.3f -> **%s**%s" % (
+                          up, LIFT_UPPER, verdict if not problems else "no decision, incomplete",
+                          why if not problems else ""))
                 tu = pool_o["title_ci"][1]
                 if verdict == "LIFT" and tu > LIFT_UPPER:
                     print("Note: title-clustered upper limit %.4f exceeds %.3f; "
@@ -214,8 +252,6 @@ def main(argv=None):
             if flags:
                 print("FLAG: set(s) with point estimate > %.3f: %s -> hold and investigate"
                       % (FLAG_POINT, ", ".join(flags)))
-            if verdict == "LIFT" and flags:
-                print("A flagged set overrides: HOLD.")
     if problems:
         print("\nINCOMPLETE: no LIFT verdict is possible.")
         for p in problems:
