@@ -78,7 +78,7 @@ def table(items):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("csv", nargs="+", help="score.py output CSVs (globs ok)")
+    ap.add_argument("--csv", nargs="+", required=True, help="score.py output CSVs (globs ok)")
     ap.add_argument("--arm", default="frak2021", help="deployed arm (decides)")
     ap.add_argument("--ref-arm", default="deu_latf", help="reference arm (reported)")
     ap.add_argument("--pool-sets", default="chronicling,reichsanzeiger",

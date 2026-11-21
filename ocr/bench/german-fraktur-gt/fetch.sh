@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Polite, resumable subset downloaders for the Part A German Fraktur truth sets.
 #
-#   DATA_ROOT=/data ./fetch.sh --list chronicling      # show layout, download nothing big
-#   DATA_ROOT=/data ./fetch.sh chronicling reichsanzeiger nzz
-#   DATA_ROOT=/data ./fetch.sh --with-austrian all
+#   DATA_ROOT=/data ./fetch.sh --list --set chronicling # show layout, download nothing big
+#   DATA_ROOT=/data ./fetch.sh --set chronicling --set reichsanzeiger --set nzz
+#   DATA_ROOT=/data ./fetch.sh --with-austrian --set all
 #
 # Each set lands in $DATA_ROOT/<set>/ with its LICENSE file(s) and MANIFEST.tsv
 # (sha256, bytes, path). >= 1 s sleep between requests. Rerunning resumes
@@ -231,13 +231,18 @@ while [ $# -gt 0 ]; do
     --list) LIST=1 ;;
     --with-austrian) AUSTRIAN=1 ;;
     -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
-    all) sets+=(chronicling reichsanzeiger nzz) ;;
-    chronicling|reichsanzeiger|nzz|austrian) sets+=("$1") ;;
+    --set)
+      shift
+      case "${1:-}" in
+        all) sets+=(chronicling reichsanzeiger nzz) ;;
+        chronicling|reichsanzeiger|nzz|austrian) sets+=("$1") ;;
+        *) echo "unknown set: ${1:-}" >&2; exit 2 ;;
+      esac ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
 [ "$AUSTRIAN" = 1 ] && sets+=(austrian)
-[ ${#sets[@]} -gt 0 ] || { echo "usage: DATA_ROOT=dir $0 [--list] [--with-austrian] {chronicling|reichsanzeiger|nzz|austrian|all}..." >&2; exit 2; }
-[ "$(printf '%s' "$SLEEP" | awk '{print ($1>=1)}')" = 1 ] || { echo "SLEEP must be >= 1" >&2; exit 2; }
+[ ${#sets[@]} -gt 0 ] || { echo "usage: DATA_ROOT=dir $0 [--list] [--with-austrian] --set {chronicling|reichsanzeiger|nzz|austrian|all} [--set ...]" >&2; exit 2; }
+[ "$(awk -v s="$SLEEP" 'BEGIN{print (s>=1)}')" = 1 ] || { echo "SLEEP must be >= 1" >&2; exit 2; }
 for s in "${sets[@]}"; do log "== $s =="; "fetch_$s"; done

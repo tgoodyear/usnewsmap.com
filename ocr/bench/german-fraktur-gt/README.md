@@ -8,8 +8,8 @@ plus Pillow; `fetch.sh` needs bash, git, curl, unzip, python3.
 
 ```sh
 export DATA_ROOT=/path/to/data            # each set goes in $DATA_ROOT/<set>/
-./fetch.sh --list chronicling             # print the layout; download nothing big
-./fetch.sh chronicling reichsanzeiger nzz # add --with-austrian for the optional set
+./fetch.sh --list --set chronicling             # print the layout; download nothing big
+./fetch.sh --set chronicling --set reichsanzeiger --set nzz # add --with-austrian for the optional set
 ```
 
 Read the `--list` output and adjust `year_ok` (year filter) and the `*_select`
@@ -21,7 +21,7 @@ LICENSE/README files and a `MANIFEST.tsv` (sha256, path). Requests are spaced by
 ```sh
 python3 score.py --data-root $DATA_ROOT --out results.csv \
   --tessdata /path/to/tessdata --workers 4 --gpu-study-pages gpu_pages.txt
-python3 analyze.py results.csv
+python3 analyze.py --csv results.csv
 python3 tests_score.py
 ```
 
