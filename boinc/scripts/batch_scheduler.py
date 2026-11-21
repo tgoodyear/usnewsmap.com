@@ -65,7 +65,7 @@ MAX_NATIVE_HOSTS = 100
 # `"native_hosts": "trusted"` (#1780): the plan's hosts are the ones the inventory's
 # native_trusted_hosts admits for its build in every language it claims, of those that asked for
 # work in the last day (host_cpus), at most MAX_NATIVE_HOSTS of them, lowest ids first.
-NATIVE_TRUSTED_HOSTS = "trusted"
+NATIVE_HOSTS_FROM_TRUST = "trusted"
 SURYA_APP_NAME = "usnm_surya"
 SURYA_DEFAULTS = {"timeout_secs": 600, "stage_pages": 50, "submit_units": 200}
 SURYA_REPLICAS = 2  # results per unit: --target_nresults in crates/usnm-boinc/src/surya/submit.rs
@@ -184,7 +184,7 @@ def normalize_cohort_apps(app):
 
 def _validate_native_plan(config):
     """A native OCR plan (#1780): queue-fed, single pages only, its `native_hosts` the only hosts
-    its units may go to (none, by default: no units), or "trusted" (NATIVE_TRUSTED_HOSTS): every
+    its units may go to (none, by default: no units), or "trusted" (NATIVE_HOSTS_FROM_TRUST): every
     host the BOINC host's trust list admits for its build and languages that asked for work in
     the last day. Nothing that would make a unit any host could get. Every other plan names no
     native hosts."""
@@ -199,12 +199,12 @@ def _validate_native_plan(config):
     require(type(config.get("units_per_cpu", 1)) is int and 1 <= config.get("units_per_cpu", 1) <= 16,
             "units_per_cpu: 1 to 16")
     hosts = config.get("native_hosts")
-    require(hosts == NATIVE_TRUSTED_HOSTS or (
+    require(hosts == NATIVE_HOSTS_FROM_TRUST or (
                 isinstance(hosts, list) and len(hosts) <= MAX_NATIVE_HOSTS and
                 all(type(host) is int and 1 <= host <= 9999999999 for host in hosts) and
                 len(set(hosts)) == len(hosts)),
             f"a {NATIVE_APP_NAME} plan needs native_hosts, up to {MAX_NATIVE_HOSTS} distinct host ids "
-            f"(an empty list sends nothing), or \"{NATIVE_TRUSTED_HOSTS}\"")
+            f"(an empty list sends nothing), or \"{NATIVE_HOSTS_FROM_TRUST}\"")
     require(config.get("source") == "queue" and config.get("claim_languages"),
             f"a {NATIVE_APP_NAME} plan is queue-fed with claim_languages, the scopes its hosts are trusted for")
     # gold_onboarding is allowed (#1780): a native plan's gold-onboard is a native campaign for
@@ -2789,7 +2789,7 @@ def gold_scope(entry):
     return f"{entry['campaign']}/{entry['language']}/{entry['profile']}"
 
 
-def gold_onboarding(config, state, transport, persist, now, *, held, room):
+def gold_onboarding(config, state, transport, persist, now, *, held, room, recount=None):
     """Run each due gold_onboarding scope's gold-onboard and gold-promote bridge steps (#901).
 
     A scope is due when its interval has passed since its last run, or GOLD_HELD_INTERVAL_SECONDS
@@ -2802,7 +2802,13 @@ def gold_onboarding(config, state, transport, persist, now, *, held, room):
     Gold units count against the global safety cap: `room` is what the cap leaves, and each
     gold-onboard pass may issue at most what is left of it. With none left gold-onboard is
     skipped and gold-promote still runs. Returns the runs and the units they may have issued,
-    which the tick then counts as in flight before it refills OCR."""
+    which the tick then counts as in flight before it refills OCR.
+
+    A native plan's pass at the cap (#1780) still runs gold-onboard once with GOLD_MAX_HOSTS=0,
+    which issues nothing and only cancels unreachable and superseded-build units (recorded as the
+    run's `gold-retire` step): units of a build no version packages any more could otherwise fill
+    the cap for good. `recount()`, when given, is then the room a fresh inventory leaves, and the
+    pass issues what that allows."""
     record = state.setdefault("gold_onboarding", {})
     runs = []
     reserved = 0
@@ -2830,6 +2836,20 @@ def gold_onboarding(config, state, transport, persist, now, *, held, room):
         record[scope] = run
         persist()
         for step in GOLD_STEPS:
+            if step == "gold-onboard" and issue < 1 and "GOLD_NATIVE" in variables:
+                try:
+                    timings = getattr(transport, "timings", None)
+                    with timings.phase("gold") if timings is not None else contextlib.nullcontext():
+                        transport.step("bridge", step, **variables, GOLD_MAX_HOSTS=0)
+                    run["steps"]["gold-retire"] = "ok"
+                except RuntimeError as error:
+                    run["steps"]["gold-retire"] = str(error)
+                persist()
+                if recount is not None and run["steps"]["gold-retire"] == "ok":
+                    room = recount()
+                    issue = min(entry.get("max_hosts", 10), max(0, room - reserved))
+                    run["max_hosts"] = issue
+                    persist()
             if step == "gold-onboard":
                 if issue < 1:
                     run["steps"][step] = GOLD_SKIPPED_AT_CAP
@@ -3008,23 +3028,32 @@ def native_plan_hosts(config, snapshot, languages=()):
     may go to any of the hosts, so a host must be admitted for all of them. An inventory without
     native_trusted_hosts or host_cpus gives none: the plan fails closed."""
     hosts = config["native_hosts"]
-    if hosts != NATIVE_TRUSTED_HOSTS:
+    if hosts != NATIVE_HOSTS_FROM_TRUST:
         return hosts
-    admitted = snapshot.get("native_trusted_hosts")
     cpus = snapshot.get("host_cpus")
-    if not isinstance(admitted, dict) or not isinstance(cpus, dict):
+    if not isinstance(snapshot.get("native_trusted_hosts"), dict) or not isinstance(cpus, dict):
         return []
-    by_language = admitted.get(config["image"], {})
-    require(isinstance(by_language, dict) and all(
-        isinstance(listed, list) and all(type(h) is int and h > 0 for h in listed)
-        for listed in by_language.values()), "invalid native trusted host inventory")
+    by_language = native_language_hosts(config, snapshot)
     admitted = None
     for language in list(config["claim_languages"]) + list(languages):
-        listed = set(by_language.get(language, ()))
+        listed = by_language.get(language, set())
         admitted = listed if admitted is None else admitted & listed
     spec = config.get(NATIVE_SPOT_KEY) or {}
     peers = {peer["host"] for key in ("peers", "third_peers") for peer in spec.get(key, ())}
     return sorted(host for host in admitted or () if str(host) in cpus and host not in peers)[:MAX_NATIVE_HOSTS]
+
+
+def native_language_hosts(config, snapshot):
+    """language -> the hosts the inventory's native_trusted_hosts admits for the plan's `image`
+    in it (#1780), or {} from an inventory without the key."""
+    admitted = snapshot.get("native_trusted_hosts")
+    if not isinstance(admitted, dict):
+        return {}
+    by_language = admitted.get(config["image"], {})
+    require(isinstance(by_language, dict) and all(
+        isinstance(listed, list) and all(type(h) is int and h > 0 for h in listed)
+        for listed in by_language.values()), "invalid native trusted host inventory")
+    return {language: set(listed) for language, listed in by_language.items()}
 
 
 def native_other_units(config, snapshot, targets):
@@ -3059,16 +3088,23 @@ def native_shared_slots(slots, others, from_trust):
     return {host: max(0, room - others.get(host, 0)) for host, room in slots.items()}
 
 
-def assign_native_hosts(job_ids, slots, outstanding):
+def assign_native_hosts(job_ids, slots, outstanding, admits=None):
     """(job id, host) for as many of `job_ids` as the hosts have room for: each to the host with
     the most room left (the lowest id on a tie), never past a host's slots. `outstanding` (host
-    -> its units not yet settled) is updated."""
+    -> its units not yet settled) is updated. `admits(job id)`, when given, is the set of hosts
+    that job may go to (#1780: a job claimed under another tick's --claim-language is for its
+    own language's hosts); a job none of them has room for is passed over."""
     units = []
     for job_id in job_ids:
         room = {host: n - outstanding.get(host, 0) for host, n in slots.items()}
+        if max(room.values(), default=0) <= 0:
+            break
+        if admits is not None:
+            allowed = admits(job_id)
+            room = {host: n for host, n in room.items() if host in allowed}
         host = max(sorted(room), key=lambda h: room[h], default=None)
         if host is None or room[host] <= 0:
-            break
+            continue
         outstanding[host] = outstanding.get(host, 0) + 1
         units.append((job_id, host))
     return units
@@ -3426,7 +3462,24 @@ def _spot_item(job_id, entry, spool):
     return item + (f":{entry['first']}" if entry.get("third") and entry.get("first") else "")
 
 
-def native_spot_step(config, state, transport, now, submit_room=100, active=None):
+def native_replay_room(config, snapshot, others, targets, from_trust):
+    """Each host's room left for spot replays under the shared per-host limit (#1780): its limit
+    as a plan host's (units_per_cpu times its CPUs, at most pages_per_host) less every other
+    native unit on it (`others`, which holds this plan's earlier replays too) and this plan's own
+    units on it (`targets`, the units submitted this tick included). None (no limit, as before)
+    for a listed plan whose inventory has no per-host count; with "trusted", no room then."""
+    if others is None:
+        return {} if from_trust else None
+    cpus = snapshot.get("host_cpus") or {}
+    per_cpu = config.get("units_per_cpu", 1)
+    own = {}
+    for host in targets.values():
+        own[host] = own.get(host, 0) + 1
+    return {int(host): max(0, min(n * per_cpu, config["pages_per_host"]) - others.get(int(host), 0)
+                           - own.get(int(host), 0)) for host, n in cpus.items()}
+
+
+def native_spot_step(config, state, transport, now, submit_room=100, active=None, target_room=None):
     """Run the bridge's native-spot step for the queued replays and the submitted ones, and act on
     what it reports: a match refreshes the host's checks and settles its unchecked pages up to
     that one; a mismatch holds both hosts (here and, already, in trust.json) with the pages each
@@ -3460,7 +3513,18 @@ def native_spot_step(config, state, transport, now, submit_room=100, active=None
         if entry.get("third") and not entry.get("first"):
             entry["first"] = (spot.get("gated", {}).get(job_id, {}).get("first") or {}).get("target")
     queued = [(j, e) for j, e in pending.items() if e["stage"] == "queued"
-              and (active is None or e["target"] in active)][:max(0, min(100, submit_room))]
+              and (active is None or e["target"] in active)]
+    if target_room is not None:
+        # A replay takes a unit of its peer's shared room (#1780): one whose peer has none left
+        # stays queued until it has.
+        room = dict(target_room)
+        fits = []
+        for job_id, entry in queued:
+            if room.get(entry["target"], 0) > 0:
+                room[entry["target"]] -= 1
+                fits.append((job_id, entry))
+        queued = fits
+    queued = queued[:max(0, min(100, submit_room))]
     # The 100 least recently polled, so every replay is looked at in turn, however many are out.
     submitted = sorted(((j, e) for j, e in pending.items() if e["stage"] == "submitted"),
                        key=lambda item: (item[1].get("polled", 0), item[0]))[:100]
@@ -4398,7 +4462,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         return in_flight + uncollected + len(missing), in_flight, fresh_pending, fresh_records, fresh
     # A native plan's hosts (#1780): its list, or with "trusted" the ones the trust list admits
     # that asked for work lately. Resolved once per tick, from this tick's inventory.
-    native_from_trust = native and config["native_hosts"] == NATIVE_TRUSTED_HOSTS
+    native_from_trust = native and config["native_hosts"] == NATIVE_HOSTS_FROM_TRUST
     if native_from_trust:
         # This tick's copy of the configuration; the feed fills its pages into the same one.
         config = {**config, "native_hosts": native_plan_hosts(
@@ -4577,10 +4641,22 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             else:
                 demand, counted = gold_demand, gold_inventory
             room = global_room(caps, demand, other_app_workunits(counted, caps["app"]) or 0)
+
+            def recount():
+                # After a native cleanup-only pass at the cap (#1780): the room as a fresh
+                # inventory has it, once the superseded units it cancelled are out of it.
+                try:
+                    fresh = transport.inventory()
+                    fresh_pending = set(fresh["pending_jobs"])
+                    left, lost = retained_backlog(config, records, owned, selected, fresh_pending, conflicts)
+                    flying = max(fresh["pending_workunits"], ocr_workunit_counts(fresh, fresh_pending)[0])
+                    return global_room(caps, flying + left + len(lost), other_app_workunits(fresh, caps["app"]) or 0)
+                except (ValueError, KeyError, TypeError, OSError, RuntimeError):
+                    return 0
         except (ValueError, KeyError, TypeError, OSError, RuntimeError):
-            room = 0
+            room, recount = 0, None
         gold_runs, reserved = gold_onboarding(config, state, transport, persist, now,
-                                              held=bool(held_jobs), room=room)
+                                              held=bool(held_jobs), room=room, recount=recount)
         # The gold units just issued are in flight too, for this tick's refill.
         snapshot = {**snapshot, "pending_workunits": snapshot["pending_workunits"] + reserved}
         # A gold run takes about 9 minutes on CT 230: with a refill on top, the tick ran past
@@ -4909,10 +4985,19 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                     native_spot_slots(config, state, native_room, now, spot_active), native_others, native_from_trust)
                 if native_from_trust:
                     # A hold another plan's spot check placed since this tick's inventory.
-                    still = set(native_plan_hosts({**config, "native_hosts": NATIVE_TRUSTED_HOSTS}, room_inventory,
+                    still = set(native_plan_hosts({**config, "native_hosts": NATIVE_HOSTS_FROM_TRUST}, room_inventory,
                                                      getattr(transport, "extra_claim_languages", ())))
                     native_slots = {host: room if host in still else 0 for host, room in native_slots.items()}
-            units = assign_native_hosts(to_submit, native_slots, outstanding)
+            admits = None
+            if native_from_trust:
+                # Each job only to a host admitted for its own page's language: a reserved job
+                # restored from a tick with another --claim-language may be one this tick's hosts
+                # aren't all admitted for (#1780). Submission would refuse it and pause the plan.
+                by_language = native_language_hosts(config, room_inventory)
+                languages = {record["job"]["id"]: record["job"]["message"].get("language")
+                             for record in owned.values()}
+                admits = lambda job_id: by_language.get(languages.get(job_id), set())  # noqa: E731
+            units = assign_native_hosts(to_submit, native_slots, outstanding, admits)
             for job_id, host in units:
                 targets[job_id] = host
             persist()
@@ -4999,8 +5084,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         spot_room = 0 if drain or not admitted or state.get("native_paused") else (
             100 if spot_cap is None else spot_cap - room_workunits - spot_retained)
         try:
-            spot_step = native_spot_step(config, state, transport, now, submit_room=spot_room,
-                                         active=spot_active)
+            spot_step = native_spot_step(
+                config, state, transport, now, submit_room=spot_room, active=spot_active,
+                target_room=native_replay_room(config, room_inventory, native_others,
+                                               state.get("native_targets", {}), native_from_trust))
         except Exception as error:
             # The tick's submit is done: whatever went wrong here is the spot check's, recorded
             # and alerted on as a failing step, and the tick goes on to report.

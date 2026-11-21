@@ -1018,7 +1018,13 @@ case "$step" in
     # engine bindings (#1418). gold-promote: collect those units
     # and admit the hosts whose complete native evidence passes the scope's existing
     # calibration in gold/trust.json (#901); it adds hosts only and never sets a threshold.
-    [[ "${GOLD_MAX_HOSTS:-10}" =~ ^[1-9][0-9]?$|^100$ ]] || fail "GOLD_MAX_HOSTS must be 1 to 100"
+    # GOLD_MAX_HOSTS=0 (#1780) is a native cleanup-only pass, for a controller whose gold cap is
+    # full: gold-onboard issues nothing and only retires unreachable and superseded-build units.
+    if [ "${GOLD_MAX_HOSTS:-}" = 0 ]; then
+      [ "$step" = gold-onboard ] && [ "${GOLD_NATIVE:-}" = 1 ] || fail "GOLD_MAX_HOSTS=0 is for a GOLD_NATIVE=1 gold-onboard"
+    else
+      [[ "${GOLD_MAX_HOSTS:-10}" =~ ^[1-9][0-9]?$|^100$ ]] || fail "GOLD_MAX_HOSTS must be 1 to 100"
+    fi
     # A native campaign (docs/boinc/apps/native-ocr.md) names its hosts. Not settable over the
     # controller's ssh: a person chooses them.
     [[ "${GOLD_NATIVE_HOSTS:-}" =~ ^([1-9][0-9]*(,[1-9][0-9]*)*)?$ ]] || fail "GOLD_NATIVE_HOSTS must be a comma-separated list of host ids"

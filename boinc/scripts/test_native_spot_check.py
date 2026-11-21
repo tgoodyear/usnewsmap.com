@@ -374,6 +374,24 @@ class NativeSpotTests(unittest.TestCase):
             polled |= {item.split("=")[0] for item in check.split(",")}
         self.assertEqual(len(polled), 150)
 
+    def test_a_replay_takes_a_unit_of_its_peers_shared_room(self):
+        # #1780: peer 240's limit is 4; another plan has 2 units on it and this plan 1, so only
+        # one of three queued replays goes, and the others wait, queued.
+        spot = self.state.setdefault("native_spot", {})
+        spot["pending"] = {f"{n:064x}": {"source": 13, "target": 240, "image": "sha256:" + "a" * 64, "page": "p",
+                                         "spool": "/project/usnmocr/results/7", "at": NOW, "stage": "queued"}
+                           for n in range(3)}
+        config = {**self.config, "units_per_cpu": 1, "pages_per_host": 4}
+        room = batch.native_replay_room(config, {"host_cpus": {"240": 8, "13": 2}}, {240: 2},
+                                        {"e" * 64: 240, "f" * 64: 13}, False)
+        self.assertEqual(room, {240: 1, 13: 1})
+        batch.native_spot_step(config, self.state, self.fake, NOW, target_room=room)
+        sent = [item.split("=")[0] for item in self.fake.spot_calls[0][0].split(",")]
+        self.assertEqual(sent, [f"{0:064x}"])
+        self.assertEqual(sum(e["stage"] == "queued" for e in self.state["native_spot"]["pending"].values()), 2)
+        # Without a per-host count: no limit for a listed plan, none left for one from the trust list.
+        self.assertIsNone(batch.native_replay_room(config, {}, None, {}, False))
+        self.assertEqual(batch.native_replay_room(config, {}, None, {}, True), {})
 
     def test_a_null_setting_is_refused(self):
         config = tbs.native_config((13, 240))

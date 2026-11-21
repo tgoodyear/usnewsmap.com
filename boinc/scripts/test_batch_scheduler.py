@@ -41,7 +41,7 @@ def config():
 
 def record(page, number, stage="reserved"):
     return {"stage": stage, "plan": "batch-test",
-            "job": {"id": f"{number:064x}", "message": {"page": page, "batch": "test_batch"},
+            "job": {"id": f"{number:064x}", "message": {"page": page, "batch": "test_batch", "language": "eng"},
                     "engine": {"image": "sha256:" + "a" * 64}}}
 
 
@@ -2082,6 +2082,49 @@ class NativePlanTests(unittest.TestCase):
         self.fake.inventory = lambda: {**inventory(), "native_host_units": {"13": {"units": 3, "jobs": []}}}
         self.assertEqual(self.tick()["native"]["slots"], {"13": 1})
         self.assertEqual(len(self.native_submissions()), 1)
+
+    def test_each_job_goes_only_to_hosts_trusted_for_its_own_language(self):
+        # #1780 review: a job reserved under another tick's --claim-language (here every job
+        # is German, the plan now claims English) goes only to a host trusted for German.
+        export = self.fake.export
+
+        def german(pages, job_ids=()):
+            export(pages, job_ids)
+            for row in self.fake.rows:
+                row["job"]["message"]["language"] = "deu"
+        self.fake.export = german
+        self.fake.cpus = {13: 24, 5: 24}
+        self.trusted({self.config["image"]: {"eng": [13, 5], "deu": [5]}}, {})
+        self.tick()
+        self.assertEqual({host for _, host in self.native_submissions()}, {5})
+        self.assertEqual(len(self.native_submissions()), 4)
+
+    def test_assigning_passes_over_a_job_no_admitted_host_has_room_for(self):
+        slots = {13: 2, 5: 1}
+        admits = {"a": {5}, "b": {5}, "c": {13}, "d": set()}.get
+        self.assertEqual(batch.assign_native_hosts(["a", "b", "c", "d"], slots, {}, admits),
+                         [("a", 5), ("c", 13)])
+        self.assertEqual(batch.assign_native_hosts(["a", "b", "c"], slots, {}), [("a", 13), ("b", 5), ("c", 13)])
+
+    def test_a_native_gold_pass_at_the_cap_retires_then_issues_what_a_fresh_count_allows(self):
+        # #1780 review: superseded units could fill the cap for good, so at the cap a native plan
+        # still runs a cleanup-only gold-onboard (GOLD_MAX_HOSTS=0), then counts the room again.
+        steps = []
+        self.fake.step = lambda target, step, **variables: steps.append((step, variables["GOLD_MAX_HOSTS"]))
+        config = {**self.config, "gold_onboarding": [dict(GOLD, max_hosts=5)]}
+        runs, reserved = batch.gold_onboarding(config, {}, self.fake, lambda: None, NOW, held=False, room=0,
+                                               recount=lambda: 3)
+        self.assertEqual(steps, [("gold-onboard", 0), ("gold-onboard", 3), ("gold-promote", 5)])
+        self.assertEqual((runs[0]["steps"]["gold-retire"], runs[0]["max_hosts"], reserved), ("ok", 3, 3))
+        steps.clear()
+        runs, reserved = batch.gold_onboarding(config, {}, self.fake, lambda: None, NOW, held=False, room=0,
+                                               recount=lambda: 0)
+        self.assertEqual(steps, [("gold-onboard", 0), ("gold-promote", 5)])
+        self.assertEqual(runs[0]["steps"]["gold-onboard"], batch.GOLD_SKIPPED_AT_CAP)
+        # A container plan at the cap still skips gold-onboard altogether.
+        steps.clear()
+        batch.gold_onboarding({**config, "app": "usnm_ocr"}, {}, self.fake, lambda: None, NOW, held=False, room=0)
+        self.assertEqual(steps, [("gold-promote", 5)])
 
     def test_a_native_plans_gold_onboarding_is_a_campaign_for_every_able_host(self):
         # #1780: no host is named; GOLD_NATIVE makes gold-onboard reach every host a live

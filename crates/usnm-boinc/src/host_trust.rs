@@ -91,9 +91,11 @@ impl Config {
                     .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
             "invalid database"
         );
+        // 0 is a cleanup-only pass of a native campaign for every able host (#1780): it retires
+        // unreachable and superseded-build units and issues nothing.
         ensure!(
-            (1..=100).contains(&c.max_hosts),
-            "max_hosts must be 1 to 100"
+            (1..=100).contains(&c.max_hosts) || (c.max_hosts == 0 && c.native_auto),
+            "max_hosts must be 1 to 100 (0 only for a native_auto cleanup pass)"
         );
         ensure!(
             (1..=100).contains(&c.max_spots),
