@@ -440,6 +440,21 @@ class DurationTest(unittest.TestCase):
         self.state, self.facts["last_workunits"]["usnm_ocr"] = {}, NOW
         self.assertEqual(self.run_archive(0, 3600, lambda at: None)["state"], "firing")
 
+    def test_a_stale_controller_tick_keeps_a_running_archive_pending(self):
+        # An archive pauses the controller: its tick is unknown (no_recent_controller_tick) while the
+        # source still reports the run, which must not end at the last observation.
+        self.facts.pop("tick")
+        self.facts["errors"] = ["controller"]
+        self.facts["sources"] = {"controller": {"observed_at": None, "state": "unknown",
+                                                "reason": F.NO_RECENT_TICK}}
+        check = self.run_archive(0, 3600, lambda at: [[NOW + 60, None]] if at >= 60 else [])
+        self.assertEqual((check["state"], check["archive_until"]),
+                         ("pending", NOW - 10 + F.ARCHIVE_WORKUNIT_MAX_AGE_S))
+        self.assertEqual(self.tick(3600)["controller_tick"]["state"], "unknown")
+        # With no archive the stale tick behaves as before: the hour fires.
+        self.state, self.facts["last_workunits"]["usnm_ocr"] = {}, NOW
+        self.assertEqual(self.run_archive(0, 3600, lambda at: None)["state"], "firing")
+
     def test_two_runs_starting_in_the_same_second_one_still_running_sort(self):
         # One unit finished and another still running, started together: an end can be None.
         runs = F.archive_runs([[NOW, NOW + 600], [NOW, None]], [], NOW + 700)

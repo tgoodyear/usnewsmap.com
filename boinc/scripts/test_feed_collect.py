@@ -1158,6 +1158,35 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(facts["archive_runs"], [[NOW - 60, None]])
         self.assertEqual(F.MAX_ARCHIVE_RUNS, C.MAX_ARCHIVE_RUNS)
 
+    def test_archive_runs_ride_along_with_a_stale_controller_tick(self):
+        # An archive pauses the controller, so its source reports no_recent_controller_tick while a run
+        # needs reporting (#835): the tick stays unknown, only the runs reach the evaluator.
+        tick = {"ok": True, "seconds": 5, "finished_at": NOW}
+        with fixture() as root:
+            output = root / "controller.json"
+            for argv, expected in ((["--archive-runs"], [[NOW - 60, None]]), ([], None)):
+                with self.subTest(argv=argv), patch.object(C, "controller", side_effect=C.NoRecentTick()), \
+                        patch.object(C, "archive_runs", return_value=[[NOW - 60, None]]), \
+                        patch.object(C.time, "time", return_value=NOW):
+                    C.main(["controller", *argv, "--output", str(output)])  # an error document exits 1
+                    document = json.loads(output.read_text())
+                    self.assertEqual((document["error"], "tick" in document, document.get("archive_runs")),
+                                     (C.NO_RECENT_TICK, False, expected))
+        for runs, expected in (([[NOW - 60, None]], [[NOW - 60, None]]), (None, None),
+                               ([[NOW + 60, None]], None), ("bad", None)):
+            docs = CollectionTests.documents(self)
+            docs["/controller"] = {"schema_version": 1, "source": "controller", "observed_at": NOW,
+                                   "error": C.NO_RECENT_TICK}
+            if runs is not None:
+                docs["/controller"]["archive_runs"] = runs
+            with self.subTest(runs=runs), patch.object(C, "read_source", side_effect=lambda path: deepcopy(docs[path])), \
+                    patch.object(C.time, "time", return_value=NOW):
+                facts = C.collect({"server": "/server", "controller": "/controller"})
+            self.assertEqual(facts["sources"]["controller"],
+                             {"observed_at": None, "state": "unknown", "reason": C.NO_RECENT_TICK})
+            self.assertEqual((facts.get("archive_runs"), "tick" in facts), (expected, False))
+            self.assertIn("controller", facts["errors"])
+
     def test_a_maintenance_unit_must_be_another_service(self):
         for maintenance in (("usnm-boinc-priority-controller.service",), ("bad unit",), ("x.timer",)):
             with self.subTest(maintenance=maintenance), self.assertRaisesRegex(ValueError, "invalid unit"):
@@ -1590,6 +1619,32 @@ class CollectionTests(unittest.TestCase):
         self.assertNotIn("supply", facts)
         self.assertNotIn("enabled_until", facts)
         self.assertTrue(facts["tick"]["ok"])
+
+    def test_slow_allocation_drops_expired_archive_runs_from_a_stale_tick_envelope(self):
+        # The runs of a no_recent_controller_tick envelope get the same completion check (#835): once
+        # expired they are dropped, and the controller's reason stays no_recent_controller_tick.
+        for delay, expected in ((0, [[NOW - 60, None]]), (15, None)):
+            docs = self.documents()
+            docs["/controller"] = {"schema_version": 1, "source": "controller", "observed_at": NOW - 175,
+                                   "error": C.NO_RECENT_TICK, "archive_runs": [[NOW - 60, None]]}
+            config = {name: "/" + name for name in ("server", "controller", "backlog")}
+            config["clients"] = ["/own"]
+            clock = [NOW]
+            real_supply = C.supply
+
+            def allocate(*args):
+                result = real_supply(*args)
+                clock[0] = NOW + delay
+                return result
+
+            with self.subTest(delay=delay), \
+                    patch.object(C, "read_source", side_effect=lambda path: deepcopy(docs[path])), \
+                    patch.object(C, "supply", side_effect=allocate), \
+                    patch.object(C.time, "time", side_effect=lambda: clock[0]):
+                facts = C.collect(config)
+            self.assertEqual(facts.get("archive_runs"), expected)
+            self.assertEqual(facts["sources"]["controller"]["reason"], C.NO_RECENT_TICK)
+            self.assertIn("controller", facts["errors"])
 
     def test_monitor_does_not_replace_completion_time_with_later_publication_time(self):
         with fixture() as root:
