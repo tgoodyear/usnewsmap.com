@@ -3200,8 +3200,7 @@ pub(super) mod tests {
         cache.limit_digests(Some(std::time::Instant::now()));
         let error = cache
             .key(&unit, &quality, &files)
-            .err()
-            .expect("keying past the deadline fails");
+            .expect_err("keying past the deadline fails");
         assert!(
             error
                 .downcast_ref::<super::super::collect_cache::BudgetSpent>()
