@@ -3482,14 +3482,25 @@ def native_replay_room(config, snapshot, others, targets, from_trust):
                            - own.get(int(host), 0)) for host, n in cpus.items()}
 
 
-def native_queued_replays(config, state, active=None):
-    """The queued spot replays this tick's replay step could make (#2081): to an active host
-    (`active`; None: not known), at most the step's 100. The refill leaves them room under the
+def native_queued_replays(config, state, now, active=None, target_room=None):
+    """The queued spot replays this tick's replay step could make (#2081): unexpired, to an active
+    host (`active`; None: not known), within its peer's shared room (`target_room`, as the step
+    takes it; None: no limit), at most the step's 100. The refill leaves them room under the
     global cap, so ordinary work can't fill it ahead of them tick after tick."""
     if NATIVE_SPOT_KEY not in config:
         return 0
-    queued = sum(entry.get("stage") == "queued" and (active is None or entry.get("target") in active)
-                 for entry in _spot(state).get("pending", {}).values())
+    room = None if target_room is None else dict(target_room)
+    queued = 0
+    for entry in _spot(state).get("pending", {}).values():
+        target = entry.get("target")
+        if (entry.get("stage") != "queued" or now - entry.get("at", now) > NATIVE_SPOT_MAX_AGE
+                or (active is not None and target not in active)):
+            continue
+        if room is not None:
+            if room.get(target, 0) <= 0:
+                continue
+            room[target] -= 1
+        queued += 1
     return min(100, queued)
 
 
@@ -4870,7 +4881,14 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     # first would starve them for good.
     spot_cap_set = (max_global_pending if max_global_pending is not None
                     else config.get("max_global_pending")) is not None
-    replay_reserve = native_queued_replays(config, state, spot_active) if native and spot_cap_set and not drain else 0
+    def queued_replays(inventory):
+        if not (native and spot_cap_set and not drain):
+            return 0
+        targets = state.get("native_targets", {})
+        return native_queued_replays(config, state, now, spot_active, native_replay_room(
+            config, inventory, native_other_units(config, inventory, targets), targets, native_from_trust))
+
+    replay_reserve = queued_replays(snapshot)
     global_free = max(0, global_room(cohort_info, global_pending, budgeted_other) - replay_reserve)
     free = min(cohort_free, global_free)
     submitted = 0
@@ -4895,6 +4913,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             room_other = other_app_workunits(fresh, ocr_app) or 0
             owned = own(records)
             admission_extra = max(0, demand - global_pending)
+            replay_reserve = queued_replays(fresh)
             if refresh_sibling_claims is not None:
                 sibling_claims = refresh_sibling_claims()
             global_free = max(0, global_room(cohort_info, global_pending + admission_extra, room_other)

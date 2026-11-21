@@ -1403,6 +1403,30 @@ class SpotStepLockTests(unittest.TestCase):
         self.assertEqual(self.state["native_spot"]["pending"][replay]["stage"], "submitted")
         self.assertEqual(submitted, 1)
 
+    def test_the_global_reservation_skips_replays_that_cannot_go_this_tick(self):
+        # #2081 review: a replay whose peer has no shared room left (another plan fills 240) and
+        # one past its age are kept no room under the global cap, so the refill takes all of it.
+        self.config["native_spot_check"]["canary_pages_per_host"] = 4
+        self.tick()
+        self.results_in()
+        batch.SPOT_RANDOM = Always(1.0)  # no new draws
+        entry = {"image": self.config["image"], "page": "p", "spool": "/project/usnmocr/results/7",
+                 "stage": "queued"}
+        self.state["native_spot"]["pending"] = {
+            "e" * 64: {**entry, "source": 13, "target": 240, "at": NOW},
+            "f" * 64: {**entry, "source": 240, "target": 13, "at": NOW - batch.NATIVE_SPOT_MAX_AGE - 3600}}
+        inventory = type(self.fake).inventory.__get__(self.fake)
+        full = {"240": {"units": 1000, "jobs": []}}
+        pending = inventory()["pending_workunits"]
+        self.fake.actions.clear()
+        self.fake.spot_calls.clear()
+        with patch.object(self.fake, "inventory",
+                          lambda: {**inventory(), "created_at": NOW + 60, "native_host_units": full}):
+            batch.tick(self.config, self.state, self.fake, lambda: None, NOW + 60,
+                       max_global_pending=pending + 2)
+        self.assertEqual(len(self.native_submissions()), 2)
+        self.assertEqual(self.state["native_spot"]["pending"]["e" * 64]["stage"], "queued")
+
 
 class SamplingTests(unittest.TestCase):
     def setUp(self):
