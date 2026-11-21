@@ -24,6 +24,14 @@ impl App {
             App::Ocr => "usnm_ocr",
         }
     }
+    /// The workunit's name: `cloud submit` names an OCR job `usnm_<job id>`, and the fixture's job
+    /// id is `j`.
+    fn workunit(self) -> &'static str {
+        match self {
+            App::Ocr => "usnm_j",
+            _ => "wu",
+        }
+    }
     /// What the stock init script runs (with `--keep` for quality).
     fn init(self, f: &[PathBuf], keep: &Path) -> bool {
         match self {
@@ -351,7 +359,7 @@ fn pbody(
     results: Vec<Value>,
 ) -> Value {
     json!({"call_id": call_id, "mode": mode,
-           "workunit": {"id": 1, "name": "wu", "app": app.name(), "batch": 0, "min_quorum": quorum},
+           "workunit": {"id": 1, "name": app.workunit(), "app": app.name(), "batch": 0, "min_quorum": quorum},
            "canonical_result_id": canonical, "results": results})
 }
 
@@ -1071,18 +1079,28 @@ async fn a_quality_result_name_that_is_not_a_store_segment_is_stored_under_its_h
     );
 }
 
-/// text.txt, layout.xml and result.json of one `usnm_ocr` result, in template order.
+/// A minimal valid ALTO, as the `usnm-ocr-local` checks' own test builds one.
+const OCR_ALTO: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<alto xmlns="http://www.loc.gov/standards/alto/ns-v4#"><Description><MeasurementUnit>pixel</MeasurementUnit><sourceImageInformation><fileName>https://tile.loc.gov/x</fileName></sourceImageInformation><Processing ID="PROC_X"><processingCategory>contentGeneration</processingCategory></Processing></Description><Layout><Page ID="P1" WIDTH="100" HEIGHT="100" PHYSICAL_IMG_NR="1"><PrintSpace><TextBlock ID="b.1" PROCESSINGREFS="PROC_X"><TextLine><String CONTENT="a"/></TextLine></TextBlock></PrintSpace></Page></Layout></alto>"#;
+
+/// text.txt, layout.xml and result.json of one `usnm_ocr` result, in template order, with the
+/// digests of the other two files in the third.
 fn ocr_outputs(text: &str) -> [Vec<u8>; 3] {
+    ocr_outputs_for(text.as_bytes(), OCR_ALTO.as_bytes())
+}
+
+fn ocr_outputs_for(text: &[u8], alto: &[u8]) -> [Vec<u8>; 3] {
+    use usnm_ocr_contract::boinc::sha256;
     let manifest = json!({
         "v": 1, "job_id": "j", "scan_sha256": format!("sha256:{}", "a".repeat(64)),
         "engine": {"image": "img", "version": "1", "profile": "p", "models": "m",
                    "psm": 1, "dpi": 300, "timeout_secs": 600},
-        "text_sha256": "t", "alto_sha256": "l", "elapsed_ms": 5,
+        "text_sha256": sha256(text), "alto_sha256": sha256(alto), "elapsed_ms": 5,
         "completed_at": "2026-10-18T00:00:00Z"
     });
     [
-        text.as_bytes().to_vec(),
-        b"<alto/>".to_vec(),
+        text.to_vec(),
+        alto.to_vec(),
         serde_json::to_vec(&manifest).unwrap(),
     ]
 }
@@ -1177,4 +1195,132 @@ async fn ocr_init_rejects_a_malformed_result_json_and_a_non_utf8_text() {
     assert_eq!(r["results"][0], json!({"id": 1, "invalid": true}));
     assert_eq!(r["results"][1], json!({"id": 2, "invalid": true}));
     assert_eq!(r["results"][2], json!({"id": 3}));
+}
+
+/// `n` copies of "word", space separated.
+fn words(n: usize) -> String {
+    vec!["word"; n].join(" ")
+}
+
+/// Posts `a` and `b` as one `check_set` call and as one `check_pair` call, in both orders, and
+/// returns the pairs each of the four calls matched.
+async fn ocr_both_ways(fx: &Fx, tag: &str, a: &str, b: &str) -> Vec<BTreeSet<(i64, i64)>> {
+    let (fa, fb) = (
+        named(App::Ocr, "a", ocr_outputs(a)),
+        named(App::Ocr, "b", ocr_outputs(b)),
+    );
+    let run = Run::new(fx, App::Ocr).await;
+    let mut out = Vec::new();
+    for (n, (first, second)) in [(&fa, &fb), (&fb, &fa)].into_iter().enumerate() {
+        let (s, r) = run
+            .post(
+                &format!("{tag}s{n}-check_set"),
+                "check_set",
+                2,
+                None,
+                &[(1, first), (2, second)],
+                true,
+            )
+            .await;
+        assert_eq!(s, 200, "{r}");
+        out.push(matches_of(&r));
+        let (s, r) = run
+            .post(
+                &format!("{tag}p{n}-check_pair"),
+                "check_pair",
+                2,
+                Some(1),
+                &[(1, first), (2, second)],
+                true,
+            )
+            .await;
+        assert_eq!(s, 200, "{r}");
+        out.push(matches_of(&r));
+    }
+    out
+}
+
+#[tokio::test]
+async fn ocr_length_tolerance_is_symmetric() {
+    let fx = Fx::new().await;
+    // 1085 characters against 1199: 0.905 one way, 1.105 the other. Judged with the shorter as
+    // the original, only 1.10 binds, so the pair is out in every order and mode.
+    for m in ocr_both_ways(&fx, "edge", &words(200), &words(181)).await {
+        assert!(m.is_empty(), "{m:?}");
+    }
+    // A pair with a few slips matches in every order and mode.
+    let text = ocr_text();
+    let noisy = text.replacen("quick brown", "qu1ck brovvn", 1);
+    for m in ocr_both_ways(&fx, "noisy", &text, &noisy).await {
+        assert_eq!(m, BTreeSet::from([(1, 2)]));
+    }
+}
+
+#[tokio::test]
+async fn ocr_equal_texts_match_without_the_measure() {
+    let fx = Fx::new().await;
+    // Equal and longer than the compare cap: only the equality fast path can match them.
+    let big = words(50_000);
+    assert!(big.chars().count() > super::super::pairwise::OCR_COMPARE_MAX_CHARS);
+    for m in ocr_both_ways(&fx, "eq", &big, &big).await {
+        assert_eq!(m, BTreeSet::from([(1, 2)]));
+    }
+}
+
+#[tokio::test]
+async fn ocr_text_over_the_compare_cap_is_no_match() {
+    let fx = Fx::new().await;
+    // Within the ratio limits and within the read limit, but too long to measure.
+    let a = words(50_000);
+    let b = format!("{a}.");
+    assert!(a.len() <= usnm_ocr_contract::boinc::MAX_TEXT);
+    for m in ocr_both_ways(&fx, "cap", &a, &b).await {
+        assert!(m.is_empty(), "{m:?}");
+    }
+}
+
+#[tokio::test]
+async fn ocr_init_checks_hashes_alto_completion_time_and_job() {
+    let fx = Fx::new().await;
+    let text = ocr_text();
+    let good = named(App::Ocr, "a", ocr_outputs(&text));
+    let mut wrong_text = ocr_outputs(&text);
+    wrong_text[0].push(b'!');
+    let mut wrong_alto = ocr_outputs(&text);
+    wrong_alto[1].push(b'\n');
+    let bad_alto = named(
+        App::Ocr,
+        "c",
+        ocr_outputs_for(text.as_bytes(), b"<alto><not-closed>"),
+    );
+    let mut late = ocr_outputs(&text);
+    let mut m: Value = serde_json::from_slice(&late[2]).unwrap();
+    m["completed_at"] = json!("yesterday");
+    late[2] = serde_json::to_vec(&m).unwrap();
+    let mut other = ocr_outputs(&text);
+    let mut m: Value = serde_json::from_slice(&other[2]).unwrap();
+    m["job_id"] = json!("k");
+    other[2] = serde_json::to_vec(&m).unwrap();
+    let cases = [
+        named(App::Ocr, "d", wrong_text),
+        named(App::Ocr, "e", wrong_alto),
+        bad_alto,
+        named(App::Ocr, "f", late),
+        named(App::Ocr, "g", other),
+    ];
+    let run = Run::new(&fx, App::Ocr).await;
+    let mut posted: Vec<(i64, &Files)> = cases.iter().zip(1..).map(|(f, i)| (i, f)).collect();
+    posted.push((9, &good));
+    let (s, r) = run
+        .post("w1-check_set", "check_set", 2, None, &posted, true)
+        .await;
+    assert_eq!(s, 200, "{r}");
+    for i in 0..cases.len() {
+        assert_eq!(
+            r["results"][i],
+            json!({"id": i + 1, "invalid": true}),
+            "case {i}"
+        );
+    }
+    assert_eq!(r["results"][cases.len()], json!({"id": 9}));
 }

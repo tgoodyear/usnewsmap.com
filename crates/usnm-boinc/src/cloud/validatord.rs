@@ -178,6 +178,9 @@ struct Request {
 #[derive(Deserialize)]
 struct Wu {
     app: String,
+    /// The workunit's name; `usnm_ocr` results are tied to the job it names.
+    #[serde(default)]
+    name: String,
     #[serde(default)]
     min_quorum: i64,
 }

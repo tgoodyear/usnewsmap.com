@@ -434,11 +434,17 @@ verdict per result (`invalid`, `retry`, or only the `id` for a readable result) 
 - `usnm_ocr` is new here: on-prem it runs at quorum 1 with the stock trivial validator and relies on trust spot checks,
   so there is no stock script to copy. The service gives it a real compare so the cloud server can run it at quorum 2
   (`src/cloud/validatord/pairwise.rs`, `Kind::Ocr`). Init: `result.json` parses as the contract's
-  `usnm_ocr_contract::boinc::ResultManifest` and `text.txt` is UTF-8, each file within its read limit (`caps`, from the
-  `usnm_ocr_out` template: text, layout, result). Compare: the two `text.txt` files are judged by
+  `usnm_ocr_contract::boinc::ResultManifest` with an RFC 3339 `completed_at`; its `job_id` is the one the workunit's name
+  carries (`usnm_<id>`; the webhook has no input files, so the job itself is not checked here, and `checked_result` checks
+  the scan, engine and version on import); `text_sha256` and `alto_sha256` are the digests of `text.txt` and `layout.xml`;
+  `text.txt` is UTF-8 and `layout.xml` is valid ALTO (`checks::check_alto`), each file within its read limit (`caps`, from the
+  `usnm_ocr_out` template: text, layout, result). A failing init is `invalid`. Compare: equal texts match; otherwise the
+  character counts must be within the `container_spot::CROSS` length ratio and the longer text at most 200,000 characters
+  (`OCR_COMPARE_MAX_CHARS`), else no match; then the two `text.txt` files are judged by
   `outside` in `src/host_trust/container_spot.rs` at the limits of `container_spot::CROSS`, the most lenient family
   limits, because a pairwise call does not know the hosts' families and any pair may be an arm64 host against an
-  amd64 one. `layout.xml` is not compared. The compare leaves no log line and no file.
+  amd64 one. The shorter text is always the original, so the result does not depend on the order. The blocking part of
+  every pairwise call holds a permit of a process-wide limit of one per CPU until it ends, even after a timeout. `layout.xml` is not compared. The compare leaves no log line and no file.
 - A request for these apps needs `mode`, `workunit.min_quorum` and, for `check_pair`, a `canonical_result_id` among the
   results; otherwise it is a 400.
 - Any `retry` in a `check_set` call means no comparison is run and no side effect is recorded: the server ignores
