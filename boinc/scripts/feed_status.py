@@ -79,6 +79,22 @@ ROTATION_FILE = "rotation.json"
 ROTATION_MAX_MINUTES = 240
 ROTATION_DEFERRED = ("cpu_shortage", "usnm_ocr_no_work", "controller_progress")
 NO_RECENT_TICK = "no_recent_controller_tick"  # feed_collect.NO_RECENT_TICK
+# A held-page archive run (#835): every archive unit holds the controller host's tick lock while it
+# dispatches and bridges a batch, so the main plan's tick waits and the drain plans skip, and the main
+# plan's archive also stops main's timer. Those are the plans that make usnm_ocr workunits, so a run
+# leaves the newest one over an hour old most times (20 to 21 Nov 2026). With the controller source's
+# archive_runs (feed_collect --archive-runs), usnm_ocr_no_work stays pending while a run lasts and for
+# one hold after it ends. It fires as usual when the check was already due before the run began (the
+# newest workunit was an hour old by then), once a run has lasted ARCHIVE_PAUSE_MAX_S, or once the
+# newest workunit is ARCHIVE_WORKUNIT_MAX_AGE_S old, whatever runs. A main plan's archive run takes at
+# most its 90-minute lock wait, its 60-minute budget and a last batch.
+ARCHIVE_PAUSE_MAX_S = 3 * 3600
+ARCHIVE_WORKUNIT_MAX_AGE_S = 3 * 3600
+# A run that ended within a minute paused nothing (an operator's pause: the run skips), so it excuses nothing.
+ARCHIVE_MIN_RUN_S = 60
+# The same run seen twice: its start comes from systemd's monotonic clock, converted on each read.
+ARCHIVE_MATCH_S = 5
+MAX_ARCHIVE_RUNS = 16  # feed_collect.MAX_ARCHIVE_RUNS
 # Own clients configured and fresh, but none can prove its capacity (#1698): feed_collect.collect.
 NO_PROVEN_CLIENTS = "no_proven_clients"
 # The BOINC database's backups and replica (db-backup.md, db-replica.md), opt-in with a
@@ -211,6 +227,59 @@ def end_rotation(state_dir):
     return existed
 
 
+def archive_runs(reported, remembered, now):
+    """The held-page archive runs that can still excuse usnm_ocr_no_work, as [started_at, ended_at or
+    None, seen_at]. `reported` is the controller source's archive_runs (each unit's latest run), None
+    without it; `remembered` the previous evaluation's. systemd keeps only a unit's latest run, so an
+    earlier one is kept here. A run remembered as running that isn't reported running now (its unit
+    ran again, a hand-run unit went, or the source is down) is taken to have ended when last seen."""
+    runs = []
+    for run in remembered if isinstance(remembered, list) else ():
+        if (isinstance(run, list) and len(run) == 3 and type(run[0]) is int and type(run[2]) is int
+                and (run[1] is None or type(run[1]) is int)
+                and 0 <= run[0] <= (run[0] if run[1] is None else run[1]) <= run[2] <= now):
+            runs.append(list(run))
+    seen = []
+    for entry in reported if isinstance(reported, list) else ():
+        # feed_collect checked the document; anything else is left out, so it excuses nothing.
+        if not (isinstance(entry, list) and len(entry) == 2 and type(entry[0]) is int
+                and (entry[1] is None or type(entry[1]) is int)
+                and 0 <= entry[0] <= (entry[0] if entry[1] is None else entry[1]) <= now):
+            continue
+        start, end = entry
+        run = next((r for r in runs if abs(r[0] - start) <= ARCHIVE_MATCH_S
+                    and not any(r is s for s in seen)), None)
+        if run is None:
+            run = [start, end, now]
+            runs.append(run)
+        run[1], run[2] = end, now
+        seen.append(run)
+    for run in runs:
+        if run[1] is None and not any(run is r for r in seen):
+            run[1] = run[2]
+    kept = [run for run in runs if (now - run[0] <= ARCHIVE_PAUSE_MAX_S if run[1] is None else
+                                    now - run[1] < NO_WORK_HOLD_S and run[1] - run[0] <= ARCHIVE_PAUSE_MAX_S)]
+    return sorted(kept)[-MAX_ARCHIVE_RUNS:]
+
+
+def archive_excuse(runs, latest, now):
+    """Until when usnm_ocr_no_work waits for a held-page archive run, at the latest, or None when no
+    run excuses it: one that began before the check came due (`latest` plus the hold) and is running
+    under ARCHIVE_PAUSE_MAX_S, or ended under a hold ago after lasting ARCHIVE_MIN_RUN_S to
+    ARCHIVE_PAUSE_MAX_S. Never past ARCHIVE_WORKUNIT_MAX_AGE_S after the newest workunit."""
+    if latest is None or now - latest >= ARCHIVE_WORKUNIT_MAX_AGE_S:
+        return None
+    ends = []
+    for start, end, _ in runs:
+        if start > latest + NO_WORK_HOLD_S:
+            continue  # the check was due before this run paused anything
+        if end is None and now - start < ARCHIVE_PAUSE_MAX_S:
+            ends.append(start + ARCHIVE_PAUSE_MAX_S + NO_WORK_HOLD_S)
+        elif end is not None and ARCHIVE_MIN_RUN_S <= end - start <= ARCHIVE_PAUSE_MAX_S and now < end + NO_WORK_HOLD_S:
+            ends.append(end + NO_WORK_HOLD_S)
+    return min(max(ends), latest + ARCHIVE_WORKUNIT_MAX_AGE_S) if ends else None
+
+
 def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None):
     """Durations require uninterrupted, fresh observations; never bridge an unknown gap.
     `rotation` is a current rotation_window: ROTATION_DEFERRED checks wait for its end."""
@@ -254,7 +323,7 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
                 return "source:" + source
         return None
 
-    def check(code, condition, hold=0, generation=None, **measurements):
+    def check(code, condition, hold=0, generation=None, archive_until=None, **measurements):
         prior = old.get(code, {})
         if not isinstance(prior, dict):
             prior = {}
@@ -264,12 +333,16 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
         if not isinstance(since, (int, float)) or not 0 <= since <= now:
             since = now
         duration = now - since if condition is True else 0
-        deferred = code in ROTATION_DEFERRED and deferred_until is not None and now < deferred_until
+        rotated = code in ROTATION_DEFERRED and deferred_until is not None and now < deferred_until
+        archived = archive_until is not None and now < archive_until
+        deferred = rotated or archived
         state = ("unknown" if condition is None else
                  "firing" if condition and duration >= hold and not deferred else
                  "pending" if condition else "healthy")
-        if deferred and condition:
+        if rotated and condition:
             measurements["rotation_until"] = deferred_until
+        if archived and condition:
+            measurements["archive_until"] = archive_until
         if state == "unknown" and cause(code):
             measurements["cause"] = cause(code)
         if state == "unknown" and excused and code in ("controller_tick", *CONTROLLER_SIGNAL_CHECKS):
@@ -282,6 +355,8 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
     # GPU hosts that are asking for work and have none to run: idle slots on the own hosts with fewer
     # eligible results than slots (gpu_shortage's condition). usnm_qwen_no_work and qwen_refill_window
     # fire only once that has held for NO_WORK_HOLD_S; None, nothing proven about the hosts, never fires.
+    # Held-page archive runs (#835), kept across evaluations: the source shows only each unit's latest.
+    archived_runs = archive_runs(facts.get("archive_runs"), previous.get("archive_runs"), now)
     gpu = facts.get("supply", {}).get("gpu")
     gpu_idle = gpu is not None and gpu["idle"] > 0 and gpu["eligible"] < gpu["idle"]
     deadline = facts.get("enabled_until")
@@ -304,7 +379,8 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
         no_work = None if backlog is None or latest is None or latest > now else backlog > 0
         if app == "usnm_qwen" and no_work is True:
             no_work = gpu_idle  # the same gate as the cohort path: only GPU hosts asking for work, idle
-        check(app + "_no_work", no_work, NO_WORK_HOLD_S, generation=latest, backlog=backlog,
+        excuse = archive_excuse(archived_runs, latest, now) if app == "usnm_ocr" and no_work is True else None
+        check(app + "_no_work", no_work, NO_WORK_HOLD_S, generation=latest, archive_until=excuse, backlog=backlog,
               last_workunit_at=latest, **({"gpu_idle": gpu_idle} if app == "usnm_qwen" else {}))
     # Own hosts left out because their running tasks can't be counted (#1698), only when there are any.
     excluded = {"excluded_hosts": facts["excluded_hosts"]} if facts.get("excluded_hosts") else {}
@@ -411,7 +487,7 @@ def evaluate(facts, previous, now, monotonic, boot_id, config_id, rotation=None)
              "time": now, "monotonic": monotonic, "conditions": conditions,
              "last_failure_at": max(failure_at, previous.get("last_failure_at", 0)),
              "maintenance_failure_at": maintenance_at,
-             "collection_elapsed": carried}
+             "collection_elapsed": carried, "archive_runs": archived_runs}
     return document, state
 
 

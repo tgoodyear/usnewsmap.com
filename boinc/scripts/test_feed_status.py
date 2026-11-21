@@ -409,6 +409,94 @@ class DurationTest(unittest.TestCase):
             checks = self.tick(at)
         self.assertEqual(checks["collection"]["state"], "firing")
 
+    def run_archive(self, start, end, runs, step=60):
+        """Evaluations every `step` seconds from `start` to `end`, with `runs(at)` as the controller
+        source's archive_runs (None: none reported), the state passed on as JSON as between processes."""
+        for at in range(start, end + 1, step):
+            reported = runs(at)
+            if reported is None:
+                self.facts.pop("archive_runs", None)
+            else:
+                self.facts["archive_runs"] = reported
+            self.state = json.loads(json.dumps(self.state))
+            checks = self.tick(at)
+        return checks["usnm_ocr_no_work"]
+
+    def test_a_held_archive_run_defers_no_work_while_it_lasts_and_one_hold_after(self):
+        # #835: the archive holds the tick lock and stops main's timer; the newest workunit is NOW - 10.
+        def runs(at):
+            return [] if at < 600 else [[NOW + 600, None if at < 4000 else NOW + 4000]]
+        check = self.run_archive(0, 3960, runs)
+        # While it runs, at the latest until ARCHIVE_WORKUNIT_MAX_AGE_S after the newest workunit.
+        self.assertEqual((check["state"], check["archive_until"], check["duration_s"]),
+                         ("pending", NOW - 10 + F.ARCHIVE_WORKUNIT_MAX_AGE_S, 3960))
+        check = self.run_archive(4000, 7599, runs)
+        self.assertEqual((check["state"], check["archive_until"]), ("pending", NOW + 7600))
+        # One hold after the run ended, it fires on its unbroken duration.
+        check = self.run_archive(7600, 7600, runs)
+        self.assertEqual((check["state"], check["duration_s"]), ("firing", 7600))
+        self.assertNotIn("archive_until", check)
+        # Without the source's runs nothing waits: the hour fires as before.
+        self.state, self.facts["last_workunits"]["usnm_ocr"] = {}, NOW
+        self.assertEqual(self.run_archive(0, 3600, lambda at: None)["state"], "firing")
+
+    def test_a_run_that_began_after_the_check_was_due_excuses_nothing(self):
+        # The newest workunit was an hour old before the run began: a stall the archive didn't make.
+        def runs(at):
+            return [[NOW + 3700, None]] if at >= 3700 else []
+        self.assertEqual(self.run_archive(0, 3600, runs)["state"], "firing")
+        self.assertEqual(self.run_archive(3660, 4200, runs)["state"], "firing")
+        # One that began a second before it was due does wait.
+        self.state = {}
+        self.assertEqual(self.run_archive(0, 3600, lambda at: [[NOW + 3590, None]] if at >= 3590 else [])["state"],
+                         "pending")
+
+    def test_the_deferral_is_capped_by_the_runs_length_and_the_workunits_age(self):
+        # A run going for longer than ARCHIVE_PAUSE_MAX_S is no planned pause.
+        start = NOW - F.ARCHIVE_PAUSE_MAX_S + 3700
+        check = self.run_archive(0, 3690, lambda at: [[start, None]])
+        self.assertEqual(check["state"], "pending")
+        self.assertEqual(self.run_archive(3700, 3700, lambda at: [[start, None]])["state"], "firing")
+        # Nor is one that ran too long and ended, or one under a minute (an operator's pause: it skips).
+        for run in ([NOW - F.ARCHIVE_PAUSE_MAX_S - 1, NOW + 60], [NOW + 3000, NOW + 3000 + F.ARCHIVE_MIN_RUN_S - 1]):
+            with self.subTest(run=run):
+                self.state = {}
+                self.assertEqual(self.run_archive(0, 3600, lambda at: [run] if at >= run[1] else [])["state"],
+                                 "firing")
+        # Runs back to back: whatever runs, it fires once the newest workunit is ARCHIVE_WORKUNIT_MAX_AGE_S old.
+        self.state = {}
+        limit = F.ARCHIVE_WORKUNIT_MAX_AGE_S - 10
+
+        def back_to_back(at):
+            return [[NOW + 600, NOW + 2400], [NOW + 2500, None]] if at >= 2500 else [[NOW + 600, None]]
+        check = self.run_archive(0, limit - 60, back_to_back)
+        self.assertEqual((check["state"], check["archive_until"]), ("pending", NOW + limit))
+        self.assertEqual(self.run_archive(limit, limit, back_to_back)["state"], "firing")
+
+    def test_a_units_earlier_run_is_remembered_once_systemd_shows_only_its_next(self):
+        # Main's archive runs again at NOW + 5000: systemd no longer shows the run the gap began in,
+        # and the new one began after the check was due. The earlier one ended when it was last seen.
+        def runs(at):
+            return [[NOW + 600, None]] if at < 5000 else [[NOW + 5000, None]]
+        self.assertEqual(self.run_archive(0, 4980, runs, step=20)["state"], "pending")
+        check = self.run_archive(5000, 8579, runs, step=20)
+        self.assertEqual((check["state"], check["archive_until"]), ("pending", NOW + 4980 + F.NO_WORK_HOLD_S))
+        self.assertEqual(self.run_archive(8580, 8580, runs)["state"], "firing")
+        # The same with the controller source gone: a run is never taken to be still going unseen.
+        self.state = {}
+        self.run_archive(0, 1200, lambda at: [[NOW + 600, None]] if at >= 600 else [])
+        check = self.run_archive(1260, 4799, lambda at: None)
+        self.assertEqual((check["state"], check["archive_until"]), ("pending", NOW + 4800))
+        self.assertEqual(self.run_archive(4800, 4800, lambda at: None)["state"], "firing")
+        # And nothing else waits for an archive.
+        self.state = {}
+        self.facts["supply"]["cpu"] = {"idle": 4, "eligible": 3}
+        checks = {}
+        for at in range(0, 1801, 60):
+            self.facts["archive_runs"] = [[NOW, None]]
+            checks = self.tick(at)
+        self.assertEqual(checks["cpu_shortage"]["state"], "firing")
+
     def test_the_rotation_window_is_bounded_and_written_by_named_flags(self):
         good = {"reason": "roll", "started_at": NOW - 60, "until": NOW + 60}
         self.assertEqual(F.rotation_window(json.dumps(good), NOW), good)
