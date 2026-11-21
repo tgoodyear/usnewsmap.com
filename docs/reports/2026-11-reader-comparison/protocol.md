@@ -121,20 +121,35 @@ Volunteer hosts for the vision-language readers, and our own CPU dev nodes for T
 
 ## Freeze record
 
-Filled in and committed before the first unit is submitted.
+Frozen 12 November 2026 on usnm-dev2 (`/root/work/sets`), before any result was scored. The sets were converted with `gold.py public-convert` (en-op and the `-52` sets, `de-nzz`) and `scripts/ocr-survey/reader_draw.py` (the held-out draws and `de-rz81`), and each passes `gold.py validate` with 0 errors. The Tesseract runs started before this record was committed; the sets didn't change in between (see the departures log).
+
+| Set | Crops | Pages | `manifest.jsonl` SHA-256 | `crops.jsonl` SHA-256 |
+| --- | ---: | ---: | --- | --- |
+| `en-op` | 345 | 18 | `249dc92e87309f8c5bcf487859bda16904a4d0dab40922dba528ed77dfbf7b71` | `58840d33d8402a312bad0fa30f71440f0358e92a7850e680792a050aeb89c559` |
+| `fr-52` | 24 | 8 | `5676554f206a0fe324f12ada6265e49b5589841db85b48b4c57dd2a7fded3b86` | `fe4db972e8584ba00af3b1916371e5c3fe62da677813879db316fb91ebb074b3` |
+| `fi-52` | 18 | 6 | `2efcd634169398b2451320acdc1fe9e25b7432d2e3c557bafc6635df68d7fa25` | `ccf867f744471aa628b5f05b502f6c5da5a7bb54b3399f3514fbde7354cd4eff` |
+| `sv-52` | 10 | 4 | `b478110f324ca1b9988becfeb5d57cf90603478d01341f6bd666167fb5dbf851` | `876f3767fe07668e96d36d4b8ee9905961d1917c0592a48320f1d41f16c9c3f8` |
+| `fr-new` | 60 | 20 | `35b28f768f475c955d2b9ac9e1f82fedefcc7e1fbc187420111f1d0aebf804a2` | `48be1ee69194e89fc6b9e1ade5af2e74f7904eb74250184cd4da90ec8e6c4dfb` |
+| `fi-new` | 60 | 20 | `147a5a6eb7e2f64ffc08f30013a53735867c730ef19e3dc28cf46761df635c79` | `9acd2413fa7120a09e5abcee82405b1b716603268f8a4d968f96beeca99932da` |
+| `sv-new` | 60 | 22 | `14cdd58437aff087a7eaef81e2dc7a53f145bd7d8e8de1f9f692d05a8fea9927` | `5bba97e03b77a3173ce979567f39375beda6bbe3cb7b0d9466a246bf71277607` |
+| `de-rz81` | 322 | 81 | `3424d29a6dcf4ea55b86292981780a70d1db1851f67a8c3508464cdfc5fe6944` | `1b8325512e7d0b78b3dc8ebc1f1b0b8c37ff766bca9209a544a01dcf919982f5` |
+| `de-nzz` | 360 | 167 | `0a3ebeb3b91abfe7dbf3fbc31a336688f4b12e7df2e4b272bd848eee61792f03` | `b36c876b3da5ea0486d79edd5674887141997dc5a2cecf4d0350b90b94463e0e` |
+
+Not frozen, so not in the comparison: `en-bln`, `de-rz700`, `de-onb` (see the departures log).
 
 | Item | Value |
 | --- | --- |
-| Benchmark v1.2.0 content digest | |
-| Subset digests | |
-| Manifest and `crops.jsonl` SHA-256, per set | |
-| NewsEye exclusion list SHA-256 | |
-| `loc_column.py` commit and `usnm-ocr-survey` SHA-256 | |
-| `usnm_qwen` app versions, plan classes, worker image | |
-| GGUF and projector SHA-256: Qwen 8B, Qwen 2B, Xiaomi-OCR-0 | |
-| Engine JSON SHA-256 per campaign | |
-| Tesseract image, version, traineddata SHA-256 | |
-| Scorer commits | |
+| Benchmark v1.2.0 content digest | Not published. The sets are licence-restricted crops and stay on usnm-dev2; the digests above identify them |
+| NewsEye exclusion lists (validation-archive page ids, SHA-256) | BnF `2d7ee67d7078bd38c862d5041d10ae29e52f6b0cf9b1af4e3ebe3f19d89fe218` (8 pages), NLF Finnish `040eb60a9075a5b3b0b62af8086b65c727222e7ab217a0a77f40c79abe638043` (8), NLF Swedish `5913471b6570aef63fcb656139ad6daad6ec321238e48a6b1bf8a057907555c9` (4) |
+| Reichsanzeiger `all-700` pages excluded (SHA-256) | `9b442030c800e6c2dee99fe5326923074d8bfe00967d689ea9dc32cb18de0201` (20 pages) |
+| `loc_column.py` commit and `usnm-ocr-survey` SHA-256 | #1778 merge `9fa02847`; binary `6e935b81e8db522cbaf74c68b95038632b1d6bd4196a79317db2a2ec0842f1f7`; `outputs.jsonl` `60886f9ce8a9460f381cfea7281d049788d525c3e5c8d7e8e6033700d7370127`, 345 of 345 aligned |
+| `usnm_qwen` app versions, plan classes, worker image | Pending: no Qwen campaign has run. Engine block from the Compute Coordinator, 12 November: worker `sha256:a25da41a10f266e5c2d02206bf9f0e40b54d476609f85d70a72e4e11792d0efe`, llama `sha256:d962a8228c42c84583150e809d654f9ec995cdf9f4e02e37365293642210a309`, weights `sha256:969266d1c24656977e06a6efacae04deac6d5093c77227fe55ac28975035cddd` |
+| GGUF and projector SHA-256: Qwen 8B, Qwen 2B, Xiaomi-OCR-0 | 8B Q4_K_M `67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2`, 8B projector `c6ba85508d82f42590e6eb77d5340369ab6fecf107a7561d809523d8aa5f3bfd`; Xiaomi-OCR-0 Q8_0 `61f0667bb08342f9...` and f16 projector `77dc7cf20404cf95...` (first 16 hex digits; the Study 9 conversions); 2B not run |
+| Local run (CT 214) | llama.cpp b12084 Vulkan `llama-server` SHA-256 `01e6b9ea...`, `libgomp.so.1` `d46f9225...`, RTX 2060 SUPER, BOINC GPU mode never from 2:01 to 4:15 PM ET on 12 November. Xiaomi: Study 11's `v5read.py` (SHA-256 `2c24ee2c...`), request version 5 settings. Guarded 8B: Study 11's `qwen_read.py` and `qwen-serve.sh`, request version 3, context 4096 then a retry pass at 8192 |
+| Engine JSON SHA-256 per campaign | Pending |
+| Tesseract build, version, traineddata SHA-256 | Debian 13 `tesseract-ocr` 5.5.0 with Leptonica 1.84.1, run on usnm-dev2, not the worker image. `eng` `8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba`, `fra` `907743d98915c91a3906dfbf6e48b97598346698fe53aaa797e1a064ffcac913`, `fin` `96745dd0900fe997541516863d859616df6120430db546424feae72923828423`, `swe` `360303308aa5d4a912ac3b3637691152b7532d9bd6e960639db1affb83db7ea9`, `frak2021` `1da2384254fa8462c776faf3b43307fe19ce51be0931c623b2fdd560f96e299a`, each checked against `ocr/engines/tesseract/models.lock` |
+| American Stories | Study 3's readings (`data/s3/american-stories.jsonl` of the GPU studies' data release, SHA-256 of the release archive `7c347ebce155158515a9a4256e25fc6e00351a455f648bc81e4713ce6e132884`), second use, unchanged |
+| Scorer commits | `gpu-study` from `docs/reports/2026-11-gpu-studies/tools` at #1778's merge `9fa02847`, with two `model: None` initialisers added to build against the current contract; seed 202611, 2,000 resamples |
 
 ## Departures log
 
@@ -144,3 +159,8 @@ Each entry: the date, what changed, why, and whether any result had been seen.
 - **12 November 2026, before any run.** The NewsEye exclusion list is every page of the publisher's validation archives (a superset of `all-52` and of Study 5's Finnish crops), and the held-out draw is from the training archives. Study 2's train and validation rows aren't in the GPU studies' data release, and Study 2's adapter isn't a reader here. No result had been seen.
 - **12 November 2026, before any run.** `en-bln` is dropped for the vision-language readers. BLN600's images are bilevel TIFFs, its No-Derivatives licence allows only the unchanged file, and a unit carries a JPEG, so the file can't go out as a crop workunit. English then has `en-op` only, a second-use set, so English results decide nothing by rule 5 and are provisional. No result had been seen.
 - **12 November 2026, before any run.** `de-rz81` takes up to 4 regions per page in this protocol's hash order (`reader_draw.py`), not Study 11's order, because Study 11's frozen set isn't in the GPU studies' data release. The pages are the same 81. The 20 pages inside `all-700` are the first 20 of `gold.py public-fetch`'s seeded order (`rz_exclusions.py`). No result had been seen.
+- **12 November 2026, before any score was seen.** The Tesseract runs started on the frozen sets before this freeze record was committed. The sets, their hashes and the runner didn't change.
+- **12 November 2026, before any score was seen.** `de-nzz` was rebuilt with `public-convert --count 360 --per-page 3` because the GPU studies' data release holds the crop ids (`pub-nzz-001` to `360`) but not the conversion command. The conversion gives 360 crops from 167 pages, the counts Study 3 reports, but the crop ids haven't been checked against Study 3's.
+- **12 November 2026, before any score was seen.** The Qwen campaigns can't run yet. `qwen benchmark-stage` stages request version 1 only, and the benchmark submission path dispatches container workers that read request version 1 only, so guarded 8B and Xiaomi-OCR-0 can't be dispatched. The Compute Coordinator is adding native benchmark routing. Until then the table has no Qwen or Xiaomi column.
+- **12 November 2026, before any score was seen.** `de-rz700` and `de-onb` aren't frozen. The GPU studies' data release holds hashes of their row lists but not the lists, and rebuilding the 700 `all-700` crops and Study 7's 60 Austrian crops would need the benchmark v1.0.0 release and Study 7's draw. Both were second-use sets, so German keeps `de-rz81` (Study 11 pages, provisional) and `de-nzz` (second use).
+- **12 November 2026, before any score was seen.** Guarded 8B and Xiaomi-OCR-0 ran as local runs on one GPU host (CT 214), not as BOINC campaigns. Guarded 8B couldn't be dispatched as a BOINC benchmark until native routing merged, and the maintainer then chose a local run for it; one-crop BOINC units would also have broken the five-minute unit rule. Their columns are labelled local runs. A BOINC run of Xiaomi on volunteer hardware is to be reported as a cross-hardware replicate.
