@@ -75,7 +75,7 @@ def sibling_pair(base, wu, *, sent_ago=10 * HOUR, state=IN_PROGRESS, appid=1, pr
 
 
 def args(**over):
-    base = dict(min_age_hours=6.0, priority=10, max=500, max_raised=50, dry_run=False)
+    base = dict(min_age_hours=6.0, priority=10, max=500, max_raised=50, give_up_hours=72.0, dry_run=False)
     base.update(over)
     return types.SimpleNamespace(**base)
 
@@ -180,6 +180,22 @@ class SiblingPriorityTests(unittest.TestCase):
         # At the bound, nothing more is raised.
         report, _, _ = go(rows, max_raised=2)
         self.assertEqual((report["selected"], report["updated"]), (0, 0))
+
+    def test_a_raised_sibling_no_host_takes_is_given_up_and_frees_room(self):
+        rows = [*sibling_pair(10, 1, sent_ago=80 * HOUR, priority=10),   # raised, past the give-up age
+                *sibling_pair(20, 2, sent_ago=80 * HOUR, priority=50),   # someone else's priority: kept
+                *sibling_pair(30, 3, sent_ago=90 * HOUR),                # never raised, too old to start
+                *sibling_pair(40, 4)]                                    # dispatchable: raised
+        # Row 21's priority 50 counts toward the bound too, so 2 leaves room for one once 11 is reset.
+        report, priorities, _ = go(rows, max_raised=2)
+        self.assertEqual((report["gave_up"], report["reset"], report["already_raised"]), (1, 1, 1))
+        self.assertEqual([priorities[i] for i in (11, 21, 31, 41)], [0, 50, 0, 10])
+        # A one-off catch-up of old siblings passes a larger --give-up-hours.
+        _, priorities, _ = go(rows, give_up_hours=1000)
+        self.assertEqual(priorities[31], 10)
+        # Dry run reports the give-up without writing it.
+        report, priorities, _ = go(rows, dry_run=True)
+        self.assertEqual((report["gave_up"], report["reset"], priorities[11]), (1, 0, 10))
 
     def test_empty_run(self):
         report, _, _ = go([])
