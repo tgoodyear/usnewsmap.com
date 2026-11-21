@@ -4398,8 +4398,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         return in_flight + uncollected + len(missing), in_flight, fresh_pending, fresh_records, fresh
     # A native plan's hosts (#1780): its list, or with "trusted" the ones the trust list admits
     # that asked for work lately. Resolved once per tick, from this tick's inventory.
-    native_trusted = native and config["native_hosts"] == NATIVE_TRUSTED_HOSTS
-    if native_trusted:
+    native_from_trust = native and config["native_hosts"] == NATIVE_TRUSTED_HOSTS
+    if native_from_trust:
         # This tick's copy of the configuration; the feed fills its pages into the same one.
         config = {**config, "native_hosts": native_trusted_hosts(
             config, snapshot, getattr(transport, "extra_claim_languages", ()))}
@@ -4411,7 +4411,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     spot_active = native_spot_active(snapshot) if native else None
     native_others = native_other_units(config, snapshot, state.get("native_targets", {})) if native else None
     native_slots = native_shared_slots(native_spot_slots(config, state, native_room, now, spot_active),
-                                       native_others, native_trusted) if native else None
+                                       native_others, native_from_trust) if native else None
     pending_jobs = snapshot["pending_jobs"]
     require(isinstance(pending_jobs, list) and len(pending_jobs) <= MAX_JOBS and
             all(isinstance(job_id, str) and ID.fullmatch(job_id) for job_id in pending_jobs) and
@@ -4906,8 +4906,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                 # admission lock has them, so two plans never fill one host's room.
                 native_others = native_other_units(config, room_inventory, targets)
                 native_slots = native_shared_slots(
-                    native_spot_slots(config, state, native_room, now, spot_active), native_others, native_trusted)
-                if native_trusted:
+                    native_spot_slots(config, state, native_room, now, spot_active), native_others, native_from_trust)
+                if native_from_trust:
                     # A hold another plan's spot check placed since this tick's inventory.
                     still = set(native_trusted_hosts({**config, "native_hosts": NATIVE_TRUSTED_HOSTS}, room_inventory,
                                                      getattr(transport, "extra_claim_languages", ())))
@@ -5022,7 +5022,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             _spot(state).pop("loc_failing", None)
         persist()
         native_slots = native_shared_slots(
-            native_spot_slots(config, state, native_room, now, spot_active), native_others, native_trusted)
+            native_spot_slots(config, state, native_room, now, spot_active), native_others, native_from_trust)
 
     container_step = None
     if not native and CONTAINER_SPOT_KEY in config:
@@ -5209,7 +5209,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         targets = state.get("native_targets", {})
         event["native"] = {
             "hosts": config["native_hosts"],
-            "trusted_hosts": native_trusted,
+            "from_trust_list": native_from_trust,
             "slots": {str(host): n for host, n in native_slots.items()},
             # Every other native plan's units on each of this plan's hosts (#1780), or None from
             # an inventory without the count.

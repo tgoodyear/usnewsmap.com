@@ -2035,7 +2035,7 @@ class NativePlanTests(unittest.TestCase):
         self.trusted({image: {"eng": [13, 21, 9, 5], "deu": [13, 9, 5]}, other: {"eng": [7]}}, {})
         event = self.tick()
         self.assertEqual(event["native"]["hosts"], [5, 13])
-        self.assertTrue(event["native"]["trusted_hosts"])
+        self.assertTrue(event["native"]["from_trust_list"])
         self.assertEqual(sorted({host for _, host in self.native_submissions()}), [5, 13])
         # The configuration on disk still says "trusted": the list is this tick's.
         self.assertEqual(self.config["native_hosts"], "trusted")
