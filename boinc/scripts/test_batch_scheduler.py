@@ -2099,12 +2099,39 @@ class NativePlanTests(unittest.TestCase):
         self.assertEqual({host for _, host in self.native_submissions()}, {5})
         self.assertEqual(len(self.native_submissions()), 4)
 
+    def test_jobs_no_host_is_admitted_for_never_hold_back_the_ones_after_them(self):
+        # #1780 review: submit_limit bounds the jobs assigned, not the jobs looked at, so the
+        # first reserved jobs being German (no host trusted for it) don't block the English ones.
+        export = self.fake.export
+
+        def mixed(pages, job_ids=()):
+            export(pages, job_ids)
+            for n, row in enumerate(self.fake.rows):
+                row["job"]["message"]["language"] = "deu" if n < 6 else "eng"
+        self.fake.export = mixed
+        self.config.update(pages_per_host=10)
+        self.fake.cpus = {13: 10}
+        self.trusted({self.config["image"]: {"eng": [13]}}, {})
+        self.tick()
+        languages = {row["job"]["id"]: row["job"]["message"]["language"] for row in self.fake.rows}
+        sent = self.native_submissions()
+        self.assertEqual((len(sent), {languages[job_id] for job_id, _ in sent}), (4, {"eng"}))
+        # The English results come in; the six German jobs stay reserved. With room for two
+        # submissions, the two new English jobs go, past the German ones ahead of them.
+        self.results_in()
+        self.fake.actions.clear()
+        self.tick(refill_cap=2)
+        languages = {row["job"]["id"]: row["job"]["message"]["language"] for row in self.fake.rows}
+        sent = self.native_submissions()
+        self.assertEqual((len(sent), {languages[job_id] for job_id, _ in sent}), (2, {"eng"}))
+
     def test_assigning_passes_over_a_job_no_admitted_host_has_room_for(self):
         slots = {13: 2, 5: 1}
         admits = {"a": {5}, "b": {5}, "c": {13}, "d": set()}.get
         self.assertEqual(batch.assign_native_hosts(["a", "b", "c", "d"], slots, {}, admits),
                          [("a", 5), ("c", 13)])
         self.assertEqual(batch.assign_native_hosts(["a", "b", "c"], slots, {}), [("a", 13), ("b", 5), ("c", 13)])
+        self.assertEqual(batch.assign_native_hosts(["a", "b", "c", "d"], slots, {}, admits, limit=1), [("a", 5)])
 
     def test_a_native_gold_pass_at_the_cap_retires_then_issues_what_a_fresh_count_allows(self):
         # #1780 review: superseded units could fill the cap for good, so at the cap a native plan

@@ -3088,14 +3088,17 @@ def native_shared_slots(slots, others, from_trust):
     return {host: max(0, room - others.get(host, 0)) for host, room in slots.items()}
 
 
-def assign_native_hosts(job_ids, slots, outstanding, admits=None):
+def assign_native_hosts(job_ids, slots, outstanding, admits=None, limit=None):
     """(job id, host) for as many of `job_ids` as the hosts have room for: each to the host with
     the most room left (the lowest id on a tie), never past a host's slots. `outstanding` (host
     -> its units not yet settled) is updated. `admits(job id)`, when given, is the set of hosts
     that job may go to (#1780: a job claimed under another tick's --claim-language is for its
-    own language's hosts); a job none of them has room for is passed over."""
+    own language's hosts); a job none of them has room for is passed over. At most `limit` units
+    (None: no limit) are assigned."""
     units = []
     for job_id in job_ids:
+        if limit is not None and len(units) >= limit:
+            break
         room = {host: n - outstanding.get(host, 0) for host, n in slots.items()}
         if max(room.values(), default=0) <= 0:
             break
@@ -4956,12 +4959,16 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         to_submit = []
         for record in owned.values():
             job_id = record["job"]["id"]
+            # A native plan scans every reserved job: one no admitted host has room for is passed
+            # over, and submit_limit bounds the ones assigned (#1780), so a prefix of such jobs
+            # can't hold back the rest tick after tick.
             if not record.get("retry") and record["stage"] == "reserved" and \
                     not kept_by_policy(record) and \
                     server.get(job_id, {}).get("stage") in (None, "reserved") and \
-                    len(to_submit) < submit_limit:
-                require(job_id not in existing_jobs,
-                        "SQL/journal mismatch; reconcile existing work before any automatic submission")
+                    (native or len(to_submit) < submit_limit):
+                if not native:
+                    require(job_id not in existing_jobs,
+                            "SQL/journal mismatch; reconcile existing work before any automatic submission")
                 to_submit.append(job_id)
         if native:
             # Each unit to one of the plan's hosts with room: its CPUs, at most pages_per_host,
@@ -4997,7 +5004,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                 languages = {record["job"]["id"]: record["job"]["message"].get("language")
                              for record in owned.values()}
                 admits = lambda job_id: by_language.get(languages.get(job_id), set())  # noqa: E731
-            units = assign_native_hosts(to_submit, native_slots, outstanding, admits)
+            units = assign_native_hosts(to_submit, native_slots, outstanding, admits, limit=submit_limit)
+            for job_id, _ in units:
+                require(job_id not in existing_jobs,
+                        "SQL/journal mismatch; reconcile existing work before any automatic submission")
             for job_id, host in units:
                 targets[job_id] = host
             persist()
@@ -5084,6 +5094,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         spot_room = 0 if drain or not admitted or state.get("native_paused") else (
             100 if spot_cap is None else spot_cap - room_workunits - spot_retained)
         try:
+            # The other plans' units as the inventory the room is counted from has them (the one
+            # taken under the admission lock, side by side), against this plan's units as they
+            # are now, whether or not this tick submitted any (#1780).
+            native_others = native_other_units(config, room_inventory, state.get("native_targets", {}))
             spot_step = native_spot_step(
                 config, state, transport, now, submit_room=spot_room, active=spot_active,
                 target_room=native_replay_room(config, room_inventory, native_others,
