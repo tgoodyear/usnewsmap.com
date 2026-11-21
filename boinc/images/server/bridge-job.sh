@@ -740,9 +740,19 @@ PY
     [[ "${BATCH_NONCE:-}" =~ ^[0-9a-f]{32}$ ]] || fail "BATCH_NONCE must be 32 hex"
     out=$(report_dir)
     mkdir -p "$out"
+    # The hosts the trust list admits for native OCR (#1780), by build and language, as
+    # submission checks them. If they can't be read the inventory leaves them out, and a native
+    # plan with "native_hosts": "trusted" sends nothing; the other plans carry on.
+    trusted=$(mktemp)
+    trusted_args=(--native-trusted "$trusted")
+    usnm-boinc host-trust native-trusted --trust "$SHARE_DIR/gold/trust.json" > "$trusted" || {
+      log "could not list the native trusted hosts; the inventory leaves them out"
+      trusted_args=()
+    }
     python3 "$TEMPLATES/batch-inventory.py" --mysql-defaults-file "$mycnf" --database "$DB_NAME" \
       --root "$HANDOFF_DIR" --results "$PROJ/results" --nonce "$BATCH_NONCE" \
-      --out "$out/inventory.json"
+      --out "$out/inventory.json" ${trusted_args[@]+"${trusted_args[@]}"}
+    rm -f "$trusted"
     usnm-boinc handoff put --from "$out" --to-url "$HANDOFF_URL" --prefix "$(report_prefix)"
   else
     python3 "$TEMPLATES/work-volume.py" --mysql-defaults-file "$mycnf" --database "$DB_NAME"
@@ -1012,6 +1022,11 @@ case "$step" in
     # A native campaign (docs/boinc/apps/native-ocr.md) names its hosts. Not settable over the
     # controller's ssh: a person chooses them.
     [[ "${GOLD_NATIVE_HOSTS:-}" =~ ^([1-9][0-9]*(,[1-9][0-9]*)*)?$ ]] || fail "GOLD_NATIVE_HOSTS must be a comma-separated list of host ids"
+    # GOLD_NATIVE=1 (#1780), which a native plan's controller sets: a native campaign for every
+    # host BOINC saw lately that a live usnm_gold_native version of this build could be sent to
+    # and that isn't trusted for it. It names no host; trust stays the gate (gold-promote).
+    [[ "${GOLD_NATIVE:-}" =~ ^1?$ ]] || fail "GOLD_NATIVE is 1 or unset"
+    [ -z "${GOLD_NATIVE:-}" ] || [ -z "${GOLD_NATIVE_HOSTS:-}" ] || fail "GOLD_NATIVE takes no GOLD_NATIVE_HOSTS"
     write_mycnf
     controller="$SECRETS/host-trust.json"
     trap 'rm -f "$mycnf" "$SECRETS/db-runtime" "$controller"' EXIT
@@ -1023,13 +1038,13 @@ case "$step" in
       --arg image "${GOLD_ENGINE_IMAGE:?set GOLD_ENGINE_IMAGE}" \
       --arg base "${GOLD_ENGINE_BASE:?set GOLD_ENGINE_BASE}" \
       --arg version "${GOLD_ENGINE_VERSION:-5.5.0}" --argjson max "${GOLD_MAX_HOSTS:-10}" \
-      --argjson native "[${GOLD_NATIVE_HOSTS:-}]" \
+      --argjson native "[${GOLD_NATIVE_HOSTS:-}]" --argjson native_auto "$([ "${GOLD_NATIVE:-}" = 1 ] && echo true || echo false)" \
       --arg platforms /usr/local/lib/usnm-boinc/gold-engine-platforms.json \
       '{root:$root, project:$project, jobs_root:$jobs, mysql_defaults:$mycnf, mysql_ca:$ca,
         database:$db, trust:$trust, prepared:$prepared,
         scope:{language:$language, profile:$profile, psm:3, dpi:300},
         engine:{base:$base, dpi:300, image:$image, psm:3, timeout_secs:300, version:$version},
-        native_hosts:$native, engine_platforms:$platforms, max_hosts:$max, max_spots:1,
+        native_hosts:$native, native_auto:$native_auto, engine_platforms:$platforms, max_hosts:$max, max_spots:1,
         sample_every:1}' > "$controller")
     if [ "$step" = gold-promote ]; then
       # The gold units' batch is 0, so their canonical results are in results/0. Not exec:

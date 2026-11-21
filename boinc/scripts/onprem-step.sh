@@ -93,8 +93,9 @@ SSH_VARS=" BATCH_NONCE BUNDLE_APP_VERSION HANDOFF_SPOOL HANDOFF_SPOOLS HANDOFF_U
 SSH_SURYA_CROPS_VARS=" SURYA_CAMPAIGN QUALITY_CAMPAIGN SURYA_ENGINE_IMAGE SURYA_ENGINE_LLAMA SURYA_ENGINE_WEIGHTS SURYA_MAX SURYA_TIMEOUT_SECS "
 SSH_SURYA_SUBMIT_VARS=" SURYA_CAMPAIGN SURYA_MAX "
 # The controller's gold onboarding (#901): issue gold units to untrusted hosts, then admit the
-# ones that pass. Never a threshold, a challenge hash, a target host or a spool.
-SSH_GOLD_ONBOARD_VARS=" GOLD_CAMPAIGN GOLD_LANGUAGE GOLD_PROFILE GOLD_ENGINE_IMAGE GOLD_ENGINE_BASE GOLD_ENGINE_VERSION GOLD_MAX_HOSTS "
+# ones that pass. Never a threshold, a challenge hash, a target host or a spool. GOLD_NATIVE=1
+# (#1780) makes it a native campaign for every able host, and names none.
+SSH_GOLD_ONBOARD_VARS=" GOLD_CAMPAIGN GOLD_LANGUAGE GOLD_PROFILE GOLD_ENGINE_IMAGE GOLD_ENGINE_BASE GOLD_ENGINE_VERSION GOLD_MAX_HOSTS GOLD_NATIVE "
 # Native spot checks (#1863): the controller names the pages and peers; usnm-boinc checks them
 # against the trust list and the build list. Never a trust hold's release, which is an operator's.
 SSH_NATIVE_SPOT_VARS=" BATCH_NONCE HANDOFF_URL NATIVE_SPOT_SUBMIT NATIVE_SPOT_CHECK "

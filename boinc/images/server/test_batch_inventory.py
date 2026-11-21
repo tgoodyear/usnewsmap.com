@@ -168,11 +168,11 @@ class InventoryTests(unittest.TestCase):
             (self.spool / ("usnm_ocrb_" + bundle + suffix)).write_text("ok")
         self.assertEqual(self.payload()["jobs"][self.job]["spool"], str(self.spool))
 
-    def run_main(self, stdout):
+    def run_main(self, stdout, extra=()):
         out = self.root / "inventory.json"
         argv = ["batch-inventory.py", "--root", str(self.root), "--results", str(self.results),
                 "--mysql-defaults-file", "my.cnf", "--database", "boinc", "--nonce", "b" * 32,
-                "--out", str(out)]
+                "--out", str(out), *extra]
         done = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout)
         with patch.object(inventory.subprocess, "run", return_value=done), patch("sys.argv", argv):
             inventory.main()
@@ -233,6 +233,42 @@ class InventoryTests(unittest.TestCase):
             self.run_main("2\n" + many)
         self.assertIn(f"LIMIT {inventory.MAX_HOSTS + 1};", inventory.query())
         self.assertNotIn("host_cpus", self.payload())
+
+    def test_reports_each_hosts_native_units_across_plans(self):
+        # #1780: a host's native units of every plan count against its room in each plan.
+        job, other = "c" * 64, "d" * 64
+        payload = self.run_main(f"2\nnative\t13\tusnm_{job}\nnative\t13\tusnm_{other}\n"
+                                f"native\t13\tusnm_spot_replay_1\nnative\t21\tusnm_{self.job}\n")
+        self.assertEqual(payload["native_host_units"], {
+            "13": {"units": 3, "jobs": [job, other]}, "21": {"units": 1, "jobs": [self.job]}})
+        self.assertEqual(self.run_main("0\n")["native_host_units"], {})
+        for bad in ("native\t0\tusnm_x", "native\t13\tother", f"native\t13\tusnm_{job}\nnative\t14\tusnm_{job}",
+                    "native\t13"):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "native unit inventory"):
+                self.run_main(f"2\n{bad}\n")
+        # Past the limit the key is left out, and a native plan sends nothing.
+        with patch.object(inventory, "MAX_NATIVE_UNITS", 1):
+            self.assertNotIn("native_host_units",
+                             self.run_main(f"2\nnative\t13\tusnm_{job}\nnative\t13\tusnm_{other}\n"))
+        self.assertIn(f"LIMIT {inventory.MAX_NATIVE_UNITS + 1};", inventory.query())
+        self.assertIn("assignment.target_type = 1", inventory.QUERY)
+        self.assertNotIn("native_host_units", self.payload())
+
+    def test_reports_the_native_trusted_hosts_only_when_given(self):
+        # #1780: from `usnm-boinc host-trust native-trusted`, on the host that holds trust.json.
+        digest = "sha256:" + "4" * 64
+        trusted = self.root / "native-trusted.json"
+        trusted.write_text(json.dumps({digest: {"eng": [13, 21]}}))
+        payload = self.run_main("2\n", ["--native-trusted", str(trusted)])
+        self.assertEqual(payload["native_trusted_hosts"], {digest: {"eng": [13, 21]}})
+        self.assertNotIn("native_trusted_hosts", self.run_main("2\n"))
+        for bad in ({"4" * 64: {"eng": [13]}}, {digest: {"english": [13]}}, {digest: {"eng": [0]}},
+                    {digest: {"eng": [13, 13]}}, {digest: {"eng": ["13"]}}, [digest]):
+            trusted.write_text(json.dumps(bad))
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "native trusted hosts"):
+                self.run_main("2\n", ["--native-trusted", str(trusted)])
+        bridge = Path(__file__).with_name("bridge-job.sh").read_text()
+        self.assertIn('usnm-boinc host-trust native-trusted --trust "$SHARE_DIR/gold/trust.json"', bridge)
 
     def test_query_and_bridge_integration_are_read_only(self):
         bridge = Path(__file__).with_name("bridge-job.sh").read_text()

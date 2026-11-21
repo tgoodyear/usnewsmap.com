@@ -5,6 +5,7 @@ use super::{
 use crate::{atomic, gold, read, trust::Trust, Lock};
 use anyhow::{ensure, Context};
 use serde::Serialize;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use usnm_ocr_contract::boinc;
 
@@ -433,9 +434,129 @@ async fn retire_unit(c: &Config, workunit: &str, host: u64, execute: bool) -> an
     }
 }
 
-/// Whether this campaign may reach `host`: every host, unless it's a native campaign.
-fn in_campaign(c: &Config, host: &u64) -> bool {
+/// Whether this campaign may reach `host`: every host, unless it's a native campaign, which
+/// reaches its named hosts, or with `native_auto` the hosts BOINC saw lately (`active`; none
+/// when it isn't known).
+fn in_campaign(c: &Config, active: Option<&BTreeSet<u64>>, host: &u64) -> bool {
+    if c.native_auto {
+        return active.is_some_and(|hosts| hosts.contains(host));
+    }
     c.native_hosts.is_empty() || c.native_hosts.contains(host)
+}
+
+/// Hosts that asked BOINC for work in the last day, as the controller's inventory counts them.
+async fn active_hosts(c: &Config) -> anyhow::Result<BTreeSet<u64>> {
+    super::hosts(
+        &query(
+            c,
+            "SELECT id FROM host WHERE id>0 AND rpc_time > UNIX_TIMESTAMP() - 86400 \
+             ORDER BY id LIMIT 100001",
+        )
+        .await?,
+    )
+}
+
+/// The app of `workunit`, or None when the database has no such workunit.
+async fn workunit_app(c: &Config, workunit: &str) -> anyhow::Result<Option<String>> {
+    checked_workunit(workunit)?;
+    let out = query(
+        c,
+        &format!(
+            "SELECT a.name FROM workunit w JOIN app a ON a.id=w.appid WHERE w.name='{workunit}'"
+        ),
+    )
+    .await?;
+    let mut names = out.lines().map(str::trim).filter(|l| !l.is_empty());
+    let name = names.next().map(str::to_owned);
+    ensure!(names.next().is_none(), "ambiguous workunit {workunit}");
+    Ok(name)
+}
+
+/// The onboarding campaign roots other than `current`, in name order: every directory under
+/// `<root>/onboard/` named by a campaign hash.
+fn other_campaign_roots(c: &Config, current: &[&Path]) -> anyhow::Result<Vec<PathBuf>> {
+    let onboard = c.root.join("onboard");
+    let mut roots = Vec::new();
+    if std::fs::symlink_metadata(&onboard).is_err() {
+        return Ok(roots);
+    }
+    for entry in std::fs::read_dir(&onboard)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_dir()
+            || current.contains(&path.as_path())
+            || !entry.file_name().to_str().is_some_and(boinc::is_sha256)
+        {
+            continue;
+        }
+        roots.push(path);
+        ensure!(
+            roots.len() <= 10_000,
+            "onboarding campaigns exceed safety bound"
+        );
+    }
+    roots.sort();
+    Ok(roots)
+}
+
+/// Version drift (#1780): a host's outstanding `usnm_gold_native` unit from another campaign,
+/// for a build no live version of the app packages for that host any more, is one the gold hook
+/// refuses on every request ("Gold job image differs from registered native build") and that
+/// holds a place under the safety cap until its deadline. It is retired as an unreachable unit
+/// is ([`retire_unit`]: cancelled unless a client holds it or it succeeded, then unassigned),
+/// and this pass issues the host a unit for the current build in its place. A unit of a build
+/// some live version still packages for the host is another campaign's, and is left alone, as
+/// are container gold units. Returns the workunits retired.
+async fn retire_superseded(
+    c: &Config,
+    current: &[&Path],
+    hosts: &[capability::Host],
+    execute: bool,
+) -> anyhow::Result<Vec<String>> {
+    let mut retired = Vec::new();
+    if hosts.is_empty() {
+        return Ok(retired);
+    }
+    let roots = other_campaign_roots(c, current)?;
+    let mut packaged: BTreeMap<(String, String), capability::Requirements> = BTreeMap::new();
+    for host in hosts {
+        for root in &roots {
+            for attempt in submitted_attempts(&root.join(host.id.to_string()))? {
+                let unit = gold::submit::units_dir(&attempt).join("0000");
+                let job: gold::job::Job = serde_json::from_slice(&read(
+                    &unit.join(gold::job::JOB_FILE),
+                    gold::job::MAX_JSON,
+                )?)?;
+                if job.engine.image == c.engine.image
+                    || job.assignment.as_ref().map(|a| a.host_id) != Some(host.id)
+                {
+                    continue;
+                }
+                let workunit = job.workunit();
+                if workunit_app(c, &workunit).await?.as_deref() != Some(gold::submit::NATIVE_APP) {
+                    continue;
+                }
+                let key = (job.engine.image.clone(), job.engine.base.clone());
+                if !packaged.contains_key(&key) {
+                    let requirements =
+                        capability::requirements_for(c, gold::submit::NATIVE_APP, &job.engine)
+                            .await?;
+                    packaged.insert(key.clone(), requirements);
+                }
+                if packaged[&key].can_run(host) {
+                    continue;
+                }
+                if retire_unit(c, &workunit, host.id, execute).await? {
+                    eprintln!(
+                        "{workunit} is for superseded build {} on host {}; a unit for {} replaces it",
+                        job.engine.image, host.id, c.engine.image
+                    );
+                    retired.push(workunit);
+                }
+            }
+        }
+    }
+    Ok(retired)
 }
 
 /// Discover hosts centrally, skip hosts already trusted for this prepared campaign's exact
@@ -452,18 +573,23 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
     let prepared = gold::prepare::read(&c.prepared)?;
     gold::submit::job(&prepared, &c.engine, 0)?;
     super::refuse_native_campaign(c, &trust, scope, crate::trust::BuildTrust::embedded()?)?;
-    let app = if c.native_hosts.is_empty() {
-        gold::submit::APP
-    } else {
+    let app = if c.native() {
         gold::submit::NATIVE_APP
+    } else {
+        gold::submit::APP
     };
     let inventory = capability::inventory(c).await?;
+    let active = if c.native_auto {
+        Some(active_hosts(c).await?)
+    } else {
+        None
+    };
     let trusted_hosts =
         trust.campaign_trusted_hosts(&c.engine.image, &prepared.manifest_sha256, scope);
     let (campaign_root, legacy_root) = campaign_roots(c, &prepared, scope)?;
     let mut pending: Vec<_> = inventory
         .into_iter()
-        .filter(|h| in_campaign(c, &h.id))
+        .filter(|h| in_campaign(c, active.as_ref(), &h.id))
         .filter(|h| !trusted_hosts.is_some_and(|hosts| hosts.contains(&h.id)))
         .collect();
     if !pending.is_empty() {
@@ -490,6 +616,9 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
             roots.push(&legacy_root);
         }
         retire_unreachable(c, &roots, &skipped, execute).await?;
+        if c.native_auto {
+            retire_superseded(c, &roots, &pending, execute).await?;
+        }
     }
     let pending: Vec<u64> = pending.into_iter().map(|h| h.id).collect();
     // Hosts are visited in id order and the pass stops at max_hosts, so hosts with an
@@ -645,9 +774,27 @@ mod tests {
             }))
             .unwrap()
         };
-        assert!(in_campaign(&config(&[]), &5));
-        assert!(in_campaign(&config(&[13]), &13));
-        assert!(!in_campaign(&config(&[13]), &5));
+        assert!(in_campaign(&config(&[]), None, &5));
+        assert!(in_campaign(&config(&[13]), None, &13));
+        assert!(!in_campaign(&config(&[13]), None, &5));
+    }
+
+    #[test]
+    fn an_every_host_native_campaign_reaches_only_lately_active_hosts() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "root": "/r", "project": "/p", "jobs_root": "/j", "mysql_defaults": "/m",
+            "mysql_ca": "/c", "database": "d", "trust": "/t", "prepared": "/q",
+            "engine": {"base": "sha256:b", "dpi": 300, "image": "sha256:i", "psm": 3,
+                       "timeout_secs": 300, "version": "5.5.0"},
+            "native_auto": true, "max_hosts": 1, "max_spots": 1, "sample_every": 1,
+        }))
+        .unwrap();
+        assert!(config.native());
+        let active = BTreeSet::from([13]);
+        assert!(in_campaign(&config, Some(&active), &13));
+        assert!(!in_campaign(&config, Some(&active), &5));
+        // Without the active list, nobody.
+        assert!(!in_campaign(&config, None, &13));
     }
 
     #[test]

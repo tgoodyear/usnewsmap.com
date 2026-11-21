@@ -142,6 +142,14 @@ pub enum HostTrustCommands {
         #[arg(long)]
         execute: bool,
     },
+    /// The hosts the trust list admits for native OCR (#1780), as `usnm-boinc submit --app
+    /// usnm_ocr_native` would: by build digest and page language, each build with its passing
+    /// challenge run in the embedded native-build-trust.json. Prints JSON; a missing list
+    /// admits nobody. Read-only.
+    NativeTrusted {
+        #[arg(long)]
+        trust: PathBuf,
+    },
     /// Release a host's trust hold for one build (#1863) after an operator has looked. The hold
     /// and the note go to holds-released.jsonl beside the trust list.
     ReleaseHold {
@@ -323,6 +331,22 @@ pub async fn run(command: HostTrustCommands) -> anyhow::Result<()> {
             value["schema_version"] = 1.into();
             crate::atomic(&out, &serde_json::to_vec_pretty(&value)?)?;
             println!("{}", serde_json::to_string(&report)?);
+        }
+        HostTrustCommands::NativeTrusted { trust } => {
+            let admitted = if trust.exists() {
+                let installed = crate::installed_models();
+                crate::trust::Trust::load(&trust)?.native_admitted(
+                    crate::trust::BuildTrust::embedded()?,
+                    |language| {
+                        usnm_ocr_worker::engine::route(language, &installed)
+                            .filter(|route| route.kind.is_tesseract())
+                            .map(|route| route.profile)
+                    },
+                )
+            } else {
+                Default::default()
+            };
+            println!("{}", serde_json::to_string(&admitted)?);
         }
         HostTrustCommands::ReleaseHold {
             trust,

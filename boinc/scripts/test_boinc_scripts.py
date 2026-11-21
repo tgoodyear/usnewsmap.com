@@ -2216,13 +2216,15 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
                   "if true; then :\n" + block + "fi\n")
         env = {**self.env, "PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log,
                "TEMPLATES": templates, "HANDOFF_DIR": handoff, "HANDOFF_URL": "/handoff-state",
-               "BATCH_NONCE": "c" * 32}
+               "BATCH_NONCE": "c" * 32, "SHARE_DIR": "/share"}
 
         def run(**extra):
             open(self.log, "w").close()
             return subprocess.run(["bash", "-euo", "pipefail", "-c", script], env={**env, **extra},
                                   capture_output=True, text=True)
 
+        # The native trusted hosts (#1780) are listed first, from the BOINC host's trust list.
+        trusted = "host-trust native-trusted --trust /share/gold/trust.json"
         r = run(BATCH_SCOPE="native-feed-9")
         self.assertEqual(r.returncode, 0, r.stderr)
         scoped = os.path.join(handoff, "scheduler-plans", "native-feed-9")
@@ -2231,13 +2233,13 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(handoff, "scheduler", "inventory.json")))
         with open(self.log) as f:
             self.assertEqual(f.read().splitlines(),
-                             [f"handoff put --from {scoped} --to-url /handoff-state --prefix scheduler/plans/native-feed-9"])
+                             [trusted, f"handoff put --from {scoped} --to-url /handoff-state --prefix scheduler/plans/native-feed-9"])
         r = run()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(os.path.exists(os.path.join(handoff, "scheduler", "inventory.json")))
         with open(self.log) as f:
             self.assertEqual(f.read().splitlines(),
-                             [f"handoff put --from {handoff}/scheduler --to-url /handoff-state --prefix scheduler"])
+                             [trusted, f"handoff put --from {handoff}/scheduler --to-url /handoff-state --prefix scheduler"])
         for bad in ("Native-9", "../x", "a/b", "-x"):
             with self.subTest(scope=bad):
                 r = run(BATCH_SCOPE=bad)
