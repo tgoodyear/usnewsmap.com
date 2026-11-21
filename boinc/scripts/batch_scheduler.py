@@ -3482,6 +3482,17 @@ def native_replay_room(config, snapshot, others, targets, from_trust):
                            - own.get(int(host), 0)) for host, n in cpus.items()}
 
 
+def native_queued_replays(config, state, active=None):
+    """The queued spot replays this tick's replay step could make (#2081): to an active host
+    (`active`; None: not known), at most the step's 100. The refill leaves them room under the
+    global cap, so ordinary work can't fill it ahead of them tick after tick."""
+    if NATIVE_SPOT_KEY not in config:
+        return 0
+    queued = sum(entry.get("stage") == "queued" and (active is None or entry.get("target") in active)
+                 for entry in _spot(state).get("pending", {}).values())
+    return min(100, queued)
+
+
 def native_spot_step(config, state, transport, now, submit_room=100, active=None, target_room=None):
     """Run the bridge's native-spot step for the queued replays and the submitted ones, and act on
     what it reports: a match refreshes the host's checks and settles its unchecked pages up to
@@ -4854,7 +4865,13 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         refilling = bool(state.get("refilling", False))
 
     cohort_free = max(0, high_target - pending) if refilling else 0
-    global_free = max(0, global_room(cohort_info, global_pending, budgeted_other))
+    # Room under the global cap kept for queued spot replays (#2081), when the cap the replay step
+    # counts against is set: the step runs after the submit, and a refill that filled the cap
+    # first would starve them for good.
+    spot_cap_set = (max_global_pending if max_global_pending is not None
+                    else config.get("max_global_pending")) is not None
+    replay_reserve = native_queued_replays(config, state, spot_active) if native and spot_cap_set and not drain else 0
+    global_free = max(0, global_room(cohort_info, global_pending, budgeted_other) - replay_reserve)
     free = min(cohort_free, global_free)
     submitted = 0
     # A plan beside others (#1836): from here to the spot checks, one plan at a time. With the lock,
@@ -4880,7 +4897,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             admission_extra = max(0, demand - global_pending)
             if refresh_sibling_claims is not None:
                 sibling_claims = refresh_sibling_claims()
-            global_free = max(0, global_room(cohort_info, global_pending + admission_extra, room_other))
+            global_free = max(0, global_room(cohort_info, global_pending + admission_extra, room_other)
+                              - replay_reserve)
             free = min(cohort_free, global_free)
     if feed and admitted:
         # Every tick, so the list stays current when this one claims nothing (#1754).
@@ -4954,7 +4972,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         global_backlog = (sum(not settled(record) and record["job"]["id"] not in room_pending | candidates
                               for record in records)
                           + sum(page not in owned and page not in conflicts for page in selected))
-        global_submit_room = max(0, global_room(cohort_info, room_in_flight + global_backlog, room_other))
+        global_submit_room = max(0, global_room(cohort_info, room_in_flight + global_backlog, room_other)
+                                 - replay_reserve)
         submit_limit = min(refill, cohort_submit_room, global_submit_room)
         to_submit = []
         for record in owned.values():

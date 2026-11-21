@@ -1364,13 +1364,44 @@ class SpotStepLockTests(unittest.TestCase):
         self.tick(NOW + 60)
         self.assertNotIn("lock_busy", self.state["native_spot"])
 
+    def native_submissions(self):
+        return [unit for action in self.fake.actions if action[0] == "submit-native" for unit in action[1]]
+
     def test_replay_room_counts_the_units_this_tick_submitted(self):
         self.tick()
         self.results_in()
-        # The cap has room for the units submit sends this tick and nothing more.
+        # The cap has room for two units. The tick's draw queued two replays, and the refill
+        # leaves the cap's room to them (#2081): it submits nothing, and the replays go.
         pending = self.fake.inventory()["pending_workunits"]
+        self.fake.actions.clear()
         self.tick(max_global_pending=pending + 2)
-        self.assertEqual([submit for submit, _ in self.fake.spot_calls if submit], [])
+        self.assertEqual(self.native_submissions(), [])
+        self.assertEqual(len([item for submit, _ in self.fake.spot_calls if submit for item in submit.split(",")]), 2)
+
+    def test_queued_replays_keep_their_global_room_through_repeated_capped_refills(self):
+        # #2081: the refill fills the global cap each tick; the replay step runs after it. A
+        # replay queued to an active peer keeps its place under the cap, and goes on the first
+        # tick, while the refill takes the rest of the room.
+        self.config["native_spot_check"]["canary_pages_per_host"] = 4
+        self.tick()
+        self.results_in()
+        batch.SPOT_RANDOM = Always(1.0)  # no new draws
+        replay = "e" * 64
+        self.state["native_spot"]["pending"] = {replay: {
+            "source": 13, "target": 240, "image": self.config["image"], "page": "p",
+            "spool": "/project/usnmocr/results/7", "at": NOW, "stage": "queued"}}
+        for n in range(3):
+            pending = self.fake.inventory()["pending_workunits"]
+            self.fake.actions.clear()
+            self.fake.spot_calls.clear()
+            self.tick(NOW + 60 * n, max_global_pending=pending + 2)
+            submitted = len(self.native_submissions())
+            if self.state["native_spot"]["pending"].get(replay, {}).get("stage") != "queued":
+                break
+            self.results_in()
+        self.assertEqual(n, 0)
+        self.assertEqual(self.state["native_spot"]["pending"][replay]["stage"], "submitted")
+        self.assertEqual(submitted, 1)
 
 
 class SamplingTests(unittest.TestCase):
