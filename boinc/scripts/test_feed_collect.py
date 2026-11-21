@@ -1132,6 +1132,19 @@ class MaintenanceTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 C.fresh(deepcopy(document) | {"archive_runs": bad}, NOW, "controller")
 
+    def test_archive_runs_report_one_entry_for_a_run_two_units_share(self):
+        listing = ("usnm-boinc-held-archive.service loaded inactive dead Archive\n"
+                   "usnm-boinc-held-archive@main.service loaded activating start Archive\n").encode()
+        shown = (b"LoadState=loaded\nSubState=start\nExecMainStartTimestampMonotonic=4400000000\n"
+                 b"ExecMainExitTimestampMonotonic=0\n")
+
+        def run(argv, **_):
+            return listing if argv[1] == "list-units" else shown
+        with patch.object(C, "run", side_effect=run), \
+                patch.object(C.time, "time", return_value=NOW), \
+                patch.object(C.time, "clock_gettime", return_value=5000):
+            self.assertEqual(C.archive_runs(), [[NOW - 600, None]])
+
     def test_archive_runs_are_opt_in_and_never_replace_the_tick(self):
         tick = {"ok": True, "seconds": 5, "finished_at": NOW}
         with fixture() as root:

@@ -33,6 +33,7 @@
 #                   [--min-age-hours N] [--max-batches N] [--wait-mins N] [--tool FILE]
 #                   [--check-state-dir DIR]... [--tick-lock FILE] [--gap-mins N]
 #                   [--max-minutes N] [--batch-mins N] [--pre-batch-tick] [--lock-wait-mins N]
+#                   [--skip-if-busy]
 #
 # --lock-wait-mins N (#2052; default 30, 0 = fail at once) is how long the run waits for another
 # archive's locks before it gives up. Six archive units (the main plan's and the native plans')
@@ -40,6 +41,13 @@
 # losing its slot: it logs boinc_held_archive_lock_wait when it starts waiting and again when it
 # has the locks, and fails ("another held-page archive is running") only on the timeout. The
 # --max-minutes budget starts once the locks are held, so a run that waited keeps its whole budget.
+#
+# --skip-if-busy (default off) is for units whose timers are staggered (RandomizedDelaySec with
+# FixedRandomDelay, so each plan has its own slot in the cycle): if another archive holds the run
+# lock when this one starts, it logs boinc_held_archive_busy ("busy, next slot") and exits 0
+# without waiting, as the other archive's run is the lock's only holder. A wait for the archive
+# lock that follows (a controller tick holds it too) still fails on --lock-wait-mins: a tick that
+# holds it that long is a real problem.
 #
 # --gap-mins N (#2012; default 0, off) lets the controller tick between batches. The pause, the
 # tick lock and the archive lock (/run/usnm-boinc-held-archive.lock, which other plans' ticks
@@ -101,7 +109,7 @@ CONFIG=/etc/usnm/boinc-priority-controller.json
 STATE_DIR=/var/lib/usnm-priority-controller
 ARCHIVE=/srv/usnm-archive
 PAGES=1000 MIN_AGE=1 MAX_BATCHES=10 WAIT_MINS=60 GAP_MINS=0 MAX_MINUTES=0
-PRE_TICK=false BATCH_MINS=10 LOCK_WAIT_MINS=30
+PRE_TICK=false BATCH_MINS=10 LOCK_WAIT_MINS=30 SKIP_IF_BUSY=false
 UNIT=${USNM_CONTROLLER_UNIT:-usnm-boinc-priority-controller@main}
 # The shared unit every plan ticked in before #1690.
 LEGACY_UNIT=usnm-boinc-priority-controller
@@ -124,6 +132,7 @@ while [ $# -gt 0 ]; do
     --max-minutes) [ $# -ge 2 ] || usage; MAX_MINUTES=$2; shift 2 ;;
     --pre-batch-tick) PRE_TICK=true; shift ;;
     --batch-mins) [ $# -ge 2 ] || usage; BATCH_MINS=$2; shift 2 ;;
+    --skip-if-busy) SKIP_IF_BUSY=true; shift ;;
     --lock-wait-mins) [ $# -ge 2 ] || usage; LOCK_WAIT_MINS=$2; shift 2 ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
@@ -181,6 +190,13 @@ take_lock() {
   die "another held-page archive is running (waited $((SECONDS - LOCK_WAIT_START)) s, --lock-wait-mins $LOCK_WAIT_MINS)"
 }
 exec 6> "$LOCK.run"
+# The run lock is held only by archives, so a busy one means another archive is running: skip this
+# slot instead of queueing (#2052), as the staggered timers give the next run its own.
+if $SKIP_IF_BUSY && ! flock -n 6; then
+  printf '{"event": "boinc_held_archive_busy", "skipped": true, "reason": "busy, next slot"}\n'
+  echo "held-page archive busy, next slot"
+  exit 0
+fi
 take_lock 6
 exec 9> "$LOCK"
 take_lock 9
