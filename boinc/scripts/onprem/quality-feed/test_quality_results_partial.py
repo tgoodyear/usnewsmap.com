@@ -171,6 +171,100 @@ class PartialTest(unittest.TestCase):
                 self.assertLess(seconds + grace, call.kwargs["timeout"])
                 self.assertEqual(command[inner + 4], "tar")
 
+    def warm_response(self, code=0, unit="bundle-a", late=False):
+        lines = [json.dumps({"phase": "warm_selected", "unit": unit})]
+        if late:
+            lines.append(json.dumps({"phase": "collection_out_of_time", "step": "warm", "unit": unit,
+                                     "budget_seconds": partial.WARM_SECONDS - 20}))
+        return subprocess.CompletedProcess(["ssh"], code, b"", ("\n".join(lines) + "\n").encode())
+
+    def test_warm_without_lock_warms_the_pass_unit_before_taking_the_lock(self):
+        self.args.warm_without_lock = True
+        with mock.patch.object(partial.uuid, "uuid4", return_value=types.SimpleNamespace(hex=self.snapshot)), \
+                mock.patch.object(partial.subprocess, "run",
+                                  side_effect=[self.warm_response(), *self.responses()]) as run, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as log:
+            partial.host_pass(self.args)
+        warm, locked = (shlex.split(call.args[0][-1]) for call in run.call_args_list[:2])
+        self.assertIn("--remote-warm", warm)
+        self.assertNotIn("flock", warm)
+        self.assertEqual(warm[warm.index("timeout") + 3], f"{partial.WARM_SECONDS}s")
+        self.assertIn("flock", locked)
+        self.assertIn("--warm-without-lock", locked)
+        self.assertIn('"phase": "warm_done", "unit": "bundle-a"', log.getvalue())
+        self.assertEqual(json.loads((self.args.state_dir / "test/cursor.json").read_bytes())["after"],
+                         "bundle-a")
+
+    def test_a_warm_out_of_time_defers_the_pass_without_the_lock(self):
+        self.args.warm_without_lock = True
+        self.args.out_of_time_passes = 2
+        counts = self.args.state_dir / "test" / partial.OUT_OF_TIME_FILE
+        for attempt, response in enumerate([self.warm_response(75, late=True), self.warm_response(124)], 1):
+            with self.subTest(attempt=attempt), \
+                    mock.patch.object(partial.subprocess, "run", return_value=response) as run, \
+                    mock.patch.object(sys, "stderr", new_callable=io.StringIO) as log:
+                with self.assertRaises(SystemExit) as raised:
+                    partial.host_pass(self.args)
+                self.assertEqual(run.call_count, 1)  # the lock was never asked for
+                self.assertIn('"phase": "warm_deferred"', log.getvalue())
+                self.assertEqual(json.loads(counts.read_bytes())["units"], {"bundle-a": attempt})
+        self.assertEqual(raised.exception.code, "bundle-a: out of time in 2 passes in a row")
+        self.assertFalse((self.args.state_dir / "test/cursor.json").exists())
+
+    def test_a_failed_warm_leaves_the_error_to_the_locked_pass(self):
+        self.args.warm_without_lock = True
+        with mock.patch.object(partial.uuid, "uuid4", return_value=types.SimpleNamespace(hex=self.snapshot)), \
+                mock.patch.object(partial.subprocess, "run",
+                                  side_effect=[self.warm_response(1), *self.responses()]) as run, \
+                mock.patch.object(sys, "stderr", new_callable=io.StringIO) as log:
+            partial.host_pass(self.args)
+        self.assertEqual(run.call_count, 6)
+        self.assertIn('"phase": "warm_failed", "exit": 1', log.getvalue())
+
+    def test_scoped_warm_keys_the_pass_unit_alike_and_shares_one_digest_directory(self):
+        root = self.root / "project"
+        for name in ["bundle-a", "bundle-b"]:
+            unit = root / "quality/test/units" / name
+            unit.mkdir(parents=True)
+            (unit / "submitted").touch()
+            (unit / "quality.json").write_text(json.dumps({"id": self.job, "doc_id": "doc-a"}))
+        calls = self.root / "calls.jsonl"
+        Path(self.args.collector).write_text(
+            "#!" + sys.executable + "\n"
+            "import json, sys\nfrom pathlib import Path\n"
+            f"open({str(calls)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "if '--out-dir' in sys.argv:\n"
+            " out = Path(sys.argv[sys.argv.index('--out-dir') + 1])\n"
+            " for name in ['pages.parquet', 'crops.parquet', 'summary.md']:\n"
+            "  (out / name).write_bytes(b'rows')\n"
+        )
+        Path(self.args.collector).chmod(0o700)
+        self.args.after = "bundle-a"
+        self.args.warm_without_lock = True
+        with mock.patch.object(sys, "stderr", new_callable=io.StringIO):
+            warmed = partial.scoped_warm(self.args, root)
+            receipt = partial.scoped_collect(self.args, root)
+        self.assertEqual((warmed["unit"], receipt["selected_unit"]), ("bundle-b", "bundle-b"))
+        warm, locked = (json.loads(line) for line in calls.read_text().splitlines())
+        self.assertIn("--warm-only", warm)
+        self.assertNotIn("--out-dir", warm)
+        self.assertNotIn("--warm-only", locked)
+        # The same call but for its output, so the locked collection finds the warmed part.
+        self.assertEqual(warm[:-1], locked[:locked.index("--out-dir")])
+        base = root / "ops/quality-results/scoped/test"
+        self.assertEqual(warm[warm.index("--digest-cache") + 1], str(base / partial.DIGESTS_DIR))
+        with mock.patch.object(partial.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, stdout="{}", stderr="")
+            partial.completion_inventory(self.args, root, base)
+            command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--digest-cache") + 1], str(base / partial.DIGESTS_DIR))
+        # Without the flag, collectors that predate `--digest-cache` keep working.
+        self.args.warm_without_lock = False
+        self.args.snapshot = "f" * 32
+        with mock.patch.object(sys, "stderr", new_callable=io.StringIO):
+            partial.scoped_collect(self.args, root)
+        self.assertNotIn("--digest-cache", json.loads(calls.read_text().splitlines()[-1]))
+
     def test_remote_failure_diagnostics_distinguish_lock_conflicts_without_advancing(self):
         for code, acquired, phase in [(75, False, "step_lock_busy"),
                                       (75, True, "collection_failed"),

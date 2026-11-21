@@ -4,15 +4,44 @@ use crate::qwen::{ledger::MAX_MEMBERSHIP, stage::Membership};
 use anyhow::{ensure, Context};
 use sha2::{Digest, Sha256};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 use usnm_ocr_contract::{quality::Job, qwen};
 
 const FORMAT: &[u8] = b"quality-row-part-v4";
+/// The digest index in the digest directory, and the format it is written in.
+const DIGESTS_FILE: &str = "index-v2.json";
+const DIGESTS_FORMAT: &str = "quality-input-digests-v2";
+/// A file whose ctime is more recent than this is hashed every time and its digest never kept:
+/// a rewrite within the same timestamp tick as the hash could leave its identity as it was, and
+/// the file server's clock may be some seconds off ours.
+const SETTLE: Duration = Duration::from_secs(60);
+/// Digests not yet written out are written this often, so a run that is killed (a warming round
+/// at its limit) keeps what it hashed until then and the next one resumes from there.
+const FLUSH: Duration = Duration::from_secs(15);
+/// Past this many digests, an index keeps only the ones its last run used or added.
+const MAX_DIGESTS: usize = 400_000;
+
+#[cfg(test)]
+thread_local! {
+    /// Tests write their inputs a moment before they read them; they may settle them sooner.
+    pub(super) static TEST_SETTLE: Cell<Option<Duration>> = const { Cell::new(None) };
+}
+
+fn settle() -> Duration {
+    #[cfg(test)]
+    {
+        if let Some(settle) = TEST_SETTLE.with(Cell::get) {
+            return settle;
+        }
+    }
+    SETTLE
+}
 
 /// An input was rewritten while it was keyed. A run under the step lock treats it as a failure; a
 /// warming run, which has no lock to keep inputs still, skips the unit and keys it again.
@@ -50,6 +79,42 @@ impl FileIdentity {
             modified: (m.mtime(), m.mtime_nsec()),
             changed: (m.ctime(), m.ctime_nsec()),
         })
+    }
+
+    /// The path's identity as an open of it sees it: on NFS, opening revalidates the attributes
+    /// (close-to-open), where a bare stat may answer from the attribute cache.
+    fn of_path(path: &Path) -> Option<Self> {
+        Self::read(&File::open(path).ok()?).ok()
+    }
+
+    /// Whether a digest of the file may be kept for its identity: its ctime has nanoseconds (a
+    /// coarse one cannot tell a same-size rewrite with restored mtime) and has settled.
+    fn fine(&self) -> bool {
+        self.changed.1 != 0
+    }
+
+    fn settled(&self) -> bool {
+        let (Ok(secs), Ok(nanos)) = (u64::try_from(self.changed.0), u32::try_from(self.changed.1))
+        else {
+            return false;
+        };
+        let changed = std::time::UNIX_EPOCH + Duration::new(secs, nanos);
+        self.fine() && changed + settle() <= std::time::SystemTime::now()
+    }
+
+    /// The index key: the identity alone, not the path, so a unit read through a partial scope's
+    /// link and through its root, or by another run naming the same directory, shares a digest.
+    fn key(&self) -> String {
+        format!(
+            "{}:{}:{}:{}.{:09}:{}.{:09}",
+            self.device,
+            self.inode,
+            self.size,
+            self.modified.0,
+            self.modified.1,
+            self.changed.0,
+            self.changed.1
+        )
     }
 }
 
@@ -93,87 +158,206 @@ fn digest_receipt(bytes: &[u8], key: &str, identity: &FileIdentity) -> anyhow::R
     Ok(saved.sha256)
 }
 
-#[cfg(unix)]
-fn input_digest(dir: &Path, path: &Path, input: &mut File) -> anyhow::Result<Vec<u8>> {
-    let identity = FileIdentity::read(input)?;
-    // Coarse ctime cannot distinguish a same-size rewrite with restored mtime.
-    if identity.changed.1 == 0 {
-        return contents(input);
-    }
-    let mut key = Sha256::new();
-    field(&mut key, b"quality-input-digest-v1");
-    field(&mut key, path.as_os_str().as_encoded_bytes());
-    field(&mut key, &serde_json::to_vec(&identity)?);
-    let key = hex(&key.finalize());
-    let receipt = dir.join(format!("{key}.json"));
-    let digest = match std::fs::read(&receipt) {
-        Ok(bytes) => digest_receipt(&bytes, &key, &identity)?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let digest = contents(input)?;
-            ensure!(
-                FileIdentity::read(input)? == identity,
-                InputChanged("input changed while hashing")
-            );
-            let rows = serde_json::to_string(&InputDigest {
-                identity: identity.clone(),
-                sha256: digest.clone(),
-            })?;
-            let envelope = Envelope {
-                fingerprint: key.clone(),
-                rows_sha256: hex(&Sha256::digest(rows.as_bytes())),
-                rows,
-            };
-            std::fs::create_dir_all(dir)?;
-            let mut staged = tempfile::NamedTempFile::new_in(dir)?;
-            staged.write_all(&serde_json::to_vec(&envelope)?)?;
-            staged.as_file().sync_all()?;
-            match staged.persist_noclobber(&receipt) {
-                Ok(_) => File::open(dir)?.sync_all()?,
-                // Another collector of this cache (a warming run beside a publication, or a
-                // manual prewarm) stored the same receipt first. Take theirs if it is valid
-                // and says what we computed; a corrupt or different one fails closed.
-                Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    ensure!(
-                        digest_receipt(&std::fs::read(&receipt)?, &key, &identity)? == digest,
-                        "input digest receipt conflict; receipt retained"
-                    );
-                }
-                Err(e) => return Err(e.into()),
-            }
-            digest
-        }
-        Err(e) => return Err(e).context("reading retained input digest"),
+fn unhex(text: &str) -> Option<Vec<u8>> {
+    (text.len() == 64 && text.is_ascii())
+        .then(|| {
+            (0..64)
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok())
+                .collect()
+        })
+        .flatten()
+}
+
+/// SHA-256 digests of input files by file identity (device, inode, size, nanosecond mtime and
+/// ctime), kept in one index that every run naming the directory shares. A file whose identity is
+/// in the index is opened (to revalidate its attributes) but not read; any change of identity
+/// reads it again. Only settled files with nanosecond ctime are kept, so other filesystems, and
+/// files just written, are hashed every time.
+pub(super) struct Digests {
+    dir: PathBuf,
+    /// Where `quality-input-digest-v1` receipts were kept, one file per input keyed on its path
+    /// too. They are read on a miss, so a cache keeps what it hashed before; never written.
+    legacy: PathBuf,
+    known: RefCell<BTreeMap<String, String>>,
+    added: RefCell<BTreeMap<String, String>>,
+    used: RefCell<BTreeSet<String>>,
+    flushed: Cell<Instant>,
+}
+
+fn read_index(path: &Path) -> anyhow::Result<BTreeMap<String, String>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(e) => return Err(e).context("reading the input digest index"),
     };
+    let envelope: Envelope = serde_json::from_slice(&bytes).context("input digest index")?;
     ensure!(
-        FileIdentity::read(input)? == identity
-            && FileIdentity::read(&File::open(path)?)? == identity,
-        InputChanged("input changed while fingerprinting")
+        envelope.fingerprint == DIGESTS_FORMAT,
+        "input digest index format mismatch; index retained"
     );
-    Ok(digest)
+    ensure!(
+        envelope.rows_sha256 == hex(&Sha256::digest(envelope.rows.as_bytes())),
+        "input digest index checksum mismatch; index retained"
+    );
+    let index: BTreeMap<String, String> = serde_json::from_str(&envelope.rows)?;
+    ensure!(
+        index.values().all(|digest| unhex(digest).is_some()),
+        "invalid input digest index; index retained"
+    );
+    Ok(index)
 }
 
-#[cfg(not(unix))]
-fn input_digest(_dir: &Path, _path: &Path, input: &mut File) -> anyhow::Result<Vec<u8>> {
-    contents(input)
+impl Digests {
+    pub(super) fn open(dir: &Path, legacy: &Path) -> anyhow::Result<Self> {
+        Ok(Self {
+            dir: dir.to_owned(),
+            legacy: legacy.to_owned(),
+            known: RefCell::new(read_index(&dir.join(DIGESTS_FILE))?),
+            added: RefCell::new(BTreeMap::new()),
+            used: RefCell::new(BTreeSet::new()),
+            flushed: Cell::new(Instant::now()),
+        })
+    }
+
+    /// The SHA-256 of `path`'s contents, or None when there is no such file. With `strict`, an
+    /// input rewritten while it was hashed is `InputChanged`; without, what was read is returned
+    /// and not kept.
+    fn digest(&self, path: &Path, strict: bool) -> anyhow::Result<Option<Vec<u8>>> {
+        let mut input = match File::open(path) {
+            Ok(input) => input,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("fingerprinting {path:?}")),
+        };
+        #[cfg(unix)]
+        {
+            let identity = FileIdentity::read(&input)?;
+            if !identity.fine() {
+                return Ok(Some(contents(&mut input)?));
+            }
+            let settled = identity.settled();
+            if settled {
+                let key = identity.key();
+                if let Some(digest) = self.known.borrow().get(&key).and_then(|d| unhex(d)) {
+                    self.used.borrow_mut().insert(key);
+                    return Ok(Some(digest));
+                }
+            }
+            let digest = match settled.then(|| self.legacy(path, &identity)).transpose()? {
+                Some(Some(digest)) => digest,
+                _ => contents(&mut input)?,
+            };
+            if FileIdentity::read(&input)? == identity
+                && FileIdentity::of_path(path).as_ref() == Some(&identity)
+            {
+                if settled {
+                    self.keep(&identity, &digest)?;
+                }
+            } else {
+                ensure!(!strict, InputChanged("input changed while fingerprinting"));
+            }
+            Ok(Some(digest))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = strict;
+            Ok(Some(contents(&mut input)?))
+        }
+    }
+
+    /// The digest a `quality-input-digest-v1` receipt holds for this input, if there is one.
+    #[cfg(unix)]
+    fn legacy(&self, path: &Path, identity: &FileIdentity) -> anyhow::Result<Option<Vec<u8>>> {
+        let mut key = Sha256::new();
+        field(&mut key, b"quality-input-digest-v1");
+        field(&mut key, path.as_os_str().as_encoded_bytes());
+        field(&mut key, &serde_json::to_vec(identity)?);
+        let key = hex(&key.finalize());
+        match std::fs::read(self.legacy.join(format!("{key}.json"))) {
+            Ok(bytes) => Ok(Some(digest_receipt(&bytes, &key, identity)?)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e).context("reading retained input digest"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn keep(&self, identity: &FileIdentity, digest: &[u8]) -> anyhow::Result<()> {
+        let key = identity.key();
+        self.known.borrow_mut().insert(key.clone(), hex(digest));
+        self.added.borrow_mut().insert(key.clone(), hex(digest));
+        self.used.borrow_mut().insert(key);
+        if self.flushed.get().elapsed() >= FLUSH {
+            self.save()?;
+        }
+        Ok(())
+    }
+
+    /// Writes the digests added since the last save into the index, merged with what other runs
+    /// wrote there meanwhile. Two runs saving at once can lose one's additions, which are then
+    /// hashed again; an identity two runs saw with different digests is dropped from it.
+    pub(super) fn save(&self) -> anyhow::Result<()> {
+        self.flushed.set(Instant::now());
+        if self.added.borrow().is_empty() {
+            return Ok(());
+        }
+        let added = std::mem::take(&mut *self.added.borrow_mut());
+        let path = self.dir.join(DIGESTS_FILE);
+        let mut index = read_index(&path)?;
+        for (key, digest) in added {
+            match index.get(&key) {
+                Some(other) if *other != digest => {
+                    index.remove(&key);
+                    self.known.borrow_mut().remove(&key);
+                }
+                _ => {
+                    index.insert(key, digest);
+                }
+            }
+        }
+        if index.len() > MAX_DIGESTS {
+            let used = self.used.borrow();
+            index.retain(|key, _| used.contains(key));
+        }
+        let rows = serde_json::to_string(&index)?;
+        let envelope = Envelope {
+            fingerprint: DIGESTS_FORMAT.to_owned(),
+            rows_sha256: hex(&Sha256::digest(rows.as_bytes())),
+            rows,
+        };
+        std::fs::create_dir_all(&self.dir)?;
+        let mut staged = tempfile::NamedTempFile::new_in(&self.dir)?;
+        staged.write_all(&serde_json::to_vec(&envelope)?)?;
+        staged.as_file().sync_all()?;
+        staged.persist(&path)?;
+        File::open(&self.dir)?.sync_all()?;
+        Ok(())
+    }
 }
 
+impl Drop for Digests {
+    /// A run that fails still keeps the digests it computed; one whose save fails hashes again.
+    fn drop(&mut self) {
+        let _ = self.save();
+    }
+}
+
+/// The identity of a staged input for the scheduling inventory, which never reads its contents.
 #[cfg(unix)]
-fn inventory_identity(path: &Path, input: &File) -> anyhow::Result<Option<Vec<u8>>> {
-    let identity = FileIdentity::read(input)?;
-    if identity.changed.1 == 0 {
+fn inventory_identity(path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
+    let input = match File::open(path) {
+        Ok(input) => input,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).with_context(|| format!("fingerprinting {path:?}")),
+    };
+    let identity = FileIdentity::read(&input)?;
+    if !identity.fine() {
         return Ok(None);
     }
-    let bytes = serde_json::to_vec(&identity)?;
-    ensure!(
-        FileIdentity::read(input)? == identity
-            && FileIdentity::read(&File::open(path)?)? == identity,
-        "input changed during scheduling inventory"
-    );
-    Ok(Some(bytes))
+    Ok(Some(serde_json::to_vec(&identity)?))
 }
 
 #[cfg(not(unix))]
-fn inventory_identity(_path: &Path, _input: &File) -> anyhow::Result<Option<Vec<u8>>> {
+fn inventory_identity(_path: &Path) -> anyhow::Result<Option<Vec<u8>>> {
     Ok(None)
 }
 
@@ -207,6 +391,7 @@ pub(super) struct Cache {
     surya_root: Option<PathBuf>,
     inventory: Vec<PathBuf>,
     included: RefCell<BTreeMap<PathBuf, TrackedUnit>>,
+    digests: Digests,
 }
 
 struct TrackedUnit {
@@ -223,14 +408,14 @@ struct Dependency {
 }
 
 impl Dependency {
-    fn new(paths: Vec<PathBuf>) -> anyhow::Result<Self> {
-        Self::salted(paths, Vec::new())
+    fn new(paths: Vec<PathBuf>, digests: &Digests) -> anyhow::Result<Self> {
+        Self::salted(paths, Vec::new(), digests)
     }
 
-    fn salted(mut paths: Vec<PathBuf>, salt: Vec<u8>) -> anyhow::Result<Self> {
+    fn salted(mut paths: Vec<PathBuf>, salt: Vec<u8>, digests: &Digests) -> anyhow::Result<Self> {
         paths.sort();
         paths.dedup();
-        let digest = Self::hash(&paths, &salt)?;
+        let digest = Self::hash(&paths, &salt, digests)?;
         Ok(Self {
             paths,
             salt,
@@ -238,21 +423,25 @@ impl Dependency {
         })
     }
 
-    fn hash(paths: &[PathBuf], salt: &[u8]) -> anyhow::Result<Vec<u8>> {
+    fn hash(paths: &[PathBuf], salt: &[u8], digests: &Digests) -> anyhow::Result<Vec<u8>> {
         let mut hash = Sha256::new();
         if !salt.is_empty() {
             field(&mut hash, salt);
         }
         for path in paths {
-            file(&mut hash, path)?;
+            fingerprint_input(&mut hash, path, digests, false, false)?;
         }
         Ok(hash.finalize().to_vec())
     }
 
+    fn unchanged(&self, digests: &Digests) -> anyhow::Result<bool> {
+        Ok(Self::hash(&self.paths, &self.salt, digests)? == self.digest)
+    }
+
     #[cfg(test)]
-    fn verify(&self) -> anyhow::Result<()> {
+    fn verify(&self, digests: &Digests) -> anyhow::Result<()> {
         ensure!(
-            Self::hash(&self.paths, &self.salt)? == self.digest,
+            self.unchanged(digests)?,
             "reading dependencies changed during collection"
         );
         Ok(())
@@ -273,43 +462,32 @@ fn field_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend(bytes);
 }
 
-fn file(hash: &mut Sha256, path: &Path) -> anyhow::Result<()> {
-    fingerprint(hash, path, None)
-}
-
-fn fingerprint(hash: &mut Sha256, path: &Path, memo: Option<&Path>) -> anyhow::Result<()> {
-    fingerprint_input(hash, path, memo, false)
-}
-
+/// The path, whether it is there and the digest of its contents (or, for a staged input in the
+/// scheduling inventory, its identity), as every key hashes an input.
 fn fingerprint_input(
     hash: &mut Sha256,
     path: &Path,
-    memo: Option<&Path>,
-    inventory: bool,
+    digests: &Digests,
+    identity_only: bool,
+    strict: bool,
 ) -> anyhow::Result<()> {
     field(hash, path.as_os_str().as_encoded_bytes());
-    let mut input = match File::open(path) {
-        Ok(input) => input,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            field(hash, b"missing");
-            return Ok(());
-        }
-        Err(e) => return Err(e).with_context(|| format!("fingerprinting {path:?}")),
-    };
-    field(hash, b"present");
     // Scheduling hints never authorize cache reuse or accepted scientific rows.
-    if inventory && memo.is_some() {
-        if let Some(identity) = inventory_identity(path, &input)? {
+    if identity_only {
+        if let Some(identity) = inventory_identity(path)? {
+            field(hash, b"present");
             field(hash, b"inventory-identity-v1");
             field(hash, &identity);
             return Ok(());
         }
     }
-    let digest = match memo {
-        Some(dir) => input_digest(dir, path, &mut input)?,
-        None => contents(&mut input)?,
-    };
-    field(hash, &digest);
+    match digests.digest(path, strict)? {
+        Some(digest) => {
+            field(hash, b"present");
+            field(hash, &digest);
+        }
+        None => field(hash, b"missing"),
+    }
     Ok(())
 }
 
@@ -349,11 +527,19 @@ fn surya_jobs(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
 
 impl Cache {
     pub fn new(dir: &Path, opts: &Options) -> anyhow::Result<Self> {
+        let legacy = dir.join("input-digests");
+        let digests = Digests::open(opts.digest_cache.as_deref().unwrap_or(&legacy), &legacy)?;
         let mut version = Sha256::new();
         field(&mut version, FORMAT);
         field(&mut version, opts.campaign.as_bytes());
         // A release/rebuild (including hat or contract changes) invalidates all derived rows.
-        file(&mut version, &std::env::current_exe()?)?;
+        fingerprint_input(
+            &mut version,
+            &std::env::current_exe()?,
+            &digests,
+            false,
+            false,
+        )?;
         // Whether readings join crop for crop changes every row that has one.
         match &opts.qwen_crop_states {
             Some(dir) => {
@@ -464,7 +650,7 @@ impl Cache {
             for doc in std::iter::once(&job.doc_id).chain(job.pages.iter().map(|p| &p.doc_id)) {
                 qwen.entry(doc.clone()).or_default().push(path.clone());
             }
-            qwen_dependencies.insert(path.clone(), Dependency::salted(paths, salt)?);
+            qwen_dependencies.insert(path.clone(), Dependency::salted(paths, salt, &digests)?);
             job_ids.insert(path.clone(), job.id.clone());
             job_bytes.push((path.clone(), bytes));
         }
@@ -486,10 +672,12 @@ impl Cache {
                 surya.push(spool.join(format!("{}_no_output_files", job.workunit())));
             }
         }
-        let surya = Dependency::new(surya)?;
+        let surya = Dependency::new(surya, &digests)?;
+        // Each job as it was parsed is still there: checked against its digest, which an
+        // unchanged identity gives without reading the job again.
         for (path, bytes) in job_bytes {
             ensure!(
-                std::fs::read(path)? == bytes,
+                digests.digest(&path, false)? == Some(Sha256::digest(&bytes).to_vec()),
                 "reading job changed during inventory"
             );
         }
@@ -506,7 +694,13 @@ impl Cache {
             surya_root: opts.surya_root.clone(),
             inventory,
             included: RefCell::new(BTreeMap::new()),
+            digests,
         })
+    }
+
+    /// Writes the digests this run computed for the next one (see `Digests`).
+    pub fn save_digests(&self) -> anyhow::Result<()> {
+        self.digests.save()
     }
 
     pub fn key(&self, unit: &Path, job: &Job, canonical: &[PathBuf]) -> anyhow::Result<String> {
@@ -597,12 +791,12 @@ impl Cache {
             let staged_blob = [super::PAGE_FILE, super::ALTO_FILE, super::TEXTS_FILE]
                 .iter()
                 .any(|name| path == unit.join(name));
-            let memo = self.dir.join("input-digests");
             fingerprint_input(
                 &mut hash,
                 &path,
-                staged_blob.then_some(memo.as_path()),
-                inventory,
+                &self.digests,
+                inventory && staged_blob,
+                true,
             )?;
         }
         Ok(hex(&hash.finalize()))
@@ -656,18 +850,14 @@ impl Cache {
     /// still publish (#1435): the root-wide check failed nearly every run.
     pub fn readings_unchanged(&self, doc: &str) -> anyhow::Result<bool> {
         // Surya's results are one dependency for the root: any change counts.
-        if Dependency::hash(&self.surya.paths, &self.surya.salt)? != self.surya.digest {
+        if !self.surya.unchanged(&self.digests)? {
             return Ok(false);
         }
         let Some(paths) = self.qwen.get(doc) else {
             return Ok(true);
         };
         for path in paths {
-            if Dependency::hash(
-                &self.qwen_dependencies[path].paths,
-                &self.qwen_dependencies[path].salt,
-            )? != self.qwen_dependencies[path].digest
-            {
+            if !self.qwen_dependencies[path].unchanged(&self.digests)? {
                 return Ok(false);
             }
             let id = &self.job_ids[path];
@@ -703,9 +893,9 @@ impl Cache {
             );
         }
         for dep in self.qwen_dependencies.values() {
-            dep.verify()?;
+            dep.verify(&self.digests)?;
         }
-        self.surya.verify()
+        self.surya.verify(&self.digests)
     }
 
     pub fn load(&self, key: &str) -> anyhow::Result<Option<Part>> {
@@ -771,23 +961,38 @@ mod tests {
         assert!(jobs(dir.path(), "job.json").is_err());
     }
 
+    /// Settles inputs at once for this thread's test, as if they were written long ago.
+    fn settled() {
+        TEST_SETTLE.with(|s| s.set(Some(Duration::ZERO)));
+    }
+
+    #[cfg(unix)]
+    fn kept(digests: &Digests, path: &Path) -> bool {
+        let key = FileIdentity::of_path(path).unwrap().key();
+        digests.known.borrow().contains_key(&key)
+    }
+
     #[cfg(unix)]
     #[test]
-    fn scheduling_identity_does_not_read_blob_and_rejects_a_replaced_path() {
+    fn scheduling_identity_changes_when_the_path_is_replaced() {
         let dir = tempfile::tempdir_in(".").unwrap();
         let path = dir.path().join("page.jpg");
         std::fs::write(&path, b"staged scientific input").unwrap();
-        let write_only = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-        assert!(inventory_identity(&path, &write_only).unwrap().is_some());
+        let first = inventory_identity(&path).unwrap().unwrap();
+        assert_eq!(inventory_identity(&path).unwrap().unwrap(), first);
         let replacement = dir.path().join("replacement");
         std::fs::write(&replacement, b"staged scientific input").unwrap();
         std::fs::rename(replacement, &path).unwrap();
-        assert!(inventory_identity(&path, &write_only).is_err());
+        assert_ne!(inventory_identity(&path).unwrap().unwrap(), first);
+        assert!(inventory_identity(&dir.path().join("missing"))
+            .unwrap()
+            .is_none());
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn cold_inventory_does_not_warm_row_cache_and_detects_restored_mtime_rewrites() {
+        settled();
         let dir = tempfile::tempdir_in(".").unwrap();
         let (opts, unit, job) = cached_fixture(dir.path()).await;
         let cache = Cache::new(opts.cache.as_ref().unwrap(), &opts).unwrap();
@@ -797,14 +1002,24 @@ mod tests {
             &super::super::outputs(),
         );
         let hint = cache.inventory_key(&unit, &job, &canonical).unwrap();
-        assert!(!opts.cache.as_ref().unwrap().join("input-digests").exists());
+        let path = unit.join(super::super::PAGE_FILE);
+        // The scheduling inventory keeps the canonical result's digest, never a staged blob's.
+        assert!(!kept(&cache.digests, &path));
+        assert!(kept(&cache.digests, &canonical[0]));
         assert!(cache.load(&hint).unwrap().is_none());
         cache.verify().unwrap();
-        assert!(!opts.cache.as_ref().unwrap().join("input-digests").exists());
+        assert!(!kept(&cache.digests, &path));
         let rows = cache.key(&unit, &job, &canonical).unwrap();
         assert_ne!(hint, rows);
-        assert!(opts.cache.as_ref().unwrap().join("input-digests").is_dir());
-        let path = unit.join(super::super::PAGE_FILE);
+        assert!(kept(&cache.digests, &path));
+        cache.save_digests().unwrap();
+        assert!(opts
+            .cache
+            .as_ref()
+            .unwrap()
+            .join("input-digests")
+            .join(DIGESTS_FILE)
+            .is_file());
         let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
         let mut bytes = std::fs::read(&path).unwrap();
         bytes[0] ^= 1;
@@ -849,35 +1064,65 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"{garbage");
     }
 
+    /// Rewrites the index with `digest` for `path`'s identity, keeping its checksum valid.
     #[cfg(unix)]
-    #[test]
-    fn input_digest_reuses_persistent_receipt_without_reading_unchanged_blob() {
-        let dir = tempfile::tempdir_in(".").unwrap();
-        let path = dir.path().join("page.jpg");
-        let memo = dir.path().join("digests");
-        std::fs::write(&path, b"staged scientific input").unwrap();
-        let first = input_digest(&memo, &path, &mut File::open(&path).unwrap()).unwrap();
-        let mut write_only = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-        assert_eq!(input_digest(&memo, &path, &mut write_only).unwrap(), first);
+    fn forge(dir: &Path, path: &Path, digest: &[u8]) {
+        let mut index = read_index(&dir.join(DIGESTS_FILE)).unwrap();
+        index.insert(FileIdentity::of_path(path).unwrap().key(), hex(digest));
+        let rows = serde_json::to_string(&index).unwrap();
+        let envelope = Envelope {
+            fingerprint: DIGESTS_FORMAT.into(),
+            rows_sha256: hex(&Sha256::digest(rows.as_bytes())),
+            rows,
+        };
+        std::fs::write(
+            dir.join(DIGESTS_FILE),
+            serde_json::to_vec(&envelope).unwrap(),
+        )
+        .unwrap();
     }
 
     #[cfg(unix)]
     #[test]
-    fn same_size_rewrite_with_restored_mtime_and_replacement_invalidate_input_digest() {
+    fn a_kept_digest_is_used_without_reading_the_unchanged_input() {
+        settled();
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let path = dir.path().join("result.json");
+        let memo = dir.path().join("digests");
+        std::fs::write(&path, b"canonical result").unwrap();
+        let digests = Digests::open(&memo, &memo).unwrap();
+        let first = digests.digest(&path, true).unwrap().unwrap();
+        assert_eq!(first, Sha256::digest(b"canonical result").to_vec());
+        drop(digests);
+        // What the index says is what a later run uses: it does not read the file again.
+        forge(&memo, &path, &[7; 32]);
+        let again = Digests::open(&memo, &memo).unwrap();
+        assert_eq!(again.digest(&path, true).unwrap().unwrap(), vec![7; 32]);
+        assert!(again
+            .digest(&dir.path().join("missing"), true)
+            .unwrap()
+            .is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn same_size_rewrite_with_restored_mtime_and_replacement_read_the_input_again() {
+        settled();
         let dir = tempfile::tempdir_in(".").unwrap();
         let path = dir.path().join("page.jpg");
         let memo = dir.path().join("digests");
         std::fs::write(&path, b"first").unwrap();
         let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
-        let first = input_digest(&memo, &path, &mut File::open(&path).unwrap()).unwrap();
+        let digests = Digests::open(&memo, &memo).unwrap();
+        let first = digests.digest(&path, true).unwrap().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
         std::fs::write(&path, b"other").unwrap();
         File::open(&path)
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(modified))
             .unwrap();
-        let changed = input_digest(&memo, &path, &mut File::open(&path).unwrap()).unwrap();
-        assert_ne!(changed, first);
+        let changed = digests.digest(&path, true).unwrap().unwrap();
+        assert_eq!(changed, Sha256::digest(b"other").to_vec());
         let replacement = dir.path().join("replacement");
         std::fs::write(&replacement, b"third").unwrap();
         File::open(&replacement)
@@ -885,56 +1130,109 @@ mod tests {
             .set_times(std::fs::FileTimes::new().set_modified(modified))
             .unwrap();
         std::fs::rename(replacement, &path).unwrap();
-        let replaced = input_digest(&memo, &path, &mut File::open(&path).unwrap()).unwrap();
-        assert_ne!(replaced, changed);
-        assert_ne!(replaced, first);
-        assert_eq!(std::fs::read_dir(memo).unwrap().count(), 3);
+        let replaced = digests.digest(&path, true).unwrap().unwrap();
+        assert_eq!(replaced, Sha256::digest(b"third").to_vec());
+        assert_ne!(first, changed);
+        digests.save().unwrap();
+        assert_eq!(read_index(&memo.join(DIGESTS_FILE)).unwrap().len(), 3);
     }
 
     #[cfg(unix)]
     #[test]
-    fn replaced_path_cannot_reuse_an_old_open_descriptor_digest() {
-        use std::io::Seek;
+    fn an_unsettled_input_is_hashed_every_time_and_never_kept() {
+        TEST_SETTLE.with(|s| s.set(Some(Duration::from_secs(3600))));
         let dir = tempfile::tempdir_in(".").unwrap();
-        let path = dir.path().join("page.jpg");
+        let path = dir.path().join("result.json");
         let memo = dir.path().join("digests");
-        std::fs::write(&path, b"first").unwrap();
-        let mut original = File::open(&path).unwrap();
-        input_digest(&memo, &path, &mut original).unwrap();
-        let replacement = dir.path().join("replacement");
-        std::fs::write(&replacement, b"other").unwrap();
-        std::fs::rename(replacement, &path).unwrap();
-        original.rewind().unwrap();
-        assert!(input_digest(&memo, &path, &mut original)
-            .unwrap_err()
-            .to_string()
-            .contains("input changed while fingerprinting"));
+        std::fs::write(&path, b"just written").unwrap();
+        let digests = Digests::open(&memo, &memo).unwrap();
+        assert_eq!(
+            digests.digest(&path, true).unwrap().unwrap(),
+            Sha256::digest(b"just written").to_vec()
+        );
+        assert!(!kept(&digests, &path));
+        digests.save().unwrap();
+        assert!(!memo.join(DIGESTS_FILE).exists());
     }
 
     #[cfg(unix)]
     #[test]
-    fn corrupt_input_digest_fails_closed_and_is_retained() {
+    fn earlier_receipts_are_reused_and_a_corrupt_one_or_index_fails_closed() {
+        settled();
         let dir = tempfile::tempdir_in(".").unwrap();
         let path = dir.path().join("page.jpg");
         let memo = dir.path().join("digests");
+        std::fs::create_dir_all(&memo).unwrap();
         std::fs::write(&path, b"first").unwrap();
-        input_digest(&memo, &path, &mut File::open(&path).unwrap()).unwrap();
-        let receipt = std::fs::read_dir(&memo)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
-        let mut envelope: Envelope =
-            serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
+        // A receipt as collectors before the index wrote it, saying a digest the file can't have.
+        let identity = FileIdentity::of_path(&path).unwrap();
+        let mut key = Sha256::new();
+        field(&mut key, b"quality-input-digest-v1");
+        field(&mut key, path.as_os_str().as_encoded_bytes());
+        field(&mut key, &serde_json::to_vec(&identity).unwrap());
+        let key = hex(&key.finalize());
+        let rows = serde_json::to_string(&InputDigest {
+            identity,
+            sha256: vec![9; 32],
+        })
+        .unwrap();
+        let mut envelope = Envelope {
+            fingerprint: key.clone(),
+            rows_sha256: hex(&Sha256::digest(rows.as_bytes())),
+            rows,
+        };
+        let receipt = memo.join(format!("{key}.json"));
+        std::fs::write(&receipt, serde_json::to_vec(&envelope).unwrap()).unwrap();
+        let digests = Digests::open(&memo, &memo).unwrap();
+        assert_eq!(digests.digest(&path, true).unwrap().unwrap(), vec![9; 32]);
+        assert!(kept(&digests, &path));
+        digests.save().unwrap();
         envelope.rows.push(' ');
         let corrupt = serde_json::to_vec(&envelope).unwrap();
         std::fs::write(&receipt, &corrupt).unwrap();
-        assert!(input_digest(&memo, &path, &mut File::open(&path).unwrap())
+        let fresh = dir.path().join("fresh");
+        assert!(Digests::open(&fresh, &memo)
+            .unwrap()
+            .digest(&path, true)
             .unwrap_err()
             .to_string()
             .contains("checksum mismatch"));
-        assert_eq!(std::fs::read(receipt).unwrap(), corrupt);
+        assert_eq!(std::fs::read(&receipt).unwrap(), corrupt);
+        let index = memo.join(DIGESTS_FILE);
+        let mut bytes = std::fs::read(&index).unwrap();
+        let at = bytes.len() - 3;
+        bytes[at] ^= 1;
+        std::fs::write(&index, &bytes).unwrap();
+        assert!(Digests::open(&memo, &memo).is_err());
+        assert_eq!(std::fs::read(&index).unwrap(), bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saves_merge_with_another_runs_and_drop_conflicting_digests() {
+        settled();
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let memo = dir.path().join("digests");
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        let one = Digests::open(&memo, &memo).unwrap();
+        let other = Digests::open(&memo, &memo).unwrap();
+        one.digest(&a, true).unwrap();
+        other.digest(&b, true).unwrap();
+        one.save().unwrap();
+        other.save().unwrap();
+        let index = read_index(&memo.join(DIGESTS_FILE)).unwrap();
+        assert_eq!(index.len(), 2);
+        // The same identity saved with another digest is trusted by neither.
+        forge(&memo, &a, &[1; 32]);
+        let late = Digests::open(&memo, &memo).unwrap();
+        late.known.borrow_mut().clear();
+        late.digest(&a, true).unwrap();
+        late.save().unwrap();
+        assert!(!read_index(&memo.join(DIGESTS_FILE))
+            .unwrap()
+            .contains_key(&FileIdentity::of_path(&a).unwrap().key()));
     }
 
     #[tokio::test]

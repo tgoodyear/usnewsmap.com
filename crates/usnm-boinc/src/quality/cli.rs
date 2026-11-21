@@ -199,6 +199,10 @@ pub enum QualityCommands {
         /// Reuse content-addressed per-unit rows; late canonical readings invalidate joins.
         #[arg(long)]
         cache: Option<PathBuf>,
+        /// Where input digests by file identity are kept (default `<cache>/input-digests`);
+        /// collections naming the same directory share them, so an unchanged input is not read.
+        #[arg(long, requires = "cache")]
+        digest_cache: Option<PathBuf>,
         /// Bound recomputation per pass; incomplete cache warming never publishes partial tables.
         #[arg(long, default_value_t = 8)]
         max_dirty_units: usize,
@@ -610,6 +614,7 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             qwen_exclusions_dsn_file,
             qwen_pages,
             cache,
+            digest_cache,
             max_dirty_units,
             max_compute_secs,
             warm_only,
@@ -634,6 +639,7 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
                 qwen_exclusions,
                 qwen_pages,
                 cache,
+                digest_cache,
                 max_dirty_units,
                 max_compute: max_compute_secs.map(std::time::Duration::from_secs),
                 warm_only,

@@ -15,8 +15,10 @@ EnvironmentFile=/etc/usnm/quality-ship.env
 Environment=CTID=215
 Environment=QUALITY_COLLECTOR=/project/ops/quality-results/usnm-boinc
 Environment=INVENTORY_BUDGET_SECS=3600
+# PARTIAL_WARM_ARGS as in usnm-quality-results.service (set in quality-results.env for both).
+Environment=PARTIAL_WARM_ARGS=
 EnvironmentFile=-/etc/usnm/quality-results.env
-ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/quality_results_partial.py --refresh-inventory-only --campaign ${CAMPAIGN} --collector ${QUALITY_COLLECTOR} --inventory-budget-secs ${INVENTORY_BUDGET_SECS}
+ExecStart=/usr/bin/python3 /opt/usnm-quality-feed/quality_results_partial.py --refresh-inventory-only --campaign ${CAMPAIGN} --collector ${QUALITY_COLLECTOR} --inventory-budget-secs ${INVENTORY_BUDGET_SECS} $PARTIAL_WARM_ARGS
 # The budget (at most 2 hours) plus the driver's own grace, so it can record a timed-out attempt.
 TimeoutStartSec=2h15min
 Nice=10

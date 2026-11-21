@@ -106,6 +106,10 @@ pub struct Options {
     pub curated_url: Option<String>,
     /// Content-addressed row parts; unchanged units avoid repeating page-hat computation.
     pub cache: Option<PathBuf>,
+    /// Where the input digests by file identity are kept (default `<cache>/input-digests`).
+    /// Runs naming the same directory share them, so a partial loader's scopes and its
+    /// inventory hash each staged file, canonical result and Qwen input once between changes.
+    pub digest_cache: Option<PathBuf>,
     /// Maximum dirty canonical units computed before refusing an incomplete publication.
     pub max_dirty_units: usize,
     /// Start no further dirty unit once the run has taken this long. A unit already started
@@ -1492,6 +1496,7 @@ pub fn inventory(
         );
     }
     cache.verify()?;
+    cache.save_digests()?;
     Ok(result)
 }
 
@@ -1538,19 +1543,15 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
     let mut summary = Summary::default();
     let mut pages = Vec::new();
     let mut crop_table = Vec::new();
-    let qwen = qwen_pages(
-        &opts.qwen_root,
-        &opts.qwen_spool,
-        opts.qwen_xiaomi_spool.as_deref(),
-        opts.qwen_crop_states.as_deref(),
-        opts.qwen_pages.as_deref(),
-        &opts.qwen_exclusions,
-    )?;
-    let surya = match (&opts.surya_root, &opts.surya_spool) {
-        (Some(root), Some(spool)) => crate::surya::collect::results(root, spool)?.crops,
-        (None, None) => BTreeMap::new(),
-        _ => anyhow::bail!("--surya-root and --surya-spool go together"),
-    };
+    anyhow::ensure!(
+        opts.surya_root.is_some() == opts.surya_spool.is_some(),
+        "--surya-root and --surya-spool go together"
+    );
+    // The readings to join, read when the first unit is computed: a run whose units are all
+    // cached, as a locked publication after warming is, reads no Qwen or Surya result. Their
+    // inputs are in every key, and checked again before a part is stored, so when they are read
+    // does not change which rows are published.
+    let mut joins = None;
     let dir = units(&opts.root);
     let mut unit_dirs: Vec<PathBuf> = if dir.exists() {
         std::fs::read_dir(&dir)?
@@ -1564,6 +1565,12 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
     unit_dirs.sort();
     for unit in unit_dirs {
         if cache.is_some() && dirty >= opts.max_dirty_units {
+            deferred = true;
+            break;
+        }
+        // A warming run's budget bounds its keying too: hashing a cold cache's inputs (after a
+        // digest format change, say) is left to the next round rather than to its kill.
+        if opts.warm_only && opts.max_compute.is_some_and(|max| started.elapsed() >= max) {
             deferred = true;
             break;
         }
@@ -1614,6 +1621,23 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
         let before = summary.clone();
         let pages_start = pages.len();
         let crops_start = crop_table.len();
+        if joins.is_none() {
+            joins = Some((
+                qwen_pages(
+                    &opts.qwen_root,
+                    &opts.qwen_spool,
+                    opts.qwen_xiaomi_spool.as_deref(),
+                    opts.qwen_crop_states.as_deref(),
+                    opts.qwen_pages.as_deref(),
+                    &opts.qwen_exclusions,
+                )?,
+                match (&opts.surya_root, &opts.surya_spool) {
+                    (Some(root), Some(spool)) => crate::surya::collect::results(root, spool)?.crops,
+                    _ => BTreeMap::new(),
+                },
+            ));
+        }
+        let (qwen, surya) = joins.as_ref().context("readings to join")?;
         let got = validate::load(&files).with_context(|| format!("canonical result {wu}"))?;
         anyhow::ensure!(
             got.result.job_id == job.id && got.result.engine == job.engine,
@@ -1843,6 +1867,9 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
         let verifying = std::time::Instant::now();
         cache.verify()?;
         verify_secs = verifying.elapsed().as_secs_f64();
+    }
+    if let Some(cache) = &cache {
+        cache.save_digests()?;
     }
     summary.page_rows = pages.len();
     summary.crop_rows = crop_table.len();
@@ -2389,6 +2416,7 @@ pub(super) mod tests {
             max_dirty_units: 8,
             max_compute: None,
             warm_only: false,
+            digest_cache: None,
             qe_dir: None,
         })
         .unwrap();
@@ -2617,6 +2645,7 @@ pub(super) mod tests {
             max_dirty_units: 1,
             max_compute: None,
             warm_only: false,
+            digest_cache: None,
             qe_dir: None,
         };
         canonical(&unit, &job, &opts.spool);
@@ -2671,8 +2700,10 @@ pub(super) mod tests {
     }
 
     fn parts(opts: &Options) -> Vec<PathBuf> {
-        let mut files = std::fs::read_dir(opts.cache.as_ref().unwrap())
-            .unwrap()
+        let Ok(entries) = std::fs::read_dir(opts.cache.as_ref().unwrap()) else {
+            return vec![];
+        };
+        let mut files = entries
             .map(|p| p.unwrap().path())
             .filter(|p| p.is_file())
             .collect::<Vec<_>>();
@@ -2991,6 +3022,92 @@ pub(super) mod tests {
             assert_eq!(after.crops, fresh.crops);
         }
         assert_eq!(parts(&opts).len(), 3);
+    }
+
+    #[tokio::test]
+    async fn rows_from_kept_digests_and_parts_are_byte_identical_to_the_uncached_rows() {
+        super::super::collect_cache::TEST_SETTLE.with(|s| s.set(Some(std::time::Duration::ZERO)));
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, unit, quality) = cached_fixture(dir.path()).await;
+        qwen_canonical(&opts, &unit, &quality, &["a kept reading", "another one"]);
+        let uncached = Options {
+            cache: None,
+            ..opts.clone()
+        };
+        let tables = |c: &Collected| files(&opts.campaign, c).unwrap();
+        let expected = collect(&uncached).unwrap();
+        assert_eq!(expected.summary.with_readings, 1);
+        let expected = tables(&expected);
+        // Warmed without the lock, then published from its parts and kept digests alone.
+        let warm = Options {
+            warm_only: true,
+            out_dir: None,
+            max_compute: Some(std::time::Duration::from_secs(600)),
+            ..opts.clone()
+        };
+        let (_, progress) = collect_units(&warm).unwrap();
+        assert_eq!((progress.dirty, progress.deferred), (1, false));
+        let digests = opts.cache.as_ref().unwrap().join("input-digests");
+        assert!(digests.join("index-v2.json").is_file());
+        let (published, progress) = collect_units(&opts).unwrap();
+        assert_eq!((progress.dirty, progress.deferred), (0, false));
+        assert_eq!(tables(&published), expected);
+        // Another cache naming the same digests computes its rows from them: the same rows.
+        let shared = Options {
+            cache: Some(dir.path().join("other-parts")),
+            digest_cache: Some(digests.clone()),
+            ..opts.clone()
+        };
+        let (fresh, progress) = collect_units(&shared).unwrap();
+        assert_eq!(progress.dirty, 1);
+        assert_eq!(tables(&fresh), expected);
+        assert!(!dir.path().join("other-parts/input-digests").exists());
+        // A rewritten canonical result, its mtime put back, has another identity: it is read
+        // again, and the rows are the uncached path's.
+        let result = opts.spool.join(format!(
+            "{}__file_{}",
+            quality.workunit(),
+            crate::quality::RESULT_FILE
+        ));
+        let modified = std::fs::metadata(&result).unwrap().modified().unwrap();
+        let mut canonical: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&result).unwrap()).unwrap();
+        canonical["host"]["plan_class"] = "rewritten-canonical".into();
+        std::fs::write(&result, serde_json::to_vec(&canonical).unwrap()).unwrap();
+        std::fs::File::open(&result)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        let (changed, progress) = collect_units(&opts).unwrap();
+        assert_eq!(progress.dirty, 1);
+        assert!(changed
+            .pages
+            .iter()
+            .all(|r| r.plan_class.as_deref() == Some("rewritten-canonical")));
+        assert_eq!(tables(&changed), tables(&collect(&uncached).unwrap()));
+        assert_ne!(tables(&changed), expected);
+    }
+
+    #[tokio::test]
+    async fn a_warming_budget_bounds_keying_and_the_next_round_resumes() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, _, _) = cached_fixture(dir.path()).await;
+        let spent = Options {
+            warm_only: true,
+            out_dir: None,
+            max_compute: Some(std::time::Duration::ZERO),
+            ..opts.clone()
+        };
+        let (_, progress) = collect_units(&spent).unwrap();
+        assert_eq!((progress.dirty, progress.deferred), (0, true));
+        assert!(parts(&opts).is_empty());
+        let (_, progress) = collect_units(&Options {
+            max_compute: Some(std::time::Duration::from_secs(600)),
+            ..spent
+        })
+        .unwrap();
+        assert_eq!((progress.dirty, progress.deferred), (1, false));
+        assert_eq!(parts(&opts).len(), 1);
     }
 
     /// A single-page `usnm_qwen` unit for the fixture's page, with a canonical
@@ -3885,6 +4002,7 @@ pub(super) mod tests {
             max_dirty_units: 8,
             max_compute: None,
             warm_only: false,
+            digest_cache: None,
             qe_dir: None,
         };
         let cached = Options {

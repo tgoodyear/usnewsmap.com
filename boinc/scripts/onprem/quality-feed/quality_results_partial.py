@@ -67,6 +67,12 @@ UNIT_GAP_SECONDS = 5
 # unit fail the run instead: a unit that never fits its budget is a fault to look at.
 OUT_OF_TIME_PASSES = 3
 OUT_OF_TIME_FILE = "out-of-time.json"
+# With --warm-without-lock, the unit a pass will select is collected first without the step lock
+# (`quality collect --warm-only`), for at most this long; the locked collection then finds its
+# part and only re-checks the inputs' identities. Its digests are kept every 15 s, so a warm that
+# runs out of time resumes where it stopped.
+WARM_SECONDS = 600
+DIGESTS_DIR = "input-digests"
 
 
 class OutOfTime(Exception):
@@ -236,6 +242,16 @@ def select_frontier(inventory, state):
     return selected, names[-1], lane, updated
 
 
+def digest_args(args, base):
+    """With --warm-without-lock, every collector call of the campaign (the inventory, each scope's
+    warm and locked collection) keeps its input digests in one directory, so each staged file,
+    canonical result and Qwen input is hashed once between changes. Needs a collector that knows
+    `--digest-cache`."""
+    if not getattr(args, "warm_without_lock", False):
+        return []
+    return ["--digest-cache", str(base / DIGESTS_DIR)]
+
+
 def completion_inventory(args, project, base, selected=None, deadline=None, limit=CALL_SECONDS,
                          log=None):
     qwen_root = project / "qwen" / args.qwen_campaign if args.qwen_campaign else base / "no-qwen"
@@ -255,7 +271,7 @@ def completion_inventory(args, project, base, selected=None, deadline=None, limi
         "--qwen-root", str(qwen_root),
         "--qwen-spool", str(project / "usnmocr/results/8") if args.qwen_campaign else str(qwen_root),
         "--out-dir", str(base / "unused-inventory-out"),
-        "--cache", str(base / "frontier-parts"), "--inventory-only",
+        "--cache", str(base / "frontier-parts"), "--inventory-only", *digest_args(args, base),
     ]
     if args.qwen_campaign:
         # Xiaomi-OCR-0 units are batch 108 (#1776); their jobs read only this spool.
@@ -337,6 +353,85 @@ def run_loader(command, timeout=120):
             raise
 
 
+def frontier_selection(args, base, names):
+    """The unit a frontier pass collects, from the saved inventory and progress: (selected,
+    through, lane, the progress to write, the inventory). Nothing is written."""
+    frontier_path = base / "frontier.json"
+    state = json.loads(frontier_path.read_bytes()) if frontier_path.exists() else {"schema": 1}
+    if state.get("schema") != 1 or len(state.get("loaded", {})) > FRONTIER_LIMIT:
+        raise ValueError("invalid completion frontier state")
+    _, inventory = cached_inventory(base, names)
+    state["loaded"] = {n: v for n, v in state.get("loaded", {}).items() if n in inventory}
+    ack = getattr(args, "frontier_ack", None)
+    if ack:
+        ack = json.loads(ack)
+        if (not UNIT.fullmatch(ack.get("unit", ""))
+                or not re.fullmatch(r"[a-f0-9]{64}", ack.get("fingerprint", ""))):
+            raise ValueError("invalid verified frontier acknowledgement")
+        if ack["unit"] in inventory:
+            state["loaded"][ack["unit"]] = ack["fingerprint"]
+    selected, through, lane, frontier_state = select_frontier(inventory, state)
+    return selected, through, lane, frontier_state, inventory
+
+
+def prepare_scope(base, root, selected):
+    """The selected unit's scope, its `quality/units/selected` linked to the unit (made once)."""
+    source = root / "units" / selected
+    scope = base / hashlib.sha256(selected.encode()).hexdigest()
+    scope_units = scope / "quality/units"
+    scope_units.mkdir(parents=True, exist_ok=True, mode=0o700)
+    link = scope_units / "selected"
+    if link.is_symlink():
+        if link.readlink() != source:
+            raise ValueError("scope source changed")
+    elif link.exists():
+        raise ValueError("scope source is not an isolated symlink")
+    else:
+        link.symlink_to(source, target_is_directory=True)
+    return scope
+
+
+def scope_command(args, project, base, scope):
+    """The scope's collector call, without its output: the warm and the locked collection
+    share it, so they key the unit alike."""
+    qwen_root = (str(project / "qwen" / args.qwen_campaign) if args.qwen_campaign
+                 else str(scope / "no-qwen"))
+    command = [
+        args.collector, "quality", "collect", "--campaign", args.campaign,
+        "--root", str(scope / "quality"), "--spool", str(project / "usnmocr/results/0"),
+        "--qwen-root", qwen_root,
+        "--qwen-spool", str(project / "usnmocr/results/8") if args.qwen_campaign else qwen_root,
+        "--cache", str(scope / "parts"), "--max-dirty-units", "1", *digest_args(args, base),
+    ]
+    if args.qwen_campaign:
+        command += ["--qwen-xiaomi-spool", str(project / "usnmocr/results/108")]
+    return command
+
+
+def scoped_warm(args, project=Path("/project")):
+    """Without the step lock: compute and store the part of the unit the next pass will select,
+    so the pass, under the lock, finds it cached. A pass that selects another unit (the inventory
+    or progress changed meanwhile) computes that one as before; the stored part is kept."""
+    root = project / "quality" / args.campaign
+    frontier = getattr(args, "completion_frontier", False)
+    names = submitted_units(root, frontier)
+    base = project / "ops/quality-results/scoped" / args.campaign
+    if frontier:
+        selected = frontier_selection(args, base, names)[0]
+    else:
+        selected = select_unit(names, args.after, args.through)[0]
+    print(json.dumps({"phase": "warm_selected", "unit": selected}), file=sys.stderr, flush=True)
+    scope = prepare_scope(base, root, selected)
+    command = [*scope_command(args, project, base, scope), "--warm-only"]
+    try:
+        result = call_collector(command, WARM_SECONDS - 20, "warm")
+    except subprocess.TimeoutExpired as error:
+        raise OutOfTime("warm", selected, error.timeout) from error
+    sys.stderr.write(result.stderr)
+    result.check_returncode()
+    return {"campaign": args.campaign, "phase": "warmed", "unit": selected}
+
+
 def scoped_collect(args, project=Path("/project")):
     pass_started = time.monotonic()
     root = project / "quality" / args.campaign
@@ -347,20 +442,7 @@ def scoped_collect(args, project=Path("/project")):
     frontier_receipt = None
     if frontier:
         frontier_path = base / "frontier.json"
-        state = json.loads(frontier_path.read_bytes()) if frontier_path.exists() else {"schema": 1}
-        if state.get("schema") != 1 or len(state.get("loaded", {})) > FRONTIER_LIMIT:
-            raise ValueError("invalid completion frontier state")
-        cached, inventory = cached_inventory(base, names)
-        state["loaded"] = {n: v for n, v in state.get("loaded", {}).items() if n in inventory}
-        ack = getattr(args, "frontier_ack", None)
-        if ack:
-            ack = json.loads(ack)
-            if (not UNIT.fullmatch(ack.get("unit", ""))
-                    or not re.fullmatch(r"[a-f0-9]{64}", ack.get("fingerprint", ""))):
-                raise ValueError("invalid verified frontier acknowledgement")
-            if ack["unit"] in inventory:
-                state["loaded"][ack["unit"]] = ack["fingerprint"]
-        selected, through, lane, frontier_state = select_frontier(inventory, state)
+        selected, through, lane, frontier_state, inventory = frontier_selection(args, base, names)
         # The cached entry only chose the unit. Its current dependency key, read under the lock,
         # is the baseline the collection must match, and replaces the cached entry.
         try:
@@ -382,34 +464,13 @@ def scoped_collect(args, project=Path("/project")):
                             "inventory_seconds": time.monotonic() - pass_started}
     else:
         selected, through = select_unit(names, args.after, args.through)
-    source = root / "units" / selected
-    job = json.loads((source / "quality.json").read_bytes())
-    scope = base / hashlib.sha256(selected.encode()).hexdigest()
-    scope_units = scope / "quality/units"
-    scope_units.mkdir(parents=True, exist_ok=True, mode=0o700)
-    link = scope_units / "selected"
-    if link.is_symlink():
-        if link.readlink() != source:
-            raise ValueError("scope source changed")
-    elif link.exists():
-        raise ValueError("scope source is not an isolated symlink")
-    else:
-        link.symlink_to(source, target_is_directory=True)
+    job = json.loads((root / "units" / selected / "quality.json").read_bytes())
+    scope = prepare_scope(base, root, selected)
     out = scope / "snapshots" / args.snapshot / "out"
     if out.parent.exists():
         raise ValueError("snapshot already exists")
     out.mkdir(parents=True, mode=0o700)
-    qwen_root = (str(project / "qwen" / args.qwen_campaign) if args.qwen_campaign
-                 else str(scope / "no-qwen"))
-    command = [
-        args.collector, "quality", "collect", "--campaign", args.campaign,
-        "--root", str(scope / "quality"), "--spool", str(project / "usnmocr/results/0"),
-        "--qwen-root", qwen_root,
-        "--qwen-spool", str(project / "usnmocr/results/8") if args.qwen_campaign else qwen_root,
-        "--out-dir", str(out), "--cache", str(scope / "parts"), "--max-dirty-units", "1",
-    ]
-    if args.qwen_campaign:
-        command += ["--qwen-xiaomi-spool", str(project / "usnmocr/results/108")]
+    command = [*scope_command(args, project, base, scope), "--out-dir", str(out)]
     # Hashed before the collection, so the time it takes counts against the pass's deadline.
     collector_sha256 = digest(Path(args.collector))
     started = time.time()
@@ -536,6 +597,8 @@ def host_refresh_inventory(args):
     ]
     if args.qwen_campaign:
         remote += ["--qwen-campaign", args.qwen_campaign]
+    if getattr(args, "warm_without_lock", False):
+        remote += ["--warm-without-lock"]
     ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", f"root@{args.server_host}"]
     try:
         response = subprocess.run([*ssh, shlex.join(remote)], input=Path(__file__).read_bytes(),
@@ -586,6 +649,54 @@ def count_out_of_time(args, unit, clear=False):
     return counts.get(unit, 0)
 
 
+def warm_selected(stderr):
+    """The unit a remote warm said it selected, or ""."""
+    for line in text_of(stderr).splitlines():
+        if line.startswith('{"phase": "warm_selected"'):
+            try:
+                unit = json.loads(line).get("unit")
+            except ValueError:
+                return ""
+            return unit if isinstance(unit, str) and UNIT.fullmatch(unit) else ""
+    return ""
+
+
+def host_warm(args, ssh, selection):
+    """With --warm-without-lock, before the pass takes the step lock: the remote computes the part
+    of the unit the pass will select (`scoped_warm`), niced and without the lock. A warm that fails
+    lets the pass go on, which reports the collector's error under the lock. One that runs out of
+    time defers the pass without the lock, and counts as an out-of-time pass of its unit."""
+    remote = [
+        "pct", "exec", str(args.server_ct), "--", "podman", "exec", "-i", "usnm-boinc-server",
+        "timeout", "--signal=TERM", "--kill-after=10s", f"{WARM_SECONDS}s",
+        "nice", "-n", "15", "python3", "-", "--remote-warm", "--campaign", args.campaign,
+        "--collector", args.collector, *selection,
+    ]
+    try:
+        response = subprocess.run([*ssh, shlex.join(remote)], input=Path(__file__).read_bytes(),
+                                  capture_output=True, timeout=WARM_SECONDS + 60)
+        stderr, code = response.stderr, response.returncode
+    except subprocess.TimeoutExpired as error:
+        stderr, code = error.stderr, None
+    if stderr:
+        sys.stderr.write(text_of(stderr))
+        sys.stderr.flush()
+    late = out_of_time_report(stderr) if code == 75 else None
+    if code == 0:
+        print(json.dumps({"phase": "warm_done", "unit": warm_selected(stderr)}), file=sys.stderr, flush=True)
+        return
+    if late is None and code not in (None, 124):
+        print(json.dumps({"phase": "warm_failed", "exit": code}), file=sys.stderr, flush=True)
+        return
+    unit = (late or {}).get("unit") or warm_selected(stderr)
+    passes = count_out_of_time(args, unit)
+    print(json.dumps({"phase": "warm_deferred", "unit": unit, "consecutive": passes, "exit": 75}),
+          file=sys.stderr, flush=True)
+    if passes >= getattr(args, "out_of_time_passes", OUT_OF_TIME_PASSES):
+        raise SystemExit(f"{unit or 'warm'}: out of time in {passes} passes in a row")
+    raise SystemExit(75)
+
+
 def host_pass(args):
     state_path = args.state_dir / args.campaign / "cursor.json"
     state = json.loads(state_path.read_bytes()) if state_path.exists() else {}
@@ -595,6 +706,24 @@ def host_pass(args):
         raise ValueError("invalid persisted cursor")
     snapshot = uuid.uuid4().hex
     common = ["--campaign", args.campaign, "--snapshot", snapshot]
+    # What chooses the unit, so a warm before the lock chooses the one the pass will.
+    selection = []
+    if after:
+        selection += ["--after", after]
+    if through:
+        selection += ["--through", through]
+    if args.qwen_campaign:
+        selection += ["--qwen-campaign", args.qwen_campaign]
+    frontier = getattr(args, "completion_frontier", False)
+    if frontier:
+        if not getattr(args, "no_inline_inventory", False):
+            host_refresh_inventory(args)
+        selection += ["--completion-frontier"]
+        if state.get("frontier_ack"):
+            selection += ["--frontier-ack", json.dumps(state["frontier_ack"], separators=(",", ":"))]
+    warm = getattr(args, "warm_without_lock", False)
+    if warm:
+        selection += ["--warm-without-lock"]
     remote = [
         "pct", "exec", str(args.server_ct), "--", "flock", "-n", "-E", "75",
         "/run/usnm-boinc-step.lock", "sh", "-c",
@@ -603,22 +732,11 @@ def host_pass(args):
         'printf "%s %s\\n" ' + LOCK_RELEASED + ' "$(date -u +%FT%TZ)" >&2; exit $code', "sh",
         "podman", "exec", "-i", "usnm-boinc-server",
         "timeout", "--signal=TERM", "--kill-after=10s", "240s", "python3", "-", "--remote",
-        *common, "--collector", args.collector,
+        *common, "--collector", args.collector, *selection,
     ]
-    if after:
-        remote += ["--after", after]
-    if through:
-        remote += ["--through", through]
-    if args.qwen_campaign:
-        remote += ["--qwen-campaign", args.qwen_campaign]
-    frontier = getattr(args, "completion_frontier", False)
-    if frontier:
-        if not getattr(args, "no_inline_inventory", False):
-            host_refresh_inventory(args)
-        remote += ["--completion-frontier"]
-        if state.get("frontier_ack"):
-            remote += ["--frontier-ack", json.dumps(state["frontier_ack"], separators=(",", ":"))]
     ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", f"root@{args.server_host}"]
+    if warm:
+        host_warm(args, ssh, selection)
     try:
         response = subprocess.run(
             [*ssh, shlex.join(remote)], input=Path(__file__).read_bytes(),
@@ -726,12 +844,18 @@ def main(argv=None):
     mode.add_argument("--remote", action="store_true")
     mode.add_argument("--load", action="store_true")
     mode.add_argument("--remote-inventory", action="store_true", help=argparse.SUPPRESS)
+    mode.add_argument("--remote-warm", action="store_true", help=argparse.SUPPRESS)
     mode.add_argument("--refresh-inventory-only", action="store_true",
                       help="host side: refresh the full scheduling inventory when it is due, under its own lock "
                            "(usnm-quality-inventory.service), and load nothing")
     parser.add_argument("--no-inline-inventory", action="store_true",
                         help="a loading run never refreshes the inventory itself: its own service does, so the "
                              "refresh's 13 minutes or more neither stop loading nor hold the host lock")
+    parser.add_argument("--warm-without-lock", action="store_true",
+                        help="collect the unit a pass will select first without the step lock "
+                             "(`quality collect --warm-only`), so the pass under the lock only re-checks "
+                             "its inputs; and keep one input digest directory for the campaign "
+                             "(`--digest-cache`, so the collector must know that flag)")
     parser.add_argument("--inventory-lock", type=Path, default=None,
                         help="host lock of --refresh-inventory-only (default /run/usnm-quality-inventory-CAMPAIGN.lock)")
     parser.add_argument("--campaign", required=True)
@@ -773,7 +897,8 @@ def main(argv=None):
             or ".." in Path(args.collector).parts
             or (args.snapshot and not SNAPSHOT.fullmatch(args.snapshot))
             or ((args.remote or args.load) and not args.snapshot)
-            or (not (args.remote or args.remote_inventory or args.refresh_inventory_only)
+            or (not (args.remote or args.remote_inventory or args.remote_warm
+                     or args.refresh_inventory_only)
                 and not re.fullmatch(r"sha256:[a-f0-9]{64}", args.engine_image or ""))
             or not 60 <= args.inventory_budget_secs <= 7200
             or args.inventory_refresh_secs < 60
@@ -794,9 +919,9 @@ def main(argv=None):
                 print(json.dumps({"phase": "inventory_lock_busy", "exit": 75}), file=sys.stderr, flush=True)
                 raise SystemExit(75) from None
             report = host_refresh_inventory(args) or {"campaign": args.campaign, "phase": "inventory_not_due"}
-    elif args.remote:
+    elif args.remote or args.remote_warm:
         try:
-            report = scoped_collect(args)
+            report = scoped_warm(args) if args.remote_warm else scoped_collect(args)
         except OutOfTime as error:
             # Exit 75 after the lock receipt: the host defers instead of failing (see host_pass).
             print(json.dumps({"phase": "collection_out_of_time", "step": error.step, "unit": error.unit,
