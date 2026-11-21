@@ -712,7 +712,7 @@ class HeldArchive(unittest.TestCase):
         self.addCleanup(run.kill)
         waiters = []
         for _ in range(200):
-            waiters = subprocess.run(["pgrep", "-P", str(run.pid)], capture_output=True, text=True).stdout.split()
+            waiters = subprocess.run(["pgrep", "-x", "-P", str(run.pid), "flock"], capture_output=True, text=True).stdout.split()
             if waiters:
                 break
             time.sleep(0.05)
