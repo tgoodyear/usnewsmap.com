@@ -445,6 +445,13 @@ class DurationTest(unittest.TestCase):
         runs = F.archive_runs([[NOW, NOW + 600], [NOW, None]], [], NOW + 700)
         self.assertEqual(sorted(run[1] is None for run in runs), [False, True])
 
+    def test_a_reported_run_matches_the_closest_remembered_start(self):
+        # Two units started two seconds apart; the earlier one ended and is no longer reported.
+        early, late = NOW + 3599, NOW + 3601
+        remembered = [[early, None, NOW + 3900], [late, None, NOW + 3900]]
+        runs = F.archive_runs([[late, None]], remembered, NOW + 4000)
+        self.assertEqual(sorted((run[0], run[1]) for run in runs), [(early, NOW + 3900), (late, None)])
+
     def test_a_run_that_began_after_the_check_was_due_excuses_nothing(self):
         # The newest workunit was an hour old before the run began: a stall the archive didn't make.
         def runs(at):

@@ -247,8 +247,9 @@ def archive_runs(reported, remembered, now):
                 and 0 <= entry[0] <= (entry[0] if entry[1] is None else entry[1]) <= now):
             continue
         start, end = entry
-        run = next((r for r in runs if abs(r[0] - start) <= ARCHIVE_MATCH_S
-                    and not any(r is s for s in seen)), None)
+        # The closest unmatched start: two units can start seconds apart.
+        run = min((r for r in runs if abs(r[0] - start) <= ARCHIVE_MATCH_S
+                   and not any(r is s for s in seen)), key=lambda r: abs(r[0] - start), default=None)
         if run is None:
             run = [start, end, now]
             runs.append(run)
