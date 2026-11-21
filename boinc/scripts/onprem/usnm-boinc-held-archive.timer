@@ -7,6 +7,12 @@ Description=Archive the held pages' history every 4 hours (#835)
 # between runs (controller_cap, 11 Nov 2026).
 OnCalendar=*-*-* 00/4:30:00 UTC
 AccuracySec=1min
+# Each plan's archive timer is its own unit (usnm-boinc-held-archive*.timer), and all of them fire
+# at the same :30. FixedRandomDelay makes the delay below a fixed offset per unit name, so each
+# plan keeps its own slot in the cycle (#2052) and they no longer queue on the shared locks.
+# Pair it with --skip-if-busy for the rare two that land close together.
+RandomizedDelaySec=90min
+FixedRandomDelay=true
 # A run missed while CT 211 was down runs when it is back: a missed run could leave more
 # journals than the cap.
 Persistent=true

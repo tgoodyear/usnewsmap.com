@@ -1545,6 +1545,9 @@ def archive_runs(maintenance=()):
             runs.append([started, None])
         elif end >= start:
             runs.append([started, max(started, int(now - (mono - end)))])
+    # One run is one entry: two units that report the same start and end (a parent and its child
+    # pass) are the same run.
+    runs = [list(r) for r in dict.fromkeys(tuple(r) for r in runs)]
     if len(runs) > MAX_ARCHIVE_RUNS:
         raise ValueError("too many archive units")
     return sorted(runs, key=lambda r: r[0])

@@ -643,6 +643,59 @@ class HeldArchive(unittest.TestCase):
         self.assertGreaterEqual(events[1]["waited_seconds"], 1)
         self.assertEqual(self.summary(done)["batches"], ["0001", "0002"])
 
+    def test_skip_if_busy_skips_the_slot_when_another_archive_runs(self):
+        lock = self.root / "lock"
+        holder = subprocess.Popen(["flock", f"{lock}.run", "sleep", "30"], start_new_session=True)
+        self.addCleanup(self.end_group, holder)
+        time.sleep(0.3)
+        started = time.monotonic()
+        done = self.run_archive("--skip-if-busy", "--lock-wait-mins", "90")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertIn("busy, next slot", done.stdout)
+        self.assertNotIn("boinc_held_archive_lock_wait", done.stdout)
+        self.assertNotIn("systemctl stop", "\n".join(self.log()) if (self.root / "log").exists() else "")
+
+    def test_skip_if_busy_skips_at_most_one_slot_in_a_row(self):
+        lock = self.root / "lock"
+        holder = subprocess.Popen(["flock", f"{lock}.run", "sleep", "30"], start_new_session=True)
+        self.addCleanup(self.end_group, holder)
+        time.sleep(0.3)
+        first = self.run_archive("--skip-if-busy")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertIn("busy, next slot", first.stdout)
+        # The next run after a skip waits for the lock instead of skipping again.
+        second = self.run_archive("--skip-if-busy", "--lock-wait-mins", "1", USNM_HELD_ARCHIVE_LOCK_WAIT_SECS="1")
+        self.assertNotEqual(second.returncode, 0)
+        self.assertNotIn("busy, next slot", second.stdout)
+        self.assertIn("boinc_held_archive_lock_wait", second.stdout)
+        self.end_group(holder)
+        # Once it has the lock the marker is gone, so a later busy slot can be skipped again.
+        third = self.run_archive("--skip-if-busy")
+        self.assertEqual(third.returncode, 0, third.stderr)
+        self.assertNotIn("busy, next slot", third.stdout)
+        holder = subprocess.Popen(["flock", f"{lock}.run", "sleep", "30"], start_new_session=True)
+        self.addCleanup(self.end_group, holder)
+        time.sleep(0.3)
+        fourth = self.run_archive("--skip-if-busy")
+        self.assertEqual(fourth.returncode, 0, fourth.stderr)
+        self.assertIn("busy, next slot", fourth.stdout)
+
+    def test_skip_if_busy_still_fails_when_a_tick_holds_the_archive_lock_too_long(self):
+        lock = self.root / "lock"
+        holder = subprocess.Popen(["flock", f"{lock}", "sleep", "30"], start_new_session=True)
+        self.addCleanup(self.end_group, holder)
+        time.sleep(0.3)
+        done = self.run_archive("--skip-if-busy", "--lock-wait-mins", "1", USNM_HELD_ARCHIVE_LOCK_WAIT_SECS="1")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("another held-page archive is running", done.stderr)
+
+    def test_skip_if_busy_runs_normally_when_nothing_else_does(self):
+        done = self.run_archive("--skip-if-busy")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("busy, next slot", done.stdout)
+        self.assertEqual(self.summary(done)["batches"], ["0001", "0002"])
+
     def test_a_stop_while_waiting_for_the_archive_lock_ends_the_waiter_too(self):
         lock = self.root / "lock"
         holder = subprocess.Popen(["flock", f"{lock}.run", "sleep", "30"], start_new_session=True)
@@ -659,7 +712,7 @@ class HeldArchive(unittest.TestCase):
         self.addCleanup(run.kill)
         waiters = []
         for _ in range(200):
-            waiters = subprocess.run(["pgrep", "-P", str(run.pid)], capture_output=True, text=True).stdout.split()
+            waiters = subprocess.run(["pgrep", "-x", "-P", str(run.pid), "flock"], capture_output=True, text=True).stdout.split()
             if waiters:
                 break
             time.sleep(0.05)
