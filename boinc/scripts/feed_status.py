@@ -259,7 +259,7 @@ def archive_runs(reported, remembered, now):
             run[1] = run[2]
     kept = [run for run in runs if (now - run[0] <= ARCHIVE_PAUSE_MAX_S if run[1] is None else
                                     now - run[1] < NO_WORK_HOLD_S and run[1] - run[0] <= ARCHIVE_PAUSE_MAX_S)]
-    return sorted(kept)[-MAX_ARCHIVE_RUNS:]
+    return sorted(kept, key=lambda run: run[0])[-MAX_ARCHIVE_RUNS:]  # an end may be None
 
 
 def archive_excuse(runs, latest, now):
@@ -271,7 +271,7 @@ def archive_excuse(runs, latest, now):
         return None
     ends = []
     for start, end, _ in runs:
-        if start > latest + NO_WORK_HOLD_S:
+        if start >= latest + NO_WORK_HOLD_S:
             continue  # the check was due before this run paused anything
         if end is None and now - start < ARCHIVE_PAUSE_MAX_S:
             ends.append(start + ARCHIVE_PAUSE_MAX_S + NO_WORK_HOLD_S)

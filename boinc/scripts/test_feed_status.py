@@ -440,6 +440,11 @@ class DurationTest(unittest.TestCase):
         self.state, self.facts["last_workunits"]["usnm_ocr"] = {}, NOW
         self.assertEqual(self.run_archive(0, 3600, lambda at: None)["state"], "firing")
 
+    def test_two_runs_starting_in_the_same_second_one_still_running_sort(self):
+        # One unit finished and another still running, started together: an end can be None.
+        runs = F.archive_runs([[NOW, NOW + 600], [NOW, None]], [], NOW + 700)
+        self.assertEqual(sorted(run[1] is None for run in runs), [False, True])
+
     def test_a_run_that_began_after_the_check_was_due_excuses_nothing(self):
         # The newest workunit was an hour old before the run began: a stall the archive didn't make.
         def runs(at):
@@ -448,7 +453,7 @@ class DurationTest(unittest.TestCase):
         self.assertEqual(self.run_archive(3660, 4200, runs)["state"], "firing")
         # One that began a second before it was due does wait.
         self.state = {}
-        self.assertEqual(self.run_archive(0, 3600, lambda at: [[NOW + 3590, None]] if at >= 3590 else [])["state"],
+        self.assertEqual(self.run_archive(0, 3600, lambda at: [[NOW + 3589, None]] if at >= 3589 else [])["state"],
                          "pending")
 
     def test_the_deferral_is_capped_by_the_runs_length_and_the_workunits_age(self):
@@ -461,7 +466,7 @@ class DurationTest(unittest.TestCase):
         for run in ([NOW - F.ARCHIVE_PAUSE_MAX_S - 1, NOW + 60], [NOW + 3000, NOW + 3000 + F.ARCHIVE_MIN_RUN_S - 1]):
             with self.subTest(run=run):
                 self.state = {}
-                self.assertEqual(self.run_archive(0, 3600, lambda at: [run] if at >= run[1] else [])["state"],
+                self.assertEqual(self.run_archive(0, 3600, lambda at: [run] if NOW + at >= run[1] else [])["state"],
                                  "firing")
         # Runs back to back: whatever runs, it fires once the newest workunit is ARCHIVE_WORKUNIT_MAX_AGE_S old.
         self.state = {}
