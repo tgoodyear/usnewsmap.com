@@ -37,7 +37,14 @@ EXPECTED_SHA = {"frak2021":
     "1da2384254fa8462c776faf3b43307fe19ce51be0931c623b2fdd560f96e299a"}
 IMG_EXT = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".jp2", ".bmp")
 PLAIN_EXT = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp")
-YEAR_RE = re.compile(r"(?<!\d)(1[89]\d\d)(?!\d)")
+# a year, but not an end of a range such as the directory name 1820-1939
+# (also the first 4 digits of an 8-digit date such as nzz_18910302)
+YEAR_RE = re.compile(r"(?<!\d)(?<!\d{4}-)(1[89]\d\d)"
+                     r"(?:(?!\d)|(?=(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?!\d)))(?!-\d{4})")
+SKIP_DIRS = ("work_in_progress", "models")     # Chronicling Germany, not pages
+NZZ_KEY_RE = re.compile(r"nzz_\d{8}")
+PRUNE_DIRS = (".clone", ".git", ".download")   # downloader / VCS dirs, never pages
+NZZ_TRUTH_DIR = "NZZ_groundtruth"   # the archive also holds uncorrected ABBYY XML
 
 # ---------------------------------------------------------------- text ----
 def _is_word(c):
@@ -53,7 +60,8 @@ _HYPH = ("-", "¬", "⸗")
 
 def norm_fold(s):
     s = unicodedata.normalize("NFC", s.replace("\r", ""))
-    s = s.replace("ſ", "s").replace("ʒ", "z").replace("ͤ", "̈")
+    s = s.replace("\u017f", "s").replace("\u0292", "z").replace("\u0364", "\u0308")
+    s = unicodedata.normalize("NFC", s)   # a + U+0308 -> precomposed, like OCR output
     cs, out, i = list(s), [], 0
     while i < len(cs):
         if _is_word(cs[i]) and i + 1 < len(cs) and cs[i + 1] in _HYPH:
@@ -130,6 +138,28 @@ def _line_text_page(line):
             return u.text or ""
     return None
 
+_GROUPS = ("OrderedGroup", "OrderedGroupIndexed", "UnorderedGroup", "UnorderedGroupIndexed")
+_REFS = ("RegionRefIndexed", "RegionRef")
+
+def _index(el):
+    try:
+        return int(el.get("index") or 0)
+    except ValueError:
+        return 0
+
+def _walk_order(el, out):
+    """Region ids in reading order. Indexes are local to their group, so only
+    the children of one ordered group are sorted together (stable); unordered
+    groups keep document order."""
+    kids = [c for c in el if _ln(c) in _GROUPS or _ln(c) in _REFS]
+    if _ln(el).startswith("OrderedGroup"):
+        kids.sort(key=_index)
+    for c in kids:
+        if _ln(c) in _REFS:
+            out.append(c.get("regionRef"))
+        else:
+            _walk_order(c, out)
+
 def ref_from_page(root):
     """Lines (Unicode of each TextLine) joined by \\n, regions in reading order."""
     regions = {}
@@ -139,9 +169,7 @@ def ref_from_page(root):
     order = []
     for ro in root.iter():
         if _ln(ro) == "ReadingOrder":
-            refs = [r for r in ro.iter() if _ln(r) in ("RegionRefIndexed", "RegionRef")]
-            refs.sort(key=lambda r: int(r.get("index") or 0))
-            order = [r.get("regionRef") for r in refs]
+            _walk_order(ro, order)
             break
     top = [el for el in root.iter() if _ln(el) == "TextRegion"]
     seq, seen = [], set()
@@ -226,17 +254,33 @@ def find_pages(set_name, root_dir, meta, years, keep_unknown):
     imgs = {}
     xmls = []
     for dp, dn, fn in os.walk(root_dir):
+        skip = PRUNE_DIRS + (SKIP_DIRS if set_name.startswith("chronicling") else ())
+        dn[:] = sorted(d for d in dn if d not in skip)
         for f in sorted(fn):
             p = os.path.join(dp, f)
             low = f.lower()
             if low.endswith(IMG_EXT):
-                imgs.setdefault(os.path.splitext(f)[0], p)
+                stem = os.path.splitext(f)[0]
+                imgs.setdefault(stem, p)
+                if set_name == "nzz":   # <NNNN>_nzz_<date>... or nzz_<date>...
+                    imgs.setdefault(re.sub(r"^\d+_(?=nzz_)", "", stem), p)
+                    m = NZZ_KEY_RE.search(stem)
+                    if m:
+                        imgs.setdefault("key:" + m.group(0), p)
             elif low.endswith(".xml") and "license" not in low:
+                if set_name == "nzz" and NZZ_TRUTH_DIR not in \
+                        os.path.relpath(p, root_dir).split(os.sep)[:-1]:
+                    continue            # only the corrected truth counts
                 xmls.append(p)
-    pages, skipped = [], 0
+    pages, skipped, seen = [], 0, set()
     for x in sorted(xmls):
         pid = os.path.splitext(os.path.basename(x))[0]
+        if pid in seen:                 # same page twice (e.g. a copied tree)
+            continue
         img = imgs.get(pid) or imgs.get(re.sub(r"\.(gt|xml)$", "", pid))
+        if not img and set_name == "nzz":
+            m = NZZ_KEY_RE.search(pid)
+            img = imgs.get("key:" + m.group(0)) if m else None
         if not img:
             continue
         rel = os.path.relpath(x, root_dir)
@@ -246,6 +290,7 @@ def find_pages(set_name, root_dir, meta, years, keep_unknown):
                 not years[0] <= year <= years[1]):
             skipped += 1
             continue
+        seen.add(pid)
         pages.append({"set": set_name, "page_id": pid, "xml": x, "img": img,
                       "year": year if year is not None else "",
                       "title": m.get("title") or title_of(set_name, pid),
@@ -270,12 +315,23 @@ def cpu_children():
     r = resource.getrusage(resource.RUSAGE_CHILDREN)
     return r.ru_utime + r.ru_stime
 
-def run_tesseract(template, img, model, tessdata, timeout):
-    t0 = cpu_children()
+def cgroup_cpu(path):
+    """usage_usec of a cgroup (dir holding cpu.stat, or the file itself), in s."""
+    p = os.path.join(path, "cpu.stat") if os.path.isdir(path) else path
+    with open(p, encoding="utf-8") as f:
+        for line in f:
+            k, _, v = line.partition(" ")
+            if k == "usage_usec":
+                return int(v) / 1e6
+    raise ValueError("no usage_usec in %s" % p)
+
+def run_tesseract(template, img, model, tessdata, timeout, cgroup=None):
+    clock = (lambda: cgroup_cpu(cgroup)) if cgroup else cpu_children
+    t0 = clock()
     p = subprocess.run(build_cmd(template, img, model, tessdata),
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        timeout=timeout)
-    cpu = cpu_children() - t0
+    cpu = clock() - t0
     if p.returncode != 0:
         raise RuntimeError("tesseract exit %d: %s" % (
             p.returncode, p.stderr.decode("utf-8", "replace")[-300:]))
@@ -292,12 +348,12 @@ def prepared_image(img, tmpdir):
     return out
 
 def job(args):
-    page, arm, template, tessdata, timeout, gpu = args
+    page, arm, template, tessdata, timeout, gpu, cgroup = args
     try:
         ref = read_reference(page["xml"])
         with tempfile.TemporaryDirectory() as td:
             img = prepared_image(page["img"], td)
-            hyp, cpu = run_tesseract(template, img, arm, tessdata, timeout)
+            hyp, cpu = run_tesseract(template, img, arm, tessdata, timeout, cgroup)
         s = score_texts(ref, hyp)
     except Exception as e:  # not recorded, so a rerun retries it
         return None, "%s/%s [%s]: %s" % (page["set"], page["page_id"], arm,
@@ -316,6 +372,23 @@ def done_keys(path):
     with open(path, newline="", encoding="utf-8") as f:
         return {(r["set"], r["page_id"], r["arm"]) for r in csv.DictReader(f)}
 
+def resume_problems(old, new, csv_arms):
+    """Why an existing run (its sidecar `old`) cannot be continued with `new`."""
+    out = []
+    oarms = old.get("arms")
+    if not isinstance(oarms, dict):
+        return ["sidecar has no arm provenance"]
+    for arm, sha in new["arms"].items():
+        if arm in oarms and oarms[arm] != sha:
+            out.append("model %s sha256 changed (%s -> %s)" % (arm, oarms[arm], sha))
+    for arm in sorted(csv_arms - set(oarms)):
+        out.append("CSV has rows for arm %s that the sidecar does not record" % arm)
+    for k, label in (("tesseract_version", "tesseract version"), ("cmd", "command"),
+                     ("cpu_cgroup", "cpu cgroup")):
+        if old.get(k) != new.get(k):
+            out.append("%s changed (%r -> %r)" % (label, old.get(k), new.get(k)))
+    return out
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--data-root", default=os.environ.get("DATA_ROOT"),
@@ -331,6 +404,10 @@ def main(argv=None):
                          "{model} {tessdata}. Podman example: " + PODMAN_EXAMPLE)
     ap.add_argument("--version-cmd", default="tesseract --version")
     ap.add_argument("--workers", type=int, default=1)
+    ap.add_argument("--cpu-cgroup", metavar="PATH",
+                    help="cgroup (dir with cpu.stat) of the engine, e.g. the podman "
+                         "container's: cpu_s = usage_usec delta around each page "
+                         "(needs --workers 1; default: client CPU via RUSAGE_CHILDREN)")
     ap.add_argument("--years", default="1850-1920")
     ap.add_argument("--keep-unknown-year", action="store_true")
     ap.add_argument("--meta", help="CSV/TSV with page_id,title,year,stratum")
@@ -347,9 +424,13 @@ def main(argv=None):
         with open(a.gpu_study_pages, encoding="utf-8") as f:
             gpu = {l.strip() for l in f if l.strip() and not l.startswith("#")}
     arms = [x for x in a.arms.split(",") if x]
-    meta = load_meta(a.meta)
+    if a.cpu_cgroup and a.workers != 1:
+        ap.error("--cpu-cgroup needs --workers 1 (a shared cgroup mixes pages)")
+    meta_all = load_meta(a.meta)
 
-    info = {"arms": {}, "cmd": a.cmd, "years": a.years}
+    info = {"arms": {}, "cmd": a.cmd, "years": a.years, "limit": a.limit,
+            "cpu_cgroup": a.cpu_cgroup,
+            "keep_unknown_year": a.keep_unknown_year}
     for arm in arms:
         p = os.path.join(a.tessdata, arm + ".traineddata")
         sha = sha256_file(p) if os.path.exists(p) else None
@@ -366,22 +447,49 @@ def main(argv=None):
         info["tesseract_version"] = v.stdout.decode("utf-8", "replace").strip()
     except Exception as e:
         info["tesseract_version"] = "unknown (%s)" % e
-    with open(a.out + ".meta.json", "w", encoding="utf-8") as f:
-        json.dump(info, f, indent=1, sort_keys=True)
 
     done = done_keys(a.out)
-    jobs = []
+    side = a.out + ".meta.json"
+    if done:                            # resuming: provenance must match
+        old, problems = None, []
+        try:
+            with open(side, encoding="utf-8") as f:
+                old = json.load(f)
+        except (OSError, ValueError) as e:
+            problems.append("sidecar %s unreadable (%s)" % (side, e))
+        if old is not None:
+            problems += resume_problems(old, info, {k[2] for k in done})
+        if problems:
+            print("REFUSING to resume %s: %s\nUse a new --out (or restore the "
+                  "original model, command and tesseract)." % (a.out, "; ".join(problems)),
+                  file=sys.stderr)
+            return 2
+        info["arms"] = {**old["arms"], **info["arms"]}
+
+    jobs, queued = [], set()
+    expected = {arm: {} for arm in arms}
     for s in a.sets.split(","):
         d = os.path.join(a.data_root, s)
+        meta = dict(load_meta(os.path.join(d, "meta.csv"))) \
+            if os.path.exists(os.path.join(d, "meta.csv")) else {}
+        meta.update(meta_all)           # --meta wins over <set>/meta.csv
         pages, skipped = find_pages(s, d, meta, (y0, y1), a.keep_unknown_year)
         if a.limit:
             pages = pages[:a.limit]
         print("%s: %d pages in %d-%d (%d skipped by year)" % (s, len(pages), y0, y1,
                                                              skipped), file=sys.stderr)
+        for arm in arms:
+            expected[arm][s] = sorted({pg["page_id"] for pg in pages})
         for pg in pages:
             for arm in arms:
-                if (s, pg["page_id"], arm) not in done:
-                    jobs.append((pg, arm, a.cmd, a.tessdata, a.timeout, gpu))
+                k = (s, pg["page_id"], arm)
+                if k not in done and k not in queued:
+                    queued.add(k)
+                    jobs.append((pg, arm, a.cmd, a.tessdata, a.timeout, gpu,
+                                 a.cpu_cgroup))
+    info["expected"] = expected         # eligible page ids per arm and set
+    with open(side, "w", encoding="utf-8") as f:
+        json.dump(info, f, indent=1, sort_keys=True)
     new = not os.path.exists(a.out) or os.path.getsize(a.out) == 0
     n_ok = n_fail = 0
     with open(a.out, "a", newline="", encoding="utf-8") as f:
