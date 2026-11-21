@@ -20,13 +20,16 @@ UNSENT, IN_PROGRESS, OVER = 2, 4, 5
 class Cursor:
     """Runs the script's SQL on in-memory sqlite: %s becomes ?, and the clock is fixed."""
 
-    def __init__(self, conn):
+    def __init__(self, conn, lock_free=True):
         self.conn = conn
         self.cur = conn.cursor()
         self.rowcount = 0
+        self.lock_free = lock_free
 
     def execute(self, sql, params=()):
-        if sql == "SELECT UNIX_TIMESTAMP()":
+        if sql.startswith("SELECT GET_LOCK("):
+            self.cur.execute("SELECT ?", (1 if self.lock_free else 0,))
+        elif sql == "SELECT UNIX_TIMESTAMP()":
             self.cur.execute("SELECT ?", (NOW,))
         else:
             self.cur.execute(sql.replace("%s", "?"), params)
@@ -40,13 +43,14 @@ class Cursor:
 
 
 class Db:
-    def __init__(self, conn):
+    def __init__(self, conn, lock_free=True):
         self.conn = conn
         self.commits = 0
         self.closed = False
+        self.lock_free = lock_free
 
     def cursor(self):
-        return Cursor(self.conn)
+        return Cursor(self.conn, self.lock_free)
 
     def commit(self):
         self.commits += 1
@@ -181,21 +185,27 @@ class SiblingPriorityTests(unittest.TestCase):
         report, _, _ = go(rows, max_raised=2)
         self.assertEqual((report["selected"], report["updated"]), (0, 0))
 
-    def test_a_raised_sibling_no_host_takes_is_given_up_and_frees_room(self):
-        rows = [*sibling_pair(10, 1, sent_ago=80 * HOUR, priority=10),   # raised, past the give-up age
-                *sibling_pair(20, 2, sent_ago=80 * HOUR, priority=50),   # someone else's priority: kept
+    def test_old_raised_siblings_stop_holding_room_and_old_ones_are_not_raised(self):
+        rows = [*sibling_pair(10, 1, sent_ago=80 * HOUR, priority=10),   # raised long ago: kept, not counted
+                *sibling_pair(20, 2, sent_ago=10 * HOUR, priority=10),   # raised recently: counted
                 *sibling_pair(30, 3, sent_ago=90 * HOUR),                # never raised, too old to start
-                *sibling_pair(40, 4)]                                    # dispatchable: raised
-        # Row 21's priority 50 counts toward the bound too, so 2 leaves room for one once 11 is reset.
+                *sibling_pair(40, 4), *sibling_pair(50, 5)]              # dispatchable
         report, priorities, _ = go(rows, max_raised=2)
-        self.assertEqual((report["gave_up"], report["reset"], report["already_raised"]), (1, 1, 1))
-        self.assertEqual([priorities[i] for i in (11, 21, 31, 41)], [0, 50, 0, 10])
-        # A one-off catch-up of old siblings passes a larger --give-up-hours.
+        self.assertEqual((report["already_raised"], report["selected"]), (1, 1))
+        self.assertEqual([priorities[i] for i in (11, 21, 31)], [10, 10, 0])
+        self.assertEqual(sum(priorities[i] == 10 for i in (41, 51)), 1)
+        # A one-off catch-up of older siblings passes a larger --give-up-hours.
         _, priorities, _ = go(rows, give_up_hours=1000)
         self.assertEqual(priorities[31], 10)
-        # Dry run reports the give-up without writing it.
-        report, priorities, _ = go(rows, dry_run=True)
-        self.assertEqual((report["gave_up"], report["reset"], priorities[11]), (1, 0, 10))
+
+    def test_a_run_that_finds_another_holding_the_lock_does_nothing(self):
+        conn = database(sibling_pair(10, 1))
+        out = io.StringIO()
+        P.run(args(), out=out, connect_db=lambda _a: Db(conn, lock_free=False))
+        report = json.loads(out.getvalue())
+        self.assertEqual((report["skipped"], report["selected"], report["updated"]),
+                         ("another run holds the lock", 0, 0))
+        self.assertEqual(dict(conn.execute("SELECT id, priority FROM result"))[11], 0)
 
     def test_empty_run(self):
         report, _, _ = go([])
@@ -208,7 +218,8 @@ class SiblingPriorityTests(unittest.TestCase):
             P.run(args(), out=io.StringIO(), connect_db=lambda _a: Db(conn))
 
     def test_options(self):
-        for bad in (["--min-age-hours", "-1"], ["--max", "0"], ["--max-raised", "0"]):
+        for bad in (["--min-age-hours", "-1"], ["--max", "0"], ["--max-raised", "0"], ["--priority", "0"],
+                    ["--priority", "-1"]):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 P.main(bad)
 

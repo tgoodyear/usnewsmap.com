@@ -58,17 +58,16 @@ def positive(text):
 # workunit has a sent sibling. A negative priority is deliberate (Xiaomi batches are created at -1
 # so production work enters the feeder first) and is never raised. MIN(sent_time) is when the workunit's first copy went out, so a later tie-breaker
 # copy doesn't restart the clock.
-# Unsent results already raised: these sit ahead of fresh copies in the feeder, so the raised
-# backlog is bounded (--max-raised) and fresh work keeps its room in the app's cache share.
-RAISED_SQL = "SELECT COUNT(*) FROM result WHERE appid = %s AND server_state = %s AND priority >= %s"
-# A raised sibling still unsent --give-up-hours after its workunit's first copy went out has no
-# host taking it (no eligible plan class, say). It goes back to priority 0, at the --priority this
-# step sets and no other, so it stops holding a place under --max-raised and later siblings that
-# hosts can take are raised instead. The selection skips it from then on.
-STALE_SQL = (
-    "SELECT r.id FROM result r JOIN result s ON s.workunitid = r.workunitid AND s.id <> r.id "
-    "WHERE r.appid = %s AND r.server_state = %s AND r.priority = %s AND s.sent_time > 0 "
-    "GROUP BY r.id HAVING MIN(s.sent_time) <= %s"
+# Raised unsent results whose workunit's first copy went out within --give-up-hours. These sit
+# ahead of fresh copies in the feeder, so they are bounded (--max-raised) and fresh work keeps its
+# room in the app's cache share. One raised longer ago than that has no host taking it (no
+# eligible plan class, say): it keeps its priority, which only orders sends, but no longer holds a
+# place under the bound, and siblings that old are not raised. Nothing is ever lowered, so a
+# priority this step did not set is never touched.
+RAISED_SQL = (
+    "SELECT COUNT(*) FROM (SELECT r.id FROM result r JOIN result s ON s.workunitid = r.workunitid "
+    "AND s.id <> r.id WHERE r.appid = %s AND r.server_state = %s AND r.priority >= %s AND s.sent_time > 0 "
+    "GROUP BY r.id HAVING MIN(s.sent_time) > %s) raised"
 )
 SELECT_SQL = (
     "SELECT r.id, MIN(s.sent_time) AS first_sent FROM result r JOIN result s ON s.workunitid = r.workunitid "
@@ -76,66 +75,57 @@ SELECT_SQL = (
     "AND s.server_state IN (%s, %s) AND s.sent_time > 0 "
     "GROUP BY r.id HAVING MIN(s.sent_time) <= %s AND MIN(s.sent_time) > %s ORDER BY first_sent, r.id LIMIT %s"
 )
+# One run at a time, timer or by hand, so two can't each fill the bound: a MySQL named lock, held
+# by this connection for the count, selection and update, and freed when it closes.
+LOCK_NAME = "usnm-qwen-sibling-priority"
 
 
 def run(args, out=sys.stdout, connect_db=connect):
     db = connect_db(args)
+    raised, picked, updated, locked = 0, [], 0, False
+    now = 0
     try:
         cur = db.cursor()
-        cur.execute("SELECT UNIX_TIMESTAMP()")
-        now = int(cur.fetchone()[0])
-        cur.execute("SELECT id FROM app WHERE name=%s", (APP,))
-        row = cur.fetchone()
-        if row is None:
-            sys.exit(f"no app named {APP}")
-        appid = row[0]
-        cutoff = now - int(args.min_age_hours * 3600)
-        give_up = now - int(args.give_up_hours * 3600)
-        cur.execute(STALE_SQL, (appid, UNSENT, args.priority, give_up))
-        stale = [int(r[0]) for r in cur.fetchall()]
-        reset = 0
-        if stale and not args.dry_run:
-            marks = ", ".join(["%s"] * len(stale))
-            try:
-                cur.execute(
-                    f"UPDATE result SET priority = 0 WHERE appid = %s AND server_state = %s "
-                    f"AND priority = %s AND id IN ({marks})",
-                    (appid, UNSENT, args.priority, *stale),
-                )
-                reset = cur.rowcount
-                db.commit()
-            except Exception:
-                db.rollback()
-                raise
-        cur.execute(RAISED_SQL, (appid, UNSENT, args.priority))
-        raised = int(cur.fetchone()[0])
-        room = min(args.max, max(0, args.max_raised - raised))
-        picked = []
-        if room:
-            cur.execute(SELECT_SQL, (appid, UNSENT, args.priority, IN_PROGRESS, OVER, cutoff, give_up, room))
-            picked = [(int(r[0]), int(r[1])) for r in cur.fetchall()]
-        updated = 0
-        if picked and not args.dry_run:
-            ids = [rid for rid, _ in picked]
-            marks = ", ".join(["%s"] * len(ids))
-            try:
-                # The guards repeat the selection's, so a result sent or raised since is left alone.
-                cur.execute(
-                    f"UPDATE result SET priority = %s WHERE appid = %s AND server_state = %s "
-                    f"AND priority >= 0 AND priority < %s AND id IN ({marks})",
-                    (args.priority, appid, UNSENT, args.priority, *ids),
-                )
-                updated = cur.rowcount
-                db.commit()
-            except Exception:
-                db.rollback()
-                raise
+        cur.execute("SELECT GET_LOCK(%s, 0)", (LOCK_NAME,))
+        locked = cur.fetchone()[0] == 1
+        if locked:
+            cur.execute("SELECT UNIX_TIMESTAMP()")
+            now = int(cur.fetchone()[0])
+            cur.execute("SELECT id FROM app WHERE name=%s", (APP,))
+            row = cur.fetchone()
+            if row is None:
+                sys.exit(f"no app named {APP}")
+            appid = row[0]
+            cutoff = now - int(args.min_age_hours * 3600)
+            give_up = now - int(args.give_up_hours * 3600)
+            cur.execute(RAISED_SQL, (appid, UNSENT, args.priority, give_up))
+            raised = int(cur.fetchone()[0])
+            room = min(args.max, max(0, args.max_raised - raised))
+            if room:
+                cur.execute(SELECT_SQL, (appid, UNSENT, args.priority, IN_PROGRESS, OVER, cutoff, give_up, room))
+                picked = [(int(r[0]), int(r[1])) for r in cur.fetchall()]
+            if picked and not args.dry_run:
+                ids = [rid for rid, _ in picked]
+                marks = ", ".join(["%s"] * len(ids))
+                try:
+                    # The guards repeat the selection's, so a result sent or raised since is left alone.
+                    cur.execute(
+                        f"UPDATE result SET priority = %s WHERE appid = %s AND server_state = %s "
+                        f"AND priority >= 0 AND priority < %s AND id IN ({marks})",
+                        (args.priority, appid, UNSENT, args.priority, *ids),
+                    )
+                    updated = cur.rowcount
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                    raise
     finally:
         db.close()
     oldest = round((now - min(sent for _, sent in picked)) / 3600, 2) if picked else 0.0
-    print(json.dumps({"app": APP, "gave_up": len(stale), "reset": reset, "already_raised": raised, "selected": len(picked), "updated": updated, "oldest_age_hours": oldest,
-                      "priority": args.priority, "min_age_hours": args.min_age_hours, "dry_run": args.dry_run},
-                     sort_keys=True), file=out)
+    print(json.dumps({"app": APP, "skipped": None if locked else "another run holds the lock",
+                      "already_raised": raised, "selected": len(picked), "updated": updated,
+                      "oldest_age_hours": oldest, "priority": args.priority, "min_age_hours": args.min_age_hours,
+                      "give_up_hours": args.give_up_hours, "dry_run": args.dry_run}, sort_keys=True), file=out)
     return 0
 
 
@@ -143,11 +133,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--min-age-hours", type=non_negative_float, default=6.0,
                         help="how long ago the sibling was sent before the result is raised (default 6; 0 is allowed)")
-    parser.add_argument("--priority", type=int, default=10, help="priority to set where it is lower (default 10)")
+    parser.add_argument("--priority", type=positive, default=10, help="priority to set where it is lower (default 10)")
     parser.add_argument("--max", type=positive, default=500, help="most results to raise in one run (default 500)")
     parser.add_argument("--give-up-hours", type=non_negative_float, default=72.0,
-                        help="return a raised sibling to priority 0 once its workunit's first copy is this old and "
-                             "it is still unsent (default 72, the delay bound)")
+                        help="stop raising, and counting under --max-raised, siblings whose workunit's first copy is "
+                             "older than this (default 72, the delay bound)")
     parser.add_argument("--max-raised", type=positive, default=50,
                         help="most unsent results to keep raised at once, so fresh copies keep their place "
                              "in the feeder (default 50)")
