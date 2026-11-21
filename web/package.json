@@ -46,7 +46,7 @@
     "eslint": "10.14.0",
     "eslint-plugin-react-hooks": "7.1.1",
     "globals": "17.14.0",
-    "jsdom": "30.1.3",
+    "jsdom": "31.0.0",
     "mapshaper": "0.7.101",
     "prettier": "3.9.10",
     "smol-toml": "1.9.1",
