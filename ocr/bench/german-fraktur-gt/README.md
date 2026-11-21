@@ -116,8 +116,7 @@ spaces per line, a `HYP` attached to its word.
   above 0.235 is flagged (hold and investigate) and overrides a lift. A
   title-clustered bootstrap is shown alongside; GPU-study pages are reported
   separately. The analyzer enforces the year window (`--years`, default
-  1850-1920) on CSV rows and drops undated ones. It prints **INCOMPLETE** (exit
-  3) and never LIFT unless every expected (set, page, arm) row from the sidecar
+  1850-1920) on CSV rows and drops undated ones. It prints **INCOMPLETE** (exit 3) and never LIFT unless every expected (set, page, arm) row from the sidecar
   is present for both arms, both pool sets have scored non-GPU-study pages, and
   no `--limit` run is involved; a `--limit` smoke run is always incomplete.
   Duplicate (set, page_id, arm) rows are an error.
