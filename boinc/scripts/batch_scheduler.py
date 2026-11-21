@@ -4884,7 +4884,11 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     def queued_replays(inventory):
         if not (native and spot_cap_set and not drain):
             return 0
-        targets = state.get("native_targets", {})
+        # The plan's units not yet settled, as the submit below prunes them: a job collected
+        # this tick has no unit left on its host and takes none of its room (#2081).
+        open_jobs = {record["job"]["id"] for record in owned.values() if not settled(record)}
+        targets = {job_id: host for job_id, host in state.get("native_targets", {}).items()
+                   if job_id in open_jobs}
         return native_queued_replays(config, state, now, spot_active, native_replay_room(
             config, inventory, native_other_units(config, inventory, targets), targets, native_from_trust))
 

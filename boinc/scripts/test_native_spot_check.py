@@ -1403,6 +1403,39 @@ class SpotStepLockTests(unittest.TestCase):
         self.assertEqual(self.state["native_spot"]["pending"][replay]["stage"], "submitted")
         self.assertEqual(submitted, 1)
 
+    def test_a_peer_emptied_by_collection_keeps_its_replays_global_room(self):
+        # #2081 review: with the per-host count, 240's units are all back and collected this
+        # tick. Its room is not taken by those settled jobs, so the queued replay keeps its place
+        # under the cap through the collect and refill, and goes on that tick.
+        self.config["pages_per_host"] = 2
+        self.config["native_spot_check"]["canary_pages_per_host"] = 2
+        inventory = type(self.fake).inventory.__get__(self.fake)
+
+        def units():
+            live = {}
+            for job_id, host in self.state.get("native_targets", {}).items():
+                job = self.fake.jobs.get(job_id, {})
+                if job.get("stage") == "submitted" and job.get("spool") is None:
+                    entry = live.setdefault(str(host), {"units": 0, "jobs": []})
+                    entry["units"] += 1
+                    entry["jobs"].append(job_id)
+            return live
+        batch.SPOT_RANDOM = Always(1.0)  # no draws: only the replay below is queued
+        with patch.object(self.fake, "inventory", lambda: {**inventory(), "native_host_units": units()}):
+            batch.tick(self.config, self.state, self.fake, lambda: None, NOW)
+            self.assertEqual(sum(host == 240 for host in self.state["native_targets"].values()), 2)
+            self.results_in()
+            replay = "e" * 64
+            self.state.setdefault("native_spot", {})["pending"] = {replay: {
+                "source": 13, "target": 240, "image": self.config["image"], "page": "p",
+                "spool": "/project/usnmocr/results/7", "at": NOW, "stage": "queued"}}
+            pending = inventory()["pending_workunits"]
+            self.fake.actions.clear()
+            batch.tick(self.config, self.state, self.fake, lambda: None, NOW + 60,
+                       max_global_pending=pending + 2)
+        self.assertEqual(self.state["native_spot"]["pending"][replay]["stage"], "submitted")
+        self.assertEqual(len(self.native_submissions()), 1)
+
     def test_the_global_reservation_skips_replays_that_cannot_go_this_tick(self):
         # #2081 review: a replay whose peer has no shared room left (another plan fills 240) and
         # one past its age are kept no room under the global cap, so the refill takes all of it.
