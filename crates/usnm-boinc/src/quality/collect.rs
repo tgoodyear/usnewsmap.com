@@ -1496,7 +1496,7 @@ pub fn inventory(
         );
     }
     cache.verify()?;
-    cache.save_digests()?;
+    cache.save_digests(true)?;
     Ok(result)
 }
 
@@ -1898,7 +1898,7 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
         verify_secs = verifying.elapsed().as_secs_f64();
     }
     if let Some(cache) = &cache {
-        cache.save_digests()?;
+        cache.save_digests(!deferred)?;
     }
     summary.page_rows = pages.len();
     summary.crop_rows = crop_table.len();

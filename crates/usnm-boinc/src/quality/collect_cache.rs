@@ -33,6 +33,22 @@ const MAX_DIGESTS: usize = 400_000;
 
 #[cfg(test)]
 thread_local! {
+    /// Tests prune small indexes.
+    pub(super) static TEST_MAX_DIGESTS: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+fn max_digests() -> usize {
+    #[cfg(test)]
+    {
+        if let Some(max) = TEST_MAX_DIGESTS.with(Cell::get) {
+            return max;
+        }
+    }
+    MAX_DIGESTS
+}
+
+#[cfg(test)]
+thread_local! {
     /// Tests write their inputs a moment before they read them; they may settle them sooner.
     pub(super) static TEST_SETTLE: Cell<Option<std::time::Duration>> = const { Cell::new(None) };
 }
@@ -329,7 +345,7 @@ impl Digests {
         self.added.borrow_mut().insert(key.clone(), hex(digest));
         self.used.borrow_mut().insert(key);
         if self.flushed.get().elapsed() >= FLUSH {
-            self.save()?;
+            self.write(false)?;
         }
         Ok(())
     }
@@ -338,8 +354,20 @@ impl Digests {
     /// wrote there meanwhile. Two runs saving at once can lose one's additions, which are then
     /// hashed again; an identity two runs saw with different digests is dropped from it.
     pub(super) fn save(&self) -> anyhow::Result<()> {
+        self.write(false)
+    }
+
+    /// `save`, then, for a run that visited every input it covers, a prune of an index past
+    /// `MAX_DIGESTS` to the ones this run used. Only a complete run prunes: a periodic flush or an
+    /// interrupted run hasn't yet visited the inputs it would drop, and a later hit only marks a
+    /// digest as used, so the final save could not restore it.
+    pub(super) fn save_complete(&self) -> anyhow::Result<()> {
+        self.write(true)
+    }
+
+    fn write(&self, complete: bool) -> anyhow::Result<()> {
         self.flushed.set(Instant::now());
-        if self.added.borrow().is_empty() {
+        if self.added.borrow().is_empty() && !complete {
             return Ok(());
         }
         let added = std::mem::take(&mut *self.added.borrow_mut());
@@ -356,7 +384,7 @@ impl Digests {
                 }
             }
         }
-        if index.len() > MAX_DIGESTS {
+        if complete && index.len() > max_digests() {
             let used = self.used.borrow();
             index.retain(|key, _| used.contains(key));
         }
@@ -753,9 +781,14 @@ impl Cache {
         })
     }
 
-    /// Writes the digests this run computed for the next one (see `Digests`).
-    pub fn save_digests(&self) -> anyhow::Result<()> {
-        self.digests.save()
+    /// Writes the digests this run computed for the next one (see `Digests`). `complete` is a run
+    /// that visited every input it covers, the only kind that may prune the index.
+    pub fn save_digests(&self, complete: bool) -> anyhow::Result<()> {
+        if complete {
+            self.digests.save_complete()
+        } else {
+            self.digests.save()
+        }
     }
 
     pub fn key(&self, unit: &Path, job: &Job, canonical: &[PathBuf]) -> anyhow::Result<String> {
@@ -1068,7 +1101,7 @@ mod tests {
         let rows = cache.key(&unit, &job, &canonical).unwrap();
         assert_ne!(hint, rows);
         assert!(kept(&cache.digests, &path));
-        cache.save_digests().unwrap();
+        cache.save_digests(true).unwrap();
         assert!(opts
             .cache
             .as_ref()
@@ -1216,6 +1249,40 @@ mod tests {
         assert_ne!(first, changed);
         digests.save().unwrap();
         assert_eq!(read_index(&memo.join(DIGESTS_FILE)).unwrap().len(), 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_a_complete_run_prunes_the_index_to_the_inputs_it_used() {
+        settled();
+        TEST_MAX_DIGESTS.with(|m| m.set(Some(1)));
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let memo = dir.path().join("digests");
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        let first = Digests::open(&memo, &memo).unwrap();
+        first.digest(&a, true).unwrap();
+        first.digest(&b, true).unwrap();
+        first.save_complete().unwrap();
+        drop(first);
+        assert_eq!(read_index(&memo.join(DIGESTS_FILE)).unwrap().len(), 2);
+        // A run that has visited only `a` so far: its flushes and an interrupted end keep `b`.
+        let partial = Digests::open(&memo, &memo).unwrap();
+        partial.digest(&a, true).unwrap();
+        std::fs::write(dir.path().join("c"), b"c").unwrap();
+        partial.digest(&dir.path().join("c"), true).unwrap();
+        partial.save().unwrap();
+        drop(partial);
+        assert_eq!(read_index(&memo.join(DIGESTS_FILE)).unwrap().len(), 3);
+        // A complete run that used only `a` prunes to it.
+        let complete = Digests::open(&memo, &memo).unwrap();
+        complete.digest(&a, true).unwrap();
+        complete.save_complete().unwrap();
+        TEST_MAX_DIGESTS.with(|m| m.set(None));
+        let index = read_index(&memo.join(DIGESTS_FILE)).unwrap();
+        assert_eq!(index.len(), 1);
+        assert!(index.contains_key(&FileIdentity::of_path(&a).unwrap().key()));
     }
 
     #[cfg(unix)]
