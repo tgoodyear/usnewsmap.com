@@ -393,6 +393,31 @@ class NativeSpotTests(unittest.TestCase):
         self.assertIsNone(batch.native_replay_room(config, {}, None, {}, False))
         self.assertEqual(batch.native_replay_room(config, {}, None, {}, True), {})
 
+    def test_queued_replays_keep_their_room_through_repeated_full_refills(self):
+        # #2080 follow-up: host 240's room is 4 and the queue never runs dry. Without room kept
+        # for it, every refill filled 240 before the replay step ran, and its replay never went.
+        self.config["native_spot_check"]["canary_pages_per_host"] = 4
+        self.fake.cpus = {13: 4, 240: 4}
+        inventory = self.fake.inventory
+        self.fake.inventory = lambda: {**inventory(), "native_host_units": {}}
+        spot = self.state.setdefault("native_spot", {})
+        replay = "a" * 64
+        spot["pending"] = {replay: {"source": 13, "target": 240, "image": self.config["image"], "page": "p",
+                                    "spool": "/project/usnmocr/results/7", "at": NOW, "stage": "queued"}}
+        batch.SPOT_RANDOM = Always(1.0)  # no new draws: only this replay is queued
+        for n in range(3):
+            self.fake.actions.clear()
+            self.tick(NOW + 60 * n)
+            to_240 = sum(host == 240 for _, host in self.native_submissions())
+            outstanding = sum(host == 240 for host in self.state["native_targets"].values())
+            if self.state["native_spot"]["pending"].get(replay, {}).get("stage") != "queued":
+                break
+            self.results_in()
+        self.assertEqual(n, 0)
+        self.assertEqual(self.state["native_spot"]["pending"][replay]["stage"], "submitted")
+        # The refill left 240 one unit short of its room for it, and the shared limit held.
+        self.assertEqual((to_240, outstanding), (3, 3))
+
     def test_a_replays_room_is_counted_from_the_admission_inventory_when_nothing_is_submitted(self):
         # #1780 review: side by side, another plan filled peer 240 after this tick's first
         # inventory. This tick submits no OCR unit (its target is 0), and its replay still
@@ -1339,13 +1364,101 @@ class SpotStepLockTests(unittest.TestCase):
         self.tick(NOW + 60)
         self.assertNotIn("lock_busy", self.state["native_spot"])
 
+    def native_submissions(self):
+        return [unit for action in self.fake.actions if action[0] == "submit-native" for unit in action[1]]
+
     def test_replay_room_counts_the_units_this_tick_submitted(self):
         self.tick()
         self.results_in()
-        # The cap has room for the units submit sends this tick and nothing more.
+        # The cap has room for two units. The tick's draw queued two replays, and the refill
+        # leaves the cap's room to them (#2081): it submits nothing, and the replays go.
         pending = self.fake.inventory()["pending_workunits"]
+        self.fake.actions.clear()
         self.tick(max_global_pending=pending + 2)
-        self.assertEqual([submit for submit, _ in self.fake.spot_calls if submit], [])
+        self.assertEqual(self.native_submissions(), [])
+        self.assertEqual(len([item for submit, _ in self.fake.spot_calls if submit for item in submit.split(",")]), 2)
+
+    def test_queued_replays_keep_their_global_room_through_repeated_capped_refills(self):
+        # #2081: the refill fills the global cap each tick; the replay step runs after it. A
+        # replay queued to an active peer keeps its place under the cap, and goes on the first
+        # tick, while the refill takes the rest of the room.
+        self.config["native_spot_check"]["canary_pages_per_host"] = 4
+        self.tick()
+        self.results_in()
+        batch.SPOT_RANDOM = Always(1.0)  # no new draws
+        replay = "e" * 64
+        self.state["native_spot"]["pending"] = {replay: {
+            "source": 13, "target": 240, "image": self.config["image"], "page": "p",
+            "spool": "/project/usnmocr/results/7", "at": NOW, "stage": "queued"}}
+        for n in range(3):
+            pending = self.fake.inventory()["pending_workunits"]
+            self.fake.actions.clear()
+            self.fake.spot_calls.clear()
+            self.tick(NOW + 60 * n, max_global_pending=pending + 2)
+            submitted = len(self.native_submissions())
+            if self.state["native_spot"]["pending"].get(replay, {}).get("stage") != "queued":
+                break
+            self.results_in()
+        self.assertEqual(n, 0)
+        self.assertEqual(self.state["native_spot"]["pending"][replay]["stage"], "submitted")
+        self.assertEqual(submitted, 1)
+
+    def test_a_peer_emptied_by_collection_keeps_its_replays_global_room(self):
+        # #2081 review: with the per-host count, 240's units are all back and collected this
+        # tick. Its room is not taken by those settled jobs, so the queued replay keeps its place
+        # under the cap through the collect and refill, and goes on that tick.
+        self.config["pages_per_host"] = 2
+        self.config["native_spot_check"]["canary_pages_per_host"] = 2
+        inventory = type(self.fake).inventory.__get__(self.fake)
+
+        def units():
+            live = {}
+            for job_id, host in self.state.get("native_targets", {}).items():
+                job = self.fake.jobs.get(job_id, {})
+                if job.get("stage") == "submitted" and job.get("spool") is None:
+                    entry = live.setdefault(str(host), {"units": 0, "jobs": []})
+                    entry["units"] += 1
+                    entry["jobs"].append(job_id)
+            return live
+        batch.SPOT_RANDOM = Always(1.0)  # no draws: only the replay below is queued
+        with patch.object(self.fake, "inventory", lambda: {**inventory(), "native_host_units": units()}):
+            batch.tick(self.config, self.state, self.fake, lambda: None, NOW)
+            self.assertEqual(sum(host == 240 for host in self.state["native_targets"].values()), 2)
+            self.results_in()
+            replay = "e" * 64
+            self.state.setdefault("native_spot", {})["pending"] = {replay: {
+                "source": 13, "target": 240, "image": self.config["image"], "page": "p",
+                "spool": "/project/usnmocr/results/7", "at": NOW, "stage": "queued"}}
+            pending = inventory()["pending_workunits"]
+            self.fake.actions.clear()
+            batch.tick(self.config, self.state, self.fake, lambda: None, NOW + 60,
+                       max_global_pending=pending + 2)
+        self.assertEqual(self.state["native_spot"]["pending"][replay]["stage"], "submitted")
+        self.assertEqual(len(self.native_submissions()), 1)
+
+    def test_the_global_reservation_skips_replays_that_cannot_go_this_tick(self):
+        # #2081 review: a replay whose peer has no shared room left (another plan fills 240) and
+        # one past its age are kept no room under the global cap, so the refill takes all of it.
+        self.config["native_spot_check"]["canary_pages_per_host"] = 4
+        self.tick()
+        self.results_in()
+        batch.SPOT_RANDOM = Always(1.0)  # no new draws
+        entry = {"image": self.config["image"], "page": "p", "spool": "/project/usnmocr/results/7",
+                 "stage": "queued"}
+        self.state["native_spot"]["pending"] = {
+            "e" * 64: {**entry, "source": 13, "target": 240, "at": NOW},
+            "f" * 64: {**entry, "source": 240, "target": 13, "at": NOW - batch.NATIVE_SPOT_MAX_AGE - 3600}}
+        inventory = type(self.fake).inventory.__get__(self.fake)
+        full = {"240": {"units": 1000, "jobs": []}}
+        pending = inventory()["pending_workunits"]
+        self.fake.actions.clear()
+        self.fake.spot_calls.clear()
+        with patch.object(self.fake, "inventory",
+                          lambda: {**inventory(), "created_at": NOW + 60, "native_host_units": full}):
+            batch.tick(self.config, self.state, self.fake, lambda: None, NOW + 60,
+                       max_global_pending=pending + 2)
+        self.assertEqual(len(self.native_submissions()), 2)
+        self.assertEqual(self.state["native_spot"]["pending"]["e" * 64]["stage"], "queued")
 
 
 class SamplingTests(unittest.TestCase):

@@ -3482,6 +3482,28 @@ def native_replay_room(config, snapshot, others, targets, from_trust):
                            - own.get(int(host), 0)) for host, n in cpus.items()}
 
 
+def native_queued_replays(config, state, now, active=None, target_room=None):
+    """The queued spot replays this tick's replay step could make (#2081): unexpired, to an active
+    host (`active`; None: not known), within its peer's shared room (`target_room`, as the step
+    takes it; None: no limit), at most the step's 100. The refill leaves them room under the
+    global cap, so ordinary work can't fill it ahead of them tick after tick."""
+    if NATIVE_SPOT_KEY not in config:
+        return 0
+    room = None if target_room is None else dict(target_room)
+    queued = 0
+    for entry in _spot(state).get("pending", {}).values():
+        target = entry.get("target")
+        if (entry.get("stage") != "queued" or now - entry.get("at", now) > NATIVE_SPOT_MAX_AGE
+                or (active is not None and target not in active)):
+            continue
+        if room is not None:
+            if room.get(target, 0) <= 0:
+                continue
+            room[target] -= 1
+        queued += 1
+    return min(100, queued)
+
+
 def native_spot_step(config, state, transport, now, submit_room=100, active=None, target_room=None):
     """Run the bridge's native-spot step for the queued replays and the submitted ones, and act on
     what it reports: a match refreshes the host's checks and settles its unchecked pages up to
@@ -4854,7 +4876,24 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         refilling = bool(state.get("refilling", False))
 
     cohort_free = max(0, high_target - pending) if refilling else 0
-    global_free = max(0, global_room(cohort_info, global_pending, budgeted_other))
+    # Room under the global cap kept for queued spot replays (#2081), when the cap the replay step
+    # counts against is set: the step runs after the submit, and a refill that filled the cap
+    # first would starve them for good.
+    spot_cap_set = (max_global_pending if max_global_pending is not None
+                    else config.get("max_global_pending")) is not None
+    def queued_replays(inventory):
+        if not (native and spot_cap_set and not drain):
+            return 0
+        # The plan's units not yet settled, as the submit below prunes them: a job collected
+        # this tick has no unit left on its host and takes none of its room (#2081).
+        open_jobs = {record["job"]["id"] for record in owned.values() if not settled(record)}
+        targets = {job_id: host for job_id, host in state.get("native_targets", {}).items()
+                   if job_id in open_jobs}
+        return native_queued_replays(config, state, now, spot_active, native_replay_room(
+            config, inventory, native_other_units(config, inventory, targets), targets, native_from_trust))
+
+    replay_reserve = queued_replays(snapshot)
+    global_free = max(0, global_room(cohort_info, global_pending, budgeted_other) - replay_reserve)
     free = min(cohort_free, global_free)
     submitted = 0
     # A plan beside others (#1836): from here to the spot checks, one plan at a time. With the lock,
@@ -4878,9 +4917,11 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             room_other = other_app_workunits(fresh, ocr_app) or 0
             owned = own(records)
             admission_extra = max(0, demand - global_pending)
+            replay_reserve = queued_replays(fresh)
             if refresh_sibling_claims is not None:
                 sibling_claims = refresh_sibling_claims()
-            global_free = max(0, global_room(cohort_info, global_pending + admission_extra, room_other))
+            global_free = max(0, global_room(cohort_info, global_pending + admission_extra, room_other)
+                              - replay_reserve)
             free = min(cohort_free, global_free)
     if feed and admitted:
         # Every tick, so the list stays current when this one claims nothing (#1754).
@@ -4954,7 +4995,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         global_backlog = (sum(not settled(record) and record["job"]["id"] not in room_pending | candidates
                               for record in records)
                           + sum(page not in owned and page not in conflicts for page in selected))
-        global_submit_room = max(0, global_room(cohort_info, room_in_flight + global_backlog, room_other))
+        global_submit_room = max(0, global_room(cohort_info, room_in_flight + global_backlog, room_other)
+                                 - replay_reserve)
         submit_limit = min(refill, cohort_submit_room, global_submit_room)
         to_submit = []
         for record in owned.values():
@@ -4995,6 +5037,16 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                     still = set(native_plan_hosts({**config, "native_hosts": NATIVE_HOSTS_FROM_TRUST}, room_inventory,
                                                      getattr(transport, "extra_claim_languages", ())))
                     native_slots = {host: room if host in still else 0 for host, room in native_slots.items()}
+            if NATIVE_SPOT_KEY in config and native_others is not None:
+                # Room kept for the queued spot replays to the plan's own hosts (#1780): a replay
+                # takes a unit of its peer's shared room after this submit (native_replay_room),
+                # so a refill that filled the peer first would starve it tick after tick. Each
+                # queued replay to an active host counts as a unit already out there.
+                for entry in _spot(state).get("pending", {}).values():
+                    host = entry.get("target")
+                    if entry.get("stage") == "queued" and host in native_slots and (
+                            spot_active is None or host in spot_active):
+                        outstanding[host] = outstanding.get(host, 0) + 1
             admits = None
             if native_from_trust:
                 # Each job only to a host admitted for its own page's language: a reserved job

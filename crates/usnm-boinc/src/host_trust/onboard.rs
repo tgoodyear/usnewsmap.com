@@ -527,6 +527,16 @@ fn other_campaign_roots(c: &Config, current: &[&Path]) -> anyhow::Result<Vec<Pat
     Ok(roots)
 }
 
+/// The hosts an every-host campaign's drift scan looks at, in id order: the untrusted ones this
+/// pass may challenge, and the ones already trusted for the build, which get no new challenge but
+/// can still hold a superseded build's unit (#2080).
+fn drift_hosts(able: &[capability::Host], trusted: &[capability::Host]) -> Vec<capability::Host> {
+    let mut hosts: Vec<_> = able.iter().chain(trusted).cloned().collect();
+    hosts.sort_by_key(|h| h.id);
+    hosts.dedup_by_key(|h| h.id);
+    hosts
+}
+
 /// Version drift (#1780): a host's outstanding `usnm_gold_native` unit from another campaign,
 /// for a build no live version of the app packages for that host any more, is one the gold hook
 /// refuses on every request ("Gold job image differs from registered native build") and that
@@ -626,11 +636,16 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
     let trusted_hosts =
         trust.campaign_trusted_hosts(&c.engine.image, &prepared.manifest_sha256, scope);
     let (campaign_root, legacy_root) = campaign_roots(c, &prepared, scope)?;
-    let mut pending: Vec<_> = inventory
+    // Hosts trusted for this build get no new challenge, but an every-host campaign still
+    // retires their superseded-build units, which would otherwise hold cap space (#2080).
+    let (trusted_in_campaign, mut pending): (Vec<_>, Vec<_>) = inventory
         .into_iter()
         .filter(|h| in_campaign(c, active.as_ref(), &h.id))
-        .filter(|h| !trusted_hosts.is_some_and(|hosts| hosts.contains(&h.id)))
-        .collect();
+        .partition(|h| trusted_hosts.is_some_and(|hosts| hosts.contains(&h.id)));
+    let mut roots = vec![campaign_root.as_path()];
+    if legacy_root != campaign_root {
+        roots.push(&legacy_root);
+    }
     if !pending.is_empty() {
         // A unit for a host that no version can reach waits out its deadline and holds a place
         // under the safety cap (#1418).
@@ -650,14 +665,16 @@ pub async fn onboard(c: &Config, execute: bool) -> anyhow::Result<Vec<u64>> {
         }
         pending = able;
         let skipped: Vec<u64> = unable.iter().map(|h| h.id).collect();
-        let mut roots = vec![campaign_root.as_path()];
-        if legacy_root != campaign_root {
-            roots.push(&legacy_root);
-        }
         retire_unreachable(c, &roots, &skipped, execute).await?;
-        if c.native_auto {
-            retire_superseded(c, &roots, &pending, execute).await?;
-        }
+    }
+    if c.native_auto {
+        retire_superseded(
+            c,
+            &roots,
+            &drift_hosts(&pending, &trusted_in_campaign),
+            execute,
+        )
+        .await?;
     }
     if c.max_hosts == 0 {
         // A cleanup-only pass (#1780): the controller's gold cap is full, so nothing is issued.
@@ -820,6 +837,27 @@ mod tests {
         assert!(in_campaign(&config(&[]), None, &5));
         assert!(in_campaign(&config(&[13]), None, &13));
         assert!(!in_campaign(&config(&[13]), None, &5));
+    }
+
+    #[test]
+    fn the_drift_scan_takes_trusted_hosts_too() {
+        // #2080: a host trusted for the current build gets no new challenge, but its unit of a
+        // superseded build is still looked at, so it can't hold cap space to its deadline.
+        let host = |id| capability::Host {
+            id,
+            os_name: "Linux Ubuntu".into(),
+            p_vendor: "AuthenticAMD".into(),
+            client: None,
+            docker: None,
+            dont_use_docker: false,
+            dont_use_wsl: false,
+        };
+        let ids: Vec<u64> = drift_hosts(&[host(21), host(5)], &[host(13), host(5)])
+            .iter()
+            .map(|h| h.id)
+            .collect();
+        assert_eq!(ids, vec![5, 13, 21]);
+        assert!(drift_hosts(&[], &[]).is_empty());
     }
 
     #[test]
