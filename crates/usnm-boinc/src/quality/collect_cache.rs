@@ -3,13 +3,15 @@ use super::collect::{CropRow, Options, PageRow, Summary};
 use crate::qwen::{ledger::MAX_MEMBERSHIP, stage::Membership};
 use anyhow::{ensure, Context};
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::time::Duration;
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Instant,
 };
 use usnm_ocr_contract::{quality::Job, qwen};
 
@@ -20,9 +22,11 @@ const DIGESTS_FORMAT: &str = "quality-input-digests-v2";
 /// A file whose ctime is more recent than this is hashed every time and its digest never kept:
 /// a rewrite within the same timestamp tick as the hash could leave its identity as it was, and
 /// the file server's clock may be some seconds off ours.
+#[cfg(unix)]
 const SETTLE: Duration = Duration::from_secs(60);
 /// Digests not yet written out are written this often, so a run that is killed (a warming round
 /// at its limit) keeps what it hashed until then and the next one resumes from there.
+#[cfg(unix)]
 const FLUSH: Duration = Duration::from_secs(15);
 /// Past this many digests, an index keeps only the ones its last run used or added.
 const MAX_DIGESTS: usize = 400_000;
@@ -30,9 +34,10 @@ const MAX_DIGESTS: usize = 400_000;
 #[cfg(test)]
 thread_local! {
     /// Tests write their inputs a moment before they read them; they may settle them sooner.
-    pub(super) static TEST_SETTLE: Cell<Option<Duration>> = const { Cell::new(None) };
+    pub(super) static TEST_SETTLE: Cell<Option<std::time::Duration>> = const { Cell::new(None) };
 }
 
+#[cfg(unix)]
 fn settle() -> Duration {
     #[cfg(test)]
     {
@@ -178,6 +183,7 @@ pub(super) struct Digests {
     dir: PathBuf,
     /// Where `quality-input-digest-v1` receipts were kept, one file per input keyed on its path
     /// too. They are read on a miss, so a cache keeps what it hashed before; never written.
+    #[cfg(unix)]
     legacy: PathBuf,
     known: RefCell<BTreeMap<String, String>>,
     added: RefCell<BTreeMap<String, String>>,
@@ -210,8 +216,11 @@ fn read_index(path: &Path) -> anyhow::Result<BTreeMap<String, String>> {
 
 impl Digests {
     pub(super) fn open(dir: &Path, legacy: &Path) -> anyhow::Result<Self> {
+        #[cfg(not(unix))]
+        let _ = legacy;
         Ok(Self {
             dir: dir.to_owned(),
+            #[cfg(unix)]
             legacy: legacy.to_owned(),
             known: RefCell::new(read_index(&dir.join(DIGESTS_FILE))?),
             added: RefCell::new(BTreeMap::new()),
@@ -962,6 +971,7 @@ mod tests {
     }
 
     /// Settles inputs at once for this thread's test, as if they were written long ago.
+    #[cfg(unix)]
     fn settled() {
         TEST_SETTLE.with(|s| s.set(Some(Duration::ZERO)));
     }
