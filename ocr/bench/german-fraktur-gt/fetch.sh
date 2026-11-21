@@ -146,7 +146,7 @@ for r in rows:
     stratum = "ood" if on("OutOfDistribution") else "test" if on("Test") else \
               "validation" if on("Validation") else "train"
     pid = re.sub(r"\.[A-Za-z0-9]+$", "", os.path.basename((r.get("Filename") or "").strip()))
-    m = re.search(r"_((?:18|19)\d\d)-\d\d-\d\d(?:_|$)", pid)
+    m = re.search(r"_((?:1[6-9])\d\d)(?:-\d\d){0,2}(?=_|$)", pid)  # _YYYY-MM-DD, _YYYY-MM_YYYY-MM, _YYYY
     if not (stratum and pid and m and y0 <= int(m.group(1)) <= y1):
         continue
     res.append((pid, pid[:m.start()], m.group(1), stratum))
