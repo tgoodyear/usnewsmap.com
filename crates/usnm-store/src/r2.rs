@@ -12,8 +12,13 @@
 //! What it does: `get`, `put`, `put_new` (a create with `If-None-Match: *`,
 //! which R2 answers 412 when the key exists), `exists` and `modified` (HEAD),
 //! `list`, `list_stem` and `list_info` (ListObjectsV2, every page), and
-//! `get_if_match`. `delete_if_match` is left unsupported: a delete is not
-//! made conditional here.
+//! `get_if_match`, `get_stream` (the body read as it arrives) and `delete_if_match`: a HEAD
+//! that must show the ETag, then a DELETE carrying `If-Match`. Only the service enforcing
+//! `If-Match` on the DELETE makes it atomic; if it ignores the header, an object written again
+//! between the HEAD and the DELETE is deleted. Its one user, `cloud pull-results`, deletes keys
+//! the export writes once and never again (every publication has a key of its own), so that
+//! window has nothing to race with there; check the header is honoured before relying on it
+//! for keys that are rewritten.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -23,7 +28,7 @@ use reqwest::{Method, StatusCode};
 use sha2::{Digest, Sha256};
 
 use crate::retry::{retryable, retrying, Retry};
-use crate::{validate_path, ObjectInfo, ObjectStore, StoreError, MAX_OBJECT_BYTES};
+use crate::{validate_path, ByteStream, ObjectInfo, ObjectStore, StoreError, MAX_OBJECT_BYTES};
 
 /// Environment variables the store reads its endpoint and token from.
 pub const ENV_ENDPOINT: &str = "R2_ENDPOINT";
@@ -423,6 +428,55 @@ impl ObjectStore for R2Store {
         let limit = max_bytes.min(MAX_OBJECT_BYTES);
         retrying("get", path, self.retry, retryable, |_| {
             self.get_once(path, Some(etag), limit)
+        })
+        .await
+    }
+    /// Only the request is tried again; the body is read as it arrives, however large.
+    async fn get_stream(&self, path: &str) -> Result<Option<ByteStream>, StoreError> {
+        use futures::StreamExt;
+        let key = self.object_key(path)?;
+        let resp = retrying("get", path, self.retry, retryable, |_| async {
+            let resp = self
+                .send(Method::GET, &key, &[], &[], Bytes::new(), "get")
+                .await?;
+            match resp.status() {
+                StatusCode::OK => Ok(Some(resp)),
+                StatusCode::NOT_FOUND => Ok(None),
+                s => Err(http("get", path, s)),
+            }
+        })
+        .await?;
+        let Some(resp) = resp else {
+            return Ok(None);
+        };
+        let p = path.to_owned();
+        let s: ByteStream = Box::pin(resp.bytes_stream().map(move |c| {
+            c.map_err(|e| StoreError::Io(format!("get `{p}`: {}", e.without_url())))
+        }));
+        Ok(Some(s))
+    }
+
+    async fn delete_if_match(&self, path: &str, etag: &str) -> Result<bool, StoreError> {
+        let unquote = |e: &str| e.trim_matches('"').to_owned();
+        let current = self
+            .head(path)
+            .await?
+            .and_then(|h| h.get("etag").and_then(|v| v.to_str().ok()).map(unquote));
+        if current.as_deref() != Some(unquote(etag).as_str()) {
+            return Ok(false);
+        }
+        let key = self.object_key(path)?;
+        let extra = [("if-match", quoted(etag))];
+        retrying("delete", path, self.retry, retryable, |_| async {
+            let resp = self
+                .send(Method::DELETE, &key, &[], &extra, Bytes::new(), "delete")
+                .await?;
+            match resp.status() {
+                StatusCode::OK | StatusCode::NO_CONTENT => Ok(true),
+                // Gone since the HEAD (or a lost answer to an earlier try), or written again.
+                StatusCode::NOT_FOUND | StatusCode::PRECONDITION_FAILED => Ok(false),
+                s => Err(http("delete", path, s)),
+            }
         })
         .await
     }
@@ -926,12 +980,25 @@ mod tests {
                         .collect();
                     axum::body::Body::from_stream(futures::stream::iter(chunks)).into_response()
                 }
-                Some((b, _)) => (
+                Some((b, e)) => (
                     AxStatus::OK,
-                    [("last-modified", "Fri, 20 Nov 2026 14:02:01 GMT")],
+                    [
+                        ("last-modified", "Fri, 20 Nov 2026 14:02:01 GMT"),
+                        ("etag", e.as_str()),
+                    ],
                     b.clone(),
                 )
                     .into_response(),
+            },
+            "DELETE" => match objects.get(&path) {
+                None => AxStatus::NOT_FOUND.into_response(),
+                Some((_, e)) if h.get("if-match").is_some_and(|m| m.to_str().unwrap() != e) => {
+                    AxStatus::PRECONDITION_FAILED.into_response()
+                }
+                Some(_) => {
+                    objects.remove(&path);
+                    AxStatus::NO_CONTENT.into_response()
+                }
             },
             _ => AxStatus::METHOD_NOT_ALLOWED.into_response(),
         }
@@ -1023,6 +1090,46 @@ mod tests {
         );
         s.put("a", b"2".to_vec(), "text/plain").await.unwrap();
         assert_eq!(s.get_if_match("a", &etag, 10).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_conditional_delete_takes_only_the_listed_version() {
+        let (f, endpoint) = fake().await;
+        let s = R2Store::new("r2://bkt", &endpoint, key())
+            .unwrap()
+            .with_retry(FAST);
+        s.put("a", b"1".to_vec(), "text/plain").await.unwrap();
+        let old = s.list_info("").await.unwrap()[0].etag.clone();
+        s.put("a", b"2".to_vec(), "text/plain").await.unwrap();
+        assert!(!s.delete_if_match("a", &old).await.unwrap());
+        assert!(f.objects.lock().unwrap().contains_key("a"));
+        let now = s.list_info("").await.unwrap()[0].etag.clone();
+        assert!(s.delete_if_match("a", &now).await.unwrap());
+        assert!(!f.objects.lock().unwrap().contains_key("a"));
+        assert!(!s.delete_if_match("a", &now).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_stream_reads_past_the_whole_object_limit_in_chunks() {
+        use futures::StreamExt;
+        let (f, endpoint) = fake().await;
+        *f.no_length.lock().unwrap() = true;
+        let s = R2Store::new("r2://bkt", &endpoint, key())
+            .unwrap()
+            .with_retry(FAST);
+        assert!(s.get_stream("missing").await.unwrap().is_none());
+        s.put("big", b"0123456789".to_vec(), "text/plain")
+            .await
+            .unwrap();
+        let mut got = Vec::new();
+        let mut chunks = 0;
+        let mut st = s.get_stream("big").await.unwrap().unwrap();
+        while let Some(c) = st.next().await {
+            got.extend_from_slice(&c.unwrap());
+            chunks += 1;
+        }
+        assert_eq!(got, b"0123456789");
+        assert!(chunks > 1);
     }
 
     #[tokio::test]

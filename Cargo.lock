@@ -3686,6 +3686,7 @@ dependencies = [
  "bzip2",
  "chrono",
  "clap",
+ "futures",
  "hayro-jpeg2000",
  "image",
  "md-5",
