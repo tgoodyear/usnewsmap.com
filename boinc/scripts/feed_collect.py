@@ -2179,6 +2179,7 @@ def collect(config):
     allowed = own_clients(config)
     clients = list(allowed)
     locations.update({name: location for name, (location, _) in allowed.items()})
+    envelope = None
     facts, documents = {"sources": {}, "errors": [], "qwen_admission": admission,
                         "controller_signals": signals, "dbbackup_checks": "dbbackup" in locations}, {}
     if "backlog" not in locations:
@@ -2213,9 +2214,10 @@ def collect(config):
                 facts["sources"][name] = {"observed_at": None, "state": "unknown", "reason": reason}
                 if name == "controller" and reason == NO_RECENT_TICK:
                     # An archive pauses the controller: its runs still count, though the tick is unknown.
-                    carried = error_archive_runs(future.result(), completed)
-                    if carried is not None:
-                        facts["archive_runs"] = carried
+                    # Kept apart from documents, so the completion check below can drop its runs
+                    # once they expire without touching the source's reason.
+                    if error_archive_runs(future.result(), completed) is not None:
+                        envelope = future.result()
                 if isinstance(error, StaleSource):
                     # How old the document is: observed_at stays None, as for every unknown source.
                     facts["sources"][name]["last_observed_at"] = error.observed_at
@@ -2301,6 +2303,10 @@ def collect(config):
             del documents[name]
             facts["sources"][name] = {"observed_at": None, "state": "unknown", "reason": "stale_at_completion"}
             facts["errors"].append(name)
+    if envelope is not None:
+        carried = error_archive_runs(envelope, completed)
+        if carried is not None:
+            facts["archive_runs"] = carried
     if "server" in documents:
         facts.update(enabled_until=documents["server"]["enabled_until"],
                      last_workunits=documents["server"]["last_workunits"])

@@ -1620,6 +1620,32 @@ class CollectionTests(unittest.TestCase):
         self.assertNotIn("enabled_until", facts)
         self.assertTrue(facts["tick"]["ok"])
 
+    def test_slow_allocation_drops_expired_archive_runs_from_a_stale_tick_envelope(self):
+        # The runs of a no_recent_controller_tick envelope get the same completion check (#835): once
+        # expired they are dropped, and the controller's reason stays no_recent_controller_tick.
+        for delay, expected in ((0, [[NOW - 60, None]]), (15, None)):
+            docs = self.documents()
+            docs["/controller"] = {"schema_version": 1, "source": "controller", "observed_at": NOW - 175,
+                                   "error": C.NO_RECENT_TICK, "archive_runs": [[NOW - 60, None]]}
+            config = {name: "/" + name for name in ("server", "controller", "backlog")}
+            config["clients"] = ["/own"]
+            clock = [NOW]
+            real_supply = C.supply
+
+            def allocate(*args):
+                result = real_supply(*args)
+                clock[0] = NOW + delay
+                return result
+
+            with self.subTest(delay=delay), \
+                    patch.object(C, "read_source", side_effect=lambda path: deepcopy(docs[path])), \
+                    patch.object(C, "supply", side_effect=allocate), \
+                    patch.object(C.time, "time", side_effect=lambda: clock[0]):
+                facts = C.collect(config)
+            self.assertEqual(facts.get("archive_runs"), expected)
+            self.assertEqual(facts["sources"]["controller"]["reason"], C.NO_RECENT_TICK)
+            self.assertIn("controller", facts["errors"])
+
     def test_monitor_does_not_replace_completion_time_with_later_publication_time(self):
         with fixture() as root:
             config = root / "config.json"
