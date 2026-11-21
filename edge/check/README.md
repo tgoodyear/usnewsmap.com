@@ -2,7 +2,7 @@
 
 A public page where anyone can help check OCR text ([#1620](https://github.com/tgoodyear/usnewsmap.com/issues/1620)). Two readings of a printed word disagree, for example LoC's OCR and an aligned reference text. The page shows the printed word and both readings, and asks which one matches the print, or neither, or "can't tell", or "not text" when the box holds no letters (a picture or a smudge). Readers don't need to know the language: they compare letter shapes.
 
-Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language, Yiddish (New York dailies, 1910–53) the second and Serbian (_Amerikanski Srbobran_, Pittsburgh, 1906–63) the third. The data model assumes none of them: a language is a configuration plus a set of tasks.
+Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language, Yiddish (New York dailies, 1910–53) the second, Serbian (_Amerikanski Srbobran_, Pittsburgh, 1906–63) the third and German (US German-language papers, printed in Fraktur) the fourth. The data model assumes none of them: a language is a configuration plus a set of tasks.
 
 ## Pieces
 
@@ -17,6 +17,7 @@ Cherokee (the _Cherokee Phoenix_, 1828–34) was the first language, Yiddish (Ne
 | `tools/build_tasks.py`         | Turns line images with two readings per line into tasks, clips and a configuration.                                         |
 | `tools/yiddish_lines.py`       | Makes `build_tasks.py`'s input for Yiddish: LoC's ALTO against our `yidj2` model.                                           |
 | `tools/serbian_lines.py`       | Makes `build_tasks.py`'s input for Serbian: LoC's ALTO against our held BOINC ALTO.                                         |
+| `tools/german_lines.py`        | Makes `build_tasks.py`'s input for German: LoC's ALTO against our held frak2021 ALTO (shares `serbian_lines.py`'s loop).    |
 | `tools/from_tap_data.py`       | Turns a glyph-check data file (Cherokee) into tasks, clips and a configuration.                                             |
 | `tools/phoenix_lines.py`       | Picks Cherokee lines from LoC's ALTO and our production re-read for `build_tasks.py`.                                       |
 | `tools/lookalike.py`           | Finds letters of two readings the page draws almost alike, and pairs that differ only in a mark; also a command on exports. |
@@ -280,6 +281,16 @@ podman run --rm -v "$PWD:/work" usnm-check-tools python3 tools/build_tasks.py --
 ```
 
 The first set (8 November 2026) is 140 pages, 20 per decade, up to 4 lines each: 488 lines and 939 words.
+
+German works the same way for pages our Tesseract `frak2021` model read and held (#835). `tools/german_lines.py` takes the same `pages.jsonl` and `--ours` folder, and picks lines LoC's ALTO has as at least 90% Latin-script letters (ä, ö, ü, ß and ſ included). The long ſ and the round s count as the same letter (`equivalents` in `languages/de.json`, with ꝛ for r and ⸗ for a hyphen). On the build host:
+
+```sh
+podman run --rm -v "$PWD:/work" -v "<scans folder>:/scans:ro" usnm-check-tools python3 tools/german_lines.py \
+  --pages /work/pages.jsonl --ours /work/ours --work /work/de --scans /scans --lines-per-page 4
+podman run --rm -v "$PWD:/work" usnm-check-tools python3 tools/build_tasks.py --lines de/lines.jsonl \
+  --images de --lang de --set loc-frak2021-v1 --a-is loc --b-is tesseract \
+  --language-config languages/de.json --out-dir de/check-out --skip-punctuation-only
+```
 
 ## The Phoenix re-read sets (#1620, #1621)
 

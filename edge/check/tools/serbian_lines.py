@@ -41,11 +41,15 @@ def cyrillic_share(text: str) -> float:
     return sum(1 for ch in letters if CYRILLIC.match(ch)) / len(letters) if letters else 0.0
 
 
-def candidates(lines: list, min_words: int, skip: set = frozenset()) -> list:
-    """Indexes of LoC lines worth checking: enough words, read as mostly Cyrillic letters, not in `skip` (merged lines)."""
+def is_serbian(text: str) -> bool:
+    return cyrillic_share(text) >= 0.6
+
+
+def candidates(lines: list, min_words: int, skip: set = frozenset(), accept=is_serbian) -> list:
+    """Indexes of LoC lines worth checking: enough words, `accept`ed (by default read as mostly Cyrillic letters), not in `skip` (merged lines)."""
     return [i for i, ln in enumerate(lines)
             if i not in skip and len(ln["words"]) >= min_words
-            and cyrillic_share(" ".join(w["text"] for w in ln["words"])) >= 0.6]
+            and accept(" ".join(w["text"] for w in ln["words"]))]
 
 
 def words_in(box: list, words: list) -> list:
@@ -66,8 +70,8 @@ def pick(pool: list, k: int, doc: str, seed: int) -> list:
     return sorted(rng.sample(pool, min(k, len(pool))))
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+def make_parser(description: str) -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(description=description)
     ap.add_argument("--pages", required=True)
     ap.add_argument("--ours", required=True, help="folder of our ALTO files, <doc id>.xml")
     ap.add_argument("--work", required=True, help="output and download cache folder")
@@ -77,8 +81,11 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--delay", type=float, default=1.0, help="seconds to wait after each download")
     merged_lines.add_arguments(ap)
-    a = ap.parse_args()
+    return ap
 
+
+def run(a, accept, empty_msg: str) -> None:
+    """The main loop for a language: `accept(text)` picks LoC's lines and checks our reading b; `empty_msg` is printed after a page's doc id when none is left."""
     from PIL import Image
 
     # The largest scan in the first set is 43 million pixels; allow well above that, not unlimited.
@@ -104,13 +111,13 @@ def main() -> None:
                 print(f"{doc}: {len(skip)} merged lines left out", flush=True)
             skip_index = {i for i in range(len(lines)) if f"{doc}_l{i}" in skip}
             chosen = []
-            for li in pick(candidates(lines, a.min_words, skip_index), a.lines_per_page, doc, a.seed):
+            for li in pick(candidates(lines, a.min_words, skip_index, accept), a.lines_per_page, doc, a.seed):
                 b_words = words_in(lines[li]["box"], our_words)
                 b = " ".join(wd["text"] for wd in b_words)
-                if b and cyrillic_share(b) >= 0.6:
+                if b and accept(b):
                     chosen.append((li, b))
             if not chosen:
-                print(f"{doc}: no Serbian lines to check", flush=True)
+                print(f"{doc}: {empty_msg}", flush=True)
                 continue
             local = os.path.join(a.scans, p["scan"]) if a.scans and p.get("scan") else None
             if not (local and os.path.exists(local)):
@@ -143,6 +150,10 @@ def main() -> None:
     merged.write(os.path.join(a.work, "merged-lines.jsonl"))
     print(merged.lines_text())
     print(f"{n} lines")
+
+
+def main() -> None:
+    run(make_parser(__doc__.split("\n\n")[0]).parse_args(), is_serbian, "no Serbian lines to check")
 
 
 if __name__ == "__main__":
