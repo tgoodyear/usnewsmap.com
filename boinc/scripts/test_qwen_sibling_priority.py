@@ -1,9 +1,12 @@
 import contextlib
 import importlib.util
 import io
+import itertools
 import json
+import os
 from pathlib import Path
 import sqlite3
+import tempfile
 import types
 import unittest
 
@@ -70,6 +73,7 @@ def database(results):
                  "priority INT, sent_time INT)")
     conn.executemany("INSERT INTO app VALUES (?, ?)", [(1, "usnm_qwen"), (2, "usnm_other")])
     conn.executemany("INSERT INTO result VALUES (?, ?, ?, ?, ?, ?)", results)
+    conn.commit()
     return conn
 
 
@@ -78,10 +82,24 @@ def sibling_pair(base, wu, *, sent_ago=10 * HOUR, state=IN_PROGRESS, appid=1, pr
     return [(base, appid, wu, state, sent_priority, sent), (base + 1, appid, wu, UNSENT, priority, 0)]
 
 
+JOURNALS = tempfile.TemporaryDirectory()
+
+
 def args(**over):
-    base = dict(min_age_hours=6.0, priority=10, max=500, max_raised=50, give_up_hours=72.0, dry_run=False)
+    base = dict(min_age_hours=6.0, priority=10, max=500, max_raised=50, give_up_hours=72.0, dry_run=False,
+                journal=os.path.join(JOURNALS.name, f"journal-{next(_journal_ids)}.json"))
     base.update(over)
     return types.SimpleNamespace(**base)
+
+
+_journal_ids = itertools.count()
+
+
+def journal_file(entries):
+    path = os.path.join(JOURNALS.name, f"journal-{next(_journal_ids)}.json")
+    with open(path, "w") as f:
+        json.dump({"raised": {str(k): v for k, v in entries.items()}}, f)
+    return path
 
 
 def go(rows, **over):
@@ -141,9 +159,10 @@ class SiblingPriorityTests(unittest.TestCase):
 
     def test_idempotent(self):
         conn = database(sibling_pair(10, 1))
+        journal = journal_file({})
         for expected in (1, 0):
             out = io.StringIO()
-            P.run(args(), out=out, connect_db=lambda _a: Db(conn))
+            P.run(args(journal=journal), out=out, connect_db=lambda _a: Db(conn))
             self.assertEqual(json.loads(out.getvalue())["updated"], expected)
 
     def test_other_apps_untouched(self):
@@ -175,28 +194,59 @@ class SiblingPriorityTests(unittest.TestCase):
         self.assertEqual(report["selected"], 1)
 
     def test_raised_backlog_is_bounded(self):
-        # Two unsent results are already raised: with --max-raised 3 only one more is.
+        # Two of this step's boosts are still unsent: with --max-raised 3 only one more is raised.
         rows = [*sibling_pair(10, 1, priority=10), *sibling_pair(20, 2, priority=10),
                 *[row for n in range(3) for row in sibling_pair(30 + 10 * n, 3 + n)]]
-        report, priorities, _ = go(rows, max_raised=3)
+        boosts = {11: {"from": 0, "first_sent": NOW - 10 * HOUR}, 21: {"from": 0, "first_sent": NOW - 10 * HOUR}}
+        report, priorities, _ = go(rows, max_raised=3, journal=journal_file(boosts))
         self.assertEqual((report["already_raised"], report["selected"], report["updated"]), (2, 1, 1))
         self.assertEqual(sum(priorities[i] == 10 for i in (31, 41, 51)), 1)
         # At the bound, nothing more is raised.
-        report, _, _ = go(rows, max_raised=2)
+        report, _, _ = go(rows, max_raised=2, journal=journal_file(boosts))
         self.assertEqual((report["selected"], report["updated"]), (0, 0))
+        # Priority-10 rows this step didn't raise don't count against the bound.
+        report, _, _ = go(rows, max_raised=2)
+        self.assertEqual((report["already_raised"], report["selected"]), (0, 2))
 
-    def test_old_raised_siblings_stop_holding_room_and_old_ones_are_not_raised(self):
-        rows = [*sibling_pair(10, 1, sent_ago=80 * HOUR, priority=10),   # raised long ago: kept, not counted
-                *sibling_pair(20, 2, sent_ago=10 * HOUR, priority=10),   # raised recently: counted
-                *sibling_pair(30, 3, sent_ago=90 * HOUR),                # never raised, too old to start
-                *sibling_pair(40, 4), *sibling_pair(50, 5)]              # dispatchable
-        report, priorities, _ = go(rows, max_raised=2)
-        self.assertEqual((report["already_raised"], report["selected"]), (1, 1))
-        self.assertEqual([priorities[i] for i in (11, 21, 31)], [10, 10, 0])
-        self.assertEqual(sum(priorities[i] == 10 for i in (41, 51)), 1)
+    def test_gives_up_on_old_boosts_and_puts_back_only_its_own(self):
+        rows = [*sibling_pair(10, 1, sent_ago=80 * HOUR, priority=10),   # this step's boost, now too old
+                *sibling_pair(20, 2, sent_ago=80 * HOUR, priority=10),   # raised by someone else: left alone
+                *sibling_pair(30, 3, sent_ago=10 * HOUR, priority=10),   # this step's boost, still in time
+                *sibling_pair(40, 4, sent_ago=80 * HOUR, priority=10),   # this step's, then changed by hand
+                *sibling_pair(50, 5, sent_ago=90 * HOUR),                # never raised, too old to start
+                *sibling_pair(60, 6), *sibling_pair(70, 7)]              # dispatchable
+        boosts = {11: {"from": 3, "first_sent": NOW - 80 * HOUR}, 31: {"from": 0, "first_sent": NOW - 10 * HOUR},
+                  41: {"from": 0, "first_sent": NOW - 80 * HOUR}, 999: {"from": 0, "first_sent": NOW - HOUR}}
+        rows = [r if r[0] != 41 else (41, 1, 4, UNSENT, 20, 0) for r in rows]
+        journal = journal_file(boosts)
+        report, priorities, _ = go(rows, max_raised=2, journal=journal, dry_run=True)
+        self.assertEqual((report["gave_up"], report["restored"]), (1, 0))
+        self.assertEqual(priorities[11], 10)
+        report, priorities, _ = go(rows, max_raised=2, journal=journal)
+        self.assertEqual((report["forgotten"], report["gave_up"], report["restored"], report["already_raised"]),
+                         (2, 1, 1, 1))
+        self.assertEqual([priorities[i] for i in (11, 21, 31, 41, 51)], [3, 10, 10, 20, 0])
+        self.assertEqual(sum(priorities[i] == 10 for i in (61, 71)), 1)
+        self.assertEqual(sorted(P.load_journal(journal)), [31, 61 if priorities[61] == 10 else 71])
         # A one-off catch-up of older siblings passes a larger --give-up-hours.
         _, priorities, _ = go(rows, give_up_hours=1000)
-        self.assertEqual(priorities[31], 10)
+        self.assertEqual(priorities[51], 10)
+
+    def test_a_failed_commit_keeps_the_boosts_it_meant_to_put_back(self):
+        conn = database([*sibling_pair(10, 1, sent_ago=80 * HOUR, priority=10), *sibling_pair(20, 2)])
+        journal = journal_file({11: {"from": 0, "first_sent": NOW - 80 * HOUR}})
+
+        class Failing(Db):
+            def commit(self):
+                raise RuntimeError("commit failed")
+
+        with self.assertRaises(RuntimeError):
+            P.run(args(journal=journal), out=io.StringIO(), connect_db=lambda _a: Failing(conn))
+        self.assertIn(11, P.load_journal(journal))
+        out = io.StringIO()
+        P.run(args(journal=journal), out=out, connect_db=lambda _a: Db(conn))
+        self.assertEqual(json.loads(out.getvalue())["restored"], 1)
+        self.assertEqual(sorted(P.load_journal(journal)), [21])
 
     def test_a_run_that_finds_another_holding_the_lock_does_nothing(self):
         conn = database(sibling_pair(10, 1))
