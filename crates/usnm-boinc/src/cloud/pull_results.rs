@@ -110,9 +110,19 @@ pub async fn pull_results_once(cfg: &Config, limit: Option<usize>) -> anyhow::Re
         if left == 0 {
             break;
         }
-        match one(cfg, id, &info, &mut left, &mut rep).await {
-            Ok(()) => {}
-            Err(e) => rep.failed.push(format!("{}: {e:#}", info.path)),
+        // A ledger that fails counts against --limit like one taken; one left for other apps or
+        // gone since the listing does not.
+        match one(cfg, id, &info, &mut rep).await {
+            Ok(Took::Filtered | Took::Gone) => {}
+            Ok(Took::Taken) => {
+                left -= 1;
+                rep.ledgers += 1;
+            }
+            Err(e) => {
+                left -= 1;
+                rep.ledgers += 1;
+                rep.failed.push(format!("{}: {e:#}", info.path));
+            }
         }
     }
     Ok(rep)
@@ -122,14 +132,13 @@ async fn one(
     cfg: &Config,
     id: i64,
     info: &usnm_store::ObjectInfo,
-    left: &mut usize,
     rep: &mut Report,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Took> {
     let key = &info.path;
     let (_, run) = parse_key(key).expect("listed ledger keys are parsed");
     // Gone since the listing: another pass took it.
     let Some(bytes) = cfg.store.get(key).await? else {
-        return Ok(());
+        return Ok(Took::Gone);
     };
     let ledger: Ledger = serde_json::from_slice(&bytes).context("parsing the ledger")?;
     ensure!(
@@ -150,10 +159,8 @@ async fn one(
     );
     if !cfg.apps.is_empty() && !cfg.apps.contains(&ledger.workunit.app) {
         rep.filtered += 1;
-        return Ok(());
+        return Ok(Took::Filtered);
     }
-    *left -= 1;
-    rep.ledgers += 1;
     let src = Source::Store {
         store: cfg.store.as_ref(),
         files_prefix: &ledger.files_prefix,
@@ -164,18 +171,19 @@ async fn one(
     rep.files_skipped += st.files_skipped;
     r?;
     if cfg.no_delete {
-        return Ok(());
+        return Ok(Took::Taken);
     }
     // The ledger first, so a pass that dies between the two never sees a ledger without files.
-    // A ledger already gone (or rewritten) is not this pass's to delete.
-    if cfg
+    // A ledger already gone or written again is not this pass's, and neither are its files.
+    if !cfg
         .store
         .delete_if_match(key, &info.etag)
         .await
         .context("deleting the ledger")?
     {
-        rep.ledgers_deleted += 1;
+        return Ok(Took::Taken);
     }
+    rep.ledgers_deleted += 1;
     let dir = ledger.files_prefix.trim_end_matches('/');
     let mut failed = 0usize;
     for o in cfg
@@ -196,7 +204,16 @@ async fn one(
     if failed > 0 {
         bail!("{failed} file(s) under {dir}/ were not deleted");
     }
-    Ok(())
+    Ok(Took::Taken)
+}
+
+/// What became of one listed ledger.
+enum Took {
+    Taken,
+    /// Its app is not one of `--app`.
+    Filtered,
+    /// Gone since the listing.
+    Gone,
 }
 
 #[cfg(test)]
@@ -557,6 +574,18 @@ mod tests {
         assert_eq!(r.ledgers, 2);
         assert_eq!(b.keys().await.len(), 2, "{:?}", b.keys().await);
         assert!(b.store.exists("ready/100-aa.json").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_failed_ledger_counts_against_the_limit() {
+        let b = bucket();
+        b.put("ready/1-aa.json", b"{not json").await;
+        b.publish(2, "bb", &[("result.json", b"x")]).await;
+        let r = pull_results_once(&b.cfg(&[], false), Some(1))
+            .await
+            .unwrap();
+        assert_eq!((r.ledgers, r.failed.len()), (1, 1));
+        assert!(b.store.exists("ready/2-bb.json").await.unwrap());
     }
 
     #[tokio::test]

@@ -295,12 +295,12 @@ usnm-boinc cloud pull-results --results-url <r2://bucket[/prefix] or dir> --spoo
 - A ledger must have `schema` 2, and a `files_prefix` of `files/<id>-<run>/` and a workunit id that match its key, or it
   fails. Its workunit is written with the same rules as `cloud pull` (same layout, `.incoming/` staging, fsync, rename,
   refusal of unsafe names), reading each present output from `<files_prefix><stored file name>`. The object's size and MD5
-  must equal the ledger's listing. A failed workunit has a ledger and no files and gets its `_error` marker.
+  must equal the ledger's listing; R2 objects are read as they arrive, so their size is not capped by a whole-object read. A failed workunit has a ledger and no files and gets its `_error` marker.
 - `--app` (repeatable) matches the workunit's app name in the ledger; other apps' ledgers are left in the bucket and
-  counted as left. `--limit` counts ledgers taken per pass.
+  counted as left. `--limit` counts ledgers taken or failed per pass.
 - Unless `--no-delete`, a workunit in the spool has its ledger deleted (with the ETag from the listing), then each
   object under its files prefix. A delete that fails counts as failed and the run exits non-zero. A ledger already gone
-  is not a failure. `--no-delete` is shadow mode: nothing is deleted, and a later run finds the files in place.
+  or written again since the listing is not a failure, and its files are then left alone. `--no-delete` is shadow mode: nothing is deleted, and a later run finds the files in place.
 - A ledger that fails (bad JSON, fetch or verify error) stays in the bucket, is listed in the report, and the pass
   continues; the run exits non-zero. The server may publish a workunit twice under different runs: the second write
   finds the files in place and verified, and both ledgers are deleted. Run one puller per spool.
