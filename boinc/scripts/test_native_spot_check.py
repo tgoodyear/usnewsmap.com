@@ -393,6 +393,31 @@ class NativeSpotTests(unittest.TestCase):
         self.assertIsNone(batch.native_replay_room(config, {}, None, {}, False))
         self.assertEqual(batch.native_replay_room(config, {}, None, {}, True), {})
 
+    def test_queued_replays_keep_their_room_through_repeated_full_refills(self):
+        # #2080 follow-up: host 240's room is 4 and the queue never runs dry. Without room kept
+        # for it, every refill filled 240 before the replay step ran, and its replay never went.
+        self.config["native_spot_check"]["canary_pages_per_host"] = 4
+        self.fake.cpus = {13: 4, 240: 4}
+        inventory = self.fake.inventory
+        self.fake.inventory = lambda: {**inventory(), "native_host_units": {}}
+        spot = self.state.setdefault("native_spot", {})
+        replay = "a" * 64
+        spot["pending"] = {replay: {"source": 13, "target": 240, "image": self.config["image"], "page": "p",
+                                    "spool": "/project/usnmocr/results/7", "at": NOW, "stage": "queued"}}
+        batch.SPOT_RANDOM = Always(1.0)  # no new draws: only this replay is queued
+        for n in range(3):
+            self.fake.actions.clear()
+            self.tick(NOW + 60 * n)
+            to_240 = sum(host == 240 for _, host in self.native_submissions())
+            outstanding = sum(host == 240 for host in self.state["native_targets"].values())
+            if self.state["native_spot"]["pending"].get(replay, {}).get("stage") != "queued":
+                break
+            self.results_in()
+        self.assertEqual(n, 0)
+        self.assertEqual(self.state["native_spot"]["pending"][replay]["stage"], "submitted")
+        # The refill left 240 one unit short of its room for it, and the shared limit held.
+        self.assertEqual((to_240, outstanding), (3, 3))
+
     def test_a_replays_room_is_counted_from_the_admission_inventory_when_nothing_is_submitted(self):
         # #1780 review: side by side, another plan filled peer 240 after this tick's first
         # inventory. This tick submits no OCR unit (its target is 0), and its replay still

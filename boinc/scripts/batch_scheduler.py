@@ -4995,6 +4995,16 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                     still = set(native_plan_hosts({**config, "native_hosts": NATIVE_HOSTS_FROM_TRUST}, room_inventory,
                                                      getattr(transport, "extra_claim_languages", ())))
                     native_slots = {host: room if host in still else 0 for host, room in native_slots.items()}
+            if NATIVE_SPOT_KEY in config and native_others is not None:
+                # Room kept for the queued spot replays to the plan's own hosts (#1780): a replay
+                # takes a unit of its peer's shared room after this submit (native_replay_room),
+                # so a refill that filled the peer first would starve it tick after tick. Each
+                # queued replay to an active host counts as a unit already out there.
+                for entry in _spot(state).get("pending", {}).values():
+                    host = entry.get("target")
+                    if entry.get("stage") == "queued" and host in native_slots and (
+                            spot_active is None or host in spot_active):
+                        outstanding[host] = outstanding.get(host, 0) + 1
             admits = None
             if native_from_trust:
                 # Each job only to a host admitted for its own page's language: a reserved job
