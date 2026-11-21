@@ -1496,7 +1496,9 @@ pub fn inventory(
         );
     }
     cache.verify()?;
-    cache.save_digests(true)?;
+    // Inventory keys staged files by identity without visiting every content-digest input, so it
+    // never prunes the index.
+    cache.save_digests(false)?;
     Ok(result)
 }
 
@@ -1615,12 +1617,28 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
             summary.pending += 1;
             continue;
         }
-        let key = match cache
+        // Keying a warming run's unit is bounded by its budget too, so one large cold file can't
+        // carry the round past it; a computation that has started is not, and finishes.
+        if let Some(c) = &cache {
+            c.limit_digests(warm_deadline);
+        }
+        let keyed = cache
             .as_ref()
             .map(|c| c.key(&unit, &job, &files))
-            .transpose()
-        {
+            .transpose();
+        if let Some(c) = &cache {
+            c.limit_digests(None);
+        }
+        let key = match keyed {
             Ok(key) => key,
+            Err(e)
+                if opts.warm_only
+                    && e.downcast_ref::<super::collect_cache::BudgetSpent>()
+                        .is_some() =>
+            {
+                deferred = true;
+                break;
+            }
             // Rewritten while keyed, and a warming run has no step lock to keep it still: leave
             // it for the next round, which the driver is told to run.
             Err(e) if opts.warm_only && is_input_change(&e) => {
@@ -3168,6 +3186,30 @@ pub(super) mod tests {
         assert_eq!((progress.dirty, progress.deferred), (0, true));
         assert_eq!(collected.pages.len(), 0);
         assert!(parts(&spent).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn keying_a_unit_past_the_warming_deadline_is_budget_spent() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let (opts, unit, quality) = cached_fixture(dir.path()).await;
+        let cache =
+            super::super::collect_cache::Cache::new(opts.cache.as_ref().unwrap(), &opts).unwrap();
+        let files = spool_files(&opts.spool, &quality.workunit(), &super::super::outputs());
+        // Its staged files are not kept yet, so keying would read them: past the deadline it stops.
+        cache.limit_digests(Some(std::time::Instant::now()));
+        let error = cache
+            .key(&unit, &quality, &files)
+            .err()
+            .expect("keying past the deadline fails");
+        assert!(
+            error
+                .downcast_ref::<super::super::collect_cache::BudgetSpent>()
+                .is_some(),
+            "{error}"
+        );
+        cache.limit_digests(None);
+        assert!(cache.key(&unit, &quality, &files).is_ok());
     }
 
     /// A single-page `usnm_qwen` unit for the fixture's page, with a canonical

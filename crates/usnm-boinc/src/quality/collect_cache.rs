@@ -367,7 +367,11 @@ impl Digests {
 
     fn write(&self, complete: bool) -> anyhow::Result<()> {
         self.flushed.set(Instant::now());
-        if self.added.borrow().is_empty() && !complete {
+        // Nothing to add and, by the index this run opened, nothing to prune: a clean run leaves
+        // the shared index as it is rather than rewriting it.
+        if self.added.borrow().is_empty()
+            && (!complete || self.known.borrow().len() <= max_digests())
+        {
             return Ok(());
         }
         let added = std::mem::take(&mut *self.added.borrow_mut());
@@ -779,6 +783,11 @@ impl Cache {
             included: RefCell::new(BTreeMap::new()),
             digests,
         })
+    }
+
+    /// Bounds the hashing of inputs not yet kept until `deadline` (see `Digests::limit`).
+    pub(super) fn limit_digests(&self, deadline: Option<Instant>) {
+        self.digests.limit(deadline);
     }
 
     /// Writes the digests this run computed for the next one (see `Digests`). `complete` is a run
