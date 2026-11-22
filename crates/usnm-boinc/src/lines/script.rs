@@ -10,9 +10,10 @@
 //! The classifier is rules, in two steps, and decides on evidence, never on LoC's text:
 //!
 //! 1. [`candidates`] picks the words worth a second reading from what the syllabary read left
-//!    behind: a word whose reading isn't a New Testament form and has low confidence, or one
-//!    that stands taller than its line (Cherokee is cast at small-capital height, with almost
-//!    no ascenders or descenders, and English is not).
+//!    behind: a word whose reading isn't a New Testament form and has low confidence. A word
+//!    the syllabary model is sure of can never be called Latin in step 2, so it is never read
+//!    again. Shape (Cherokee is cast at small-capital height, with almost no ascenders or
+//!    descenders, and English is not) only backs a verdict in step 2.
 //! 2. [`verdicts`] reads the English engine's reading of each candidate, with the syllabary
 //!    reading's confidence, the word's shape and its neighbours', and calls it Latin when the
 //!    evidence agrees. A reading of only the 16 shared capitals is never enough: lowercase
@@ -27,13 +28,10 @@ use std::sync::OnceLock;
 use usnm_core::cherokee_type::{is_known, is_syllabary};
 use usnm_core::query_language::ENGLISH_WORDS;
 
-/// A candidate's syllabary reading is under this confidence.
-pub const CANDIDATE_CONF: f64 = 80.0;
-/// A word is as tall as this many times the line's other words, or more, to be a candidate on
-/// its shape alone.
-pub const CANDIDATE_HEIGHT: f64 = 1.3;
-/// The share of a word's ink in its top third at most, to be a candidate on its shape alone.
-pub const CANDIDATE_TOP: f64 = 0.15;
+/// A candidate's syllabary reading is under this confidence: the highest one any verdict in
+/// [`verdicts`] accepts ([`MAX_CHR_CONF_HYPHEN`]), so no word is read in English that could
+/// never be routed.
+pub const CANDIDATE_CONF: f64 = MAX_CHR_CONF_HYPHEN;
 /// The syllabary model's confidence is under this for a word to be Latin.
 pub const MAX_CHR_CONF: f64 = 70.0;
 /// A hyphenated run of lowercase syllables needs a less confident syllabary reading to be Latin.
@@ -210,20 +208,11 @@ fn shapes(ink: &Ink, words: &[Word]) -> Vec<Option<(Shape, f64)>> {
 }
 
 /// The words of a line worth reading in English: the syllabary reading is no New Testament
-/// form and is unsure of itself (or the word stands tall), the first step of the classifier.
-pub fn candidates(ink: &Ink, words: &[Word]) -> Vec<bool> {
-    let shapes = shapes(ink, words);
+/// form and is unsure of itself, the first step of the classifier.
+pub fn candidates(words: &[Word]) -> Vec<bool> {
     words
         .iter()
-        .zip(&shapes)
-        .map(|(w, s)| {
-            if is_attested(&w.text) {
-                return false;
-            }
-            let unsure = w.conf.is_none_or(|c| c < CANDIDATE_CONF);
-            let tall = s.is_some_and(|(s, rel)| rel >= CANDIDATE_HEIGHT && s.top <= CANDIDATE_TOP);
-            unsure || tall
-        })
+        .map(|w| !is_attested(&w.text) && w.conf.is_none_or(|c| c < CANDIDATE_CONF))
         .collect()
 }
 
@@ -518,9 +507,8 @@ mod tests {
             word("ᎤᏙᏓ", 95.0, [150, 20, 200, 40]),
             word("ᏔᎵ", 95.0, [220, 20, 270, 40]),
         ];
-        let ink = line_with(&words);
         // ᎠᎴ is attested; a low-confidence form that is attested is still not a candidate.
-        let c = candidates(&ink, &words);
+        let c = candidates(&words);
         assert!(!c[0]);
         assert!(!c[1], "{c:?}");
         let words = [
@@ -528,25 +516,26 @@ mod tests {
             word("ᎤᏪᏟᏌᏁᏯ", 40.0, [80, 20, 130, 40]),
             word("ᎤᏪᏟᏌᏁᏯ", 90.0, [150, 20, 200, 40]),
         ];
-        let c = candidates(&line_with(&words), &words);
+        let c = candidates(&words);
         assert_eq!(c, [false, true, false]);
     }
 
     #[test]
-    fn a_tall_word_is_a_candidate_even_when_the_model_is_sure() {
-        // Two short blocks, one tall word whose top third is empty (an ascender at the left
-        // only).
+    fn a_word_the_model_is_sure_of_is_never_a_candidate() {
+        // A tall word with an empty top third still can't be routed at 80% or more (every
+        // verdict needs less), so it is not read in English (#2094 review).
         let mut img = crop(&[(10, 60, 30, 50), (80, 130, 30, 50), (150, 260, 30, 50)]);
         for y in 5..30 {
             img.put_pixel(155, y, image::Luma([0]));
         }
         let words = [
             word("ᎤᏪᏟᏌᏁᏯ", 95.0, [5, 0, 65, 60]),
-            word("ᎤᏪᏟᏌᏁᏯ", 95.0, [75, 0, 135, 60]),
+            word("ᎤᏪᏟᏌᏁᏯ", 79.0, [75, 0, 135, 60]),
             word("ᎤᏪᏟᏌᏁᏯ", 95.0, [145, 0, 265, 60]),
         ];
-        let c = candidates(&Ink::new(&img), &words);
-        assert_eq!(c, [false, false, true]);
+        assert_eq!(candidates(&words), [false, true, false]);
+        let english = [None, None, eng("Academy", 99.0)];
+        assert!(!verdicts(&Ink::new(&img), &words, &english)[2]);
     }
 
     #[test]

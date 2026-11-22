@@ -420,7 +420,7 @@ pub async fn read_words(
             continue;
         }
         let image = image::open(&crops[i])?.to_luma8();
-        let want = script::candidates(&script::Ink::new(&image), &words);
+        let want = script::candidates(&words);
         for (k, (word, want)) in words.iter().zip(want).enumerate() {
             if !want {
                 continue;
