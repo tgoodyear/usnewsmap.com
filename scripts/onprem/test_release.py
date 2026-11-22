@@ -304,6 +304,11 @@ class Ready(ReleaseScript):
 STUB_PRUNE = """#!/bin/sh
 printf '%s\\n' "$*" >> "$STUB_ARGS"
 printf '%s\\n' "$QW_AZURE_STORAGE_ACCOUNT" >> "$STUB_ARGS.account"
+# Start "Quickwit" as the real one does, through --quickwit-bin.
+while [ $# -gt 0 ]; do
+  if [ "$1" = --quickwit-bin ]; then "$2" run --config x; break; fi
+  shift
+done
 echo '{"level":"INFO","message":"prune keeps"}'
 cat "$STUB_REPORT"
 """
@@ -318,14 +323,62 @@ def report(serving=VERSION, rollback=ROLLBACK, newer=(), dry_run=True):
     )
 
 
+# A stand-in for Quickwit: asks its App Service identity endpoint for a Blob token, as
+# azure_identity does with AZURE_CREDENTIAL_KIND=appservice, and records what it got.
+STUB_QUICKWIT = """#!/bin/sh
+{
+  echo "kind=$AZURE_CREDENTIAL_KIND imds=${IMDS_ENDPOINT:-unset}"
+  curl -s -H "X-IDENTITY-HEADER: $IDENTITY_HEADER" -H metadata:true \\
+    "$IDENTITY_ENDPOINT?api-version=2019-08-01&resource=https%3A%2F%2Fstorage.azure.com"
+  echo
+} >> "$STUB_ARGS.quickwit"
+"""
+ARC_KEY = "arc-challenge-secret"
+
+
+class FakeArc(http.server.BaseHTTPRequestHandler):
+    """The Arc agent's identity endpoint: a challenge naming a key file, then a token for it."""
+
+    key_file = ""
+
+    def do_GET(self):
+        if self.headers.get("Authorization") == "Basic " + ARC_KEY:
+            body = json.dumps({"access_token": "arc-token", "expires_on": "1900000000",
+                               "resource": "https://storage.azure.com", "token_type": "Bearer"})  # fmt: skip
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body.encode())
+            return
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", "Basic realm=" + self.key_file)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
 class Prune(Ready):
     def setUp(self):
         super().setUp()
         with open(self.ingest, "w") as f:
             f.write(STUB_PRUNE)
         self.quickwit = os.path.join(self.dir, "quickwit")
-        open(self.quickwit, "w").close()
+        with open(self.quickwit, "w") as f:
+            f.write(STUB_QUICKWIT)
         os.chmod(self.quickwit, 0o755)
+        self.tokens = os.path.join(self.dir, "tokens")
+        os.makedirs(self.tokens)
+        key_file = os.path.join(self.tokens, "challenge.key")
+        with open(key_file, "w") as f:
+            f.write(ARC_KEY)
+        handler = type("Arc", (FakeArc,), {"key_file": key_file})
+        arc = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=arc.serve_forever, daemon=True).start()
+        self.addCleanup(arc.server_close)
+        self.addCleanup(arc.shutdown)
+        self.arc_endpoint = "http://127.0.0.1:%d/metadata/identity/oauth2/token" % arc.server_address[1]
         self.report_file = os.path.join(self.dir, "report.json")
         self.write_report(report())
 
@@ -338,6 +391,8 @@ class Prune(Ready):
         url = "http://127.0.0.1:%d" % server.server_address[1]
         env.setdefault("USNM_QUICKWIT_BIN", self.quickwit)
         env.setdefault("STUB_REPORT", self.report_file)
+        env.setdefault("USNM_ARC_ENDPOINT", self.arc_endpoint)
+        env.setdefault("USNM_ARC_TOKEN_DIR", self.tokens)
         if enabled:
             env.setdefault("USNM_RELEASE_PRUNE", "true")
         return self.release("--step", "prune", "--app-url", url, "--index-version", VERSION, *args, **env)
@@ -366,10 +421,26 @@ class Prune(Ready):
         self.assertNotIn("--delete", calls[0])
         self.assertIn("--state-file %s/prune-state.json" % self.run_dir, calls[0])
         self.assertIn("--reference https://lakeexample.blob.core.windows.net/reference", calls[0])
-        self.assertIn("prune --quickwit-bin %s --quickwit-metastore azure://qw-index" % self.quickwit, calls[0])
+        arc = os.path.join(HERE, "quickwit-arc.sh")
+        self.assertIn("prune --quickwit-bin %s --quickwit-metastore azure://qw-index" % arc, calls[0])
         with open(self.args_file + ".account") as f:
             self.assertEqual(f.read(), "accountexample\n")
         self.assertTrue(os.path.exists(os.path.join(self.run_dir, "prune-dry-run.log")))
+
+    def test_quickwit_gets_blob_tokens_from_the_arc_identity(self):
+        p = self.prune()
+        self.assertEqual(p.returncode, 0, p.stderr)
+        with open(self.args_file + ".quickwit") as f:
+            lines = f.read().split("\n")
+        self.assertEqual(lines[0], "kind=appservice imds=unset")
+        token = json.loads(lines[1])
+        self.assertEqual(token["access_token"], "arc-token")
+        self.assertEqual(token["expires_on"], "1900000000")
+        # The shim stops with the step.
+        with open(os.path.join(self.run_dir, "arc-token-shim.port")) as f:
+            port = int(f.read())
+        r = subprocess.run(["curl", "-s", "-o", "/dev/null", "http://127.0.0.1:%d/" % port])
+        self.assertNotEqual(r.returncode, 0)
 
     def test_delete_runs_the_dry_run_first_and_then_deletes(self):
         p = self.prune("--delete")

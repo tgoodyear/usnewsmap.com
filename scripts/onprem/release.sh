@@ -71,7 +71,9 @@
 #          the dry run (the report is in DIR/prune-dry-run.log). With --delete
 #          it then deletes, keeping V and its rollback. The pipeline state is a
 #          fresh file in DIR (the Cosmos writer lock isn't taken: keep ingest
-#          jobs off, and never run it beside a release).
+#          jobs off, and never run it beside a release). Quickwit gets its
+#          Blob tokens from the Arc identity through arc-token-shim.py on
+#          loopback, started for the step (it needs python3).
 #
 # Settings come from the environment, with prod's defaults: USNM_LAKE
 # (stusnmdffapzy), USNM_INDEX_ACCOUNT (usnmqwstprodffapzy), USNM_INGEST
@@ -83,8 +85,9 @@
 # a finish lists curated as of the run's start by those times. Azure access is
 # the host's Arc identity: usnm must be in the himds group.
 set -euo pipefail
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '2,84s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '2,86s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 EXPECT_REVOKED="" NO_DB_HOLDS=false
 RUN="" STEP="" SAMPLE="" SPLIT_DOCS=60000 DRY_RUN=false VERSION="" APP_URL="" DELETE=false COSMOS_ENDPOINT=${USNM_COSMOS_ENDPOINT:-}
 while [ $# -gt 0 ]; do
@@ -287,10 +290,27 @@ case "$STEP" in
     # Pipeline state is a fresh file: prune reads the serving version's run from its snapshot, and
     # the Arc identity has no grant on the Cosmos `ops` container, where the writer lock lives.
     rm -f "$RUN/prune-state.json"
+    # Quickwit can't answer the Arc agent's challenge, so its Blob tokens come from
+    # arc-token-shim.py on loopback, for this step only (quickwit-arc.sh points Quickwit at it).
+    command -v python3 > /dev/null 2>&1 || die "--step prune needs python3 (arc-token-shim.py)"
+    shim_header=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
+    shim_port_file="$RUN/arc-token-shim.port"
+    rm -f "$shim_port_file"
+    USNM_ARC_SHIM_HEADER=$shim_header python3 "$HERE/arc-token-shim.py" --port-file "$shim_port_file" &
+    shim_pid=$!
+    trap 'kill "$shim_pid" 2> /dev/null && wait "$shim_pid" 2> /dev/null || true' EXIT
+    for _ in $(seq 50); do
+      [ -s "$shim_port_file" ] || ! kill -0 "$shim_pid" 2> /dev/null && break
+      sleep 0.1
+    done
+    shim_port=$(cat "$shim_port_file" 2> /dev/null || true)
+    [[ $shim_port =~ ^[0-9]+$ ]] || die "arc-token-shim.py didn't start"
     prune_ingest() {
-      QW_AZURE_STORAGE_ACCOUNT="$INDEX_ACCOUNT" "$INGEST" --state-file "$RUN/prune-state.json" \
+      QW_AZURE_STORAGE_ACCOUNT="$INDEX_ACCOUNT" USNM_ARC_QUICKWIT="$QUICKWIT" \
+        USNM_ARC_SHIM_ENDPOINT="http://127.0.0.1:$shim_port/token" USNM_ARC_SHIM_HEADER="$shim_header" \
+        "$INGEST" --state-file "$RUN/prune-state.json" \
         --curated "$CURATED" --reference "$LAKE_URL/reference" \
-        prune --quickwit-bin "$QUICKWIT" --quickwit-metastore azure://qw-index \
+        prune --quickwit-bin "$HERE/quickwit-arc.sh" --quickwit-metastore azure://qw-index \
         --quickwit-index-root azure://qw-index "$@"
     }
     prune_report() { # the pretty JSON report that ends the log, from its last line that is just "{"
