@@ -18,7 +18,7 @@
 
 ![Character error by reading on test set v2. The fine-tuned chr_phoenix model has the lowest error on all lines, on silver lines and on the 70 hand-checked lines, though the gap to LoC on the hand-checked lines is within noise.](figures/cer-by-reading.svg)
 
-**Figure 1.** Character error (share of syllabary letters wrong, lower is better) at PSM 13 (Tesseract's single-line mode). No interval is drawn; the intervals for the differences are in the text. Source: the table in step 3.
+**Figure 1.** Disagreement with the reference (share of syllabary letters that differ, lower is better) at PSM 13. On all lines and silver lines the reference is the 1860 New Testament, whose wording and own errors sometimes differ from the print, so those bars are not pure OCR error; only the 70 hand-checked lines measure OCR error against the page. PSM 13 is Tesseract's single-line mode. No interval is drawn; the intervals for the differences are in the text. Source: the table in step 3.
 
 **What the published data holds.** The `report-2026-11-cherokee` data set has the 2,160 line crops with their New Testament reference lines (`testset-v2/aligned.jsonl`), 20 New Testament reference pages, every reading and the hand-check answers. It does not hold the full New Testament text, the word lists built from it, or ChrEn. The numbers that depend on them (the word-list coverage rows and the dictionary comparison) can be checked only by rebuilding the text from the pinned PDFs, whose sha256 are in `testset-v2/manifest.json`, and fetching ChrEn from its repository.
 

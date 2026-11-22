@@ -21,9 +21,9 @@ We want to know, language by language, whether a reader (Qwen 3-VL 8B, Xiaomi-OC
 
 *Figure 1. Correlation with CER (left) and paired accuracy (right) for the 11 measures, all truth sets pooled. Orange is the chosen measure, grey the two existing production scores.*
 
-![Accuracy of lm_oov on a held-out language when the decision margin is chosen on the other languages. English, French and Swedish clear the 90% bar. Finnish (0.88) and German (0.81) do not.](figures/transfer.svg)
+![Accuracy of lm_oov on a held-out language when the decision margin is chosen on the other languages, with German left out of every margin pool. English, French and Swedish clear the 90% bar. Finnish (0.88) and German (0.81) do not.](figures/transfer.svg)
 
-*Figure 2. Leave-one-language-out transfer. A language with no truth would need to clear the dashed 90% line. Finnish and German do not.*
+*Figure 2. Leave-one-language-out transfer, with German excluded from the margin pools (with it included, no margin meets the bar). A language with no truth would need to clear the dashed 90% line. Finnish and German do not.*
 
 ![Accuracy and balanced accuracy of lm_oov, charlm_bpc and unknown on English pairs. Against Tesseract, balanced accuracy is 0.76 to 0.80. Against Qwen 8B it is 0.57 to 0.60, close to the 0.50 chance line, although accuracy is 0.88 to 0.89.](figures/vlm-blind-spot.svg)
 
