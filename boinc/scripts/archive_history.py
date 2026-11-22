@@ -1286,6 +1286,11 @@ def plan_reconcile(scheduler, target, plans, container, bridge, args):
     blobs = list_job_blobs(container)
     records = read_records(container, blobs)
     found, skipped = stranded(scheduler, target, blobs, records, bridge, args.kinds)
+    only = set(args.page or [])
+    if only:
+        found = {kind: [item for item in items if item["page"] in only] for kind, items in found.items()}
+        skipped = {reason: [page for page in pages if page in only] for reason, pages in skipped.items()}
+        skipped = {reason: pages for reason, pages in skipped.items() if pages}
     chosen = sorted((dict(item, kind=kind) for kind, items in found.items() for item in items),
                     key=lambda item: item["page"])
     jobs = sorted(job for item in chosen for job in item["jobs"])
@@ -1324,6 +1329,8 @@ def plan_reconcile(scheduler, target, plans, container, bridge, args):
     }
     before_collisions = collisions(plans, records)
     after_collisions = collisions(plans, remaining, after_states)
+    # Journal-less pages whose journal belongs to another plan: the only pages a live plan may give back.
+    owned_elsewhere = {item["page"] for item in before_collisions if item["allocated_to"] == target.name}
     summary = {
         "plan": target.name, "kinds": sorted(args.kinds),
         "found": {kind: len(items) for kind, items in found.items()},
@@ -1338,6 +1345,9 @@ def plan_reconcile(scheduler, target, plans, container, bridge, args):
         "owned_records": {"before": ownership(scheduler, plans, records),
                           "after": ownership(scheduler, plans, remaining, after_states)},
     }
+    if args.confirm_collision_only:
+        summary["not_collisions"] = sorted(item["page"] for item in chosen
+                                           if item["kind"] != "journal-less" or item["page"] not in owned_elsewhere)
     return manifest, summary
 
 
@@ -1395,6 +1405,10 @@ def reconcile(args):
         require("handoff_root" not in plan.config,
                 f"{plan.name} uses a local handoff_root; reconcile reads only the Azure hand-off")
     args.kinds = sorted(set(args.kind or RECONCILE_KINDS))
+    args.page = sorted(set(args.page or []))
+    require(not args.confirm_collision_only or args.page, "--confirm-collision-only needs --page")
+    unknown = sorted(set(args.page) - set(target.state.get("claims", {})))
+    require(not unknown, f"{target.name} has no claim on {unknown[:5]}: nothing was changed")
     bridge = None
     if "unsubmitted" in args.kinds:
         require(args.bridge_jobs is not None,
@@ -1415,8 +1429,9 @@ def reconcile(args):
               "controller": controller, **summary})
         return 0
     require_apply(args, units)
-    require(args.confirm_plan_draining,
-            f"--apply needs --confirm-plan-draining: {target.name} must run with --drain, or not at all")
+    require(args.confirm_plan_draining or args.confirm_collision_only,
+            f"--apply needs --confirm-plan-draining: {target.name} must run with --drain, or not at all "
+            "(or --confirm-collision-only with --page, for journal-less pages another plan owns)")
     require(archive is not None, "--apply needs --archive-dir")
     require(lease in FREE_LEASE_STATES, f"the controller lease is {lease}: a tick may be running")
     expected = {"dead-lettered": args.expect_dead_lettered, "journal-less": args.expect_journal_less,
@@ -1458,12 +1473,20 @@ def reconcile(args):
                        projected_ownership(scheduler, plans, target, manifest, container).items() if not result["ok"]}
             require(not refused, f"resuming reconcile run {batch.name} would leave a plan refusing its journals: "
                                  f"{refused}; nothing more was changed")
+            if args.confirm_collision_only and not args.confirm_plan_draining:
+                require(all(page["kind"] == "journal-less" and page["page"] in args.page
+                            for page in manifest["pages"]),
+                        f"reconcile run {batch.name} gives back more than the named collision pages")
             progress(f"resuming reconcile run {batch.name}")
             summary = None
         else:
             manifest, summary = plan_reconcile(scheduler, target, plans, container, bridge, args)
             wrong = {kind: summary["found"][kind] for kind in args.kinds if summary["found"][kind] != expected[kind]}
             require(not wrong, f"found {wrong}, not the counts given; dry-run again and check")
+            if not args.confirm_plan_draining:
+                require(not summary["not_collisions"],
+                        f"--confirm-collision-only gives back only journal-less pages another plan's journal "
+                        f"is for; not such: {summary['not_collisions'][:5]}")
             refused = {name: result["error"] for name, result in summary["owned_records"]["after"].items()
                        if not result["ok"]}
             require(not refused, f"a plan would still refuse its journals afterwards: {refused}")
@@ -2089,8 +2112,13 @@ def main(argv=None):
     for kind in RECONCILE_KINDS:
         five.add_argument(f"--expect-{kind}", type=int, metavar="N",
                           help=f"the dry run's count of {kind} pages (required with --apply)")
+    five.add_argument("--page", action="append",
+                      help="restrict reconcile to this page (repeatable; every page must be claimed by the plan)")
     five.add_argument("--confirm-plan-draining", action="store_true",
                       help="the plan named by --config runs with --drain, or not at all")
+    five.add_argument("--confirm-collision-only", action="store_true",
+                      help="with --page, allow --apply on a live plan when every named page is journal-less "
+                           "and its journal belongs to another plan")
     five.add_argument("--controller-unit", default=UNIT,
                       help="the controller's systemd service and timer name, without the suffix")
     handoff_options(five)

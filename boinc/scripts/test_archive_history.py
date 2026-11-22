@@ -1684,6 +1684,96 @@ class ReconcileTests(ReconcileFixture):
         self.assertEqual(sorted(set(self.states[self.DRAINING]["claims"]) - set(self.state_of(self.DRAINING)["claims"])),
                          [page_key(1), page_key(2)])
 
+    def only_page_2_collides(self):
+        """Leaves the live plan nothing that collides but page 2's journal."""
+        for name in [name for name in self.container.blobs if name.startswith(f"dispatch/jobs/{job_id(41)}/")]:
+            del self.container.blobs[name]
+        state = self.state_of(self.LIVE)
+        for number in (1, 3):
+            del state["claims"][page_key(number)]
+        state["claims"][page_key(2)] = claim(2)
+        (self.paths[self.LIVE][1] / "state.json").write_text(json.dumps(state, sort_keys=True) + "\n")
+
+    def collide_page_2(self):
+        """The live plan exports page 2, which the draining plan still claims with no journal."""
+        record = journal(42, page_key(2), "reserved", plan=self.LIVE)
+        job = record["job"]["id"]
+        self.container.put(f"dispatch/jobs/{job}/record.json", json.dumps(record).encode(), time.time() - DAY)
+        self.container.put(f"dispatch/jobs/{job}/request.json", b'{"synthetic": true}', time.time() - DAY)
+
+    def collision_apply(self, *pages, **kwargs):
+        return run(self.argv("--apply", "--confirm-controller-paused", "--confirm-collision-only",
+                             "--kind", "journal-less", "--expect-journal-less", "1", bridge=False,
+                             *[arg for page in pages for arg in ("--page", page)]))
+
+    def test_page_restricts_a_dry_run(self):
+        code, summary, _ = run(self.argv("--page", page_key(1), "--page", page_key(2)))
+        self.assertEqual(code, 0)
+        self.assertEqual(summary["found"], {"dead-lettered": 1, "journal-less": 1, "unsubmitted": 0})
+        self.assertEqual(summary["pages"]["journal-less"], [page_key(2)])
+
+    def test_an_unknown_page_is_reported_and_changes_nothing(self):
+        before = self.snapshot()
+        for extra in ((), ("--apply", "--confirm-controller-paused", "--confirm-plan-draining", *self.EXPECT)):
+            code, _, errors = run(self.argv("--page", page_key(99), *extra))
+            self.assertEqual(code, 1)
+            self.assertIn(page_key(99), errors[-1]["error"])
+            self.assertEqual(before, self.snapshot())
+
+    def test_page_restricts_an_apply(self):
+        self.only_page_2_collides()
+        code, receipt, _ = run(self.argv("--apply", "--confirm-controller-paused", "--confirm-plan-draining",
+                                         "--kind", "journal-less", "--page", page_key(2),
+                                         "--expect-journal-less", "1", bridge=False))
+        self.assertEqual(code, 0, receipt)
+        self.assertEqual(receipt["pages"], 1)
+        claims = self.state_of(self.DRAINING)["claims"]
+        self.assertNotIn(page_key(2), claims)
+        self.assertIn(page_key(1), claims)
+
+    def test_collision_only_gives_back_a_collision_on_a_live_plan(self):
+        self.only_page_2_collides()
+        self.collide_page_2()
+        archive_before = self.state_of(self.DRAINING)["claims"]
+        code, receipt, errs = self.collision_apply(page_key(2))
+        self.assertEqual(code, 0, errs)
+        self.assertNotIn(page_key(2), self.state_of(self.DRAINING)["claims"])
+        self.assertEqual(set(archive_before) - set(self.state_of(self.DRAINING)["claims"]), {page_key(2)})
+        run_dir = self.archive_dir / "reconcile/0001"
+        self.assertTrue((run_dir / "controller/state-entries.json").is_file())
+
+    def test_collision_only_refuses_what_is_not_a_collision(self):
+        before = self.snapshot()
+        # page 2 has no journal of another plan yet
+        code, _, errors = self.collision_apply(page_key(2))
+        self.assertEqual(code, 1)
+        self.assertIn("--confirm-collision-only", errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+        self.collide_page_2()
+        before = self.snapshot()
+        # page 1 is dead-lettered, not journal-less; page 2 alone would do
+        code, _, errors = run(self.argv("--apply", "--confirm-controller-paused", "--confirm-collision-only",
+                                        "--expect-dead-lettered", "1", "--expect-journal-less", "1",
+                                        "--expect-unsubmitted", "0", "--kind", "journal-less",
+                                        "--kind", "dead-lettered", "--page", page_key(1),
+                                        "--page", page_key(2), bridge=False))
+        self.assertEqual(code, 1)
+        self.assertIn(page_key(1), errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+
+    def test_collision_only_needs_page_and_plain_apply_still_needs_draining(self):
+        self.collide_page_2()
+        before = self.snapshot()
+        code, _, errors = run(self.argv("--apply", "--confirm-controller-paused", "--confirm-collision-only",
+                                        "--kind", "journal-less", "--expect-journal-less", "1", bridge=False))
+        self.assertEqual(code, 1)
+        self.assertIn("--page", errors[-1]["error"])
+        code, _, errors = run(self.argv("--apply", "--confirm-controller-paused", "--kind", "journal-less",
+                                        "--page", page_key(2), "--expect-journal-less", "1", bridge=False))
+        self.assertEqual(code, 1)
+        self.assertIn("--confirm-plan-draining", errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+
     def test_a_run_stopped_half_way_resumes(self):
         self.container.fail_deletes_after = 2
         code, _, errors = self.apply()
