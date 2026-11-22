@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Unit tests for score.py and analyze.py: CER, fold, word F1, PAGE-XML and ALTO
-readers, page discovery, resume checks, year window and completeness."""
+readers, page discovery, resume checks, year window and completeness; line_score.py's
+line alignment and analyze.py's rule A2."""
 import csv, json, os, random, sys, tempfile, unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import analyze, score
+import analyze, line_score, score
 
 def dp(a, b):
     prev = list(range(len(b) + 1))
@@ -418,6 +419,46 @@ class A(unittest.TestCase):
             p = self.write(d, self.rows() + self.rows()[:1], self.EXP)
             with self.assertRaises(SystemExit):
                 analyze.load([p])
+
+    def test_title_key_merges_spellings(self):
+        self.assertEqual(analyze.title_key("Weisseritz-Zeitung"), analyze.title_key("Weisseritz_Zeitung"))
+        self.assertEqual(analyze.title_key(" Neue  Zeitung "), "Neue_Zeitung")
+
+    def test_line_alignment_ignores_reading_order(self):
+        lines = [(0, 0, 100, 20, "Die ſtadt"), (0, 30, 100, 50, "zweite Zeile"), (0, 60, 100, 80, "leer")]
+        # engine coordinates at twice the truth's scale, words out of order
+        words = [(100, 64, 180, 96, "Zeile"), (0, 64, 80, 96, "zweite"),
+                 (70, 4, 180, 36, "stadt"), (0, 4, 60, 36, "Die")]
+        pairs = line_score.align(lines, words, (100, 100), (200, 200))
+        self.assertEqual([p[1] for p in pairs], ["Die stadt", "zweite Zeile", ""])
+        s = line_score.score_lines(pairs)
+        self.assertEqual((s["lines"], s["lost_lines"], s["lost_chars"]), (3, 1, 4))
+        self.assertEqual(s["edits_folded"], 4)       # the lost line only; ſ folds to s
+        self.assertEqual(s["edits_raw"], 5)
+        self.assertEqual(s["ref_chars"], 25)
+
+    def test_gt_lines_page_bbox(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "x.xml")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write('''<PcGts xmlns="http://schema.primaresearch.org/PAGE/gts/pagecontent/2019-07-15">
+ <Page imageWidth="400" imageHeight="300"><TextRegion id="r"><TextLine id="l">
+ <Coords points="10,20 90,18 95,40 12,42"/><TextEquiv><Unicode>Haus</Unicode></TextEquiv>
+ </TextLine></TextRegion></Page></PcGts>''')
+            lines, size = line_score.gt_lines(p)
+        self.assertEqual(size, (400.0, 300.0))
+        self.assertEqual(lines, [(10.0, 18.0, 95.0, 42.0, "Haus")])
+
+    def test_rule_a2(self):
+        ok = {"page_ci": (0.1, 0.17), "title_ci": (0.1, 0.2), "lost": 0.03}
+        self.assertEqual(analyze.rule_a2(ok, []), ("LIFT", []))
+        for bad, part in (({"page_ci": (0.1, 0.18)}, "page"), ({"title_ci": (0.1, 0.24)}, "title"),
+                          ({"lost": 0.06}, "lost")):
+            v, why = analyze.rule_a2({**ok, **bad}, [])
+            self.assertEqual(v, "HOLD")
+            self.assertIn(part, why[0])
+        self.assertEqual(analyze.rule_a2(ok, ["chronicling"])[0], "HOLD")
+        self.assertEqual(analyze.rule_a2({k: v for k, v in ok.items() if k != "lost"}, [])[0], "HOLD")
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

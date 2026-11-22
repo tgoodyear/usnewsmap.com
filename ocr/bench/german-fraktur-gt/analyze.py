@@ -13,11 +13,26 @@ bootstrap limit of pooled folded CER on the decision pool (Chronicling
 Germany 1850-1920 plus Reichsanzeiger pages not in the GPU study) is
 <= 0.179. Any set whose point estimate is > 0.235 is flagged (hold and
 investigate). Reads CSV rows only; no page text is ever involved.
+
+Titles are compared with runs of '-', '_' and spaces made one '_' (Chronicling
+Germany names one newspaper both Weisseritz-Zeitung and Weisseritz_Zeitung).
+
+--rule A2 is for line_score.py CSVs (line-aligned CER, reading order taken out).
+It lifts only if every one of these holds on the decision pool: upper 95%
+page-bootstrap limit <= 0.179, upper 95% title-bootstrap limit <= 0.235, no
+set's point estimate above 0.235, and lost text (reference characters on truth
+lines that got no engine words) at most 5%. --without-title adds a report-only
+pool row without the named title(s).
 """
-import argparse, csv, glob, json, os, random, sys
+import argparse, csv, glob, json, os, random, re, sys
 from collections import defaultdict
 
 LIFT_UPPER, FLAG_POINT = 0.179, 0.235
+A2_TITLE_UPPER, A2_MAX_LOST = 0.235, 0.05
+
+def title_key(t):
+    """One spelling per title: '-', '_' and whitespace runs become one '_'."""
+    return re.sub(r"[-_\s]+", "_", (t or "").strip())
 N_BOOT, SEED = 10000, 20261121
 
 def expand(paths):
@@ -46,6 +61,9 @@ def load(paths):
                 for c in ("word_f1", "cpu_s"):
                     r[c] = float(r[c])
                 r["gpu_study_flag"] = int(r["gpu_study_flag"] or 0)
+                r["title"] = title_key(r.get("title"))
+                if r.get("lost_chars") not in (None, ""):
+                    r["lost_chars"] = int(r["lost_chars"])
                 rows.append(r)
     if dup:
         raise SystemExit("duplicate (set, page_id, arm) rows, refusing to guess "
@@ -177,18 +195,37 @@ def summarize(name, rows, n_boot, seed):
            "cer_f": pooled(rows, "edits_folded"), "cer_r": pooled(rows, "edits_raw"),
            "f1": sum(r["word_f1"] for r in rows) / len(rows),
            "cpu": sum(r["cpu_s"] for r in rows) / len(rows)}
+    if all(isinstance(r.get("lost_chars"), int) for r in rows):
+        out["lost"] = sum(r["lost_chars"] for r in rows) / out["ref_chars"] if out["ref_chars"] else 0.0
     out["page_ci"] = ci(pages, "edits_folded", n_boot, random.Random(seed))
     out["title_ci"] = ci(titles, "edits_folded", n_boot, random.Random(seed + 1))
     return out
 
 def table(items):
+    lost = all("lost" in o for o in items)
     h = ("| group | pages | titles | ref chars | CER folded | 95% page CI | "
-         "95% title CI | CER raw | word F1 | CPU s/page |")
-    print(h); print("|" + "---|" * 10)
+         "95% title CI | CER raw | word F1 | CPU s/page |" + (" lost text |" if lost else ""))
+    print(h); print("|" + "---|" * (11 if lost else 10))
     for o in items:
         print("| %s | %d | %d | %d | %.4f | %.4f-%.4f | %.4f-%.4f | %.4f | %.4f | %.1f |" % (
             o["name"], o["pages"], o["titles"], o["ref_chars"], o["cer_f"],
-            *o["page_ci"], *o["title_ci"], o["cer_r"], o["f1"], o["cpu"]))
+            *o["page_ci"], *o["title_ci"], o["cer_r"], o["f1"], o["cpu"])
+            + (" %.4f |" % o["lost"] if lost else ""))
+
+def rule_a2(pool_o, flags):
+    """Rule A v2 (line-aligned): (verdict, reasons it failed)."""
+    why = []
+    if pool_o["page_ci"][1] > LIFT_UPPER:
+        why.append("upper page limit %.4f > %.3f" % (pool_o["page_ci"][1], LIFT_UPPER))
+    if pool_o["title_ci"][1] > A2_TITLE_UPPER:
+        why.append("upper title limit %.4f > %.3f" % (pool_o["title_ci"][1], A2_TITLE_UPPER))
+    if flags:
+        why.append("set(s) above %.3f: %s" % (FLAG_POINT, ", ".join(flags)))
+    if "lost" not in pool_o:
+        why.append("no lost_chars column (use line_score.py CSVs)")
+    elif pool_o["lost"] > A2_MAX_LOST:
+        why.append("lost text %.4f > %.2f" % (pool_o["lost"], A2_MAX_LOST))
+    return ("HOLD" if why else "LIFT"), why
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -199,6 +236,10 @@ def main(argv=None):
                     help="sets in the decision pool (GPU-study pages excluded)")
     ap.add_argument("--years", default="1850-1920",
                     help="year window enforced on CSV rows (undated rows dropped)")
+    ap.add_argument("--rule", choices=("A", "A2"), default="A",
+                    help="A: page CER (score.py); A2: line-aligned CER (line_score.py)")
+    ap.add_argument("--without-title", action="append", default=[],
+                    help="also report the decision pool without this title (repeatable)")
     ap.add_argument("--n-boot", type=int, default=N_BOOT)
     ap.add_argument("--seed", type=int, default=SEED)
     a = ap.parse_args(argv)
@@ -227,16 +268,34 @@ def main(argv=None):
             g = [r for r in sub if r["gpu_study_flag"]]
             if g:
                 items.append(summarize("%s / GPU-study pages" % s, g, a.n_boot, a.seed))
+                ng = [r for r in sub if not r["gpu_study_flag"]]
+                if ng:
+                    items.append(summarize("%s / not GPU-study" % s, ng, a.n_boot, a.seed))
         pool = [r for r in rs if r["set"] in pool_sets and not r["gpu_study_flag"]]
         pool_o = summarize("DECISION POOL", pool, a.n_boot, a.seed) if pool else None
         if pool_o:
             items.append(pool_o)
+            for t in a.without_title:
+                rest = [r for r in pool if r["title"] != title_key(t)]
+                if rest and len(rest) < len(pool):
+                    items.append(summarize("DECISION POOL without %s" % title_key(t), rest,
+                                           a.n_boot, a.seed))
         print("\n### Arm %s%s\n" % (arm, "" if arm == a.arm else " (reference, no decision)"))
         table(items)
         if arm == a.arm:
             flags = [o["name"] for o in items if " / " not in o["name"]
-                     and o["name"] != "DECISION POOL" and o["cer_f"] > FLAG_POINT]
-            if pool_o:
+                     and not o["name"].startswith("DECISION POOL") and o["cer_f"] > FLAG_POINT]
+            if pool_o and a.rule == "A2":
+                verdict, why = rule_a2(pool_o, flags)
+                if problems:
+                    verdict = "INCOMPLETE"
+                print("\nDecision rule A2 (line-aligned): page upper %.4f (<= %.3f), title upper "
+                      "%.4f (<= %.3f), lost text %s (<= %.2f) -> **%s**%s" % (
+                          pool_o["page_ci"][1], LIFT_UPPER, pool_o["title_ci"][1], A2_TITLE_UPPER,
+                          "%.4f" % pool_o["lost"] if "lost" in pool_o else "n/a", A2_MAX_LOST,
+                          verdict if not problems else "no decision, incomplete",
+                          (" (" + "; ".join(why) + ")") if why and not problems else ""))
+            elif pool_o:
                 up = pool_o["page_ci"][1]
                 verdict = "LIFT" if up <= LIFT_UPPER else "HOLD"
                 why = ""

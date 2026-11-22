@@ -131,6 +131,41 @@ spaces per line, a `HYP` attached to its word.
   image, no `--limit` run is involved, and (with several CSVs) the sidecars agree
   on model sha256s, tesseract version, `--cmd` and the GPU-study list; a `--limit` smoke run is always incomplete.
   Duplicate (set, page_id, arm) rows are an error.
+- **Titles**: the analyzer treats runs of `-`, `_` and spaces in a title as one
+  `_`, so Chronicling Germany's `Weisseritz-Zeitung` and `Weisseritz_Zeitung` are
+  one title in the title bootstrap. A set with GPU-study pages also gets a
+  `not GPU-study` row.
+
+## Line-aligned CER (rule A2)
+
+Page CER compares whole-page text, so a column or region the engine reads in
+another order than the truth counts as edits; on multi-column gazettes and
+newspapers that order effect can outweigh recognition errors. `line_score.py`
+takes it out:
+
+```sh
+python3 line_score.py --data-root $DATA_ROOT --out lines.csv --alto-dir ALTO_CACHE \
+  --cmd 'podman run --rm --network=none --user 10001:10001 -v {imgdir}:/in:ro IMAGE@sha256:DIGEST /in/{imgname} stdout -l {model} --psm 3 --dpi 300 alto' \
+  --workers 4 --gpu-study-pages gpu_pages.txt
+python3 analyze.py --csv lines.csv --rule A2 --without-title Koelnische_Zeitung
+```
+
+- The engine reads the whole page as for page CER (same model, PSM 3, 300 DPI),
+  with ALTO output, kept in `--alto-dir` (OCR text: keep it out of any
+  repository) and reused on a rerun.
+- Each truth line (PAGE `TextLine/Coords`, or ALTO `TextLine` box) takes the
+  engine's words whose box centre falls inside the line's bounding box, left to
+  right. Engine coordinates are scaled to the truth's page size when the two
+  differ. Words outside every truth line are not counted.
+- CER is pooled over lines: sum of per-line edits (raw and folded, the rules
+  above applied to each line) over sum of raw line lengths. A truth line with no
+  words counts in full as deletions; `lost_chars` (the CSV column) is the
+  reference characters on such lines, and `lost text` is their share.
+- **Rule A2** (`analyze.py --rule A2`): on the decision pool, lift only if the
+  upper 95% page-bootstrap limit is <= 0.179, the upper 95% title-bootstrap limit
+  is <= 0.235, no set's point estimate is above 0.235, and lost text is <= 5%.
+  `--without-title` adds report-only pool rows without the named titles (in
+  Chronicling Germany the Kölnische Zeitung holds most of the text).
 
 ## Licences
 
