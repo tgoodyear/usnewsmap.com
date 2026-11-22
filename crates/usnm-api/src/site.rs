@@ -492,12 +492,14 @@ fn site_metadata(body: Vec<u8>, state: &AppState) -> Vec<u8> {
 }
 
 /// `map` is the example's revisioned map; the old address redirects to it
-/// once the renderer's identity can be read.
+/// once the renderer's identity can be read. `related` is the
+/// [`related_links`] list, put in the page's footer.
 fn search_landing(
     body: Vec<u8>,
     preview: &str,
     example: &crate::prewarm::Example,
     map: Option<&str>,
+    related: &str,
 ) -> Vec<u8> {
     let body = insert_content(body, preview);
     let src = map.map_or_else(
@@ -534,7 +536,7 @@ fn search_landing(
             )
             .replacen(
                 "</main>",
-                "</div></main><footer class=\"empty\" aria-label=\"Search landing information\"><nav aria-label=\"Site information\"><p><a href=\"/\">Search other newspaper topics</a> · <a href=\"/privacy\">Privacy</a> · <a href=\"/datasets\">Dataset details</a> · <a href=\"/credits\">OCR credits</a></p></nav></footer>",
+                &format!("</div></main><footer class=\"empty\" aria-label=\"Search landing information\">{related}<nav aria-label=\"Site information\"><p><a href=\"/\">Search other newspaper topics</a> · <a href=\"/privacy\">Privacy</a> · <a href=\"/datasets\">Dataset details</a> · <a href=\"/credits\">OCR credits</a></p></nav></footer>"),
                 1,
             )
             .into_bytes(),
@@ -543,6 +545,47 @@ fn search_landing(
             error.into_bytes()
         }
     }
+}
+
+/// How many other examples an example page links to.
+const RELATED_LIMIT: usize = 6;
+
+/// Links from an example page to the next examples of its era (in
+/// `examples.json` order, wrapping around), so each indexable example is
+/// linked from several pages and not only the home page's list. Only
+/// examples the sitemap lists are linked: the others are `noindex`. Empty
+/// when no other example of the era is listed.
+fn related_links(example: &crate::prewarm::Example, sitemap: &sitemap::Service) -> String {
+    let era: Vec<_> = crate::prewarm::examples()
+        .iter()
+        .filter(|other| other.era == example.era)
+        .collect();
+    let at = era
+        .iter()
+        .position(|other| other.id == example.id)
+        .unwrap_or_default();
+    let links: String = era[at..]
+        .iter()
+        .chain(&era[..at])
+        .skip(1)
+        .map(|other| (other, examples::path(other)))
+        .filter(|(_, path)| sitemap.contains(path))
+        .take(RELATED_LIMIT)
+        .map(|(other, path)| {
+            format!(
+                r#"<li><a href="{}">{}</a></li>"#,
+                escape_html(&path),
+                escape_html(&other.title)
+            )
+        })
+        .collect();
+    if links.is_empty() {
+        return String::new();
+    }
+    format!(
+        "<nav aria-label=\"More newspaper searches\"><h2>More searches from {}</h2><ul>{links}</ul></nav>",
+        escape_html(&example.era.replace('-', "–"))
+    )
 }
 
 fn search_links(sitemap: &sitemap::Service) -> String {
@@ -815,7 +858,9 @@ async fn app_route(req: Request, index: PathBuf, state: Arc<AppState>) -> Respon
                 {
                     Ok(preview) => {
                         let map = social::search_map_path(&state, example).await;
-                        body = search_landing(body, &preview.html, example, map.as_deref());
+                        let related = related_links(example, &state.sitemap);
+                        body =
+                            search_landing(body, &preview.html, example, map.as_deref(), &related);
                     }
                     Err(error) => {
                         tracing::warn!("search page preview unavailable");
@@ -1062,6 +1107,30 @@ pub async fn www_redirect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn example_pages_link_other_examples_of_their_era() {
+        let sitemap = sitemap::Service::default();
+        for example in crate::prewarm::examples() {
+            let links = related_links(example, &sitemap);
+            let others = crate::prewarm::examples()
+                .iter()
+                .filter(|other| other.era == example.era && other.id != example.id)
+                .count();
+            assert_eq!(
+                links.matches("<li>").count(),
+                others.min(RELATED_LIMIT),
+                "{}",
+                example.id
+            );
+            let own = format!(r#"href="{}""#, examples::path(example));
+            assert!(!links.contains(&own), "{}", example.id);
+            for path in links.split(r#"href=""#).skip(1) {
+                let path = path.split('"').next().unwrap();
+                assert!(examples::for_path(path).is_some_and(|e| e.era == example.era));
+            }
+        }
+    }
 
     #[test]
     fn previews_match_the_default_interactive_search_mode() {

@@ -856,6 +856,12 @@ async fn legacy_searches_redirect_and_curated_results_render_without_javascript(
     assert!(body.contains("cross of gold"), "{body}");
     assert!(body.contains("<ol><li>"), "{body}");
     assert!(body.contains(r#"<div id="root"></div><div id="search-landing">"#));
+    // Other examples of its era are linked, so each is reachable from more
+    // than the home page.
+    assert!(body.contains(
+        r#"<nav aria-label="More newspaper searches"><h2>More searches from 1877–1900</h2><ul><li><a href="/examples/populists">"#
+    ), "{body}");
+    assert!(!body.contains(r#"<li><a href="/examples/cross-of-gold">"#));
     assert!(!body.contains(r#"id="site-fallback""#));
     assert!(!body.contains(r#"class="visually-hidden" inert"#));
     let map = body
