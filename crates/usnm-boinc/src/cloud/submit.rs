@@ -1,13 +1,18 @@
 //! `cloud submit`: jobs the controller already exported, to the cloud server's admin API.
 //!
-//! Only plain first-attempt single-page jobs go: retries, bundled and line jobs, and failed
+//! Two apps: `usnm_ocr` (the default) and `usnm_ndlocr`, whose staged units
+//! (`<root>/units/<doc>/`) go the same way: two inputs each, put and then created in chunks. An
+//! ndlocr unit already marked `submitted` (or `submitting`) on-prem is skipped, because this
+//! command only reads the on-prem state.
+//!
+//! For `usnm_ocr`, only plain first-attempt single-page jobs go: retries, bundled and line jobs, and failed
 //! records are skipped. Records are only read (no lock, no save). Each job's two inputs are put
 //! under the physical names `submit_unit` stages (`<id>_page`, `<id>_request_json`), then the
 //! jobs that uploaded are created in chunks. Safe to repeat: a same-contents upload is
 //! idempotent and an existing job name counts as already submitted.
 use super::pull::{admin_url, checked_base, http_client};
 use crate::{
-    dir, load, read, records,
+    dir, load, ndlocr, read, records,
     submit::{limits, max_error_results, schedule},
     Record, Stage,
 };
@@ -15,12 +20,78 @@ use anyhow::{anyhow, ensure, Context};
 use md5::{Digest, Md5};
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, fmt, path::Path};
+use std::{
+    collections::BTreeSet,
+    fmt,
+    path::{Path, PathBuf},
+};
 use usnm_ocr_contract::boinc;
 
-const APP: &str = "usnm_ocr";
 const INPUT_TEMPLATE: &str = include_str!("../../../../boinc/apps/usnm_ocr_in");
 const RESULT_TEMPLATE: &str = include_str!("../../../../boinc/apps/usnm_ocr_out");
+const NDLOCR_INPUT_TEMPLATE: &str = include_str!("../../../../boinc/apps/usnm_ndlocr_in");
+const NDLOCR_RESULT_TEMPLATE: &str = include_str!("../../../../boinc/apps/usnm_ndlocr_out");
+/// The zone plan's request body limit on Free and Pro, which caps one admin upload.
+const MAX_UPLOAD: usize = 100 * 1000 * 1000;
+
+/// The app a run submits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum App {
+    #[default]
+    #[value(name = "usnm_ocr")]
+    Ocr,
+    #[value(name = "usnm_ndlocr")]
+    Ndlocr,
+}
+
+impl App {
+    fn name(self) -> &'static str {
+        match self {
+            App::Ocr => "usnm_ocr",
+            App::Ndlocr => ndlocr::APP,
+        }
+    }
+    fn input_template(self) -> &'static str {
+        match self {
+            App::Ocr => INPUT_TEMPLATE,
+            App::Ndlocr => NDLOCR_INPUT_TEMPLATE,
+        }
+    }
+    fn result_template(self) -> &'static str {
+        match self {
+            App::Ocr => RESULT_TEMPLATE,
+            App::Ndlocr => NDLOCR_RESULT_TEMPLATE,
+        }
+    }
+}
+
+/// One unit to send: what `--root` holds for the app.
+enum Item {
+    Ocr(Box<Record>),
+    /// The job and its unit directory.
+    Ndlocr(Box<ndlocr::Job>, PathBuf),
+}
+
+impl Item {
+    fn skip_reason(&self) -> Option<&'static str> {
+        match self {
+            Item::Ocr(record) => skip_reason(record),
+            Item::Ndlocr(_, unit) => ndlocr_skip_reason(unit),
+        }
+    }
+    fn inputs(&self, root: &Path) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+        match self {
+            Item::Ocr(record) => inputs(root, record),
+            Item::Ndlocr(job, unit) => ndlocr_inputs(job, unit),
+        }
+    }
+    fn spec(&self) -> anyhow::Result<JobSpec> {
+        match self {
+            Item::Ocr(record) => spec(record),
+            Item::Ndlocr(job, _) => ndlocr_spec(job),
+        }
+    }
+}
 /// The server's message for a duplicate workunit name.
 const EXISTS: &str = "a job with this name exists";
 
@@ -30,6 +101,7 @@ pub struct Config {
     batch_size: usize,
     dry_run: bool,
     client: Client,
+    app: App,
 }
 
 impl Config {
@@ -45,7 +117,14 @@ impl Config {
             batch_size: batch_size.clamp(1, 500) as usize,
             dry_run,
             client: http_client()?,
+            app: App::default(),
         })
+    }
+
+    /// Submit this app's units instead of `usnm_ocr`'s.
+    pub fn with_app(mut self, app: App) -> Config {
+        self.app = app;
+        self
     }
 }
 
@@ -155,6 +234,125 @@ fn skip_reason(record: &Record) -> Option<&'static str> {
     }
 }
 
+/// Why this ndlocr unit is not sent: the on-prem submit has already taken it.
+fn ndlocr_skip_reason(unit: &Path) -> Option<&'static str> {
+    if unit.join("submitted").exists() {
+        Some("already submitted on-prem (cloud submit only reads the on-prem state)")
+    } else if unit.join("submitting").exists() {
+        Some("on-prem submission uncertain (submitting marker; cloud submit only reads the on-prem state)")
+    } else {
+        None
+    }
+}
+
+/// The unit's staged inputs as `ndlocr::submit` checks them: (physical name, bytes).
+fn ndlocr_inputs(job: &ndlocr::Job, unit: &Path) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+    let id = &job.id;
+    let scan = read(&unit.join("page"), boinc::MAX_SCAN)?;
+    ensure!(
+        scan.len() as u64 == job.scan.bytes && boinc::sha256(&scan) == job.scan.sha256,
+        "staged scan changed"
+    );
+    let meta = read(&unit.join(ndlocr::JOB_FILE), boinc::MAX_JSON)?;
+    let files = vec![
+        (format!("{id}_page"), scan),
+        (format!("{id}_ndlocr_json"), meta),
+    ];
+    for (name, body) in &files {
+        ensure!(
+            body.len() <= MAX_UPLOAD,
+            "{name} is {} bytes, over the {MAX_UPLOAD}-byte admin upload cap; stage it with a \
+             single-part PUT to R2 and POST /admin/v1/files/{name}/register instead",
+            body.len()
+        );
+    }
+    Ok(files)
+}
+
+/// The job as `ndlocr::create_work_args` gives `create_work`, from the same constants.
+fn ndlocr_spec(job: &ndlocr::Job) -> anyhow::Result<JobSpec> {
+    use ndlocr::limits;
+    let id = &job.id;
+    Ok(JobSpec {
+        name: job.workunit(),
+        input_files: [format!("{id}_page"), format!("{id}_ndlocr_json")]
+            .map(|name| InputFile { name })
+            .into(),
+        min_quorum: limits::MIN_QUORUM.parse()?,
+        target_nresults: limits::TARGET_NRESULTS.parse()?,
+        max_error_results: limits::MAX_ERROR_RESULTS.parse()?,
+        max_total_results: limits::MAX_TOTAL_RESULTS.parse()?,
+        max_success_results: limits::MAX_SUCCESS_RESULTS.parse()?,
+        rsc_fpops_est: ndlocr::FPOPS_EST.parse()?,
+        rsc_fpops_bound: limits::RSC_FPOPS_BOUND.parse()?,
+        rsc_memory_bound: ndlocr::MEMORY_BOUND.parse()?,
+        rsc_disk_bound: limits::RSC_DISK_BOUND.parse()?,
+        delay_bound: limits::DELAY_BOUND.parse()?,
+        // `create_work` is given no priority, so its default.
+        priority: 0,
+    })
+}
+
+/// Load one ndlocr unit under `<root>/units/<doc>`.
+fn load_unit(root: &Path, doc: &str) -> anyhow::Result<Item> {
+    crate::assess::check_doc_id(doc)?;
+    let unit = root.join("units").join(doc);
+    let job = ndlocr::load_job(&unit)?;
+    ensure!(
+        usnm_core::ids::PageKey::from_doc_id(doc)?.to_string() == job.page,
+        "unit/page mismatch"
+    );
+    Ok(Item::Ndlocr(Box::new(job), unit))
+}
+
+/// The items to send: `ids`, or everything under `root` with `all`.
+fn load_items(
+    app: App,
+    root: &Path,
+    ids: &[String],
+    all: bool,
+) -> anyhow::Result<Vec<(String, anyhow::Result<Item>)>> {
+    Ok(match (app, all) {
+        (App::Ocr, true) => records(root)?
+            .into_iter()
+            .map(|r| (r.job.id.clone(), Ok(Item::Ocr(Box::new(r)))))
+            .collect(),
+        (App::Ocr, false) => {
+            let mut seen = BTreeSet::new();
+            ids.iter()
+                .filter(|id| seen.insert(id.as_str()))
+                .map(|id| (id.clone(), load(root, id).map(|r| Item::Ocr(Box::new(r)))))
+                .collect()
+        }
+        (App::Ndlocr, true) => {
+            let dir = root.join("units");
+            let mut docs = Vec::new();
+            for entry in
+                std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))?
+            {
+                let entry = entry?;
+                if entry.file_type()?.is_dir() {
+                    docs.push(entry.file_name().to_string_lossy().into_owned());
+                }
+            }
+            docs.sort();
+            docs.into_iter()
+                .map(|doc| {
+                    let item = load_unit(root, &doc);
+                    (doc, item)
+                })
+                .collect()
+        }
+        (App::Ndlocr, false) => {
+            let mut seen = BTreeSet::new();
+            ids.iter()
+                .filter(|id| seen.insert(id.as_str()))
+                .map(|id| (id.clone(), load_unit(root, id)))
+                .collect()
+        }
+    })
+}
+
 /// The record's staged inputs as `submit_unit` checks them: (physical name, bytes).
 fn inputs(root: &Path, record: &Record) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
     let id = &record.job.id;
@@ -201,9 +399,9 @@ async fn create(cfg: &Config, jobs: &[JobSpec]) -> anyhow::Result<CreateReply> {
         .post(admin_url(&cfg.base, &["jobs"]))
         .bearer_auth(&cfg.token)
         .json(&CreateBody {
-            app: APP,
-            input_template: INPUT_TEMPLATE,
-            result_template: RESULT_TEMPLATE,
+            app: cfg.app.name(),
+            input_template: cfg.app.input_template(),
+            result_template: cfg.app.result_template(),
             jobs,
         })
         .send()
@@ -218,24 +416,13 @@ async fn create(cfg: &Config, jobs: &[JobSpec]) -> anyhow::Result<CreateReply> {
     resp.json().await.context("reading the create reply")
 }
 
-/// Send `ids` (or every record with `all`).
+/// Send `ids` (or every record, or for ndlocr every unit, with `all`).
 pub async fn run(cfg: &Config, root: &Path, ids: &[String], all: bool) -> anyhow::Result<Report> {
-    let loaded: Vec<(String, anyhow::Result<Record>)> = if all {
-        records(root)?
-            .into_iter()
-            .map(|r| (r.job.id.clone(), Ok(r)))
-            .collect()
-    } else {
-        let mut seen = BTreeSet::new();
-        ids.iter()
-            .filter(|id| seen.insert(id.as_str()))
-            .map(|id| (id.clone(), load(root, id)))
-            .collect()
-    };
+    let loaded = load_items(cfg.app, root, ids, all)?;
     let mut report = Report::default();
     let mut ready: Vec<JobSpec> = Vec::new();
     for (id, record) in loaded {
-        let record = match record {
+        let item = match record {
             Ok(r) => r,
             Err(e) => {
                 report.failed += 1;
@@ -243,13 +430,13 @@ pub async fn run(cfg: &Config, root: &Path, ids: &[String], all: bool) -> anyhow
                 continue;
             }
         };
-        if let Some(why) = skip_reason(&record) {
+        if let Some(why) = item.skip_reason() {
             report.skipped += 1;
             report.lines.push(format!("{id}: skipped: {why}"));
             continue;
         }
         let uploaded = async {
-            let files = inputs(root, &record)?;
+            let files = item.inputs(root)?;
             if cfg.dry_run {
                 for (name, body) in &files {
                     report
@@ -261,7 +448,7 @@ pub async fn run(cfg: &Config, root: &Path, ids: &[String], all: bool) -> anyhow
                     put(cfg, &name, body).await?;
                 }
             }
-            spec(&record)
+            item.spec()
         }
         .await;
         match uploaded {
@@ -724,6 +911,138 @@ mod tests {
         assert!(report.lines.iter().any(|l| l.contains("would upload")));
         let m = s.lock().unwrap();
         assert!(m.puts.is_empty() && m.posts.is_empty());
+    }
+
+    /// An ndlocr unit staged under `<root>/units/<doc>/`: (doc id, job).
+    fn ndlocr_unit(root: &Path, page: &[u8], mark: Option<&str>) -> (String, ndlocr::Job) {
+        let key: usnm_core::ids::PageKey = "sn00000001/1900-01-01/ed-1/seq-1".parse().unwrap();
+        let mut job = ndlocr::Job {
+            v: 1,
+            id: String::new(),
+            page: key.to_string(),
+            batch: "test_pilot".into(),
+            batch_version: 1,
+            loc_text: "missing".into(),
+            route: usnm_ocr_worker::engine::candidates("jpn").remove(0),
+            engine: ndlocr::engine(format!("sha256:{}", "a".repeat(64)), 600),
+            scan: Scan {
+                url: "https://tile.loc.gov/test".into(),
+                iiif_base: "https://tile.loc.gov/test".into(),
+                sha256: boinc::sha256(page),
+                bytes: page.len() as u64,
+                md5: None,
+            },
+        };
+        job.id = job.identity().unwrap();
+        job.validate().unwrap();
+        let doc = key.doc_id().to_string();
+        let unit = root.join("units").join(&doc);
+        atomic(&unit.join("page"), page).unwrap();
+        atomic(
+            &unit.join(ndlocr::JOB_FILE),
+            &serde_json::to_vec_pretty(&job).unwrap(),
+        )
+        .unwrap();
+        if let Some(mark) = mark {
+            atomic(&unit.join(mark), b"x").unwrap();
+        }
+        (doc, job)
+    }
+
+    fn ndlocr_cfg(base: &str, dry: bool) -> Config {
+        cfg(base, 100, dry).with_app(App::Ndlocr)
+    }
+
+    #[tokio::test]
+    async fn ndlocr_unit_uploads_both_inputs_and_creates_the_job() {
+        let root = tempfile::tempdir().unwrap();
+        let page = b"jpeg bytes";
+        let (doc, job) = ndlocr_unit(root.path(), page, None);
+        let (s, base) = serve(Mock::default()).await;
+        let report = run(&ndlocr_cfg(&base, false), root.path(), &[doc], false)
+            .await
+            .unwrap();
+        assert_eq!(
+            report.to_string(),
+            "submitted 1, already there 0, skipped 0, failed 0"
+        );
+        let m = s.lock().unwrap();
+        let id = &job.id;
+        let names: Vec<&str> = m.puts.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, [format!("{id}_page"), format!("{id}_ndlocr_json")]);
+        assert_eq!(m.puts[0].body, page);
+        assert_eq!(m.puts[0].query["md5"], md5_hex(page));
+        assert_eq!(m.puts[1].query["md5"], md5_hex(&m.puts[1].body));
+        assert!(m.puts.iter().all(|p| p.authed));
+        let b = &m.posts[0];
+        assert_eq!(b["app"], "usnm_ndlocr");
+        assert_eq!(b["input_template"], NDLOCR_INPUT_TEMPLATE);
+        assert_eq!(b["result_template"], NDLOCR_RESULT_TEMPLATE);
+        assert_eq!(
+            b["jobs"][0],
+            json!({
+                "name": job.workunit(),
+                "input_files": [{"name": format!("{id}_page")},
+                                {"name": format!("{id}_ndlocr_json")}],
+                "min_quorum": 2, "target_nresults": 2, "max_error_results": 3,
+                "max_total_results": 5, "max_success_results": 3,
+                "rsc_fpops_est": 1e12, "rsc_fpops_bound": 1e14,
+                "rsc_memory_bound": 4294967296u64, "rsc_disk_bound": 1073741824u64,
+                "delay_bound": 259200, "priority": 0
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn ndlocr_submitted_unit_is_skipped_and_left_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let (doc, _) = ndlocr_unit(root.path(), b"jpeg bytes", Some("submitted"));
+        let (s, base) = serve(Mock::default()).await;
+        let report = run(&ndlocr_cfg(&base, false), root.path(), &[], true)
+            .await
+            .unwrap();
+        assert_eq!(
+            report.to_string(),
+            "submitted 0, already there 0, skipped 1, failed 0"
+        );
+        assert!(report.lines[0].contains("already submitted on-prem"));
+        let m = s.lock().unwrap();
+        assert!(m.puts.is_empty() && m.posts.is_empty());
+        assert!(root
+            .path()
+            .join("units")
+            .join(doc)
+            .join("submitted")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn ndlocr_dry_run_sends_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        ndlocr_unit(root.path(), b"jpeg bytes", None);
+        let (s, base) = serve(Mock::default()).await;
+        let report = run(&ndlocr_cfg(&base, true), root.path(), &[], true)
+            .await
+            .unwrap();
+        assert_eq!(report.submitted, 1);
+        assert!(report.lines.iter().any(|l| l.contains("would upload")));
+        let m = s.lock().unwrap();
+        assert!(m.puts.is_empty() && m.posts.is_empty());
+    }
+
+    #[test]
+    fn ndlocr_oversized_input_names_the_register_route() {
+        let root = tempfile::tempdir().unwrap();
+        let page = vec![0u8; MAX_UPLOAD + 1];
+        let (doc, _) = ndlocr_unit(root.path(), &page, None);
+        let Item::Ndlocr(job, unit) = load_unit(root.path(), &doc).unwrap() else {
+            panic!("not an ndlocr item")
+        };
+        let err = format!("{:#}", ndlocr_inputs(&job, &unit).unwrap_err());
+        assert!(
+            err.contains("/admin/v1/files/") && err.contains("/register"),
+            "{err}"
+        );
     }
 
     #[test]
