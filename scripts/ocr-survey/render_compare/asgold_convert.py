@@ -7,7 +7,8 @@
 undocumented when PUBLIC was written), so it can't feed the loader. The frozen set's README documents what was
 missing: seven of the ten pages are matched to a Chronicling America page (asgold-ca-map.json), whose image rights
 are public domain; three are not matched and their rights are UNVERIFIED. This converter keeps a page only when
-  - its ALTO and page image (`<id>.xml`, `<id>.jpg` in --alto-dir) are held, and
+  - its ALTO and page image (`<lccn>-<id>.xml` and `.jpg` in --alto-dir; templates.py pools a title's letters by
+    the stem's text before the first dash, so the LCCN must come first) are held, and
   - the set matched it to a Chronicling America page, and
   - it isn't one of the Overproof pages in --exclude-file (LCCN, date and page number the same).
 Every other page is dropped with its reason, in --report. Nothing is fetched. Text licence: Apache-2.0 (Hugging
@@ -68,15 +69,18 @@ def convert(frozen: Path, alto_dir: Path, exclude: list[dict]) -> tuple[list[dic
         pid, ca = s["id"], s["ca_page"]
         file_number = int(s["page"].rsplit("-", 1)[-1])
         row = {"id": pid, "americanstories": s["page"], "ca_page": ca or None}
+        # The stem starts with the LCCN: templates.py pools letters per title by `stem.split("-")[0]`.
+        stem = f"{CA_ID.match(ca)['lccn']}-{pid}" if ca and CA_ID.match(ca) else pid
+        row["stem"] = stem
         if not ca:
             row |= {"used": False, "reason": "no Chronicling America page matched; image rights unverified; no ALTO held"}
-        elif not ((alto_dir / f"{pid}.xml").is_file() and (alto_dir / f"{pid}.jpg").is_file()):
+        elif not ((alto_dir / f"{stem}.xml").is_file() and (alto_dir / f"{stem}.jpg").is_file()):
             row |= {"used": False, "reason": "ALTO or image not held in --alto-dir"}
         elif (hit := overlap(ca, file_number, exclude)):
             row |= {"used": False, "reason": f"overlaps Overproof page {hit}"}
         else:
             row |= {"used": True}
-            keep[pid] = s
+            keep[pid] = {**s, "stem": stem}
         report["pages"].append(row)
     manifest, crops = [], []
     for r in regions:
@@ -86,7 +90,7 @@ def convert(frozen: Path, alto_dir: Path, exclude: list[dict]) -> tuple[list[dic
         crop_id = f"asgold-{n:04d}"
         manifest.append({
             "crop_id": crop_id, "page_id": r["id"], "group": "asgold", "lang": "eng", "era": None, "stratum": "asgold",
-            "box": r["box"], "image": None, "source_image": f"{r['id']}.jpg", "region": r["region"],
+            "box": r["box"], "image": None, "source_image": f"{keep[r['id']]['stem']}.jpg", "region": r["region"],
             "region_type": r["type"], "ca_page": keep[r["id"]]["ca_page"],
             "source_dataset": "americanstories", "source_license": LICENCE, "for_scoring": True})
         crops.append({"crop_id": crop_id, "group": "asgold", "lang": "eng", "image": None, "transcription": r["text"],

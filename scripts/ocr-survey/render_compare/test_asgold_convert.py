@@ -35,9 +35,9 @@ class ConvertTest(unittest.TestCase):
         rows = [region("s9-a", "one two"), region("s9-a", "", False), region("s9-b", "three"), region("s9-c", "four"),
                 region("s9-d", "five")]
         (self.frozen / "regions.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
-        for pid in ("s9-a", "s9-b", "s9-c"):  # s9-d has no ALTO held
-            (self.alto / f"{pid}.xml").write_text("<alto/>")
-            (self.alto / f"{pid}.jpg").write_bytes(b"x")
+        for stem in ("sn11111111-s9-a", "sn22222222-s9-b", "s9-c"):  # s9-d has no ALTO held
+            (self.alto / f"{stem}.xml").write_text("<alto/>")
+            (self.alto / f"{stem}.jpg").write_bytes(b"x")
         self.exclude = t / "exclude.txt"
         self.exclude.write_text("sn22222222-00000000000-1904120101-0042\n")
 
@@ -53,6 +53,7 @@ class ConvertTest(unittest.TestCase):
         self.assertIn("not held", used["s9-d"]["reason"])
         self.assertEqual(len(m), 1)  # the untranscribed region is not a crop
         self.assertEqual(c[0]["transcription"], "one two")
+        self.assertEqual(m[0]["source_image"], "sn11111111-s9-a.jpg")  # LCCN first: templates.py pools a title by it
 
     def test_reads_the_real_key_shapes(self):
         self.exclude.write_text("sn84024828-00211100606-1887061801-0101\nsn85066387-noissue-190001011-0003\n")
