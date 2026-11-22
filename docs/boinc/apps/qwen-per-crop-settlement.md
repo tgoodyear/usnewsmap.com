@@ -9,7 +9,8 @@ Status: Proposed, not adopted. Issue #1963 is open and the science decision has 
 - **Problem.** Under `crop-consensus-v2` one disagreeing crop fails a whole unit of 130 to 250 crops. Two Nordic units had 95% and 97% of their text crops agreeing and still produced no agreed result.
 - **Proposal.** Accept a pair when at least 80% of its text crops agree, vouch only the agreeing crops, and re-issue each disagreeing crop once in pooled follow-up units. The 80% is a proposed value, not a finding.
 - **Status.** Proposed, not adopted. Issue #1963 is open.
-- **What deciding it needs.** A Science Coordinator decision on the six open questions below, chiefly the 80% threshold, which the planned #1919 rerun on at least 300 matured units can test. The evidence so far is three failed units.
+- **Evidence since.** The matured #1919 rerun ([21 Nov](https://github.com/tgoodyear/usnewsmap.com/issues/1919#issuecomment-7065037753), 426 v2 units) found first-pair agreement up 3.6 points on the baseline. Its any-pair gap (95.1% against 99.2%) was [traced](https://github.com/tgoodyear/usnewsmap.com/issues/1919#issuecomment-7065116471) to 16 units waiting for a second replica, none of them a dispute, so v2 stays on unchanged. That rerun did not test per-crop settlement or the 80% value.
+- **What deciding it needs.** A Science Coordinator decision on the six open questions below, chiefly whether disputed units are still common enough to justify per-crop settlement, and a test of the 80% value. The three failed units of 14 Nov are the only direct case studies.
 
 ![Share of text crops agreeing in the three failed units: the two Nordic units 95% and 97%, ces+spa 46% (113 of 248), against the proposed 80% floor. The two Nordic units clear it; ces+spa fails for a different reason.](figures/qwen-per-crop-settlement.svg)
 
