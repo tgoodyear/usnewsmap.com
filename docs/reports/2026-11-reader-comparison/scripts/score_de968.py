@@ -17,8 +17,9 @@ and DIR/readers/{ours-live-alto,loc-alto}.jsonl. Crops without a transcription a
 All German frak2021 text is revoked at the next full rebuild. This script says which bands earn their
 way back at a later rebuild: with --live (the decoded pages-v20261026-1 list) it writes readd-<band>.txt for
 each band where ours beats LoC (verdict keep): every live German page whose loc_damage falls in the band
-(page ids only). The write-up must say that the three lowest bands are one title (sn84027101) and that
-new titles stay out by default.
+(page ids only), restricted to titles with a transcribed page in that band. A title is the LCCN, the
+part of a page id before its first "_" (sn84027101_1890-...). The write-up must say that the three lowest bands are one title
+(sn84027101) and that new titles stay out by default.
 """
 import argparse, csv, json, subprocess, sys
 from pathlib import Path
@@ -31,12 +32,13 @@ ap.add_argument("--live", type=Path)
 a = ap.parse_args()
 a.out.mkdir(parents=True, exist_ok=True)
 man = {r["crop_id"]: r for r in map(json.loads, (a.dir / "crops/manifest.jsonl").read_text().splitlines())}
-refs, left = [], 0
+refs, left, titles = [], 0, {}
 for t in map(json.loads, (a.dir / "crops/crops.jsonl").read_text().splitlines()):
     if not (t.get("transcription") or "").strip():
         left += 1
         continue
     m = man[t["crop_id"]]
+    titles.setdefault(m["band"], set()).add(m["page_id"].split("_", 1)[0])
     refs.append({"id": t["crop_id"], "page": m["page_id"], "ref": t["transcription"], "source": m["band"], "lang": "ger"})
 if not refs:
     sys.exit("no crop has a human transcription yet")
@@ -68,9 +70,12 @@ if a.live:
     pages = {n: [] for n in names}
     for r in csv.DictReader(a.live.open(), delimiter="\t"):
         if r["lang"] == "ger":
-            pages[names[sum(float(r["loc_damage"]) >= e for e in edges)]].append(r["doc_id"])
+            n = names[sum(float(r["loc_damage"]) >= e for e in edges)]
+            # New titles stay out: only a title with transcribed evidence in this band can re-enter.
+            if r["doc_id"].split("_", 1)[0] in titles.get(n, set()):
+                pages[n].append(r["doc_id"])
     for n in names:
         readd = rule.get(n) == "keep"
         if readd:
             (a.out / f"readd-{n.replace('<', 'lt').replace('>=', 'ge')}.txt").write_text("".join(p + "\n" for p in sorted(pages[n])))
-        print(f"band {n}: {len(pages[n])} live pages; {'re-add' if readd else 'stay out'}")
+        print(f"band {n}: {len(pages[n])} live pages of sampled titles; {'re-add' if readd else 'stay out'}")

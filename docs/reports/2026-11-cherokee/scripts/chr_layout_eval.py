@@ -45,10 +45,12 @@ def jpeg_size(path):
         f.read(2)
         while True:
             b = f.read(1)
-            while b != b"\xff":
+            while b and b != b"\xff":
                 b = f.read(1)
             while b == b"\xff":
                 b = f.read(1)
+            if not b:
+                raise ValueError(f"{path}: no frame header before end of file")
             m = b[0]
             if m in (0xD8, 0x01) or 0xD0 <= m <= 0xD7:
                 continue
