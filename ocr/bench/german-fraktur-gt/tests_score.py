@@ -594,5 +594,14 @@ class A(unittest.TestCase):
         self.assertEqual(analyze.summarize("x", rows, 20, 1)["cpu"], 3.0)
         self.assertIsNone(analyze.summarize("x", rows[1:2], 20, 1)["cpu"])
 
+    def test_engine_hyp_attaches_to_previous_word(self):
+        alto = (b'<alto xmlns="http://www.loc.gov/standards/alto/ns-v3#"><Layout>'
+                b'<Page WIDTH="100" HEIGHT="50"><PrintSpace><TextBlock><TextLine>'
+                b'<String CONTENT="Kai" HPOS="10" VPOS="10" WIDTH="20" HEIGHT="10"/>'
+                b'<HYP CONTENT="-"/></TextLine></TextBlock></PrintSpace></Page></Layout></alto>')
+        words, size = line_score.alto_words(alto)
+        self.assertEqual([w[4] for w in words], ["Kai-"])
+        self.assertEqual(size, (100.0, 50.0))
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
