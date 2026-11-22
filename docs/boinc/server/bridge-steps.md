@@ -224,10 +224,12 @@ there, so the inputs go up over HTTPS and the server keeps them in its own bucke
 Nothing in the running bridge, the timers or the scripts calls it, and `submit` is unchanged.
 
 ```
-usnm-boinc cloud submit --root <controller root> --base-url https://<dev server> --token-file <file> (--id <job id>... | --all) [--app usnm_ocr|usnm_ndlocr] [--batch-size N] [--dry-run]
+usnm-boinc cloud submit --root <controller root> --base-url https://<dev server> --token-file <file> (--id <job id>... | --all) [--app usnm_ocr|usnm_ndlocr|usnm_quality] [--batch-size N] [--dry-run]
+       [--r2-endpoint <url> --r2-bucket <name> --r2-credentials-file <file>]
 ```
 
-`--app` defaults to `usnm_ocr`. `--app usnm_ndlocr` sends staged Japanese units instead (see "usnm_ndlocr" below).
+`--app` defaults to `usnm_ocr`. `--app usnm_ndlocr` sends staged Japanese units instead (see "usnm_ndlocr" below), and `--app usnm_quality` sends
+staged quality units (see "usnm_quality" and "Inputs over the admin cap" below).
 
 - Records under `<root>/jobs/` are only read: no lock is taken and no record is saved, so a job's on-prem stage is
   never changed. Run it on a copy of the root, or on jobs the on-prem server isn't given, so a page isn't computed
@@ -261,8 +263,45 @@ With `--app usnm_ndlocr`, `--root` is the ndlocr root and `--id` is a doc id; `-
   `create_work` is given no priority, so the job sends 0.
 - A unit with a `submitted` marker is skipped and listed, and so is one with a `submitting` marker (the on-prem
   submission is uncertain). Cloud submit never writes a marker, so the unit's on-prem state is unchanged.
-- An input over the 100 MB admin body cap fails that unit with a message naming the other route: a single-part PUT of the
-  file to R2, then `POST /admin/v1/files/<name>/register`. Cloud submit doesn't call that route yet.
+- An input over the 100 MB admin body cap goes by the route in "Inputs over the admin cap" below, or fails that unit
+  with a message naming the `--r2-*` flags when they are absent.
+
+### usnm_quality
+
+With `--app usnm_quality`, `--root` is the quality staging root and `--id` is a unit name (the directory under
+`<root>/units/`); `--all` takes every unit directory that holds a `quality.json`. Nothing about a unit is rebuilt:
+
+- `quality::submit::load_checked` is the on-prem check, shared: the job validates, `page.jpg`, `loc.xml`, `texts.json`,
+  `places.txt` and (when the job names one) `qe.bin` equal the record's sizes and SHA-256, and a pruned page is refused.
+- The inputs go up under the physical names `quality::submit::physical_names` gives, in template order: `<id>_page_jpg`,
+  `<id>_loc_xml`, `<id>_texts_json`, `usnm_quality_places_v2_<sha256>`, `usnm_quality_qe_v1_<sha256>` (only with a quality
+  measure) and `<id>_quality_json`. The places and quality-measure files are shared by name, so a run sends each once.
+  Which inputs are sticky is in the input template, not the job: `boinc/apps/usnm_quality_in`, or `usnm_quality_qe_in`
+  for a job with a quality measure, with `usnm_quality_out`. A request has one template, so a run's jobs are created in
+  one request per template.
+- The job's numbers are read from `quality::submit::create_work_args`, the arguments on-prem hands `create_work`: quorum 2,
+  target 2, max error 3, max total 4, max success 3, delay bound 259200, and FPOPs, memory and disk bounds by page count.
+  `create_work` is given no priority, so the job sends 0.
+- A unit with a `submitted` marker is skipped and listed, and so is one with a `submitting` marker. Cloud submit never
+  writes a marker.
+
+### Inputs over the admin cap
+
+A quality page is 230 MB to 1 GB, over the 100 MB `PUT /admin/v1/files/<name>` takes. Give all three flags and a file over
+the cap goes to the bucket instead (any app; without the flags the unit fails, naming them):
+
+- `--r2-endpoint` is the S3 API root (`https://<account>.r2.cloudflarestorage.com`; plain http only for loopback),
+  `--r2-bucket` the bucket bound as the server's FILES, and `--r2-credentials-file` a file with the access key id on line
+  1 and the secret on line 2. The credentials are read from the file only and never logged.
+- The file streams from disk in one single-part `PUT /<bucket>/download/<name>`, signed with AWS Signature Version 4
+  (region `auto`, service `s3`, `x-amz-content-sha256: UNSIGNED-PAYLOAD`; `cloud/sigv4.rs`, on the HMAC in `cloud/hmac.rs`
+  that the validation webhook shares). R2 keeps the MD5 of a single-part object, up to 5 GB, as its ETag.
+- A signed `HEAD` comes first. An object already there with the same MD5 is not sent again (so the shared places and
+  quality-measure files go up once per bucket); one with a different MD5, or a multipart ETag, fails that unit and is never
+  overwritten, as the admin route's 409 does.
+- `POST /admin/v1/files/<name>/register` with `{"no_delete": true}` records the object's size and MD5 under the name. The
+  body takes no MD5: the server reads both from the object, and cloud submit fails the unit if the reply differs from the
+  file's size and MD5.
 
 ## Pull from the cloud BOINC server (dev only)
 

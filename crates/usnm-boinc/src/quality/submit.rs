@@ -116,7 +116,8 @@ pub fn physical_names(job: &Job) -> Vec<(String, &'static str)> {
     names
 }
 
-fn limit(file: &str) -> usize {
+/// The largest a unit's file of this name may be.
+pub(crate) fn limit(file: &str) -> usize {
     match file {
         super::PAGE_FILE => MAX_BUNDLE_SCAN.max(MAX_SCAN),
         super::ALTO_FILE => MAX_BUNDLE_ALTO.max(MAX_ALTO),
@@ -125,6 +126,81 @@ fn limit(file: &str) -> usize {
         QE_FILE => MAX_QE,
         _ => MAX_JOB_JSON,
     }
+}
+
+/// Size, SHA-256 and MD5 (lowercase hex) of a regular file in one chunked pass, never holding
+/// more than one 1 MiB buffer.
+/// The file must be at most `max` bytes: its size is checked first, and the reader is capped at
+/// one byte over so a file that grows while it is read still fails.
+pub(crate) fn hash_file(
+    path: &std::path::Path,
+    max: usize,
+) -> anyhow::Result<(u64, String, String)> {
+    use std::io::Read;
+    let file = crate::open_regular(path)?;
+    ensure!(file.metadata()?.len() <= max as u64, "file over size limit");
+    let hashed = hash_reader(&mut file.take(max as u64 + 1))?;
+    ensure!(hashed.0 <= max as u64, "file over size limit");
+    Ok(hashed)
+}
+
+pub(crate) fn hash_reader(r: &mut impl std::io::Read) -> anyhow::Result<(u64, String, String)> {
+    use md5::Md5;
+    use sha2::{Digest, Sha256};
+    let (mut sha, mut md5) = (Sha256::new(), Md5::new());
+    let mut buf = vec![0u8; 1 << 20];
+    let mut len = 0u64;
+    loop {
+        let n = r.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        sha.update(&buf[..n]);
+        md5.update(&buf[..n]);
+        len += n as u64;
+    }
+    let hex = |d: &[u8]| d.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    Ok((len, hex(&sha.finalize()), hex(&md5.finalize())))
+}
+
+/// The unit's job record, validated, with every staged input equal to what the record names.
+/// What a submission (on-prem or cloud) checks before it sends anything.
+pub(crate) fn load_checked(unit: &std::path::Path) -> anyhow::Result<Job> {
+    Ok(check_unit(unit, usize::MAX)?.0)
+}
+
+/// [`load_checked`], but a file over `stream_over` bytes is checked in one chunked pass instead
+/// of being read into memory; its MD5 comes back from that same pass, by unit file name.
+pub(crate) fn check_unit(
+    unit: &std::path::Path,
+    stream_over: usize,
+) -> anyhow::Result<(Job, std::collections::BTreeMap<&'static str, String>)> {
+    let job: Job = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB_JSON)?)?;
+    job.validate()?;
+    super::page_dims::require_image(unit, "quality submit")?;
+    let mut streamed = std::collections::BTreeMap::new();
+    let mut inputs = vec![
+        (super::PAGE_FILE, &job.inputs.page),
+        (super::ALTO_FILE, &job.inputs.alto),
+        (super::TEXTS_FILE, &job.inputs.texts),
+        (PLACES_FILE, &job.inputs.places),
+    ];
+    if let Some(qe) = &job.qe {
+        inputs.push((QE_FILE, &qe.input));
+    }
+    for (file, input) in inputs {
+        let path = unit.join(file);
+        let big = std::fs::metadata(&path).is_ok_and(|m| m.len() > stream_over as u64);
+        let matches = if big {
+            let (len, sha, md5) = hash_file(&path, limit(file))?;
+            streamed.insert(file, md5);
+            len == input.bytes && sha == input.sha256
+        } else {
+            input.matches(&read(&path, limit(file))?)
+        };
+        ensure!(matches, "staged {file} changed for {}", job.doc_id);
+    }
+    Ok((job, streamed))
 }
 
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
@@ -150,28 +226,7 @@ pub async fn run_selected(
             summary.uncertain += 1;
             continue;
         }
-        let job: Job = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB_JSON)?)?;
-        job.validate()?;
-        super::page_dims::require_image(&unit, "quality submit")?;
-        for (file, input) in [
-            (super::PAGE_FILE, &job.inputs.page),
-            (super::ALTO_FILE, &job.inputs.alto),
-            (super::TEXTS_FILE, &job.inputs.texts),
-            (PLACES_FILE, &job.inputs.places),
-        ] {
-            ensure!(
-                input.matches(&read(&unit.join(file), limit(file))?),
-                "staged {file} changed for {}",
-                job.doc_id
-            );
-        }
-        if let Some(qe) = &job.qe {
-            ensure!(
-                qe.input.matches(&read(&unit.join(QE_FILE), MAX_QE)?),
-                "staged {QE_FILE} changed for {}",
-                job.doc_id
-            );
-        }
+        let job = load_checked(&unit)?;
         atomic(&unit.join("submitting"), job.workunit().as_bytes())?;
         for (physical, file) in physical_names(&job) {
             crate::assess::submit::stage_file(

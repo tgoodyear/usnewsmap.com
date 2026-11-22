@@ -21,7 +21,7 @@ pub enum CloudCommands {
     /// finished single-page job at a time. Dev cloud server only.
     SpoolOut(SpoolOutArgs),
     /// Send usnm_ocr jobs the controller already exported (`jobs/<id>/` under --root), or with
-    /// --app usnm_ndlocr the staged units (`units/<doc>/`), to the cloud server's admin API.
+    /// --app usnm_ndlocr or usnm_quality the staged units (`units/<doc>/`), to the cloud server's admin API.
     /// Reads the on-prem state, never changes it. Dev cloud server only.
     Submit(SubmitArgs),
     /// The cloud server's validation webhook for the gold apps (POST /v1/validate/<app>). Dev
@@ -154,7 +154,7 @@ pub struct PullResultsArgs {
 #[derive(Args)]
 pub struct SubmitArgs {
     /// The controller root, with jobs at `<root>/jobs/<id>/` (usnm_ocr); for usnm_ndlocr, the
-    /// ndlocr root, with units at `<root>/units/<doc>/`.
+    /// ndlocr or quality root, with units at `<root>/units/<doc>/`.
     #[arg(long)]
     root: PathBuf,
     /// The app to submit.
@@ -167,10 +167,10 @@ pub struct SubmitArgs {
     /// taken from the command line and never logged. Not needed with --dry-run.
     #[arg(long)]
     token_file: Option<PathBuf>,
-    /// A job id (sha256) to send, or for usnm_ndlocr a doc id; repeat for several.
+    /// A job id (sha256) to send, or for usnm_ndlocr and usnm_quality a unit name (the doc id); repeat for several.
     #[arg(long = "id", conflicts_with = "all", required_unless_present = "all")]
     ids: Vec<String>,
-    /// Send every record (usnm_ocr) or unit (usnm_ndlocr) under --root.
+    /// Send every record (usnm_ocr) or unit (usnm_ndlocr, usnm_quality) under --root.
     #[arg(long)]
     all: bool,
     /// Print what would be sent; make no request.
@@ -179,6 +179,18 @@ pub struct SubmitArgs {
     /// Jobs per create request (1 to 500).
     #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=500))]
     batch_size: u32,
+    /// The R2 S3 API root (https://<account>.r2.cloudflarestorage.com), for an input over the
+    /// admin upload cap, which is put straight to the bucket and then registered. Needs
+    /// --r2-bucket and --r2-credentials-file.
+    #[arg(long, requires_all = ["r2_bucket", "r2_credentials_file"])]
+    r2_endpoint: Option<String>,
+    /// The bucket that holds the server's files (the FILES binding).
+    #[arg(long, requires = "r2_endpoint")]
+    r2_bucket: Option<String>,
+    /// File with the R2 access key id on its first line and the secret on its second. Never
+    /// taken from the command line and never logged.
+    #[arg(long, requires = "r2_endpoint")]
+    r2_credentials_file: Option<PathBuf>,
 }
 
 fn read_token(file: &Option<PathBuf>, env: &str) -> anyhow::Result<String> {
@@ -284,8 +296,13 @@ pub async fn run(command: CloudCommands) -> anyhow::Result<()> {
             } else {
                 read_token(&a.token_file, "CBOINC_TOKEN")?
             };
-            let cfg = cloud_submit::Config::new(&a.base_url, token, a.batch_size, a.dry_run)?
+            let mut cfg = cloud_submit::Config::new(&a.base_url, token, a.batch_size, a.dry_run)?
                 .with_app(a.app);
+            if let (Some(endpoint), Some(bucket), Some(credentials)) =
+                (&a.r2_endpoint, &a.r2_bucket, &a.r2_credentials_file)
+            {
+                cfg = cfg.with_r2(cloud_submit::R2::new(endpoint, bucket, credentials)?);
+            }
             let report = cloud_submit::run(&cfg, &a.root, &a.ids, a.all).await?;
             println!("{report}");
             for line in &report.lines {
