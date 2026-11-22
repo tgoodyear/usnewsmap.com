@@ -1,76 +1,144 @@
 #!/usr/bin/env python3
-"""Grid search of finder parameters on the tuning set de-rz only (#2107, step 1).
+"""Grid search of finder parameters on the tuning pages of the second attempt (#2107, step 1).
 
-Refuses any page that is not a de-rz page, so the test sets cannot be tuned on.
+Tuning sets only: liberte-train (500 pages), finlam-train, colorado-train, derz. The tool refuses any
+other set name, so the test and secondary sets cannot be run through it.
 
 Method follows jscancella/NYTribuneOCRExperiments (findText_usingSums.py, GPL-3.0), reimplemented;
-no code copied. Tuning data: Reichsanzeiger-GT, CC BY 4.0, Mannheim University Library.
+no code copied. Data: Teklia/Newspapers-finlam and -La-Liberte (MIT), NealCaren/co-newspaper-layout-
+yolo (no licence stated; private, aggregates only), Reichsanzeiger-GT (CC BY 4.0, Mannheim University
+Library).
 
-    tune.py --images DIR --refs ref-de-rz.json --cache-dir DIR --method banded|fullheight
-            --grid '{"prominence": [0.4, 0.6], "min_gutter": [0.004, 0.008]}' --out tune.json
-            [--base-json '{...}'] [--workers 6] [--shard-index I --shard-count N]
+    tune.py --sets-json '{"finlam-train": {"refs": "refs-finlam-train.json", "cache": "cache/finlam-train"}, ...}'
+            --method banded|fullheight --grid '{"prominence": [0.4, 0.6]}' [--base-json '{...}']
+            [--shard-index I --shard-count N] [--workers K] --out part-I.json
+    tune.py --merge part-0.json part-1.json ... [--top 10]
 
-Output: keyed JSON, keys sorted: config key -> {f1, params, precision, recall}.
+A run is sharded by page: every shard writes, per configuration and set, the summed heights
+[det, matched det, ref, matched ref, pages]; --merge adds the shards and ranks the configurations by
+the equal-weight pooled F1 (precision and recall per set, then the mean over sets).
 """
 import argparse
 import itertools
 import json
 import multiprocessing as mp
-import os
 import sys
 import time
 from dataclasses import asdict
 
+import numpy as np
+
 import columns
+import refs as refsmod
 import score
 
+_G = {}
 
-def _page(args):
-    pid, path, method, pdict, cache_dir, ref = args
-    p = columns.Params(**pdict)
-    gray, size = columns.load_gray(path, p.work_width, cache_dir)
-    g = columns.detect(gray, size, method, p)
-    return pid, score.match_page(g, ref["gutters"], ref["width"], ref["excluded"])
+
+def _init(sets, method, configs):
+    _G["refs"] = {name: json.load(open(d["refs"]))["pages"] for name, d in sets.items()}
+    _G["cache"] = {name: d["cache"] for name, d in sets.items()}
+    _G["method"] = method
+    _G["configs"] = configs
+
+
+def _page(task):
+    name, pid = task
+    ref = _G["refs"][name][pid]
+    gray, size = columns.load_cached(_G["cache"][name], pid)
+    out = {}
+    cur_key, ink = None, None
+    for key, pd in _G["configs"]:
+        p = columns.Params(**pd)
+        ik = (p.ink_ratio, p.bg_window)
+        if ik != cur_key:
+            ink, cur_key = columns.binarize(gray, p), ik
+        g = columns.detect(gray, size, _G["method"], p, ink)
+        m = score.match_page(g, ref["gutters"], ref["width"], ref["excluded"])
+        out[key] = [m["det_height"], m["matched_det_height"], m["ref_height"], m["matched_ref_height"]]
+    return name, out
+
+
+def run(a):
+    sets = json.loads(a.sets_json) if a.sets_json.lstrip().startswith("{") else json.load(open(a.sets_json))
+    bad = [n for n in sets if n not in refsmod.TUNING_SETS]
+    if bad:
+        raise SystemExit(f"tune.py works on the tuning sets only, not {bad}")
+    grid = json.loads(a.grid)
+    names = sorted(grid)
+    base = json.loads(a.base_json) if a.base_json else {}
+    configs = []
+    for combo in itertools.product(*(grid[n] for n in names)):
+        over = dict(base)
+        over.update(dict(zip(names, combo)))
+        p = columns.params_from(json.dumps(over))
+        configs.append((json.dumps(dict(zip(names, combo)), sort_keys=True), asdict(p)))
+    configs.sort(key=lambda c: (c[1]["ink_ratio"], c[1]["bg_window"], c[0]))
+    tasks = []
+    for name, d in sorted(sets.items()):
+        for pid in sorted(json.load(open(d["refs"]))["pages"]):
+            tasks.append((name, pid))
+    idx = [int(x) for x in str(a.shard_index).split(",")]
+    tasks = [t for i in idx for t in tasks[i:: a.shard_count]]
+    acc = {k: {n: np.zeros(5) for n in sets} for k, _ in configs}
+    t0 = time.time()
+    done = 0
+    with mp.Pool(a.workers, initializer=_init, initargs=(sets, a.method, configs)) as pool:
+        for name, out in pool.imap_unordered(_page, tasks, chunksize=2):
+            for k, v in out.items():
+                acc[k][name][:4] += v
+                acc[k][name][4] += 1
+            done += 1
+            if done % 50 == 0 or done == len(tasks):
+                print(f"pages {done}/{len(tasks)} ({len(configs)} configs, {time.time() - t0:.0f}s)", flush=True)
+    res = {k: {n: [float(x) for x in v] for n, v in s.items()} for k, s in acc.items()}
+    res["_meta"] = {"base": base, "method": a.method, "shard_count": a.shard_count,
+                    "shard_index": a.shard_index, "wall_seconds": round(time.time() - t0, 1)}
+    with open(a.out, "w") as f:
+        json.dump(res, f, sort_keys=True)
+    return 0
+
+
+def merge(a):
+    tot, meta = {}, []
+    for path in a.merge:
+        d = json.load(open(path))
+        meta.append(d.pop("_meta"))
+        for k, s in d.items():
+            for n, v in s.items():
+                tot.setdefault(k, {}).setdefault(n, np.zeros(5))
+                tot[k][n] += v
+    rows = []
+    for k, s in tot.items():
+        vecs = {n: np.array([[v[0], v[1], v[2], v[3]]]) for n, v in s.items()}
+        p, r, f, prs = score.pool(vecs)
+        rows.append((f, p, r, k, prs))
+    rows.sort(key=lambda x: -x[0])
+    for f, p, r, k, prs in rows[: a.top]:
+        per = " ".join(f"{n}:{x[0]:.3f}/{x[1]:.3f}" for n, x in sorted(prs.items()))
+        print(f"F1={f:.4f} P={p:.4f} R={r:.4f} {k} | {per}")
+    print(f"{len(rows)} configs; wall seconds per shard: {[m['wall_seconds'] for m in meta]}")
+    return 0
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--images", required=True)
-    ap.add_argument("--refs", required=True)
-    ap.add_argument("--cache-dir", required=True)
+    ap.add_argument("--sets-json")
     ap.add_argument("--method", choices=sorted(columns.METHODS), default="banded")
-    ap.add_argument("--grid", required=True, help="JSON object: parameter -> list of values")
-    ap.add_argument("--base-json", help="JSON object of fixed parameter overrides")
+    ap.add_argument("--grid")
+    ap.add_argument("--base-json")
     ap.add_argument("--workers", type=int, default=1)
-    ap.add_argument("--shard-index", type=int, default=0)
+    ap.add_argument("--shard-index", default="0", help="shard number, or a comma list of them")
     ap.add_argument("--shard-count", type=int, default=1)
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--out")
+    ap.add_argument("--merge", nargs="+")
+    ap.add_argument("--top", type=int, default=10)
     a = ap.parse_args(argv)
-    refs = json.load(open(a.refs))
-    if any(not k.startswith("s9-de-rz-") for k in refs):
-        raise SystemExit("tune.py works on de-rz only")
-    grid = json.loads(a.grid)
-    names = sorted(grid)
-    combos = list(itertools.product(*(grid[n] for n in names)))[a.shard_index:: a.shard_count]
-    base = json.loads(a.base_json) if a.base_json else {}
-    paths = {os.path.splitext(f)[0]: os.path.join(a.images, f) for f in os.listdir(a.images)}
-    res = {}
-    t0 = time.time()
-    pool = mp.Pool(a.workers) if a.workers > 1 else None
-    for ci, combo in enumerate(combos, 1):
-        over = dict(base)
-        over.update(dict(zip(names, combo)))
-        p = columns.params_from(json.dumps(over))
-        jobs = [(pid, paths[pid], a.method, asdict(p), a.cache_dir, refs[pid]) for pid in sorted(refs)]
-        rows = list(pool.imap_unordered(_page, jobs)) if pool else [_page(j) for j in jobs]
-        pr, rc, f1 = score.pooled([r for _, r in rows])
-        key = json.dumps(dict(zip(names, combo)), sort_keys=True)
-        res[key] = {"f1": round(f1, 4), "params": over, "precision": round(pr, 4), "recall": round(rc, 4)}
-        print(f"configs {ci}/{len(combos)} f1={f1:.3f} p={pr:.3f} r={rc:.3f} {key}", flush=True)
-    with open(a.out, "w") as f:
-        json.dump(res, f, sort_keys=True, indent=1)
-    print(f"done in {time.time() - t0:.0f}s")
-    return 0
+    if a.merge:
+        return merge(a)
+    if not (a.sets_json and a.grid and a.out):
+        ap.error("--sets-json, --grid and --out are required")
+    return run(a)
 
 
 if __name__ == "__main__":

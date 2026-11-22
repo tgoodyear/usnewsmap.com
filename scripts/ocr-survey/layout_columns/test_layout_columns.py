@@ -12,7 +12,9 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
 import columns  # noqa: E402
+import pagecache  # noqa: E402
 import refgutters  # noqa: E402
+import refs  # noqa: E402
 import score  # noqa: E402
 
 
@@ -247,3 +249,85 @@ def test_columns_cli_writes_sorted_json(tmp_path):
     assert set(data) == {"_meta", "a", "b"}
     assert len(data["a"]["gutters"]) == 2
     assert list(data) == sorted(data)
+
+
+# ---- second attempt: references, equal-weight pooling
+
+def test_gap_cap_drops_wide_gaps():
+    g = [[[100, 120, 0, 500]], [[200, 400, 0, 500]], [[10, 20, 0, 100], [30, 400, 100, 200]]]
+    out = refs.cap_gutters(g, 1000)  # cap 30 px
+    assert out == [[[100, 120, 0, 500]], [[10, 20, 0, 100]]]
+
+
+def row(ds, **kw):
+    base = {"dataset": ds, "width": 1000, "height": 1000, "text_regions": [], "nontext_regions": [],
+            "separators": [], "column_gutters": []}
+    base.update(kw)
+    return base
+
+
+def test_europeana_reference_is_the_vertical_separators():
+    r = row("biglam/europeana-newspapers-ground-truth",
+            separators=[{"box": [500, 100, 504, 900], "orientation": "vertical"},
+                        {"box": [0, 50, 900, 54], "orientation": "horizontal"}],
+            nontext_regions=[{"box": [0, 0, 10, 10], "type": "x"}])
+    ref = refs.row_reference(r)
+    assert ref["gutters"] == [[[500, 504, 100, 900]]]
+    assert ref["excluded"] == [[0, 0, 10, 10]]
+
+
+def test_finlam_percent_coordinates_are_scaled_and_gutters_rebuilt():
+    tr = [{"class": "ARTICLE-TEXT", "box": [10, 10, 45, 90]}, {"class": "ARTICLE-TEXT", "box": [46, 10, 90, 90]},
+          {"class": "ARTICLE-TITLE", "box": [0, 0, 100, 5]}]
+    r = row("Teklia/Newspapers-finlam", width=1400, height=2000, text_regions=tr,
+            nontext_regions=[{"box": [10, 10, 20, 20], "type": "picture"},
+                             {"box": [30, 30, 40, 40], "type": "announcement"}])
+    ref = refs.row_reference(r)
+    assert len(ref["gutters"]) == 1
+    x0, x1, y0, y1 = ref["gutters"][0][0]
+    assert (x0, x1, y0, y1) == (630.0, 644.0, 200.0, 1800.0)
+    assert ref["excluded"] == [[140.0, 200.0, 280.0, 400.0]]  # the announcement is not in the mask
+
+
+def test_liberte_uses_stored_column_gutters_with_cap():
+    r = row("Teklia/Newspapers-finlam-La-Liberte", column_gutters=[[[100, 110, 0, 50]], [[100, 400, 0, 50]]])
+    assert refs.row_reference(r)["gutters"] == [[[100, 110, 0, 50]]]
+
+
+def test_liberte_draw_is_hash_ordered():
+    ids = ["a", "b", "c"]
+    assert sorted(ids, key=refs.ll_order) == sorted(ids, key=lambda i: __import__("hashlib").sha256(("2107:ll:" + i).encode()).hexdigest())
+
+
+def test_pool_is_equal_weight_per_set():
+    import numpy as np
+    big = np.array([[1000.0, 1000.0, 1000.0, 1000.0]] * 10)   # P 1, R 1
+    small = np.array([[10.0, 0.0, 10.0, 0.0]])                # P 0, R 0
+    p, r, f, prs = score.pool({"big": big, "small": small})
+    assert (p, r) == (0.5, 0.5) and abs(f - 0.5) < 1e-12
+
+
+def test_pool_bootstrap_deterministic_and_within_set():
+    import numpy as np
+    v = {"a": np.array([[10.0, 8, 10, 7], [10, 9, 10, 6]]), "b": np.array([[5.0, 5, 5, 5]])}
+    assert score.pool_bootstrap(v) == score.pool_bootstrap(v)
+
+
+def test_score_sets_private_set_has_no_per_page():
+    ref = {"p1": {"gutters": [G(100, 120, 0, 1000)], "excluded": [], "width": 1000, "height": 1000}}
+    det = {"p1": {"gutters": [G(100, 120, 0, 1000)]}}
+    res = score.score_sets({"pub": {"detections": det, "refs": ref, "for_publication": True},
+                            "priv": {"detections": det, "refs": ref, "for_publication": False}})
+    assert "per_page" in res["per_set"]["pub"] and "per_page" not in res["per_set"]["priv"]
+    assert res["f1"] == 1.0
+
+
+def test_pagecache_roundtrip(tmp_path):
+    from PIL import Image
+    p = tmp_path / "a.png"
+    Image.fromarray(page(w=300, h=400)).save(p)
+    g, size = pagecache.to_gray(str(p), 2000)
+    assert g.shape == (400, 300) and size == (300, 400)
+    pagecache.save(str(tmp_path), "a", 2000, g, size)
+    g2, s2 = columns.load_cached(str(tmp_path), "a", 2000)
+    assert (g2 == g).all() and s2 == (300, 400)

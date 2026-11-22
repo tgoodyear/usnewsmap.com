@@ -105,6 +105,12 @@ def load_gray(path, work_width, cache_dir=None):
     return gray, (w0, h0)
 
 
+def load_cached(cache_dir, page_id, work_width=2000):
+    """Gray array and original size written by pagecache.py."""
+    z = np.load(os.path.join(cache_dir, f"{page_id}.{work_width}.npz"))
+    return z["gray"], (int(z["size"][0]), int(z["size"][1]))
+
+
 def binarize(gray, p):
     g = gray.astype(np.float32)
     win = max(15, int(gray.shape[1] * p.bg_window))
@@ -178,9 +184,10 @@ def valleys(profile, band_h, min_gutter_px, min_col_px, prominence, valley_max, 
 
 # ---------------------------------------------------------------- methods
 
-def find_banded(gray, p):
+def find_banded(gray, p, ink=None):
     h, w = gray.shape
-    ink = binarize(gray, p)
+    if ink is None:
+        ink = binarize(gray, p)
     bh = max(24, int(p.band_frac * h))
     stride = max(1, int(bh * (1 - p.band_overlap)))
     min_g = max(1, int(p.min_gutter * w))
@@ -225,9 +232,10 @@ def find_banded(gray, p):
     return out
 
 
-def find_fullheight(gray, p):
+def find_fullheight(gray, p, ink=None):
     h, w = gray.shape
-    ink = binarize(gray, p)
+    if ink is None:
+        ink = binarize(gray, p)
     rows = ink.sum(axis=1, dtype=np.float64)
     live = np.nonzero(rows >= 0.01 * rows.max())[0] if rows.max() > 0 else []
     if len(live) < 3:
@@ -242,12 +250,12 @@ def find_fullheight(gray, p):
 METHODS = {"banded": find_banded, "fullheight": find_fullheight}
 
 
-def detect(gray, orig_size, method, p):
+def detect(gray, orig_size, method, p, ink=None):
     """Gutters in original-image pixels: [x0, x1, y0, y1]."""
     sx = orig_size[0] / gray.shape[1]
     sy = orig_size[1] / gray.shape[0]
     return [[[round(s[0] * sx), round(s[1] * sx), round(s[2] * sy), round(s[3] * sy)] for s in g]
-            for g in METHODS[method](gray, p)]
+            for g in METHODS[method](gray, p, ink)]
 
 
 # ---------------------------------------------------------------- driver
@@ -281,6 +289,13 @@ def _one(args):
     return pid, {"gutters": g, "height": size[1], "width": size[0]}
 
 
+def _one_cached(args):
+    pid, method, pdict, cache_dir = args
+    p = Params(**pdict)
+    gray, size = load_cached(cache_dir, pid, p.work_width)
+    return pid, {"gutters": detect(gray, size, method, p), "height": size[1], "width": size[0]}
+
+
 def list_images(images_dir, ids_file=None):
     names = sorted(f for f in os.listdir(images_dir) if f.lower().endswith((".jpg", ".jpeg", ".png", ".ppm", ".tif", ".tiff")))
     if ids_file:
@@ -292,7 +307,9 @@ def list_images(images_dir, ids_file=None):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--images", required=True)
+    ap.add_argument("--images", help="directory of page images (or use --page-cache with --pages-from)")
+    ap.add_argument("--page-cache", help="directory written by pagecache.py")
+    ap.add_argument("--pages-from", help="reference JSON from refs.py: the page ids to run (with --page-cache)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--method", choices=sorted(METHODS), default="banded")
     ap.add_argument("--ids-file")
@@ -305,20 +322,25 @@ def main(argv=None):
     ap.add_argument("--params-json", help="JSON object overriding Params fields")
     a = ap.parse_args(argv)
     p = params_from(a.params_json)
-    paths = list_images(a.images, a.ids_file)[a.shard_index:: a.shard_count]
     refs = json.load(open(a.overlay_refs)) if a.overlay_refs else None
-    jobs = [(x, a.method, asdict(p), a.cache_dir, a.overlay_dir, refs) for x in paths]
+    if a.page_cache:
+        ids = sorted(json.load(open(a.pages_from))["pages"])[a.shard_index:: a.shard_count]
+        jobs = [(x, a.method, asdict(p), a.page_cache) for x in ids]
+    else:
+        paths = list_images(a.images, a.ids_file)[a.shard_index:: a.shard_count]
+        jobs = [(x, a.method, asdict(p), a.cache_dir, a.overlay_dir, refs) for x in paths]
+    worker = _one_cached if a.page_cache else _one
     res = {}
     t0 = time.time()
     if a.workers > 1:
         import multiprocessing as mp
         with mp.Pool(a.workers) as pool:
-            for i, (pid, r) in enumerate(pool.imap_unordered(_one, jobs), 1):
+            for i, (pid, r) in enumerate(pool.imap_unordered(worker, jobs), 1):
                 res[pid] = r
                 print(f"pages {i}/{len(jobs)}", flush=True)
     else:
         for i, j in enumerate(jobs, 1):
-            pid, r = _one(j)
+            pid, r = worker(j)
             res[pid] = r
             print(f"pages {i}/{len(jobs)}", flush=True)
     res["_meta"] = {"method": a.method, "params": asdict(p), "pages": len(jobs),

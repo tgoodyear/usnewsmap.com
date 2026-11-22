@@ -15,6 +15,11 @@ Matching, as frozen in the plan:
     reference height / all reference height. Pooled over pages, in pixels (a secondary figure
     pools heights as fractions of page height). F1 = 2PR/(P+R) from the pooled values.
   - Intervals: page bootstrap, 1,000 draws, seed 2107, 2.5 and 97.5 percentiles.
+  - Second attempt (--sets-json): precision and recall are computed per set from that set's pooled
+    heights, the pool's are the means over sets (equal weight), F1 = 2PR/(P+R) from the means; the
+    bootstrap resamples pages within each set and recomputes the pool. The reference side (3% gap cap,
+    Europeana separators, non-text masks) is built by refs.py. Sets whose refs file says
+    for_publication false (Colorado) get no per-page numbers in the output.
 
 Method follows jscancella/NYTribuneOCRExperiments (findText_usingSums.py, GPL-3.0), reimplemented;
 no code copied.
@@ -108,11 +113,17 @@ def match_page(det, ref, width, excluded):
     kept = [d for d in det if excluded_fraction(d, excluded) <= IGNORE_FRAC]
     m = MARGIN * width
     cands = []
+    hull = lambda g: (min(s[0] for s in g), max(s[1] for s in g), min(s[2] for s in g), max(s[3] for s in g))  # noqa: E731
+    dh = [hull(d) for d in kept]
+    rhh = [(hull(r), height(r)) for r in ref]
     for di, d in enumerate(kept):
         for ri, r in enumerate(ref):
-            rh = height(r)
+            (rx0, rx1, ry0, ry1), rh = rhh[ri]
             if rh <= 0:
                 continue
+            dx0, dx1, dy0, dy1 = dh[di]
+            if dy1 < ry0 or dy0 > ry1 or dx1 < rx0 - m or dx0 > rx1 + m:
+                continue  # cannot lie inside the gap anywhere (exact shortcut)
             cov = covered_height(d, r, m)
             if cov >= MIN_REF_COVER * rh:
                 cands.append((cov, di, ri))
@@ -196,15 +207,116 @@ def score(detections, refs):
     }
 
 
+# ---------------------------------------------------------------- several sets (second attempt)
+
+def page_rows(detections, refs):
+    """Per-page match sums for one set; detections: id -> {gutters}, refs: id -> reference page."""
+    out = {}
+    for pid in sorted(refs):
+        if pid not in detections:
+            raise SystemExit(f"no detections for {pid}")
+        r = refs[pid]
+        s = match_page(detections[pid]["gutters"], r["gutters"], r["width"], r["excluded"])
+        s["height_px"] = r["height"]
+        out[pid] = s
+    return out
+
+
+def _vec(rows):
+    return np.array([[r["det_height"], r["matched_det_height"], r["ref_height"], r["matched_ref_height"]]
+                     for r in rows], dtype=float).reshape(-1, 4)
+
+
+def set_pr(v):
+    """Precision and recall of one set from its pages' [det, matched det, ref, matched ref] heights."""
+    s = v.sum(axis=0)
+    return (s[1] / s[0] if s[0] > 0 else 0.0), (s[3] / s[2] if s[2] > 0 else 0.0)
+
+
+def pool(vecs):
+    """Equal-weight pool: precision and recall per set from that set's pooled heights, then the means
+    over sets; F1 from the means. vecs: set name -> array of per-page rows."""
+    prs = {k: set_pr(v) for k, v in sorted(vecs.items())}
+    p = float(np.mean([x[0] for x in prs.values()]))
+    r = float(np.mean([x[1] for x in prs.values()]))
+    f = 2 * p * r / (p + r) if p + r > 0 else 0.0
+    return p, r, f, prs
+
+
+def pool_bootstrap(vecs):
+    """Resample pages within each set (1,000 draws, seed 2107), recompute the pool."""
+    rng = np.random.default_rng(SEED)
+    names = sorted(vecs)
+    res = []
+    for _ in range(DRAWS):
+        sub = {k: vecs[k][rng.integers(0, len(vecs[k]), len(vecs[k]))] for k in names if len(vecs[k])}
+        p, r, f, _ = pool(sub)
+        res.append((p, r, f))
+    res = np.array(res)
+    out = {}
+    for i, k in enumerate(("precision", "recall", "f1")):
+        lo, hi = np.percentile(res[:, i], [2.5, 97.5])
+        out[k] = [round(float(lo), 4), round(float(hi), 4)]
+    return out
+
+
+def score_sets(sets, per_page=True):
+    """sets: name -> {detections, refs, for_publication}. Returns the pool and each set's figures."""
+    rows, vecs, per_set = {}, {}, {}
+    for name, d in sorted(sets.items()):
+        rows[name] = page_rows(d["detections"], d["refs"])
+        vecs[name] = _vec(list(rows[name].values()))
+    p, r, f, prs = pool(vecs)
+    for name in sorted(sets):
+        sp, sr = prs[name]
+        sf = 2 * sp * sr / (sp + sr) if sp + sr > 0 else 0.0
+        tot = {k: sum(x[k] for x in rows[name].values()) for k in
+               ("det_height", "det_ignored", "det_n", "matched_det_height", "matched_n",
+                "matched_ref_height", "ref_height", "ref_n")}
+        entry = {"f1": sf, "for_publication": sets[name].get("for_publication", True),
+                 "interval_95": bootstrap(list(rows[name].values())), "pages": len(rows[name]),
+                 "precision": sp, "recall": sr, "totals": tot}
+        if per_page and entry["for_publication"]:
+            entry["per_page"] = {pid: {k: (round(v, 2) if isinstance(v, float) else v) for k, v in x.items()}
+                                 for pid, x in rows[name].items()}
+        per_set[name] = entry
+    return {"f1": f, "interval_95": pool_bootstrap(vecs), "per_set": per_set, "precision": p, "recall": r}
+
+
+def main_sets(a):
+    spec = json.load(open(a.sets_json))
+    sets = {}
+    for name, d in sorted(spec.items()):
+        ref = json.load(open(d["refs"]))
+        det = {}
+        for path in d["detections"]:
+            x = json.load(open(path))
+            x.pop("_meta", None)
+            det.update(x)
+        sets[name] = {"detections": det, "refs": ref["pages"], "for_publication": ref.get("for_publication", True)}
+    res = score_sets(sets, per_page=not a.no_per_page)
+    res["for_publication"] = all(v["for_publication"] for v in res["per_set"].values())
+    with open(a.out, "w") as f:
+        json.dump(res, f, sort_keys=True, indent=1)
+    print(json.dumps({"f1": round(res["f1"], 4), "interval_95": res["interval_95"],
+                      "precision": round(res["precision"], 4), "recall": round(res["recall"], 4),
+                      "sets": {k: [round(v["precision"], 4), round(v["recall"], 4), round(v["f1"], 4)]
+                               for k, v in res["per_set"].items()}}, sort_keys=True))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--detections", nargs="+", required=True, help="shard files from columns.py")
-    ap.add_argument("--regions", required=True)
-    ap.add_argument("--selection", required=True)
+    ap.add_argument("--sets-json", help='several sets: {"NAME": {"refs": refs.json, "detections": [files]}}')
+    ap.add_argument("--detections", nargs="+", help="shard files from columns.py (one set, first attempt)")
+    ap.add_argument("--regions")
+    ap.add_argument("--selection")
     ap.add_argument("--out", required=True)
     ap.add_argument("--only-ca-page", action="store_true")
     ap.add_argument("--no-per-page", action="store_true")
     a = ap.parse_args(argv)
+    if a.sets_json:
+        return main_sets(a)
     det, meta = {}, []
     for path in a.detections:
         with open(path) as f:
