@@ -70,7 +70,13 @@ VALIDATE_NAMES = {0: "waiting", 1: "valid", 2: "invalid", 3: "invalid", 4: "inco
                   5: "invalid", 6: "invalid"}
 RESULT_SERIES = ("valid", "inconclusive", "invalid", "waiting", "error", "units", "elapsed_seconds",
                  "bundles")
-STEP_NAME = re.compile(r"usnm-boinc-step-[0-9]{8}T[0-9]{6}Z-([a-z0-9-]{1,40})")
+STEP_NAME = re.compile(r"usnm-boinc-step-[0-9]{8}T[0-9]{6}Z-([a-z0-9-]{1,50})")
+# The step runner ends a container's name in the process id (batch-inventory-native-feed-9-3672364),
+# so every run would be a series of its own. A process id is 4 or more digits; a plan's number
+# (native-feed-9, queue-feed-13) is not, and stays.
+PID_SUFFIX = re.compile(r"-[0-9]{4,}$")
+# The dashboard refuses a push of more series than this (usnm-ocr-dash throughput.rs MAX_SERIES).
+MAX_SERIES = 256
 PHASE_NAME = re.compile(r"[a-z0-9-]{1,40}")
 # The kinds of a failed tick's error, by its text up to the first colon or semicolon. A fixed list,
 # so a failure keeps its kind from one run to the next and no other text can reach a series name:
@@ -162,7 +168,22 @@ class Window:
                     if self.first + index * HOUR < start:
                         values[index] = None
 
+    def keep_largest(self, limit=MAX_SERIES):
+        """At most `limit` series, the ones with the most volume; the dashboard refuses a push
+        with more. Returns how many were dropped."""
+        dropped = len(self.series) - limit
+        if dropped <= 0:
+            return 0
+        volume = lambda name: sum(abs(v) for v in self.series[name] if v is not None)
+        keep = sorted(self.series, key=lambda name: (-volume(name), name))[:limit]
+        self.series = {name: self.series[name] for name in keep}
+        return dropped
+
     def document(self, source, limits):
+        dropped = self.keep_largest()
+        if dropped:
+            print(f"throughput-collect: {dropped} series dropped, the {MAX_SERIES} with the most volume kept",
+                  file=sys.stderr)
         return {
             "schema": SCHEMA,
             "source": source,
@@ -479,6 +500,11 @@ def collect_boinc(window, rows):
         window.add(f"{apps[appid]}_elapsed_seconds", hour, seconds)
 
 
+def step_series_name(match):
+    """The step's name without the process id the runner appends."""
+    return PID_SUFFIX.sub("", match[1])
+
+
 def collect_steps(window, events):
     """Each step container's run: the bridge lock is held for all of it. `events` are podman's
     start and died events, oldest first."""
@@ -497,12 +523,12 @@ def collect_steps(window, events):
         elif event["Name"] in started:
             begin = started.pop(event["Name"])
             window.spread("lock_seconds", begin, at)
-            window.spread(f"step_seconds.{match[1]}", begin, at)
-            window.add(f"step_runs.{match[1]}", at)
+            window.spread(f"step_seconds.{step_series_name(match)}", begin, at)
+            window.add(f"step_runs.{step_series_name(match)}", at)
     # The step still running holds the lock up to now.
     for name, begin in started.items():
         window.spread("lock_seconds", begin, window.now)
-        window.spread(f"step_seconds.{STEP_NAME.fullmatch(name)[1]}", begin, window.now)
+        window.spread(f"step_seconds.{step_series_name(STEP_NAME.fullmatch(name))}", begin, window.now)
 
 
 def boinc_rows(since):

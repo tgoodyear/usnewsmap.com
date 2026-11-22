@@ -520,6 +520,38 @@ class BoincTests(unittest.TestCase):
         self.assertAlmostEqual(w.series["step_seconds.spool-out"][2], 60, delta=1)
         self.assertNotIn("step_seconds.collect", w.series)
 
+    def test_step_series_drop_the_process_id_and_merge_runs(self):
+        w = window()
+        start = THIS_HOUR + 100
+        at = lambda epoch: datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.123456789Z")
+        events = []
+        for index, (name, pid) in enumerate([("batch-inventory-native-feed-9", 3672364),
+                                              ("batch-inventory-native-feed-9", 3672999),
+                                              ("claim-queue-feed-13", 1234)]):
+            full = f"usnm-boinc-step-20261101T1158{index:02d}Z-{name}-{pid}"
+            events += [{"Name": full, "Status": "start", "Time": at(start + index * 100)},
+                       {"Name": full, "Status": "died", "Time": at(start + index * 100 + 50)}]
+        collector.collect_steps(w, events)
+        self.assertEqual(w.series["step_runs.batch-inventory-native-feed-9"][2], 2)
+        self.assertAlmostEqual(w.series["step_seconds.batch-inventory-native-feed-9"][2], 100, delta=1)
+        self.assertEqual(w.series["step_runs.claim-queue-feed-13"][2], 1)
+        self.assertEqual([n for n in w.series if n[-5:].lstrip("-").isdigit() and len(n.rsplit("-", 1)[1]) >= 4], [])
+
+    def test_a_step_name_without_a_process_id_keeps_its_number(self):
+        match = collector.STEP_NAME.fullmatch("usnm-boinc-step-20261101T115840Z-native-feed-9")
+        self.assertEqual(collector.step_series_name(match), "native-feed-9")
+
+    def test_the_series_over_the_dashboards_limit_are_the_largest_kept(self):
+        w = window()
+        for i in range(collector.MAX_SERIES + 5):
+            w.add(f"s{i:03d}", THIS_HOUR, i + 1)
+        with patch("sys.stderr") as err:
+            document = w.document("controller", {})
+        self.assertEqual(len(document["series"]), collector.MAX_SERIES)
+        self.assertNotIn("s000", document["series"])
+        self.assertIn(f"s{collector.MAX_SERIES + 4:03d}", document["series"])
+        self.assertIn("5 series dropped", "".join(c.args[0] for c in err.write.call_args_list))
+
     def test_step_events_come_from_the_journals_podman_fields(self):
         line = lambda **fields: json.dumps({"SYSLOG_IDENTIFIER": "podman", "PODMAN_TYPE": "container", **fields})
         output = "\n".join([
