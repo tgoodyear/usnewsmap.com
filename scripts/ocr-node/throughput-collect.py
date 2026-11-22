@@ -82,7 +82,7 @@ PID_SUFFIX = re.compile(r"-[0-9]{4,}$")
 SCOPED_STEPS = ("archive-delete", "archive-write", "batch-inventory", "claim", "collect", "container-spot",
                 "dead-letter", "export", "native-spot", "release", "spool-out", "submit-remote")
 SCOPED_PID = re.compile(r"(?:%s)-[a-z0-9][a-z0-9-]*-[0-9]+(-[0-9]+)$" % "|".join(SCOPED_STEPS))
-# The dashboard refuses a push of more series than this (usnm-ocr-dash throughput.rs MAX_SERIES).
+# The dashboard refuses a push of more series than this (the dashboard crate's throughput MAX_SERIES).
 MAX_SERIES = 256
 DYNAMIC_PREFIXES = ("step_", "phase_")
 PHASE_NAME = re.compile(r"[a-z0-9-]{1,40}")
