@@ -1501,6 +1501,7 @@ def paused_by(maintenance):
         status = dict(line.split("=", 1) for line in run([
             "systemctl", "show", unit, "-p", "LoadState", "-p", "SubState",
             "-p", "ExecMainStartTimestampMonotonic", "-p", "ExecMainExitTimestampMonotonic",
+            "-p", "Result",
         ]).decode().splitlines() if "=" in line)
         if status.get("LoadState") != "loaded":
             continue
@@ -1516,7 +1517,7 @@ def paused_by(maintenance):
 
 def archive_runs(maintenance=()):
     """Each held-page archive unit's latest run as [started_at, ended_at], Unix seconds, oldest first;
-    ended_at is None while it runs. The units are the --maintenance-unit ones and every loaded unit
+    ended_at is None while it runs; a run that failed has a third item, True. The units are the --maintenance-unit ones and every loaded unit
     named like an archive (ARCHIVE_UNIT_GLOBS). systemd keeps only a unit's latest run, so the
     evaluator remembers the earlier ones (feed_status.archive_runs). A unit that never ran is left out."""
     raw = run(["systemctl", "list-units", "--all", "--plain", "--no-legend", "--full", "--no-pager",
@@ -1531,6 +1532,7 @@ def archive_runs(maintenance=()):
         status = dict(line.split("=", 1) for line in run([
             "systemctl", "show", unit, "-p", "LoadState", "-p", "SubState",
             "-p", "ExecMainStartTimestampMonotonic", "-p", "ExecMainExitTimestampMonotonic",
+            "-p", "Result",
         ]).decode().splitlines() if "=" in line)
         if status.get("LoadState") != "loaded":
             continue
@@ -1544,7 +1546,10 @@ def archive_runs(maintenance=()):
         if status.get("SubState") in ("start", "running") and start > end:
             runs.append([started, None])
         elif end >= start:
-            runs.append([started, max(started, int(now - (mono - end)))])
+            run_ended = [started, max(started, int(now - (mono - end)))]
+            if status.get("Result", "success") != "success":
+                run_ended.append(True)  # failed: it excuses no gap (feed_status.archive_excuse)
+            runs.append(run_ended)
     # One run is one entry: two units that report the same start and end (a parent and its child
     # pass) are the same run.
     runs = [list(r) for r in dict.fromkeys(tuple(r) for r in runs)]
@@ -1557,7 +1562,8 @@ def validate_archive_runs(runs, now):
     if not isinstance(runs, list) or len(runs) > MAX_ARCHIVE_RUNS:
         raise ValueError("invalid archive runs")
     for entry in runs:
-        if (not isinstance(entry, list) or len(entry) != 2 or natural(entry[0]) > now
+        if (not isinstance(entry, list) or len(entry) not in (2, 3) or natural(entry[0]) > now
+                or (len(entry) == 3 and entry[2] is not True)
                 or entry[1] is not None and not entry[0] <= natural(entry[1]) <= now):
             raise ValueError("invalid archive run")
 

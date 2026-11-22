@@ -455,6 +455,24 @@ class DurationTest(unittest.TestCase):
         self.state, self.facts["last_workunits"]["usnm_ocr"] = {}, NOW
         self.assertEqual(self.run_archive(0, 3600, lambda at: None)["state"], "firing")
 
+    def test_a_failed_archive_run_excuses_nothing(self):
+        # latest workunit is NOW - 10; the run overlapped the gap but failed.
+        def runs(at):
+            return [] if at < 600 else [[NOW + 600, NOW + 1200, True]]
+        self.assertEqual(self.run_archive(0, 3700, runs)["state"], "firing")
+        self.assertEqual(F.archive_excuse([[NOW + 600, NOW + 1200, NOW + 1300, True]], NOW - 10, NOW + 1300), None)
+        self.assertIsNotNone(F.archive_excuse([[NOW + 600, NOW + 1200, NOW + 1300]], NOW - 10, NOW + 1300))
+
+    def test_a_failed_flag_survives_remembering_and_a_run_before_the_gap_excuses_nothing(self):
+        runs = F.archive_runs([[NOW, NOW + 600, True]], [], NOW + 700)
+        self.assertEqual(runs, [[NOW, NOW + 600, NOW + 700, True]])
+        again = F.archive_runs([[NOW, NOW + 600, True]], runs, NOW + 800)
+        self.assertEqual(again, [[NOW, NOW + 600, NOW + 800, True]])
+        # Ended before the newest workunit: no overlap with the no-work window.
+        self.assertIsNone(F.archive_excuse([[NOW - 900, NOW - 300, NOW - 200]], NOW, NOW + 100))
+        # In progress when the gap began: overlap, excused until end plus a hold, capped.
+        self.assertEqual(F.archive_excuse([[NOW - 900, NOW + 600, NOW + 700]], NOW, NOW + 700), NOW + 600 + 3600)
+
     def test_two_runs_starting_in_the_same_second_one_still_running_sort(self):
         # One unit finished and another still running, started together: an end can be None.
         runs = F.archive_runs([[NOW, NOW + 600], [NOW, None]], [], NOW + 700)
