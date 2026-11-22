@@ -541,15 +541,41 @@ class BoincTests(unittest.TestCase):
         match = collector.STEP_NAME.fullmatch("usnm-boinc-step-20261101T115840Z-native-feed-9")
         self.assertEqual(collector.step_series_name(match), "native-feed-9")
 
+    def test_short_process_ids_are_stripped_and_plan_numbers_kept(self):
+        name = lambda n: collector.step_series_name(
+            collector.STEP_NAME.fullmatch(f"usnm-boinc-step-20261101T115840Z-{n}"))
+        for full, want in [("claim-queue-feed-13-998", "claim-queue-feed-13"),
+                           ("collect-native-feed-9-7", "collect-native-feed-9"),
+                           ("batch-inventory-native-feed-9-3672364", "batch-inventory-native-feed-9"),
+                           ("claim-queue-feed-13", "claim-queue-feed-13"),
+                           ("collect-native-feed-9", "collect-native-feed-9"),
+                           ("native-feed-9", "native-feed-9"), ("queue-feed-13", "queue-feed-13"),
+                           ("spool-out", "spool-out")]:
+            self.assertEqual(name(full), want)
+
+    def test_the_cap_keeps_every_fixed_series_and_ranks_only_step_and_phase(self):
+        w = window()
+        w.declare("ocr_bundles")
+        w.declare("lock_seconds")
+        w.add("ocr_units", THIS_HOUR, 1000)
+        for i in range(collector.MAX_SERIES + 5):
+            w.add(f"step_seconds.s{i:03d}", THIS_HOUR, i + 1)
+        with patch("sys.stderr"):
+            document = w.document("controller", {})
+        self.assertEqual(len(document["series"]), collector.MAX_SERIES)
+        for fixed in ("ocr_bundles", "lock_seconds", "ocr_units"):
+            self.assertIn(fixed, document["series"])
+        self.assertNotIn("step_seconds.s000", document["series"])
+
     def test_the_series_over_the_dashboards_limit_are_the_largest_kept(self):
         w = window()
         for i in range(collector.MAX_SERIES + 5):
-            w.add(f"s{i:03d}", THIS_HOUR, i + 1)
+            w.add(f"step_seconds.s{i:03d}", THIS_HOUR, i + 1)
         with patch("sys.stderr") as err:
             document = w.document("controller", {})
         self.assertEqual(len(document["series"]), collector.MAX_SERIES)
-        self.assertNotIn("s000", document["series"])
-        self.assertIn(f"s{collector.MAX_SERIES + 4:03d}", document["series"])
+        self.assertNotIn("step_seconds.s000", document["series"])
+        self.assertIn(f"step_seconds.s{collector.MAX_SERIES + 4:03d}", document["series"])
         self.assertIn("5 series dropped", "".join(c.args[0] for c in err.write.call_args_list))
 
     def test_step_events_come_from_the_journals_podman_fields(self):
