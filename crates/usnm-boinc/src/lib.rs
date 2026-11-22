@@ -59,8 +59,8 @@ pub mod surya;
 pub mod trust;
 pub mod worker;
 
-/// Bounded regular-file reads, also used for untrusted volunteer output.
-pub fn read(path: &Path, max: usize) -> anyhow::Result<Vec<u8>> {
+/// Open a regular file for reading, refusing a symlink.
+pub(crate) fn open_regular(path: &Path) -> anyhow::Result<File> {
     ensure!(
         std::fs::symlink_metadata(path)
             .with_context(|| format!("reading {}", path.display()))?
@@ -78,6 +78,13 @@ pub fn read(path: &Path, max: usize) -> anyhow::Result<Vec<u8>> {
     let f = options
         .open(path)
         .with_context(|| format!("reading {}", path.display()))?;
+    ensure!(f.metadata()?.is_file(), "not a regular file");
+    Ok(f)
+}
+
+/// Bounded regular-file reads, also used for untrusted volunteer output.
+pub fn read(path: &Path, max: usize) -> anyhow::Result<Vec<u8>> {
+    let f = open_regular(path)?;
     ensure!(
         f.metadata()?.is_file() && f.metadata()?.len() <= max as u64,
         "file over size limit"

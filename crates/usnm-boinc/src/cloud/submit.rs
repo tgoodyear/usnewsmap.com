@@ -408,12 +408,21 @@ fn ndlocr_inputs(job: &ndlocr::Job, unit: &Path, cap: usize) -> anyhow::Result<V
 /// The unit's staged inputs, checked as `quality::submit` checks them, under the physical names
 /// it stages them as (the places and quality-measure files are shared by name).
 fn quality_inputs(job: &QualityJob, unit: &Path, cap: usize) -> anyhow::Result<Vec<Upload>> {
-    let checked = quality::submit::load_checked(unit)?;
+    // A file over the cap is hashed in one chunked pass here and never held in memory.
+    let (checked, streamed) = quality::submit::check_unit(unit, cap)?;
     ensure!(checked.id == job.id, "the staged job changed");
     quality::submit::physical_names(job)
         .into_iter()
         .map(|(name, file)| {
             let path = unit.join(file);
+            if let Some(md5) = streamed.get(file) {
+                return Ok(Upload {
+                    name,
+                    len: std::fs::metadata(&path)?.len(),
+                    md5: md5.clone(),
+                    body: Body::File(path),
+                });
+            }
             let bytes = read(&path, quality::submit::limit(file))?;
             Ok(Upload::of(name, bytes, &path, cap))
         })
@@ -648,9 +657,22 @@ async fn put_large(cfg: &Config, r2: &R2, up: &Upload) -> anyhow::Result<()> {
             "the stored object for {name} differs from this file (or was not a single-part upload)"
         ))
         }
-        None => r2_put(r2, &key, path, up.len)
-            .await
-            .with_context(|| format!("uploading {name} to the bucket"))?,
+        None => {
+            let created = r2_put(r2, &key, path, up.len)
+                .await
+                .with_context(|| format!("uploading {name} to the bucket"))?;
+            if !created {
+                // Someone stored it between the HEAD and the PUT: fine if it is this file.
+                match r2_head(r2, &key).await? {
+                    Some(etag) if etag == up.md5 => {}
+                    _ => {
+                        return Err(anyhow!(
+                            "the stored object for {name} differs from this file (written while it was uploading)"
+                        ))
+                    }
+                }
+            }
+        }
     }
     let resp = cfg
         .client
@@ -683,6 +705,7 @@ fn r2_signed(
     method: &str,
     key: &str,
     len: Option<u64>,
+    extra: &[(&'static str, &str)],
 ) -> anyhow::Result<(Url, Vec<(&'static str, String)>)> {
     let mut url = r2.endpoint.clone();
     url.set_path(key);
@@ -692,6 +715,12 @@ fn r2_signed(
         _ => anyhow::bail!("--r2-endpoint has no host"),
     };
     let amz_date = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let mut signed = vec![
+        ("host", host.as_str()),
+        ("x-amz-content-sha256", sigv4::UNSIGNED_PAYLOAD),
+        ("x-amz-date", amz_date.as_str()),
+    ];
+    signed.extend_from_slice(extra);
     let authorization = sigv4::authorization(
         &r2.credentials,
         R2_REGION,
@@ -701,11 +730,7 @@ fn r2_signed(
             method,
             path: key,
             query: &[],
-            headers: &[
-                ("host", &host),
-                ("x-amz-content-sha256", sigv4::UNSIGNED_PAYLOAD),
-                ("x-amz-date", &amz_date),
-            ],
+            headers: &signed,
             payload_hash: sigv4::UNSIGNED_PAYLOAD,
         },
     );
@@ -714,6 +739,7 @@ fn r2_signed(
         ("x-amz-date", amz_date),
         ("authorization", authorization),
     ];
+    headers.extend(extra.iter().map(|(k, v)| (*k, (*v).to_owned())));
     if let Some(len) = len {
         headers.push(("content-length", len.to_string()));
     }
@@ -722,7 +748,7 @@ fn r2_signed(
 
 /// The object's MD5, from its ETag, or `None` when there is no such object.
 async fn r2_head(r2: &R2, key: &str) -> anyhow::Result<Option<String>> {
-    let (url, headers) = r2_signed(r2, "HEAD", key, None)?;
+    let (url, headers) = r2_signed(r2, "HEAD", key, None, &[])?;
     let mut rq = r2.client.head(url);
     for (k, v) in headers {
         rq = rq.header(k, v);
@@ -743,8 +769,9 @@ async fn r2_head(r2: &R2, key: &str) -> anyhow::Result<Option<String>> {
     Ok(Some(etag))
 }
 
-async fn r2_put(r2: &R2, key: &str, path: &Path, len: u64) -> anyhow::Result<()> {
-    let (url, headers) = r2_signed(r2, "PUT", key, Some(len))?;
+/// Create-only (`If-None-Match: *`, signed): `Ok(false)` when the object exists by now (412).
+async fn r2_put(r2: &R2, key: &str, path: &Path, len: u64) -> anyhow::Result<bool> {
+    let (url, headers) = r2_signed(r2, "PUT", key, Some(len), &[("if-none-match", "*")])?;
     let file = tokio::fs::File::open(path)
         .await
         .with_context(|| format!("opening {}", path.display()))?;
@@ -754,8 +781,11 @@ async fn r2_put(r2: &R2, key: &str, path: &Path, len: u64) -> anyhow::Result<()>
     }
     let resp = rq.send().await?;
     let status = resp.status();
+    if status == StatusCode::PRECONDITION_FAILED {
+        return Ok(false);
+    }
     ensure!(status.is_success(), "HTTP {status}");
-    Ok(())
+    Ok(true)
 }
 
 /// Create `jobs`, which share one input template.
@@ -940,6 +970,8 @@ mod tests {
         bucket_calls: Vec<(String, String, String, Option<String>)>,
         /// Names the register route was called for, with the body.
         registered: Vec<(String, Value)>,
+        /// An object another writer stores just before the next bucket PUT, which gets 412.
+        race: Option<Vec<u8>>,
     }
     type Shared = Arc<Mutex<Mock>>;
 
@@ -1020,6 +1052,16 @@ mod tests {
     ) -> StatusCode {
         let mut m = s.lock().unwrap();
         bucket_call(&mut m, "PUT", &h);
+        let key = format!("{bucket}/download/{name}");
+        if let Some(other) = m.race.take() {
+            m.bucket.insert(key, other);
+            return StatusCode::PRECONDITION_FAILED;
+        }
+        if h.get("if-none-match").and_then(|v| v.to_str().ok()) == Some("*")
+            && m.bucket.contains_key(&key)
+        {
+            return StatusCode::PRECONDITION_FAILED;
+        }
         m.bucket
             .insert(format!("{bucket}/download/{name}"), body.to_vec());
         StatusCode::OK
@@ -1720,7 +1762,7 @@ mod tests {
                 "{}",
                 put.1
             );
-            assert!(put.1.contains("/auto/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature="));
+            assert!(put.1.contains("/auto/s3/aws4_request, SignedHeaders=host;if-none-match;x-amz-content-sha256;x-amz-date, Signature="));
             assert!(!put.1.contains("secret-example-value"));
             assert_eq!(put.2, "UNSIGNED-PAYLOAD");
             assert_eq!(put.3.as_deref(), Some(page.len().to_string().as_str()));
@@ -1761,6 +1803,72 @@ mod tests {
         let m = s.lock().unwrap();
         assert_eq!(m.bucket[&format!("bucket/download/{page_name}")], b"other");
         assert!(m.registered.is_empty() && m.posts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn losing_the_create_race_is_fine_only_when_the_winner_stored_the_same_file() {
+        for (same, failed) in [(true, 0), (false, 1)] {
+            let root = tempfile::tempdir().unwrap();
+            let job = quality_unit(root.path(), 1, false);
+            let unit = root.path().join("units").join(&job.doc_id);
+            let page = std::fs::read(unit.join("page.jpg")).unwrap();
+            let page_name = format!("{}_page_jpg", job.id);
+            let mock = Mock {
+                race: Some(if same {
+                    page.clone()
+                } else {
+                    b"other".to_vec()
+                }),
+                ..Mock::default()
+            };
+            let (s, base) = serve(mock).await;
+            let c = quality_cfg(&base)
+                .with_max_upload(page.len() - 1)
+                .with_r2(r2_for(&base, root.path()));
+            let report = run(&c, root.path(), std::slice::from_ref(&job.doc_id), false)
+                .await
+                .unwrap();
+            assert_eq!(report.failed, failed, "{:?}", report.lines);
+            let m = s.lock().unwrap();
+            let calls: Vec<&str> = m.bucket_calls.iter().map(|c| c.0.as_str()).collect();
+            assert_eq!(calls, ["HEAD", "PUT", "HEAD"]);
+            assert_eq!(m.registered.len(), 1 - failed);
+            if failed == 1 {
+                assert!(report.lines[0].contains("differs"));
+                assert_eq!(m.bucket[&format!("bucket/download/{page_name}")], b"other");
+            }
+        }
+    }
+
+    #[test]
+    fn a_big_staged_file_is_checked_without_being_read_into_memory() {
+        let root = tempfile::tempdir().unwrap();
+        let job = quality_unit(root.path(), 1, false);
+        let unit = root.path().join("units").join(&job.doc_id);
+        let page = std::fs::read(unit.join("page.jpg")).unwrap();
+        // Over the cap, `check_unit` hashes the page from the file and hands back its MD5.
+        let (_, streamed) = quality::submit::check_unit(&unit, page.len() - 1).unwrap();
+        assert_eq!(streamed.keys().copied().collect::<Vec<_>>(), ["page.jpg"]);
+        assert_eq!(streamed["page.jpg"], md5_hex(&page));
+        // The upload is file-backed: no bytes held.
+        let ups = quality_inputs(&job, &unit, page.len() - 1).unwrap();
+        assert!(matches!(ups[0].body, Body::File(_)) && ups[0].md5 == md5_hex(&page));
+        assert!(ups[1..].iter().all(|u| matches!(u.body, Body::Bytes(_))));
+        // A changed big file is still caught.
+        let mut changed = page.clone();
+        changed[0] ^= 1;
+        std::fs::write(unit.join("page.jpg"), &changed).unwrap();
+        assert!(quality::submit::check_unit(&unit, page.len() - 1).is_err());
+    }
+
+    #[test]
+    fn the_chunked_hash_matches_the_whole_file_hash_across_chunk_boundaries() {
+        let data: Vec<u8> = (0..(3 << 20) + 17).map(|i| (i % 251) as u8).collect();
+        let (len, sha, md5) =
+            quality::submit::hash_reader(&mut std::io::Cursor::new(&data)).unwrap();
+        assert_eq!(len, data.len() as u64);
+        assert_eq!(sha, boinc::sha256(&data));
+        assert_eq!(md5, md5_hex(&data));
     }
 
     #[tokio::test]
