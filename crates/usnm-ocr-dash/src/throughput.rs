@@ -247,8 +247,7 @@ impl Throughput {
             bytes.len() as u64 <= MAX_FILE,
             "the throughput history would exceed {MAX_FILE} bytes"
         );
-        std::fs::write(&tmp, bytes)
-            .with_context(|| format!("writing {}", tmp.display()))?;
+        std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
         std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
         Ok(())
     }
@@ -1327,8 +1326,9 @@ mod tests {
         for batch in 0..64 {
             let series: serde_json::Map<String, serde_json::Value> = (0..MAX_SERIES)
                 .map(|i| {
-                    let values: Vec<f64> =
-                        (0..KEEP_HOURS).map(|h| 1e9 + (batch * 1000 + h) as f64).collect();
+                    let values: Vec<f64> = (0..KEEP_HOURS)
+                        .map(|h| 1e9 + (batch * 1000 + h) as f64)
+                        .collect();
                     (format!("s{batch}_{i}"), json!(values))
                 })
                 .collect();
@@ -1340,7 +1340,10 @@ mod tests {
                 break;
             }
         }
-        assert!(refused, "the history must stop growing before it is unreadable");
+        assert!(
+            refused,
+            "the history must stop growing before it is unreadable"
+        );
         let size = std::fs::metadata(dir.path().join("throughput.json"))
             .unwrap()
             .len();
