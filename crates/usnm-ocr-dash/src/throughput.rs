@@ -22,6 +22,8 @@ pub const KEEP_HOURS: i64 = 336;
 /// The hours the charts show: a week, in bars of [`BIN_HOURS`].
 pub const CHART_HOURS: i64 = 168;
 pub const BIN_HOURS: i64 = 4;
+/// Largest accepted push body: a collector sends a full retained window.
+pub const MAX_THROUGHPUT_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_SERIES: usize = 256;
 pub const MAX_LIMIT_CHARS: usize = 160;
 /// The largest history file read; a larger one isn't ours.
@@ -157,7 +159,7 @@ struct SourceState {
     limits: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct Stored {
     schema: u32,
     sources: BTreeMap<String, SourceState>,
@@ -202,6 +204,16 @@ impl Throughput {
     /// Merges a checked packet: its hours replace what was there, its unknown
     /// hours leave it alone. Then the history is cut to [`KEEP_HOURS`] and saved.
     pub fn apply(&mut self, p: Packet, now: DateTime<Utc>) -> anyhow::Result<()> {
+        let before = self.stored.clone();
+        let result = self.merge(p, now);
+        if result.is_err() {
+            // A push that can't be kept changes nothing.
+            self.stored = before;
+        }
+        result
+    }
+
+    fn merge(&mut self, p: Packet, now: DateTime<Utc>) -> anyhow::Result<()> {
         let oldest = hour_of(now) - KEEP_HOURS * HOUR;
         for (name, values) in &p.series {
             let series = self.stored.series.entry(name.clone()).or_default();
@@ -229,8 +241,13 @@ impl Throughput {
         };
         self.stored.schema = 1;
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(&self.stored)?)
-            .with_context(|| format!("writing {}", tmp.display()))?;
+        let bytes = serde_json::to_vec(&self.stored)?;
+        // Never write what open() would refuse to read back.
+        ensure!(
+            bytes.len() as u64 <= MAX_FILE,
+            "the throughput history would exceed {MAX_FILE} bytes"
+        );
+        std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
         std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
         Ok(())
     }
@@ -1297,6 +1314,43 @@ mod tests {
         t.apply(p, later).unwrap();
         assert_eq!(t.get("lock_seconds", end - (KEEP_HOURS - 1) * HOUR), None);
         assert!(t.stored.series["lock_seconds"].values.len() <= KEEP_HOURS as usize + 1);
+    }
+
+    #[test]
+    fn a_push_that_would_outgrow_the_read_limit_is_refused_and_the_file_reopens() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut t = Throughput::open(dir.path());
+        let end = hour_of(now()) - HOUR;
+        let first = end - (KEEP_HOURS - 1) * HOUR;
+        let mut refused = false;
+        for batch in 0..64 {
+            let series: serde_json::Map<String, serde_json::Value> = (0..MAX_SERIES)
+                .map(|i| {
+                    let values: Vec<f64> = (0..KEEP_HOURS)
+                        .map(|h| 1e9 + (batch * 1000 + h) as f64)
+                        .collect();
+                    (format!("s{batch}_{i}"), json!(values))
+                })
+                .collect();
+            let body = packet("boinc", first, serde_json::Value::Object(series));
+            assert!(body.len() <= MAX_THROUGHPUT_BYTES);
+            let p = parse(&body, "boinc", now()).unwrap();
+            if t.apply(p, now()).is_err() {
+                refused = true;
+                break;
+            }
+        }
+        assert!(
+            refused,
+            "the history must stop growing before it is unreadable"
+        );
+        let size = std::fs::metadata(dir.path().join("throughput.json"))
+            .unwrap()
+            .len();
+        assert!(size <= MAX_FILE);
+        let again = Throughput::open(dir.path());
+        assert!(again.error.is_none());
+        assert_eq!(again.stored.series.len(), t.stored.series.len());
     }
 
     #[test]

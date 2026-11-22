@@ -490,5 +490,135 @@ class ControllerTests(unittest.TestCase):
                     transport.step("handoff", "collect", JOB_ID="1" * 64)
 
 
+SHARED_STEP = """
+import fcntl, sys, time
+d, hold = sys.argv[1], float(sys.argv[2])
+gate = open(d + "/usnm-boinc-handoff.lock.gate", "a")
+fcntl.flock(gate, fcntl.LOCK_EX)
+lk = open(d + "/usnm-boinc-handoff.lock", "a")
+fcntl.flock(lk, fcntl.LOCK_SH)
+fcntl.flock(gate, fcntl.LOCK_UN)
+print("held", flush=True)
+time.sleep(hold)
+"""
+
+
+class WriterPreferenceTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def shared(self, hold):
+        proc = subprocess.Popen(["python3", "-c", SHARED_STEP, str(self.dir), str(hold)],
+                                stdout=subprocess.PIPE, text=True)
+        self.assertEqual(proc.stdout.readline().strip(), "held")
+        return proc
+
+    def test_exclusive_drain_is_not_starved_by_a_stream_of_shared_steps(self):
+        stop = threading.Event()
+        procs = []
+
+        def stream():
+            # Each shared step overlaps the next, so the hand-off lock is never free.
+            while not stop.is_set():
+                procs.append(self.shared(0.6))
+                stop.wait(0.2)
+
+        first = self.shared(0.6)
+        procs.append(first)
+        thread = threading.Thread(target=stream)
+        thread.start()
+        try:
+            started = time.monotonic()
+            lock.drain(self.dir, 20)
+            self.assertLess(time.monotonic() - started, 10)
+        finally:
+            stop.set()
+            thread.join()
+            for proc in procs:
+                proc.wait()
+
+    def test_drain_acquires_before_deadline_with_continuously_overlapping_holders(self):
+        # Several shared holders each hold the hand-off lock for 1 s and arrive every 0.15 s,
+        # so at least one always holds it; the drain's gate keeps newcomers out.
+        stop = threading.Event()
+        procs = []
+
+        def stream():
+            while not stop.is_set():
+                procs.append(self.shared(1.0))
+                stop.wait(0.15)
+
+        procs.append(self.shared(1.0))
+        thread = threading.Thread(target=stream)
+        thread.start()
+        try:
+            time.sleep(0.5)
+            started = time.monotonic()
+            lock.drain(self.dir, 8)
+            self.assertLess(time.monotonic() - started, 4)
+        finally:
+            stop.set()
+            thread.join()
+            for proc in procs:
+                proc.wait()
+
+    def test_shared_drain_lets_the_gate_go_before_recording_its_holder(self):
+        seen = []
+        real = lock.note_holder
+
+        def spy(*args, **kwargs):
+            gate = open(self.dir / lock.GATE, "a")
+            try:
+                fcntl.flock(gate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                seen.append(True)
+            except BlockingIOError:
+                seen.append(False)
+            finally:
+                gate.close()
+            return real(*args, **kwargs)
+
+        with patch.object(lock, "note_holder", spy):
+            lock.drain(self.dir, 2, plan="p-1")
+        self.assertTrue(seen and all(seen))
+
+    def test_shared_step_waits_while_an_exclusive_drain_waits(self):
+        holder = self.shared(1.5)
+        result = []
+        thread = threading.Thread(target=lambda: result.append(lock.drain(self.dir, 20)))
+        thread.start()
+        time.sleep(0.4)
+        started = time.monotonic()
+        late = self.shared(0.1)  # blocks on the gate until the drain is through
+        waited = time.monotonic() - started
+        holder.wait()
+        thread.join()
+        late.wait()
+        self.assertGreater(waited, 0.5, "a new shared step must queue behind the waiting drain")
+
+    def test_timeout_names_the_holder_and_holders_are_cleaned_up(self):
+        held = open(self.dir / lock.HANDOFF_LOCK, "a")
+        fcntl.flock(held, fcntl.LOCK_EX)
+        path = lock.note_holder(self.dir, lock.HANDOFF_LOCK, "handoff:export", plan="p-1")
+        with self.assertRaises(lock.LockError) as caught:
+            lock.drain(self.dir, 0.3)
+        self.assertIn(f"pid {os.getpid()} step handoff:export plan p-1", str(caught.exception))
+        self.assertIn(lock.HANDOFF_LOCK, str(caught.exception))
+        # The gate is let go after the failed wait.
+        gate = open(self.dir / lock.GATE, "a")
+        fcntl.flock(gate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        gate.close()
+        lock.clear_holder(path)
+        fcntl.flock(held, fcntl.LOCK_UN)
+        lock.drain(self.dir, 1)
+        self.assertEqual(list(self.dir.glob("*.holder*")), [])
+
+    def test_unknown_holder_is_said_so(self):
+        self.assertIn("holder unknown", lock.holder_text(self.dir, lock.STEP_LOCK))
+
+
 if __name__ == "__main__":
     unittest.main()

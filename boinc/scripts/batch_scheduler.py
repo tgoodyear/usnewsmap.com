@@ -816,12 +816,22 @@ class Admission:
     lock a plan sees every other plan's claims and exports as they stand (no page exported by
     two plans) and every workunit they created (no cap passed by two plans each filling the same
     room). acquire() waits up to `wait_secs` and returns whether it holds the lock; a plan that
-    doesn't get it does none of those things this tick, which is always safe."""
+    doesn't get it does none of those things this tick, which is always safe.
+
+    Priority: flock queues nobody in order, so a plan whose tick waits behind eight or ten others
+    can wait its whole `wait_secs` and publish nothing. A `priority` plan (the main OCR plan by
+    default, --admission-priority-plan) therefore holds a shared flock on `<path>.waiting` while it
+    waits; any other plan takes the admission lock only when it can take that marker exclusively,
+    that is, while no priority plan waits, and otherwise keeps polling within its own wait. A
+    holder is never preempted, so a priority plan waits for at most the one tick holding the lock.
+    The marker is a flock, so it goes with a crashed process."""
 
     def __init__(self, path, wait_secs=DEFAULT_ADMISSION_WAIT_SECS, *, poll_secs=1.0, clock=time.monotonic,
-                 sleep=time.sleep):
+                 sleep=time.sleep, priority=False):
         require(0 <= wait_secs <= MAX_ADMISSION_WAIT_SECS, "invalid --admission-wait-secs")
         self.path = Path(path)
+        self.marker_path = self.path.with_name(self.path.name + ".waiting")
+        self.priority = priority
         self.wait_secs = wait_secs
         self.poll_secs = poll_secs
         self.clock = clock
@@ -834,24 +844,48 @@ class Admission:
     def held(self):
         return self._file is not None
 
+    def _try_admission(self, handle, marker):
+        """One nonblocking attempt at the admission lock. A non-priority plan holds the marker
+        exclusively through the attempt, so no priority plan can mark itself waiting between the
+        check and the admission (it blocks for that instant); while a priority plan waits the
+        exclusive take fails and the plan is not admitted. The marker is released before the
+        caller sleeps or, once admitted, returns."""
+        if not self.priority:
+            try:
+                fcntl.flock(marker, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            return False
+        finally:
+            if not self.priority:
+                fcntl.flock(marker, fcntl.LOCK_UN)
+
     def acquire(self):
         require(self._file is None, "the admission lock is already held")
         handle = self.path.open("a")
+        marker = self.marker_path.open("a")
         started = self.clock()
         try:
+            if self.priority:
+                fcntl.flock(marker, fcntl.LOCK_SH)
             while True:
-                try:
-                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if self._try_admission(handle, marker):
                     break
-                except BlockingIOError:
-                    if self.clock() - started >= self.wait_secs:
-                        handle.close()
-                        self.waited = self.clock() - started
-                        return False
-                    self.sleep(self.poll_secs)
+                if self.clock() - started >= self.wait_secs:
+                    handle.close()
+                    marker.close()
+                    self.waited = self.clock() - started
+                    return False
+                self.sleep(self.poll_secs)
         except BaseException:
             handle.close()
+            marker.close()
             raise
+        marker.close()  # drops the waiting marker, if this plan held it
         self.waited = self.clock() - started
         self._file = handle
         return True
@@ -5486,6 +5520,10 @@ def main(argv=None):
                         help="how long to wait for --admission-lock before this tick claims, exports, submits "
                              f"and replays nothing (0 to {MAX_ADMISSION_WAIT_SECS}; default "
                              f"{DEFAULT_ADMISSION_WAIT_SECS})")
+    parser.add_argument("--admission-priority-plan", action="append", default=[], metavar="PLAN",
+                        help="with --plan-scope: a plan that other plans yield --admission-lock to while it "
+                             "waits (repeatable). Without it, the plans for app usnm_ocr (the main queue "
+                             "feed) have priority and the native plans don't")
     parser.add_argument("--onprem-handoff", action="append", choices=sorted(ONPREM_HANDOFF), default=[],
                         help="run this hand-off step (claim, with its release, or collect) on the on-prem BOINC "
                              "host through step_command instead of the Azure hand-off job; repeat for both (#967)")
@@ -5641,7 +5679,10 @@ def main(argv=None):
                 tick_kwargs["other_app_budget"] = args.other_app_budget
             admission = None
             if args.plan_scope:
-                admission = tick_kwargs["admission"] = Admission(args.admission_lock, args.admission_wait_secs)
+                priority = (config.get("plan") in args.admission_priority_plan if args.admission_priority_plan
+                            else config.get("app", OCR_APP_NAME) == OCR_APP_NAME)
+                admission = tick_kwargs["admission"] = Admission(
+                    args.admission_lock, args.admission_wait_secs, priority=priority)
                 if args.check_state_dir:
                     # Read again under the admission lock, before any claim (#1836).
                     tick_kwargs["refresh_sibling_claims"] = functools.partial(

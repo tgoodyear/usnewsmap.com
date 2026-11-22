@@ -779,24 +779,51 @@ case $TARGET:$STEP in
     [ -z "$PLAN_SCOPE" ] || plan_lock=usnm-boinc-handoff.plan-$PLAN_SCOPE.lock ;;
 esac
 lock_started=$SECONDS
-# take_lock FD [FLOCK OPTION]: waits for the lock on FD for what is left of the lock wait.
+# Who holds a lock, for the failure text: the sidecar files handoff_lock.py note-holder writes.
+holders_of() { python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" holders --lock-dir "$RUN_DIR" --lock "$1" 2> /dev/null || echo "$1 holder unknown"; }
+# take_lock FD LOCKFILE [FLOCK OPTION]: waits for the lock on FD for what is left of the lock wait.
 take_lock() {
   local left
   if [ "$lock_wait" -eq 0 ]; then
-    flock -n ${2:+"$2"} "$1" || die "another bridge step is running on this host - wait for it to end first"
+    flock -n ${3:+"$3"} "$1" || die "another bridge step is running on this host - wait for it to end first ($(holders_of "$2"))"
   else
     left=$((lock_wait - (SECONDS - lock_started)))
     [ "$left" -gt 0 ] || left=0
-    flock -w "$left" ${2:+"$2"} "$1" || die "another bridge step still holds the lock after ${lock_wait}s"
+    flock -w "$left" ${3:+"$3"} "$1" || die "another bridge step still holds the lock after ${lock_wait}s ($(holders_of "$2"))"
   fi
 }
+# note_holder LOCKFILE [--shared]: records this runner as a holder, removed when it ends.
+holder_files=()
+note_holder() {
+  local lock=$1; shift
+  python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" ${PLAN_SCOPE:+--plan "$PLAN_SCOPE"} note-holder --lock-dir "$RUN_DIR" --lock "$lock" \
+    --step "$TARGET:$STEP" --pid $$ "$@" 2> /dev/null || return 0
+  if [ "${1:-}" = --shared ]; then holder_files+=("$RUN_DIR/$lock.holder.$$"); else holder_files+=("$RUN_DIR/$lock.holder"); fi
+}
+clear_holders() { [ ${#holder_files[@]} -eq 0 ] || rm -f "${holder_files[@]}"; }
+trap 'rm -f "${held_stdin:-}" "${archive_stdin:-}"; clear_holders' EXIT
+# The hand-off lock goes through its gate (writer preference): an exclusive taker holds the gate
+# while it waits, so a stream of shared steps cannot starve it; a shared taker takes the gate
+# exclusively too, but only until it holds the hand-off lock. The order is gate, hand-off lock, plan lock.
+gate_file=""
+[ "$lock_file" != usnm-boinc-handoff.lock ] || gate_file=usnm-boinc-handoff.lock.gate
+if [ -n "$gate_file" ]; then
+  exec 8> "$RUN_DIR/$gate_file"
+  take_lock 8 "$gate_file"
+fi
 exec 9> "$RUN_DIR/$lock_file"
 if [ -n "$plan_lock" ]; then
-  take_lock 9 -s
+  take_lock 9 "$lock_file" -s
+  # Turnstile: the gate goes at once, before the holder-recording subprocess.
+  [ -z "$gate_file" ] || exec 8>&-
+  note_holder "$lock_file" --shared
   exec 7> "$RUN_DIR/$plan_lock"
-  take_lock 7
+  take_lock 7 "$plan_lock"
+  note_holder "$plan_lock"
 else
-  take_lock 9
+  take_lock 9 "$lock_file"
+  note_holder "$lock_file"
+  [ -z "$gate_file" ] || exec 8>&-
 fi
 step_timeout=$((step_timeout - (SECONDS - lock_started)))
 [ "$step_timeout" -gt 0 ] || die "step deadline expired while waiting for the bridge lock"
@@ -820,7 +847,7 @@ if [ -n "$archive_stdin" ]; then
   exit "$rc"
 fi
 envfile=$(mktemp "$RUN_DIR/usnm-boinc-step.XXXXXX")
-trap 'rm -f "$envfile"' EXIT
+trap 'rm -f "${held_stdin:-}" "${archive_stdin:-}" "$envfile"; clear_holders' EXIT
 # The settings as parsed above, one per line, so a file without a final newline can't run its
 # last setting into the step's own.
 if [ "$TARGET" = publish ]; then

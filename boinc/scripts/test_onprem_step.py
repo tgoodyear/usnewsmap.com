@@ -734,6 +734,43 @@ class OnpremStep(unittest.TestCase):
                 self.assertFalse(Path(self.conf.name, "podman-args").exists())
 
     @unittest.skipUnless(shutil.which("flock"), "native flock is required")
+    def test_holder_records_really_run_and_name_the_holder_on_refusal(self):
+        import fcntl
+        import shlex
+
+        root = Path(self.conf.name, "handoff-root").resolve()
+        root.mkdir(mode=0o700)
+        script = f'exec {shlex.quote(shutil.which("flock"))} "$@"\n'
+        env = {"USNM_BOINC_HANDOFF_ROOT": str(root)}
+        args = ("--env", "prod", "--step", "submit", "--wait-mins", "1")
+        directory = Path(self.conf.name, "run")
+        directory.mkdir()
+        # The runner records itself (exclusive path, no shared flag, under set -u) while it runs.
+        seen = Path(self.conf.name, "holder-seen")
+        first = Path(self.conf.name, "first-bin")
+        first.mkdir()
+        (first / "podman").write_text(
+            "#!/usr/bin/env bash\n"
+            f"cp {shlex.quote(str(directory))}/usnm-boinc-step.lock.holder {shlex.quote(str(seen))}\n")
+        (first / "podman").chmod(0o755)
+        path = f"{first}:{Path(self.conf.name, 'bin')}:{os.environ['PATH']}"
+        done, _ = self.run_for_real(*args, flock_script=script, extra_env={**env, "PATH": path})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue(seen.exists(), "note-holder never recorded the runner")
+        self.assertFalse((directory / "usnm-boinc-step.lock.holder").exists())
+        # A refused runner names the live holder instead of "holder unknown".
+        tool = Path(__file__).with_name("handoff_lock.py")
+        subprocess.run(["python3", str(tool), "--root", str(root), "note-holder", "--lock-dir", str(directory),
+                        "--lock", "usnm-boinc-step.lock", "--step", "bridge:other", "--pid", str(os.getpid())],
+                       check=True, capture_output=True)
+        with (directory / "usnm-boinc-step.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            done, _ = self.run_for_real(*args, flock_script=script, extra_env=env)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("bridge:other", done.stderr)
+        self.assertNotIn("holder unknown", done.stderr)
+
+    @unittest.skipUnless(shutil.which("flock"), "native flock is required")
     def test_real_mutex_refuses_overlap_times_out_and_then_accepts_a_released_lock(self):
         import fcntl
         import shlex
@@ -1254,7 +1291,7 @@ class ArchiveSteps(unittest.TestCase):
         self.assertEqual(json.loads(done.stdout), {"deleted": 1, "gone": 0})
         self.assertFalse((self.root / self.name).exists())
         # The hand-off lock, exclusively (no plan scope): flock -n 9 (the host's lock wait is 0).
-        self.assertEqual(self.flock_calls.read_text().splitlines(), ["-n 9"])
+        self.assertEqual(self.flock_calls.read_text().splitlines(), ["-n 8", "-n 9"])
         new = f"dispatch/jobs/{self.JOB}/record.json"
         done = self.step("archive-write", f"ARCHIVE_OBJECT={new}", "EXPECTED_HANDOFF_URL=/handoff-state",
                          stdin=b"{}", ssh=True)
@@ -1271,12 +1308,12 @@ class ArchiveSteps(unittest.TestCase):
     def test_a_change_waits_for_the_lock_as_long_as_the_caller_asks(self):
         done = self.delete([{"name": self.name, "etag": self.etag(self.name)}], lock_wait=300)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertRegex(self.flock_calls.read_text(), r"^-w [0-9]+ 9$")
+        self.assertRegex(self.flock_calls.read_text(), r"^-w [0-9]+ 8\n-w [0-9]+ 9$")
 
     def test_a_plan_scoped_change_shares_the_hand_off_lock_and_takes_its_plans_own(self):
         done = self.delete([{"name": self.name, "etag": self.etag(self.name)}], "PLAN_SCOPE=native-feed-7")
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(self.flock_calls.read_text().splitlines(), ["-n -s 9", "-n 7"])
+        self.assertEqual(self.flock_calls.read_text().splitlines(), ["-n 8", "-n -s 9", "-n 7"])
 
     def test_a_change_is_fenced_by_the_controllers_lock(self):
         module = self.lock()
