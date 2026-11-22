@@ -20,6 +20,8 @@
 
 **Figure 1.** Character error (share of syllabary letters wrong, lower is better) at PSM 13 (Tesseract's single-line mode). No interval is drawn; the intervals for the differences are in the text. Source: the table in step 3.
 
+**What the published data holds.** The `report-2026-11-cherokee` data set has the 2,160 line crops with their New Testament reference lines (`testset-v2/aligned.jsonl`), 20 New Testament reference pages, every reading and the hand-check answers. It does not hold the full New Testament text, the word lists built from it, or ChrEn. The numbers that depend on them (the word-list coverage rows and the dictionary comparison) can be checked only by rebuilding the text from the pinned PDFs, whose sha256 are in `testset-v2/manifest.json`, and fetching ChrEn from its repository.
+
 ### Findings in detail
 
 - **Volume.** usnewsmap.com searches 324 pages of the _Cherokee Phoenix_ (82 issues, 1828-03-06 to 1833-10-19). They hold about 85,000 words of Cherokee syllabary, on 191 pages. That is 32% of the 1,023 pages LoC and GHN list for the paper. Images of the other 699 pages are already on our storage, without OCR. No other Cherokee-language newspaper is in the index. The largest one outside it is the _Cherokee Advocate_ (1844–1906), 895 issues on the Gateway to Oklahoma History.
@@ -68,8 +70,8 @@ Machine-readable Cherokee text, for vocabulary and as possible ground truth:
 
 | Corpus                                                                              | Size                                                         | Terms                                          | Kind                                                    |
 | ----------------------------------------------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------- | ------------------------------------------------------- |
-| Cherokee New Testament, 1860 (our word lists)                                       | About 115,700 words per edition                              | CC0                                            | Typeset                                                 |
-| [ChrEn](https://github.com/ZhangShiyue/ChrEn/tree/master/data) (Zhang et al., 2020) | 206,000 Cherokee tokens, 38,000 forms; 14,151 sentence pairs | Research use; copyright stays with the sources | Typeset books, 56% New Testament, OCR corrected by hand |
+| Cherokee New Testament, 1860 (word lists built from it; not in the published data) | About 115,700 words per edition                              | CC0                                            | Typeset                                                 |
+| [ChrEn](https://github.com/ZhangShiyue/ChrEn/tree/master/data) (Zhang et al., 2020; not in the published data) | 206,000 Cherokee tokens, 38,000 forms; 14,151 sentence pairs | Research use; copyright stays with the sources | Typeset books, 56% New Testament, OCR corrected by hand |
 | [DAILP](https://dailp.northeastern.edu)                                             | 87 documents                                                 | CC BY-NC 4.0                                   | Letters, notices, stories; mostly manuscript            |
 | Cherokee Wikipedia                                                                  | 999 articles, about 40,000 words                             | CC BY-SA                                       | Modern, born digital                                    |
 
