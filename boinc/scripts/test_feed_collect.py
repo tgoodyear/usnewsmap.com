@@ -3041,6 +3041,20 @@ class PlanTickTests(unittest.TestCase):
         self.assertEqual(F.PLAN_STATES_SEEN, C.PLAN_STATES)
 
 
+class PausedByValidationTests(unittest.TestCase):
+    def test_only_paused_by_forms_on_a_paused_tick_pass(self):
+        paused = {"ok": None, "seconds": 0, "finished_at": NOW}
+        for good in (C.PAUSED_TIMERS, C.PAUSED_MARKER, "usnm-boinc-held-archive@queue-feed-13.service"):
+            with self.subTest(good=good):
+                C.validate_tick({**paused, "paused_by": good}, NOW)
+        for bad in (True, ["x"], "free text", "", 1):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(ValueError, "pause"):
+                    C.validate_tick({**paused, "paused_by": bad}, NOW)
+        with self.assertRaisesRegex(ValueError, "pause"):
+            C.validate_tick({"ok": True, "seconds": 5, "finished_at": NOW, "paused_by": C.PAUSED_MARKER}, NOW)
+
+
 class PausedAndReasonTests(unittest.TestCase):
     def systemd(self, units, timers):
         """A fake systemctl: `units` maps archive unit -> (SubState, start, end); `timers` maps timer -> ActiveState."""

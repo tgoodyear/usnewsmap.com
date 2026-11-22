@@ -645,6 +645,8 @@ def controller_signals(check, tick, now):
     progress = tick["progress"]
     published, first, pending = progress["published_at"], progress["first_tick_at"], progress["pending"]
     paused = tick.get("paused_by")
+    if not isinstance(paused, str):
+        paused = None  # feed_collect.validate_tick admits only its own pause names
     if pending is None:
         stalled = None
     elif paused:

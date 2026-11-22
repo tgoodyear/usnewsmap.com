@@ -199,6 +199,8 @@ PLANS_ERROR = "plans_unavailable"
 # unit's name. The scheduled units are usnm-boinc-held-archive*.service, the hand-run ones
 # usnm-held-archive-*.service (controller-tick.sh's skip_reason).
 ARCHIVE_UNIT_GLOBS = ("usnm-boinc-held-archive*.service", "usnm-held-archive-*.service")
+# A maintenance unit paused_by() may name: a --maintenance-unit or an archive unit.
+PAUSE_UNIT = re.compile(r"[A-Za-z0-9@_.:-]{1,200}\.service")
 ARCHIVE_UNIT = re.compile(r"usnm-(?:boinc-held-archive|held-archive-)[A-Za-z0-9@_.-]*\.service")
 MAX_ARCHIVE_RUNS = 16
 
@@ -464,6 +466,14 @@ def validate_tick(tick, now, fresh_s=900):
             not isinstance(name, str) or not NAME.fullmatch(name) or natural(count) > 10**9
             for name, count in latest.items()):
         raise ValueError("invalid controller cap counts")
+    if tick.get("paused_by") is not None:
+        # A pause hides controller_progress (feed_status), so only paused_by()'s own forms count,
+        # and only on the paused tick's shape: nothing ran.
+        paused = tick["paused_by"]
+        if (not isinstance(paused, str)
+                or not (paused in (PAUSED_TIMERS, PAUSED_MARKER) or PAUSE_UNIT.fullmatch(paused))
+                or tick["ok"] is not None or tick["seconds"] != 0):
+            raise ValueError("invalid controller pause")
     if tick.get("tick_n") is not None:
         natural(tick["tick_n"])
     if tick.get("tick_p50_s") is not None and (
