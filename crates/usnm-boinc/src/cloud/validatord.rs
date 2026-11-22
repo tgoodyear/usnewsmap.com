@@ -14,6 +14,7 @@
 //! `usnm_ndlocr` and `usnm_quality` have an init and a compare script and answer in the server's
 //! pairwise `matches` form instead; see `pairwise`.
 mod pairwise;
+use super::hmac::hmac_sha256_hex;
 use super::pull::{self, OutFile};
 use crate::gold::{job::MAX_RESULT, validate};
 use anyhow::{bail, ensure, Context};
@@ -100,30 +101,6 @@ fn token_matches(given: &str, want: &str) -> bool {
 /// recommended freshness window).
 const SIGNATURE_WINDOW_SECS: i64 = 300;
 const SIGNATURE_PREFIX: &str = "v1=";
-
-/// HMAC-SHA-256 (RFC 2104) of the concatenated `parts`, in lowercase hex. Written out here so the
-/// service needs no `hmac` crate; the tests pin it to the RFC 4231 vectors.
-fn hmac_sha256_hex(key: &[u8], parts: &[&[u8]]) -> String {
-    let mut k = [0u8; 64];
-    if key.len() > 64 {
-        k[..32].copy_from_slice(&Sha256::digest(key));
-    } else {
-        k[..key.len()].copy_from_slice(key);
-    }
-    let mut inner = Sha256::new();
-    inner.update(k.map(|b| b ^ 0x36));
-    for p in parts {
-        inner.update(p);
-    }
-    let mut outer = Sha256::new();
-    outer.update(k.map(|b| b ^ 0x5c));
-    outer.update(inner.finalize());
-    outer
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
 
 /// Checks the signature headers of a call against its raw body. `Err` is the reason to send
 /// back; it never says which part of the MAC differed.
@@ -791,23 +768,6 @@ mod tests {
             rq = rq.header("X-CB-Signature", s);
         }
         rq.send().await.unwrap().status().as_u16()
-    }
-
-    #[test]
-    fn hmac_matches_the_rfc_4231_vectors() {
-        let hex = |parts: &[&[u8]], key: &[u8]| hmac_sha256_hex(key, parts);
-        assert_eq!(
-            hex(&[b"Hi ", b"There"], &[0x0b; 20]),
-            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
-        );
-        // A key longer than the block is hashed first (test case 6).
-        assert_eq!(
-            hex(
-                &[b"Test Using Larger Than Block-Size Key - Hash Key First"],
-                &[0xaa; 131]
-            ),
-            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
-        );
     }
 
     #[tokio::test]

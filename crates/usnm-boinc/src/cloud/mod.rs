@@ -4,8 +4,10 @@
 //! unchanged. See docs/boinc/server/bridge-steps.md, "Pull from the cloud BOINC server".
 //! `cloud pull-results` writes the same spool from a results bucket the server exported to.
 pub mod cli;
+mod hmac;
 pub mod pull;
 pub mod pull_results;
+mod sigv4;
 pub mod spool_out;
 pub mod submit;
 #[cfg(any(test, feature = "cloud-validatord"))]

@@ -1,9 +1,13 @@
 //! `cloud submit`: jobs the controller already exported, to the cloud server's admin API.
 //!
-//! Two apps: `usnm_ocr` (the default) and `usnm_ndlocr`, whose staged units
-//! (`<root>/units/<doc>/`) go the same way: two inputs each, put and then created in chunks. An
-//! ndlocr unit already marked `submitted` (or `submitting`) on-prem is skipped, because this
-//! command only reads the on-prem state.
+//! Three apps: `usnm_ocr` (the default), `usnm_ndlocr` and `usnm_quality`, whose staged units
+//! (`<root>/units/<doc>/`) go the same way: their inputs put, then the jobs created in chunks. A
+//! unit already marked `submitted` (or `submitting`) on-prem is skipped, because this command
+//! only reads the on-prem state.
+//!
+//! An input over the admin API's body cap (a quality page is 230 MB to 1 GB) is put straight to
+//! the R2 bucket with a single-part SigV4 `PUT` and then registered with
+//! `POST /admin/v1/files/<name>/register`, which takes the size and MD5 from the stored object.
 //!
 //! For `usnm_ocr`, only plain first-attempt single-page jobs go: retries, bundled and line jobs, and failed
 //! records are skipped. Records are only read (no lock, no save). Each job's two inputs are put
@@ -11,8 +15,9 @@
 //! jobs that uploaded are created in chunks. Safe to repeat: a same-contents upload is
 //! idempotent and an existing job name counts as already submitted.
 use super::pull::{admin_url, checked_base, http_client};
+use super::sigv4;
 use crate::{
-    dir, load, ndlocr, read, records,
+    dir, load, ndlocr, quality, read, records,
     submit::{limits, max_error_results, schedule},
     Record, Stage,
 };
@@ -21,16 +26,20 @@ use md5::{Digest, Md5};
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fmt,
     path::{Path, PathBuf},
+    time::Duration,
 };
-use usnm_ocr_contract::boinc;
+use usnm_ocr_contract::{boinc, quality::Job as QualityJob};
 
 const INPUT_TEMPLATE: &str = include_str!("../../../../boinc/apps/usnm_ocr_in");
 const RESULT_TEMPLATE: &str = include_str!("../../../../boinc/apps/usnm_ocr_out");
 const NDLOCR_INPUT_TEMPLATE: &str = include_str!("../../../../boinc/apps/usnm_ndlocr_in");
 const NDLOCR_RESULT_TEMPLATE: &str = include_str!("../../../../boinc/apps/usnm_ndlocr_out");
+const QUALITY_INPUT_TEMPLATE: &str = include_str!("../../../../boinc/apps/usnm_quality_in");
+const QUALITY_QE_INPUT_TEMPLATE: &str = include_str!("../../../../boinc/apps/usnm_quality_qe_in");
+const QUALITY_RESULT_TEMPLATE: &str = include_str!("../../../../boinc/apps/usnm_quality_out");
 /// The zone plan's request body limit on Free and Pro, which caps one admin upload.
 const MAX_UPLOAD: usize = 100 * 1000 * 1000;
 
@@ -42,6 +51,8 @@ pub enum App {
     Ocr,
     #[value(name = "usnm_ndlocr")]
     Ndlocr,
+    #[value(name = "usnm_quality")]
+    Quality,
 }
 
 impl App {
@@ -49,18 +60,14 @@ impl App {
         match self {
             App::Ocr => "usnm_ocr",
             App::Ndlocr => ndlocr::APP,
-        }
-    }
-    fn input_template(self) -> &'static str {
-        match self {
-            App::Ocr => INPUT_TEMPLATE,
-            App::Ndlocr => NDLOCR_INPUT_TEMPLATE,
+            App::Quality => quality::APP,
         }
     }
     fn result_template(self) -> &'static str {
         match self {
             App::Ocr => RESULT_TEMPLATE,
             App::Ndlocr => NDLOCR_RESULT_TEMPLATE,
+            App::Quality => QUALITY_RESULT_TEMPLATE,
         }
     }
 }
@@ -70,28 +77,74 @@ enum Item {
     Ocr(Box<Record>),
     /// The job and its unit directory.
     Ndlocr(Box<ndlocr::Job>, PathBuf),
+    Quality(Box<QualityJob>, PathBuf),
 }
 
 impl Item {
     fn skip_reason(&self) -> Option<&'static str> {
         match self {
             Item::Ocr(record) => skip_reason(record),
-            Item::Ndlocr(_, unit) => ndlocr_skip_reason(unit),
+            Item::Ndlocr(_, unit) | Item::Quality(_, unit) => unit_skip_reason(unit),
         }
     }
-    fn inputs(&self, root: &Path) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+    /// The files to put, checked as the on-prem submission checks them. A file over `cap` bytes
+    /// is not held in memory: it is read again from its path when it goes up.
+    fn inputs(&self, root: &Path, cap: usize) -> anyhow::Result<Vec<Upload>> {
         match self {
-            Item::Ocr(record) => inputs(root, record),
-            Item::Ndlocr(job, unit) => ndlocr_inputs(job, unit),
+            Item::Ocr(record) => inputs(root, record, cap),
+            Item::Ndlocr(job, unit) => ndlocr_inputs(job, unit, cap),
+            Item::Quality(job, unit) => quality_inputs(job, unit, cap),
         }
     }
     fn spec(&self) -> anyhow::Result<JobSpec> {
         match self {
             Item::Ocr(record) => spec(record),
             Item::Ndlocr(job, _) => ndlocr_spec(job),
+            Item::Quality(job, _) => quality_spec(job),
         }
     }
 }
+
+/// One input file on its way to the server.
+struct Upload {
+    name: String,
+    len: u64,
+    md5: String,
+    body: Body,
+}
+
+enum Body {
+    Bytes(Vec<u8>),
+    /// Streamed from disk, for a file over the admin cap.
+    File(PathBuf),
+}
+
+impl Upload {
+    fn of(name: String, bytes: Vec<u8>, path: &Path, cap: usize) -> Upload {
+        let md5 = hex(&Md5::digest(&bytes));
+        let len = bytes.len() as u64;
+        let body = if bytes.len() > cap {
+            Body::File(path.to_owned())
+        } else {
+            Body::Bytes(bytes)
+        };
+        Upload {
+            name,
+            len,
+            md5,
+            body,
+        }
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// R2's S3 API region.
+const R2_REGION: &str = "auto";
+/// The most one single-part S3 upload takes.
+const MAX_SINGLE_PUT: u64 = 5 * 1000 * 1000 * 1000;
 /// The server's message for a duplicate workunit name.
 const EXISTS: &str = "a job with this name exists";
 
@@ -102,6 +155,75 @@ pub struct Config {
     dry_run: bool,
     client: Client,
     app: App,
+    /// The largest body the admin upload takes; a bigger input goes through `r2`.
+    max_upload: usize,
+    r2: Option<R2>,
+}
+
+/// The R2 bucket behind the server's files, for inputs over the admin upload cap.
+pub struct R2 {
+    endpoint: Url,
+    bucket: String,
+    credentials: sigv4::Credentials,
+    /// No total timeout: a gigabyte takes as long as the link does.
+    client: Client,
+}
+
+impl R2 {
+    /// `endpoint` is the S3 API root (`https://<account>.r2.cloudflarestorage.com`). The
+    /// credentials file holds the access key id on its first line and the secret on its second.
+    pub fn new(endpoint: &str, bucket: &str, credentials_file: &Path) -> anyhow::Result<R2> {
+        let text = std::fs::read_to_string(credentials_file)
+            .with_context(|| format!("reading {}", credentials_file.display()))?;
+        let mut lines = text.lines().map(str::trim);
+        let (Some(id), Some(secret)) = (lines.next(), lines.next()) else {
+            anyhow::bail!(
+                "the R2 credentials file must hold the access key id on line 1 and the secret on line 2"
+            );
+        };
+        ensure!(
+            !id.is_empty() && !secret.is_empty(),
+            "the R2 credentials file has an empty access key id or secret"
+        );
+        ensure!(!bucket.is_empty(), "--r2-bucket is empty");
+        let mut endpoint = checked_endpoint(endpoint)?;
+        endpoint
+            .path_segments_mut()
+            .map_err(|()| anyhow!("--r2-endpoint cannot carry a path"))?
+            .pop_if_empty();
+        ensure!(
+            endpoint.path().is_empty() || endpoint.path() == "/",
+            "--r2-endpoint must be the server root, without a path"
+        );
+        Ok(R2 {
+            endpoint,
+            bucket: bucket.to_owned(),
+            credentials: sigv4::Credentials {
+                access_key_id: id.to_owned(),
+                secret_access_key: secret.to_owned(),
+            },
+            client: Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(15))
+                .build()?,
+        })
+    }
+}
+
+/// https, or plain http for a loopback host only (the signature is the only secret on the wire,
+/// but the object is still the campaign's data).
+fn checked_endpoint(endpoint: &str) -> anyhow::Result<Url> {
+    let url = Url::parse(endpoint).context("--r2-endpoint")?;
+    let host = url.host_str().unwrap_or("");
+    let loopback = host
+        .trim_matches(['[', ']'])
+        .parse::<std::net::IpAddr>()
+        .map_or(host.eq_ignore_ascii_case("localhost"), |a| a.is_loopback());
+    ensure!(
+        url.scheme() == "https" || (url.scheme() == "http" && loopback),
+        "--r2-endpoint must be https (plain http is allowed only for a loopback host)"
+    );
+    Ok(url)
 }
 
 impl Config {
@@ -118,7 +240,21 @@ impl Config {
             dry_run,
             client: http_client()?,
             app: App::default(),
+            max_upload: MAX_UPLOAD,
+            r2: None,
         })
+    }
+
+    /// Put inputs over the admin upload cap straight to this bucket.
+    pub fn with_r2(mut self, r2: R2) -> Config {
+        self.r2 = Some(r2);
+        self
+    }
+
+    #[cfg(test)]
+    fn with_max_upload(mut self, max: usize) -> Config {
+        self.max_upload = max;
+        self
     }
 
     /// Submit this app's units instead of `usnm_ocr`'s.
@@ -155,6 +291,9 @@ struct InputFile {
 
 #[derive(Serialize)]
 struct JobSpec {
+    /// The input template this job is created with (the request carries it, not each job).
+    #[serde(skip)]
+    input_template: &'static str,
     name: String,
     input_files: Vec<InputFile>,
     min_quorum: u32,
@@ -193,6 +332,7 @@ fn spec(record: &Record) -> anyhow::Result<JobSpec> {
     let id = &record.job.id;
     let (delay_bound, priority) = schedule(record.job.message.reason);
     Ok(JobSpec {
+        input_template: INPUT_TEMPLATE,
         name: record.job.workunit(),
         input_files: [format!("{id}_page"), format!("{id}_request_json")]
             .map(|name| InputFile { name })
@@ -234,8 +374,8 @@ fn skip_reason(record: &Record) -> Option<&'static str> {
     }
 }
 
-/// Why this ndlocr unit is not sent: the on-prem submit has already taken it.
-fn ndlocr_skip_reason(unit: &Path) -> Option<&'static str> {
+/// Why this ndlocr or quality unit is not sent: the on-prem submit has already taken it.
+fn unit_skip_reason(unit: &Path) -> Option<&'static str> {
     if unit.join("submitted").exists() {
         Some("already submitted on-prem (cloud submit only reads the on-prem state)")
     } else if unit.join("submitting").exists() {
@@ -245,8 +385,8 @@ fn ndlocr_skip_reason(unit: &Path) -> Option<&'static str> {
     }
 }
 
-/// The unit's staged inputs as `ndlocr::submit` checks them: (physical name, bytes).
-fn ndlocr_inputs(job: &ndlocr::Job, unit: &Path) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+/// The unit's staged inputs as `ndlocr::submit` checks them.
+fn ndlocr_inputs(job: &ndlocr::Job, unit: &Path, cap: usize) -> anyhow::Result<Vec<Upload>> {
     let id = &job.id;
     let scan = read(&unit.join("page"), boinc::MAX_SCAN)?;
     ensure!(
@@ -254,19 +394,71 @@ fn ndlocr_inputs(job: &ndlocr::Job, unit: &Path) -> anyhow::Result<Vec<(String, 
         "staged scan changed"
     );
     let meta = read(&unit.join(ndlocr::JOB_FILE), boinc::MAX_JSON)?;
-    let files = vec![
-        (format!("{id}_page"), scan),
-        (format!("{id}_ndlocr_json"), meta),
-    ];
-    for (name, body) in &files {
-        ensure!(
-            body.len() <= MAX_UPLOAD,
-            "{name} is {} bytes, over the {MAX_UPLOAD}-byte admin upload cap; stage it with a \
-             single-part PUT to R2 and POST /admin/v1/files/{name}/register instead",
-            body.len()
-        );
-    }
-    Ok(files)
+    Ok(vec![
+        Upload::of(format!("{id}_page"), scan, &unit.join("page"), cap),
+        Upload::of(
+            format!("{id}_ndlocr_json"),
+            meta,
+            &unit.join(ndlocr::JOB_FILE),
+            cap,
+        ),
+    ])
+}
+
+/// The unit's staged inputs, checked as `quality::submit` checks them, under the physical names
+/// it stages them as (the places and quality-measure files are shared by name).
+fn quality_inputs(job: &QualityJob, unit: &Path, cap: usize) -> anyhow::Result<Vec<Upload>> {
+    let checked = quality::submit::load_checked(unit)?;
+    ensure!(checked.id == job.id, "the staged job changed");
+    quality::submit::physical_names(job)
+        .into_iter()
+        .map(|(name, file)| {
+            let path = unit.join(file);
+            let bytes = read(&path, quality::submit::limit(file))?;
+            Ok(Upload::of(name, bytes, &path, cap))
+        })
+        .collect()
+}
+
+/// The value after `flag` in `create_work`'s arguments.
+fn flag_value<'a>(args: &'a [String], flag: &str) -> anyhow::Result<&'a str> {
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .map(String::as_str)
+        .with_context(|| format!("create_work_args has no {flag}"))
+}
+
+/// The job as `quality::submit::create_work_args` gives `create_work`, read from those very
+/// arguments so the two cannot drift. The sticky inputs (places, quality measure) are marked in
+/// the input template, as on-prem.
+fn quality_spec(job: &QualityJob) -> anyhow::Result<JobSpec> {
+    let args = quality::submit::create_work_args(job);
+    let value = |flag| flag_value(&args, flag);
+    Ok(JobSpec {
+        input_template: if job.qe.is_some() {
+            QUALITY_QE_INPUT_TEMPLATE
+        } else {
+            QUALITY_INPUT_TEMPLATE
+        },
+        name: job.workunit(),
+        input_files: quality::submit::physical_names(job)
+            .into_iter()
+            .map(|(name, _)| InputFile { name })
+            .collect(),
+        min_quorum: value("--min_quorum")?.parse()?,
+        target_nresults: value("--target_nresults")?.parse()?,
+        max_error_results: value("--max_error_results")?.parse()?,
+        max_total_results: value("--max_total_results")?.parse()?,
+        max_success_results: value("--max_success_results")?.parse()?,
+        rsc_fpops_est: value("--rsc_fpops_est")?.parse()?,
+        rsc_fpops_bound: value("--rsc_fpops_bound")?.parse()?,
+        rsc_memory_bound: value("--rsc_memory_bound")?.parse()?,
+        rsc_disk_bound: value("--rsc_disk_bound")?.parse()?,
+        delay_bound: value("--delay_bound")?.parse()?,
+        // `create_work` is given no priority, so its default.
+        priority: 0,
+    })
 }
 
 /// The job as `ndlocr::create_work_args` gives `create_work`, from the same constants.
@@ -274,6 +466,7 @@ fn ndlocr_spec(job: &ndlocr::Job) -> anyhow::Result<JobSpec> {
     use ndlocr::limits;
     let id = &job.id;
     Ok(JobSpec {
+        input_template: NDLOCR_INPUT_TEMPLATE,
         name: job.workunit(),
         input_files: [format!("{id}_page"), format!("{id}_ndlocr_json")]
             .map(|name| InputFile { name })
@@ -293,10 +486,34 @@ fn ndlocr_spec(job: &ndlocr::Job) -> anyhow::Result<JobSpec> {
     })
 }
 
-/// Load one ndlocr unit under `<root>/units/<doc>`.
-fn load_unit(root: &Path, doc: &str) -> anyhow::Result<Item> {
-    crate::assess::check_doc_id(doc)?;
+/// A unit directory name that stays under `<root>/units/`.
+fn check_unit_name(doc: &str) -> anyhow::Result<()> {
+    ensure!(
+        !doc.is_empty()
+            && doc != "."
+            && doc != ".."
+            && doc
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')),
+        "not a unit name: {doc:?}"
+    );
+    Ok(())
+}
+
+/// Load one ndlocr or quality unit under `<root>/units/<doc>`. A quality unit's inputs are
+/// checked when they are read for upload, not here, so a whole campaign loads fast.
+fn load_unit(app: App, root: &Path, doc: &str) -> anyhow::Result<Item> {
     let unit = root.join("units").join(doc);
+    if app == App::Quality {
+        check_unit_name(doc)?;
+        let job: QualityJob = serde_json::from_slice(&read(
+            &unit.join(quality::JOB_FILE),
+            usnm_ocr_contract::quality::MAX_JOB_JSON,
+        )?)?;
+        job.validate()?;
+        return Ok(Item::Quality(Box::new(job), unit));
+    }
+    crate::assess::check_doc_id(doc)?;
     let job = ndlocr::load_job(&unit)?;
     ensure!(
         usnm_core::ids::PageKey::from_doc_id(doc)?.to_string() == job.page,
@@ -324,37 +541,40 @@ fn load_items(
                 .map(|id| (id.clone(), load(root, id).map(|r| Item::Ocr(Box::new(r)))))
                 .collect()
         }
-        (App::Ndlocr, true) => {
+        (App::Ndlocr | App::Quality, true) => {
             let dir = root.join("units");
             let mut docs = Vec::new();
             for entry in
                 std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))?
             {
                 let entry = entry?;
-                if entry.file_type()?.is_dir() {
+                // A quality unit is a directory with a job record, as on-prem.
+                if entry.file_type()?.is_dir()
+                    && (app != App::Quality || entry.path().join(quality::JOB_FILE).exists())
+                {
                     docs.push(entry.file_name().to_string_lossy().into_owned());
                 }
             }
             docs.sort();
             docs.into_iter()
                 .map(|doc| {
-                    let item = load_unit(root, &doc);
+                    let item = load_unit(app, root, &doc);
                     (doc, item)
                 })
                 .collect()
         }
-        (App::Ndlocr, false) => {
+        (App::Ndlocr | App::Quality, false) => {
             let mut seen = BTreeSet::new();
             ids.iter()
                 .filter(|id| seen.insert(id.as_str()))
-                .map(|id| (id.clone(), load_unit(root, id)))
+                .map(|id| (id.clone(), load_unit(app, root, id)))
                 .collect()
         }
     })
 }
 
 /// The record's staged inputs as `submit_unit` checks them: (physical name, bytes).
-fn inputs(root: &Path, record: &Record) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+fn inputs(root: &Path, record: &Record, cap: usize) -> anyhow::Result<Vec<Upload>> {
     let id = &record.job.id;
     let input = dir(root, id)?;
     let request = read(&input.join("request.json"), boinc::MAX_REQUEST)?;
@@ -366,20 +586,26 @@ fn inputs(root: &Path, record: &Record) -> anyhow::Result<Vec<(String, Vec<u8>)>
         "staged scan changed"
     );
     Ok(vec![
-        (format!("{id}_page"), page),
-        (format!("{id}_request_json"), request),
+        Upload::of(format!("{id}_page"), page, &input.join("page"), cap),
+        Upload::of(
+            format!("{id}_request_json"),
+            request,
+            &input.join("request.json"),
+            cap,
+        ),
     ])
 }
 
-async fn put(cfg: &Config, name: &str, body: Vec<u8>) -> anyhow::Result<()> {
-    let md5: String = Md5::digest(&body)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+async fn put(cfg: &Config, up: Upload) -> anyhow::Result<()> {
+    let name = &up.name;
+    let body = match up.body {
+        Body::Bytes(bytes) => bytes,
+        Body::File(_) => unreachable!("a file over the cap goes through put_large"),
+    };
     let resp = cfg
         .client
         .put(admin_url(&cfg.base, &["files", name]))
-        .query(&[("md5", md5.as_str()), ("no_delete", "1")])
+        .query(&[("md5", up.md5.as_str()), ("no_delete", "1")])
         .bearer_auth(&cfg.token)
         .body(body)
         .send()
@@ -393,6 +619,146 @@ async fn put(cfg: &Config, name: &str, body: Vec<u8>) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Deserialize)]
+struct Registered {
+    nbytes: u64,
+    md5: String,
+}
+
+/// An input over the admin cap: a single-part `PUT` to `download/<name>` in the bucket (R2 keeps
+/// the body's MD5 as the ETag of a single-part object, up to 5 GB), then the register call,
+/// which records the stored object's size and MD5 under the name.
+async fn put_large(cfg: &Config, r2: &R2, up: &Upload) -> anyhow::Result<()> {
+    let Body::File(path) = &up.body else {
+        unreachable!("only a file goes through put_large")
+    };
+    let name = &up.name;
+    ensure!(
+        up.len <= MAX_SINGLE_PUT,
+        "{name} is {} bytes, over the 5 GB a single-part R2 upload takes",
+        up.len
+    );
+    let key = format!("/{}/download/{name}", r2.bucket);
+    // The object may be there already (the shared places and quality-measure files are, after the
+    // first unit): same contents, nothing to send; other contents, never overwrite.
+    match r2_head(r2, &key).await? {
+        Some(etag) if etag == up.md5 => {}
+        Some(_) => {
+            return Err(anyhow!(
+            "the stored object for {name} differs from this file (or was not a single-part upload)"
+        ))
+        }
+        None => r2_put(r2, &key, path, up.len)
+            .await
+            .with_context(|| format!("uploading {name} to the bucket"))?,
+    }
+    let resp = cfg
+        .client
+        .post(admin_url(&cfg.base, &["files", name, "register"]))
+        .bearer_auth(&cfg.token)
+        .json(&serde_json::json!({ "no_delete": true }))
+        .send()
+        .await
+        .with_context(|| format!("registering {name}"))?;
+    let status = resp.status();
+    ensure!(status.is_success(), "registering {name}: HTTP {status}");
+    let reg: Registered = resp
+        .json()
+        .await
+        .with_context(|| format!("reading the register reply for {name}"))?;
+    ensure!(
+        reg.md5 == up.md5 && reg.nbytes == up.len,
+        "the server registered {name} as {} bytes with MD5 {}, not {} bytes with MD5 {}",
+        reg.nbytes,
+        reg.md5,
+        up.len,
+        up.md5
+    );
+    Ok(())
+}
+
+/// The signed headers of one request to the bucket. Nothing here is logged.
+fn r2_signed(
+    r2: &R2,
+    method: &str,
+    key: &str,
+    len: Option<u64>,
+) -> anyhow::Result<(Url, Vec<(&'static str, String)>)> {
+    let mut url = r2.endpoint.clone();
+    url.set_path(key);
+    let host = match (url.host_str(), url.port()) {
+        (Some(h), Some(p)) => format!("{h}:{p}"),
+        (Some(h), None) => h.to_owned(),
+        _ => anyhow::bail!("--r2-endpoint has no host"),
+    };
+    let amz_date = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let authorization = sigv4::authorization(
+        &r2.credentials,
+        R2_REGION,
+        "s3",
+        &amz_date,
+        &sigv4::Request {
+            method,
+            path: key,
+            query: &[],
+            headers: &[
+                ("host", &host),
+                ("x-amz-content-sha256", sigv4::UNSIGNED_PAYLOAD),
+                ("x-amz-date", &amz_date),
+            ],
+            payload_hash: sigv4::UNSIGNED_PAYLOAD,
+        },
+    );
+    let mut headers = vec![
+        ("x-amz-content-sha256", sigv4::UNSIGNED_PAYLOAD.to_owned()),
+        ("x-amz-date", amz_date),
+        ("authorization", authorization),
+    ];
+    if let Some(len) = len {
+        headers.push(("content-length", len.to_string()));
+    }
+    Ok((url, headers))
+}
+
+/// The object's MD5, from its ETag, or `None` when there is no such object.
+async fn r2_head(r2: &R2, key: &str) -> anyhow::Result<Option<String>> {
+    let (url, headers) = r2_signed(r2, "HEAD", key, None)?;
+    let mut rq = r2.client.head(url);
+    for (k, v) in headers {
+        rq = rq.header(k, v);
+    }
+    let resp = rq.send().await.context("checking the bucket")?;
+    let status = resp.status();
+    if status == StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    ensure!(status.is_success(), "checking the bucket: HTTP {status}");
+    let etag = resp
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .trim_matches('"')
+        .to_ascii_lowercase();
+    Ok(Some(etag))
+}
+
+async fn r2_put(r2: &R2, key: &str, path: &Path, len: u64) -> anyhow::Result<()> {
+    let (url, headers) = r2_signed(r2, "PUT", key, Some(len))?;
+    let file = tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("opening {}", path.display()))?;
+    let mut rq = r2.client.put(url).body(file);
+    for (k, v) in headers {
+        rq = rq.header(k, v);
+    }
+    let resp = rq.send().await?;
+    let status = resp.status();
+    ensure!(status.is_success(), "HTTP {status}");
+    Ok(())
+}
+
+/// Create `jobs`, which share one input template.
 async fn create(cfg: &Config, jobs: &[JobSpec]) -> anyhow::Result<CreateReply> {
     let resp = cfg
         .client
@@ -400,7 +766,7 @@ async fn create(cfg: &Config, jobs: &[JobSpec]) -> anyhow::Result<CreateReply> {
         .bearer_auth(&cfg.token)
         .json(&CreateBody {
             app: cfg.app.name(),
-            input_template: cfg.app.input_template(),
+            input_template: jobs.first().map_or("", |j| j.input_template),
             result_template: cfg.app.result_template(),
             jobs,
         })
@@ -421,6 +787,8 @@ pub async fn run(cfg: &Config, root: &Path, ids: &[String], all: bool) -> anyhow
     let loaded = load_items(cfg.app, root, ids, all)?;
     let mut report = Report::default();
     let mut ready: Vec<JobSpec> = Vec::new();
+    // Names already in the bucket or on the server from this run: units share some inputs.
+    let mut sent: BTreeSet<String> = BTreeSet::new();
     for (id, record) in loaded {
         let item = match record {
             Ok(r) => r,
@@ -436,16 +804,43 @@ pub async fn run(cfg: &Config, root: &Path, ids: &[String], all: bool) -> anyhow
             continue;
         }
         let uploaded = async {
-            let files = item.inputs(root)?;
+            let files = item.inputs(root, cfg.max_upload)?;
+            for up in &files {
+                if matches!(up.body, Body::File(_)) && cfg.r2.is_none() {
+                    anyhow::bail!(
+                        "{} is {} bytes, over the {}-byte admin upload cap; give --r2-endpoint, \
+                         --r2-bucket and --r2-credentials-file to put it in the bucket and \
+                         register it (POST /admin/v1/files/{}/register)",
+                        up.name,
+                        up.len,
+                        cfg.max_upload,
+                        up.name
+                    );
+                }
+            }
             if cfg.dry_run {
-                for (name, body) in &files {
-                    report
-                        .lines
-                        .push(format!("{id}: would upload {name} ({} bytes)", body.len()));
+                for up in &files {
+                    let how = if matches!(up.body, Body::File(_)) {
+                        " to the bucket"
+                    } else {
+                        ""
+                    };
+                    report.lines.push(format!(
+                        "{id}: would upload {}{how} ({} bytes)",
+                        up.name, up.len
+                    ));
                 }
             } else {
-                for (name, body) in files {
-                    put(cfg, &name, body).await?;
+                for up in files {
+                    if sent.contains(&up.name) {
+                        continue;
+                    }
+                    let name = up.name.clone();
+                    match (&up.body, &cfg.r2) {
+                        (Body::File(_), Some(r2)) => put_large(cfg, r2, &up).await?,
+                        _ => put(cfg, up).await?,
+                    }
+                    sent.insert(name);
                 }
             }
             item.spec()
@@ -466,7 +861,12 @@ pub async fn run(cfg: &Config, root: &Path, ids: &[String], all: bool) -> anyhow
         report.submitted = ready.len();
         return Ok(report);
     }
-    for chunk in ready.chunks(cfg.batch_size) {
+    // One request has one input template, and a quality job's depends on its quality measure.
+    let mut by_template: BTreeMap<&str, Vec<JobSpec>> = BTreeMap::new();
+    for job in ready {
+        by_template.entry(job.input_template).or_default().push(job);
+    }
+    for chunk in by_template.values().flat_map(|g| g.chunks(cfg.batch_size)) {
         match create(cfg, chunk).await {
             Err(e) => {
                 for job in chunk {
@@ -506,7 +906,8 @@ mod tests {
     use axum::{
         extract::{Path as AxPath, Query, State},
         http::{HeaderMap, StatusCode},
-        routing::{post, put as put_route},
+        response::IntoResponse,
+        routing::{head, post, put as put_route},
         Json, Router,
     };
     use serde_json::{json, Value};
@@ -533,6 +934,12 @@ mod tests {
         conflict: BTreeSet<String>,
         /// Create errors by job name.
         errors: BTreeMap<String, String>,
+        /// Objects in the mock bucket, by key (`<bucket>/download/<name>`).
+        bucket: BTreeMap<String, Vec<u8>>,
+        /// The headers of each bucket PUT or HEAD: (method, authorization, content hash, length).
+        bucket_calls: Vec<(String, String, String, Option<String>)>,
+        /// Names the register route was called for, with the body.
+        registered: Vec<(String, Value)>,
     }
     type Shared = Arc<Mutex<Mock>>;
 
@@ -588,10 +995,74 @@ mod tests {
         Json(json!({ "jobs": jobs }))
     }
 
+    fn bucket_call(m: &mut Mock, method: &str, h: &HeaderMap) {
+        let get = |k: &str| {
+            h.get(k)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned()
+        };
+        m.bucket_calls.push((
+            method.to_owned(),
+            get("authorization"),
+            get("x-amz-content-sha256"),
+            h.get("content-length")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned),
+        ));
+    }
+
+    async fn bucket_put(
+        State(s): State<Shared>,
+        h: HeaderMap,
+        AxPath((bucket, name)): AxPath<(String, String)>,
+        body: axum::body::Bytes,
+    ) -> StatusCode {
+        let mut m = s.lock().unwrap();
+        bucket_call(&mut m, "PUT", &h);
+        m.bucket
+            .insert(format!("{bucket}/download/{name}"), body.to_vec());
+        StatusCode::OK
+    }
+
+    async fn bucket_head(
+        State(s): State<Shared>,
+        h: HeaderMap,
+        AxPath((bucket, name)): AxPath<(String, String)>,
+    ) -> axum::response::Response {
+        let mut m = s.lock().unwrap();
+        bucket_call(&mut m, "HEAD", &h);
+        match m.bucket.get(&format!("{bucket}/download/{name}")) {
+            Some(b) => (StatusCode::OK, [("etag", format!("\"{}\"", md5_hex(b)))]).into_response(),
+            None => StatusCode::NOT_FOUND.into_response(),
+        }
+    }
+
+    async fn register(
+        State(s): State<Shared>,
+        AxPath(name): AxPath<String>,
+        Json(b): Json<Value>,
+    ) -> axum::response::Response {
+        let mut m = s.lock().unwrap();
+        m.registered.push((name.clone(), b));
+        let key = format!("bucket/download/{name}");
+        match m.bucket.get(&key) {
+            Some(o) => {
+                Json(json!({"name": name, "nbytes": o.len(), "md5": md5_hex(o)})).into_response()
+            }
+            None => StatusCode::NOT_FOUND.into_response(),
+        }
+    }
+
     async fn serve(m: Mock) -> (Shared, String) {
         let s: Shared = Arc::new(Mutex::new(m));
         let app = Router::new()
             .route("/admin/v1/files/{name}", put_route(put_file))
+            .route("/admin/v1/files/{name}/register", post(register))
+            .route(
+                "/{bucket}/download/{name}",
+                head(bucket_head).put(bucket_put),
+            )
             .route("/admin/v1/jobs", post(create_jobs))
             .with_state(s.clone());
         let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1030,19 +1501,303 @@ mod tests {
         assert!(m.puts.is_empty() && m.posts.is_empty());
     }
 
-    #[test]
-    fn ndlocr_oversized_input_names_the_register_route() {
+    #[tokio::test]
+    async fn an_input_over_the_cap_without_the_bucket_flags_fails_naming_them() {
         let root = tempfile::tempdir().unwrap();
-        let page = vec![0u8; MAX_UPLOAD + 1];
-        let (doc, _) = ndlocr_unit(root.path(), &page, None);
-        let Item::Ndlocr(job, unit) = load_unit(root.path(), &doc).unwrap() else {
-            panic!("not an ndlocr item")
-        };
-        let err = format!("{:#}", ndlocr_inputs(&job, &unit).unwrap_err());
+        let (doc, _) = ndlocr_unit(root.path(), &[0u8; 64], None);
+        let (s, base) = serve(Mock::default()).await;
+        let c = ndlocr_cfg(&base, false).with_max_upload(32);
+        let report = run(&c, root.path(), &[doc], false).await.unwrap();
+        assert_eq!(report.failed, 1);
         assert!(
-            err.contains("/admin/v1/files/") && err.contains("/register"),
-            "{err}"
+            report.lines[0].contains("--r2-endpoint"),
+            "{:?}",
+            report.lines
         );
+        assert!(report.lines[0].contains("/register"));
+        let m = s.lock().unwrap();
+        assert!(m.puts.is_empty() && m.posts.is_empty());
+    }
+
+    /// A quality unit staged under `<root>/units/<doc>/`, with a quality measure when `qe`.
+    fn quality_unit(root: &Path, seq: u32, qe: bool) -> QualityJob {
+        let doc = format!("sn1_1900-01-01_ed-1_seq-{seq}");
+        let dir = root.join("units").join(&doc);
+        let mut job = crate::quality::work::tests::unit(&dir);
+        job.doc_id = doc;
+        if qe {
+            atomic(&dir.join(quality::QE_FILE), b"qe resources").unwrap();
+            job.qe = Some(usnm_ocr_contract::quality::QeInput {
+                input: usnm_ocr_contract::quality::Input::of(b"qe resources", "lake:qe/eng.qe"),
+                language: "eng".into(),
+            });
+        }
+        job.id = job.identity().unwrap();
+        atomic(
+            &dir.join(quality::JOB_FILE),
+            &serde_json::to_vec(&job).unwrap(),
+        )
+        .unwrap();
+        job
+    }
+
+    fn quality_cfg(base: &str) -> Config {
+        cfg(base, 100, false).with_app(App::Quality)
+    }
+
+    #[tokio::test]
+    async fn quality_unit_uploads_its_inputs_and_creates_the_job() {
+        let root = tempfile::tempdir().unwrap();
+        let job = quality_unit(root.path(), 1, false);
+        let (s, base) = serve(Mock::default()).await;
+        let report = run(
+            &quality_cfg(&base),
+            root.path(),
+            std::slice::from_ref(&job.doc_id),
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            report.to_string(),
+            "submitted 1, already there 0, skipped 0, failed 0"
+        );
+        let m = s.lock().unwrap();
+        let names: Vec<String> = quality::submit::physical_names(&job)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(names.len(), 5);
+        let sent: Vec<&str> = m.puts.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(sent, names);
+        assert!(m.puts.iter().all(|p| p.authed));
+        for p in &m.puts {
+            assert_eq!(p.query["md5"], md5_hex(&p.body));
+            assert_eq!(p.query["no_delete"], "1");
+        }
+        let b = &m.posts[0];
+        assert_eq!(b["app"], "usnm_quality");
+        assert_eq!(b["input_template"], QUALITY_INPUT_TEMPLATE);
+        assert_eq!(b["result_template"], QUALITY_RESULT_TEMPLATE);
+        let input_files: Vec<Value> = names.iter().map(|n| json!({ "name": n })).collect();
+        assert_eq!(
+            b["jobs"][0],
+            json!({
+                "name": job.workunit(),
+                "input_files": input_files,
+                "min_quorum": 2, "target_nresults": 2, "max_error_results": 3,
+                "max_total_results": 4, "max_success_results": 3,
+                "rsc_fpops_est": 1e12, "rsc_fpops_bound": 1e14,
+                "rsc_memory_bound": 1610612736u64, "rsc_disk_bound": 1073741824u64,
+                "delay_bound": 259200, "priority": 0
+            })
+        );
+        assert!(m.bucket_calls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn quality_units_with_and_without_the_measure_are_created_with_their_own_template() {
+        let root = tempfile::tempdir().unwrap();
+        let plain = quality_unit(root.path(), 1, false);
+        let measured = quality_unit(root.path(), 2, true);
+        let (s, base) = serve(Mock::default()).await;
+        let report = run(&quality_cfg(&base), root.path(), &[], true)
+            .await
+            .unwrap();
+        assert_eq!(report.submitted, 2, "{:?}", report.lines);
+        let m = s.lock().unwrap();
+        assert_eq!(m.posts.len(), 2);
+        let template_of = |job: &QualityJob| {
+            m.posts
+                .iter()
+                .find(|p| p["jobs"][0]["name"] == job.workunit())
+                .unwrap()["input_template"]
+                .clone()
+        };
+        assert_eq!(template_of(&plain), QUALITY_INPUT_TEMPLATE);
+        assert_eq!(template_of(&measured), QUALITY_QE_INPUT_TEMPLATE);
+        let post = m
+            .posts
+            .iter()
+            .find(|p| p["jobs"][0]["name"] == measured.workunit())
+            .unwrap();
+        assert_eq!(post["jobs"][0]["input_files"].as_array().unwrap().len(), 6);
+    }
+
+    #[tokio::test]
+    async fn quality_units_share_one_upload_of_their_places_file() {
+        let root = tempfile::tempdir().unwrap();
+        let (a, b) = (
+            quality_unit(root.path(), 1, false),
+            quality_unit(root.path(), 2, false),
+        );
+        let (s, base) = serve(Mock::default()).await;
+        run(&quality_cfg(&base), root.path(), &[], true)
+            .await
+            .unwrap();
+        let m = s.lock().unwrap();
+        let places = format!("usnm_quality_places_v2_{}", a.inputs.places.sha256);
+        assert_eq!(a.inputs.places.sha256, b.inputs.places.sha256);
+        assert_eq!(m.puts.iter().filter(|p| p.name == places).count(), 1);
+        assert_eq!(m.puts.len(), 9);
+    }
+
+    #[tokio::test]
+    async fn quality_unit_marked_on_prem_is_skipped_and_a_changed_input_fails() {
+        let root = tempfile::tempdir().unwrap();
+        let done = quality_unit(root.path(), 1, false);
+        let uncertain = quality_unit(root.path(), 2, false);
+        let changed = quality_unit(root.path(), 3, false);
+        let unit = |j: &QualityJob| root.path().join("units").join(&j.doc_id);
+        atomic(&unit(&done).join("submitted"), b"x").unwrap();
+        atomic(&unit(&uncertain).join("submitting"), b"x").unwrap();
+        atomic(&unit(&changed).join(quality::TEXTS_FILE), b"{}").unwrap();
+        let (s, base) = serve(Mock::default()).await;
+        let report = run(&quality_cfg(&base), root.path(), &[], true)
+            .await
+            .unwrap();
+        assert_eq!(
+            report.to_string(),
+            "submitted 0, already there 0, skipped 2, failed 1"
+        );
+        assert!(report
+            .lines
+            .iter()
+            .any(|l| l.contains("texts.json changed")));
+        let m = s.lock().unwrap();
+        assert!(m.puts.is_empty() && m.posts.is_empty());
+        assert!(unit(&done).join("submitted").exists());
+        assert!(!unit(&changed).join("submitted").exists());
+    }
+
+    fn r2_for(base: &str, dir: &Path) -> R2 {
+        let creds = dir.join("r2-credentials");
+        std::fs::write(&creds, "AKIDEXAMPLE\nsecret-example-value\n").unwrap();
+        R2::new(base, "bucket", &creds).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_input_over_the_cap_is_put_to_the_bucket_and_registered() {
+        let root = tempfile::tempdir().unwrap();
+        let job = quality_unit(root.path(), 1, false);
+        let page =
+            std::fs::read(root.path().join("units").join(&job.doc_id).join("page.jpg")).unwrap();
+        // Only the page is over the cap.
+        let cap = page.len() - 1;
+        let small_max = [&job.inputs.alto, &job.inputs.texts, &job.inputs.places]
+            .iter()
+            .map(|i| i.bytes as usize)
+            .max()
+            .unwrap();
+        assert!(
+            small_max <= cap,
+            "the fixture's page must be its largest input"
+        );
+        let (s, base) = serve(Mock::default()).await;
+        let c = quality_cfg(&base)
+            .with_max_upload(cap)
+            .with_r2(r2_for(&base, root.path()));
+        let ids = [job.doc_id.clone()];
+        let report = run(&c, root.path(), &ids, false).await.unwrap();
+        assert_eq!(
+            report.to_string(),
+            "submitted 1, already there 0, skipped 0, failed 0",
+            "{:?}",
+            report.lines
+        );
+        let page_name = format!("{}_page_jpg", job.id);
+        {
+            let m = s.lock().unwrap();
+            assert_eq!(m.bucket[&format!("bucket/download/{page_name}")], page);
+            assert!(m.puts.iter().all(|p| p.name != page_name));
+            assert_eq!(m.puts.len(), 4);
+            let calls: Vec<&str> = m.bucket_calls.iter().map(|c| c.0.as_str()).collect();
+            assert_eq!(calls, ["HEAD", "PUT"]);
+            let put = &m.bucket_calls[1];
+            assert!(
+                put.1
+                    .starts_with("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/"),
+                "{}",
+                put.1
+            );
+            assert!(put.1.contains("/auto/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature="));
+            assert!(!put.1.contains("secret-example-value"));
+            assert_eq!(put.2, "UNSIGNED-PAYLOAD");
+            assert_eq!(put.3.as_deref(), Some(page.len().to_string().as_str()));
+            assert_eq!(m.registered.len(), 1);
+            assert_eq!(m.registered[0].0, page_name);
+            assert_eq!(m.registered[0].1, json!({"no_delete": true}));
+            assert_eq!(m.posts.len(), 1);
+        }
+        // A rerun finds the object there with the same MD5 and sends it no more.
+        let c = quality_cfg(&base)
+            .with_max_upload(cap)
+            .with_r2(r2_for(&base, root.path()));
+        let report = run(&c, root.path(), &ids, false).await.unwrap();
+        assert_eq!(report.submitted, 1);
+        let m = s.lock().unwrap();
+        let calls: Vec<&str> = m.bucket_calls.iter().map(|c| c.0.as_str()).collect();
+        assert_eq!(calls, ["HEAD", "PUT", "HEAD"]);
+        assert_eq!(m.registered.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_stored_object_with_other_contents_is_never_overwritten() {
+        let root = tempfile::tempdir().unwrap();
+        let job = quality_unit(root.path(), 1, false);
+        let page_name = format!("{}_page_jpg", job.id);
+        let mut mock = Mock::default();
+        mock.bucket
+            .insert(format!("bucket/download/{page_name}"), b"other".to_vec());
+        let (s, base) = serve(mock).await;
+        let c = quality_cfg(&base)
+            .with_max_upload(1000)
+            .with_r2(r2_for(&base, root.path()));
+        let report = run(&c, root.path(), std::slice::from_ref(&job.doc_id), false)
+            .await
+            .unwrap();
+        assert_eq!(report.failed, 1);
+        assert!(report.lines[0].contains("differs"), "{:?}", report.lines);
+        let m = s.lock().unwrap();
+        assert_eq!(m.bucket[&format!("bucket/download/{page_name}")], b"other");
+        assert!(m.registered.is_empty() && m.posts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_large_input_in_a_dry_run_is_planned_not_sent() {
+        let root = tempfile::tempdir().unwrap();
+        let job = quality_unit(root.path(), 1, false);
+        let (s, base) = serve(Mock::default()).await;
+        let c = cfg(&base, 100, true)
+            .with_app(App::Quality)
+            .with_max_upload(1000)
+            .with_r2(r2_for(&base, root.path()));
+        let report = run(&c, root.path(), std::slice::from_ref(&job.doc_id), false)
+            .await
+            .unwrap();
+        assert_eq!(report.submitted, 1);
+        assert!(report.lines.iter().any(|l| l.contains("to the bucket")));
+        let m = s.lock().unwrap();
+        assert!(m.puts.is_empty() && m.bucket_calls.is_empty() && m.posts.is_empty());
+    }
+
+    #[test]
+    fn the_credentials_file_needs_two_lines_and_is_not_echoed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("creds");
+        std::fs::write(&path, "only-the-id-AKID999\n").unwrap();
+        let err = format!(
+            "{:#}",
+            R2::new("https://acct.r2.cloudflarestorage.com", "b", &path)
+                .err()
+                .unwrap()
+        );
+        assert!(err.contains("line 2") && !err.contains("AKID999"), "{err}");
+        std::fs::write(&path, "id\nsecret\n").unwrap();
+        assert!(R2::new("https://acct.r2.cloudflarestorage.com", "b", &path).is_ok());
+        assert!(R2::new("http://acct.example.org", "b", &path).is_err());
+        assert!(R2::new("https://acct.example.org/x", "b", &path).is_err());
+        assert!(R2::new("http://127.0.0.1:9", "b", &path).is_ok());
     }
 
     #[test]

@@ -116,7 +116,8 @@ pub fn physical_names(job: &Job) -> Vec<(String, &'static str)> {
     names
 }
 
-fn limit(file: &str) -> usize {
+/// The largest a unit's file of this name may be.
+pub(crate) fn limit(file: &str) -> usize {
     match file {
         super::PAGE_FILE => MAX_BUNDLE_SCAN.max(MAX_SCAN),
         super::ALTO_FILE => MAX_BUNDLE_ALTO.max(MAX_ALTO),
@@ -125,6 +126,34 @@ fn limit(file: &str) -> usize {
         QE_FILE => MAX_QE,
         _ => MAX_JOB_JSON,
     }
+}
+
+/// The unit's job record, validated, with every staged input equal to what the record names.
+/// What a submission (on-prem or cloud) checks before it sends anything.
+pub(crate) fn load_checked(unit: &std::path::Path) -> anyhow::Result<Job> {
+    let job: Job = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB_JSON)?)?;
+    job.validate()?;
+    super::page_dims::require_image(unit, "quality submit")?;
+    for (file, input) in [
+        (super::PAGE_FILE, &job.inputs.page),
+        (super::ALTO_FILE, &job.inputs.alto),
+        (super::TEXTS_FILE, &job.inputs.texts),
+        (PLACES_FILE, &job.inputs.places),
+    ] {
+        ensure!(
+            input.matches(&read(&unit.join(file), limit(file))?),
+            "staged {file} changed for {}",
+            job.doc_id
+        );
+    }
+    if let Some(qe) = &job.qe {
+        ensure!(
+            qe.input.matches(&read(&unit.join(QE_FILE), MAX_QE)?),
+            "staged {QE_FILE} changed for {}",
+            job.doc_id
+        );
+    }
+    Ok(job)
 }
 
 pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
@@ -150,28 +179,7 @@ pub async fn run_selected(
             summary.uncertain += 1;
             continue;
         }
-        let job: Job = serde_json::from_slice(&read(&unit.join(JOB_FILE), MAX_JOB_JSON)?)?;
-        job.validate()?;
-        super::page_dims::require_image(&unit, "quality submit")?;
-        for (file, input) in [
-            (super::PAGE_FILE, &job.inputs.page),
-            (super::ALTO_FILE, &job.inputs.alto),
-            (super::TEXTS_FILE, &job.inputs.texts),
-            (PLACES_FILE, &job.inputs.places),
-        ] {
-            ensure!(
-                input.matches(&read(&unit.join(file), limit(file))?),
-                "staged {file} changed for {}",
-                job.doc_id
-            );
-        }
-        if let Some(qe) = &job.qe {
-            ensure!(
-                qe.input.matches(&read(&unit.join(QE_FILE), MAX_QE)?),
-                "staged {QE_FILE} changed for {}",
-                job.doc_id
-            );
-        }
+        let job = load_checked(&unit)?;
         atomic(&unit.join("submitting"), job.workunit().as_bytes())?;
         for (physical, file) in physical_names(&job) {
             crate::assess::submit::stage_file(
