@@ -1292,6 +1292,32 @@ select {
   text-align: center;
 }
 
+/* An example page's links to other examples of its era, which the API puts
+   at the end of <body>, below the app (site.rs related_links). */
+#related-searches {
+  font-size: 0.8rem;
+  color: var(--muted);
+  padding: 6px 16px;
+  text-align: center;
+}
+#related-searches h2 {
+  display: inline;
+  font-size: inherit;
+  margin: 0 0.5em 0 0;
+}
+#related-searches ul {
+  display: inline;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+#related-searches li {
+  display: inline;
+}
+#related-searches li + li::before {
+  content: " · ";
+}
+
 @media (max-width: 640px) {
   /* Phones: the brand on its own line, then the search box and its button;
      the options open below with an extra tap. */

@@ -439,6 +439,18 @@ fn insert_content(body: Vec<u8>, content: &str) -> Vec<u8> {
     }
 }
 
+fn insert_before_body_end(body: Vec<u8>, content: &str) -> Vec<u8> {
+    match String::from_utf8(body) {
+        Ok(html) => html
+            .replacen("</body>", &format!("{content}</body>"), 1)
+            .into_bytes(),
+        Err(error) => {
+            tracing::error!("site index is not UTF-8");
+            error.into_bytes()
+        }
+    }
+}
+
 fn site_metadata(body: Vec<u8>, state: &AppState) -> Vec<u8> {
     let snap = state.snapshot.load();
     let rd = &snap.refdata;
@@ -492,14 +504,12 @@ fn site_metadata(body: Vec<u8>, state: &AppState) -> Vec<u8> {
 }
 
 /// `map` is the example's revisioned map; the old address redirects to it
-/// once the renderer's identity can be read. `related` is the
-/// [`related_links`] list, put in the page's footer.
+/// once the renderer's identity can be read.
 fn search_landing(
     body: Vec<u8>,
     preview: &str,
     example: &crate::prewarm::Example,
     map: Option<&str>,
-    related: &str,
 ) -> Vec<u8> {
     let body = insert_content(body, preview);
     let src = map.map_or_else(
@@ -536,7 +546,7 @@ fn search_landing(
             )
             .replacen(
                 "</main>",
-                &format!("</div></main><footer class=\"empty\" aria-label=\"Search landing information\">{related}<nav aria-label=\"Site information\"><p><a href=\"/\">Search other newspaper topics</a> · <a href=\"/privacy\">Privacy</a> · <a href=\"/datasets\">Dataset details</a> · <a href=\"/credits\">OCR credits</a></p></nav></footer>"),
+                "</div></main><footer class=\"empty\" aria-label=\"Search landing information\"><nav aria-label=\"Site information\"><p><a href=\"/\">Search other newspaper topics</a> · <a href=\"/privacy\">Privacy</a> · <a href=\"/datasets\">Dataset details</a> · <a href=\"/credits\">OCR credits</a></p></nav></footer>",
                 1,
             )
             .into_bytes(),
@@ -553,9 +563,14 @@ const RELATED_LIMIT: usize = 6;
 /// Links from an example page to the next examples of its era (in
 /// `examples.json` order, wrapping around), so each indexable example is
 /// linked from several pages and not only the home page's list. Only
-/// examples the sitemap lists are linked: the others are `noindex`. Empty
-/// when no other example of the era is listed.
-fn related_links(example: &crate::prewarm::Example, sitemap: &sitemap::Service) -> String {
+/// examples `listed` accepts (the sitemap's) are linked: the others are
+/// `noindex`. Empty when no other example of the era is listed. The page puts
+/// it at the end of `<body>`, outside the static landing and the app's root,
+/// so it stays once the app replaces the landing.
+pub(super) fn related_links(
+    example: &crate::prewarm::Example,
+    listed: impl Fn(&str) -> bool,
+) -> String {
     let era: Vec<_> = crate::prewarm::examples()
         .iter()
         .filter(|other| other.era == example.era)
@@ -569,7 +584,7 @@ fn related_links(example: &crate::prewarm::Example, sitemap: &sitemap::Service) 
         .chain(&era[..at])
         .skip(1)
         .map(|other| (other, examples::path(other)))
-        .filter(|(_, path)| sitemap.contains(path))
+        .filter(|(_, path)| listed(path))
         .take(RELATED_LIMIT)
         .map(|(other, path)| {
             format!(
@@ -583,7 +598,7 @@ fn related_links(example: &crate::prewarm::Example, sitemap: &sitemap::Service) 
         return String::new();
     }
     format!(
-        "<nav aria-label=\"More newspaper searches\"><h2>More searches from {}</h2><ul>{links}</ul></nav>",
+        "<nav id=\"related-searches\" aria-label=\"More newspaper searches\"><h2>More searches from {}</h2><ul>{links}</ul></nav>",
         escape_html(&example.era.replace('-', "–"))
     )
 }
@@ -858,9 +873,9 @@ async fn app_route(req: Request, index: PathBuf, state: Arc<AppState>) -> Respon
                 {
                     Ok(preview) => {
                         let map = social::search_map_path(&state, example).await;
-                        let related = related_links(example, &state.sitemap);
-                        body =
-                            search_landing(body, &preview.html, example, map.as_deref(), &related);
+                        let related = related_links(example, |path| state.sitemap.contains(path));
+                        body = search_landing(body, &preview.html, example, map.as_deref());
+                        body = insert_before_body_end(body, &related);
                     }
                     Err(error) => {
                         tracing::warn!("search page preview unavailable");
@@ -1112,7 +1127,7 @@ mod tests {
     fn example_pages_link_other_examples_of_their_era() {
         let sitemap = sitemap::Service::default();
         for example in crate::prewarm::examples() {
-            let links = related_links(example, &sitemap);
+            let links = related_links(example, |path| sitemap.contains(path));
             let others = crate::prewarm::examples()
                 .iter()
                 .filter(|other| other.era == example.era && other.id != example.id)

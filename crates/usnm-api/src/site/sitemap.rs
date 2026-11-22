@@ -382,6 +382,21 @@ async fn generate(
         );
         tokio::task::yield_now().await;
     }
+    // An example page links the other listed examples of its era, so a change
+    // in which of them are listed changes the page.
+    let related: Vec<_> = crate::prewarm::examples()
+        .iter()
+        .map(|example| (super::examples::path(example), example))
+        .filter(|(path, _)| pages.contains_key(path))
+        .map(|(path, example)| {
+            let links = super::related_links(example, |other| pages.contains_key(other));
+            (path, fingerprint(links))
+        })
+        .collect();
+    for (path, links) in related {
+        let content = pages.get_mut(&path).expect("listed example");
+        *content = fingerprint(format!("{content}\0{links}"));
+    }
     generation.pages = pages;
     Ok(generation)
 }
