@@ -793,7 +793,13 @@ mod tests {
             models=sha256:843614a53083 route=boinc@r1 contract=0";
         assert_eq!(rule_for(WORDS), line_merge::VERSION_V2);
         assert!(line_merge::is_line_job(WORDS));
-        let (_, _, v, rule) = judge_row(WORDS, LOC_GARBLED, Some(LOC_GARBLED), &["eng"]);
+        let (_, _, v, rule, _) = judge_row(
+            WORDS,
+            LOC_GARBLED,
+            Some(LOC_GARBLED),
+            &["eng"],
+            &Completeness::default(),
+        );
         assert_eq!((v, rule), (Ok(()), line_merge::VERSION_V2));
         // The v1 profile keeps its rule, so its pages' results stay reproducible.
         assert_eq!(rule_for(PHOENIX), line_merge::VERSION);
