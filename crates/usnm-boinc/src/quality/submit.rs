@@ -130,9 +130,18 @@ pub(crate) fn limit(file: &str) -> usize {
 
 /// Size, SHA-256 and MD5 (lowercase hex) of a regular file in one chunked pass, never holding
 /// more than one 1 MiB buffer.
-pub(crate) fn hash_file(path: &std::path::Path) -> anyhow::Result<(u64, String, String)> {
-    let mut file = crate::open_regular(path)?;
-    hash_reader(&mut file)
+/// The file must be at most `max` bytes: its size is checked first, and the reader is capped at
+/// one byte over so a file that grows while it is read still fails.
+pub(crate) fn hash_file(
+    path: &std::path::Path,
+    max: usize,
+) -> anyhow::Result<(u64, String, String)> {
+    use std::io::Read;
+    let file = crate::open_regular(path)?;
+    ensure!(file.metadata()?.len() <= max as u64, "file over size limit");
+    let hashed = hash_reader(&mut file.take(max as u64 + 1))?;
+    ensure!(hashed.0 <= max as u64, "file over size limit");
+    Ok(hashed)
 }
 
 pub(crate) fn hash_reader(r: &mut impl std::io::Read) -> anyhow::Result<(u64, String, String)> {
@@ -183,8 +192,7 @@ pub(crate) fn check_unit(
         let path = unit.join(file);
         let big = std::fs::metadata(&path).is_ok_and(|m| m.len() > stream_over as u64);
         let matches = if big {
-            let (len, sha, md5) = hash_file(&path)?;
-            ensure!(len <= limit(file) as u64, "staged {file} is too large");
+            let (len, sha, md5) = hash_file(&path, limit(file))?;
             streamed.insert(file, md5);
             len == input.bytes && sha == input.sha256
         } else {

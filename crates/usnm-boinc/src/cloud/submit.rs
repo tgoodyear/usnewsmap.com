@@ -658,7 +658,7 @@ async fn put_large(cfg: &Config, r2: &R2, up: &Upload) -> anyhow::Result<()> {
         ))
         }
         None => {
-            let created = r2_put(r2, &key, path, up.len)
+            let created = r2_put(r2, &key, path, up.len, &up.md5)
                 .await
                 .with_context(|| format!("uploading {name} to the bucket"))?;
             if !created {
@@ -770,11 +770,25 @@ async fn r2_head(r2: &R2, key: &str) -> anyhow::Result<Option<String>> {
 }
 
 /// Create-only (`If-None-Match: *`, signed): `Ok(false)` when the object exists by now (412).
-async fn r2_put(r2: &R2, key: &str, path: &Path, len: u64) -> anyhow::Result<bool> {
-    let (url, headers) = r2_signed(r2, "PUT", key, Some(len), &[("if-none-match", "*")])?;
-    let file = tokio::fs::File::open(path)
-        .await
-        .with_context(|| format!("opening {}", path.display()))?;
+///
+/// The checked MD5 goes as a signed `Content-MD5`, so the bucket refuses bytes that changed after
+/// the check instead of committing them.
+async fn r2_put(r2: &R2, key: &str, path: &Path, len: u64, md5_hex: &str) -> anyhow::Result<bool> {
+    use base64::Engine as _;
+    let raw: Vec<u8> = (0..md5_hex.len() / 2)
+        .map(|i| u8::from_str_radix(&md5_hex[2 * i..2 * i + 2], 16))
+        .collect::<Result<_, _>>()
+        .context("the MD5 is not hex")?;
+    let content_md5 = base64::engine::general_purpose::STANDARD.encode(raw);
+    let (url, headers) = r2_signed(
+        r2,
+        "PUT",
+        key,
+        Some(len),
+        &[("content-md5", &content_md5), ("if-none-match", "*")],
+    )?;
+    // Not a symlink, and the same file the check read.
+    let file = tokio::fs::File::from_std(crate::open_regular(path)?);
     let mut rq = r2.client.put(url).body(file);
     for (k, v) in headers {
         rq = rq.header(k, v);
@@ -1027,6 +1041,11 @@ mod tests {
         Json(json!({ "jobs": jobs }))
     }
 
+    fn base64_md5(b: &[u8]) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(Md5::digest(b))
+    }
+
     fn bucket_call(m: &mut Mock, method: &str, h: &HeaderMap) {
         let get = |k: &str| {
             h.get(k)
@@ -1053,6 +1072,10 @@ mod tests {
         let mut m = s.lock().unwrap();
         bucket_call(&mut m, "PUT", &h);
         let key = format!("{bucket}/download/{name}");
+        let sent_md5 = h.get("content-md5").and_then(|v| v.to_str().ok());
+        if sent_md5 != Some(base64_md5(&body).as_str()) {
+            return StatusCode::BAD_REQUEST;
+        }
         if let Some(other) = m.race.take() {
             m.bucket.insert(key, other);
             return StatusCode::PRECONDITION_FAILED;
@@ -1762,7 +1785,7 @@ mod tests {
                 "{}",
                 put.1
             );
-            assert!(put.1.contains("/auto/s3/aws4_request, SignedHeaders=host;if-none-match;x-amz-content-sha256;x-amz-date, Signature="));
+            assert!(put.1.contains("/auto/s3/aws4_request, SignedHeaders=content-md5;host;if-none-match;x-amz-content-sha256;x-amz-date, Signature="));
             assert!(!put.1.contains("secret-example-value"));
             assert_eq!(put.2, "UNSIGNED-PAYLOAD");
             assert_eq!(put.3.as_deref(), Some(page.len().to_string().as_str()));
@@ -1869,6 +1892,42 @@ mod tests {
         assert_eq!(len, data.len() as u64);
         assert_eq!(sha, boinc::sha256(&data));
         assert_eq!(md5, md5_hex(&data));
+    }
+
+    #[tokio::test]
+    async fn the_bucket_refuses_bytes_that_differ_from_the_checked_md5() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f");
+        std::fs::write(&file, b"changed after the check").unwrap();
+        let (s, base) = serve(Mock::default()).await;
+        let r2 = r2_for(&base, dir.path());
+        let stale = md5_hex(b"what the check saw");
+        assert!(r2_put(&r2, "/bucket/download/x", &file, 23, &stale)
+            .await
+            .is_err());
+        assert!(s.lock().unwrap().bucket.is_empty());
+        let good = md5_hex(b"changed after the check");
+        assert!(r2_put(&r2, "/bucket/download/x", &file, 23, &good)
+            .await
+            .unwrap());
+        // A symlink is refused.
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+            assert!(r2_put(&r2, "/bucket/download/y", &link, 23, &good)
+                .await
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn a_big_file_over_its_limit_is_refused_before_and_while_hashing() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f");
+        std::fs::write(&file, vec![7u8; 100]).unwrap();
+        assert!(quality::submit::hash_file(&file, 99).is_err());
+        assert_eq!(quality::submit::hash_file(&file, 100).unwrap().0, 100);
     }
 
     #[tokio::test]
