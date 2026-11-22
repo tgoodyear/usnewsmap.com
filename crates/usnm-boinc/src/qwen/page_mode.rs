@@ -1,5 +1,5 @@
-//! `qwen stage --page-mode` (#1998): page-mode `usnm_qwen` units for Xiaomi-OCR-0 (design in
-//! `docs/boinc/apps/xiaomi-page-mode.md`, #1997).
+//! `qwen stage --page-mode` (#1998): page-mode `usnm_qwen` units for Xiaomi-OCR-0 (see
+//! `docs/boinc/apps/quality.md`, "Why page mode, and how the pilot was chosen").
 //!
 //! A unit reads every text region of a page, not the 64-crop sample [`super::stage`] cuts.
 //!

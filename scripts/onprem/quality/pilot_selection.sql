@@ -1,5 +1,5 @@
--- The English pilot's pages for Xiaomi-OCR-0 page mode (#1867, design: docs/boinc/apps/
--- xiaomi-page-mode.md, "Pilot selection"): the worst tenth of English pages by qe-v1, leaving
+-- The English pilot's pages for Xiaomi-OCR-0 page mode (#1867, see docs/boinc/apps/
+-- quality.md, "Why page mode, and how the pilot was chosen"): the worst tenth of English pages by qe-v1, leaving
 -- out pages Tesseract's worst-first wave has fixed, stratified by decade and damage band in
 -- proportion to the pool. Read-only; run on the replica as quality_reader. pilot_select.py
 -- runs it and trims the draw; to run it by hand:
