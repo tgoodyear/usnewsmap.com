@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""Score detected column gutters against reference gutters (#2107, step 1).
+
+Matching, as frozen in the plan:
+  - A detected gutter matches a reference gutter if, over at least half the reference gutter's
+    height (y axis), it lies within the reference gap widened by 1% of the page's own width on
+    each side.
+  - Greedy one-to-one, largest vertical overlap first. A reference gutter takes at most one
+    detected gutter; extra detected gutters in the same gap stay unmatched.
+  - A detected gutter mostly (more than half its area) inside an excluded region (ad, picture,
+    table, masthead, header) is ignored: it counts neither for nor against.
+  - Precision = matched detected height / all (non-ignored) detected height. Recall = matched
+    reference height / all reference height. Pooled over pages, in pixels (a secondary figure
+    pools heights as fractions of page height). F1 = 2PR/(P+R) from the pooled values.
+  - Intervals: page bootstrap, 1,000 draws, seed 2107, 2.5 and 97.5 percentiles.
+
+Method follows jscancella/NYTribuneOCRExperiments (findText_usingSums.py, GPL-3.0), reimplemented;
+no code copied.
+
+Datasets: Reichsanzeiger-GT, CC BY 4.0, Mannheim University Library; American Stories gold,
+Apache-2.0 text, Dell Research Harvard, arXiv:2308.12477; Chronicling Germany, CC BY-NC 4.0,
+Schultze et al. 2025, University of Bonn.
+
+    score.py --detections a.json [b.json ...] --regions regions.jsonl --selection selection.tsv
+             --out score.json [--only-ca-page] [--per-page]
+
+Output is keyed JSON, keys sorted.
+"""
+import argparse
+import json
+import sys
+
+import numpy as np
+
+import refgutters
+
+MARGIN = 0.01        # of page width
+MIN_REF_COVER = 0.5  # of the reference gutter's height
+IGNORE_FRAC = 0.5    # of a detected gutter's area inside excluded regions
+DRAWS = 1000
+SEED = 2107
+
+
+def _overlap(a0, a1, b0, b1):
+    return max(0.0, min(a1, b1) - max(a0, b0))
+
+
+def excluded_fraction(g, boxes):
+    """Fraction of gutter g (x0, x1, y0, y1) covered by the union of boxes (x0, y0, x1, y1)."""
+    x0, x1, y0, y1 = g
+    area = (x1 - x0) * (y1 - y0)
+    if area <= 0 or not boxes:
+        return 0.0
+    # exact union area by sweeping over the clipped boxes' x edges
+    clipped = []
+    for b in boxes:
+        bx0, bx1 = max(x0, b[0]), min(x1, b[2])
+        by0, by1 = max(y0, b[1]), min(y1, b[3])
+        if bx1 > bx0 and by1 > by0:
+            clipped.append((bx0, bx1, by0, by1))
+    if not clipped:
+        return 0.0
+    xs = sorted({c[0] for c in clipped} | {c[1] for c in clipped})
+    cov = 0.0
+    for xa, xb in zip(xs, xs[1:]):
+        iv = sorted((c[2], c[3]) for c in clipped if c[0] <= xa and c[1] >= xb)
+        tot, cur0, cur1 = 0.0, None, None
+        for a, b in iv:
+            if cur1 is None or a > cur1:
+                if cur1 is not None:
+                    tot += cur1 - cur0
+                cur0, cur1 = a, b
+            else:
+                cur1 = max(cur1, b)
+        if cur1 is not None:
+            tot += cur1 - cur0
+        cov += tot * (xb - xa)
+    return cov / area
+
+
+def match_page(det, ref, width, excluded):
+    """Per-page sums. det and ref are lists of [x0, x1, y0, y1]."""
+    kept = [d for d in det if excluded_fraction(d, excluded) <= IGNORE_FRAC]
+    m = MARGIN * width
+    cands = []
+    for di, d in enumerate(kept):
+        for ri, r in enumerate(ref):
+            rh = r[3] - r[2]
+            if rh <= 0:
+                continue
+            if d[0] < r[0] - m or d[1] > r[1] + m:
+                continue
+            ov = _overlap(d[2], d[3], r[2], r[3])
+            if ov >= MIN_REF_COVER * rh:
+                cands.append((ov, di, ri))
+    cands.sort(key=lambda c: (-c[0], c[1], c[2]))
+    ud, ur = set(), set()
+    md = mr = 0.0
+    for ov, di, ri in cands:
+        if di in ud or ri in ur:
+            continue
+        ud.add(di)
+        ur.add(ri)
+        md += kept[di][3] - kept[di][2]
+        mr += ref[ri][3] - ref[ri][2]
+    return {
+        "det_height": sum(d[3] - d[2] for d in kept),
+        "det_ignored": len(det) - len(kept),
+        "det_n": len(kept),
+        "matched_det_height": md,
+        "matched_ref_height": mr,
+        "matched_n": len(ud),
+        "ref_height": sum(r[3] - r[2] for r in ref),
+        "ref_n": len(ref),
+    }
+
+
+def prf(md, dh, mr, rh):
+    p = md / dh if dh > 0 else 0.0
+    r = mr / rh if rh > 0 else 0.0
+    f = 2 * p * r / (p + r) if p + r > 0 else 0.0
+    return p, r, f
+
+
+def pooled(rows, key_d="det_height", key_md="matched_det_height", key_r="ref_height", key_mr="matched_ref_height"):
+    return prf(sum(r[key_md] for r in rows), sum(r[key_d] for r in rows),
+               sum(r[key_mr] for r in rows), sum(r[key_r] for r in rows))
+
+
+def bootstrap(rows):
+    """Page bootstrap: 1,000 draws, seed 2107; 95% percentile intervals for P, R, F1."""
+    rng = np.random.default_rng(SEED)
+    n = len(rows)
+    a = np.array([[r["det_height"], r["matched_det_height"], r["ref_height"], r["matched_ref_height"]]
+                  for r in rows], dtype=float)
+    out = []
+    for _ in range(DRAWS):
+        s = a[rng.integers(0, n, n)].sum(axis=0)
+        out.append(prf(s[1], s[0], s[3], s[2]))
+    out = np.array(out)
+    res = {}
+    for i, k in enumerate(("precision", "recall", "f1")):
+        lo, hi = np.percentile(out[:, i], [2.5, 97.5])
+        res[k] = [round(float(lo), 4), round(float(hi), 4)]
+    return res
+
+
+def score(detections, refs):
+    """detections: id -> {gutters, ...}; refs: id -> {gutters, excluded, width, height}."""
+    rows, per_page = [], {}
+    for pid in sorted(refs):
+        ref = refs[pid]
+        if pid not in detections:
+            raise SystemExit(f"no detections for {pid}")
+        d = detections[pid]
+        s = match_page(d["gutters"], ref["gutters"], ref["width"], ref["excluded"])
+        s["height_px"] = ref["height"]
+        rows.append(s)
+        per_page[pid] = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in s.items()}
+        p, r, f = prf(s["matched_det_height"], s["det_height"], s["matched_ref_height"], s["ref_height"])
+        per_page[pid].update({"f1": round(f, 4), "precision": round(p, 4), "recall": round(r, 4)})
+    p, r, f = pooled(rows)
+    norm = [dict(r_, **{k: r_[k] / r_["height_px"] for k in
+                        ("det_height", "matched_det_height", "ref_height", "matched_ref_height")}) for r_ in rows]
+    pn, rn, fn = pooled(norm)
+    return {
+        "f1": f, "interval_95": bootstrap(rows) if rows else {}, "pages": len(rows),
+        "per_page": per_page, "precision": p, "recall": r,
+        "secondary_page_normalised": {"f1": fn, "precision": pn, "recall": rn},
+        "totals": {k: sum(x[k] for x in rows) for k in
+                   ("det_height", "det_ignored", "det_n", "matched_det_height", "matched_n",
+                    "matched_ref_height", "ref_height", "ref_n")},
+    }
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--detections", nargs="+", required=True, help="shard files from columns.py")
+    ap.add_argument("--regions", required=True)
+    ap.add_argument("--selection", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--only-ca-page", action="store_true")
+    ap.add_argument("--no-per-page", action="store_true")
+    a = ap.parse_args(argv)
+    det, meta = {}, []
+    for path in a.detections:
+        with open(path) as f:
+            d = json.load(f)
+        meta.append(d.pop("_meta", {}))
+        det.update(d)
+    refs = refgutters.build(a.regions, a.selection, a.only_ca_page)
+    res = score(det, refs)
+    res["detection_meta"] = meta
+    if a.no_per_page:
+        res.pop("per_page")
+    with open(a.out, "w") as f:
+        json.dump(res, f, sort_keys=True, indent=1)
+    print(json.dumps({k: (round(res[k], 4) if isinstance(res[k], float) else res[k])
+                      for k in ("f1", "interval_95", "pages", "precision", "recall")}, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
