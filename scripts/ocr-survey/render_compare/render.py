@@ -48,8 +48,9 @@ def _font(path: str, px: int):
     return ImageFont.truetype(path, px)
 
 
-def glyph_bitmap(text: str, font_path: str | Path, px: int = BITMAP_PX) -> np.ndarray | None:
-    """The text's ink on [0, 1], cropped to its bounding box, or None when nothing is drawn (blank text, or no glyphs)."""
+def glyph_bitmap_pos(text: str, font_path: str | Path, px: int = BITMAP_PX) -> tuple[np.ndarray, tuple[int, int]] | None:
+    """The text's ink on [0, 1], cropped to its bounding box, and the offset (dx, dy) of its top-left corner from the
+    pen origin on the baseline (dy < 0 above the baseline); None when nothing is drawn."""
     from PIL import Image, ImageDraw
 
     font = _font(str(font_path), px)
@@ -60,7 +61,13 @@ def glyph_bitmap(text: str, font_path: str | Path, px: int = BITMAP_PX) -> np.nd
     ys, xs = np.nonzero(a > 0.05)
     if len(xs) == 0:
         return None
-    return a[ys.min(): ys.max() + 1, xs.min(): xs.max() + 1]
+    return a[ys.min(): ys.max() + 1, xs.min(): xs.max() + 1], (int(xs.min()) - px, int(ys.min()) - 2 * px)
+
+
+def glyph_bitmap(text: str, font_path: str | Path, px: int = BITMAP_PX) -> np.ndarray | None:
+    """The text's ink on [0, 1], cropped to its bounding box, or None when nothing is drawn (blank text, or no glyphs)."""
+    g = glyph_bitmap_pos(text, font_path, px)
+    return None if g is None else g[0]
 
 
 def has_glyphs(text: str, font_path: str | Path) -> bool:
@@ -105,12 +112,14 @@ def match_stroke(coverage: np.ndarray, target: float | None) -> tuple[np.ndarray
 
 
 def render_word(text: str, frame_shape: tuple[int, int], x_span: tuple[int, int], y_span: tuple[int, int],
-                font_path: str | Path, stroke: float | None) -> tuple[np.ndarray, dict]:
+                font_path: str | Path, stroke: float | None, bitmap: np.ndarray | None = None) -> tuple[np.ndarray, dict]:
     """The text's ink mask in a frame of `frame_shape` (rows, columns): its bounding box fills x_span (columns,
-    end exclusive) and y_span (rows), and its strokes are about `stroke` pixels wide. Blank when nothing is drawn."""
+    end exclusive) and y_span (rows), and its strokes are about `stroke` pixels wide. Blank when nothing is drawn.
+    `bitmap` is a ready-made ink drawing of the word (templates.py's), used in place of the font's."""
     mask = np.zeros(frame_shape, bool)
     coverage = np.zeros(frame_shape, np.float32)
-    bitmap = glyph_bitmap(text, font_path)
+    if bitmap is None:
+        bitmap = glyph_bitmap(text, font_path)
     meta = {"drawn": bitmap is not None, "stroke_before": None, "stroke_target": stroke}
     if bitmap is None:
         return mask, meta
@@ -121,11 +130,14 @@ def render_word(text: str, frame_shape: tuple[int, int], x_span: tuple[int, int]
     return mask, meta
 
 
-def render_for_crop(text: str, page, box: list[float], font_path: str | Path) -> dict:
+def render_for_crop(text: str, page, box: list[float], font_path: str | Path, word_bitmap=None) -> dict:
     """Scan crop and rendering of one word: {"scan": grey frame, "scan_mask", "render_mask", "meta"}.
 
     The rendering's ink fills the rows and columns that hold the scan's ink inside the ALTO box (the box itself
-    when the crop has no ink): ALTO boxes carry a little slack, and the rendering should not inherit it."""
+    when the crop has no ink): ALTO boxes carry a little slack, and the rendering should not inherit it.
+
+    `word_bitmap(text)`, when given, returns the word's ink drawing (and a meta dict) in place of the font's; the
+    fit to the box and the stroke match are the same for every renderer."""
     frame, pad, (bx, by, bw, bh) = crop_frame(page, box)
     scan_mask = ink.drop_specks(ink.binarise(frame))
     inside = np.zeros_like(scan_mask)
@@ -133,7 +145,12 @@ def render_for_crop(text: str, page, box: list[float], font_path: str | Path) ->
     rows, cols = ink.ink_rows(inside), ink.ink_cols(inside)
     y_span = rows if rows else (by, by + bh)
     x_span = cols if cols else (bx, bx + bw)
-    render_mask, meta = render_word(text, frame.shape, x_span, y_span, font_path, ink.stroke_width(inside))
+    extra = {}
+    bitmap = None
+    if word_bitmap is not None:
+        bitmap, extra = word_bitmap(text)
+    render_mask, meta = render_word(text, frame.shape, x_span, y_span, font_path, ink.stroke_width(inside), bitmap)
+    meta.update(extra)
     meta.update({"pad": pad, "box_px": [bw, bh], "scan_ink": bool(inside.any()), "ink_rows": list(y_span),
                  "ink_cols": list(x_span)})
     return {"scan": frame, "scan_mask": scan_mask, "render_mask": render_mask, "meta": meta}

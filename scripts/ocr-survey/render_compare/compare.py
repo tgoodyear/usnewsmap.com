@@ -274,6 +274,11 @@ def run(rows: list[dict], qe_words: Path | None = None, qe_columns: list[str] | 
            "settings": {"folds": folds, "low_damage_quantile": low_q, "bootstrap": bootstrap, "substitutions_only": substitutions_only},
            "languages": {}}
     out["fonts"] = [dict(zip(("family", "version", "sha256", "package"), f)) for f in out["fonts"]]
+    out["renderer"] = sorted({r.get("renderer") or "font" for r in rows})
+    if "templates" in out["renderer"]:
+        use = {k: sum(r.get(k) or 0 for r in rows) for k in ("tpl_page_letters", "tpl_lccn_letters", "tpl_font_letters")}
+        n = sum(use.values()) or 1
+        out["template_usage"] = {**use, "fallback_share": (use["tpl_lccn_letters"] + use["tpl_font_letters"]) / n}
     for lang in sorted({r["lang"] for r in rows}):
         out["languages"][lang] = analyse_language([r for r in rows if r["lang"] == lang], [e for e in existing],
                                                   folds, low_q, bootstrap)

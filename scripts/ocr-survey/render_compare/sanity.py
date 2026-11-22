@@ -89,7 +89,9 @@ def summarise(orig: dict[str, list], swapped: dict[str, list]) -> dict:
     return out
 
 
-def run(rows: list[dict], alto_dir: Path, font: fonts.FontInfo, pairs, seed: int = 2103, limit: int | None = None) -> tuple[dict, list[dict]]:
+def run(rows: list[dict], alto_dir: Path, font: fonts.FontInfo, pairs, seed: int = 2103, limit: int | None = None,
+        store=None) -> tuple[dict, list[dict]]:
+    """`store` is a templates.TemplateStore: the words are drawn from the page's templates instead of the font."""
     from PIL import Image
 
     Image.MAX_IMAGE_PIXELS = None
@@ -97,6 +99,8 @@ def run(rows: list[dict], alto_dir: Path, font: fonts.FontInfo, pairs, seed: int
     right = sorted((r for r in rows if r["label"] == 1 and r["lang"] == "eng"), key=lambda r: (r["page_id"], r["crop_id"], r["word_index"]))
     pages: dict[str, object] = {}
     out_rows, skipped = [], 0
+    usage = {"tpl_page_letters": 0, "tpl_lccn_letters": 0, "tpl_font_letters": 0}
+    wb = None
     for r in right:
         if limit and len(out_rows) >= limit:
             break
@@ -107,11 +111,15 @@ def run(rows: list[dict], alto_dir: Path, font: fonts.FontInfo, pairs, seed: int
         stem = r["source_image"].rsplit(".", 1)[0]
         if stem not in pages:
             pages = {stem: Image.open(alto_dir / f"{stem}.jpg").convert("L")}
-        a = distances.word_distances(r["ocr_word"], pages[stem], r["box"], font.path)
-        b = distances.word_distances(sw[0], pages[stem], r["box"], font.path)
+            wb = store.renderer(stem, font.path) if store else None
+        a = distances.word_distances(r["ocr_word"], pages[stem], r["box"], font.path, wb)
+        b = distances.word_distances(sw[0], pages[stem], r["box"], font.path, wb)
         if a["status"] != "ok" or b["status"] != "ok":
             skipped += 1
             continue
+        for x in (a, b):
+            for k in usage:
+                usage[k] += x.get(k) or 0
         out_rows.append({"page_id": r["page_id"], "crop_id": r["crop_id"], "word_index": r["word_index"], "word": r["ocr_word"],
                          "swapped": sw[0], "position": sw[1][0], "letter": sw[1][1], "lookalike": sw[1][2],
                          "overlap": sw[1][3], **{f"{m}_original": a[m] for m in METRICS}, **{f"{m}_swapped": b[m] for m in METRICS}})
@@ -119,15 +127,21 @@ def run(rows: list[dict], alto_dir: Path, font: fonts.FontInfo, pairs, seed: int
     def collect(sel):
         return ({m: [x[f"{m}_original"] for x in sel] for m in METRICS}, {m: [x[f"{m}_swapped"] for x in sel] for m in METRICS})
 
-    report = {"sanity_check_only": True, "seed": seed, "font": font.record(), "pairs": len(pairs),
+    report = {"sanity_check_only": True, "renderer": "templates" if store else "font", "seed": seed, "font": font.record(), "pairs": len(pairs),
               "swapped_words": len(out_rows), "skipped_words": skipped, "all": summarise(*collect(out_rows)),
               "overlap_ge_%.1f" % TIER: summarise(*collect([x for x in out_rows if x["overlap"] >= TIER])),
               "overlap_lt_%.1f" % TIER: summarise(*collect([x for x in out_rows if x["overlap"] < TIER]))}
+    if store:
+        n = sum(usage.values()) or 1
+        report["template_usage"] = {**usage, "fallback_share": (usage["tpl_lccn_letters"] + usage["tpl_font_letters"]) / n}
+        keep = ("trusted", "accepted", "accept_rate_of_trusted", "letters_covered_page", "fallback_share")
+        report["template_stats"] = {k: store.meta.get(k) for k in ("letter_share", "fallback_share", "settings", "font")}
+        report["template_stats"]["pages"] = {p: {k: v for k, v in r.items() if k in keep} for p, r in store.meta["pages"].items()}
     return report, out_rows
 
 
 def format_report(rep: dict) -> str:
-    lines = [f"SANITY CHECK ONLY. {rep['swapped_words']} correct words with one look-alike letter swapped "
+    lines = [f"SANITY CHECK ONLY ({rep.get('renderer', 'font')} renderer). {rep['swapped_words']} correct words with one look-alike letter swapped "
              f"({rep['skipped_words']} skipped; {rep['pairs']} pairs, font {rep['font']['font_family']})"]
     for split in ("all", "overlap_ge_%.1f" % TIER, "overlap_lt_%.1f" % TIER):
         for m, e in rep[split].items():
@@ -149,13 +163,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--min-overlap", type=float, default=0.6)
     ap.add_argument("--font", action="append", metavar="SCRIPT=PATH")
     ap.add_argument("--font-cache")
+    ap.add_argument("--renderer", choices=["font", "templates"], default="font")
+    ap.add_argument("--templates", type=Path, help="templates.py build output (.npz), for --renderer templates")
     a = ap.parse_args(argv)
+    store = None
+    if a.renderer == "templates":
+        if not a.templates:
+            ap.error("--renderer templates needs --templates")
+        import templates
+
+        store = templates.TemplateStore.load(a.templates)
     fs = fonts.resolve("latin", fonts.parse_overrides(a.font), a.font_cache)
     if not fs:
         print(f"latin: {fonts.unavailable_reason('latin')}", file=sys.stderr)
         return 1
     pairs = lookalike_pairs(fs[0].path, a.min_overlap)
-    rep, rows = run(gold.read_jsonl(a.words), a.alto_dir, fs[0], pairs, a.seed, a.limit)
+    rep, rows = run(gold.read_jsonl(a.words), a.alto_dir, fs[0], pairs, a.seed, a.limit, store)
     rep["pair_list"] = [[x, y, round(v, 3)] for x, y, v in pairs]
     a.out.parent.mkdir(parents=True, exist_ok=True)
     a.out.write_text(json.dumps(rep, indent=1, sort_keys=True) + "\n", encoding="utf-8")

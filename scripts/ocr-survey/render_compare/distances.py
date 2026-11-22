@@ -96,13 +96,15 @@ def hog_cosine(a_mask: np.ndarray, b_mask: np.ndarray) -> float | None:
     return max(0.0, float(1.0 - np.dot(vecs[0], vecs[1]) / (na * nb)))
 
 
-def word_distances(text: str, page, box: list[float], font_path: str | Path) -> dict:
-    """The distance fields for one word drawn in one font: status, chamfer, pixel, hog_cos, dx, dy and the strokes."""
-    out = render.render_for_crop(text, page, box, font_path)
+def word_distances(text: str, page, box: list[float], font_path: str | Path, word_bitmap=None) -> dict:
+    """The distance fields for one word drawn in one font (or by `word_bitmap`, see render.render_for_crop): status,
+    chamfer, pixel, hog_cos, dx, dy and the strokes, plus any renderer fields (`tpl_*`)."""
+    out = render.render_for_crop(text, page, box, font_path, word_bitmap)
     scan, rend, meta = out["scan_mask"], out["render_mask"], out["meta"]
     res = {"status": "ok", "chamfer": None, "pixel": None, "hog_cos": None, "dx": None, "dy": None,
            "scan_stroke": meta["stroke_target"], "render_stroke_before": meta["stroke_before"],
            "ink_height": meta["ink_rows"][1] - meta["ink_rows"][0], "box_w": meta["box_px"][0], "box_h": meta["box_px"][1]}
+    res.update({k: v for k, v in meta.items() if k.startswith("tpl_")})
     if not scan.any() or not rend.any():
         res["status"] = "no_ink" if not scan.any() else "no_glyph"
         return res
@@ -124,6 +126,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, help="the first N words only")
     ap.add_argument("--font", action="append", metavar="SCRIPT=PATH", help="font file for a script (chr, latin)")
     ap.add_argument("--font-cache", help="font cache dir (default $RENDER_COMPARE_FONTS)")
+    ap.add_argument("--renderer", choices=["font", "templates"], default="font",
+                    help="font: the pinned font; templates: letters cut from the page's own ink (templates.py build)")
+    ap.add_argument("--templates", type=Path, help="templates.py build output (.npz), for --renderer templates")
     a = ap.parse_args(argv)
     Image.MAX_IMAGE_PIXELS = None
     rows = gold.read_jsonl(a.words)[: a.limit]
@@ -132,6 +137,13 @@ def main(argv: list[str] | None = None) -> int:
     available: dict[str, list] = {}
     page_stem, page = None, None
     out_rows, counts = [], {}
+    store = None
+    if a.renderer == "templates":
+        import templates
+
+        if not a.templates:
+            ap.error("--renderer templates needs --templates")
+        store = templates.TemplateStore.load(a.templates)
     for r in rows:
         script = fonts.script_of_lang(r["lang"])
         fs = available.setdefault(script, fonts.resolve(script, overrides, a.font_cache))
@@ -151,7 +163,9 @@ def main(argv: list[str] | None = None) -> int:
         if stem != page_stem:
             page = Image.open(a.alto_dir / f"{stem}.jpg").convert("L")
             page_stem = stem
-        rec.update(word_distances(r["ocr_word"], page, r["box"], font.path))
+            wb = store.renderer(stem, font.path) if store else None
+        rec.update(word_distances(r["ocr_word"], page, r["box"], font.path, wb))
+        rec["renderer"] = a.renderer
         rec.update(font.record())
         rec["script"] = script
         out_rows.append(rec)
