@@ -117,8 +117,8 @@ STEP_LOCK = "usnm-boinc-step.lock"
 HANDOFF_LOCK = "usnm-boinc-handoff.lock"
 # Writer preference: an exclusive acquirer of the hand-off lock first takes this gate exclusively
 # and keeps it while it waits, so no new shared acquirer gets past it and a stream of shared steps
-# cannot starve it. A shared acquirer takes the gate shared only to pass through, then the
-# hand-off lock, then lets the gate go. Order everywhere: gate, hand-off lock, plan lock, step lock.
+# cannot starve it. A shared acquirer also takes the gate exclusively (a turnstile), but only
+# briefly: gate, hand-off lock shared, gate released at once, before any holder recording. Order everywhere: gate, hand-off lock, plan lock, step lock.
 GATE = HANDOFF_LOCK + ".gate"
 HOLDER_SUFFIX = ".holder"
 POLL_FIRST = 0.02
@@ -218,17 +218,18 @@ def drain(directory, wait, plan=None, step="lock-acquire"):
         with contextlib.ExitStack() as held:
             gate = None
             if group[0][0] == HANDOFF_LOCK:
-                # Exclusive: the gate stays held to the end of the group. Shared: only to pass.
+                # Turnstile: always exclusive. Exclusive taker keeps it to the end of the group;
+                # a shared taker lets it go as soon as it holds the hand-off lock.
                 gate = held.enter_context(open(directory / GATE, "a"))
-                lock_until(gate, fcntl.LOCK_SH if plan else fcntl.LOCK_EX, deadline, directory, GATE)
+                lock_until(gate, fcntl.LOCK_EX, deadline, directory, GATE)
             for name, mode in group:
                 handle = held.enter_context(open(directory / name, "a"))
                 lock_until(handle, mode, deadline, directory, name)
-                path = note_holder(directory, name, step, plan, shared=mode == fcntl.LOCK_SH)
-                held.callback(clear_holder, path)
                 if gate is not None and plan:
                     fcntl.flock(gate, fcntl.LOCK_UN)
                     gate = None
+                path = note_holder(directory, name, step, plan, shared=mode == fcntl.LOCK_SH)
+                held.callback(clear_holder, path)
 
 
 def acquire(root, holder, host, pid, ttl=DEFAULT_TTL, drain_dir=None, drain_wait=0, plan=None):

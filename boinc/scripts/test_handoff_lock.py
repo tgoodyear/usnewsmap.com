@@ -494,7 +494,7 @@ SHARED_STEP = """
 import fcntl, sys, time
 d, hold = sys.argv[1], float(sys.argv[2])
 gate = open(d + "/usnm-boinc-handoff.lock.gate", "a")
-fcntl.flock(gate, fcntl.LOCK_SH)
+fcntl.flock(gate, fcntl.LOCK_EX)
 lk = open(d + "/usnm-boinc-handoff.lock", "a")
 fcntl.flock(lk, fcntl.LOCK_SH)
 fcntl.flock(gate, fcntl.LOCK_UN)
@@ -540,6 +540,50 @@ class WriterPreferenceTests(unittest.TestCase):
             thread.join()
             for proc in procs:
                 proc.wait()
+
+    def test_drain_acquires_before_deadline_with_continuously_overlapping_holders(self):
+        # Several shared holders each hold the hand-off lock for 1 s and arrive every 0.15 s,
+        # so at least one always holds it; the drain's gate keeps newcomers out.
+        stop = threading.Event()
+        procs = []
+
+        def stream():
+            while not stop.is_set():
+                procs.append(self.shared(1.0))
+                stop.wait(0.15)
+
+        procs.append(self.shared(1.0))
+        thread = threading.Thread(target=stream)
+        thread.start()
+        try:
+            time.sleep(0.5)
+            started = time.monotonic()
+            lock.drain(self.dir, 8)
+            self.assertLess(time.monotonic() - started, 4)
+        finally:
+            stop.set()
+            thread.join()
+            for proc in procs:
+                proc.wait()
+
+    def test_shared_drain_lets_the_gate_go_before_recording_its_holder(self):
+        seen = []
+        real = lock.note_holder
+
+        def spy(*args, **kwargs):
+            gate = open(self.dir / lock.GATE, "a")
+            try:
+                fcntl.flock(gate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                seen.append(True)
+            except BlockingIOError:
+                seen.append(False)
+            finally:
+                gate.close()
+            return real(*args, **kwargs)
+
+        with patch.object(lock, "note_holder", spy):
+            lock.drain(self.dir, 2, plan="p-1")
+        self.assertTrue(seen and all(seen))
 
     def test_shared_step_waits_while_an_exclusive_drain_waits(self):
         holder = self.shared(1.5)

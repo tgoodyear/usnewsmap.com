@@ -1313,7 +1313,7 @@ class ArchiveSteps(unittest.TestCase):
     def test_a_plan_scoped_change_shares_the_hand_off_lock_and_takes_its_plans_own(self):
         done = self.delete([{"name": self.name, "etag": self.etag(self.name)}], "PLAN_SCOPE=native-feed-7")
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(self.flock_calls.read_text().splitlines(), ["-n -s 8", "-n -s 9", "-n 7"])
+        self.assertEqual(self.flock_calls.read_text().splitlines(), ["-n 8", "-n -s 9", "-n 7"])
 
     def test_a_change_is_fenced_by_the_controllers_lock(self):
         module = self.lock()

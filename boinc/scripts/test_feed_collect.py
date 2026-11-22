@@ -1463,6 +1463,21 @@ class CollectionTests(unittest.TestCase):
         # One source:clients alert row, as before #1698; collection adds nothing uncovered.
         self.assertEqual((checks["collection"]["state"], checks["collection"]["uncovered"]), ("firing", 0))
 
+    def test_the_client_retry_is_skipped_when_the_shared_budget_is_spent(self):
+        def run(budget_left):
+            calls = []
+
+            def failing(*args):
+                calls.append(1)
+                raise OSError("down")
+            clock = iter([0, C.CLIENT_BUDGET_S - budget_left])
+            with fixture() as root, patch.object(C, "client", failing), patch.object(C.time, "sleep"), \
+                    patch.object(C.time, "monotonic", lambda: next(clock)):
+                C.main(["client", "--data-dir", str(root), "--port", "1", "--output", str(root / "c.json")])
+            return len(calls)
+        self.assertEqual(run(C.CLIENT_RETRY_MIN_S + 5), 2)
+        self.assertEqual(run(C.CLIENT_RETRY_MIN_S - 5), 1)
+
     def test_an_unreachable_client_is_still_an_error(self):
         docs, config = self.unproven_documents()
         config["clients"] = ["/own", "/down"]

@@ -1099,6 +1099,13 @@ def reservations_proven(session, client_start, fingerprint, messages):
     return proven
 
 
+# The feed-source unit's start limit (TimeoutStartSec=75 in usnm-boinc-feed-source@.service) less
+# the time publication needs: both client attempts share this budget, and a retry that would leave
+# less than CLIENT_RETRY_MIN_S of it is skipped.
+CLIENT_BUDGET_S = 60
+CLIENT_RETRY_MIN_S = 30
+
+
 def client(data_dir, port, session=None):
     from client_account import MASTER, RPC, flag
 
@@ -2486,10 +2493,15 @@ def main(argv=None):
                                  args.feeder_guard, args.cohort_unit))
         elif args.source == "client":
             session = args.output.with_name(args.output.stem + ".session.json")
+            client_deadline = time.monotonic() + CLIENT_BUDGET_S
             try:
                 result.update(client(args.data_dir, args.port, session))
             except Exception as first:
-                # One retry: a single RPC timeout is not a reason to report the source down.
+                # One retry: a single RPC timeout is not a reason to report the source down, but
+                # not past the unit's start limit: skip it when too little of the budget is left.
+                if client_deadline - time.monotonic() < CLIENT_RETRY_MIN_S:
+                    print(f"feed-source client: {client_failure(first)}", file=sys.stderr)
+                    raise
                 print(f"feed-source client: {client_failure(first)} retrying", file=sys.stderr)
                 time.sleep(1)
                 try:

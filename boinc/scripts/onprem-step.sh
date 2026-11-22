@@ -803,19 +803,20 @@ note_holder() {
 clear_holders() { [ ${#holder_files[@]} -eq 0 ] || rm -f "${holder_files[@]}"; }
 trap 'rm -f "${held_stdin:-}" "${archive_stdin:-}"; clear_holders' EXIT
 # The hand-off lock goes through its gate (writer preference): an exclusive taker holds the gate
-# while it waits, so a stream of shared steps cannot starve it; a shared taker passes the gate
-# first, then lets it go. The order is gate, hand-off lock, plan lock.
+# while it waits, so a stream of shared steps cannot starve it; a shared taker takes the gate
+# exclusively too, but only until it holds the hand-off lock. The order is gate, hand-off lock, plan lock.
 gate_file=""
 [ "$lock_file" != usnm-boinc-handoff.lock ] || gate_file=usnm-boinc-handoff.lock.gate
 if [ -n "$gate_file" ]; then
   exec 8> "$RUN_DIR/$gate_file"
-  if [ -n "$plan_lock" ]; then take_lock 8 "$gate_file" -s; else take_lock 8 "$gate_file"; fi
+  take_lock 8 "$gate_file"
 fi
 exec 9> "$RUN_DIR/$lock_file"
 if [ -n "$plan_lock" ]; then
   take_lock 9 "$lock_file" -s
+  # Turnstile: the gate goes at once, before the holder-recording subprocess.
+  [ -z "$gate_file" ] || exec 8>&-
   note_holder "$lock_file" --shared
-  exec 8>&-
   exec 7> "$RUN_DIR/$plan_lock"
   take_lock 7 "$plan_lock"
   note_holder "$plan_lock"

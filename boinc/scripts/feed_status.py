@@ -644,14 +644,20 @@ def controller_signals(check, tick, now):
           reason="not_reported" if conflicts is None else None)
     progress = tick["progress"]
     published, first, pending = progress["published_at"], progress["first_tick_at"], progress["pending"]
+    paused = tick.get("paused_by")
     if pending is None:
         stalled = None
+    elif paused:
+        # A validated maintenance pause (feed_collect.paused_by): nothing ticked, so a stale
+        # pending/publication reading is no stall. Deferred, not erased: the failure history
+        # and the other checks are untouched, and the check resumes when the pause ends.
+        stalled = False
     elif published is not None:
         stalled = pending > 0 and now - published >= PROGRESS_STALL_S
     else:
         stalled = pending > 0 and first is not None and now - first >= PROGRESS_COVERAGE_S
     check("controller_progress", stalled, backlog=pending, published_at=published,
-          reason="not_reported" if pending is None else None)
+          reason="not_reported" if pending is None else None, **({"paused_by": paused} if paused else {}))
     p90 = tick["tick_p90_s"]
     p50 = tick.get("tick_p50_s")
     # No tick in the last hour is controller_tick's to report, not a trend; neither is one tick. A

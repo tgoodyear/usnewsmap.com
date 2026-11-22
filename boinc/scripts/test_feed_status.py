@@ -779,6 +779,15 @@ class ControllerSignalsTest(unittest.TestCase):
         self.assertEqual((checked["state"], checked["rotation_until"]), ("pending", NOW + 120))
         self.assertEqual(self.checks(120)["controller_progress"]["state"], "firing")
 
+    def test_controller_progress_is_deferred_during_a_validated_pause(self):
+        self.tick["progress"].update(published_at=NOW - F.PROGRESS_STALL_S, pending=5)
+        self.assertEqual(self.checks(0)["controller_progress"]["state"], "firing")
+        self.tick["paused_by"] = "maintenance_marker"
+        checked = self.checks(60)["controller_progress"]
+        self.assertEqual((checked["state"], checked["paused_by"]), ("healthy", "maintenance_marker"))
+        del self.tick["paused_by"]
+        self.assertEqual(self.checks(120)["controller_progress"]["state"], "firing")
+
     def test_a_tick_trend_fires_on_a_median_over_twice_the_baseline_held_for_an_hour(self):
         limit = F.TICK_TREND_FACTOR * F.TICK_BASELINE_P50_S
         self.assertEqual((F.TICK_BASELINE_P50_S, limit), (660, 1320))
