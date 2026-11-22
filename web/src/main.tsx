@@ -9,6 +9,7 @@ import { DATASETS_PATH, docIdForPath, OLD_DATASETS_PATH, pageFor } from "./route
 import "./styles.css";
 import { preloadBasemap } from "./lib/preloadBasemap";
 import { enhanceSearchLanding } from "./searchLanding";
+import { syncRelatedSearches } from "./relatedSearches";
 import type { Meta } from "./api/types";
 
 // The dataset details, privacy and credits pages load only when visited.
@@ -87,6 +88,8 @@ function mount() {
     </StrictMode>,
   );
 }
+
+syncRelatedSearches();
 
 if ("__USNM_SHARE_CAPTURE__" in window) {
   document.getElementById("search-landing")?.remove();

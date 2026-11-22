@@ -20,6 +20,9 @@ export function Mentions({ first, last, placeName, hrefFor, onOpen }: Props) {
   const link = (hit: HitItem, sort: HitSort) => (
     <a
       href={hrefFor(hit, sort)}
+      // The permalink is the page plus map and list state, which is noindex:
+      // crawlers needn't spend their visits on one per page and place.
+      rel="nofollow"
       onClick={(e) => {
         // Let modified clicks open the permalink in a new tab.
         if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;

@@ -41,6 +41,7 @@ describe("Mentions", () => {
     const lastLink = screen.getByRole("link", { name: "Dec 28, 1896" });
     expect(firstLink.getAttribute("href")).toBe("/?place=P00001&sort=oldest");
     expect(lastLink.getAttribute("href")).toBe("/?place=P00006&sort=newest");
+    expect(firstLink.getAttribute("rel")).toBe("nofollow");
 
     fireEvent.click(lastLink);
     expect(onOpen).toHaveBeenCalledWith(last, "newest");
