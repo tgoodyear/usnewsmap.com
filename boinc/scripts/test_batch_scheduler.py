@@ -1245,6 +1245,24 @@ class GoldOnboardingTests(unittest.TestCase):
         self.assertNotEqual(event["backpressure_reason"], "gold_tick")
         self.assertEqual(len(self.fake.jobs), 2)
 
+    def test_a_gold_tick_refills_when_asked_and_nothing_is_unsent(self):
+        # --gold-refill-when-empty: hosts shouldn't sit idle through a gold tick while BOINC
+        # has none of the plan's work unsent.
+        event = self.tick(gold_refill_when_empty=True)
+        self.assertEqual(len(self.fake.steps), 2)  # gold still ran
+        self.assertNotEqual(event["backpressure_reason"], "gold_tick")
+        self.assertTrue(event["gold_refilled"])
+        self.assertEqual(len(self.fake.jobs), 2)
+
+    def test_a_gold_tick_still_skips_the_refill_while_work_is_unsent(self):
+        self.fake.now = NOW
+        event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW,
+                           gold_refill_when_empty=True,
+                           server_status=status_xml(ocr_unsent=5, qwen_unsent=0, quality_unsent=0,
+                                                    quality_in_progress=0, train_unsent=0))
+        self.assertEqual((event["backpressure_reason"], len(self.fake.jobs)), ("gold_tick", 0))
+        self.assertFalse(event["gold_refilled"])
+
     def test_a_gold_tick_collects_at_most_one_step(self):
         self.tick()          # gold, no refill
         self.tick(at=60)     # refills: two jobs
