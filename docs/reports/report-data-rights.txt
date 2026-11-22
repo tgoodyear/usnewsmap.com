@@ -8,7 +8,11 @@ in ops/data-assets.json (report-YYYY-MM-topic) is released separately, with
 its member list and SHA256SUMS as release assets. The GPU studies' data is in
 data-report-2026-11-gpu-studies-20261106-0183479. The copy of this notice in
 that release has the earlier wording; its source terms are the same. The
-Cherokee report's data is released as report-2026-11-cherokee. The October
+Cherokee report's data is released as report-2026-11-cherokee. The OCR
+quality-estimation report's source lists (book and Wikisource titles, URLs
+and hashes, no text) are released as report-2026-11-ocr-quality-estimation.
+The Tesseract 5.5.4 report's comparison output, which covers pages from the
+sources below, is released as report-2026-11-tesseract-5-5-4. The October
 release and the Study 8 supplement are unchanged.
 
 There is no single licence for the archive. The source terms below apply to

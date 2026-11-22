@@ -1,6 +1,6 @@
 # Which gain measure tracks real CER? (20 Nov 2026)
 
-The worst-first campaign (#1415) judges a re-read by the drop in LoC's damage rate, with a stop rule of 0.02. An earlier check of damage against human truth (closed PR #1889, folded in below) found it valid for English, French, Swedish and Finnish and not for German. The [quality-estimation report](https://github.com/tgoodyear/usnewsmap.com/pull/1925) (draft PR #1925) found qe-v1's `lm_oov` the best reference-free measure of a reading's quality. This report asks whether a drop in `lm_oov` tracks a real CER drop better than a drop in damage.
+The worst-first campaign (#1415) judges a re-read by the drop in LoC's damage rate, with a stop rule of 0.02. An earlier check of damage against human truth (closed PR #1889, folded in below) found it valid for English, French, Swedish and Finnish and not for German. The [quality-estimation report](../2026-11-ocr-quality-estimation/report.md) found qe-v1's `lm_oov` the best reference-free measure of a reading's quality. This report asks whether a drop in `lm_oov` tracks a real CER drop better than a drop in damage.
 
 ## Summary
 
