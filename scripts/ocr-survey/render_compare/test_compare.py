@@ -98,7 +98,7 @@ class RunTest(unittest.TestCase):
         g = self.L["results"]["all"]["gain"]
         a = self.L["results"]["all"]["auc"]
         best_existing = max(a["alto_wc"], 0.0)
-        self.assertAlmostEqual(g["render_alone_over_best_existing"], max(a[k] for k in compare.RENDER) - best_existing)
+        self.assertAlmostEqual(g["render_alone_over_best_existing"], max(a[k] for k in compare.ABSOLUTE) - best_existing)
         self.assertAlmostEqual(g["combined_over_existing_logistic"], a["logistic:existing+render"] - a["logistic:existing"])
         self.assertTrue(self.L["results"]["real_word_errors"]["rule"]["passes"])
 
@@ -106,11 +106,25 @@ class RunTest(unittest.TestCase):
         rows = fake_rows(seed=3)
         rng = np.random.default_rng(9)
         for r in rows:
-            for k in compare.RENDER:
+            for k in compare.ABSOLUTE:
                 r[k] = float(rng.normal())
         L = compare.run(rows)["languages"]["eng"]["results"]
         self.assertFalse(L["all"]["rule"]["passes"])
         self.assertLess(L["all"]["auc"]["chamfer"], 0.6)
+
+    def test_relative_scores_join_the_render_signals_when_present(self):
+        rows = fake_rows(seed=4)
+        for r in rows:
+            for k in compare.ABSOLUTE:
+                r["rel_" + k] = r[k] - 0.5
+        a = compare.run(rows)["languages"]["eng"]
+        self.assertEqual(a["signals_unavailable"], [])
+        self.assertEqual(a["folds"]["logistic:render"]["members"], compare.ABSOLUTE + compare.RELATIVE)
+        for k in compare.RELATIVE:
+            self.assertIn(k, a["results"]["all"]["auc"])
+        # without the columns they are simply unavailable, and the render members are the three absolute ones
+        b = self.L
+        self.assertEqual(b["folds"]["logistic:render"]["members"], compare.ABSOLUTE)
 
     def test_languages_are_reported_apart(self):
         rep = compare.run(fake_rows("eng") + fake_rows("ger", seed=5), bootstrap=0)

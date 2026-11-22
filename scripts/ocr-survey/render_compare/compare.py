@@ -8,7 +8,8 @@
 with `status` ok are used. The positive class is a wrong word (label 0); every signal is oriented so a higher
 score means "more likely wrong". Per language (`lang`), the report holds AUC for
 
-  render signals   chamfer, pixel, hog_cos (higher = further from the scan)
+  render signals   chamfer, pixel, hog_cos (higher = further from the scan), and when the file has them rel_chamfer,
+                   rel_pixel, rel_hog_cos (fitrel.py: the same distance less the least over the word's look-alike variants)
   ALTO WC          1 - wc (LoC's own word confidence)
   lex_oov          1 when the OCR word is not in the language's lexicon (english-words.txt, English only): a word-level
                    stand-in for qe-v1's `oov`, NOT qe-v1 itself (qe-v1's resources and its char 5-gram model score
@@ -44,7 +45,11 @@ import damage_v2
 import gold
 import loader
 
-RENDER = ["chamfer", "pixel", "hog_cos"]
+ABSOLUTE = ["chamfer", "pixel", "hog_cos"]
+# fitrel.py's relative scores (d minus the least d among the text's single look-alike variants); present only in
+# distance files made by `fitrel.py all`
+RELATIVE = ["rel_chamfer", "rel_pixel", "rel_hog_cos"]
+RENDER = ABSOLUTE + RELATIVE
 MARGIN = 0.05
 DAMAGE_STRATA = ("low", "mid", "high")
 LEXICONS = {"eng": paths.ROOT / "crates" / "usnm-core" / "data" / "english-words.txt.zst"}
