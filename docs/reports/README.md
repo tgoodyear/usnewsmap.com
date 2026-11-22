@@ -15,7 +15,7 @@ One directory per report, named `<year>-<month>-<topic>`. A report is `report.md
 | [2026-11-gain-measures](2026-11-gain-measures/)             | Which gain measure tracks real CER: damage rate against qe-v1 `lm_oov`       |
 | [2026-11-gpu-studies](2026-11-gpu-studies/)                 | GPU OCR studies and their reproduction notes                                 |
 | [2026-11-ocr-quality-estimation](2026-11-ocr-quality-estimation/) | Reference-free OCR quality: `lm_oov` against true CER, and the evidence rule (`qe-v1`) |
-| [2026-11-reader-comparison](2026-11-reader-comparison/)     | Protocol for the per-language reader comparison on BOINC (#968)              |
+| [2026-11-reader-comparison](2026-11-reader-comparison/)     | Per-language reader comparison (#968): protocol and results          |
 
 ## Data
 
