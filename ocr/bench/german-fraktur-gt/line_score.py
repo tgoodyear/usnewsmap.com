@@ -92,6 +92,9 @@ def alto_words(data):
             x, y = float(el.get("HPOS", 0)), float(el.get("VPOS", 0))
             words.append((x, y, x + float(el.get("WIDTH", 0)), y + float(el.get("HEIGHT", 0)),
                           el.get("CONTENT") or ""))
+        elif n == "HYP" and words:      # attach to the preceding word, as gt_lines() does
+            w = words[-1]
+            words[-1] = w[:4] + (w[4] + (el.get("CONTENT") or "-"),)
     return words, size
 
 
@@ -221,7 +224,7 @@ def main(argv=None):
             gpu = {score.gpu_norm(l) for l in f
                    if l.strip().lstrip("﻿") and not l.lstrip().startswith("#")}
             gpu.discard("")
-    arms = [x for x in a.arms.split(",") if x]
+    arms = list(dict.fromkeys(x for x in a.arms.split(",") if x))
     gpu_ids = sorted(gpu)
     info = {"scorer": "line_score.py", "arms": {}, "cmd": a.cmd, "years": a.years,
             "limit": a.limit, "gpu_study_ids": gpu_ids,
@@ -255,7 +258,8 @@ def main(argv=None):
         info["arms"] = {**old["arms"], **info["arms"]}
     meta_all = score.load_meta(a.meta)
     jobs, missing_all, expected = [], {}, {arm: {} for arm in arms}
-    for s in a.sets.split(","):
+    queued = set()
+    for s in dict.fromkeys(a.sets.split(",")):
         d = os.path.join(a.data_root, s)
         meta = dict(score.load_meta(os.path.join(d, "meta.csv"))) \
             if os.path.exists(os.path.join(d, "meta.csv")) else {}
@@ -271,7 +275,9 @@ def main(argv=None):
             expected[arm][s] = sorted({pg["page_id"] for pg in pages})
         for pg in pages:
             for arm in arms:
-                if (s, pg["page_id"], arm) not in done:
+                key = (s, pg["page_id"], arm)
+                if key not in done and key not in queued:   # schedule each job once
+                    queued.add(key)
                     jobs.append((pg, arm, a.cmd, a.tessdata, a.timeout, gpu, a.alto_dir,
                                  {"model_sha256": info["arms"].get(arm),
                                   "version": info["tesseract_version"]}))
