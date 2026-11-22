@@ -22,6 +22,8 @@ pub const KEEP_HOURS: i64 = 336;
 /// The hours the charts show: a week, in bars of [`BIN_HOURS`].
 pub const CHART_HOURS: i64 = 168;
 pub const BIN_HOURS: i64 = 4;
+/// Largest accepted push body: a collector sends a full retained window.
+pub const MAX_THROUGHPUT_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_SERIES: usize = 256;
 pub const MAX_LIMIT_CHARS: usize = 160;
 /// The largest history file read; a larger one isn't ours.

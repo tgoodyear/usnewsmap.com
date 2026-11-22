@@ -470,7 +470,10 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/{part}", get(api))
         .route("/api/host/{name}", put(put_host))
         .route("/api/sset/{name}", put(put_sset))
-        .route("/api/throughput/{source}", put(put_throughput))
+        .route(
+            "/api/throughput/{source}",
+            put(put_throughput).layer(DefaultBodyLimit::max(throughput::MAX_THROUGHPUT_BYTES)),
+        )
         .route("/api/boinc-week", put(put_boinc_week))
         .route(
             "/api/feed-source/{source}",
@@ -535,7 +538,9 @@ pub fn redirect_router(app: Arc<App>, authority: &str) -> Router {
         .route("/api/sset/{name}", put(put_sset).fallback(redirect.clone()))
         .route(
             "/api/throughput/{source}",
-            put(put_throughput).fallback(redirect.clone()),
+            put(put_throughput)
+                .fallback(redirect.clone())
+                .layer(DefaultBodyLimit::max(throughput::MAX_THROUGHPUT_BYTES)),
         )
         .route(
             "/api/boinc-week",
@@ -1029,6 +1034,35 @@ mod tests {
                 "limits":{{"quality_ship":"1 chunk a run on pve-laptop"}}}}"#,
             Utc::now().to_rfc3339()
         )
+    }
+
+    #[tokio::test]
+    async fn a_throughput_push_has_its_own_larger_body_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = app(dir.path());
+        // Valid JSON padded with whitespace: past the host limit, under the throughput one.
+        let padded = |n: usize| format!("{}{}", throughput_push(), " ".repeat(n));
+        let big = padded(600_000);
+        assert!(big.len() > hosts::MAX_HOST_BYTES);
+        let uri = "/api/throughput/ship";
+        assert_eq!(
+            call(a.clone(), "198.51.100.14", "PUT", uri, &big).await.0,
+            StatusCode::NO_CONTENT
+        );
+        let ((s, _), _) = call_on(
+            redirect_router(a.clone(), "ocr.example.org"),
+            "198.51.100.14",
+            "PUT",
+            uri,
+            &big,
+        )
+        .await;
+        assert_eq!(s, StatusCode::NO_CONTENT);
+        let huge = padded(throughput::MAX_THROUGHPUT_BYTES);
+        assert_eq!(
+            call(a, "198.51.100.14", "PUT", uri, &huge).await.0,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
     }
 
     #[tokio::test]
