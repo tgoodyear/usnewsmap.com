@@ -2,7 +2,24 @@
 
 15 November 2026. Analysis only. Script: [`scripts/chr_letter_similarity.py`](scripts/chr_letter_similarity.py), test: [`scripts/test_chr_letter_similarity.py`](scripts/test_chr_letter_similarity.py).
 
-## Verdict
+## Summary
+
+**Question.** The _Phoenix_ was set in one typeface, so the same letter should look alike on every page. If so, a new letter crop could take the label of its nearest labelled neighbour without a person looking. That would let one checked letter settle many others, and would cut the hand-checking needed for look-alike letters such as Ꮧ and Ꮨ.
+
+**Hypothesis.** Fixed before the run (the decision rule): build label propagation only if, on look-alike letter pairs, the nearest-neighbour label (1-NN: copy the label of the single most similar labelled crop) is right at least 98% of the time at some similarity threshold that still covers at least 30% of letters, and the word-level result does not contradict that. This is a necessary condition for building, not a reason to build.
+
+**Answer.** The rule is met in one of four cells and not in the other three. DINOv2-small (a general-purpose image model) on the tier A evaluation set (letters whose spelling also appears elsewhere in the reference text) reaches 98% look-alike accuracy at 63.2% coverage, with 22 of 22 look-alike letters right. The same test fails for pixels plus HOG (a simple edge-histogram feature; 28.7% on tier A, 29.5% on all letters, the latter by half a point) and for DINOv2-small on all letters (14.8%). The one passing cell is fragile: the threshold was picked on the same 22 letters, and 22 of 22 has a 95% lower bound of about 85%. Over all letters, pixels plus HOG is the better feature (92.6% against 79.0% 1-NN accuracy). The word-level check (31 words, 31 same-side) is too small to carry anything. So the hypothesis did not hold robustly.
+
+**What it means.**
+
+- Do not build label propagation yet. The evidence supports a larger tier A and a repeat of the test.
+- Open: tier A has only 38 look-alike letters, 31 of them Ꮧ/Ꮨ or Ꮐ/Ᏻ, and the letters are segmented crops from small clips, so segmentation errors are counted as classifier errors.
+
+![1-NN letter accuracy by feature and slice, with 95% intervals. Pixels plus HOG beats DINOv2-small on every slice, and the look-alike tier A interval is wide for both (79% to 97% and 73% to 94%).](figures/letter-1nn.svg)
+
+**Figure 1.** 1-NN accuracy, five folds grouped by page. Source: the letter k-NN accuracy table below.
+
+## The decision rule and the four cells
 
 The fixed rule was: propagation is worth building only if letter-level 1-NN accuracy on look-alike pairs is at least 98% at some threshold that covers at least 30% of letters, and the word-level precision does not contradict that.
 
@@ -18,6 +35,10 @@ Applied literally, the rule's letter condition is met in one of four cells and n
 The passing cell is fragile. The threshold was chosen on the same 22 look-alike letters it is scored on, and 22 of 22 has a 95% lower bound of about 85%. On all letters (260 look-alike letters, of which the tier A ones are a subset) DINOv2-small reaches only 84% look-alike accuracy at 50% coverage. Tier A is also small and skewed: 38 look-alike letters, 31 of them Ꮧ/Ꮨ or Ꮐ/Ᏻ. Pixels plus HOG is the more accurate embedding overall (92.6% against 79.0% 1-NN), yet it misses the condition. The word-level test (31 words with a same-pair neighbour, 31 correct) does not contradict the letter result but is too small to support it.
 
 The evidence supports a larger tier A and a repeat of the test, not a build.
+
+![Best coverage at 98% look-alike accuracy in each of the four cells against the 30% requirement. Only DINOv2-small on tier A passes, at 63.2%; the other three reach 29.5%, 28.7% and 14.8%.](figures/letter-cells.svg)
+
+**Figure 2.** The decision rule's letter condition, by cell. Source: the table above.
 
 ## Question and data
 
@@ -174,6 +195,14 @@ The task sets contain only words where the two readings differ, so errors the tw
 - One typeface, one paper, low-resolution crops from clips of about 40 pixels in height. Only 75 distinct letters occur, and some have a handful of crops.
 - Both embeddings were run unmodified. No tuning was done and the threshold grid was fixed before the run.
 - Words with unequal readings (266 of 969) and failed splits (139) are missing, and they are not random: they are probably the harder ones.
+
+## Conclusion
+
+Applied literally, the pre-stated rule passes in one of four cells (DINOv2-small on tier A, 63.2% coverage at 98% look-alike accuracy) and fails in three. We do not trust that pass: it rests on 22 look-alike letters and a threshold chosen on them, and DINOv2-small is the worse feature overall. The word-level check neither supports nor contradicts the letter result.
+
+- Do not build label propagation on this evidence.
+- Next step: grow tier A (more look-alike letters, with Ꮎ/Ꮻ and Ꮘ/Ꮱ in particular) and repeat the test with the threshold set on separate data.
+- Pixels plus HOG is the feature to start from, since it is the more accurate one overall.
 
 ## Reproducing
 
