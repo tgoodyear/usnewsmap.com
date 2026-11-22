@@ -32,6 +32,8 @@ for p in glob.glob(f"{a.metrics_dir}/truth-*.jsonl"):
 
 
 def rho(x, y):
+    # Known limitation: double argsort ranks ties by order, not by average rank, so rho is
+    # approximate where values tie (e.g. zero-error readings with equal CER).
     rx = np.argsort(np.argsort(x)); ry = np.argsort(np.argsort(y))
     return float(np.corrcoef(rx, ry)[0, 1])
 

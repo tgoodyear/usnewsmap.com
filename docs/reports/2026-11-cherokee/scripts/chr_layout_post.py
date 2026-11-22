@@ -61,8 +61,7 @@ def main():
         return
     sec = {r["page"]: r["lines"] for r in map(json.loads, open(a.secondary))}
     for r in map(json.loads, open(a.primary)):
-        if r["page"] in sec:
-            print(json.dumps({"page": r["page"], "lines": union(r["lines"], sec[r["page"]])}, sort_keys=True))
+        print(json.dumps({"page": r["page"], "lines": union(r["lines"], sec.get(r["page"], []))}, sort_keys=True))
 
 
 if __name__ == "__main__":

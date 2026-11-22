@@ -236,6 +236,8 @@ Measure: lm_oov (character-model bits per character / 1.185 + out-of-lexicon rat
 
 ## Commonest character edits per reader (truth sets, folded, lower-cased; expected → read)
 
+Note: in these lists the ten edits were selected alphabetically by a packing bug, not by frequency, so they are not the commonest edits and the counts are not in descending order. The ranked lists are not published.
+
 - deu qwen8b-local (273026 reference characters, 5592 edits): `∅→ ` 497, `∅→"` 11, `∅→'` 4, `∅→(` 3, `∅→)` 7, `∅→,` 16, `∅→-` 29, `∅→.` 117, `∅→/` 2, `∅→0` 9
 - deu tess3 (273026 reference characters, 13936 edits): `∅→ ` 759, `∅→!` 7, `∅→%` 3, `∅→&` 4, `∅→'` 10, `∅→(` 8, `∅→)` 8, `∅→*` 19, `∅→,` 35, `∅→-` 32
 - deu tess6 (273026 reference characters, 14105 edits): `∅→ ` 798, `∅→!` 9, `∅→%` 4, `∅→&` 2, `∅→'` 11, `∅→(` 10, `∅→)` 8, `∅→*` 29, `∅→,` 41, `∅→-` 51

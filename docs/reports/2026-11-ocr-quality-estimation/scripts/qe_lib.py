@@ -195,6 +195,9 @@ class NearMiss:
             for i in range(len(w)):
                 self.idx[w[:i] + w[i + 1:]].append(w)
 
+    # Known limitation: this one-deletion index finds distance-2 neighbours only when the two edits
+    # leave a shared deletion key, so for words of 7+ letters it misses some (e.g. two substitutions
+    # far apart). Those near-misses are counted as novel words. Kept as run; it produced the reported figures.
     @staticmethod
     def _dels(t):
         return {t[:i] + t[i + 1:] for i in range(len(t))}

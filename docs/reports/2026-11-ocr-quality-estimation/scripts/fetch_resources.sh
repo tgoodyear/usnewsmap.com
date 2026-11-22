@@ -29,7 +29,11 @@ for f in $FILES; do
   url="https://raw.githubusercontent.com/LibreOffice/dictionaries/$LO_SHA/$f"
   dest="$OUT/hunspell/$f"
   mkdir -p "$(dirname "$dest")"
-  [ -s "$dest" ] || curl -fsS -o "$dest" "$url"
+  # The cache is per commit: a file is reused only when the commit recorded beside it matches.
+  if [ ! -s "$dest" ] || [ "$(cat "$dest.commit" 2>/dev/null)" != "$LO_SHA" ]; then
+    curl -fsS -o "$dest" "$url"
+    printf '%s\n' "$LO_SHA" > "$dest.commit"
+  fi
   printf '%s\t%s\t%s\n' "hunspell/$f" "$url" "$(sha256sum "$dest" | cut -d' ' -f1)" >> "$OUT/SOURCES.tsv.new"
 done
 # wordfreq 3.1.1 (code Apache-2.0, data CC BY-SA 4.0): the wheel carries the frequency lists.

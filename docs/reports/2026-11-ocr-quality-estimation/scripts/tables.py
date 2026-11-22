@@ -89,6 +89,6 @@ if any("mlm_pppl" in e for e in R["groups"].values()):
 L.append("## Commonest character edits per reader (truth sets, folded, lower-cased; expected → read)\n")
 for lang, m in sorted(C.items()):
     for rd, v in sorted(m.items()):
-        ops = ", ".join(f"`{k.split(chr(9))[0] or '∅'}→{k.split(chr(9))[1] or '∅'}` {n}" for k, n in list(v["ops"].items())[:10])
+        ops = ", ".join(f"`{k.split(chr(9))[0] or '∅'}→{k.split(chr(9))[1] or '∅'}` {n}" for k, n in sorted(v["ops"].items(), key=lambda kv: -kv[1])[:10])
         L.append(f"- {lang} {rd} ({v['chars']} reference characters, {v['errors']} edits): {ops}")
 open(a.out, "w").write("\n".join(L) + "\n")
