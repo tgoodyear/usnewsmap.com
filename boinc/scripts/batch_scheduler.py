@@ -4419,7 +4419,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
          low_watermark=None, high_watermark=None, max_global_pending=None, server_status=None,
          refill_cap=None, other_app_budget=None, sibling_archived=None, sibling_claims=None,
          resume_native=False, release_spot_hold=None, release_container_hold=None, pair_log=None,
-         resolution_log=None, loc_text=None, admission=None, refresh_sibling_claims=None):
+         resolution_log=None, loc_text=None, admission=None, refresh_sibling_claims=None,
+         gold_refill_when_empty=False):
     """One tick. `admission` (an Admission, #1836) is the lock of a plan that ticks beside others:
     gold, and publishing held pages through claims, exports, submits and spot replays, run only
     while it is held, after reading every plan's journals, claims (`refresh_sibling_claims`) and
@@ -4859,6 +4860,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     other_app_pending_results = other_status_results
     global_pending_results = cohort_pending_results + other_app_pending_results
     pending = cohort_pending if cohort_mode else global_pending
+    # A gold tick skips the refill (a 15-minute tick limit that no longer applies to a finished
+    # tick). With --gold-refill-when-empty it refills anyway while BOINC has none of the plan's
+    # work unsent, so hosts don't sit idle through a gold tick on top of a long refill cycle.
+    gold_holds = gold_ran and not (gold_refill_when_empty and has_ocr_attribution and ocr_unsent == 0)
 
     uncertain = any(job["stage"] == "submitting" for job in server.values())
     require(not uncertain, "uncertain server submission blocks fresh allocation")
@@ -4927,7 +4932,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # Every tick, so the list stays current when this one claims nothing (#1754).
         feed.settled_messages = settled_messages(records, claimed_messages(state.get("claims"), sibling_claims))
         feed.publish_settled()
-    if admitted and target and not held and not drain and not gold_ran and not native_paused:
+    if admitted and target and not held and not drain and not gold_holds and not native_paused:
         if free > 0:
             if feed:
                 feed.settled_messages = settled_messages(
@@ -5223,7 +5228,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     elif held > 0:
         backpressure = True
         backpressure_reason = "collection_backlog"
-    elif gold_ran:
+    elif gold_holds:
         backpressure = True
         backpressure_reason = "gold_tick"
     elif target == 0:
@@ -5328,6 +5333,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         "backpressure": backpressure,
         "backpressure_reason": backpressure_reason,
         "refill_cap": refill,
+        "gold_refilled": bool(gold_ran and not gold_holds and submitted),
         "low_watermark": low_target,
         "high_watermark": high_target,
         "cohort_pending": cohort_pending,
@@ -5401,6 +5407,9 @@ def main(argv=None):
     parser.add_argument("--refill-cap", type=int, default=None,
                         help="claim, export and submit at most this many pages a tick (1-500, in steps of at most 100; never more than "
                              "batch_size, the default); collection still takes up to batch_size (#1447)")
+    parser.add_argument("--gold-refill-when-empty", action="store_true",
+                        help="refill on a gold tick too while BOINC has none of the plan's app unsent "
+                             "(per-app server status needed); a gold tick otherwise only collects")
     parser.add_argument("--other-app-budget", type=int, default=None,
                         help="count at most this many of other apps' unassimilated workunits toward "
                              "--max-global-pending (needed, and above it), and hold all apps' work to the "
@@ -5626,6 +5635,8 @@ def main(argv=None):
                 tick_kwargs["max_global_pending"] = args.max_global_pending
             if args.refill_cap is not None:
                 tick_kwargs["refill_cap"] = args.refill_cap
+            if args.gold_refill_when_empty:
+                tick_kwargs["gold_refill_when_empty"] = True
             if args.other_app_budget is not None:
                 tick_kwargs["other_app_budget"] = args.other_app_budget
             admission = None
