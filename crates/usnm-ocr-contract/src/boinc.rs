@@ -17,6 +17,10 @@ pub const LINES_VERSION: u32 = 3;
 pub const LINES_RETRY_VERSION: u32 = 4;
 /// The page segmentation mode of a line job: one raw line, no layout analysis.
 pub const LINE_PSM: u8 = 13;
+/// The profile of a line job that reads each word in its script (#1666): the syllabary model on
+/// the line, then the English model on the words that are Latin. Its pages are decided by rule
+/// `line-merge-v2`; the job's profile is `chr_phoenix` alone for rule `line-merge-v1`.
+pub const LINE_WORDS_PROFILE: &str = "chr_phoenix+eng";
 /// The most lines in one line job.
 pub const MAX_LINES: usize = 2000;
 /// The longest line id.

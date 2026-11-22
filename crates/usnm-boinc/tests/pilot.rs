@@ -163,6 +163,7 @@ impl Fixture {
             deadline_retries: vec![],
             line_read: None,
             loc_alto: None,
+            line_words: false,
         };
         Self {
             tmp,

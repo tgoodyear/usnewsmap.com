@@ -582,6 +582,22 @@ verdicts (`line_merge_verdicts`) and the rule v1 `verdicts`. Record each batch's
 changed, which is a bug, not a reading. For comparison, the e2e run of 9 November read 734
 lines on 3 test-set pages; 700 took the model's reading and all 3 pages were admitted.
 
+**Per-word script detection (#1666).** `export --line-read chr --line-words` makes line
+jobs with profile `chr_phoenix+eng` instead of `chr_phoenix`. The worker reads the line with
+the syllabary model, reads the words that look Latin again with the English model
+(`crates/usnm-boinc/src/lines/script.rs`) and puts those readings in place of the syllabary
+ones. Everything else about the run is as above, with these differences:
+
+- A worker built before this refuses the job (its route for `chr` is `chr_phoenix`), so the
+  jobs need a `usnm_ocr` version built from this code, and a host that has the `eng` model
+  beside `chr_phoenix` (the image has both; a native plan has to list `eng`). Publish the
+  version through [app-release.md](app-release.md) as for any worker change.
+- Its pages are decided by rule `line-merge-v2` (`line-merge.json`, `line_merge.rule`),
+  which tests a page as v1 does but credits a line's Latin words in the half-as-many-letters
+  test. `line-report` adds `latin_words` to each page's `stats` and to the summary.
+- The line-job trust scope is keyed by profile, so `gold/trust.json` needs its own `chr`
+  entry for `chr_phoenix+eng` (PSM 13, DPI 300) before a host's results are published.
+
 ### 6. Into the index
 
 `ocr-sync` (its timer in CT 215) imports BOINC's `ocr-out` parts into `curated/ocr-local/`
