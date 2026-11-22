@@ -1498,6 +1498,14 @@ def reconcile(args):
             if args.confirm_collision_only and not args.confirm_plan_draining:
                 require(all(page["kind"] == "journal-less" for page in manifest["pages"]),
                         f"reconcile run {batch.name} gives back more than the named collision pages")
+                # A named page the run left out (a journal of this plan, say) was never shown
+                # to be a collision: only the draining run's own confirmation covers it.
+                planned_less = {page["page"] for page in manifest["pages"]}
+                named_all = set(manifest["named_pages"]) if "named_pages" in manifest else planned_less
+                not_planned = sorted(named_all - planned_less)
+                require(not not_planned,
+                        f"reconcile run {batch.name} names {not_planned[:5]}, which it does not give back as "
+                        "journal-less pages; resume it with --confirm-plan-draining")
                 # Claims still to be removed need collision evidence now, as a fresh run would.
                 now = collisions(plans, read_records(container, list_job_blobs(container)))
                 owned_elsewhere = {item["page"] for item in now if item["allocated_to"] == target.name}

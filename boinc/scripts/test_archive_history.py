@@ -1822,6 +1822,24 @@ class ReconcileTests(ReconcileFixture):
         self.assertEqual(code, 0, errors)
         self.assertEqual(receipt["run"], "0001")
 
+    def test_collision_only_resume_refuses_a_named_page_the_run_left_out(self):
+        # A draining run named pages 2 and 4 but planned only 2; page 4 has this plan's own journal.
+        self.only_page_2_collides()
+        args = self.argv("--apply", "--confirm-controller-paused", "--confirm-plan-draining",
+                         "--kind", "journal-less", "--expect-journal-less", "1",
+                         "--page", page_key(2), "--page", page_key(4), bridge=False)
+        with mock.patch.object(archive, "handoff_step", side_effect=OSError("injected")):
+            code, _, errors = run(args)
+        self.assertEqual(code, 1, errors)
+        self.collide_page_2()
+        before = self.snapshot()
+        code, _, errors = run(self.argv("--apply", "--confirm-controller-paused", "--confirm-collision-only",
+                                        "--kind", "journal-less", "--expect-journal-less", "1",
+                                        "--page", page_key(2), "--page", page_key(4), bridge=False))
+        self.assertEqual(code, 1)
+        self.assertIn("--confirm-plan-draining", errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+
     def test_a_resume_refuses_pages_outside_the_named_scope(self):
         self.interrupt_scoped_run(page_key(1), page_key(2))
         before = self.snapshot()
