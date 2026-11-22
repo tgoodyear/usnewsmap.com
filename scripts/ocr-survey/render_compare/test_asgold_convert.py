@@ -54,6 +54,12 @@ class ConvertTest(unittest.TestCase):
         self.assertEqual(len(m), 1)  # the untranscribed region is not a crop
         self.assertEqual(c[0]["transcription"], "one two")
 
+    def test_reads_the_real_key_shapes(self):
+        self.exclude.write_text("sn84024828-00211100606-1887061801-0101\nsn85066387-noissue-190001011-0003\n")
+        ex = asgold_convert.read_exclude(self.exclude)
+        self.assertEqual([(k["lccn"], k["date"], k["num"]) for k in ex],
+                         [("sn84024828", "18870618", 101), ("sn85066387", "19000101", 3)])
+
     def test_overlap_needs_lccn_date_and_page(self):
         ex = asgold_convert.read_exclude(self.exclude)
         self.assertIsNotNone(asgold_convert.overlap("sn22222222_1904-12-01_ed-1_seq-1", 42, ex))

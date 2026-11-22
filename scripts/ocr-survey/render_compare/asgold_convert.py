@@ -30,7 +30,7 @@ import gold
 LICENCE = ("Text: Apache-2.0 (Hugging Face repository metadata, American Stories gold). "
            "Images: Chronicling America, public domain (page matched to a LoC page in asgold-ca-map.json)")
 CA_ID = re.compile(r"^(?P<lccn>[a-z]{2}\d+)_(?P<date>\d{4}-\d{2}-\d{2})_ed-(?P<ed>\d+)_seq-(?P<seq>\d+)$")
-EXCLUDE_KEY = re.compile(r"^(?P<lccn>[a-z]{2}\d+)-[^-]+-(?P<date>\d{8})(?P<ed>\d{2})-(?P<seq>\d{4})$")
+EXCLUDE_KEY = re.compile(r"^(?P<lccn>[a-z]{2}\d+)-[^-]+-(?P<date>\d{8})(?P<ed>\d+)-(?P<seq>\d{4})$")
 
 
 def read_exclude(path: Path) -> list[dict]:
