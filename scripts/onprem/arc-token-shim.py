@@ -22,6 +22,7 @@ third-party packages.
 import argparse
 import hmac
 import http.client
+import ipaddress
 import json
 import os
 import stat
@@ -61,6 +62,32 @@ def challenge_file(realm):
         return f.read().strip()
 
 
+def loopback_endpoint(endpoint):
+    """The agent's endpoint must be plain HTTP on loopback, as usnm-store's ArcIdentity
+    requires: the challenge file's secret goes to it in the clear."""
+    url = urllib.parse.urlsplit(endpoint)
+    host = url.hostname or ""
+    if host.lower() == "localhost":
+        loopback = True
+    else:
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+    return url.scheme == "http" and loopback
+
+
+def basic_realm(header):
+    """The realm of a Basic challenge, with or without quotes; None for anything else."""
+    prefix = "basic realm="
+    if not header.lower().startswith(prefix):
+        return None
+    realm = header[len(prefix):].strip()
+    if len(realm) >= 2 and realm[0] == realm[-1] == '"':
+        realm = realm[1:-1]
+    return realm or None
+
+
 def arc_get(path, headers):
     url = urllib.parse.urlsplit(ARC_ENDPOINT)
     # The agent is on loopback: a direct connection, never through a proxy.
@@ -78,10 +105,10 @@ def arc_token(resource):
     query = urllib.parse.urlencode({"api-version": "2020-06-01", "resource": resource})
     path = "%s?%s" % (url.path, query)
     status, auth, _ = arc_get(path, {"Metadata": "true"})
-    prefix = "basic realm="
-    if status != 401 or not auth.lower().startswith(prefix):
+    realm = basic_realm(auth)
+    if status != 401 or realm is None:
         raise Refused(502, "no challenge from the Arc agent (status %d)" % status)
-    key = challenge_file(auth[len(prefix):].strip())
+    key = challenge_file(realm)
     status, _, body = arc_get(path, {"Metadata": "true", "Authorization": "Basic " + key})
     if status != 200:
         raise Refused(502, "the Arc agent refused the token request (status %d; is this user in himds?)" % status)
@@ -148,6 +175,8 @@ def main():
     secret = os.environ.get("USNM_ARC_SHIM_HEADER", "")
     if len(secret) < 16:
         sys.exit("arc-token-shim: USNM_ARC_SHIM_HEADER must be a secret of at least 16 characters")
+    if not loopback_endpoint(ARC_ENDPOINT):
+        sys.exit("arc-token-shim: the Arc agent's endpoint must be http on loopback, not %s" % ARC_ENDPOINT)
     Handler.secret = secret
     server = Server(("127.0.0.1", 0), Handler)
     tmp = args.port_file + ".tmp"

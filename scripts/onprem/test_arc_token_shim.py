@@ -39,7 +39,7 @@ class Arc(http.server.BaseHTTPRequestHandler):
 
 
 class Shim(unittest.TestCase):
-    def start(self, realm_name="agent.key"):
+    def start(self, realm_name="agent.key", quoted=False):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         tokens = os.path.join(tmp.name, "tokens")
@@ -50,6 +50,8 @@ class Shim(unittest.TestCase):
             f.write(KEY)
         self.requests = []
         realm = os.path.join(tokens if realm_name == "agent.key" else tmp.name, realm_name)
+        if quoted:
+            realm = '"%s"' % realm
         handler = type("A", (Arc,), {"realm": realm, "requests": self.requests})
         arc = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=arc.serve_forever, daemon=True).start()
@@ -84,6 +86,18 @@ class Shim(unittest.TestCase):
         self.assertEqual(body, {"access_token": "tok", "expires_on": "1900000000",
                                 "resource": "https://storage.azure.com", "token_type": "Bearer"})  # fmt: skip
         self.assertIn("resource=https%3A%2F%2Fstorage.azure.com", self.requests[0])
+
+    def test_it_takes_a_quoted_realm(self):
+        self.start(quoted=True)
+        self.assertEqual(self.get()[0], 200)
+
+    def test_it_talks_to_the_agent_only_over_http_on_loopback(self):
+        for endpoint in ("https://localhost:40342/x", "http://example.com:40342/x", "http://10.0.0.1:40342/x"):
+            env = dict(os.environ, USNM_ARC_SHIM_HEADER=SECRET, USNM_ARC_ENDPOINT=endpoint)
+            p = subprocess.run([sys.executable, SHIM, "--port-file", "/nonexistent/x"],
+                               env=env, capture_output=True, text=True, check=False)  # fmt: skip
+            self.assertNotEqual(p.returncode, 0, endpoint)
+            self.assertIn("http on loopback", p.stderr, endpoint)
 
     def test_it_refuses_without_the_secret(self):
         self.start()
