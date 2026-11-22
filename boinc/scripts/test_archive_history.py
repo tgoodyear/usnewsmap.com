@@ -1774,6 +1774,79 @@ class ReconcileTests(ReconcileFixture):
         self.assertIn("--confirm-plan-draining", errors[-1]["error"])
         self.assertEqual(before, self.snapshot())
 
+    def scoped_args(self, *pages, confirm="--confirm-plan-draining"):
+        return self.argv("--apply", "--confirm-controller-paused", confirm,
+                         "--kind", "dead-lettered", "--kind", "journal-less",
+                         "--expect-dead-lettered", str(int(page_key(1) in pages)), "--expect-journal-less", "1",
+                         bridge=False, *[arg for page in pages for arg in ("--page", page)])
+
+    def interrupt_scoped_run(self, *pages, confirm="--confirm-plan-draining"):
+        """A run stopped after its manifest and controller step, before the hand-off."""
+        if page_key(1) in pages:
+            state = self.state_of(self.LIVE)
+            del state["claims"][page_key(3)]  # the live plan's other collision, not part of this run
+            (self.paths[self.LIVE][1] / "state.json").write_text(json.dumps(state, sort_keys=True) + "\n")
+        with mock.patch.object(archive, "handoff_step", side_effect=OSError("injected")):
+            code, _, errors = run(self.scoped_args(*pages, confirm=confirm))
+        self.assertEqual(code, 1)
+        self.assertEqual(errors[-1]["error"], "OSError")
+        self.assertTrue((self.archive_dir / "reconcile/0001/manifest.json").is_file())
+
+    def test_a_scoped_run_resumes_with_its_own_page_command(self):
+        # The controller step removed the named claims, so "no claim on" must not stop the resume.
+        self.interrupt_scoped_run(page_key(1), page_key(2))
+        self.assertNotIn(page_key(1), self.state_of(self.DRAINING)["claims"])
+        code, receipt, errors = run(self.scoped_args(page_key(1), page_key(2)))
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(receipt["run"], "0001")
+        self.assertFalse(self.jobs_in_container() & {job_id(1)})
+        # A page the run never had is still refused, resumed or not.
+        code, _, errors = run(self.scoped_args(page_key(99)))
+        self.assertEqual(code, 1)
+        self.assertIn(page_key(99), errors[-1]["error"])
+
+    def test_a_resume_refuses_pages_outside_the_named_scope(self):
+        self.interrupt_scoped_run(page_key(1), page_key(2))
+        before = self.snapshot()
+        for pages in ((page_key(2),), (page_key(1), page_key(2), page_key(3))):
+            code, _, errors = run(self.scoped_args(*pages))
+            self.assertEqual(code, 1)
+            self.assertIn("nothing more was changed", errors[-1]["error"])
+            self.assertEqual(before, self.snapshot())
+
+    def test_a_collision_only_resume_needs_collision_evidence_for_remaining_claims(self):
+        # Page 2 has no journal of another plan: a draining run planned it, then stopped.
+        self.only_page_2_collides()
+        self.interrupt_scoped_run(page_key(2))
+        # Put the claim back, as if the controller step hadn't removed it yet.
+        state = self.state_of(self.DRAINING)
+        saved = json.loads((self.archive_dir / "reconcile/0001/controller/state-entries.json").read_text())
+        for key, entries in saved.items():
+            if isinstance(entries, dict):
+                state.setdefault(key, {}).update(entries)
+        (self.paths[self.DRAINING][1] / "state.json").write_text(json.dumps(state, sort_keys=True) + "\n")
+        before = self.snapshot()
+        code, _, errors = self.collision_apply(page_key(2))
+        self.assertEqual(code, 1)
+        self.assertIn("--confirm-plan-draining", errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+        # With the other plan's journal there, the same resume is a collision and proceeds.
+        self.collide_page_2()
+        code, _, errors = self.collision_apply(page_key(2))
+        self.assertEqual(code, 0, errors)
+
+    def test_collision_only_refuses_a_named_page_the_kind_filter_drops(self):
+        self.only_page_2_collides()
+        self.collide_page_2()
+        before = self.snapshot()
+        # Page 4 is claimed and has a journal (reserved): --kind journal-less leaves it out of the plan.
+        code, _, errors = run(self.argv("--apply", "--confirm-controller-paused", "--confirm-collision-only",
+                                        "--kind", "journal-less", "--expect-journal-less", "1",
+                                        "--page", page_key(2), "--page", page_key(4), bridge=False))
+        self.assertEqual(code, 1)
+        self.assertIn(page_key(4), errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+
     def test_a_run_stopped_half_way_resumes(self):
         self.container.fail_deletes_after = 2
         code, _, errors = self.apply()

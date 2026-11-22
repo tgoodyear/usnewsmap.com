@@ -1346,8 +1346,11 @@ def plan_reconcile(scheduler, target, plans, container, bridge, args):
                           "after": ownership(scheduler, plans, remaining, after_states)},
     }
     if args.confirm_collision_only:
-        summary["not_collisions"] = sorted(item["page"] for item in chosen
-                                           if item["kind"] != "journal-less" or item["page"] not in owned_elsewhere)
+        # All or nothing: a named page the kind filter or the finders left out is refused too,
+        # not silently dropped while the others are applied.
+        named_out = set(args.page) - {item["page"] for item in chosen}
+        summary["not_collisions"] = sorted(named_out | {item["page"] for item in chosen
+                                           if item["kind"] != "journal-less" or item["page"] not in owned_elsewhere})
     return manifest, summary
 
 
@@ -1407,8 +1410,13 @@ def reconcile(args):
     args.kinds = sorted(set(args.kind or RECONCILE_KINDS))
     args.page = sorted(set(args.page or []))
     require(not args.confirm_collision_only or args.page, "--confirm-collision-only needs --page")
-    unknown = sorted(set(args.page) - set(target.state.get("claims", {})))
-    require(not unknown, f"{target.name} has no claim on {unknown[:5]}: nothing was changed")
+
+    def require_claimed():
+        unknown = sorted(set(args.page) - set(target.state.get("claims", {})))
+        require(not unknown, f"{target.name} has no claim on {unknown[:5]}: nothing was changed")
+
+    if not args.apply:
+        require_claimed()
     bridge = None
     if "unsubmitted" in args.kinds:
         require(args.bridge_jobs is not None,
@@ -1473,13 +1481,31 @@ def reconcile(args):
                        projected_ownership(scheduler, plans, target, manifest, container).items() if not result["ok"]}
             require(not refused, f"resuming reconcile run {batch.name} would leave a plan refusing its journals: "
                                  f"{refused}; nothing more was changed")
+            if args.page:
+                # A resume is checked against the run's own pages, not the claims (which its
+                # first steps may have removed): it must be the run the named pages describe.
+                planned_pages = {page["page"] for page in manifest["pages"]}
+                outside = sorted(planned_pages - set(args.page))
+                require(not outside, f"reconcile run {batch.name} also gives back {outside[:5]}, which --page "
+                                     "does not name; nothing more was changed")
+                unplanned = sorted(set(args.page) - planned_pages)
+                require(not unplanned, f"reconcile run {batch.name} does not include {unplanned[:5]}; "
+                                       "nothing more was changed")
             if args.confirm_collision_only and not args.confirm_plan_draining:
-                require(all(page["kind"] == "journal-less" and page["page"] in args.page
-                            for page in manifest["pages"]),
+                require(all(page["kind"] == "journal-less" for page in manifest["pages"]),
                         f"reconcile run {batch.name} gives back more than the named collision pages")
+                # Claims still to be removed need collision evidence now, as a fresh run would.
+                now = collisions(plans, read_records(container, list_job_blobs(container)))
+                owned_elsewhere = {item["page"] for item in now if item["allocated_to"] == target.name}
+                claimed = set(target.state.get("claims", {}))
+                lacking = sorted(page["page"] for page in manifest["pages"]
+                                 if page["page"] in claimed and page["page"] not in owned_elsewhere)
+                require(not lacking, f"reconcile run {batch.name} still has claims no other plan's journal "
+                                     f"is for: {lacking[:5]}; resume it with --confirm-plan-draining")
             progress(f"resuming reconcile run {batch.name}")
             summary = None
         else:
+            require_claimed()
             manifest, summary = plan_reconcile(scheduler, target, plans, container, bridge, args)
             wrong = {kind: summary["found"][kind] for kind in args.kinds if summary["found"][kind] != expected[kind]}
             require(not wrong, f"found {wrong}, not the counts given; dry-run again and check")
