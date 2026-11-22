@@ -50,6 +50,9 @@ ABSOLUTE = ["chamfer", "pixel", "hog_cos"]
 # distance files made by `fitrel.py all`
 RELATIVE = ["rel_chamfer", "rel_pixel", "rel_hog_cos"]
 RENDER = ABSOLUTE + RELATIVE
+# WC as a percentile rank within its page (the frozen change of #2103): primary. Raw WC: secondary, reported, in no model.
+PRIMARY_WC = ["alto_wc_rank"]
+SECONDARY = ["alto_wc"]
 MARGIN = 0.05
 DAMAGE_STRATA = ("low", "mid", "high")
 LEXICONS = {"eng": paths.ROOT / "crates" / "usnm-core" / "data" / "english-words.txt.zst"}
@@ -99,6 +102,22 @@ def add_lexicon_oov(rows: list[dict]) -> bool:
             r["lex_oov"] = 0.0 if word in lex[r["lang"]] else 1.0
             got = True
     return got
+
+
+def add_wc_rank(rows: list[dict]) -> None:
+    """`alto_wc_rank`: `wc` as a percentile rank within its page (`page_id`), in (0, 1): (mean rank - 0.5) / n over the
+    page's words that have a `wc`, ties sharing the mean rank. A page whose WC is constant gets 0.5 throughout."""
+    from scipy.stats import rankdata
+
+    by_page: dict[str, list[int]] = {}
+    for i, r in enumerate(rows):
+        w = r.get("wc")
+        if w is not None and not (isinstance(w, float) and math.isnan(w)):
+            by_page.setdefault(r["page_id"], []).append(i)
+    for idx in by_page.values():
+        ranks = rankdata([float(rows[i]["wc"]) for i in idx])  # mean rank for ties
+        for i, k in zip(idx, ranks):
+            rows[i]["alto_wc_rank"] = float((k - 0.5) / len(idx))
 
 
 # ---------------------------------------------------------------- statistics
@@ -175,8 +194,8 @@ def split_masks(rows: list[dict], y: np.ndarray, low_q: float) -> dict[str, np.n
 
 
 def analyse_language(rows: list[dict], existing: list[str], folds: int, low_q: float, bootstrap: int, seed: int = 2103) -> dict:
-    present = [s for s in RENDER + ["alto_wc"] + existing if any(r.get(s) is not None for r in rows)]
-    unavailable = [s for s in RENDER + ["alto_wc"] + existing if s not in present]
+    present = [s for s in RENDER + SECONDARY + PRIMARY_WC + existing if any(r.get(s) is not None for r in rows)]
+    unavailable = [s for s in RENDER + SECONDARY + PRIMARY_WC + existing if s not in present]
     cols = {s: [r.get(s) for r in rows] for s in present}
     keep = np.array([all(cols[s][i] is not None and not (isinstance(cols[s][i], float) and math.isnan(cols[s][i]))
                          for s in present) for i in range(len(rows))])
@@ -190,9 +209,11 @@ def analyse_language(rows: list[dict], existing: list[str], folds: int, low_q: f
     y = np.array([1 - r["label"] for r in rows])  # 1 = wrong
     groups = np.array([r["page_id"] for r in rows])
     scores = {s: np.array([float(r[s]) for r in rows]) for s in present}
-    if "alto_wc" in scores:
-        scores["alto_wc"] = 1.0 - scores["alto_wc"]  # a low confidence is the sign of a wrong word
-    ex = [s for s in ["alto_wc"] + existing if s in scores]
+    for k in SECONDARY + PRIMARY_WC:
+        if k in scores:
+            scores[k] = 1.0 - scores[k]  # a low confidence is the sign of a wrong word
+    # the primary existing signals: WC ranked within its page, and the others; raw alto_wc is reported only
+    ex = [s for s in PRIMARY_WC + existing if s in scores]
     combos, cv_note = {}, {}
     for name, members in (("existing", ex), ("render", [s for s in RENDER if s in scores]),
                           ("existing+render", ex + [s for s in RENDER if s in scores])):
@@ -225,7 +246,29 @@ def analyse_language(rows: list[dict], existing: list[str], folds: int, low_q: f
         t["rule"] = {"margin": MARGIN, "passes": any(v is not None and v >= MARGIN for v in vals)}
     if bootstrap:
         _bootstrap(results, scores, y, groups, masks, ex, bootstrap, seed)
-    return {**info, "folds": cv_note, "results": results}
+    return {**info, "folds": cv_note, "results": results, "decision_inputs": _decision_inputs(results)}
+
+
+def _decision_inputs(results: dict) -> dict:
+    """The numbers the pre-registered rule reads (#2103), copied out of `results` with their bootstrap intervals;
+    no verdict is drawn here."""
+    def pick(split):
+        t = results.get(split)
+        if not t:
+            return None
+        ci = t.get("ci95", {})
+        a = t["auc"]
+        return {
+            "words": t["words"], "wrong": t["wrong"],
+            "auc_logistic_existing": a.get("logistic:existing"),
+            "auc_logistic_existing+render": a.get("logistic:existing+render"),
+            "gain_over_logistic_existing": t["gain"]["combined_over_existing_logistic"],
+            "gain_over_logistic_existing_ci95": ci.get("gain:combined_over_logistic"),
+            "best_existing_single": t["best_existing_single"],
+            "gain_over_best_existing_single": t["gain"]["combined_over_best_existing"],
+            "gain_over_best_existing_single_ci95": ci.get("gain:combined"),
+        }
+    return {"all_words": pick("all"), "low_damage": pick("damage_low")}
 
 
 def _diff(a, b):
@@ -238,7 +281,8 @@ def _bootstrap(results, scores, y, groups, masks, ex, n_boot, seed):
     rng = np.random.default_rng(seed)
     pages = np.array(sorted(set(groups.tolist())))
     by_page = {p: np.nonzero(groups == p)[0] for p in pages}
-    draws = {split: {k: [] for k in list(scores) + ["gain:render_alone", "gain:combined"]} for split in masks}
+    draws = {split: {k: [] for k in list(scores) + ["gain:render_alone", "gain:combined", "gain:combined_over_logistic"]}
+             for split in masks}
     for _ in range(n_boot):
         pick = rng.choice(pages, size=len(pages), replace=True)
         idx = np.concatenate([by_page[p] for p in pick])
@@ -256,6 +300,9 @@ def _bootstrap(results, scores, y, groups, masks, ex, n_boot, seed):
                 draws[split]["gain:render_alone"].append(d1)
             if d2 is not None:
                 draws[split]["gain:combined"].append(d2)
+            d3 = _diff(a.get("logistic:existing+render"), a.get("logistic:existing"))
+            if d3 is not None:
+                draws[split]["gain:combined_over_logistic"].append(d3)
     for split, t in results.items():
         t["ci95"] = {k: [float(np.quantile(v, 0.025)), float(np.quantile(v, 0.975))] for k, v in draws[split].items() if len(v) >= 10}
 
@@ -271,9 +318,10 @@ def run(rows: list[dict], qe_words: Path | None = None, qe_columns: list[str] | 
     existing = merge_qe(rows, qe_words, qe_columns or [])
     if add_lexicon_oov(rows):
         existing.append("lex_oov")
+    add_wc_rank(rows)
     for r in rows:
         r["alto_wc"] = r.get("wc")
-    out = {"signals": {"render": RENDER, "existing": ["alto_wc"] + existing},
+    out = {"signals": {"render": RENDER, "existing": PRIMARY_WC + existing, "secondary": SECONDARY},
            "fonts": sorted({(r.get("font_family"), r.get("font_version"), r.get("font_sha256"), r.get("font_package")) for r in rows},
                            key=str),
            "settings": {"folds": folds, "low_damage_quantile": low_q, "bootstrap": bootstrap, "substitutions_only": substitutions_only},

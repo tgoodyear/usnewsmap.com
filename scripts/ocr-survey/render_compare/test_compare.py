@@ -58,6 +58,49 @@ class AucTest(unittest.TestCase):
         self.assertEqual(compare.auc(np.array([0, 1]), np.array([0.9, 0.1])), 0.0)
 
 
+class WcRankTest(unittest.TestCase):
+    def test_rank_is_within_page_with_mean_ties(self):
+        rows = [{"page_id": "a", "wc": w} for w in (0.1, 0.5, 0.5, 0.9)]
+        rows += [{"page_id": "b", "wc": 0.7} for _ in range(3)]  # constant WC page
+        rows += [{"page_id": "c", "wc": None}, {"page_id": "c", "wc": 0.2}]
+        compare.add_wc_rank(rows)
+        self.assertEqual([r["alto_wc_rank"] for r in rows[:4]], [0.125, 0.5, 0.5, 0.875])
+        self.assertEqual([r["alto_wc_rank"] for r in rows[4:7]], [0.5, 0.5, 0.5])
+        self.assertNotIn("alto_wc_rank", rows[7])
+        self.assertEqual(rows[8]["alto_wc_rank"], 0.5)
+
+    def test_rank_removes_a_page_level_shift_that_raw_wc_keeps(self):
+        # two pages with the same within-page signal but WC shifted by page: ranked WC separates, raw WC does not pool
+        rng = np.random.default_rng(5)
+        rows = []
+        for p, shift in (("p0", 0.0), ("p1", 0.5), ("p2", 0.0), ("p3", 0.5), ("p4", 0.25), ("p5", 0.25)):
+            for w in range(60):
+                wrong = rng.random() < 0.3
+                rows.append({"page_id": p, "crop_id": p, "word_index": w, "lang": "eng", "status": "ok",
+                             "label": 0 if wrong else 1, "op": "sub" if wrong else "match", "real_word_error": False,
+                             "page_damage": 0.1, "ocr_word": "word", "chamfer": 0.0, "pixel": 0.0, "hog_cos": 0.0,
+                             "wc": float(shift + 0.1 * rng.normal() - (0.1 if wrong else 0.0))})
+        a = compare.run(rows)["languages"]["eng"]["results"]["all"]["auc"]
+        self.assertGreater(a["alto_wc_rank"], a["alto_wc"] + 0.05)
+
+    def test_raw_wc_is_reported_but_in_no_model(self):
+        L = compare.run(fake_rows())["languages"]["eng"]
+        self.assertIn("alto_wc", L["results"]["all"]["auc"])
+        for k in ("logistic:existing", "logistic:existing+render"):
+            self.assertNotIn("alto_wc", L["folds"][k]["members"])
+            self.assertIn("alto_wc_rank", L["folds"][k]["members"])
+
+    def test_decision_inputs_carry_gain_intervals(self):
+        L = compare.run(fake_rows(pages=12, per_page=40), bootstrap=20)["languages"]["eng"]
+        d = L["decision_inputs"]
+        for k in ("all_words", "low_damage"):
+            self.assertEqual(len(d[k]["gain_over_logistic_existing_ci95"]), 2)
+            self.assertEqual(len(d[k]["gain_over_best_existing_single_ci95"]), 2)
+        a = L["results"]["all"]["auc"]
+        self.assertAlmostEqual(d["all_words"]["gain_over_logistic_existing"], a["logistic:existing+render"] - a["logistic:existing"])
+        self.assertNotEqual(d["low_damage"]["best_existing_single"]["signal"], "alto_wc")
+
+
 class RunTest(unittest.TestCase):
     def setUp(self):
         self.rep = compare.run(fake_rows(), low_q=0.34, bootstrap=0)
@@ -67,7 +110,7 @@ class RunTest(unittest.TestCase):
         self.assertEqual(set(self.L["results"]), {"all", "damage_low", "damage_mid", "damage_high", "real_word_errors",
                                                   "non_word_errors"})
         a = self.L["results"]["all"]["auc"]
-        for k in ("chamfer", "pixel", "hog_cos", "alto_wc", "logistic:existing", "logistic:render", "logistic:existing+render"):
+        for k in ("chamfer", "pixel", "hog_cos", "alto_wc", "alto_wc_rank", "logistic:existing", "logistic:render", "logistic:existing+render"):
             self.assertIn(k, a)
         self.assertEqual(self.L["folds"]["logistic:render"]["cv"], "5-fold by page")
         self.assertEqual(self.rep["fonts"][0]["family"], "Old Standard TT")
@@ -76,9 +119,9 @@ class RunTest(unittest.TestCase):
     def test_render_separates_and_wc_does_not_on_real_word_errors(self):
         r = self.L["results"]
         self.assertGreater(r["all"]["auc"]["chamfer"], 0.75)
-        self.assertLess(abs(r["real_word_errors"]["auc"]["alto_wc"] - 0.5), 0.12)
+        self.assertLess(abs(r["real_word_errors"]["auc"]["alto_wc_rank"] - 0.5), 0.12)
         self.assertGreater(r["real_word_errors"]["auc"]["chamfer"], 0.7)
-        self.assertGreater(r["non_word_errors"]["auc"]["alto_wc"], 0.8)
+        self.assertGreater(r["non_word_errors"]["auc"]["alto_wc_rank"], 0.75)
         # the real-word split holds only real-word errors and right words
         words = sum(1 for x in fake_rows() if x["label"] == 1 or x["real_word_error"])
         self.assertEqual(r["real_word_errors"]["words"], words)
@@ -97,7 +140,7 @@ class RunTest(unittest.TestCase):
     def test_gain_and_rule(self):
         g = self.L["results"]["all"]["gain"]
         a = self.L["results"]["all"]["auc"]
-        best_existing = max(a["alto_wc"], 0.0)
+        best_existing = max(a["alto_wc_rank"], 0.0)
         self.assertAlmostEqual(g["render_alone_over_best_existing"], max(a[k] for k in compare.ABSOLUTE) - best_existing)
         self.assertAlmostEqual(g["combined_over_existing_logistic"], a["logistic:existing+render"] - a["logistic:existing"])
         self.assertTrue(self.L["results"]["real_word_errors"]["rule"]["passes"])
