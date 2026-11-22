@@ -137,14 +137,20 @@ def score_lines(pairs):
 
 
 def _manifest_ok(cache, want):
-    """True when the cached ALTO and its manifest match `want` (provenance and
-    the ALTO's own hash), so a stale, truncated or foreign file is rerun."""
+    """The manifest dict (incl. the original OCR `cpu_s`, or None) when the cached
+    ALTO and its manifest match `want` (provenance and the ALTO's own hash), else
+    None so a stale, truncated or foreign file is rerun."""
     try:
         with open(cache + ".json", encoding="utf-8") as f:
             have = json.load(f)
-        return have == {**want, "alto_sha256": hashlib.sha256(open(cache, "rb").read()).hexdigest()}
-    except (OSError, ValueError):
-        return False
+        with open(cache, "rb") as f:
+            sha = hashlib.sha256(f.read()).hexdigest()
+        cpu = have.pop("cpu_s", None)
+        if have != {**want, "alto_sha256": sha}:
+            return None
+        return {"cpu_s": cpu if isinstance(cpu, (int, float)) else None}
+    except (OSError, ValueError, AttributeError):
+        return None
 
 
 def job(args):
@@ -155,7 +161,9 @@ def job(args):
         want = {"model_sha256": prov.get("model_sha256"), "tesseract_version": prov.get("version"),
                 "cmd": template, "image_sha256": score.sha256_file(page["img"])}
         cpu = 0.0
-        if os.path.exists(cache) and _manifest_ok(cache, want):
+        hit = _manifest_ok(cache, want) if os.path.exists(cache) else None
+        if hit is not None:
+            cpu = hit["cpu_s"]      # original OCR CPU; None (unknown) if not recorded
             with open(cache, "rb") as f:
                 data = f.read()
             alto_words(data)
@@ -168,7 +176,7 @@ def job(args):
             os.makedirs(os.path.dirname(cache), exist_ok=True)
             with open(cache + ".part", "wb") as f:
                 f.write(data)
-            man = {**want, "alto_sha256": hashlib.sha256(data).hexdigest()}
+            man = {**want, "alto_sha256": hashlib.sha256(data).hexdigest(), "cpu_s": cpu}
             with open(cache + ".json.part", "w", encoding="utf-8") as f:
                 json.dump(man, f, sort_keys=True)
             os.replace(cache + ".part", cache)
@@ -179,7 +187,7 @@ def job(args):
         return None, "%s/%s [%s]: %s" % (page["set"], page["page_id"], arm,
                                          str(e).replace("\n", " ")[:200])
     row = {k: page[k] for k in ("set", "stratum", "page_id", "title", "year")}
-    row.update(arm=arm, cpu_s=round(cpu, 3), **s)
+    row.update(arm=arm, cpu_s="" if cpu is None else round(cpu, 3), **s)
     for k in ("cer_raw", "cer_folded", "word_f1"):
         row[k] = round(row[k], 6)
     row["gpu_study_flag"] = score.gpu_flag(page["set"], page["page_id"], gpu)

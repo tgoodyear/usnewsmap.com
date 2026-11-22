@@ -481,9 +481,8 @@ class A(unittest.TestCase):
                                         gpu_study_flag=0, lost_chars=0, lines=0, lost_lines=0))
             with open(p + ".meta.json", "w") as f:
                 json.dump({"expected": A.EXP, "limit": 0}, f)
-            for rule in ("A", "A2"):
-                _, out = A().run_analyze(p, "--rule", rule)
-                self.assertNotIn("**LIFT**", out, rule)
+            _, out = A().run_analyze(p, "--rule", "A2")
+            self.assertNotIn("**LIFT**", out)
 
     def test_page_truth_line_without_coords_fails(self):
         with tempfile.TemporaryDirectory() as d:
@@ -550,6 +549,50 @@ class A(unittest.TestCase):
         exp, miss = score.merge_resume(old, {"a": {"s": ["p4"]}}, {})
         self.assertEqual(exp, {"a": {"s": ["p1", "p2", "p4"]}, "b": {"s": ["p1"]}})
         self.assertEqual(miss, {"s": ["p3"]})       # p2 now has an image
+
+    def test_rule_a_rejects_line_aligned_csv(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "l.csv")
+            with open(p, "w", newline="") as f:
+                w = csv.DictWriter(f, line_score.FIELDS)
+                w.writeheader()
+                w.writerow(dict(set="chronicling", stratum="t", page_id="p1", title="t",
+                                year="1900", arm="frak2021", ref_chars=10, edits_raw=0,
+                                edits_folded=0, cer_raw=0, cer_folded=0, word_f1=1, cpu_s=1,
+                                gpu_study_flag=0, lost_chars=0, lines=1, lost_lines=0))
+            with self.assertRaises(SystemExit) as cm:
+                A().run_analyze(p)          # default rule A
+            self.assertNotEqual(cm.exception.code, 0)
+            A().run_analyze(p, "--rule", "A2")
+            rc, _ = A().run_analyze(A().write(d, A().rows(), A.EXP, name="page.csv"))
+            self.assertEqual(rc, 0)         # page CSVs still fine under A
+
+    def test_cache_hit_restores_cpu_and_unknown_is_empty(self):
+        good = ALTO.replace("<String CONTENT=\"Haus\"/>", "<String CONTENT=\"Haus\" HPOS=\"1\" VPOS=\"1\" WIDTH=\"5\" HEIGHT=\"5\"/>")
+        with tempfile.TemporaryDirectory() as d:
+            page, cmd, alto, img, calls = self._job_fixture(d, good)
+            prov = {"model_sha256": "aa", "version": "t 1"}
+            r1, _ = line_score.job((page, "m", cmd, d, 30, set(), alto, prov))
+            man = os.path.join(alto, "s", "m", "p.xml.json")
+            with open(man) as f:
+                m = json.load(f)
+            m["cpu_s"] = 7.5
+            with open(man, "w") as f:
+                json.dump(m, f)
+            r2, _ = line_score.job((page, "m", cmd, d, 30, set(), alto, prov))
+            self.assertEqual(calls(), 1)
+            self.assertEqual(r2["cpu_s"], 7.5)
+            del m["cpu_s"]
+            with open(man, "w") as f:
+                json.dump(m, f)
+            r3, _ = line_score.job((page, "m", cmd, d, 30, set(), alto, prov))
+            self.assertEqual(r3["cpu_s"], "")
+
+    def test_cpu_average_skips_unknown(self):
+        rows = [dict(ref_chars=10, edits_folded=1, edits_raw=1, word_f1=1.0, title="t",
+                     cpu_s=c) for c in (2.0, None, 4.0)]
+        self.assertEqual(analyze.summarize("x", rows, 20, 1)["cpu"], 3.0)
+        self.assertIsNone(analyze.summarize("x", rows[1:2], 20, 1)["cpu"])
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

@@ -58,8 +58,8 @@ def load(paths):
                 seen[k] = p
                 for c in ("ref_chars", "edits_raw", "edits_folded"):
                     r[c] = int(r[c])
-                for c in ("word_f1", "cpu_s"):
-                    r[c] = float(r[c])
+                r["word_f1"] = float(r["word_f1"])
+                r["cpu_s"] = float(r["cpu_s"]) if (r.get("cpu_s") or "").strip() else None
                 r["gpu_study_flag"] = int(r["gpu_study_flag"] or 0)
                 r["title"] = title_key(r.get("title"))
                 if r.get("lost_chars") not in (None, ""):
@@ -194,7 +194,8 @@ def summarize(name, rows, n_boot, seed):
            "ref_chars": sum(r["ref_chars"] for r in rows),
            "cer_f": pooled(rows, "edits_folded"), "cer_r": pooled(rows, "edits_raw"),
            "f1": sum(r["word_f1"] for r in rows) / len(rows),
-           "cpu": sum(r["cpu_s"] for r in rows) / len(rows)}
+           "cpu": (sum(c) / len(c)) if (c := [r["cpu_s"] for r in rows
+                                              if r["cpu_s"] is not None]) else None}
     if all(isinstance(r.get("lost_chars"), int) for r in rows):
         out["lost"] = sum(r["lost_chars"] for r in rows) / out["ref_chars"] if out["ref_chars"] else 0.0
     out["page_ci"] = ci(pages, "edits_folded", n_boot, random.Random(seed))
@@ -207,9 +208,10 @@ def table(items):
          "95% title CI | CER raw | word F1 | CPU s/page |" + (" lost text |" if lost else ""))
     print(h); print("|" + "---|" * (11 if lost else 10))
     for o in items:
-        print("| %s | %d | %d | %d | %.4f | %.4f-%.4f | %.4f-%.4f | %.4f | %.4f | %.1f |" % (
+        print("| %s | %d | %d | %d | %.4f | %.4f-%.4f | %.4f-%.4f | %.4f | %.4f | %s |" % (
             o["name"], o["pages"], o["titles"], o["ref_chars"], o["cer_f"],
-            *o["page_ci"], *o["title_ci"], o["cer_r"], o["f1"], o["cpu"])
+            *o["page_ci"], *o["title_ci"], o["cer_r"], o["f1"],
+            "n/a" if o["cpu"] is None else "%.1f" % o["cpu"])
             + (" %.4f |" % o["lost"] if lost else ""))
 
 def rule_a2(pool_o, flags):
@@ -250,6 +252,9 @@ def main(argv=None):
     y0, y1 = (int(x) for x in a.years.split("-"))
     csv_paths = expand(a.csv)
     all_rows = load(csv_paths)
+    if a.rule == "A" and any("lost_chars" in r for r in all_rows):
+        ap.error("these CSVs are line-aligned (line_score.py: lost_chars/lines columns); "
+                 "rule A would bypass A2's lost-text limit. Use --rule A2.")
     pool_sets = set(a.pool_sets.split(","))
     rows, undated, outside = in_window(all_rows, y0, y1)
     problems = completeness(csv_paths, rows, [a.arm, a.ref_arm], pool_sets, all_rows)
