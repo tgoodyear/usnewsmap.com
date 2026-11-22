@@ -5333,7 +5333,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         "backpressure": backpressure,
         "backpressure_reason": backpressure_reason,
         "refill_cap": refill,
-        "gold_refilled": gold_ran and not gold_holds,
+        "gold_refilled": bool(gold_ran and not gold_holds and submitted),
         "low_watermark": low_target,
         "high_watermark": high_target,
         "cohort_pending": cohort_pending,
