@@ -372,14 +372,21 @@ binary does not have the subcommand. Build it where you run it, with
 `cargo test` of the crate.
 
 ```
-usnm-boinc cloud validatord --secret-file <webhook token> --state-url <dir or r2://bucket/prefix> --gold-dir <project gold/> \
+usnm-boinc cloud validatord --secret-file <webhook token> [--signing-secret-file <signing secret>] --state-url <dir or r2://bucket/prefix> --gold-dir <project gold/> \
   --base-url https://<dev server> --token-file <admin token> [--listen 127.0.0.1:8787]
 ```
 
 - `POST /v1/validate/<app>` takes the server's JSON call and answers a verdict per result. The caller is authenticated by
   the `Authorization: Bearer` token the server sends (its `WEBHOOK_TOKEN` secret), compared in constant time; the token
-  is read from `--secret-file` and never logged. The cloud server sends no body signature and no timestamp, so a stale
-  call cannot be told from a fresh one; `call_id` is the replay control. `GET /healthz` answers `ok`.
+  is read from `--secret-file` and never logged. `GET /healthz` answers `ok`.
+- With `--signing-secret-file` (the same value as the server's `WEBHOOK_SIGNING_SECRET`; the key is separate from the bearer
+  token), each call must also carry `X-CB-Timestamp` (Unix seconds) and `X-CB-Signature` (`v1=` and the lowercase hex
+  HMAC-SHA-256, keyed with the signing secret, of the timestamp text, `.` and the raw request body). The service checks
+  them on the raw bytes, before parsing the body, with a constant-time comparison, and answers 401 for a missing or
+  malformed header, a wrong signature or a timestamp more than 5 minutes either side of its own clock (keep the host's
+  clock in sync). The bearer token is still required. A signature does not stop a replay inside the window; `call_id` is
+  that control. Without the flag nothing is verified, the service logs a warning at startup, and a stale call cannot be
+  told from a fresh one. To rotate the secret, restart with the new file once the server signs with it.
 - The service listens on loopback by default and speaks plain http. The cloud server only calls `https` URLs, so put TLS
   in front (a tunnel or a proxy); a non-loopback `--listen` needs `--allow-non-loopback`.
 - Each result's one output file is fetched from `GET /admin/v1/outputs/<name>` with the admin token (`--token-file` or

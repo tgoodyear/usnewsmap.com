@@ -41,6 +41,11 @@ pub struct ValidatordArgs {
     /// File holding the webhook bearer token the cloud server sends (its WEBHOOK_TOKEN).
     #[arg(long)]
     secret_file: PathBuf,
+    /// File holding the webhook signing secret (the server's WEBHOOK_SIGNING_SECRET). When set,
+    /// a call needs a valid X-CB-Signature and a timestamp within 5 minutes; when not, calls are
+    /// checked by the bearer token only.
+    #[arg(long)]
+    signing_secret_file: Option<PathBuf>,
     /// The durable state: verdicts by call id and quality's seen copies and pair lines. A local
     /// directory, or `r2://<bucket>[/<prefix>]` with R2_ENDPOINT, R2_ACCESS_KEY_ID and
     /// R2_SECRET_ACCESS_KEY set (`usnm_store::open`).
@@ -192,6 +197,17 @@ pub async fn run(command: CloudCommands) -> anyhow::Result<()> {
                 bail!("--listen is not a loopback address; add --allow-non-loopback to serve it");
             }
             let secret = read_token(&Some(a.secret_file), "")?;
+            let signing_secret = match a.signing_secret_file {
+                Some(p) => Some(read_token(&Some(p), "")?),
+                None => {
+                    eprintln!(
+                        "warning: no --signing-secret-file: webhook signatures are not verified, \
+                         so a call is authenticated by the bearer token alone and a captured call \
+                         can be replayed"
+                    );
+                    None
+                }
+            };
             let admin = read_token(&a.token_file, "CBOINC_TOKEN")?;
             let fetch =
                 pull::Config::new(&a.base_url, admin, a.work_dir.clone(), false, vec![], 1)?;
@@ -199,6 +215,7 @@ pub async fn run(command: CloudCommands) -> anyhow::Result<()> {
                 .with_context(|| format!("opening the state store {}", a.state_url))?;
             let cfg = validatord::Config {
                 secret,
+                signing_secret,
                 state,
                 work_dir: a.work_dir,
                 gold_dir: a.gold_dir,

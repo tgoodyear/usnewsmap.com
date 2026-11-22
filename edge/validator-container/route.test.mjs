@@ -58,5 +58,7 @@ test("the container environment needs every setting", () => {
   const out = containerEnv(full);
   assert.equal(out.UNRELATED, undefined);
   assert.equal(Object.keys(out).length, 8);
+  assert.equal(out.WEBHOOK_SIGNING_SECRET, undefined);
+  assert.equal(containerEnv({ ...full, WEBHOOK_SIGNING_SECRET: "sek" }).WEBHOOK_SIGNING_SECRET, "sek");
   assert.throws(() => containerEnv({ ...full, GOLD_URL: "" }), /GOLD_URL/);
 });
