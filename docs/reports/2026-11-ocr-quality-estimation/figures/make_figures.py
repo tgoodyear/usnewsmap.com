@@ -73,7 +73,7 @@ def transfer():
     w, top = 760, 34
     h = top + 34 * len(rows) + 44
     x0, x1 = 120, 520          # accuracy axis 0.5 to 1.0
-    b = [text(x0, 18, "Accuracy on the held-out language (margin chosen on the others)", 12, weight="bold")]
+    b = [text(x0, 18, "Accuracy on the held-out language (margin chosen on the others, German never in the pool)", 12, weight="bold")]
     for v in (0.5, 0.6, 0.7, 0.8, 0.9, 1.0):
         x = x0 + (x1 - x0) * (v - 0.5) / 0.5
         b.append(f"<line x1='{x:.1f}' y1='{top - 6}' x2='{x:.1f}' y2='{top + 34 * len(rows)}' stroke='{LINE}'/>")

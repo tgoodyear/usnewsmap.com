@@ -93,7 +93,7 @@ def cer_by_reading():
         ("Round one", PURPLE, [30.5, 14.1, 9.7], None),
         ("chr_phoenix", ORANGE, [27.6, 10.2, 6.6], None),
     ]
-    return vbars(760, 380, groups, series, 0, 40, 10, "%", "Character error (lower is better)", "{:.1f}%")
+    return vbars(760, 380, groups, series, 0, 40, 10, "%", "Letters differing from reference (lower is better)", "{:.1f}%")
 
 
 def finder_recall():
@@ -135,7 +135,7 @@ def ghn_pages_yield():
     # Right: searchable Cherokee words. Now: 85,000 (Summary, section 1). The plan assumed
     # "250,000 or more" (step 4). The sample estimate is about 65,000 new words (13,000
     # Cherokee lines, standard error 8,000, at 5 words a line), so about 150,000 in all.
-    w, h = 760, 330
+    w, h = 760, 340
     b = [text(14, 22, "GHN pages to read, by year (699 pages)", 13, weight="bold")]
     x0, x1, y0, y1 = 50, 350, 50, 280
     sy = lambda v: y1 - (y1 - y0) * v / 160
@@ -171,7 +171,8 @@ def ghn_pages_yield():
             b.append(line(sx(ci[1]), y + 8, sx(ci[1]), y + 22, INK, 1.5))
     b.append(text(rx0, 276, "Estimate: 85 now plus 65 (+/- 40, one standard error)", 11, color=MUTED))
     b.append(text(rx0, 292, "from 13,000 Cherokee lines at 5 words a line. Its error", 11, color=MUTED))
-    b.append(text(rx0, 308, "bar covers only the line count, not the 12-page sample.", 11, color=MUTED))
+    b.append(text(rx0, 308, "bar is the 12-page sampling error; finder and classifier", 11, color=MUTED))
+    b.append(text(rx0, 324, "bias and words per line are not included.", 11, color=MUTED))
     return svg(w, h, "".join(b))
 
 

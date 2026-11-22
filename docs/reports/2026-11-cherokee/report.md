@@ -18,7 +18,9 @@
 
 ![Character error by reading on test set v2. The fine-tuned chr_phoenix model has the lowest error on all lines, on silver lines and on the 70 hand-checked lines, though the gap to LoC on the hand-checked lines is within noise.](figures/cer-by-reading.svg)
 
-**Figure 1.** Character error (share of syllabary letters wrong, lower is better) at PSM 13 (Tesseract's single-line mode). No interval is drawn; the intervals for the differences are in the text. Source: the table in step 3.
+**Figure 1.** Disagreement with the reference (share of syllabary letters that differ, lower is better) at PSM 13. On all lines and silver lines the reference is the 1860 New Testament, whose wording and own errors sometimes differ from the print, so those bars are not pure OCR error; only the 70 hand-checked lines measure OCR error against the page. PSM 13 is Tesseract's single-line mode. No interval is drawn; the intervals for the differences are in the text. Source: the table in step 3.
+
+**What the published data holds.** The `report-2026-11-cherokee` data set has the 2,160 line crops with their New Testament reference lines (`testset-v2/aligned.jsonl`), 20 New Testament reference pages, every reading and the hand-check answers. It does not hold the full New Testament text or ChrEn. The New Testament word lists are not in the data set but are committed in the repository (`ocr/ja-ocr/wordlists/chr.txt` and `chr-attested.txt`, from #1584), so the word-list rows and the New Testament half of the dictionary comparison can be rescored from the retained readings and reference pages, as in [Reproducing](#reproducing). Only the ChrEn arm of the dictionary comparison needs ChrEn fetched from its repository, and only rebuilding the New Testament text itself needs the pinned PDFs, whose sha256 are in `testset-v2/manifest.json`.
 
 ### Findings in detail
 
@@ -68,8 +70,8 @@ Machine-readable Cherokee text, for vocabulary and as possible ground truth:
 
 | Corpus                                                                              | Size                                                         | Terms                                          | Kind                                                    |
 | ----------------------------------------------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------- | ------------------------------------------------------- |
-| Cherokee New Testament, 1860 (our word lists)                                       | About 115,700 words per edition                              | CC0                                            | Typeset                                                 |
-| [ChrEn](https://github.com/ZhangShiyue/ChrEn/tree/master/data) (Zhang et al., 2020) | 206,000 Cherokee tokens, 38,000 forms; 14,151 sentence pairs | Research use; copyright stays with the sources | Typeset books, 56% New Testament, OCR corrected by hand |
+| Cherokee New Testament, 1860 (full text not in the published data; its word lists are in `ocr/ja-ocr/wordlists`) | About 115,700 words per edition                              | CC0                                            | Typeset                                                 |
+| [ChrEn](https://github.com/ZhangShiyue/ChrEn/tree/master/data) (Zhang et al., 2020; not in the published data) | 206,000 Cherokee tokens, 38,000 forms; 14,151 sentence pairs | Research use; copyright stays with the sources | Typeset books, 56% New Testament, OCR corrected by hand |
 | [DAILP](https://dailp.northeastern.edu)                                             | 87 documents                                                 | CC BY-NC 4.0                                   | Letters, notices, stories; mostly manuscript            |
 | Cherokee Wikipedia                                                                  | 999 articles, about 40,000 words                             | CC BY-SA                                       | Modern, born digital                                    |
 

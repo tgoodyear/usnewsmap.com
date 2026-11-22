@@ -74,7 +74,7 @@ CER, with the paired difference from Tesseract PSM 6 in points (95% limits). A d
 
 ![Paired CER difference from Tesseract PSM 6 for Xiaomi and 8B on each set, with 95% limits. Points left of zero mean the reader is better. Every set except de-rz81 is clearly left of zero for both readers, except 8B on en-op.](figures/difference-from-tesseract.svg)
 
-_Figure 2. Paired CER difference from Tesseract PSM 6, in points, with 95% limits. A bar wholly left of zero passes rule 1._
+_Figure 2. Paired CER difference from Tesseract PSM 6, in points, with 95% limits. A bar wholly left of zero passes rule 1 only on a set of at least five pages; `sv-52` has four, so it stays descriptive._
 
 Major invented-text counts (the GPU studies' check, flagged crops not yet read by a person) are Tesseract 69, Xiaomi 16 and 8B 47 over all 1,259 crops. On `en-op` they are 16, 9 and 26. On `fr-new` they are 9, 4 and 4, and on `de-rz81` 25, 1 and 1. On these three sets neither vision-language reader has more than Tesseract except 8B on `en-op` (26 against 16).
 
