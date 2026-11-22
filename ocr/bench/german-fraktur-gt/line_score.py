@@ -72,7 +72,10 @@ def gt_lines(xml_path):
         for ch in el:
             if _ln(ch) == "Coords" and ch.get("points"):
                 pts = [tuple(float(v) for v in p.split(",")) for p in ch.get("points").split()]
-        if pts and txt is not None:
+        if txt is not None and score.norm_raw(txt):
+            if not pts:     # silently dropping it would shrink the reference
+                raise ValueError("truth line %s has text but no usable Coords"
+                                 % (el.get("id") or "?"))
             out.append((*_bbox(pts), txt))
     return out, size
 
@@ -133,24 +136,43 @@ def score_lines(pairs):
     return tot
 
 
+def _manifest_ok(cache, want):
+    """True when the cached ALTO and its manifest match `want` (provenance and
+    the ALTO's own hash), so a stale, truncated or foreign file is rerun."""
+    try:
+        with open(cache + ".json", encoding="utf-8") as f:
+            have = json.load(f)
+        return have == {**want, "alto_sha256": hashlib.sha256(open(cache, "rb").read()).hexdigest()}
+    except (OSError, ValueError):
+        return False
+
+
 def job(args):
-    page, arm, template, tessdata, timeout, gpu, alto_dir = args
+    page, arm, template, tessdata, timeout, gpu, alto_dir, prov = args
     try:
         lines, gt_size = gt_lines(page["xml"])
         cache = os.path.join(alto_dir, page["set"], arm, page["page_id"] + ".xml")
+        want = {"model_sha256": prov.get("model_sha256"), "tesseract_version": prov.get("version"),
+                "cmd": template, "image_sha256": score.sha256_file(page["img"])}
         cpu = 0.0
-        if os.path.exists(cache):
+        if os.path.exists(cache) and _manifest_ok(cache, want):
             with open(cache, "rb") as f:
                 data = f.read()
+            alto_words(data)
         else:
             with tempfile.TemporaryDirectory() as td:
                 img = score.prepared_image(page["img"], td)
                 text, cpu = score.run_tesseract(template, img, arm, tessdata, timeout)
             data = text.encode("utf-8")
+            alto_words(data)        # must parse before it can enter the cache
             os.makedirs(os.path.dirname(cache), exist_ok=True)
             with open(cache + ".part", "wb") as f:
                 f.write(data)
+            man = {**want, "alto_sha256": hashlib.sha256(data).hexdigest()}
+            with open(cache + ".json.part", "w", encoding="utf-8") as f:
+                json.dump(man, f, sort_keys=True)
             os.replace(cache + ".part", cache)
+            os.replace(cache + ".json.part", cache + ".json")
         words, ocr_size = alto_words(data)
         s = score_lines(align(lines, words, gt_size, ocr_size))
     except Exception as e:  # not recorded, so a rerun retries it
@@ -209,13 +231,20 @@ def main(argv=None):
         info["tesseract_version"] = "unknown (%s)" % e
     done = score.done_keys(a.out)
     side = a.out + ".meta.json"
+    old = None
     if done:
-        with open(side, encoding="utf-8") as f:
-            old = json.load(f)
-        problems = score.resume_problems(old, info, {k[2] for k in done})
+        problems = []
+        try:
+            with open(side, encoding="utf-8") as f:
+                old = json.load(f)
+        except (OSError, ValueError) as e:
+            problems.append("sidecar %s unreadable (%s)" % (side, e))
+        if old is not None:
+            problems += score.resume_problems(old, info, {k[2] for k in done})
         if problems:
             print("REFUSING to resume %s: %s" % (a.out, "; ".join(problems)), file=sys.stderr)
             return 2
+        info["arms"] = {**old["arms"], **info["arms"]}
     meta_all = score.load_meta(a.meta)
     jobs, missing_all, expected = [], {}, {arm: {} for arm in arms}
     for s in a.sets.split(","):
@@ -235,7 +264,11 @@ def main(argv=None):
         for pg in pages:
             for arm in arms:
                 if (s, pg["page_id"], arm) not in done:
-                    jobs.append((pg, arm, a.cmd, a.tessdata, a.timeout, gpu, a.alto_dir))
+                    jobs.append((pg, arm, a.cmd, a.tessdata, a.timeout, gpu, a.alto_dir,
+                                 {"model_sha256": info["arms"].get(arm),
+                                  "version": info["tesseract_version"]}))
+    if done:        # keep earlier expectations and unresolved missing images
+        expected, missing_all = score.merge_resume(old, expected, missing_all)
     info["expected"] = expected
     info["missing_images"] = missing_all
     with open(side, "w", encoding="utf-8") as f:

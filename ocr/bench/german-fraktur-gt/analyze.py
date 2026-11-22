@@ -215,16 +215,20 @@ def table(items):
 def rule_a2(pool_o, flags):
     """Rule A v2 (line-aligned): (verdict, reasons it failed)."""
     why = []
-    if pool_o["page_ci"][1] > LIFT_UPPER:
-        why.append("upper page limit %.4f > %.3f" % (pool_o["page_ci"][1], LIFT_UPPER))
-    if pool_o["title_ci"][1] > A2_TITLE_UPPER:
-        why.append("upper title limit %.4f > %.3f" % (pool_o["title_ci"][1], A2_TITLE_UPPER))
+    # Written as `not (x <= limit)` so a NaN limit (e.g. zero reference characters)
+    # fails instead of passing because every NaN comparison is False.
+    if pool_o.get("ref_chars") == 0:
+        why.append("no reference characters in the decision pool")
+    if not pool_o["page_ci"][1] <= LIFT_UPPER:
+        why.append("upper page limit %.4f not <= %.3f" % (pool_o["page_ci"][1], LIFT_UPPER))
+    if not pool_o["title_ci"][1] <= A2_TITLE_UPPER:
+        why.append("upper title limit %.4f not <= %.3f" % (pool_o["title_ci"][1], A2_TITLE_UPPER))
     if flags:
         why.append("set(s) above %.3f: %s" % (FLAG_POINT, ", ".join(flags)))
     if "lost" not in pool_o:
         why.append("no lost_chars column (use line_score.py CSVs)")
-    elif pool_o["lost"] > A2_MAX_LOST:
-        why.append("lost text %.4f > %.2f" % (pool_o["lost"], A2_MAX_LOST))
+    elif not pool_o["lost"] <= A2_MAX_LOST:
+        why.append("lost text %.4f not <= %.2f" % (pool_o["lost"], A2_MAX_LOST))
     return ("HOLD" if why else "LIFT"), why
 
 def main(argv=None):
@@ -297,7 +301,7 @@ def main(argv=None):
                           (" (" + "; ".join(why) + ")") if why and not problems else ""))
             elif pool_o:
                 up = pool_o["page_ci"][1]
-                verdict = "LIFT" if up <= LIFT_UPPER else "HOLD"
+                verdict = "LIFT" if up <= LIFT_UPPER else "HOLD"   # NaN: HOLD
                 why = ""
                 if flags:               # a flagged set overrides a lift
                     verdict = "HOLD"

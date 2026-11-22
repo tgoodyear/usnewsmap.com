@@ -460,5 +460,96 @@ class A(unittest.TestCase):
         self.assertEqual(analyze.rule_a2(ok, ["chronicling"])[0], "HOLD")
         self.assertEqual(analyze.rule_a2({k: v for k, v in ok.items() if k != "lost"}, [])[0], "HOLD")
 
+    def test_rule_a2_nan_limits_fail(self):
+        nan = float("nan")
+        ok = {"page_ci": (0.1, 0.17), "title_ci": (0.1, 0.2), "lost": 0.03}
+        for bad in ({"page_ci": (nan, nan)}, {"title_ci": (nan, nan)}, {"lost": nan},
+                    {"ref_chars": 0}):
+            self.assertEqual(analyze.rule_a2({**ok, **bad}, [])[0], "HOLD", bad)
+
+    def test_zero_reference_pool_never_lifts(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "z.csv")
+            with open(p, "w", newline="") as f:
+                w = csv.DictWriter(f, line_score.FIELDS)
+                w.writeheader()
+                for s in ("chronicling", "reichsanzeiger"):
+                    for arm in ("frak2021", "deu_latf"):
+                        w.writerow(dict(set=s, stratum="t", page_id="p1", title="t", year="1900",
+                                        arm=arm, ref_chars=0, edits_raw=0, edits_folded=0,
+                                        cer_raw=0, cer_folded=0, word_f1=1, cpu_s=1,
+                                        gpu_study_flag=0, lost_chars=0, lines=0, lost_lines=0))
+            with open(p + ".meta.json", "w") as f:
+                json.dump({"expected": A.EXP, "limit": 0}, f)
+            for rule in ("A", "A2"):
+                _, out = A().run_analyze(p, "--rule", rule)
+                self.assertNotIn("**LIFT**", out, rule)
+
+    def test_page_truth_line_without_coords_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "x.xml")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write('''<PcGts xmlns="http://schema.primaresearch.org/PAGE/gts/pagecontent/2019-07-15">
+ <Page imageWidth="400" imageHeight="300"><TextRegion id="r"><TextLine id="l">
+ <TextEquiv><Unicode>Haus</Unicode></TextEquiv></TextLine></TextRegion></Page></PcGts>''')
+            with self.assertRaises(ValueError):
+                line_score.gt_lines(p)
+            row, err = line_score.job(({"xml": p, "img": p, "set": "s", "page_id": "x"},
+                                       "m", "false", d, 5, set(), d, {}))
+            self.assertIsNone(row)
+            self.assertIn("no usable Coords", err)
+
+    def _job_fixture(self, d, body):
+        xml = os.path.join(d, "gt.xml")
+        with open(xml, "w", encoding="utf-8") as f:
+            f.write('''<PcGts xmlns="http://schema.primaresearch.org/PAGE/gts/pagecontent/2019-07-15">
+ <Page imageWidth="100" imageHeight="100"><TextLine id="l"><Coords points="0,0 100,0 100,20 0,20"/>
+ <TextEquiv><Unicode>Haus</Unicode></TextEquiv></TextLine></Page></PcGts>''')
+        img = os.path.join(d, "i.png")
+        with open(img, "wb") as f:
+            f.write(b"img1")
+        fake = os.path.join(d, "fake.py")
+        with open(fake, "w") as f:
+            f.write("import sys\nopen(%r, 'a').write('x')\nsys.stdout.write(%r)\n"
+                    % (os.path.join(d, "calls"), body))
+        cmd = "python3 %s {img}" % fake
+        alto = os.path.join(d, "alto")
+        page = {"xml": xml, "img": img, "set": "s", "page_id": "p", "title": "t",
+                "year": "1900", "stratum": "x"}
+        calls = lambda: len(open(os.path.join(d, "calls")).read()) if os.path.exists(
+            os.path.join(d, "calls")) else 0
+        return page, cmd, alto, img, calls
+
+    def test_alto_cache_keyed_by_provenance_and_validated(self):
+        good = ALTO.replace("<String CONTENT=\"Haus\"/>", "<String CONTENT=\"Haus\" HPOS=\"1\" VPOS=\"1\" WIDTH=\"5\" HEIGHT=\"5\"/>")
+        with tempfile.TemporaryDirectory() as d:
+            page, cmd, alto, img, calls = self._job_fixture(d, good)
+            def run(prov):
+                return line_score.job((page, "m", cmd, d, 30, set(), alto, prov))
+            prov = {"model_sha256": "aa", "version": "t 1"}
+            self.assertIsNone(run(prov)[1]); self.assertEqual(calls(), 1)
+            self.assertIsNone(run(prov)[1]); self.assertEqual(calls(), 1)     # cache hit
+            run({**prov, "model_sha256": "bb"}); self.assertEqual(calls(), 2)  # model changed
+            run({**prov, "version": "t 2"}); self.assertEqual(calls(), 3)      # engine changed
+            with open(img, "wb") as f:
+                f.write(b"img2")
+            run({**prov, "version": "t 2"}); self.assertEqual(calls(), 4)      # image changed
+
+    def test_unparseable_alto_not_cached(self):
+        with tempfile.TemporaryDirectory() as d:
+            page, cmd, alto, img, calls = self._job_fixture(d, "<alto><oops")
+            row, err = line_score.job((page, "m", cmd, d, 30, set(), alto, {}))
+            self.assertIsNone(row)
+            self.assertIsNotNone(err)
+            self.assertFalse(os.path.exists(os.path.join(alto, "s", "m", "p.xml")))
+            self.assertFalse(os.path.exists(os.path.join(alto, "s", "m", "p.xml.json")))
+
+    def test_merge_resume_keeps_ids_and_missing(self):
+        old = {"expected": {"a": {"s": ["p1", "p2"]}, "b": {"s": ["p1"]}},
+               "missing_images": {"s": ["p3", "p2"]}}
+        exp, miss = score.merge_resume(old, {"a": {"s": ["p4"]}}, {})
+        self.assertEqual(exp, {"a": {"s": ["p1", "p2", "p4"]}, "b": {"s": ["p1"]}})
+        self.assertEqual(miss, {"s": ["p3"]})       # p2 now has an image
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)
