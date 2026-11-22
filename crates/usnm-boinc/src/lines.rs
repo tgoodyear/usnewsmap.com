@@ -421,18 +421,14 @@ pub async fn read_words(
         }
         let image = image::open(&crops[i])?.to_luma8();
         let want = script::candidates(&words);
-        for (k, (word, want)) in words.iter().zip(want).enumerate() {
+        for (k, want) in want.into_iter().enumerate() {
             if !want {
                 continue;
             }
-            let [x0, y0, x1, y1] = word.rect;
             let (w, h) = image.dimensions();
-            let pad = script::WORD_PAD;
-            let (x0, y0) = (x0.saturating_sub(pad), y0.saturating_sub(pad));
-            let (x1, y1) = (x1.saturating_add(pad).min(w), y1.saturating_add(pad).min(h));
-            if x0 >= x1 || y0 >= y1 {
+            let Some([x0, y0, x1, y1]) = script::crop_box(&words, k, w, h) else {
                 continue;
-            }
+            };
             let path = work.join(format!("word-{i:04}-{k:03}.png"));
             image::imageops::crop_imm(&image, x0, y0, x1 - x0, y1 - y0)
                 .to_image()

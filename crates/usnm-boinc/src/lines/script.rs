@@ -216,6 +216,33 @@ pub fn candidates(words: &[Word]) -> Vec<bool> {
         .collect()
 }
 
+/// The crop of word `k` the English engine reads, `[x0, y0, x1, y1]` with `x1`, `y1`
+/// exclusive: its box with [`WORD_PAD`] pixels around it, inside a `w` by `h` image. The
+/// padding stops at the neighbouring words' boxes on the line, so the English reading of one
+/// word never takes in its neighbour's ink (which assembly keeps as its own word, #2094).
+pub fn crop_box(words: &[Word], k: usize, w: u32, h: u32) -> Option<[u32; 4]> {
+    let [x0, y0, x1, y1] = words[k].rect;
+    let mut left = x0.saturating_sub(WORD_PAD);
+    let mut right = x1.saturating_add(WORD_PAD).min(w);
+    for (j, other) in words.iter().enumerate() {
+        let [ox0, oy0, ox1, oy1] = other.rect;
+        // Only a word beside this one on the line bounds it: the boxes share some height.
+        if j == k || oy0 >= y1 || oy1 <= y0 {
+            continue;
+        }
+        if ox1 <= x0 {
+            left = left.max(ox1);
+        } else if ox0 >= x1 {
+            right = right.min(ox0);
+        }
+    }
+    let (top, bottom) = (
+        y0.saturating_sub(WORD_PAD),
+        y1.saturating_add(WORD_PAD).min(h),
+    );
+    (left < right && top < bottom).then_some([left, top, right, bottom])
+}
+
 /// What the English engine read at one candidate.
 #[derive(Debug, Clone, PartialEq)]
 pub struct English {
@@ -518,6 +545,26 @@ mod tests {
         ];
         let c = candidates(&words);
         assert_eq!(c, [false, true, false]);
+    }
+
+    #[test]
+    fn a_word_crop_stops_at_its_neighbours() {
+        let words = [
+            word("ᏣᎳᎩ", 40.0, [10, 20, 60, 40]),
+            word("ᎤᏙᏓ", 40.0, [64, 20, 120, 40]),
+            word("Ꮡ", 40.0, [140, 20, 150, 40]),
+        ];
+        // The first word's padding stops at the second word, 4 pixels away; the second's stops
+        // at the first on the left and gets its full 10 pixels on the right.
+        assert_eq!(crop_box(&words, 0, 300, 60), Some([0, 10, 64, 50]));
+        assert_eq!(crop_box(&words, 1, 300, 60), Some([60, 10, 130, 50]));
+        assert_eq!(crop_box(&words, 2, 145, 60), Some([130, 10, 145, 50]));
+        // A word on another line's height doesn't bound it.
+        let stacked = [
+            word("ᏣᎳᎩ", 40.0, [10, 20, 60, 40]),
+            word("ᎤᏙᏓ", 40.0, [62, 45, 120, 60]),
+        ];
+        assert_eq!(crop_box(&stacked, 0, 300, 60), Some([0, 10, 70, 50]));
     }
 
     #[test]
