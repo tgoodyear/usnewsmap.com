@@ -90,7 +90,7 @@ class MainTest(unittest.TestCase):
         condition, missing = module.split("var queries = [", 1)[1].split("name: alertNames.missing", 1)
         test_branch = condition.rsplit("| union (", 1)[1]
         self.assertIn(f"Feed.event == '{F.DELIVERY_TEST_EVENT}' and tobool(Feed.test)", test_branch)
-        self.assertIn("Observed between (ago(10m) .. now())", test_branch)
+        self.assertIn("Observed between (ago(20m) .. now())", test_branch)
         self.assertIn("| project Check = 'delivery_test'", test_branch)
         self.assertNotIn("FeedLines", missing.split("]", 1)[0])
         self.assertNotIn("delivery", missing.split("]", 1)[0])
@@ -105,8 +105,8 @@ class MainTest(unittest.TestCase):
         self.assertNotIn("in ('firing', 'unknown')", health)
         self.assertIn("where tostring(Held.code) == 'collection'", health)
         self.assertIn("(State == 'unknown' and CollectionFiring and tostring(Check.excused) != 'true')", health)
-        # #1698: unknown rows count over the same ten minutes as firing ones, so they don't flap.
-        self.assertIn("FeedEvents\n| where Observed between (ago(10m) .. now())", health)
+        # #1698: unknown rows count over the same twenty minutes as firing ones, so they don't flap.
+        self.assertIn("FeedEvents\n| where Observed between (ago(20m) .. now())", health)
         self.assertNotIn("ago(3m)", health)
         self.assertEqual(F.COLLECTION_HOLD_S, 180)
 
@@ -289,7 +289,7 @@ class DurationTest(unittest.TestCase):
         # remains a rollout gate, not a local Kusto execution claim.
         query = (ROOT / "infra/modules/boinc-feed-alerts.bicep").read_text()
         retained = query.split("var queries = [", 1)[1].split("| distinct Check", 1)[0]
-        self.assertIn("Observed between (ago(10m) .. now())", retained)
+        self.assertIn("Observed between (ago(20m) .. now())", retained)
         self.assertIn("(State == 'firing' and (Code != 'collection' or Uncovered > 0))", retained)
 
     def test_feeder_allocation_is_opt_in_and_drift_fires_after_two_guard_runs(self):
