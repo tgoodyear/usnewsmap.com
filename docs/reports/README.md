@@ -16,6 +16,7 @@ One directory per report, named `<year>-<month>-<topic>`. A report is `report.md
 | [2026-11-gpu-studies](2026-11-gpu-studies/)                 | GPU OCR studies and their reproduction notes                                 |
 | [2026-11-ocr-quality-estimation](2026-11-ocr-quality-estimation/) | Reference-free OCR quality: `lm_oov` against true CER, and the evidence rule (`qe-v1`) |
 | [2026-11-reader-comparison](2026-11-reader-comparison/)     | Per-language reader comparison (#968): protocol and results          |
+| [2026-11-tesseract-5-5-4](2026-11-tesseract-5-5-4/) | Tesseract 5.5.4 beside 5.5.0: output comparison, CPU time and the three patches (#1835) |
 
 ## Data
 
