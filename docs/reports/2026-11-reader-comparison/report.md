@@ -2,6 +2,23 @@
 
 12 November 2026, updated 22 November. Tesseract, LoC and American Stories are scored, and so are Xiaomi-OCR-0 and guarded Qwen3-VL 8B, both as local runs on one RTX 2060 SUPER GPU host, not on BOINC. Qwen3-VL 2B and a BOINC run of Xiaomi on volunteer hardware had not run as of 22 November. The sets, readers, scoring and decision rules are those of the [protocol](protocol.md), and the [freeze record](protocol.md#freeze-record) lists the hashes. Departures from the protocol are in its [departures log](protocol.md#departures-log).
 
+## Summary
+
+**Question.** Which reader should usnewsmap.com use to turn newspaper page crops into text, for each language? The candidates are Tesseract (the current engine), Xiaomi-OCR-0 and Qwen3-VL 8B (two vision-language models), plus LoC's own text and American Stories for English. We score them against human transcriptions with CER (character error rate: share of characters wrong).
+
+**Hypothesis.** Pre-stated in the [protocol](protocol.md). A reader counts as better than Tesseract only if the 95% limits of its paired CER difference lie wholly below zero (rule 1). The language's reader is the best such one, and the smaller model wins ties (rule 2). Held-out sets decide; sets we have used before are provisional (rules 5 and 6). We expected the vision-language readers to beat Tesseract on the non-English languages.
+
+**Answer.** The hypothesis held for French, Finnish and Swedish. On the held-out sets Xiaomi and 8B both cut CER by roughly 5 to 7 points: French 11.52% to 6.08% (Xiaomi), Finnish 10.46% to 3.30% (8B), Swedish 8.89% to 2.09% (8B). In every one of those cases the limits of the difference exclude zero. For German neither reader beat Tesseract on the Reichsanzeiger pages (Xiaomi +0.25, 8B -0.10 points, limits including zero), though both did on the NZZ pages, which are second use. For English, Xiaomi beat Tesseract by 1.94 points on a second-use set, so that is provisional. LoC's own text was worse than Tesseract (9.54% against 4.06%), and American Stories returned text for only 59 of 345 crops.
+
+**What it means.**
+
+- Route French to Xiaomi, Finnish and Swedish to 8B, and keep Tesseract for German. English stays provisional until the held-out set `en-as` has been read by Xiaomi and 8B.
+- All vision-language numbers come from one local GPU host. Wait for the BOINC replicate of Xiaomi before changing production, and have a person read the flagged invented-text crops.
+
+![CER by reader on each frozen set. The vision-language readers sit well below Tesseract everywhere except the Reichsanzeiger German pages, where all three are close. Limits are shown for Tesseract only.](figures/cer-by-reader.svg)
+
+_Figure 1. CER by reader on each frozen set. Error bars are 95% limits for Tesseract PSM 6; the report gives limits for the other readers only as differences (Figure 2)._
+
 ## What ran
 
 Every CER below is pooled character error rate against human transcriptions, with missing output kept in the denominator, scored by the GPU studies' `gpu-study score`. Limits are 95% percentile bootstraps resampling whole source pages, 2,000 resamples, seed 202611. The normalization is the gold set's (`gold.py normalize`). Median crop CER and WER are in the tables beside it.
@@ -55,6 +72,10 @@ CER, with the paired difference from Tesseract PSM 6 in points (95% limits). A d
 | `de-rz81` (Study 11 pages)    |           4.90% |  5.15% | +0.25 (-0.69 to 1.07)  | 4.80% | -0.10 (-0.99 to 0.74)  | +0.35 (0.14 to 0.56)  |
 | `de-nzz` (second use)         |          13.36% |  7.99% | -5.38 (-8.24 to -2.72) | 8.91% | -4.46 (-6.34 to -2.77) | -0.92 (-3.57 to 1.37) |
 
+![Paired CER difference from Tesseract PSM 6 for Xiaomi and 8B on each set, with 95% limits. Points left of zero mean the reader is better. Every set except de-rz81 is clearly left of zero for both readers, except 8B on en-op.](figures/difference-from-tesseract.svg)
+
+_Figure 2. Paired CER difference from Tesseract PSM 6, in points, with 95% limits. A bar wholly left of zero passes rule 1._
+
 Major invented-text counts (the GPU studies' check, flagged crops not yet read by a person) are Tesseract 69, Xiaomi 16 and 8B 47 over all 1,259 crops. On `en-op` they are 16, 9 and 26. On `fr-new` they are 9, 4 and 4, and on `de-rz81` 25, 1 and 1. On these three sets neither vision-language reader has more than Tesseract except 8B on `en-op` (26 against 16).
 
 These two columns are a local run on one host. The protocol planned them as BOINC campaigns on volunteer GPUs. Guarded 8B couldn't be dispatched as a BOINC benchmark until native routing was merged, and the maintainer then chose a local run for 8B. The BOINC run of Xiaomi on 1.20 app versions had not run as of 22 November. If it runs, it would be reported beside the local column as a cross-hardware replicate.
@@ -70,6 +91,10 @@ Protocol rule 2 picks the reader with the lowest CER on the language's primary s
 | Swedish  | `sv-new`     | Qwen 8B                   | 8B beats Tesseract by 6.79 points and Xiaomi by 0.44 (0.14 to 0.74)                                                                    |
 | German   | `de-rz81`    | Tesseract stays           | Neither reader beats it: Xiaomi +0.25 (-0.69 to 1.07), 8B -0.10 (-0.99 to 0.74). Provisional, as every German set has been read before |
 | English  | `en-op` only | Xiaomi-OCR-0, provisional | It beats Tesseract by 1.94 points and isn't separated from 8B. `en-op` is second use, so by rule 5 this decides nothing                |
+
+![For each language the recommended reader's CER minus Tesseract PSM 6 with 95% limits. French, Finnish and Swedish are clearly better, English is provisional, and German has no separated winner.](figures/recommended-readers.svg)
+
+_Figure 3. The margin of the recommended reader over Tesseract PSM 6, with 95% limits. German's bar includes zero, so Tesseract stays._
 
 German on `de-nzz` (second use) points the other way: both readers beat Tesseract (by 5.38 and 4.46 points). No German set is held out, and rule 6 keeps German results provisional, so the German result stays Tesseract for now. Study 11 ([GPU studies report](../2026-11-gpu-studies/report.md#study-11-held-out-pages-3-and-4-november-2026)) found that Xiaomi loses on tall Reichsanzeiger columns when its images are fitted to 2,048 px. This run reads them at native size, which is the request version 5 setting.
 
@@ -150,6 +175,14 @@ PSM 3 is lower than PSM 6 with limits that exclude zero under 100 characters and
 - English held-out set (`en-bln`): dropped, because BLN600's images are bilevel TIFFs that a unit can't carry unchanged under its No-Derivatives licence. `en-as` (above) replaces it as the held-out English set, but Xiaomi and Qwen had not run on it as of 22 November, so the English recommendation stays provisional.
 - `de-rz700` and `de-onb`: not frozen, because their crop lists (Study 7's and the benchmark release's) can't be rebuilt from the GPU studies' data release; see the departures log.
 - The GPU and CPU host comparison. No CPU app version is live.
+
+## Conclusion
+
+The pre-stated rules gave a clear answer for three languages and a provisional one for two. Vision-language readers are much better than Tesseract on French, Finnish and Swedish held-out pages, so the hypothesis held there. It did not hold for German Reichsanzeiger pages, and English rests on a set we have used before. We are fairly sure of the direction for the held-out languages (limits exclude zero by a wide margin) and less sure of the size, because the runs are on one GPU host and the invented-text flags are unread.
+
+- Recommended now: Xiaomi for French, 8B for Finnish and Swedish, Tesseract for German, Xiaomi provisionally for English.
+- Next: run Xiaomi and 8B on `en-as`, run the BOINC replicate of Xiaomi, and read the flagged invented-text crops.
+- Open: German has no held-out set, and the German-against-LoC band check has no truth source.
 
 ## Reproducing
 

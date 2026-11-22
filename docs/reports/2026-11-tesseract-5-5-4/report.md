@@ -4,7 +4,29 @@ Issue [#1835](https://github.com/tgoodyear/usnewsmap.com/issues/1835), steps 1 t
 
 **Status as of 22 November 2026.** The build tooling and the comparison tool written for this work are not on `main`, because nothing there uses them. They stay on the branch `1835-tesseract-554` of closed pull request [#1851](https://github.com/tgoodyear/usnewsmap.com/pull/1851) for anyone resuming #1835. `main`'s default native build is now 5.5.0 plus patches 0001 to 0003 ([#1903](https://github.com/tgoodyear/usnewsmap.com/pull/1903)); see [Tesseract patches](../../boinc/apps/native-ocr.md#tesseract-patches). The per-file results are in `data/` and published as the release set `report-2026-11-tesseract-5-5-4`: fetch them with `scripts/ops/data-assets.sh --fetch --set report-2026-11-tesseract-5-5-4`.
 
-## Result in brief
+## Summary
+
+**Question.** Tesseract is the OCR (text recognition) engine our volunteers' computers run. Issue #1835 asked whether upstream's newest release, 5.5.4, can replace the 5.5.0 we ship, and whether it is faster. If it can, we get quicker OCR without a new engine; if it changes the output, our calibration and quality checks must be redone.
+
+**Hypothesis.** The issue stated, before any run, that the recogniser itself does not change between these releases, so only speed and layout code would differ. The speed gain was expected from upstream's release notes. Neither was a pre-registered threshold; this was a measurement, and the comparison with 5.5.0 was set up to check the premise.
+
+**Answer.** The premise did not hold. The text differs between 5.5.0 and 5.5.4 on all 63 reads (30 challenge crops and 33 pages), and a control build of 5.5.0 made the same way as 5.5.4 rules out the build as the cause. Accuracy is mixed: on the 30 English challenge crops CER (character error rate: share of characters wrong) goes from 7.16% to 6.81%, but one crop supplies 280 of the 288 edits saved, and on 6 English pages with a human reference it goes from 10.8% to 12.1% (5 pages worse, 1 better; one page jumps from 33.0% to 53.5% because columns are merged). German pages are unchanged within 0.1 point. 5.5.4 is faster on dense pages, using 0.62 to 0.69 of the CPU time of 5.5.0 on the densest, and no faster on sparse ones. Timings come from a busy shared machine with three runs per page, so they are relative.
+
+**What it means.**
+
+- 5.5.4 is not a drop-in upgrade. Moving to it needs a new challenge calibration, new parity runs and re-scored models, and the layout change on `asgold-005` should be looked at first.
+- `main` took the safer route instead: 5.5.0 plus three upstream fixes (patches 0001 to 0003, [#1903](https://github.com/tgoodyear/usnewsmap.com/pull/1903)). They leave text and ALTO unchanged on all 63 items and carry roughly a third to two thirds of 5.5.4's speed gain.
+- Still open: the exact upstream commit that changes layout, whether the use-after-free fix matters on our pages (no memory-checker run), and timing on a quiet machine.
+
+![Change in character error rate from 5.5.0 to 5.5.4 on four sets, in percentage points, with positive meaning worse. The challenge crops improve by 0.35 points, English pages get 1.35 points worse, and German pages do not move.](figures/cer-by-set.svg)
+
+*Figure 1. Change in CER (5.5.4 minus 5.5.0) by set, with both CERs in each row label (table in [Text and accuracy](#text-and-accuracy)). All four share one scale. The English pages are the one place 5.5.4 is clearly worse.*
+
+![CPU time of 5.5.4 as a fraction of 5.5.0 for 11 pages. Dense pages fall to 0.62 to 0.74; sparse pages sit near 0.9 to 1.0.](figures/cpu-ratio.svg)
+
+*Figure 2. 5.5.4 CPU time relative to 5.5.0, per page ([Timing](#timing)). Ratios within about 10% of 1.0 are inside the noise.*
+
+## Results in brief
 
 - **The output changes.** Text differs between 5.5.0 and 5.5.4 on all 63 reads (33 pages, 30 challenge crops). The 5.5.0 build made from the upstream tarball through the same recipe, and a plain upstream build of 5.5.4, rule out the build as the cause: see [Build](#build). The issue's premise that nothing changes the recogniser does not hold for our pages.
 - **Why: two changes in 5.5.1, nothing later.** 5.5.1, 5.5.2, 5.5.3 and 5.5.4 give the same text and block layout on the small set; the difference is in 5.5.0 to 5.5.1. The character differences come from 5.5.1 restoring the original random number generator (the LSTM pads each line image with random values). The paragraph and column differences come from upstream's rewrite of its list classes in the same release, which changed how lists are sorted; the exact commit isn't found. See [Why the output differs](#why-the-output-differs).
@@ -295,6 +317,14 @@ Left out because they need a crafted model or a different output: #4588, #4609, 
 Main adopted these three patches in #1903. As written when the measurements were done: if the output is identical, as here, adoption needs new build digests and new app versions, but no re-calibration: the text and ALTO bytes match stock 5.5.0 (apart from the host-CPU `WC` effect stock 5.5.0 already has), so the calibrated challenge, gold results and host trust stay valid. What it does need: a `usnm_tesseract` built with the patches for each platform (the macOS and Windows builds apply the same patch files to upstream 5.5.0), the engine image rebuilt, the manifest digest and app versions changed as for any new build, and the parity run repeated for the new build as the native-OCR rollout already requires. The engine still reports 5.5.0, so the version-string checks pass.
 
 What was not tested: the crash fix, a second CPU for the patched build, single-patch builds, patch 0004, and the macOS and Windows builds themselves (only `git apply --check` on the upstream tag).
+
+## Conclusion
+
+5.5.4 reads our pages differently from 5.5.0, and the difference comes from two changes in 5.5.1: a restored random number generator (character noise, symmetric) and a rewrite of upstream's list classes (layout, a regression on the one page checked by eye). We are confident of the difference and of the speed gain on dense pages; we are less sure of the size of the gain, and the layout cause is narrowed to a series of commits, not one. The next step is the one `main` already took, shipping 5.5.0 with the three speed and crash patches, and revisiting 5.5.4 only with a full re-calibration.
+
+- Text and ALTO differ on all 63 items, so 5.5.4 needs new calibration, parity and host-trust runs.
+- 5.5.4 is 0.62 to 0.69 of 5.5.0's CPU time on dense pages; patches 0001 to 0003 carry part of that at no change in output.
+- Open: exact layout commit, memory-checker run for patch 0003, quiet-machine timing.
 
 ## What this means for the issue
 

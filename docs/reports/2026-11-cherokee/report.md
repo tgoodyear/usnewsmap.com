@@ -4,6 +4,24 @@
 
 ## Summary
 
+**Question.** How much of the _Cherokee Phoenix_'s Cherokee text can people search on usnewsmap.com, how accurate is it, and what would it take to make it better? The paper is the first Cherokee-language newspaper, and search only finds a word if the OCR (machine reading of the page image) spelled it right.
+
+**Hypothesis.** The plan in section 5 set a measure for each step before it ran. The gate that mattered was pre-stated: fine-tune an OCR model on the paper's own letters (step 3) and go on to step 4 only if it beats LoC's (the Library of Congress, whose OCR is what we index) on held-out real lines. The finding that most errors come from a few look-alike letters came from the data, so it is post-hoc.
+
+**Answer.** We search 324 pages (82 issues, 1828 to 1833), which hold about 85,000 Cherokee words on 191 pages. That is 32% of the 1,023 pages LoC and Georgia Historic Newspapers (GHN) list; images of the other 699 are on our storage without OCR. On 70 lines checked by eye against the page, LoC's Cherokee OCR gets at least 8 to 9% of letters wrong (CER, character error rate: share of letters wrong) and stock Tesseract 16 to 17%, mostly on look-alike letters in the paper's 1828 type. Our fine-tuned model, `chr_phoenix`, reads the held-out silver lines (lines aligned to the 1860 New Testament) at 10.2% CER against LoC's 18.0%, 7.8 points better (95% interval 6.3 to 9.1). On the 70 hand-checked lines it is also ahead, 6.6% against 8.4%, but 70 lines are too few to settle that (interval -4.9 to +1.9 points). The gate passed, and the model has re-read the 190 pages with Cherokee lines that have a scan. For the 699 missing pages we expect about 65,000 more words, not the 165,000 more the plan assumed.
+
+**What it means.**
+
+- Go on with step 4: the 699 pages need a line finder for pages without layout data, which tests at 90% line recall (subsection "The 699 pages"). A pilot of 5 pages comes first.
+- The new text is not searchable yet: the 190 re-read pages wait for a rebuild of the index, and the model is not deployed.
+- Open: the only checked set is 70 lines, so how well the model reads unseen news pages is unmeasured, and dark early pages may defeat the line finder.
+
+![Character error by reading on test set v2. The fine-tuned chr_phoenix model has the lowest error on all lines, on silver lines and on the 70 hand-checked lines, though the gap to LoC on the hand-checked lines is within noise.](figures/cer-by-reading.svg)
+
+**Figure 1.** Character error (share of syllabary letters wrong, lower is better) at PSM 13 (Tesseract's single-line mode). No interval is drawn; the intervals for the differences are in the text. Source: the table in step 3.
+
+### Findings in detail
+
 - **Volume.** usnewsmap.com searches 324 pages of the _Cherokee Phoenix_ (82 issues, 1828-03-06 to 1833-10-19). They hold about 85,000 words of Cherokee syllabary, on 191 pages. That is 32% of the 1,023 pages LoC and GHN list for the paper. Images of the other 699 pages are already on our storage, without OCR. No other Cherokee-language newspaper is in the index. The largest one outside it is the _Cherokee Advocate_ (1844–1906), 895 issues on the Gateway to Oklahoma History.
 - **Accuracy.** The first measured figure comes from 70 lines checked against the page images: LoC's Cherokee OCR misreads at least 8–9% of syllabary letters, and stock Tesseract 16–17% (step 2). The proxies we can compute say LoC's Cherokee OCR is weak, and weak in particular letters. ᎾᏍᎩ ("that"), the second most common word in the New Testament, is read correctly 127 times and misread as ᏩᏍᎩ, ᏣᏍᎩ or ᏳᏍᎩ 1,007 times. ᎠᎴ ("and", the most common) is read correctly 2,547 times in 2,555. The paper's name, ᏣᎳᎩ ᏧᎴᎯᏌᏅᎯ, reads exactly on 47 of 82 front pages. It appears in a standing notice in the first column, not in the masthead. LoC's word confidences are no help: 99.8% of Cherokee words have a confidence of at least 0.5, and the median is 1.0.
 - **Models.** Tesseract's Cherokee model reads clean typeset text well: 1.67% character error on the New Testament PDFs. On Phoenix scans it makes the same letter confusions LoC's OCR makes. Our Qwen3-VL-2B route produced no syllabary at all, and in a 2026 benchmark none of 14 vision-language models read Cherokee. Fine-tuned on the paper's own glyphs, Tesseract beats LoC: `chr_phoenix` reads the test set's silver lines at 10.2% character error against LoC's 18.0%, and the hand-checked lines at 6.6% against 8.4%, though 70 lines are too few to settle that (step 3). It isn't deployed yet.
@@ -269,7 +287,25 @@ Measured on test set v2 (2,160 line crops, 11,340 words) with the round-two mode
 
 **Production.** The word route needs a new `usnm_ocr` worker image (`docker_lines`), because the worker now reads word boxes and runs the English model on them, and a native build would need the `eng` model in its plan. No app version has been published for it. A re-run of the 190 pages is not warranted for Cherokee accuracy: the test set's CER is the same, and the earlier survey found Latin on well under 0.1% of words (71 hand-confirmed words, 55 of them on one lesson). It would make those words searchable, at most about 70 known ones. It is worth doing together with the next worker release, for instance when the 699 pages with no LoC text are read.
 
-**The 699 pages: inventory, line finding and campaign design (12 November: finder and classifier measured on LoC pages; campaign design, not run).** This prepares the rest of step 4. The 699 pages have no ALTO, so a line job needs boxes from another source, and the line classifier and the English route are new.
+**The 699 pages: inventory, line finding and campaign design (12 November: finder and classifier measured on LoC pages; campaign design, not run).**
+
+> **Question.** Can we OCR the 699 GHN pages, which have no layout data, and how many Cherokee words would that add?
+>
+> **Hypothesis.** The plan assumed the GHN pages carry the same share of Cherokee as LoC's (9% of lines), which gives 250,000 words or more in all. No accuracy threshold was set for the line finder before it was tested: we compared candidate finders on 30 LoC pages and kept the best.
+>
+> **Answer.** The chosen finder (Tesseract's layout on a binarised scan, then a clean-up) finds 89.7% of text lines and 84.0% of Cherokee lines on LoC pages, with 83.8% of its boxes on a real line. A second model separates Cherokee lines from English at 99.0% recall and 98.9% precision. On 12 GHN pages the classifier calls only 3.9% of lines Cherokee, so the 699 pages hold about 13,000 Cherokee lines (standard error 8,000), about 65,000 words. The assumption of 250,000 did not hold. These figures come from LoC scans and 12 GHN pages. Dark early pages are the main risk: the first issue's page 1 fails.
+>
+> **What it means.** Run a pilot of 5 pages before the campaign, not the whole 699. The campaign is a few hours of Cherokee line jobs, so the cost is small. Open: better line finding for dark pages, and ingest of the finished pages into search.
+
+![Line finders on 30 LoC pages. Binarising the scan before Tesseract's layout step raises line recall from 81% to 90% and precision from 70% to 84%; Cherokee lines are found less often than lines in general, at 84%.](figures/finder-recall.svg)
+
+**Figure 2.** Line recall, line precision and Cherokee line recall by finder. Source: the finder table below.
+
+![GHN pages by year, and searchable Cherokee words today, as the plan assumed, and as the 12-page sample estimates. The sample suggests about 150,000 words in all, not 250,000 or more.](figures/ghn-pages-yield.svg)
+
+**Figure 3.** Left: the 699 pages by year (inventory table below). Right: Cherokee words in thousands. The estimate adds the sample's 65,000 new words to today's 85,000; its bar covers only the uncertainty in the line count. Source: "GHN scans" below.
+
+This prepares the rest of step 4. The 699 pages have no ALTO, so a line job needs boxes from another source, and the line classifier and the English route are new.
 
 _Inventory._ `ghn-pages.jsonl` lists the 699 pages, one JSON line each, in the shape of `phoenix-pages.jsonl`: the page, `doc_id` (`ghn:<lccn>_<date>_ed-<n>_seq-<n>`, the form ADR-0026 gives a Georgia Historic Newspapers (GHN) page), batch and version, the image's path under the fetcher's output directory, its size and sha256, and its IIIF URL on GHN as provenance. `lines` is `null` until a finder has run, and `test_set` is false. Each image was hashed again and its dimensions read from the JPEG header (`chr_ghn_pages.py`); every value agrees with the fetcher's inventory and the verification receipts of #1590. Nothing was fetched. The file is not committed: `scripts/chr_ghn_pages.py` regenerates it from the fetcher's inventory.
 
@@ -362,6 +398,14 @@ Made on 6 November 2026:
 - **Ground truth.** Synthetic and aligned references only (step 2). A set transcribed by a Cherokee reader would still be the only fully trustworthy test; no one is being asked for one. Results from steps 2 and 3 are reported with that limit.
 - **The _Advocate_.** Metadata only for now, through the Gateway's OAI-PMH interface. Whether to fetch images is decided after the step-3 model works.
 - **Order.** Step 1 (confusion-tolerant search) first.
+
+## Conclusion
+
+We know what is searchable (about 85,000 Cherokee words on 191 of 324 pages), that LoC's Cherokee OCR is weak in specific letters, and that a model fine-tuned on the paper's own glyphs beats it on held-out silver lines by 7.8 points of character error. We are fairly sure of that gain, since it holds on 26 of 29 pages. We are less sure of the gain on real news text, because the only hand-checked set is 70 lines and the references are New Testament text. The 699 missing pages are a smaller prize than planned (about 65,000 words, not 165,000) and the line finder is the weak part.
+
+- Next: pilot 5 GHN pages through the staged layout and line job, with the stop rule of #1621.
+- Next: decide whether to deploy `chr_phoenix` and when to rebuild the index with the 190 re-read pages.
+- Open: a set of lines transcribed by a Cherokee reader would be the only fully trustworthy test; none is planned.
 
 ## Reproducing
 

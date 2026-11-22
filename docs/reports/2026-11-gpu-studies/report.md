@@ -6,6 +6,22 @@ date: "November 2026"
 
 # Summary
 
+**Question.** Which OCR reader should we run on rented GPUs to read the newspaper corpus, and what does it take to run it safely? We tested several readers on text people transcribed by hand, because the choice sets both search quality and cost for usnewsmap.com. CER (character error rate) is the share of characters a reader gets wrong.
+
+**Hypothesis.** Each study's samples, measures and decision rules were fixed in [`protocol.md`](protocol.md) before its runs (Studies 8 and 10 were added later). The test that matters most was pre-stated: Xiaomi-OCR-0, a small 0.8B reader, would beat Tesseract on German pages the readers hadn't seen. Findings marked "post-hoc" were chosen after seeing results.
+
+**Answer.** On 612 hand-transcribed crops, Xiaomi-OCR-0 had 4.0% CER against Tesseract's 9.0%, and tied guarded Qwen 8B (4.5%) at a tenth of its size. The pre-stated held-out test did not confirm that. On 81 new Reichsanzeiger pages, Xiaomi-OCR-0 had 10.4% CER against Tesseract's 6.5%, a gap of +3.9 points (95% limits 0.9 to 7.8), and it was level with Qwen (12.4%). The loss sat in 84 tall columns that were shrunk to fit. Read at native size, a post-hoc arm, the gap shrinks to +1.3 (-0.7 to 3.3). So the pre-stated test failed for Xiaomi-OCR-0 on German. A separate finding, not a pre-stated test, is that Qwen 8B's main fault was repetition loops, which the `stop` guard fixes.
+
+**What it means.**
+
+- Keep Tesseract for German for now. Hold Xiaomi-OCR-0 until a test on production-shaped crops of held-out pages says otherwise; use guarded Qwen 8B where a vision-language reader is needed.
+- Upgrade BOINC's llama.cpp before any new reader ships, and read crops, not whole pages.
+- Still open: production crop sizes, any Yiddish newspaper reader, and whether fine-tuning ever pays.
+
+![Left: on 612 hand-transcribed crops Xiaomi-OCR-0 has the lowest CER (4.0%) and Tesseract the highest (9.0%). Right: on 2,000 regions from 81 held-out German pages the order flips, with Tesseract lowest (6.5%) and Xiaomi-OCR-0 (10.4%) and Qwen (12.4%) behind, with overlapping limits.](figures/fig1-cer-by-reader.svg)
+
+*Figure 1. Reader error rate (lower is better) on the crops used to choose a reader, and on pages held out to check that choice.*
+
 ## What we learned
 
 1. **Xiaomi-OCR-0 is the best reader on the 612 crops, but held-out pages didn't confirm it.** On 612 human-transcribed newspaper crops it has 4.0% CER against Tesseract's 9.0% and ties guarded Qwen 8B (4.5%) at a tenth of its size. On a rented 3090 it reads crops for about $0.02 per 1,000 pages of reading time, against $3.40 for Qwen with boot and idle time included. It also invents less: 7 flagged readings to Qwen's 32. On 81 new Reichsanzeiger pages it lost to Tesseract (10.4% against 6.5%), all of the loss on 84 tall columns shrunk to 2,048 px. At native size it comes within 1.3 points of Tesseract and beats guarded Qwen (post-hoc). [Studies 9](#study-9-xiaomi-ocr-0-3-november-2026) and [11](#study-11-held-out-pages-3-and-4-november-2026)
@@ -587,7 +603,19 @@ The hash list of the training split's 554 page images and ALTO files has SHA-256
 
 # Study 11: held-out pages (3 and 4 November 2026)
 
-**Bottom line.** Study 9's result is not confirmed. On the 81 held-out Reichsanzeiger pages, Xiaomi-OCR-0 reads regions worse than Tesseract, 10.4% CER against 6.5%, a difference of +3.9 points (limits 0.9 to 7.8). It is level with guarded Qwen 8B (12.4%). Post-hoc, the whole loss sits in 84 tall column regions: on the other 1,916 regions it ties Tesseract (7.0% against 6.8%). Post-hoc again, reading those columns at native size, as request version 5 sends them, cuts the gap to +1.3 (limits -0.7 to 3.3). It also loses on the other two sets. Xiaomi-OCR-0 shouldn't replace Tesseract on German until a production-shaped test says otherwise.
+**Question.** Does Xiaomi-OCR-0's lead over Tesseract on the 612 crops (Study 9) hold on German pages it has never been scored on?
+
+**Hypothesis.** Pre-stated in the protocol: Xiaomi-OCR-0 minus Tesseract on the held-out `de-rz` regions would be below zero, with 95% limits excluding zero.
+
+**Answer.** No. On 81 held-out Reichsanzeiger pages Xiaomi-OCR-0 has 10.4% CER against Tesseract's 6.5%, a difference of +3.9 points (limits 0.9 to 7.8), and it ties guarded Qwen 8B (12.4%). It also loses on the other German set (+14.0, limits 9.3 to 18.8) and on English (+4.5, limits -2.4 to 13.3, descriptive). Post-hoc, the loss sits in 84 tall columns shrunk to 2,048 px. Reading them at native size, as request version 5 does, cuts the gap to +1.3 (limits -0.7 to 3.3), which is no longer a loss with limits excluding zero.
+
+**What it means.** Don't replace Tesseract with Xiaomi-OCR-0 on German. It may still be fine for crops no taller than 2,048 px, but that is a post-hoc subgroup, so confirm it on production-shaped crops first.
+
+![Xiaomi-OCR-0 minus Tesseract on held-out German regions, in CER points with 95% limits. The protocol's arm (fitted to 2,048 px) is above zero, so Tesseract is better. At native size the limits cross zero, so it's a tie. On de-cg the gap is large.](figures/fig2-xiaomi-minus-tesseract.svg)
+
+*Figure 2. Paired difference, Xiaomi-OCR-0 minus Tesseract. Right of the zero line, Tesseract reads better. The native-size row is post-hoc.*
+
+**In detail.** Study 9's result is not confirmed. Post-hoc, on the other 1,916 regions it ties Tesseract (7.0% against 6.8%), and the whole loss sits in the 84 tall column regions. Xiaomi-OCR-0 shouldn't replace Tesseract on German until a production-shaped test says otherwise.
 
 The readings were made on 3 and 4 November on an RTX 2060 SUPER with other work paused, following the protocol amendment of 4 November. They were scored then and not reported until now. On 12 November the tables were checked with a separate scorer (rapidfuzz Levenshtein, NFC, whitespace collapsed, the same page resampling and seed). For `de-rz` it agreed within 0.2 points on every pooled CER and difference.
 
@@ -663,6 +691,14 @@ The line pipeline loses on German pages, with low precision (60.8% on `de-rz`). 
 - Don't open the `_x08` plan classes for German. Xiaomi-OCR-0 is a candidate for crops no taller than 2,048 px, where it ties Tesseract and Qwen on `de-rz`. That's a post-hoc subgroup, so a production-shaped test should confirm it before any release: production crops, the v5 settings, and the same held-out pages.
 - b12084 stays necessary for every reader. On it, the two models returned 1 empty reading between them in 9,186. The `usnm_qwen` 1.20 bundle built from main on 12 November (b12084 with its pinned `libgomp`) read the 612 Study 9 crops with no empty readings: 4.4% CER, with 577 readings identical to Study 9's b12084 run (#1783).
 - The vote helps over either vision-language reader, but not over Tesseract on German regions.
+
+# Conclusion
+
+Across the studies, the clearest result is that guarded Qwen 8B and Xiaomi-OCR-0 both beat Tesseract on the 612 crops, but Xiaomi-OCR-0's lead did not survive held-out German pages: 10.4% against 6.5% CER, +3.9 points (limits 0.9 to 7.8). We are fairly sure of the held-out loss under the protocol's settings, and much less sure of the post-hoc claim that native-size reading closes the gap (+1.3, limits -0.7 to 3.3). The next step is a production-shaped test of Xiaomi-OCR-0 on held-out pages.
+
+- Keep Tesseract for German and use guarded Qwen 8B where a vision-language reader is needed; hold Xiaomi-OCR-0 on German until the production-shaped test.
+- Upgrade BOINC's llama.cpp, read crops rather than pages, and use `crop-consensus-v2` to validate replicas.
+- Build a transcribed Yiddish newspaper set; no reader is shown to work there.
 
 # Spend
 

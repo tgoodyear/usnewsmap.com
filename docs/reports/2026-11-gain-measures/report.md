@@ -4,10 +4,19 @@ The worst-first campaign (#1415) judges a re-read by the drop in LoC's damage ra
 
 ## Summary
 
-- Over all 338 human-truth pages, `lm_oov` tracks CER drops better than damage: page-pair rho 0.65 against 0.48.
-- Most of the difference is German, where damage barely tracks CER (0.28) and `lm_oov` does moderately (0.56). Even so, 15% of German pairs `lm_oov` counts as a gain are losses, so German stays held.
-- In English, French, Swedish and Finnish both measures work. Damage at 0.02 is confirmed (93–99% of passing pairs really improved). Damage is better on Finnish.
-- Truth volume is the limit: 20–28 pages per language outside German.
+**Question.** The worst-first re-read campaign decides whether a re-read helped by checking whether LoC's damage rate (the share of words that look like near-misses of common words) fell by at least 0.02. Does that drop really track a fall in CER (character error rate: share of characters wrong), and would a drop in the quality-estimation score `lm_oov` (a reference-free score that combines a character language model with the share of unknown words) track it better?
+
+**Hypothesis.** There was no pre-stated decision rule. The study measured how well each drop agrees with the CER drop on pages with human-typed truth. The idea that `lm_oov` might beat damage came from the quality-estimation report, so its German advantage is a finding of this run, not a prediction. The `lm_oov` thresholds were set after the fact to pass as many pairs as damage at 0.02.
+
+**Answer.** Over all 338 truth pages, `lm_oov` tracks CER drops better than damage: Spearman rho (rank agreement, 1 is perfect) 0.65 (0.60 to 0.70) against 0.48 (0.42 to 0.54). Almost all of the gap is German, where damage barely tracks CER (0.28) and `lm_oov` does moderately (0.56). In English, French, Swedish and Finnish both measures work well (rho 0.80 to 0.94), and damage at 0.02 is confirmed: 93 to 99% of passing pairs really improved. In Finnish damage is the better measure. Even in German, 15% of the pairs `lm_oov` counts as gains are losses, so German is not fixed.
+
+**What it means.**
+
+- Keep the 0.02 damage rule for English, French, Swedish and Finnish. `quality_gain.py` will report the `lm_oov` drop beside it, deciding nothing yet.
+- German stays held (#835), and any Fraktur or modernised-spelling language is treated like German until it has human truth. Production data agrees: German 1890 gained 0.147 in damage but 0.003 in estimated CER.
+- Still open: only 20 to 28 truth pages per language outside German, and no held-out Chronicling America English pages.
+
+![Spearman rho of each measure's drop against the real CER drop, with 95% limits: lm_oov is ahead pooled and in German, while damage is as good or better in English, French, Swedish and Finnish, and weak only in German.](figures/rho.svg)
 
 ## Data and method
 
@@ -38,13 +47,13 @@ This part comes from the earlier gain-proxy check (closed PR #1889). It uses the
 
 Page level, diplomatic CER:
 
-| Language | rho (95%) | CER drop at 0.02 | Pairs with damage drop of 0.02 or more where CER fell |
-| -------- | ---------------- | ------ | ---- |
-| English  | 0.72 (0.54–0.86) | 1.2 pt | 93%  |
-| French   | 0.60 (0.38–0.79) | 2.3 pt | 100% |
-| Swedish  | 0.70 (0.49–0.82) | 0.9 pt | 100% |
-| Finnish  | 0.69 (0.51–0.83) | 0.7 pt | 99%  |
-| German   | 0.06 (−0.03–0.15) | 0.4 pt | 52% |
+| Language | rho (95%)         | CER drop at 0.02 | Pairs with damage drop of 0.02 or more where CER fell |
+| -------- | ----------------- | ---------------- | ----------------------------------------------------- |
+| English  | 0.72 (0.54–0.86)  | 1.2 pt           | 93%                                                   |
+| French   | 0.60 (0.38–0.79)  | 2.3 pt           | 100%                                                  |
+| Swedish  | 0.70 (0.49–0.82)  | 0.9 pt           | 100%                                                  |
+| Finnish  | 0.69 (0.51–0.83)  | 0.7 pt           | 99%                                                   |
+| German   | 0.06 (−0.03–0.15) | 0.4 pt           | 52%                                                   |
 
 A 0.02 damage drop therefore means about 1 pt of CER in English, Swedish and Finnish, and more in French, where 0.02 is conservative. In Finnish it means under 1 pt.
 
@@ -59,6 +68,8 @@ The same rho at three units, diplomatic CER (crops: 3,066 German, 3,096 English 
 | German   | 0.11     | 0.06     | 0.07      |
 
 The CER drop at 0.02 is 0.8, 1.5, 0.8, 0.4 and 0.3 pt at crop level (English, French, Swedish, Finnish, German) and 1.2, 2.2, 1.1, 0.7 and 0.2 pt at chunk level. The tables for every unit, scoring and measure, including the share of unknown words, are in the closed PR's `data/tables.md`.
+
+![CER drop implied by a 0.02 damage drop, by language and unit: about 1 point in English, Swedish and Finnish, more in French, and under half a point in German.](figures/implied-cer.svg)
 
 ### Why German fails
 
@@ -86,12 +97,22 @@ The first run of `quality_gain.py` (#1846, closed PR #1850) covered 23,986 pages
 - The German rho shows up in production. German 1890 had no estimated-CER gain (0.003 over 187 pairs), and German 1900 was worse (-0.054 over 1,167 pairs), while damage gained in both (0.147 and 0.130).
 - The serving version `pages-v20261026-1` had replaced LoC's text on 21,290 of the 25,846 re-read pages it considered, 20,652 of them German.
 
+![Mean damage drop and estimated-CER gain by cell in the production snapshot: the worst band gained 0.137 in damage, and German 1890 and 1900 gained 0.147 and 0.130 in damage but about 0 and -0.054 in estimated CER.](figures/production.svg)
+
 ## Limits
 
 - Engines against engines: LoC's text, the production baseline, is in the English sets only.
 - English is 28 pages from two collections; French, Finnish and Swedish are 20–22 pages each from European libraries.
 - Page pairs, not 374-page cells: the rule's cell mean is not tested directly.
 - The thresholds are matched to damage's selectivity on these sets, so they inherit the sets' mix of readers.
+
+## Conclusion
+
+On pages with human truth, a drop in damage is a trustworthy sign of a real CER drop for English, French, Swedish and Finnish, and not for German. `lm_oov` agrees with CER better overall (rho 0.65 against 0.48), but the gain is nearly all German, where it is still imperfect, and it is worse than damage on Finnish. We are fairly sure of the language-level pattern, less sure of the exact thresholds: the truth is 20 to 28 pages per language outside German, and the thresholds were fitted after the fact.
+
+- Keep the damage rule at 0.02 for the four non-German languages, and report `lm_oov` beside it.
+- Keep German held until a gold-calibrated German test exists.
+- Add more truth pages, above all held-out Chronicling America English, before any `lm_oov` rule is set.
 
 ## Reproducing
 

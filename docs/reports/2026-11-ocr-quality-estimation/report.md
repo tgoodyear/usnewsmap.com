@@ -1,18 +1,36 @@
 # OCR quality without human truth (13 Nov 2026)
 
+
 We want to know, language by language, whether a reader (Qwen 3-VL 8B, Xiaomi-OCR-0, Tesseract) beats LoC's OCR where no human transcription exists: Serbian, Czech, Polish, Russian, Spanish, Yiddish and others. Typed transcription is ruled out. This report tests reference-free measures against true CER on the truth sets we have, then applies the best one to the unlabelled Qwen and LoC crops. The second part is proxy evidence, not measured accuracy.
 
 ## Summary
 
-- **Best measure:** `lm_oov`, a character 5-gram model's bits per character plus the out-of-lexicon rate against a full lexicon (wordfreq plus Hunspell), each scaled by its truth-set standard deviation. Over all truth sets its Spearman rho with CER is 0.58 per crop and 0.60 per page. The production damage rate gets 0.41 and 0.33, and the top-5,000 unknown share 0.36 and 0.36.
-- **Paired decisions:** given two readings of the same crop whose CER differs by at least 1 point, `lm_oov` picks the better one 85% of the time in English, 97% in French, 87% in Finnish, 92% in Swedish and 77% in German.
-- **Per-language verdicts on truth:** in 31 of 34 language and reader-pair cases, the reader `lm_oov` prefers on most crops is the one that truly wins most crops. All three misses have 2–4 decisive crops. The measure exaggerates the winner's share (German, Qwen against Tesseract PSM 3: true 58%, proxy 78%).
-- **VLM against LoC:** in en-op, LoC beats Qwen by 1 point or more on 35 of 324 crops. Every measure misses most of those (balanced accuracy 0.57–0.60). Qwen's losing readings are fluent and a median 14% longer than the reference: it adds text, probably from just outside the crop. A rate-based measure can show that LoC's text is bad. It can't show that a VLM's text is faithful.
-- **Transfer fails for German and is marginal for Finnish.** No decision margin reaches 90% in German. A margin chosen on the other languages gives 81% in German, 88% in Finnish, and 93–99% in English, French and Swedish.
-- **Confusion weighting doesn't help.** Counting only near-misses through common OCR confusions correlates worse with CER per crop than counting any near-miss, in every language.
-- **Unlabelled crops (proxy):** `lm_oov` prefers Qwen on 93–97% of crops in Czech, Slovene, French, Norwegian, Danish and Serbian (both scripts), on 77% in Spanish and 73% in Polish, where Qwen returns no word on 10–12% of crops, and on 22% in Yiddish, where 37% of Qwen's readings are only the illegible marker `[?]`. No language meets the proposed evidence rule yet. The binding limit is breadth: the Qwen crops come from 1 Serbian title, 2 Slovene, 5 Czech and 9 French. Nothing can replace LoC on proxy evidence alone.
-- **Wikisource:** as character-model training text it changes no verdict and doesn't fix German (paired accuracy 0.77 with every training text). Used alone it raises the character model's paired accuracy by 5–6 points in English, Finnish and Swedish. As truth it is not usable: none of the seven gap-language wikis has validated newspaper pages in 1880–1930.
-- **Outcome:** `oov` (full lexicon), `charlm_bpc`, `lm_oov`, the omission guard's word count and a no-words flag shipped in `usnm_quality` as `qe-v1` (see [ocr/qe/README.md](../../../ocr/qe/README.md)). The confusion-weighted near-miss, garbage and script-mix ideas were dropped. XLM-R pseudo-perplexity matched `lm_oov` on the same sample (paired accuracy 0.88 against 0.87) at about 2.5 s per reading on two CPU threads, so it was not built as a BOINC app.
+**Question.** When a language has no human-typed reference text, can a score computed from the OCR text alone tell us which reader is better, LoC's OCR or a candidate such as Qwen? usnewsmap.com needs this to decide where to replace LoC's text without paying for transcription. CER (character error rate: share of characters wrong) is the yardstick, measured only on the sets where we do have typed truth.
+
+**Hypothesis.** We expected that a mix of two signals would track CER best: how many words are missing from a full dictionary, and how unlikely the letter sequences are under a language model trained on period text (`lm_oov`). We expected both to beat the existing damage rate. No decision rule was pre-registered for the measures. The `lm_oov` recipe was chosen from the first comparison, and the "over-read" rule for Qwen (below) was found after looking at the data, so both are post-hoc. The 90% bar in the transfer test was set as a design choice.
+
+**Answer.** The hypothesis held for ranking readers, and failed for one case that matters. `lm_oov` correlates with true CER at rho 0.58 per crop (Spearman rank correlation, 1.0 is perfect) against 0.41 for the damage rate. Given two readings of the same crop that differ by at least 1 CER point, it picks the better one 83% of the time overall, from 77% in German to 97% in French. The failure is the VLM (vision-language model, here Qwen) against LoC: LoC is truly better on 35 of 324 English crops, and on those pairs `lm_oov`'s balanced accuracy is 0.57, barely above the 0.50 of a coin toss (against 0.80 when the rival is Tesseract). Qwen's losing readings are fluent text, a median 14% longer than the reference, so a rate-based score cannot see them. Used on a language it was not tuned on, `lm_oov` reaches 88% in Finnish and 81% in German, short of the 90% bar. On unlabelled crops it prefers Qwen on 93-97% of crops in six languages (Czech, Slovene, French, Norwegian, Danish and Serbian, the last in both scripts), but no language yet meets the evidence rule.
+
+**What it means.**
+
+- Proxy scores can show that LoC's text is bad. They cannot show that a VLM's text is faithful. Replacing LoC needs a human blind pick on top (the #1896 task, step 6 of the [evidence rule](#evidence-rule-for-1922)).
+- `qe-v1` (`oov`, `charlm_bpc`, `lm_oov`, the omission guard, a no-words flag) is shipped in `usnm_quality`. The damage rate stays only for worst-first campaigns.
+- Still open: breadth (the Qwen crops come from 1 Serbian title, 2 Slovene, 5 Czech and 9 French), Fraktur and historical spelling (German fails transfer), and Cyrillic and Hebrew script, where there is no truth at all.
+
+![Eleven measures ranked by rank correlation with true CER per crop, with paired accuracy on pairs differing by 1 CER point or more. lm_oov, the combination of dictionary misses and character-model surprise, is the best measure that was run on all the data. XLM-R (mlm_pppl) is slightly higher but was run on a sample only. The production damage rate is near the bottom.](figures/measures.svg)
+
+*Figure 1. Correlation with CER (left) and paired accuracy (right) for the 11 measures, all truth sets pooled. Orange is the chosen measure, grey the two existing production scores.*
+
+![Accuracy of lm_oov on a held-out language when the decision margin is chosen on the other languages. English, French and Swedish clear the 90% bar. Finnish (0.88) and German (0.81) do not.](figures/transfer.svg)
+
+*Figure 2. Leave-one-language-out transfer. A language with no truth would need to clear the dashed 90% line. Finnish and German do not.*
+
+![Accuracy and balanced accuracy of lm_oov, charlm_bpc and unknown on English pairs. Against Tesseract, balanced accuracy is 0.76 to 0.80. Against Qwen 8B it is 0.57 to 0.60, close to the 0.50 chance line, although accuracy is 0.88 to 0.89.](figures/vlm-blind-spot.svg)
+
+*Figure 3. The VLM blind spot, from [Per reader pair](#per-reader-pair). Accuracy looks high against Qwen 8B only because LoC is truly better on just 0.11 of the pairs; balanced accuracy, which weights both outcomes equally, is near chance. Against Tesseract the measures work.*
+
+Other findings, each with its section below: confusion-weighted near-misses did worse than plain ones in every language; Wikisource as character-model text changes no verdict and does not fix German, and it has no validated 1880-1930 newspaper pages to use as truth; XLM-R matched `lm_oov` on a sample (0.88 against 0.87) at about 2.5 s of CPU per reading, so it was not built as a BOINC app.
+
 
 ## Literature
 
@@ -289,6 +307,14 @@ Left out: confusion-weighted near-misses (worse than plain near-misses in every 
 - **Known limitations of the scripts: near-miss index.** The near-miss count in `qe_lib.py` uses a one-deletion index, which for words of seven or more letters misses some distance-2 neighbours (two substitutions far apart), so some near-misses count as novel words. `qe-v1` does not share this: the near-miss measure was dropped and the shipped measures (`oov`, `charlm_bpc`, `lm_oov`, the guard, `no_words`) do not use it.
 - **Crop sample, not pages.** Unlabelled verdicts cover the quality campaigns' sampled crops, up to 6,000 per language, not whole pages.
 - **The over-read rule is in-sample.** It was found and scored on the same 35 en-op crops.
+
+## Conclusion
+
+A dictionary-miss rate combined with a period character model (`lm_oov`) is a usable, cheap way to rank two readers of the same text without human truth: rho 0.58 with CER and 83% paired accuracy, against 0.41 and 70% for the old damage rate. We are fairly sure of this in English, French, Finnish and Swedish, and less sure in German, where it fails transfer. We are not sure at all that it protects against a VLM adding plausible text: on the 35 crops where LoC beats Qwen it is little better than chance (balanced accuracy 0.57), and the one rule that helps was fitted on those same crops. The unlabelled results show Qwen far ahead of LoC in six languages, but that is evidence that LoC is poor, not that Qwen is right.
+
+- Use `lm_oov` to decide where a human pick task is worth running, not to replace LoC.
+- Collect more titles for Serbian, Slovene and Czech, and a Fraktur and a Cyrillic truth set, before relaxing the evidence rule.
+- Check the Spanish and Polish crops where Qwen returns no word (10-12%).
 
 ## References
 
