@@ -1,4 +1,4 @@
-//! The pairwise apps of `cloud validatord`: `usnm_ndlocr` and `usnm_quality`. Dev only.
+//! The pairwise apps of `cloud validatord`: `usnm_ndlocr`, `usnm_quality` and `usnm_ocr`. Dev only.
 //!
 //! These apps have an init script and a compare script under stock `script_validator`, so the
 //! reply uses the server's `matches` form (cloud-boinc `cloud/docs/architecture.md`, "Webhook
@@ -14,6 +14,11 @@
 //!   in request order, each compared (candidate first) with every other usable result; the loop
 //!   stops at the first candidate with at least `min_quorum / 2` matches. `check_pair`: each late
 //!   result compared (late first) with the canonical result, and no other pair.
+//! * `usnm_ocr` has no stock script: on-prem it runs at quorum 1 with the trivial validator and
+//!   checks hosts by trust spot checks. Here its init is the integrity part of `checked_result`
+//!   (see `ocr_init`); its compare is the spot checks' own text measure,
+//!   `host_trust::container_spot::outside`, at the limits of [`Kind::OCR_LIMITS`], behind cheap
+//!   bounds (see `ocr_match`). A failing init is `invalid`, never a retry.
 //! * Side effects (quality only; ndlocr has none): `check --keep` copies, under `quality/seen/`
 //!   in the state store, and each `compare --log` line as its own object,
 //!   `quality/pairs/<key>.json`, where the key is a digest of the call id and the two results.
@@ -23,6 +28,7 @@
 //!   cloud server (dev only)".
 use super::{Config, Request, Res};
 use crate::cloud::pull::{self, OutFile};
+use crate::host_trust::container_spot::{self, Limits};
 use crate::quality::validate as quality_validate;
 use anyhow::{bail, ensure, Context};
 use serde_json::{json, Value};
@@ -30,24 +36,36 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
+use tokio::sync::Semaphore;
 use usnm_ocr_contract::{boinc as ocr_boinc, quality as ocr_quality};
+use usnm_ocr_local::checks;
 
 /// The apps with an init script and a compare script (the `matches` reply).
-pub const PAIRWISE_APPS: [&str; 2] = ["usnm_ndlocr", "usnm_quality"];
+pub const PAIRWISE_APPS: [&str; 3] = ["usnm_ndlocr", "usnm_quality", "usnm_ocr"];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Ndlocr,
     Quality,
+    Ocr,
 }
 
 impl Kind {
+    /// The limits two `usnm_ocr` results may differ by and still match: `container_spot::CROSS`,
+    /// the most lenient of the spot checks' families (`STRICT` for two hosts of one family,
+    /// `CROSS` for an arm64 host against an amd64 one). A pairwise call sees the results, not
+    /// the hosts' families, so any two hosts may be a cross-family pair; judging every pair by
+    /// `STRICT` would reject a legitimate arm64/amd64 pair that the spot checks accept. Text
+    /// within these limits is enough: `layout.xml` is not compared.
+    const OCR_LIMITS: Limits = container_spot::CROSS;
+
     fn of(app: &str) -> Option<Kind> {
         match app {
             "usnm_ndlocr" => Some(Kind::Ndlocr),
             "usnm_quality" => Some(Kind::Quality),
+            "usnm_ocr" => Some(Kind::Ocr),
             _ => None,
         }
     }
@@ -60,6 +78,12 @@ impl Kind {
                 ocr_boinc::MAX_ALTO,
                 ocr_boinc::MAX_JSON,
             ],
+            // The usnm_ocr_out template: text.txt, layout.xml, result.json.
+            Kind::Ocr => [
+                ocr_boinc::MAX_TEXT,
+                ocr_boinc::MAX_ALTO,
+                ocr_boinc::MAX_JSON,
+            ],
             Kind::Quality => [
                 ocr_quality::MAX_RESULT_JSON,
                 ocr_quality::MAX_CONFUSIONS,
@@ -68,10 +92,12 @@ impl Kind {
         }
     }
 
-    /// The init script: exit 0 or not.
-    fn init(self, files: &[PathBuf]) -> anyhow::Result<()> {
+    /// The init script: exit 0 or not. `workunit` is the workunit's name, which `usnm_ocr` ties
+    /// its result to.
+    fn init(self, files: &[PathBuf], workunit: &str) -> anyhow::Result<()> {
         match self {
             Kind::Ndlocr => crate::ndlocr::load(files).map(|_| ()),
+            Kind::Ocr => ocr_init(files, workunit),
             Kind::Quality => {
                 quality_validate::check(files, None)?;
                 // `--keep` names the copy after the uploaded result.json and refuses an odd name.
@@ -91,6 +117,10 @@ impl Kind {
     ) -> anyhow::Result<(bool, Option<Vec<u8>>)> {
         match self {
             Kind::Ndlocr => Ok((crate::ndlocr::compare(a, b).is_ok(), None)),
+            Kind::Ocr => {
+                let (a, b) = (text_of(&a[0])?, text_of(&b[0])?);
+                Ok((ocr_match(&a, &b), None))
+            }
             Kind::Quality => {
                 let verdict = quality_validate::compare(a, b, Some(line));
                 match std::fs::read(line) {
@@ -103,6 +133,97 @@ impl Kind {
             }
         }
     }
+}
+
+fn read_capped(path: &Path, cap: usize) -> anyhow::Result<Vec<u8>> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    ensure!(
+        bytes.len() <= cap,
+        "{} is over its size limit",
+        path.display()
+    );
+    Ok(bytes)
+}
+
+/// The longest text, in characters, that the `usnm_ocr` compare measures. `outside` aligns the two
+/// texts, which costs about the product of their lengths, and a call has a time limit; real
+/// newspaper pages are far smaller. A longer pair is no match, not an error: the server then asks
+/// for another result.
+pub(super) const OCR_COMPARE_MAX_CHARS: usize = 200_000;
+
+/// The init script of `usnm_ocr`: what `checked_result` (`usnm-boinc import`) checks of a result
+/// that does not need the job. `result.json` parses as the contract's `ResultManifest` with an
+/// RFC 3339 `completed_at`; `text.txt` is UTF-8 and `layout.xml` valid ALTO (`checks::check_alto`,
+/// as `checked_result` calls it), each within its read limit; and `text_sha256` and `alto_sha256`
+/// are the digests of those two files.
+///
+/// Provenance: the webhook names the workunit but carries no input files, so the job
+/// (`<id>_request_json`) is not at hand and `ResultManifest::matches` cannot run. Instead
+/// `job_id` must be the id that `cloud submit` put in the workunit's name (`Job::workunit`:
+/// `usnm_<id>`). The scan, engine and version checks of `matches` are done on import, by
+/// `checked_result`, which holds the job's record.
+fn ocr_init(files: &[PathBuf], workunit: &str) -> anyhow::Result<()> {
+    let [text, alto, result] = files else {
+        bail!("expected text, layout and result files");
+    };
+    let manifest: ocr_boinc::ResultManifest =
+        serde_json::from_slice(&read_capped(result, ocr_boinc::MAX_JSON)?)
+            .context("result.json is not a usnm_ocr result")?;
+    chrono::DateTime::parse_from_rfc3339(&manifest.completed_at)
+        .context("completed_at is not RFC 3339")?;
+    ensure!(
+        workunit == format!("usnm_{}", manifest.job_id),
+        "result.json is for another job than this workunit"
+    );
+    let text = read_capped(text, ocr_boinc::MAX_TEXT)?;
+    let alto = read_capped(alto, ocr_boinc::MAX_ALTO)?;
+    ensure!(
+        manifest.text_sha256 == ocr_boinc::sha256(&text)
+            && manifest.alto_sha256 == ocr_boinc::sha256(&alto),
+        "output checksum mismatch"
+    );
+    std::str::from_utf8(&text).context("text.txt is not UTF-8")?;
+    checks::check_alto(&alto).map_err(|r| anyhow::anyhow!("{}", r.code()))?;
+    Ok(())
+}
+
+/// Whether two `usnm_ocr` texts match: equal, or within [`Kind::OCR_LIMITS`] by `outside`.
+/// The cheap tests come first and bound the cost of `outside`: equal bytes match; a text over
+/// [`OCR_COMPARE_MAX_CHARS`] (raw characters) does not; nor do normalised lengths outside the
+/// ratio limits.
+///
+/// The measure is symmetric here. `outside` normalises both texts (as the gold set's are) and
+/// takes the replay's normalised length over the original's, so the text that is shorter after
+/// normalising is always passed as the original: the ratio is then at least 1 and only
+/// `max_ratio` binds, whichever result was the candidate, and whitespace that normalising drops
+/// changes neither the order nor the ratio. Both orders of a pair give one answer.
+fn ocr_match(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    if a.chars().count().max(b.chars().count()) > OCR_COMPARE_MAX_CHARS {
+        return false;
+    }
+    let norm = |t: &str| usnm_ocr_quality::text::normalize(t, false).chars().count();
+    let (na, nb) = (norm(a), norm(b));
+    let (short, long, ns, nl) = if (na, a) <= (nb, b) {
+        (a, b, na, nb)
+    } else {
+        (b, a, nb, na)
+    };
+    let limits = &Kind::OCR_LIMITS;
+    if ns == 0 {
+        return nl == 0;
+    }
+    if (nl as f64 / ns as f64) > limits.max_ratio || (ns as f64 / nl as f64) < limits.min_ratio {
+        return false;
+    }
+    container_spot::outside(limits, short, long).is_none()
+}
+
+/// The text of a `usnm_ocr` result: `text.txt`, which must be UTF-8.
+fn text_of(path: &Path) -> anyhow::Result<String> {
+    String::from_utf8(read_capped(path, ocr_boinc::MAX_TEXT)?).context("text.txt is not UTF-8")
 }
 
 enum Fetched {
@@ -165,13 +286,22 @@ pub(super) async fn evaluate(cfg: &Config, req: &Request) -> anyhow::Result<(Val
         check_pair: req.mode == "check_pair",
         min_quorum: req.workunit.min_quorum,
         canonical: req.canonical_result_id,
+        workunit: req.workunit.name.clone(),
         work: work.path().to_owned(),
     };
     // The blocking part owns the work directory, so a call cut off by the timeout cannot have
     // its files removed from under a side effect that is still being written.
+    // The permit is moved in too: a timed-out call's blocking work goes on, and holds its place
+    // among at most one per CPU until it ends, so such work cannot pile up.
+    let permit = blocking_limiter()
+        .clone()
+        .acquire_owned()
+        .await
+        .context("the validation limiter")?;
     let keep = work.clone();
     let judged = tokio::task::spawn_blocking(move || {
         let _keep = keep;
+        let _permit = permit;
         judge(kind, &call, items)
     })
     .await
@@ -206,11 +336,22 @@ pub(super) async fn evaluate(cfg: &Config, req: &Request) -> anyhow::Result<(Val
     Ok((json!({ "results": out, "matches": matches }), all_final))
 }
 
+/// At most one blocking judge per CPU runs at once, across calls.
+fn blocking_limiter() -> &'static Arc<Semaphore> {
+    static LIMIT: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    LIMIT.get_or_init(|| {
+        let n = std::thread::available_parallelism().map_or(1, |n| n.get());
+        Arc::new(Semaphore::new(n))
+    })
+}
+
 struct Call {
     id: String,
     check_pair: bool,
     min_quorum: i64,
     canonical: Option<i64>,
+    /// The workunit's name.
+    workunit: String,
     /// This call's scratch directory: the fetched files, the compare's log line, and the seen
     /// copies before they are stored.
     work: PathBuf,
@@ -240,7 +381,7 @@ fn judge(kind: Kind, call: &Call, items: Vec<(i64, Usable)>) -> anyhow::Result<J
         results.push(match u {
             Usable::Retry => (id, None, Verdict::Retry),
             Usable::Invalid => (id, None, Verdict::Invalid),
-            Usable::Files(p) => match kind.init(&p) {
+            Usable::Files(p) => match kind.init(&p, &call.workunit) {
                 Ok(()) => (id, Some(p), Verdict::Readable),
                 Err(_) => (id, None, Verdict::Invalid),
             },

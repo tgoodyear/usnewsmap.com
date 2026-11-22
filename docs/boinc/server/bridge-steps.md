@@ -362,8 +362,8 @@ WantedBy=timers.target
 ## Validate gold results for the cloud server (dev only)
 
 `usnm-boinc cloud validatord` is the validation webhook the cloud BOINC server calls for an app whose `validator_url`
-points at it. It serves the gold apps (`usnm_gold`, `usnm_gold_native`) with a fingerprint reply, and `usnm_ndlocr` and
-`usnm_quality` with the server's pairwise `matches` reply (below). `usnm_qwen` is not served yet. It is for the dev cloud
+points at it. It serves the gold apps (`usnm_gold`, `usnm_gold_native`) with a fingerprint reply, and `usnm_ndlocr`,
+`usnm_quality` and `usnm_ocr` with the server's pairwise `matches` reply (below). `usnm_qwen` is not served yet. It is for the dev cloud
 server only: nothing in the running bridge or the stock validators calls it, nothing is installed, and no tunnel is configured.
 
 It is not in any default build: no worker image, native app or bridge image build passes the feature, so their `usnm-boinc`
@@ -414,9 +414,9 @@ usnm-boinc cloud validatord --secret-file <webhook token> --state-url <dir or r2
   is cut off after `--timeout-secs` (15, covering the wait behind a duplicate as well as the work; the server's `<webhook_timeout_secs>` is 20 by default) with a 503 the server
   counts as a failed call.
 
-### The pairwise apps: `usnm_ndlocr` and `usnm_quality`
+### The pairwise apps: `usnm_ndlocr`, `usnm_quality` and `usnm_ocr`
 
-These two apps run an init script and a compare script under stock `script_validator`. The service answers a call with a
+`usnm_ndlocr` and `usnm_quality` run an init script and a compare script under stock `script_validator`; `usnm_ocr` has none (see the last bullet). The service answers a call with a
 verdict per result (`invalid`, `retry`, or only the `id` for a readable result) and a top-level `matches` list of
 `[id, id]` pairs, never a fingerprint (the server rejects both together).
 
@@ -431,6 +431,20 @@ verdict per result (`invalid`, `retry`, or only the `id` for a readable result) 
   each late result (first argument) against the canonical result, and no other pair. A compare that errors is no match.
   The server decides valid and invalid from the pairs, as stock does (D39 and D41 in cloud-boinc
   `cloud/docs/compatibility.md`).
+- `usnm_ocr` is new here: on-prem it runs at quorum 1 with the stock trivial validator and relies on trust spot checks,
+  so there is no stock script to copy. The service gives it a real compare so the cloud server can run it at quorum 2
+  (`src/cloud/validatord/pairwise.rs`, `Kind::Ocr`). Init: `result.json` parses as the contract's
+  `usnm_ocr_contract::boinc::ResultManifest` with an RFC 3339 `completed_at`; its `job_id` is the one the workunit's name
+  carries (`usnm_<id>`; the webhook has no input files, so the job itself is not checked here, and `checked_result` checks
+  the scan, engine and version on import); `text_sha256` and `alto_sha256` are the digests of `text.txt` and `layout.xml`;
+  `text.txt` is UTF-8 and `layout.xml` is valid ALTO (`checks::check_alto`), each file within its read limit (`caps`, from the
+  `usnm_ocr_out` template: text, layout, result). A failing init is `invalid`. Compare: equal texts match; otherwise the
+  character counts must be within the `container_spot::CROSS` length ratio and the longer text at most 200,000 characters
+  (`OCR_COMPARE_MAX_CHARS`), else no match; then the two `text.txt` files are judged by
+  `outside` in `src/host_trust/container_spot.rs` at the limits of `container_spot::CROSS`, the most lenient family
+  limits, because a pairwise call does not know the hosts' families and any pair may be an arm64 host against an
+  amd64 one. The shorter text is always the original, so the result does not depend on the order. The blocking part of
+  every pairwise call holds a permit of a process-wide limit of one per CPU until it ends, even after a timeout. `layout.xml` is not compared. The compare leaves no log line and no file.
 - A request for these apps needs `mode`, `workunit.min_quorum` and, for `check_pair`, a `canonical_result_id` among the
   results; otherwise it is a 400.
 - Any `retry` in a `check_set` call means no comparison is run and no side effect is recorded: the server ignores
