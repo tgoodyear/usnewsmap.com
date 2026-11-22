@@ -7,25 +7,32 @@
 # root with az signed in to the environment's subscription; the host installs it as
 # /etc/usnm/ingest.env (home-infra scripts/lab/batch-ct-ingest.sh --env-file -).
 #
-#   scripts/onprem/ingest-env.sh --env prod > ingest.env
-#   scripts/onprem/ingest-env.sh --env prod | ssh root@<proxmox host> /root/batch-ct-ingest.sh --env-file -
+#   scripts/onprem/ingest-env.sh --env prod --curated DIR > ingest.env
+#   scripts/onprem/ingest-env.sh --env prod --curated DIR | ssh root@<proxmox host> /root/batch-ct-ingest.sh --env-file -
+#
+# --curated DIR (required) is the host's local copy of curated, an absolute directory as
+# the container sees it: on-prem jobs never read curated from the lake, whose egress is
+# billed.
 #
 # Nothing in it is a secret: every store takes Entra tokens only (the host's Arc
 # identity), and the Application Insights component refuses ingestion without one, so
 # its connection string names the component and nothing more. No AZURE_CLIENT_ID: the
 # Arc identity is the machine's own.
 set -euo pipefail
-usage() { sed -n '2,16s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '2,20s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 die() { echo "error: $*" >&2; exit 1; }
-ENV_NAME=""
+ENV_NAME="" CURATED=""
 while [ $# -gt 0 ]; do
   case $1 in
     --env) [ $# -ge 2 ] || usage; ENV_NAME=$2; shift 2 ;;
+    --curated) [ $# -ge 2 ] || usage; CURATED=$2; shift 2 ;;
     -h|--help) usage ;;
     *) echo "error: unexpected \"$1\"" >&2; usage ;;
   esac
 done
 [ -n "$ENV_NAME" ] || usage
+[ -n "$CURATED" ] || die "--curated DIR: the host's local copy of curated (on-prem jobs don't read curated from the lake)"
+[[ $CURATED == /* ]] || die "--curated: an absolute directory, not \"$CURATED\""
 cd "$(dirname "$0")/../.."
 # shellcheck source=scripts/lib/env.sh
 . scripts/lib/env.sh
@@ -47,7 +54,7 @@ line() {
 }
 echo "# usnm-ingest's settings for $ENV_NAME, written by scripts/onprem/ingest-env.sh on $(date -u +%Y-%m-%dT%H:%MZ)."
 line USNM_COSMOS_ENDPOINT "$cosmos"
-line USNM_CURATED_URL "${blob}curated"
+line USNM_CURATED_URL "$CURATED"
 line USNM_REFERENCE_URL "${blob}reference"
 line RUST_LOG info
 line APPLICATIONINSIGHTS_CONNECTION_STRING "$(aget APPLICATIONINSIGHTS_CONNECTION_STRING)"

@@ -50,6 +50,8 @@ class ReleaseRecordTest(unittest.TestCase):
         self.run_dir = os.path.join(self.tmp.name, "run")
         self.reference = os.path.join(self.run_dir, "reference")
         os.makedirs(self.reference)
+        self.curated = os.path.join(self.tmp.name, "curated")
+        os.makedirs(self.curated)
         self.log = os.path.join(self.tmp.name, "calls.jsonl")
         self.stub = os.path.join(self.tmp.name, "usnm-ingest")
         with open(self.stub, "w") as f:
@@ -65,7 +67,8 @@ class ReleaseRecordTest(unittest.TestCase):
 
     def run_script(self, *args, env=None):
         base = {k: v for k, v in os.environ.items() if not k.startswith(("USNM_", "STUB_"))}
-        base.update(USNM_INGEST=self.stub, USNM_LAKE=LAKE, USNM_INDEX_ACCOUNT=INDEX_ACCOUNT, STUB_LOG=self.log)
+        base.update(USNM_INGEST=self.stub, USNM_LAKE=LAKE, USNM_INDEX_ACCOUNT=INDEX_ACCOUNT,
+                    USNM_CURATED=self.curated, STUB_LOG=self.log)
         base.update(env or {})
         return subprocess.run([SCRIPT, "--run-dir", self.run_dir, *args], env=base, text=True, capture_output=True)
 
@@ -75,8 +78,9 @@ class ReleaseRecordTest(unittest.TestCase):
         with open(self.log) as f:
             return [json.loads(line) for line in f]
 
-    def lake_curated(self):
-        return "https://%s.blob.core.windows.net/curated" % LAKE
+    def local_curated(self):
+        # The local copy of curated: releases never read it from the lake.
+        return self.curated
 
     def test_publish_records_the_run_after_the_copy(self):
         done = self.run_script("--step", "publish", "--cosmos-endpoint", ENDPOINT)
@@ -86,7 +90,7 @@ class ReleaseRecordTest(unittest.TestCase):
         copy, record = calls
         self.assertEqual(
             copy["argv"],
-            ["--state-file", self.run_dir + "/state.json", "--curated", self.lake_curated(),
+            ["--state-file", self.run_dir + "/state.json", "--curated", self.local_curated(),
              "--reference", self.reference, "publish-staged", "--local-index-root", self.run_dir + "/qw",
              "--to-reference", "https://%s.blob.core.windows.net/reference" % LAKE,
              "--to-index", "https://%s.blob.core.windows.net/qw-index" % INDEX_ACCOUNT],
@@ -94,7 +98,7 @@ class ReleaseRecordTest(unittest.TestCase):
         # Cosmos only: no state file, and no --current (the host has no role on ops).
         self.assertEqual(
             record["argv"],
-            ["--cosmos", ENDPOINT, "--curated", self.lake_curated(), "--reference", self.reference,
+            ["--cosmos", ENDPOINT, "--curated", self.local_curated(), "--reference", self.reference,
              "import-staged-run", "--version", VERSION],
         )
 
