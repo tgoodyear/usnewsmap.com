@@ -623,6 +623,54 @@ async fn manifest(dir: &Path) -> PathBuf {
     p
 }
 
+/// While the host's global pacer is slowed a run doesn't start: it asks LoC nothing,
+/// writes no status, and ends as `NotStarted` (`main` exits 75 on it for the fetch queue).
+/// The slow-down ends on its own, and then nothing holds a run back.
+#[tokio::test]
+async fn a_slowed_global_pacer_means_not_starting() {
+    let dir = tempfile::tempdir().unwrap();
+    let times = Arc::new(Mutex::new(Vec::new()));
+    let hits = Arc::new(AtomicUsize::new(0));
+    let root = fake_loc(times, hits.clone()).await;
+    let pacer = dir.path().join("pacer.json");
+    let g = crate::loc::global::GlobalPacer::new(pacer.clone());
+    g.slow_down("HTTP 503 (challenge page)");
+    let loc = Arc::new(
+        LocClient::new(LocConfig {
+            global_pacer: Some(pacer.clone()),
+            api_root: root.clone(),
+            iiif_root: format!("{root}/iiif/"),
+            storage_root: format!("{root}/storage-services/service/ndnp/"),
+            batches_root: format!("{root}/data/batches/"),
+            ..LocConfig::default()
+        })
+        .unwrap(),
+    );
+    let out = dir.path().join("scans");
+    let opts = Options {
+        manifest: manifest(dir.path()).await,
+        out: out.clone(),
+        size: ImageSize::Pct(50),
+        ..Options::default()
+    };
+    let (_tx, rx) = watch::channel(false);
+    let e = run(opts, Arc::clone(&loc), rx).await.unwrap_err();
+    let ns = e
+        .downcast_ref::<crate::loc::global::NotStarted>()
+        .expect("a NotStarted");
+    let until = ns.0.until().expect("an end time");
+    assert_eq!(
+        e.to_string(),
+        format!("LoC pacer slowed until {until} (HTTP 503 (challenge page)); not starting")
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+    assert!(!out.exists(), "nothing written");
+    let mut st = g.state().unwrap();
+    st.slowed.as_mut().unwrap().until_ms = Some(1);
+    std::fs::write(&pacer, serde_json::to_vec(&st).unwrap()).unwrap();
+    assert!(loc.slowed().unwrap().is_none());
+}
+
 #[tokio::test]
 async fn fetches_paced_honours_retry_after_and_resumes() {
     let dir = tempfile::tempdir().unwrap();

@@ -11,6 +11,7 @@ use tokio::sync::watch;
 use usnm_ocr_worker::cache::CachedScans;
 use usnm_ocr_worker::contract::{ContractEngine, ContractOptions, Launch};
 use usnm_ocr_worker::engine::{Engine, Limits, Remote, Runner, Tesseract, TesseractOptions};
+use usnm_ocr_worker::loc::global::NotStarted;
 use usnm_ocr_worker::loc::{ImageSize, LocClient, LocConfig, STORAGE_SERVICE_ROOT};
 use usnm_ocr_worker::message::{OcrMessage, Reason};
 use usnm_ocr_worker::prefetch;
@@ -1194,9 +1195,15 @@ async fn main() -> std::process::ExitCode {
         _ => None,
     };
     let telemetry = telemetry::init(node);
+    let not_started = not_started_code(&cli.command);
     let result = command(cli).await;
     let code = match &result {
         Ok(()) => std::process::ExitCode::SUCCESS,
+        // A LoC job that didn't start while the global pacer is slowed: one line, no failure.
+        Err(e) if e.downcast_ref::<NotStarted>().is_some() => {
+            tracing::info!("{e}");
+            std::process::ExitCode::from(not_started)
+        }
         Err(e) => {
             tracing::info_span!("ocr_worker_exit")
                 .in_scope(|| tracing::error!(error = format!("{e:#}"), "usnm-ocr-worker failed"));
@@ -1206,6 +1213,17 @@ async fn main() -> std::process::ExitCode {
     // Flush what's buffered before exit, on every path.
     telemetry.shutdown().await;
     code
+}
+
+/// How a LoC job that didn't start while the global pacer is slowed exits.
+/// `bulk-ocr`: 0, so its timer starts the next run as usual. `prefetch`: 75
+/// (`EX_TEMPFAIL`), so the fetch queue can tell a run that didn't start from
+/// one that finished (its status file is the last run's) and stop cleanly.
+fn not_started_code(command: &Command) -> u8 {
+    match command {
+        Command::Prefetch { .. } => 75,
+        _ => 0,
+    }
 }
 
 /// `routes check`'s profile lock: one model set per profile id (#1481).

@@ -1138,6 +1138,12 @@ pub async fn run(
     loc: Arc<LocClient>,
     stop: watch::Receiver<bool>,
 ) -> anyhow::Result<Status> {
+    // While a push-back has the host's budget slowed, the run doesn't start: it asks LoC
+    // nothing and leaves the status and the manifest as they are, and a start after the
+    // slow-down lifts runs as usual.
+    if let Some(s) = loc.slowed().context("reading the global LoC pacer")? {
+        return Err(crate::loc::global::NotStarted(s).into());
+    }
     let mut stop_main = stop.clone();
     std::fs::create_dir_all(&opts.out)
         .with_context(|| format!("creating {}", opts.out.display()))?;
