@@ -1254,7 +1254,7 @@ class ArchiveSteps(unittest.TestCase):
         self.assertEqual(json.loads(done.stdout), {"deleted": 1, "gone": 0})
         self.assertFalse((self.root / self.name).exists())
         # The hand-off lock, exclusively (no plan scope): flock -n 9 (the host's lock wait is 0).
-        self.assertEqual(self.flock_calls.read_text().splitlines(), ["-n 9"])
+        self.assertEqual(self.flock_calls.read_text().splitlines(), ["-n 8", "-n 9"])
         new = f"dispatch/jobs/{self.JOB}/record.json"
         done = self.step("archive-write", f"ARCHIVE_OBJECT={new}", "EXPECTED_HANDOFF_URL=/handoff-state",
                          stdin=b"{}", ssh=True)
@@ -1271,12 +1271,12 @@ class ArchiveSteps(unittest.TestCase):
     def test_a_change_waits_for_the_lock_as_long_as_the_caller_asks(self):
         done = self.delete([{"name": self.name, "etag": self.etag(self.name)}], lock_wait=300)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertRegex(self.flock_calls.read_text(), r"^-w [0-9]+ 9$")
+        self.assertRegex(self.flock_calls.read_text(), r"^-w [0-9]+ 8\n-w [0-9]+ 9$")
 
     def test_a_plan_scoped_change_shares_the_hand_off_lock_and_takes_its_plans_own(self):
         done = self.delete([{"name": self.name, "etag": self.etag(self.name)}], "PLAN_SCOPE=native-feed-7")
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(self.flock_calls.read_text().splitlines(), ["-n -s 9", "-n 7"])
+        self.assertEqual(self.flock_calls.read_text().splitlines(), ["-n -s 8", "-n -s 9", "-n 7"])
 
     def test_a_change_is_fenced_by_the_controllers_lock(self):
         module = self.lock()
