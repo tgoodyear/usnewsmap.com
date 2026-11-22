@@ -70,7 +70,21 @@ VALIDATE_NAMES = {0: "waiting", 1: "valid", 2: "invalid", 3: "invalid", 4: "inco
                   5: "invalid", 6: "invalid"}
 RESULT_SERIES = ("valid", "inconclusive", "invalid", "waiting", "error", "units", "elapsed_seconds",
                  "bundles")
-STEP_NAME = re.compile(r"usnm-boinc-step-[0-9]{8}T[0-9]{6}Z-([a-z0-9-]{1,40})")
+STEP_NAME = re.compile(r"usnm-boinc-step-[0-9]{8}T[0-9]{6}Z-([a-z0-9-]{1,50})")
+# The step runner ends a container's name in the process id (batch-inventory-native-feed-9-3672364),
+# so every run would be a series of its own. A process id is 4 or more digits; a plan's number
+# (native-feed-9, queue-feed-13) is not, and stays.
+PID_SUFFIX = re.compile(r"-[0-9]{4,}$")
+# onprem-step.sh names a scoped step <step>-<PLAN_SCOPE>-$$ with the pid at any width (claim-queue-
+# feed-13-998), and an unscoped one <step> alone. A numbered plan (queue-feed-13) ends in a number
+# of its own, so a name of a known step, a scope ending in a number and one more number carries a
+# pid; native-feed-9 and collect-native-feed-9 do not.
+SCOPED_STEPS = ("archive-delete", "archive-write", "batch-inventory", "claim", "collect", "container-spot",
+                "dead-letter", "export", "native-spot", "release", "spool-out", "submit-remote")
+SCOPED_PID = re.compile(r"(?:%s)-[a-z0-9][a-z0-9-]*-[0-9]+(-[0-9]+)$" % "|".join(SCOPED_STEPS))
+# The dashboard refuses a push of more series than this (the dashboard crate's throughput MAX_SERIES).
+MAX_SERIES = 256
+DYNAMIC_PREFIXES = ("step_", "phase_")
 PHASE_NAME = re.compile(r"[a-z0-9-]{1,40}")
 # The kinds of a failed tick's error, by its text up to the first colon or semicolon. A fixed list,
 # so a failure keeps its kind from one run to the next and no other text can reach a series name:
@@ -162,7 +176,27 @@ class Window:
                     if self.first + index * HOUR < start:
                         values[index] = None
 
+    def keep_largest(self, limit=MAX_SERIES):
+        """At most `limit` series, the ones with the most volume; the dashboard refuses a push
+        with more. Returns how many were dropped."""
+        dropped = len(self.series) - limit
+        if dropped <= 0:
+            return 0
+        # Every fixed series stays (bundles, results, lock_seconds, even a zero one): the
+        # dashboard reads them by name. Only the step and phase series, whose names come from the
+        # journal, are ranked, in the room the fixed ones leave.
+        dynamic = [n for n in self.series if n.startswith(DYNAMIC_PREFIXES)]
+        room = max(0, limit - (len(self.series) - len(dynamic)))
+        volume = lambda name: sum(abs(v) for v in self.series[name] if v is not None)
+        drop = set(sorted(dynamic, key=lambda name: (-volume(name), name))[room:])
+        self.series = {n: v for n, v in self.series.items() if n not in drop}
+        return len(drop)
+
     def document(self, source, limits):
+        dropped = self.keep_largest()
+        if dropped:
+            print(f"throughput-collect: {dropped} series dropped, the step and phase series with the most volume kept, within {MAX_SERIES}",
+                  file=sys.stderr)
         return {
             "schema": SCHEMA,
             "source": source,
@@ -479,6 +513,15 @@ def collect_boinc(window, rows):
         window.add(f"{apps[appid]}_elapsed_seconds", hour, seconds)
 
 
+def step_series_name(match):
+    """The step's name without the process id the runner appends."""
+    name = match[1]
+    scoped = SCOPED_PID.fullmatch(name)
+    if scoped:
+        return name[:scoped.start(1)]
+    return PID_SUFFIX.sub("", name)
+
+
 def collect_steps(window, events):
     """Each step container's run: the bridge lock is held for all of it. `events` are podman's
     start and died events, oldest first."""
@@ -497,12 +540,12 @@ def collect_steps(window, events):
         elif event["Name"] in started:
             begin = started.pop(event["Name"])
             window.spread("lock_seconds", begin, at)
-            window.spread(f"step_seconds.{match[1]}", begin, at)
-            window.add(f"step_runs.{match[1]}", at)
+            window.spread(f"step_seconds.{step_series_name(match)}", begin, at)
+            window.add(f"step_runs.{step_series_name(match)}", at)
     # The step still running holds the lock up to now.
     for name, begin in started.items():
         window.spread("lock_seconds", begin, window.now)
-        window.spread(f"step_seconds.{STEP_NAME.fullmatch(name)[1]}", begin, window.now)
+        window.spread(f"step_seconds.{step_series_name(STEP_NAME.fullmatch(name))}", begin, window.now)
 
 
 def boinc_rows(since):
