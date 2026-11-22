@@ -188,27 +188,34 @@ fn ocr_init(files: &[PathBuf], workunit: &str) -> anyhow::Result<()> {
 }
 
 /// Whether two `usnm_ocr` texts match: equal, or within [`Kind::OCR_LIMITS`] by `outside`.
-/// The cheap tests come first and bound the cost of `outside`: equal bytes match; character
-/// counts outside the ratio limits, or a longer text over [`OCR_COMPARE_MAX_CHARS`], do not.
+/// The cheap tests come first and bound the cost of `outside`: equal bytes match; a text over
+/// [`OCR_COMPARE_MAX_CHARS`] (raw characters) does not; nor do normalised lengths outside the
+/// ratio limits.
 ///
-/// The measure is symmetric here. `outside` takes the replay's length over the original's, so
-/// the shorter text is always passed as the original: the ratio is then at least 1 and only
-/// `max_ratio` binds, whichever result was the candidate. Both orders of a pair give one answer.
+/// The measure is symmetric here. `outside` normalises both texts (as the gold set's are) and
+/// takes the replay's normalised length over the original's, so the text that is shorter after
+/// normalising is always passed as the original: the ratio is then at least 1 and only
+/// `max_ratio` binds, whichever result was the candidate, and whitespace that normalising drops
+/// changes neither the order nor the ratio. Both orders of a pair give one answer.
 fn ocr_match(a: &str, b: &str) -> bool {
     if a == b {
         return true;
     }
-    let (ca, cb) = (a.chars().count(), b.chars().count());
-    let (short, long, cs, cl) = if ca <= cb {
-        (a, b, ca, cb)
+    if a.chars().count().max(b.chars().count()) > OCR_COMPARE_MAX_CHARS {
+        return false;
+    }
+    let norm = |t: &str| usnm_ocr_quality::text::normalize(t, false).chars().count();
+    let (na, nb) = (norm(a), norm(b));
+    let (short, long, ns, nl) = if (na, a) <= (nb, b) {
+        (a, b, na, nb)
     } else {
-        (b, a, cb, ca)
+        (b, a, nb, na)
     };
     let limits = &Kind::OCR_LIMITS;
-    if cl > OCR_COMPARE_MAX_CHARS
-        || (cs as f64 / cl as f64) < limits.min_ratio
-        || (cl as f64 / cs as f64) > limits.max_ratio
-    {
+    if ns == 0 {
+        return nl == 0;
+    }
+    if (nl as f64 / ns as f64) > limits.max_ratio || (ns as f64 / nl as f64) < limits.min_ratio {
         return false;
     }
     container_spot::outside(limits, short, long).is_none()

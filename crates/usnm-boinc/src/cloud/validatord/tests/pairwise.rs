@@ -1248,6 +1248,21 @@ async fn ocr_length_tolerance_is_symmetric() {
     for m in ocr_both_ways(&fx, "edge", &words(200), &words(181)).await {
         assert!(m.is_empty(), "{m:?}");
     }
+    // Raw lengths alike, normalised lengths not: 181 words padded with spaces that normalising
+    // drops are judged as 181 words, so the pair is out in every order and mode too.
+    let padded = format!(
+        "{}{}",
+        words(181),
+        " ".repeat(1199 - words(181).chars().count())
+    );
+    for m in ocr_both_ways(&fx, "pad", &words(200), &padded).await {
+        assert!(m.is_empty(), "{m:?}");
+    }
+    // Whitespace alone is no difference.
+    let spaced = words(200).replace(' ', "  ");
+    for m in ocr_both_ways(&fx, "space", &words(200), &spaced).await {
+        assert_eq!(m, BTreeSet::from([(1, 2)]));
+    }
     // A pair with a few slips matches in every order and mode.
     let text = ocr_text();
     let noisy = text.replacen("quick brown", "qu1ck brovvn", 1);
