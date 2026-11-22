@@ -24,6 +24,8 @@ param name string
 @minValue(1)
 @maxValue(365)
 param blobSoftDeleteDays int = 3
+@description('Empty curated/ with a lifecycle delete rule (USNM_RETIRE_CURATED). Only for an environment where nothing in Azure reads or writes curated, and its blobs are checked against the on-prem copy first.')
+param retireCurated bool = false
 @description('Public IPv4 addresses or CIDR ranges allowed through the firewall. Empty (the default) keeps public network access off. Storage rejects /31 and /32 ranges, so a /32 is written as the bare address.')
 param allowedIps array = []
 @description('Subnets allowed through the firewall, as resource ids; each needs a Microsoft.Storage service endpoint. With allowedIps empty too, public network access stays off.')
@@ -99,7 +101,8 @@ resource blobContainers 'Microsoft.Storage/storageAccounts/blobServices/containe
   }
 ]
 
-// Versioning is account-wide; only curated/ and reference/ need history.
+// Versioning is account-wide; only curated/ (unless retired) and reference/
+// need history.
 // searches/days/ and searches/import/ (the search log, kept indefinitely,
 // ADR-0012) match no rule here, so nothing expires them.
 resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = {
@@ -157,26 +160,44 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
             }
           }
         }
-        {
-          // Read only by curation and releases. By last access, so a
-          // rebuild's reads don't churn it. reference/, cache/ and searches/
-          // stay Hot (tiny).
-          name: 'tier-curated-cool'
-          enabled: true
-          type: 'Lifecycle'
-          definition: {
-            filters: { blobTypes: ['blockBlob'], prefixMatch: ['curated/'] }
-            actions: {
-              baseBlob: { tierToCool: { daysAfterLastAccessTimeGreaterThan: 7 } }
+        retireCurated
+          ? {
+              // USNM_RETIRE_CURATED: curation, OCR sync and releases use the
+              // on-prem copy, and nothing in Azure reads curated/. The container
+              // stays declared because runner modules grant roles on it; this
+              // keeps it empty, and soft delete holds what it removes for
+              // blobSoftDeleteDays.
+              name: 'retire-curated'
+              enabled: true
+              type: 'Lifecycle'
+              definition: {
+                filters: { blobTypes: ['blockBlob'], prefixMatch: ['curated/'] }
+                actions: {
+                  baseBlob: { delete: { daysAfterModificationGreaterThan: 0 } }
+                  version: { delete: { daysAfterCreationGreaterThan: 0 } }
+                }
+              }
             }
-          }
-        }
+          : {
+              // Read only by curation and releases. By last access, so a
+              // rebuild's reads don't churn it. reference/, cache/ and searches/
+              // stay Hot (tiny).
+              name: 'tier-curated-cool'
+              enabled: true
+              type: 'Lifecycle'
+              definition: {
+                filters: { blobTypes: ['blockBlob'], prefixMatch: ['curated/'] }
+                actions: {
+                  baseBlob: { tierToCool: { daysAfterLastAccessTimeGreaterThan: 7 } }
+                }
+              }
+            }
         {
           name: 'prune-data-versions'
           enabled: true
           type: 'Lifecycle'
           definition: {
-            filters: { blobTypes: ['blockBlob'], prefixMatch: ['curated/', 'reference/'] }
+            filters: { blobTypes: ['blockBlob'], prefixMatch: retireCurated ? ['reference/'] : ['curated/', 'reference/'] }
             actions: {
               version: { delete: { daysAfterCreationGreaterThan: 30 } }
             }

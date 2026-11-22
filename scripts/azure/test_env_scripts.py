@@ -2752,6 +2752,20 @@ class ProvisionScript(Stubbed):
         self.assertNotIn("requires USNM_INDEX_STORAGE", r.stderr)
         self.assertTrue(os.path.exists(self.log))
 
+    def test_retire_curated_refuses_azure_curated_users(self):
+        for other in ("USNM_INGEST_JOBS", "USNM_SEARCH_CLUSTER"):
+            with self.subTest(other=other):
+                self.committed({"USNM_RETIRE_CURATED": True, other: True})
+                r = self.lib("curated_retire_check")
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("USNM_RETIRE_CURATED empties curated/", r.stderr)
+        self.committed({"USNM_RETIRE_CURATED": True})
+        r = self.lib("curated_retire_check")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.committed({"USNM_INGEST_JOBS": True})
+        r = self.lib("curated_retire_check")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
     def test_uncommitted_settings_are_refused(self):
         self.committed({"USNM_OCR": True}, commit=False)
         r = self.provision()

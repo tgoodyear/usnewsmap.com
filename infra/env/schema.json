@@ -333,6 +333,11 @@
       "x-usnm-visibility": "public",
       "type": "boolean"
     },
+    "USNM_RETIRE_CURATED": {
+      "x-usnm-visibility": "public",
+      "type": "boolean",
+      "description": "Empty the lake's curated/ container with a lifecycle delete rule. Default false. Only where nothing in Azure reads or writes curated (no USNM_INGEST_JOBS, no USNM_SEARCH_CLUSTER), after checking its blobs against the on-prem copy."
+    },
     "USNM_SCAN_ARCHIVE_GROUP": {
       "x-usnm-visibility": "private",
       "description": "Private: object id of the Entra group granted only archive writer access.",

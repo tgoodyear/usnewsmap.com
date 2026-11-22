@@ -101,6 +101,9 @@ param githubRepoIds string = 'tgoodyear@116683/usnewsmap.com@1389862972'
 @description('Create the ingest and backfill jobs (needs useAcr: the ingest image is only in the private registry).')
 param ingestJobs bool = false
 
+@description('Empty the lake\'s curated/ container (USNM_RETIRE_CURATED). provision.sh refuses it with Azure ingest jobs or the search cluster, which use curated.')
+param retireCurated bool = false
+
 @description('Weekly ingest schedule, UTC cron (e.g. "17 3 * * 1"). Empty: run the job manually.')
 param ingestCron string = ''
 
@@ -613,6 +616,7 @@ module storage 'modules/storage.bicep' = {
     tags: tags
     name: n.dataLake
     blobSoftDeleteDays: lakeBlobSoftDeleteDays
+    retireCurated: retireCurated
     allowedIps: lakeNodeAccess ? nodeIpList(ocrNodeIps) : []
     allNetworks: dataEveryNetwork
     // The BOINC hand-off job reaches the lake from its own subnet, as it does the exchange account.
