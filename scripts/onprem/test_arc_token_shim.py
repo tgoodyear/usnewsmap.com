@@ -92,7 +92,7 @@ class Shim(unittest.TestCase):
         self.assertEqual(self.get()[0], 200)
 
     def test_it_talks_to_the_agent_only_over_http_on_loopback(self):
-        for endpoint in ("https://localhost:40342/x", "http://example.com:40342/x", "http://10.0.0.1:40342/x"):
+        for endpoint in ("https://localhost:40342/x", "http://example.com:40342/x", "http://192.0.2.1:40342/x"):
             env = dict(os.environ, USNM_ARC_SHIM_HEADER=SECRET, USNM_ARC_ENDPOINT=endpoint)
             p = subprocess.run([sys.executable, SHIM, "--port-file", "/nonexistent/x"],
                                env=env, capture_output=True, text=True, check=False)  # fmt: skip
