@@ -222,12 +222,16 @@ pub fn candidates(words: &[Word]) -> Vec<bool> {
 /// word never takes in its neighbour's ink (which assembly keeps as its own word, #2094).
 pub fn crop_box(words: &[Word], k: usize, w: u32, h: u32) -> Option<[u32; 4]> {
     let [x0, y0, x1, y1] = words[k].rect;
+    let (top, bottom) = (
+        y0.saturating_sub(WORD_PAD),
+        y1.saturating_add(WORD_PAD).min(h),
+    );
     let mut left = x0.saturating_sub(WORD_PAD);
     let mut right = x1.saturating_add(WORD_PAD).min(w);
     for (j, other) in words.iter().enumerate() {
         let [ox0, oy0, ox1, oy1] = other.rect;
-        // Only a word beside this one on the line bounds it: the boxes share some height.
-        if j == k || oy0 >= y1 || oy1 <= y0 {
+        // A word bounds the crop when any of it falls in the crop's padded height.
+        if j == k || oy0 >= bottom || oy1 <= top {
             continue;
         }
         if ox1 <= x0 {
@@ -236,10 +240,6 @@ pub fn crop_box(words: &[Word], k: usize, w: u32, h: u32) -> Option<[u32; 4]> {
             right = right.min(ox0);
         }
     }
-    let (top, bottom) = (
-        y0.saturating_sub(WORD_PAD),
-        y1.saturating_add(WORD_PAD).min(h),
-    );
     (left < right && top < bottom).then_some([left, top, right, bottom])
 }
 
@@ -559,12 +559,18 @@ mod tests {
         assert_eq!(crop_box(&words, 0, 300, 60), Some([0, 10, 64, 50]));
         assert_eq!(crop_box(&words, 1, 300, 60), Some([60, 10, 130, 50]));
         assert_eq!(crop_box(&words, 2, 145, 60), Some([130, 10, 145, 50]));
-        // A word on another line's height doesn't bound it.
-        let stacked = [
+        // A word reaching into the padded height bounds it too (#2094 review); one wholly
+        // below the crop doesn't.
+        let lower = [
             word("ᏣᎳᎩ", 40.0, [10, 20, 60, 40]),
             word("ᎤᏙᏓ", 40.0, [62, 45, 120, 60]),
         ];
-        assert_eq!(crop_box(&stacked, 0, 300, 60), Some([0, 10, 70, 50]));
+        assert_eq!(crop_box(&lower, 0, 300, 80), Some([0, 10, 62, 50]));
+        let below = [
+            word("ᏣᎳᎩ", 40.0, [10, 20, 60, 40]),
+            word("ᎤᏙᏓ", 40.0, [62, 50, 120, 70]),
+        ];
+        assert_eq!(crop_box(&below, 0, 300, 80), Some([0, 10, 70, 50]));
     }
 
     #[test]
