@@ -1,0 +1,25 @@
+{
+  "latin": {
+    "family": "Old Standard TT",
+    "licence": "OFL-1.1",
+    "note": "Open-licence period serif, after the 19th-century Modern faces of American newspapers. Fonts are not committed: fonts.py --fetch installs the pinned npm package into a cache and checks both hashes.",
+    "package": "@fontsource/old-standard-tt",
+    "package_integrity": "sha512-9cXU8XWqw4Pz9/9Lf6Otf1GPc0y17d96/nP9tzs4PLlq1IFMIxXszL3OLldaoyAn5YGr1r+tIXr0rlbgIeCYrg==",
+    "package_version": "5.3.0",
+    "files": [
+      {
+        "path": "files/old-standard-tt-latin-400-normal.woff",
+        "sha256": "c2e4acb213fdbd08576434d36c9bc94ff76dfe83284d89d93fac7b103694b770"
+      },
+      {
+        "path": "files/old-standard-tt-latin-ext-400-normal.woff",
+        "sha256": "927c2ab2fc34d594c3c694a6a8ef04c138766605d44cf079083d54d2a2275a36"
+      }
+    ]
+  },
+  "chr": {
+    "family": "Phoenix 1828",
+    "licence": "CC0-1.0",
+    "note": "Traced from the Cherokee Phoenix's own glyphs by ocr/models/chr-phoenix/recipe/chr_trace_font.py (#1620). The font file is not in the repository: only the recipe is, and it needs the glyph bank. Give the built Phoenix1828.ttf with --font chr=PATH to render Cherokee."
+  }
+}
