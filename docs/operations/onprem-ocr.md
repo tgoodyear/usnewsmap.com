@@ -313,7 +313,7 @@ scripts/azure/settings.sh --env prod --key USNM_OCR_SEED_MAX_PAGES --value 3000
 scripts/azure/settings.sh --env prod --key USNM_OCR_BULK_WINDOW --value 1000
 scripts/azure/provision.sh --env prod
 # The batch container reads its own copy of the settings: write it again.
-scripts/onprem/ingest-env.sh --env prod | ssh root@<proxmox-host> /root/batch-ct-ingest.sh --env-file -
+scripts/onprem/ingest-env.sh --env prod --curated <local curated dir> | ssh root@<proxmox-host> /root/batch-ct-ingest.sh --env-file -
 ```
 
 **Quarantine.** Rejects stay 30 days as `rejects/<run>/<source path>` (dead letters `rejects/<run>/deadletter/<message id>.txt`) with a `.reason.json` (reason, source, ETag, size, creation time; never content; oversized sources get only the record). Read them with an operator's own sign-in from an allowed IP (the firewall allows the node IPs and the subnet). After a fix, put one reason's rejects back where they came from; the same run checks them again:

@@ -19,8 +19,8 @@
 #          reserves the version names the lake has for today and the next
 #          two days. Run it the day the release starts.
 # release  builds a full staged version: the Quickwit writer on DIR/qw
-#          (file://), the WAL in DIR/wal, curated read from the lake (or
-#          USNM_CURATED), with the
+#          (file://), the WAL in DIR/wal, curated read from the local copy
+#          USNM_CURATED names, with the
 #          #283 settings (one text field, decades, page languages, American
 #          Stories, our OCR, the Latin text, v1 ingest). It writes
 #          DIR/reference/index-storage-pending.json and nothing in Azure.
@@ -75,15 +75,16 @@
 #
 # Settings come from the environment, with prod's defaults: USNM_LAKE
 # (stusnmdffapzy), USNM_INDEX_ACCOUNT (usnmqwstprodffapzy), USNM_INGEST
-# (the usnm-ingest binary), USNM_QUICKWIT_BIN. USNM_CURATED reads curated
-# from a local copy instead of the lake (#308). The copy must keep each
-# blob's last-modified time as its file's (`azcopy copy
-# --preserve-last-modified-time`): a finish lists curated as of the run's
-# start by those times. Azure access is the host's Arc
-# identity: usnm must be in the himds group.
+# (the usnm-ingest binary), USNM_QUICKWIT_BIN. USNM_CURATED (required for
+# every step but ready) is the local copy of curated, an absolute directory:
+# releases never read curated from the lake, whose egress is billed, and an
+# unset value or a URL stops the step. The copy must keep each blob's
+# last-modified time as its file's (`azcopy copy --preserve-last-modified-time`):
+# a finish lists curated as of the run's start by those times. Azure access is
+# the host's Arc identity: usnm must be in the himds group.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '2,83s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '2,84s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 EXPECT_REVOKED="" NO_DB_HOLDS=false
 RUN="" STEP="" SAMPLE="" SPLIT_DOCS=60000 DRY_RUN=false VERSION="" APP_URL="" DELETE=false COSMOS_ENDPOINT=${USNM_COSMOS_ENDPOINT:-}
 while [ $# -gt 0 ]; do
@@ -129,7 +130,12 @@ INGEST=${USNM_INGEST:-/srv/usnm/target/release/usnm-ingest}
 QUICKWIT=${USNM_QUICKWIT_BIN:-/srv/usnm/bin/quickwit}
 [ "$STEP" = ready ] || [ -x "$INGEST" ] || die "no usnm-ingest at $INGEST"
 LAKE_URL=https://$LAKE.blob.core.windows.net
-CURATED=${USNM_CURATED:-$LAKE_URL/curated}
+CURATED=${USNM_CURATED:-}
+if [ "$STEP" != ready ]; then
+  [ -n "$CURATED" ] || die "USNM_CURATED isn't set: give the local copy of curated (an absolute directory); releases don't read curated from the lake"
+  [[ $CURATED == /* ]] || die "USNM_CURATED: the local copy of curated as an absolute directory, not \"$CURATED\""
+  [ -d "$CURATED" ] || die "USNM_CURATED: no directory $CURATED"
+fi
 export IDENTITY_ENDPOINT=http://localhost:40342/metadata/identity/oauth2/token
 export IMDS_ENDPOINT=http://localhost:40342
 export RUST_LOG=${RUST_LOG:-info}

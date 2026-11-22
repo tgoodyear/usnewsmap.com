@@ -33,6 +33,8 @@ class ReleaseScript(unittest.TestCase):
         self.dir = self.tmp.name
         self.run_dir = os.path.join(self.dir, "run")
         self.args_file = os.path.join(self.dir, "ingest-args")
+        self.curated = os.path.join(self.dir, "curated")
+        os.makedirs(self.curated)
         self.ingest = os.path.join(self.dir, "usnm-ingest")
         with open(self.ingest, "w") as f:
             f.write(STUB_INGEST)
@@ -44,6 +46,7 @@ class ReleaseScript(unittest.TestCase):
             USNM_INGEST=self.ingest,
             USNM_LAKE="lakeexample",
             USNM_INDEX_ACCOUNT="accountexample",
+            USNM_CURATED=self.curated,
             STUB_ARGS=self.args_file,
             USNM_READY_WAIT_SECS="0",
             NO_PROXY="127.0.0.1,localhost",
@@ -140,7 +143,22 @@ class PublishAndRestore(ReleaseScript):
                 *extra, "--restore",
             ])  # fmt: skip
             self.assertEqual(args[:4], ["--state-file", self.run_dir + "/state.json", "--curated",
-                                        "https://lakeexample.blob.core.windows.net/curated"])  # fmt: skip
+                                        self.curated])  # fmt: skip
+
+    def test_curated_must_be_a_local_directory(self):
+        """Releases read curated only from a local copy, never the lake (its egress is billed)."""
+        self.stage()
+        for value, message in [
+            ("", "USNM_CURATED isn't set"),
+            ("https://lakeexample.blob.core.windows.net/curated", "an absolute directory"),
+            ("relative/curated", "an absolute directory"),
+            (os.path.join(self.dir, "missing"), "no directory"),
+        ]:
+            with self.subTest(value=value):
+                p = self.release("--step", "restore", "--dry-run", USNM_CURATED=value)
+                self.assertEqual(p.returncode, 1)
+                self.assertIn(message, p.stderr)
+                self.assertFalse(os.path.exists(self.args_file), "usnm-ingest ran")
 
     def test_restore_needs_the_run_that_built_the_version(self):
         p = self.release("--step", "restore")
