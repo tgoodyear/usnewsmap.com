@@ -38,6 +38,7 @@ baselines and adapted models with `usnm_qwen`.
 ## Apps
 
 - [OCR quality](apps/quality.md): `usnm_quality` and `usnm_qwen`.
+- [Qwen per-crop settlement](apps/qwen-per-crop-settlement.md): an open proposal for the `crop-consensus-v2` rule (#1963), not adopted.
 - [OCR bundles](apps/ocr-bundles.md): several pages in one `usnm_ocr` workunit.
 - [Native OCR](apps/native-ocr.md): `usnm_ocr` and `usnm_gold` without a container runtime.
 - [Japanese OCR with NDLOCR-Lite](apps/ndlocr-lite.md): `usnm_ndlocr`.
