@@ -10,7 +10,7 @@ date: "November 2026"
 
 **Hypothesis.** Each study's samples, measures and decision rules were fixed in [`protocol.md`](protocol.md) before its runs (Studies 8 and 10 were added later). The test that matters most was pre-stated: Xiaomi-OCR-0, a small 0.8B reader, would beat Tesseract on German pages the readers hadn't seen. Findings marked "post-hoc" were chosen after seeing results.
 
-**Answer.** On 612 hand-transcribed crops, Xiaomi-OCR-0 had 4.0% CER against Tesseract's 9.0%, and tied guarded Qwen 8B (4.5%) at a tenth of its size. The pre-stated held-out test did not confirm that. On 81 new Reichsanzeiger pages, Xiaomi-OCR-0 had 10.4% CER against Tesseract's 6.5%, a gap of +3.9 points (95% limits 0.9 to 7.8), and it was level with Qwen (12.4%). The loss sat in 84 tall columns that were shrunk to fit. Read at native size, a post-hoc arm, the gap shrinks to +1.3 (-0.7 to 3.3). The other big finding is that Qwen 8B's main fault was repetition loops, which the `stop` guard fixes, so the hypothesis held for Qwen but not for Xiaomi-OCR-0 on German.
+**Answer.** On 612 hand-transcribed crops, Xiaomi-OCR-0 had 4.0% CER against Tesseract's 9.0%, and tied guarded Qwen 8B (4.5%) at a tenth of its size. The pre-stated held-out test did not confirm that. On 81 new Reichsanzeiger pages, Xiaomi-OCR-0 had 10.4% CER against Tesseract's 6.5%, a gap of +3.9 points (95% limits 0.9 to 7.8), and it was level with Qwen (12.4%). The loss sat in 84 tall columns that were shrunk to fit. Read at native size, a post-hoc arm, the gap shrinks to +1.3 (-0.7 to 3.3). So the pre-stated test failed for Xiaomi-OCR-0 on German. A separate finding, not a pre-stated test, is that Qwen 8B's main fault was repetition loops, which the `stop` guard fixes.
 
 **What it means.**
 
@@ -696,7 +696,7 @@ The line pipeline loses on German pages, with low precision (60.8% on `de-rz`). 
 
 Across the studies, the clearest result is that guarded Qwen 8B and Xiaomi-OCR-0 both beat Tesseract on the 612 crops, but Xiaomi-OCR-0's lead did not survive held-out German pages: 10.4% against 6.5% CER, +3.9 points (limits 0.9 to 7.8). We are fairly sure of the held-out loss under the protocol's settings, and much less sure of the post-hoc claim that native-size reading closes the gap (+1.3, limits -0.7 to 3.3). The next step is a production-shaped test of Xiaomi-OCR-0 on held-out pages.
 
-- Keep Tesseract for German and use guarded Qwen 8B where a vision-language reader is needed; hold Xiaomi-OCR-0 for BOINC.
+- Keep Tesseract for German and use guarded Qwen 8B where a vision-language reader is needed; hold Xiaomi-OCR-0 on German until the production-shaped test.
 - Upgrade BOINC's llama.cpp, read crops rather than pages, and use `crop-consensus-v2` to validate replicas.
 - Build a transcribed Yiddish newspaper set; no reader is shown to work there.
 
