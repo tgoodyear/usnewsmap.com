@@ -132,9 +132,16 @@ class OcrClaimTest(unittest.TestCase):
         index = {("b", x): {"doc_id": x, "batch": "b"} for n, x in enumerate(docs) if n % 2 == 0}
         there = {x for n, x in enumerate(docs) if n % 4 == 0}
         checked = []
+        # The first two checks wait for each other: one at a time, the barrier times out.
+        meet, calls, guard = threading.Barrier(2, timeout=5), [0], threading.Lock()
 
         def available(server, row):
-            checked.append(row["doc_id"])
+            with guard:
+                calls[0] += 1
+                first_two = calls[0] <= 2
+                checked.append(row["doc_id"])
+            if first_two:
+                meet.wait()
             return row["doc_id"] in there
 
         with tempfile.TemporaryDirectory() as d:
