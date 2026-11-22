@@ -224,8 +224,10 @@ there, so the inputs go up over HTTPS and the server keeps them in its own bucke
 Nothing in the running bridge, the timers or the scripts calls it, and `submit` is unchanged.
 
 ```
-usnm-boinc cloud submit --root <controller root> --base-url https://<dev server> --token-file <file> (--id <job id>... | --all) [--batch-size N] [--dry-run]
+usnm-boinc cloud submit --root <controller root> --base-url https://<dev server> --token-file <file> (--id <job id>... | --all) [--app usnm_ocr|usnm_ndlocr] [--batch-size N] [--dry-run]
 ```
+
+`--app` defaults to `usnm_ocr`. `--app usnm_ndlocr` sends staged Japanese units instead (see "usnm_ndlocr" below).
 
 - Records under `<root>/jobs/` are only read: no lock is taken and no record is saved, so a job's on-prem stage is
   never changed. Run it on a copy of the root, or on jobs the on-prem server isn't given, so a page isn't computed
@@ -245,6 +247,22 @@ usnm-boinc cloud submit --root <controller root> --base-url https://<dev server>
   exits non-zero when any job failed. `--dry-run` reads and checks everything and sends nothing.
 - Cloudflare caps a request body at 100 MB on the Free and Pro plans, below the 128 MiB `MAX_SCAN`. The scan archive's
   largest page was 12.7 MB (ADR 0018), so only a page far outside that range would fail its upload.
+
+### usnm_ndlocr
+
+With `--app usnm_ndlocr`, `--root` is the ndlocr root and `--id` is a doc id; `--all` takes every directory under
+`<root>/units/`. It reuses the upload, batching and create code above.
+
+- A unit's `page` and `ndlocr.json` get the checks `ndlocr::submit` makes (the scan's size and SHA-256 equal the job's),
+  and go up as `<id>_page` and `<id>_ndlocr_json`, with the `boinc/apps/usnm_ndlocr_in` and `usnm_ndlocr_out`
+  templates.
+- The job's numbers come from the constants `ndlocr::create_work_args` uses (`ndlocr::limits`, `FPOPS_EST`,
+  `MEMORY_BOUND`): quorum 2, target 2, max error 3, max total 5, max success 3, delay bound 259200, FPOPs bound 1e14.
+  `create_work` is given no priority, so the job sends 0.
+- A unit with a `submitted` marker is skipped and listed, and so is one with a `submitting` marker (the on-prem
+  submission is uncertain). Cloud submit never writes a marker, so the unit's on-prem state is unchanged.
+- An input over the 100 MB admin body cap fails that unit with a message naming the other route: a single-part PUT of the
+  file to R2, then `POST /admin/v1/files/<name>/register`. Cloud submit doesn't call that route yet.
 
 ## Pull from the cloud BOINC server (dev only)
 

@@ -24,6 +24,19 @@ pub const MIN_SIMILARITY: f64 = 0.99;
 pub const MEMORY_BOUND: &str = "4294967296";
 pub const FPOPS_EST: &str = "1e12";
 
+/// The fixed `create_work` numbers of an ndlocr unit, shared with `cloud submit` so the two
+/// can't drift.
+pub(crate) mod limits {
+    pub const MIN_QUORUM: &str = "2";
+    pub const TARGET_NRESULTS: &str = "2";
+    pub const MAX_ERROR_RESULTS: &str = "3";
+    pub const MAX_TOTAL_RESULTS: &str = "5";
+    pub const MAX_SUCCESS_RESULTS: &str = "3";
+    pub const RSC_FPOPS_BOUND: &str = "1e14";
+    pub const RSC_DISK_BOUND: &str = "1073741824";
+    pub const DELAY_BOUND: &str = "259200";
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Job {
@@ -252,25 +265,25 @@ pub fn create_work_args(job: &Job) -> Vec<String> {
         "--result_template",
         "templates/usnm_ndlocr_out",
         "--min_quorum",
-        "2",
+        limits::MIN_QUORUM,
         "--target_nresults",
-        "2",
+        limits::TARGET_NRESULTS,
         "--max_error_results",
-        "3",
+        limits::MAX_ERROR_RESULTS,
         "--max_total_results",
-        "5",
+        limits::MAX_TOTAL_RESULTS,
         "--max_success_results",
-        "3",
+        limits::MAX_SUCCESS_RESULTS,
         "--rsc_fpops_est",
         FPOPS_EST,
         "--rsc_fpops_bound",
-        "1e14",
+        limits::RSC_FPOPS_BOUND,
         "--rsc_memory_bound",
         MEMORY_BOUND,
         "--rsc_disk_bound",
-        "1073741824",
+        limits::RSC_DISK_BOUND,
         "--delay_bound",
-        "259200",
+        limits::DELAY_BOUND,
         &format!("{}_page", job.id),
         &format!("{}_ndlocr_json", job.id),
     ]

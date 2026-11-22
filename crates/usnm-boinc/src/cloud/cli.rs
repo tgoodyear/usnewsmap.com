@@ -20,8 +20,9 @@ pub enum CloudCommands {
     /// Hand the spool `cloud pull` wrote to the hand-off store with `handoff::put_spool`, one
     /// finished single-page job at a time. Dev cloud server only.
     SpoolOut(SpoolOutArgs),
-    /// Send usnm_ocr jobs the controller already exported (`jobs/<id>/` under --root) to the
-    /// cloud server's admin API. Reads the records, never changes them. Dev cloud server only.
+    /// Send usnm_ocr jobs the controller already exported (`jobs/<id>/` under --root), or with
+    /// --app usnm_ndlocr the staged units (`units/<doc>/`), to the cloud server's admin API.
+    /// Reads the on-prem state, never changes it. Dev cloud server only.
     Submit(SubmitArgs),
     /// The cloud server's validation webhook for the gold apps (POST /v1/validate/<app>). Dev
     /// only; nothing in the running bridge calls it.
@@ -152,9 +153,13 @@ pub struct PullResultsArgs {
 
 #[derive(Args)]
 pub struct SubmitArgs {
-    /// The controller root; jobs are at `<root>/jobs/<id>/`.
+    /// The controller root, with jobs at `<root>/jobs/<id>/` (usnm_ocr); for usnm_ndlocr, the
+    /// ndlocr root, with units at `<root>/units/<doc>/`.
     #[arg(long)]
     root: PathBuf,
+    /// The app to submit.
+    #[arg(long, value_enum, default_value_t)]
+    app: cloud_submit::App,
     /// Server root, e.g. https://boinc-dev.example.org (the /admin/v1 path is added).
     #[arg(long)]
     base_url: String,
@@ -162,10 +167,10 @@ pub struct SubmitArgs {
     /// taken from the command line and never logged. Not needed with --dry-run.
     #[arg(long)]
     token_file: Option<PathBuf>,
-    /// A job id (sha256) to send; repeat for several.
+    /// A job id (sha256) to send, or for usnm_ndlocr a doc id; repeat for several.
     #[arg(long = "id", conflicts_with = "all", required_unless_present = "all")]
     ids: Vec<String>,
-    /// Send every record under --root.
+    /// Send every record (usnm_ocr) or unit (usnm_ndlocr) under --root.
     #[arg(long)]
     all: bool,
     /// Print what would be sent; make no request.
@@ -279,7 +284,8 @@ pub async fn run(command: CloudCommands) -> anyhow::Result<()> {
             } else {
                 read_token(&a.token_file, "CBOINC_TOKEN")?
             };
-            let cfg = cloud_submit::Config::new(&a.base_url, token, a.batch_size, a.dry_run)?;
+            let cfg = cloud_submit::Config::new(&a.base_url, token, a.batch_size, a.dry_run)?
+                .with_app(a.app);
             let report = cloud_submit::run(&cfg, &a.root, &a.ids, a.all).await?;
             println!("{report}");
             for line in &report.lines {
