@@ -99,7 +99,7 @@ resource blobContainers 'Microsoft.Storage/storageAccounts/blobServices/containe
   }
 ]
 
-// Versioning is account-wide; only curated/ and reference/ need history.
+// Versioning is account-wide; only reference/ needs history.
 // searches/days/ and searches/import/ (the search log, kept indefinitely,
 // ADR-0012) match no rule here, so nothing expires them.
 resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = {
@@ -158,16 +158,21 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
           }
         }
         {
-          // Read only by curation and releases. By last access, so a
-          // rebuild's reads don't churn it. reference/, cache/ and searches/
-          // stay Hot (tiny).
-          name: 'tier-curated-cool'
+          // Retired 22 Nov 2026: curation, OCR sync and releases read and
+          // write the on-prem tank copy, and nothing in Azure reads curated/
+          // (docs/operations/search-serving.md, "What a failover needs").
+          // Every blob and version here was checked against tank by name and
+          // size first. The container stays declared because runner modules
+          // still grant roles on it; this rule keeps it empty, and soft
+          // delete holds what it removes for blobSoftDeleteDays.
+          name: 'retire-curated'
           enabled: true
           type: 'Lifecycle'
           definition: {
             filters: { blobTypes: ['blockBlob'], prefixMatch: ['curated/'] }
             actions: {
-              baseBlob: { tierToCool: { daysAfterLastAccessTimeGreaterThan: 7 } }
+              baseBlob: { delete: { daysAfterModificationGreaterThan: 0 } }
+              version: { delete: { daysAfterCreationGreaterThan: 0 } }
             }
           }
         }
@@ -176,7 +181,7 @@ resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05
           enabled: true
           type: 'Lifecycle'
           definition: {
-            filters: { blobTypes: ['blockBlob'], prefixMatch: ['curated/', 'reference/'] }
+            filters: { blobTypes: ['blockBlob'], prefixMatch: ['reference/'] }
             actions: {
               version: { delete: { daysAfterCreationGreaterThan: 30 } }
             }
