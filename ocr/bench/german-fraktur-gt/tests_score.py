@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Unit tests for score.py and analyze.py: CER, fold, word F1, PAGE-XML and ALTO
-readers, page discovery, resume checks, year window and completeness."""
+readers, page discovery, resume checks, year window and completeness; line_score.py's
+line alignment and analyze.py's rule A2."""
 import csv, json, os, random, sys, tempfile, unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import analyze, score
+import analyze, line_score, score
 
 def dp(a, b):
     prev = list(range(len(b) + 1))
@@ -418,6 +419,180 @@ class A(unittest.TestCase):
             p = self.write(d, self.rows() + self.rows()[:1], self.EXP)
             with self.assertRaises(SystemExit):
                 analyze.load([p])
+
+    def test_title_key_merges_spellings(self):
+        self.assertEqual(analyze.title_key("Weisseritz-Zeitung"), analyze.title_key("Weisseritz_Zeitung"))
+        self.assertEqual(analyze.title_key(" Neue  Zeitung "), "Neue_Zeitung")
+
+    def test_line_alignment_ignores_reading_order(self):
+        lines = [(0, 0, 100, 20, "Die ſtadt"), (0, 30, 100, 50, "zweite Zeile"), (0, 60, 100, 80, "leer")]
+        # engine coordinates at twice the truth's scale, words out of order
+        words = [(100, 64, 180, 96, "Zeile"), (0, 64, 80, 96, "zweite"),
+                 (70, 4, 180, 36, "stadt"), (0, 4, 60, 36, "Die")]
+        pairs = line_score.align(lines, words, (100, 100), (200, 200))
+        self.assertEqual([p[1] for p in pairs], ["Die stadt", "zweite Zeile", ""])
+        s = line_score.score_lines(pairs)
+        self.assertEqual((s["lines"], s["lost_lines"], s["lost_chars"]), (3, 1, 4))
+        self.assertEqual(s["edits_folded"], 4)       # the lost line only; ſ folds to s
+        self.assertEqual(s["edits_raw"], 5)
+        self.assertEqual(s["ref_chars"], 25)
+
+    def test_gt_lines_page_bbox(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "x.xml")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write('''<PcGts xmlns="http://schema.primaresearch.org/PAGE/gts/pagecontent/2019-07-15">
+ <Page imageWidth="400" imageHeight="300"><TextRegion id="r"><TextLine id="l">
+ <Coords points="10,20 90,18 95,40 12,42"/><TextEquiv><Unicode>Haus</Unicode></TextEquiv>
+ </TextLine></TextRegion></Page></PcGts>''')
+            lines, size = line_score.gt_lines(p)
+        self.assertEqual(size, (400.0, 300.0))
+        self.assertEqual(lines, [(10.0, 18.0, 95.0, 42.0, "Haus")])
+
+    def test_rule_a2(self):
+        ok = {"page_ci": (0.1, 0.17), "title_ci": (0.1, 0.2), "lost": 0.03}
+        self.assertEqual(analyze.rule_a2(ok, []), ("LIFT", []))
+        for bad, part in (({"page_ci": (0.1, 0.18)}, "page"), ({"title_ci": (0.1, 0.24)}, "title"),
+                          ({"lost": 0.06}, "lost")):
+            v, why = analyze.rule_a2({**ok, **bad}, [])
+            self.assertEqual(v, "HOLD")
+            self.assertIn(part, why[0])
+        self.assertEqual(analyze.rule_a2(ok, ["chronicling"])[0], "HOLD")
+        self.assertEqual(analyze.rule_a2({k: v for k, v in ok.items() if k != "lost"}, [])[0], "HOLD")
+
+    def test_rule_a2_nan_limits_fail(self):
+        nan = float("nan")
+        ok = {"page_ci": (0.1, 0.17), "title_ci": (0.1, 0.2), "lost": 0.03}
+        for bad in ({"page_ci": (nan, nan)}, {"title_ci": (nan, nan)}, {"lost": nan},
+                    {"ref_chars": 0}):
+            self.assertEqual(analyze.rule_a2({**ok, **bad}, [])[0], "HOLD", bad)
+
+    def test_zero_reference_pool_never_lifts(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "z.csv")
+            with open(p, "w", newline="") as f:
+                w = csv.DictWriter(f, line_score.FIELDS)
+                w.writeheader()
+                for s in ("chronicling", "reichsanzeiger"):
+                    for arm in ("frak2021", "deu_latf"):
+                        w.writerow(dict(set=s, stratum="t", page_id="p1", title="t", year="1900",
+                                        arm=arm, ref_chars=0, edits_raw=0, edits_folded=0,
+                                        cer_raw=0, cer_folded=0, word_f1=1, cpu_s=1,
+                                        gpu_study_flag=0, lost_chars=0, lines=0, lost_lines=0))
+            with open(p + ".meta.json", "w") as f:
+                json.dump({"expected": A.EXP, "limit": 0}, f)
+            _, out = A().run_analyze(p, "--rule", "A2")
+            self.assertNotIn("**LIFT**", out)
+
+    def test_page_truth_line_without_coords_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "x.xml")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write('''<PcGts xmlns="http://schema.primaresearch.org/PAGE/gts/pagecontent/2019-07-15">
+ <Page imageWidth="400" imageHeight="300"><TextRegion id="r"><TextLine id="l">
+ <TextEquiv><Unicode>Haus</Unicode></TextEquiv></TextLine></TextRegion></Page></PcGts>''')
+            with self.assertRaises(ValueError):
+                line_score.gt_lines(p)
+            row, err = line_score.job(({"xml": p, "img": p, "set": "s", "page_id": "x"},
+                                       "m", "false", d, 5, set(), d, {}))
+            self.assertIsNone(row)
+            self.assertIn("no usable Coords", err)
+
+    def _job_fixture(self, d, body):
+        xml = os.path.join(d, "gt.xml")
+        with open(xml, "w", encoding="utf-8") as f:
+            f.write('''<PcGts xmlns="http://schema.primaresearch.org/PAGE/gts/pagecontent/2019-07-15">
+ <Page imageWidth="100" imageHeight="100"><TextLine id="l"><Coords points="0,0 100,0 100,20 0,20"/>
+ <TextEquiv><Unicode>Haus</Unicode></TextEquiv></TextLine></Page></PcGts>''')
+        img = os.path.join(d, "i.png")
+        with open(img, "wb") as f:
+            f.write(b"img1")
+        fake = os.path.join(d, "fake.py")
+        with open(fake, "w") as f:
+            f.write("import sys\nopen(%r, 'a').write('x')\nsys.stdout.write(%r)\n"
+                    % (os.path.join(d, "calls"), body))
+        cmd = "python3 %s {img}" % fake
+        alto = os.path.join(d, "alto")
+        page = {"xml": xml, "img": img, "set": "s", "page_id": "p", "title": "t",
+                "year": "1900", "stratum": "x"}
+        calls = lambda: len(open(os.path.join(d, "calls")).read()) if os.path.exists(
+            os.path.join(d, "calls")) else 0
+        return page, cmd, alto, img, calls
+
+    def test_alto_cache_keyed_by_provenance_and_validated(self):
+        good = ALTO.replace("<String CONTENT=\"Haus\"/>", "<String CONTENT=\"Haus\" HPOS=\"1\" VPOS=\"1\" WIDTH=\"5\" HEIGHT=\"5\"/>")
+        with tempfile.TemporaryDirectory() as d:
+            page, cmd, alto, img, calls = self._job_fixture(d, good)
+            def run(prov):
+                return line_score.job((page, "m", cmd, d, 30, set(), alto, prov))
+            prov = {"model_sha256": "aa", "version": "t 1"}
+            self.assertIsNone(run(prov)[1]); self.assertEqual(calls(), 1)
+            self.assertIsNone(run(prov)[1]); self.assertEqual(calls(), 1)     # cache hit
+            run({**prov, "model_sha256": "bb"}); self.assertEqual(calls(), 2)  # model changed
+            run({**prov, "version": "t 2"}); self.assertEqual(calls(), 3)      # engine changed
+            with open(img, "wb") as f:
+                f.write(b"img2")
+            run({**prov, "version": "t 2"}); self.assertEqual(calls(), 4)      # image changed
+
+    def test_unparseable_alto_not_cached(self):
+        with tempfile.TemporaryDirectory() as d:
+            page, cmd, alto, img, calls = self._job_fixture(d, "<alto><oops")
+            row, err = line_score.job((page, "m", cmd, d, 30, set(), alto, {}))
+            self.assertIsNone(row)
+            self.assertIsNotNone(err)
+            self.assertFalse(os.path.exists(os.path.join(alto, "s", "m", "p.xml")))
+            self.assertFalse(os.path.exists(os.path.join(alto, "s", "m", "p.xml.json")))
+
+    def test_merge_resume_keeps_ids_and_missing(self):
+        old = {"expected": {"a": {"s": ["p1", "p2"]}, "b": {"s": ["p1"]}},
+               "missing_images": {"s": ["p3", "p2"]}}
+        exp, miss = score.merge_resume(old, {"a": {"s": ["p4"]}}, {})
+        self.assertEqual(exp, {"a": {"s": ["p1", "p2", "p4"]}, "b": {"s": ["p1"]}})
+        self.assertEqual(miss, {"s": ["p3"]})       # p2 now has an image
+
+    def test_rule_a_rejects_line_aligned_csv(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "l.csv")
+            with open(p, "w", newline="") as f:
+                w = csv.DictWriter(f, line_score.FIELDS)
+                w.writeheader()
+                w.writerow(dict(set="chronicling", stratum="t", page_id="p1", title="t",
+                                year="1900", arm="frak2021", ref_chars=10, edits_raw=0,
+                                edits_folded=0, cer_raw=0, cer_folded=0, word_f1=1, cpu_s=1,
+                                gpu_study_flag=0, lost_chars=0, lines=1, lost_lines=0))
+            with self.assertRaises(SystemExit) as cm:
+                A().run_analyze(p)          # default rule A
+            self.assertNotEqual(cm.exception.code, 0)
+            A().run_analyze(p, "--rule", "A2")
+            rc, _ = A().run_analyze(A().write(d, A().rows(), A.EXP, name="page.csv"))
+            self.assertEqual(rc, 0)         # page CSVs still fine under A
+
+    def test_cache_hit_restores_cpu_and_unknown_is_empty(self):
+        good = ALTO.replace("<String CONTENT=\"Haus\"/>", "<String CONTENT=\"Haus\" HPOS=\"1\" VPOS=\"1\" WIDTH=\"5\" HEIGHT=\"5\"/>")
+        with tempfile.TemporaryDirectory() as d:
+            page, cmd, alto, img, calls = self._job_fixture(d, good)
+            prov = {"model_sha256": "aa", "version": "t 1"}
+            r1, _ = line_score.job((page, "m", cmd, d, 30, set(), alto, prov))
+            man = os.path.join(alto, "s", "m", "p.xml.json")
+            with open(man) as f:
+                m = json.load(f)
+            m["cpu_s"] = 7.5
+            with open(man, "w") as f:
+                json.dump(m, f)
+            r2, _ = line_score.job((page, "m", cmd, d, 30, set(), alto, prov))
+            self.assertEqual(calls(), 1)
+            self.assertEqual(r2["cpu_s"], 7.5)
+            del m["cpu_s"]
+            with open(man, "w") as f:
+                json.dump(m, f)
+            r3, _ = line_score.job((page, "m", cmd, d, 30, set(), alto, prov))
+            self.assertEqual(r3["cpu_s"], "")
+
+    def test_cpu_average_skips_unknown(self):
+        rows = [dict(ref_chars=10, edits_folded=1, edits_raw=1, word_f1=1.0, title="t",
+                     cpu_s=c) for c in (2.0, None, 4.0)]
+        self.assertEqual(analyze.summarize("x", rows, 20, 1)["cpu"], 3.0)
+        self.assertIsNone(analyze.summarize("x", rows[1:2], 20, 1)["cpu"])
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

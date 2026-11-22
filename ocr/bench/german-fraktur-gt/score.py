@@ -415,6 +415,23 @@ def resume_problems(old, new, csv_arms):
             out.append("%s changed (%r -> %r)" % (label, old.get(k), new.get(k)))
     return out
 
+def merge_resume(old, expected, missing_all):
+    """Union the earlier run's expected page ids and keep its still-unresolved
+    missing images: (expected, missing_images)."""
+    for arm, sets in (old.get("expected") or {}).items():
+        expected.setdefault(arm, {})
+        for s, ids in sets.items():
+            expected[arm][s] = sorted(set(ids) | set(expected[arm].get(s, [])))
+    found = {}
+    for sets in expected.values():
+        for s, ids in sets.items():
+            found.setdefault(s, set()).update(ids)
+    for s, ids in (old.get("missing_images") or {}).items():
+        keep = set(ids) - found.get(s, set())
+        if keep:
+            missing_all[s] = sorted(keep | set(missing_all.get(s, [])))
+    return expected, missing_all
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--data-root", default=os.environ.get("DATA_ROOT"),
@@ -525,18 +542,7 @@ def main(argv=None):
                     jobs.append((pg, arm, a.cmd, a.tessdata, a.timeout, gpu,
                                  a.cpu_cgroup))
     if done:        # keep earlier expectations and unresolved missing images
-        for arm, sets in (old.get("expected") or {}).items():
-            expected.setdefault(arm, {})
-            for s, ids in sets.items():
-                expected[arm][s] = sorted(set(ids) | set(expected[arm].get(s, [])))
-        found = {}
-        for sets in expected.values():
-            for s, ids in sets.items():
-                found.setdefault(s, set()).update(ids)
-        for s, ids in (old.get("missing_images") or {}).items():
-            keep = set(ids) - found.get(s, set())
-            if keep:
-                missing_all[s] = sorted(keep | set(missing_all.get(s, [])))
+        expected, missing_all = merge_resume(old, expected, missing_all)
     if missing_all:
         listing = "; ".join("%s: %s" % (k, ", ".join(v)) for k, v in sorted(missing_all.items()))
         if not a.allow_missing_images:
