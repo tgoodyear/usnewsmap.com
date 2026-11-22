@@ -1,0 +1,8 @@
+# Render-vs-scan word distance test (#2103). Python 3.11 or later.
+# Step 1 (loader) needs only Pillow; steps 2 to 5 need the rest.
+pillow==13.0.0
+numpy==2.5.5
+scipy==1.18.1
+scikit-image==0.26.0
+scikit-learn==1.9.1
+pyarrow==26.0.1
