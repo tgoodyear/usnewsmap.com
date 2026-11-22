@@ -26,7 +26,8 @@ Class mapping (zone_classes -> row field, refgutters.py type):
   gutters:          refgutters.py chains over all text types in TEXT_TYPES (article, headline,
                     heading, caption), as for the de-rz references.
   column_gutters:   the same method over ARTICLE-TEXT zones only: the gaps between body-text zones.
-Zone polygons are kept; boxes are the polygon bounding boxes. reading_order is the zone ids sorted
+Zone polygons are kept and converted to pixels (finlam stores percent of the page, 0..100;
+La Liberte stores fractions, 0..1); boxes are the polygon bounding boxes. reading_order is the zone ids sorted
 by zone_orders; articles group zones by article_id (page-local: ids repeat across pages only if the
 source repeats them, so they are keyed per page here).
 
@@ -89,6 +90,21 @@ def flatten_polygon(poly):
     return [[float(p[0]), float(p[1])] for p in poly if len(p) >= 2]
 
 
+def polygon_scale(peak, lib, width, height):
+    """Multipliers (sx, sy) that turn source polygon units into pixels.
+
+    finlam polygons are percent of the page (0..100); La-Liberte polygons are fractions (0..1).
+    The unit is decided from the largest coordinate on the page; (1, 1) means already pixels.
+    """
+    if peak <= 0 or min(width, height) <= 100:
+        return 1.0, 1.0
+    if lib and peak <= 1.0 + 1e-6:
+        return float(width), float(height)
+    if not lib and peak <= 100.0 + 1e-6:
+        return width / 100.0, height / 100.0
+    return 1.0, 1.0
+
+
 NAME_DATE = re.compile(r"^(.*?)\s+-\s+(\d{4})-(\d{2})-(\d{2})\b")
 
 
@@ -114,14 +130,15 @@ def row_from_record(rec, split, image_path, width, height, dataset, licence="MIT
     texts = rec.get("zone_texts") or [""] * len(classes)
     text_regions, nontext_regions, problems = [], [], []
     order_of = {}
-    # La-Liberte stores polygon coordinates as fractions of the page (0..1), finlam in pixels.
+    # Units: La-Liberte polygons are fractions of the page (0..1), finlam polygons are percent of
+    # the page (0..100). Detect from the data so a pixel-unit file would also pass through.
     allpts = [p for z in polys for p in flatten_polygon(z)]
-    normalised = bool(allpts) and max(max(p) for p in allpts) <= 1.0 + 1e-6 and min(width, height) > 100
+    sx, sy = polygon_scale(max((max(p) for p in allpts), default=0.0), lib, width, height)
     for i, c in enumerate(classes):
         name = names[c] if isinstance(c, int) else c
         poly = flatten_polygon(polys[i])
-        if normalised:
-            poly = [[x * width, y * height] for x, y in poly]
+        if (sx, sy) != (1.0, 1.0):
+            poly = [[x * sx, y * sy] for x, y in poly]
         if len(poly) < 3:
             problems.append("zone %d has %d points" % (i, len(poly)))
             continue

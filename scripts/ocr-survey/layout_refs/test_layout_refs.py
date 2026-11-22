@@ -104,6 +104,21 @@ def test_liberte_row():
     assert r["meta"]["title"] == "La Liberte"
 
 
+def test_finlam_percent_coordinates():
+    rec = {"page_arkindex_id": "F1", "newspaper_name": "Le Test - 1900-01-02 (1)",
+           "zone_polygons": [rect(5.0, 10.0, 30.0, 90.0), rect(32.0, 10.0, 60.0, 90.0),
+                             rect(62.0, 10.0, 95.0, 90.0)],
+           "zone_classes": [6, 6, 6], "zone_orders": [0, 1, 2], "zone_texts": ["a"] * 3,
+           "article_id": [1, 1, 1]}
+    r = conv_finlam.row_from_record(rec, "train", "x", 1000, 2000, "Teklia/Newspapers-finlam")
+    assert common.check_row(r) == []
+    assert r["text_regions"][0]["box"] == [50.0, 200.0, 300.0, 1800.0]
+    assert r["text_regions"][2]["box"] == [620.0, 200.0, 950.0, 1800.0]
+    assert [g[0][:2] for g in r["column_gutters"]] == [[300.0, 320.0], [600.0, 620.0]]
+    assert conv_finlam.polygon_scale(99.0, False, 1000, 2000) == (10.0, 20.0)
+    assert conv_finlam.polygon_scale(1500.0, False, 1000, 2000) == (1.0, 1.0)  # already pixels
+
+
 def test_liberte_normalised_coordinates():
     rec = {"page_arkindex_id": "L2", "zone_polygons": [rect(0.0, 0.1, 0.4, 0.9), rect(0.5, 0.1, 0.9, 0.9)],
            "zone_classes": [7, 7], "zone_orders": [0, 1], "zone_texts": ["a", "b"],
