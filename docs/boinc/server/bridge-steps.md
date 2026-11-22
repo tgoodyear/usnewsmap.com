@@ -381,7 +381,7 @@ usnm-boinc cloud validatord --secret-file <webhook token> [--signing-secret-file
   is read from `--secret-file` and never logged. `GET /healthz` answers `ok`.
 - With `--signing-secret-file` (the same value as the server's `WEBHOOK_SIGNING_SECRET`; the key is separate from the bearer
   token), each call must also carry `X-CB-Timestamp` (Unix seconds) and `X-CB-Signature` (`v1=` and the lowercase hex
-  HMAC-SHA-256, keyed with the signing secret, of the timestamp text, `.` and the raw request body). The service checks
+  HMAC-SHA-256, keyed with the signing secret read byte for byte (only one final line ending is dropped), of the timestamp text, `.` and the raw request body). The service checks
   them on the raw bytes, before parsing the body, with a constant-time comparison, and answers 401 for a missing or
   malformed header, a wrong signature or a timestamp more than 5 minutes either side of its own clock (keep the host's
   clock in sync). The bearer token is still required. A signature does not stop a replay inside the window; `call_id` is

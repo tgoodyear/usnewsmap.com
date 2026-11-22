@@ -831,7 +831,7 @@ mod tests {
         let wrong = sign("not-sek", &ts, &b);
         assert_eq!(post_headers(&base, &b, Some(&ts), Some(&wrong)).await, 401);
         // A signature made for another timestamp fails.
-        let ts2 = (now() - 1).to_string();
+        let ts2 = (ts.parse::<i64>().unwrap() - 1).to_string();
         assert_eq!(post_headers(&base, &b, Some(&ts2), Some(&good)).await, 401);
         // A missing header fails, whichever it is.
         assert_eq!(post_headers(&base, &b, Some(&ts), None).await, 401);
