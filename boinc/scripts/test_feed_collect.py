@@ -3079,6 +3079,18 @@ class PausedAndReasonTests(unittest.TestCase):
             self.assertEqual(C.main(["controller", "--output", str(Path(folder) / "c.json")]), 1)
         self.assertEqual(err.getvalue().strip(), "feed-source controller: no_recent_controller_tick age=1234")
 
+    def test_a_failed_push_still_prints_the_collection_reason_then_its_own_line(self):
+        with patch.object(C, "controller", side_effect=C.NoRecentTick()), \
+                patch.object(C, "reported_tick_age", return_value=1234), \
+                patch.object(C.urllib.request, "build_opener", side_effect=OSError("secret")), \
+                tempfile.TemporaryDirectory() as folder, contextlib.redirect_stderr(io.StringIO()) as err:
+            argv = ["controller", "--output", str(Path(folder) / "c.json"), "--push-url", "http://127.0.0.1:1/x"]
+            self.assertEqual(C.main(argv), 1)
+        lines = err.getvalue().strip().splitlines()
+        self.assertEqual(lines[0], "feed-source controller: no_recent_controller_tick age=1234")
+        self.assertEqual(lines[-1], "feed-source controller: push_unavailable")
+        self.assertNotIn("secret", err.getvalue())
+
     def test_binding_mismatch_names_both_ids_on_stderr_and_keeps_the_code(self):
         docs = CollectionTests.documents(self)
         with patch.object(C, "own_clients", return_value={"client_0": ("/client-0", 11)}), \

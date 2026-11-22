@@ -473,6 +473,11 @@ class DurationTest(unittest.TestCase):
         # In progress when the gap began: overlap, excused until end plus a hold, capped.
         self.assertEqual(F.archive_excuse([[NOW - 900, NOW + 600, NOW + 700]], NOW, NOW + 700), NOW + 600 + 3600)
 
+    def test_a_report_without_the_outcome_keeps_a_remembered_failure(self):
+        runs = F.archive_runs([[NOW, NOW + 600, True]], [], NOW + 700)
+        again = F.archive_runs([[NOW, NOW + 600]], runs, NOW + 800)
+        self.assertEqual(again, [[NOW, NOW + 600, NOW + 800, True]])
+
     def test_two_runs_starting_in_the_same_second_one_still_running_sort(self):
         # One unit finished and another still running, started together: an end can be None.
         runs = F.archive_runs([[NOW, NOW + 600], [NOW, None]], [], NOW + 700)

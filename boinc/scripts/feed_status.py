@@ -257,7 +257,8 @@ def archive_runs(reported, remembered, now):
             run = [start, end, now]
             runs.append(run)
         run[1], run[2] = end, now
-        del run[3:]
+        if len(entry) == 3:
+            del run[3:]  # a report that carries the outcome decides it; one without keeps what is remembered
         if failed:
             run.append(True)  # a failed run excuses nothing (archive_excuse)
         seen.append(run)

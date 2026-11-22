@@ -2528,6 +2528,11 @@ def main(argv=None):
         # Source errors must replace the last success; never publish stderr, paths or credentials.
         result["error"] = "source unavailable"
     atomic_json(args.output, result)
+    if "error" in result:
+        # Fixed reason only: never the exception text, paths or credentials.
+        age = reported_tick_age(args.unit) if result["error"] == NO_RECENT_TICK else None
+        print(f"feed-source {args.source}: {result['error'].replace(' ', '_')}"
+              + (f" age={age}" if age is not None else ""), file=sys.stderr)
     if args.push_url:
         request = urllib.request.Request(args.push_url, data=json.dumps(result).encode(),
                                          headers={"Content-Type": "application/json"}, method="PUT")
@@ -2537,12 +2542,8 @@ def main(argv=None):
                     raise ValueError("source push rejected")
         except (OSError, ValueError, http.client.HTTPException):
             print("feed observation push unavailable", file=sys.stderr)
+            print(f"feed-source {args.source}: push_unavailable", file=sys.stderr)
             return 1
-    if "error" in result:
-        # Fixed reason only: never the exception text, paths or credentials.
-        age = reported_tick_age(args.unit) if result["error"] == NO_RECENT_TICK else None
-        print(f"feed-source {args.source}: {result['error'].replace(' ', '_')}"
-              + (f" age={age}" if age is not None else ""), file=sys.stderr)
     return int("error" in result)
 
 
