@@ -7,7 +7,7 @@
 
 The pages are the worst tenth of English pages by qe-v1, leaving out those Tesseract's
 worst-first wave has fixed, stratified by decade and damage band (scripts/onprem/quality/
-pilot_selection.sql, which docs/boinc/apps/xiaomi-page-mode.md, "Pilot selection", describes).
+pilot_selection.sql, which docs/boinc/apps/quality.md, "Why page mode, and how the pilot was chosen", describes).
 It reads the database read-only (use the quality_reader DSN, which points at the replica).
 
 The floor of 30 pages a stratum can push the draw past --n; the largest strata are trimmed back

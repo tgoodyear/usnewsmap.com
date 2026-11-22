@@ -1,4 +1,4 @@
-//! Page mode (#1998, design in docs/boinc/apps/xiaomi-page-mode.md): a unit whose crops are the
+//! Page mode (#1998, see docs/boinc/apps/quality.md): a unit whose crops are the
 //! regions of one page (or a few small pages), read with several requests in flight on one
 //! `llama-server`.
 //!
