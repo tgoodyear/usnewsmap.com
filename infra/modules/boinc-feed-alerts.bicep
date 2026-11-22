@@ -53,7 +53,7 @@
 //   hour, GPU hosts that ask for work idle for an hour), so this query takes
 //   any firing check as it always did. docs/boinc/server/boundaries-and-monitoring.md
 //   (Sustained conditions only) has the numbers.
-// Evaluated every 15 minutes over 20, so a line ingested late is still seen by
+// Evaluated every 15 minutes over a 30-minute window with 20-minute lookbacks, so a line ingested late is still seen by
 // the next evaluation (a line seen twice only repeats a stateful alert).
 // - missing: no health event observed in the last 5 minutes
 //   (Check = collector_heartbeat): the evaluator stopped, its timer, the
@@ -190,7 +190,7 @@ resource alerts 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [for alert
     enabled: true
     severity: 2
     evaluationFrequency: 'PT15M'
-    windowSize: 'PT20M'
+    windowSize: 'PT30M'
     scopes: [workspace.id]
     // No Syslog table until the first line arrives.
     skipQueryValidation: true
