@@ -12,7 +12,7 @@ Status: Proposed, not adopted. Issue #1963 is open and the science decision has 
 - **Evidence since.** The matured #1919 rerun ([21 Nov](https://github.com/tgoodyear/usnewsmap.com/issues/1919#issuecomment-7065037753), 426 v2 units) found first-pair agreement up 3.6 points on the baseline. Its any-pair gap (95.1% against 99.2%) was [traced](https://github.com/tgoodyear/usnewsmap.com/issues/1919#issuecomment-7065116471) to 16 units waiting for a second replica, none of them a dispute, so v2 stays on unchanged. That rerun did not test per-crop settlement or the 80% value.
 - **What deciding it needs.** A Science Coordinator decision on the six open questions below, chiefly whether disputed units are still common enough to justify per-crop settlement, and a test of the 80% value. The three failed units of 14 Nov are the only direct case studies.
 
-![Share of text crops agreeing in the three failed units: the two Nordic units 95% and 97%, against the proposed 80% floor, which both clear. The ces+spa unit has no bar: 135 of its 248 crops disagreed because one host returned blank readings, and its text-crop agreement is not reported.](figures/qwen-per-crop-settlement.svg)
+![Share of text crops agreeing in the three failed units: the two Nordic units 95% and 97%, against the proposed 80% floor, which both clear. The ces+spa unit has no bar: 135 of its 248 crops disagreed, 131 of them because one host returned a blank reading and four real misreads, and its text-crop agreement is not reported.](figures/qwen-per-crop-settlement.svg)
 
 _Figure 1. The three units that failed under v2 (14 Nov table in Problem). The Nordic units would pass at 80%. The ces+spa return was a host failure that the empty-return guard already rejects._
 
@@ -64,7 +64,7 @@ Why 80% is proposed:
 - The ces+spa failure had 135 of 248 crops disagreeing. It would fail under any floor above about 45%, and the #1965 empty-return guard already rejects that return before pairing.
 - A lower floor, such as 60%, would let a pair through where a quarter of the text crops are still wrong. Those crops cost one re-issue each, and 80% bounds the work: at most 20% of a unit's text crops go into follow-up units.
 
-The number is a proposal, not a finding. It is a free parameter next to `floor`, `min_share` and `min_agreed_chars` in `Params`, so it can be changed without touching the rule's structure. The #1919 sample is three failed units, and the rerun planned on #1919 is what would show whether 80% is too tight or too loose.
+The number is a proposal, not a finding. It is a free parameter next to `floor`, `min_share` and `min_agreed_chars` in `Params`, so it can be changed without touching the rule's structure. The #1919 sample is three failed units, and the matured #1919 rerun measured unit-level agreement, not per-crop shares, so a separate per-crop evaluation is still needed to show whether 80% is too tight or too loose.
 
 ### No vouching of disagreeing crops
 
@@ -139,7 +139,7 @@ If adopted, the order would be:
 
 ## Open questions for the Science Coordinator
 
-1. Is 80% of text crops the right pair threshold, or should the #1919 rerun with at least 300 matured v2 units set it?
+1. Is 80% of text crops the right pair threshold, or should a per-crop evaluation set it? The matured #1919 rerun (426 v2 units) measured unit-level agreement only and does not answer this.
 2. Should settled-crop credit scale with the settled share (proposed), or stay full for any validating pair?
 3. Minimum pooled follow-up unit size, and the age at which a small pool is flushed anyway.
 4. Keep `page-v1` (proposed) or deprecate it once per-crop settlement is live?
