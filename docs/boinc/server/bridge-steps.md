@@ -445,9 +445,11 @@ verdict per result (`invalid`, `retry`, or only the `id` for a readable result) 
   carries (`usnm_<id>`; the webhook has no input files, so the job itself is not checked here, and `checked_result` checks
   the scan, engine and version on import); `text_sha256` and `alto_sha256` are the digests of `text.txt` and `layout.xml`;
   `text.txt` is UTF-8 and `layout.xml` is valid ALTO (`checks::check_alto`), each file within its read limit (`caps`, from the
-  `usnm_ocr_out` template: text, layout, result). A failing init is `invalid`. Compare: equal texts match; otherwise the
-  character counts must be within the `container_spot::CROSS` length ratio and the longer text at most 200,000 characters
-  (`OCR_COMPARE_MAX_CHARS`), else no match; then the two `text.txt` files are judged by
+  `usnm_ocr_out` template: text, layout, result). A failing init is `invalid`. Compare: equal texts match; a text over
+  200,000 characters (`OCR_COMPARE_MAX_CHARS`) does not. Both texts are then put in the form the import stores
+  (`usnm_core::text::normalize_ocr_for`, with Fraktur line-end breaks when either result's engine profile is a Fraktur
+  model), so long s and the `ﬀ ﬁ ﬂ ﬃ ﬄ ﬅ ﬆ` ligatures are no difference: equal stored forms match, and the character
+  counts must be within the `container_spot::CROSS` length ratio, else no match; then the two stored texts are judged by
   `outside` in `src/host_trust/container_spot.rs` at the limits of `container_spot::CROSS`, the most lenient family
   limits, because a pairwise call does not know the hosts' families and any pair may be an arm64 host against an
   amd64 one. The shorter text is always the original, so the result does not depend on the order. The blocking part of

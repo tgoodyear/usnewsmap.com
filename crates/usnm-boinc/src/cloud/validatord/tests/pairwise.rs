@@ -1090,10 +1090,19 @@ fn ocr_outputs(text: &str) -> [Vec<u8>; 3] {
 }
 
 fn ocr_outputs_for(text: &[u8], alto: &[u8]) -> [Vec<u8>; 3] {
+    ocr_outputs_with(text, alto, "p")
+}
+
+/// [`ocr_outputs`] for an engine `profile` (a model name, as `frak2021`).
+fn ocr_outputs_profile(text: &str, profile: &str) -> [Vec<u8>; 3] {
+    ocr_outputs_with(text.as_bytes(), OCR_ALTO.as_bytes(), profile)
+}
+
+fn ocr_outputs_with(text: &[u8], alto: &[u8], profile: &str) -> [Vec<u8>; 3] {
     use usnm_ocr_contract::boinc::sha256;
     let manifest = json!({
         "v": 1, "job_id": "j", "scan_sha256": format!("sha256:{}", "a".repeat(64)),
-        "engine": {"image": "img", "version": "1", "profile": "p", "models": "m",
+        "engine": {"image": "img", "version": "1", "profile": profile, "models": "m",
                    "psm": 1, "dpi": 300, "timeout_secs": 600},
         "text_sha256": sha256(text), "alto_sha256": sha256(alto), "elapsed_ms": 5,
         "completed_at": "2026-10-18T00:00:00Z"
@@ -1269,6 +1278,77 @@ async fn ocr_length_tolerance_is_symmetric() {
     for m in ocr_both_ways(&fx, "noisy", &text, &noisy).await {
         assert_eq!(m, BTreeSet::from([(1, 2)]));
     }
+}
+
+#[tokio::test]
+async fn ocr_long_s_and_ligature_spellings_are_no_difference() {
+    let fx = Fx::new().await;
+    // Every `s` a long s and every `fi`, `ff` and `fl` a ligature: far over the CER limit as raw
+    // text, the same page in its stored form.
+    let text = (0..60)
+        .map(|i| {
+            format!("Line {i}: the first office staff sees fifty sheep in the fields of the mill.")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let spelt = text
+        .replace("ffi", "\u{fb03}")
+        .replace("fi", "\u{fb01}")
+        .replace("ff", "\u{fb00}")
+        .replace("fl", "\u{fb02}")
+        .replace('s', "\u{17f}");
+    let raw = usnm_ocr_quality::align::pair(&text, &spelt);
+    assert!(raw.cer_sym > 0.10, "raw CER {}", raw.cer_sym);
+    for m in ocr_both_ways(&fx, "longs", &text, &spelt).await {
+        assert_eq!(m, BTreeSet::from([(1, 2)]));
+    }
+    // Folding is no licence for other differences: long s on top of a different page is still
+    // no match.
+    let other = "Completely different words entirely, nothing alike here.\n"
+        .repeat(60)
+        .replace('s', "\u{17f}");
+    for m in ocr_both_ways(&fx, "longs-other", &text, &other).await {
+        assert!(m.is_empty(), "{m:?}");
+    }
+}
+
+#[tokio::test]
+async fn ocr_fraktur_profile_joins_em_dash_breaks_as_the_import_does() {
+    let fx = Fx::new().await;
+    // frak2021 marks a line-end break with an em dash (#1065). The import joins it for a
+    // Fraktur profile, so a host that broke every line's last word matches one that didn't.
+    let joined = (0..60)
+        .map(|i| format!("Zeile {i}: die Zeitung bringt heute Nachrichten aus der Stadt."))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let broken = joined
+        .replace("Zeitung", "Zei\u{2014}\ntung")
+        .replace("Nachrichten", "Nach\u{2014}\nrichten")
+        .replace("Stadt.", "Sta\u{2014}\ndt.");
+    // As raw text the breaks alone are outside the limits.
+    assert!(crate::host_trust::container_spot::outside(
+        &crate::host_trust::container_spot::CROSS,
+        &joined,
+        &broken
+    )
+    .is_some());
+    let (fa, fb) = (
+        named(App::Ocr, "a", ocr_outputs_profile(&joined, "frak2021")),
+        named(App::Ocr, "b", ocr_outputs_profile(&broken, "frak2021")),
+    );
+    let run = Run::new(&fx, App::Ocr).await;
+    let (s, r) = run
+        .post(
+            "fk-check_set",
+            "check_set",
+            2,
+            None,
+            &[(1, &fa), (2, &fb)],
+            true,
+        )
+        .await;
+    assert_eq!(s, 200, "{r}");
+    assert_eq!(matches_of(&r), BTreeSet::from([(1, 2)]));
 }
 
 #[tokio::test]
