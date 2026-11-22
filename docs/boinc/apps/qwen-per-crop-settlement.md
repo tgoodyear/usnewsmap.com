@@ -4,6 +4,17 @@ Issue: [#1963](https://github.com/tgoodyear/usnewsmap.com/issues/1963). Evidence
 
 Status: Proposed, not adopted. Issue #1963 is open and the science decision has not been made (as of 22 Nov 2026). Nothing here is built, and `crop-consensus-v2` is unchanged. The rerun described on #1919 has a pre-registered rule that says nothing changes in v2 before the Science Coordinator decides.
 
+## Summary
+
+- **Problem.** Under `crop-consensus-v2` one disagreeing crop fails a whole unit of 130 to 250 crops. Two Nordic units had 95% and 97% of their text crops agreeing and still produced no agreed result.
+- **Proposal.** Accept a pair when at least 80% of its text crops agree, vouch only the agreeing crops, and re-issue each disagreeing crop once in pooled follow-up units. The 80% is a proposed value, not a finding.
+- **Status.** Proposed, not adopted. Issue #1963 is open.
+- **What deciding it needs.** A Science Coordinator decision on the six open questions below, chiefly the 80% threshold, which the planned #1919 rerun on at least 300 matured units can test. The evidence so far is three failed units.
+
+![Share of text crops agreeing in the three failed units: nor 95%, dan+nor 97%, ces+spa about 46%, against the proposed 80% floor. The two Nordic units clear it; ces+spa fails for a different reason.](figures/qwen-per-crop-settlement.svg)
+
+_Figure 1. The three units that failed under v2 (14 Nov table in Problem). The Nordic units would pass at 80%. The ces+spa return was a host failure that the empty-return guard already rejects._
+
 ## Problem
 
 A `usnm_qwen` unit holds 130 to 250 crops. Under `crop-consensus-v2` a pair fails if any one crop is in the `disagree` state, so one bad crop discards the rest.
