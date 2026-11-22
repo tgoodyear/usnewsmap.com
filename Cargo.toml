@@ -58,7 +58,7 @@ arrow-schema = "60"
 async-trait = "0.1"
 axum = "0.8"
 # HTTPS for the OCR dashboard (usnm-ocrdash): rustls with ring, the provider reqwest already uses.
-axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
+axum-server = { version = "0.9", default-features = false, features = ["tls-rustls-no-provider"] }
 base64 = "0.23"
 blake2 = "0.11"
 bytes = "1"
@@ -81,7 +81,7 @@ libm = "0.2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # Pure-Rust JPEG 2000 decoding: the Cherokee line re-read crops LoC's JP2 scans in the worker
 # (usnm-boinc, #1621), whose native build is static musl.
-hayro-jpeg2000 = { version = "0.4.1", default-features = false, features = ["std", "simd"] }
+hayro-jpeg2000 = { version = "0.5.0", default-features = false, features = ["std", "simd"] }
 # The md5s in LoC's BagIt batch manifests, checked against each fetched JP2 (#368).
 md-5 = "0.11"
 # The bounded ALTO reader (usnm-alto): streaming, no DTD processing.
@@ -103,7 +103,7 @@ schemars = "1"
 rustc-hash = "2"
 rskafka = { version = "0.6", default-features = false, features = ["compression-zstd"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-rmcp = { version = "3.8", default-features = false, features = ["server", "transport-streamable-http-server"] }
+rmcp = { version = "3.11", default-features = false, features = ["server", "transport-streamable-http-server"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
