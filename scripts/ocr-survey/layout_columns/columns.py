@@ -40,7 +40,7 @@ Image.MAX_IMAGE_PIXELS = None
 
 @dataclass
 class Params:
-    """Defaults are the values frozen after tuning on de-rz (see the PR)."""
+    """Defaults are the values frozen after the second-attempt tuning (see the PR)."""
     # image
     work_width: int = 2000
     bg_window: float = 0.05      # local-mean window, fraction of work width
@@ -48,26 +48,26 @@ class Params:
     # profile / valley detection (shared by both methods; fractions of the band or page)
     smooth: float = 0.003        # profile smoothing, fraction of width
     rule_width: float = 0.0      # column rules thinner than this are removed from the profile (fraction of width)
-    prominence: float = 0.6      # valley prominence, fraction of the profile's 90th percentile
+    prominence: float = 0.4      # valley prominence, fraction of the profile's 90th percentile
     rel_height: float = 0.5      # valley width measured at this fraction of its prominence
     clip: float = 1.0            # profile is clipped at this multiple of its level (rules, borders, pictures)
-    valley_max: float = 0.2      # valley floor must be <= this fraction of the profile level
+    valley_max: float = 0.35     # valley floor must be <= this fraction of the profile level
     min_ink: float = 0.03        # band profile level must be >= this fraction of band height
-    min_gutter: float = 0.002    # minimum gutter width, fraction of page width
+    min_gutter: float = 0.0005   # minimum gutter width, fraction of page width
     min_col: float = 0.04        # minimum text width left and right of a gutter, fraction of width
     # banded
     band_frac: float = 0.08      # band height, fraction of page height
     band_overlap: float = 0.5
     deskew_deg: float = 1.0
     deskew_step: float = 0.25
-    merge_overlap: float = 0.5   # x overlap (of the narrower) to join gutters of adjacent bands
-    max_hole: int = 2            # bands without the gutter that a run may bridge
-    min_run: float = 0.12        # shortest kept gutter, fraction of page height
+    merge_overlap: float = 0.3   # x overlap (of the narrower) to join gutters of adjacent bands
+    max_hole: int = 1            # bands without the gutter that a run may bridge
+    min_run: float = 0.2         # shortest kept gutter, fraction of page height
     # fullheight baseline
     fh_min_gutter: float = 0.001
-    fh_prominence: float = 0.15
+    fh_prominence: float = 0.3
     fh_valley_max: float = 0.7
-    fh_min_col: float = 0.15
+    fh_min_col: float = 0.1
 
 
 def params_from(json_text):
