@@ -1,5 +1,6 @@
 import contextlib
 import copy
+import fcntl
 import hashlib
 import importlib.util
 import io
@@ -5933,6 +5934,54 @@ class PlanScopeTransportTests(unittest.TestCase):
                 options = {"onprem_handoff": ("claim", "collect", "export"), **kwargs}
                 with self.assertRaisesRegex(ValueError, "--plan-scope needs|--local-lock|--ssh-reads"):
                     batch.Transport(config, directory, plan_scope=True, **options)
+
+
+class AdmissionPriorityTests(unittest.TestCase):
+    def test_a_waiting_priority_plan_goes_before_other_waiters(self):
+        import tempfile, threading, time as _time
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.lock"
+            holder = batch.Admission(path, 0)
+            self.assertTrue(holder.acquire())
+            main = batch.Admission(path, 5, poll_secs=0.01, priority=True)
+            result = {}
+            thread = threading.Thread(target=lambda: result.update(main=main.acquire()))
+            thread.start()
+            _time.sleep(0.2)  # main is waiting, marker held shared
+            native = batch.Admission(path, 0.3, poll_secs=0.01)
+            holder.release()
+            # The lock is free, but the waiting priority plan has it first: native yields.
+            thread.join(5)
+            self.assertTrue(result["main"])
+            self.assertFalse(native.acquire())
+            main.release()
+            self.assertTrue(native.acquire())
+            native.release()
+
+    def test_a_non_priority_plan_yields_while_a_priority_plan_waits(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.lock"
+            marker = batch.Admission(path, 0).marker_path.open("a")
+            fcntl.flock(marker, fcntl.LOCK_SH)
+            try:
+                self.assertFalse(batch.Admission(path, 0.2, poll_secs=0.01).acquire())
+                priority = batch.Admission(path, 0.2, poll_secs=0.01, priority=True)
+                self.assertTrue(priority.acquire())
+                priority.release()
+            finally:
+                marker.close()
+            self.assertTrue(batch.Admission(path, 0.2, poll_secs=0.01).acquire())
+
+    def test_a_priority_plans_timeout_drops_its_marker(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.lock"
+            holder = batch.Admission(path, 0)
+            self.assertTrue(holder.acquire())
+            self.assertFalse(batch.Admission(path, 0.1, poll_secs=0.01, priority=True).acquire())
+            holder.release()
+            self.assertTrue(batch.Admission(path, 0.1, poll_secs=0.01).acquire())
 
 
 class AdmissionLockTests(unittest.TestCase):

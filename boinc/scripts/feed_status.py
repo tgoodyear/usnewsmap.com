@@ -229,24 +229,27 @@ def end_rotation(state_dir):
 
 def archive_runs(reported, remembered, now):
     """The held-page archive runs that can still excuse usnm_ocr_no_work, as [started_at, ended_at or
-    None, seen_at]. `reported` is the controller source's archive_runs (each unit's latest run), None
+    None, seen_at] or, for one that failed, [started_at, ended_at, seen_at, True]. `reported` is the controller source's archive_runs (each unit's latest run), None
     without it; `remembered` the previous evaluation's. systemd keeps only a unit's latest run, so an
     earlier one is kept here. A run remembered as running that isn't reported running now (its unit
     ran again, a hand-run unit went, or the source is down) is taken to have ended when last seen."""
     runs = []
     for run in remembered if isinstance(remembered, list) else ():
-        if (isinstance(run, list) and len(run) == 3 and type(run[0]) is int and type(run[2]) is int
+        if (isinstance(run, list) and len(run) in (3, 4) and type(run[0]) is int and type(run[2]) is int
+                and (len(run) == 3 or run[3] is True)
                 and (run[1] is None or type(run[1]) is int)
                 and 0 <= run[0] <= (run[0] if run[1] is None else run[1]) <= run[2] <= now):
             runs.append(list(run))
     seen = []
     for entry in reported if isinstance(reported, list) else ():
         # feed_collect checked the document; anything else is left out, so it excuses nothing.
-        if not (isinstance(entry, list) and len(entry) == 2 and type(entry[0]) is int
+        if not (isinstance(entry, list) and len(entry) in (2, 3) and type(entry[0]) is int
+                and (len(entry) == 2 or type(entry[2]) is bool)
                 and (entry[1] is None or type(entry[1]) is int)
                 and 0 <= entry[0] <= (entry[0] if entry[1] is None else entry[1]) <= now):
             continue
-        start, end = entry
+        start, end = entry[:2]
+        failed = len(entry) == 3 and entry[2] and end is not None
         # The closest unmatched start: two units can start seconds apart.
         run = min((r for r in runs if abs(r[0] - start) <= ARCHIVE_MATCH_S
                    and not any(r is s for s in seen)), key=lambda r: abs(r[0] - start), default=None)
@@ -254,6 +257,9 @@ def archive_runs(reported, remembered, now):
             run = [start, end, now]
             runs.append(run)
         run[1], run[2] = end, now
+        del run[3:]
+        if failed:
+            run.append(True)  # a failed run excuses nothing (archive_excuse)
         seen.append(run)
     for run in runs:
         if run[1] is None and not any(run is r for r in seen):
@@ -265,18 +271,23 @@ def archive_runs(reported, remembered, now):
 
 def archive_excuse(runs, latest, now):
     """Until when usnm_ocr_no_work waits for a held-page archive run, at the latest, or None when no
-    run excuses it: one that began before the check came due (`latest` plus the hold) and is running
-    under ARCHIVE_PAUSE_MAX_S, or ended under a hold ago after lasting ARCHIVE_MIN_RUN_S to
-    ARCHIVE_PAUSE_MAX_S. Never past ARCHIVE_WORKUNIT_MAX_AGE_S after the newest workunit."""
+    run excuses it. A run excuses the gap when its span overlapped the no-work window (it began
+    before the check came due, `latest` plus the hold, and was still running at `latest` or ended
+    after it), so one in progress during the gap waits until it ends plus a hold of grace. A run
+    still going counts for ARCHIVE_PAUSE_MAX_S; an ended one must have lasted ARCHIVE_MIN_RUN_S to
+    ARCHIVE_PAUSE_MAX_S and must not have failed (a failed run proves nothing about why the plans
+    published no workunit). Hard cap, so a stuck archive can't hide no-work for ever: never past
+    ARCHIVE_WORKUNIT_MAX_AGE_S after the newest workunit."""
     if latest is None or now - latest >= ARCHIVE_WORKUNIT_MAX_AGE_S:
         return None
     ends = []
-    for start, end, _ in runs:
+    for start, end, _, *failed in runs:
         if start >= latest + NO_WORK_HOLD_S:
             continue  # the check was due before this run paused anything
         if end is None and now - start < ARCHIVE_PAUSE_MAX_S:
             ends.append(start + ARCHIVE_PAUSE_MAX_S + NO_WORK_HOLD_S)
-        elif end is not None and ARCHIVE_MIN_RUN_S <= end - start <= ARCHIVE_PAUSE_MAX_S and now < end + NO_WORK_HOLD_S:
+        elif (end is not None and not failed and end > latest and now < end + NO_WORK_HOLD_S
+              and ARCHIVE_MIN_RUN_S <= end - start <= ARCHIVE_PAUSE_MAX_S):
             ends.append(end + NO_WORK_HOLD_S)
     return min(max(ends), latest + ARCHIVE_WORKUNIT_MAX_AGE_S) if ends else None
 
