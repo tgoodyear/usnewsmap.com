@@ -17,8 +17,8 @@ def text(x, y, s, size=12, anchor="start", color=INK, weight="normal"):
 # Share of text crops agreeing. Nordic units: 95% and 97% ("Problem" text);
 # ces+spa: 135 of 248 crops disagreed, so 113 of 248 = 45.6% ("Problem" table).
 UNITS = [
-    ("nor, mask 24", "5 of 132 crops disagree", 95.0, BLUE),
-    ("dan+nor, mask 16", "6 of 251 crops disagree", 97.0, BLUE),
+    ("Nordic unit (95%)", "", 95.0, BLUE),
+    ("Nordic unit (97%)", "", 97.0, BLUE),
     ("ces+spa", "135 of 248 crops disagree", 113 / 248 * 100, ORANGE),
 ]
 FLOOR = 80.0  # proposed pair threshold ("Pair threshold")
@@ -37,10 +37,13 @@ for v in range(0, 101, 20):
     b.append(text(x(v), y0 + 3 * 46 + 16, f"{v}%", 11, "middle", MUTED))
 for i, (name, note, v, col) in enumerate(UNITS):
     y = y0 + i * 46
-    b.append(text(x0 - 12, y + 16, name, 12, "end"))
-    b.append(text(x0 - 12, y + 30, note, 10, "end", MUTED))
+    if note:
+        b.append(text(x0 - 12, y + 16, name, 12, "end"))
+        b.append(text(x0 - 12, y + 30, note, 10, "end", MUTED))
+    else:
+        b.append(text(x0 - 12, y + 23, name, 12, "end"))
     b.append(f"<rect x='{x0}' y='{y + 4}' width='{x(v) - x0:.1f}' height='28' fill='{col}'/>")
-    b.append(text(x(v) + 6, y + 23, f"{v:.0f}%" if i < 2 else "about 46%", 12))
+    b.append(text(x(v) + 6, y + 23, f"{v:.0f}%" if i < 2 else "46%", 12))
 b.append(f"<line x1='{x(FLOOR):.1f}' y1='{y0 - 10}' x2='{x(FLOOR):.1f}' y2='{y0 + 3 * 46}' stroke='{INK}' stroke-width='2' stroke-dasharray='5 3'/>")
 b.append(text(x(FLOOR), y0 - 16, "proposed 80% floor", 12, "middle", INK, "bold"))
 b.append(text((x0 + x1) / 2, y0 + 3 * 46 + 38, "Share of text crops where the two readings agree", 11, "middle", MUTED))

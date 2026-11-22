@@ -18,9 +18,9 @@ Issue [#1835](https://github.com/tgoodyear/usnewsmap.com/issues/1835), steps 1 t
 - `main` took the safer route instead: 5.5.0 plus three upstream fixes (patches 0001 to 0003, [#1903](https://github.com/tgoodyear/usnewsmap.com/pull/1903)). They leave text and ALTO unchanged on all 63 items and carry roughly a third to two thirds of 5.5.4's speed gain.
 - Still open: the exact upstream commit that changes layout, whether the use-after-free fix matters on our pages (no memory-checker run), and timing on a quiet machine.
 
-![Character error rate of Tesseract 5.5.0 and 5.5.4 on four sets. The challenge crops improve by 0.35 points, English pages get 1.35 points worse, and German pages do not move.](figures/cer-by-set.svg)
+![Change in character error rate from 5.5.0 to 5.5.4 on four sets, in percentage points, with positive meaning worse. The challenge crops improve by 0.35 points, English pages get 1.35 points worse, and German pages do not move.](figures/cer-by-set.svg)
 
-*Figure 1. CER by set (table in [Text and accuracy](#text-and-accuracy)). The English pages are the one place 5.5.4 is clearly worse.*
+*Figure 1. Change in CER (5.5.4 minus 5.5.0) by set, with both CERs in each row label (table in [Text and accuracy](#text-and-accuracy)). All four share one scale. The English pages are the one place 5.5.4 is clearly worse.*
 
 ![CPU time of 5.5.4 as a fraction of 5.5.0 for 11 pages. Dense pages fall to 0.62 to 0.74; sparse pages sit near 0.9 to 1.0.](figures/cpu-ratio.svg)
 

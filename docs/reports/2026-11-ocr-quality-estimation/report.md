@@ -25,9 +25,9 @@ We want to know, language by language, whether a reader (Qwen 3-VL 8B, Xiaomi-OC
 
 *Figure 2. Leave-one-language-out transfer. A language with no truth would need to clear the dashed 90% line. Finnish and German do not.*
 
-![Of the 35 English crops where LoC beats Qwen, the number each measure prefers LoC on: about 6 of 35 for lm_oov and unknown share, about 8 of 35 for the character model.](figures/vlm-blind-spot.svg)
+![Accuracy and balanced accuracy of lm_oov, charlm_bpc and unknown on English pairs. Against Tesseract, balanced accuracy is 0.76 to 0.80. Against Qwen 8B it is 0.57 to 0.60, close to the 0.50 chance line, although accuracy is 0.88 to 0.89.](figures/vlm-blind-spot.svg)
 
-*Figure 3. The VLM blind spot. The measures pick Qwen's fluent but over-long readings on most of the crops where LoC is better. Counts are derived from accuracy and balanced accuracy in [Per reader pair](#per-reader-pair), so they are good to about 2 crops.*
+*Figure 3. The VLM blind spot, from [Per reader pair](#per-reader-pair). Accuracy looks high against Qwen 8B only because LoC is truly better on just 0.11 of the pairs; balanced accuracy, which weights both outcomes equally, is near chance. Against Tesseract the measures work.*
 
 Other findings, each with its section below: confusion-weighted near-misses did worse than plain ones in every language; Wikisource as character-model text changes no verdict and does not fix German, and it has no validated 1880-1930 newspaper pages to use as truth; XLM-R matched `lm_oov` on a sample (0.88 against 0.87) at about 2.5 s of CPU per reading, so it was not built as a BOINC app.
 

@@ -151,7 +151,7 @@ def ghn_pages_yield():
     b.append(text(x0 + 4, y1 + 38, "Pages", 11, color=MUTED))
     b.append(text(420, 22, "Searchable Cherokee words, thousands", 13, weight="bold"))
     rx0, rx1 = 420, 730
-    sx = lambda v: rx0 + 90 + (rx1 - rx0 - 100) * v / 300
+    sx = lambda v: rx0 + 125 + (rx1 - rx0 - 135) * v / 300
     rows = [
         ("Today (LoC pages)", 85, 85, None, BLUE),
         ("Plan assumed", 250, 250, None, "#bbbbbb"),
@@ -208,7 +208,7 @@ def letter_cells():
         b.append(text(x0 - 10, y + 22, name, 12, "end"))
         b.append(rect(x0, y, sx(cov) - x0, 32, GREEN if met else "#bbbbbb"))
         inside = sx(cov) + 120 > w
-        tx, anchor = (sx(cov) - 6, "end") if inside else (sx(cov) + 6, "start")
+        tx, anchor = (sx(cov) - 6, "end") if inside else (max(sx(cov), sx(30)) + 10, "start")
         b.append(text(tx, y + 15, f"{cov:.1f}%" + (" (met)" if met else " (not met)"), 12, anchor, "white" if inside else INK, "bold"))
         b.append(text(tx, y + 30, note, 11, anchor, "white" if inside else MUTED))
     b.append(line(sx(30), 34, sx(30), h - 34, INK, 1.5, "5 4"))

@@ -5,11 +5,9 @@ Sources, all in report.md:
 - measures.svg: "Correlation with CER" table (All column, per crop) and "Paired
   decisions" table (All column, crops). Masked-LM numbers cover a sample only.
 - transfer.svg: "Transfer to a language without truth" table.
-- vlm-blind-spot.svg: "Per reader pair" table, English LoC vs Qwen 8B row
-  (324 pairs, first reader truly better 0.11 = 35 crops). The caught counts are
-  derived: with a = accuracy on crops Qwen wins and b = accuracy on crops LoC wins,
-  a + b = 2 x balanced accuracy and (289 a + 35 b) / 324 = accuracy, so
-  caught = 35 b. Rounded inputs make the counts good to about +-2 crops.
+- vlm-blind-spot.svg: "Per reader pair" table, English rows LoC vs Qwen 8B and
+  LoC vs Tesseract PSM 6 (accuracy / balanced accuracy for lm_oov, charlm_bpc and
+  unknown). Only stated numbers are drawn.
 """
 
 from pathlib import Path
@@ -94,30 +92,37 @@ def transfer():
 
 
 def blind_spot():
-    """Of the 35 en-op crops where LoC beats Qwen by 1 point or more, how many each measure picks LoC on."""
-    # (measure, accuracy, balanced accuracy)  -- "Per reader pair", English LoC vs Qwen 8B
-    rows = [("lm_oov", 0.89, 0.57), ("charlm_bpc", 0.88, 0.60), ("unknown (top 5,000)", 0.89, 0.57)]
-    n, loc_wins = 324, 35
-    qwen_wins = n - loc_wins
-    w, top = 760, 40
-    h = top + 44 * len(rows) + 50
-    x0, x1 = 170, 640
-    sc = (x1 - x0) / loc_wins
-    b = [text(x0, 20, "The 35 crops where LoC is truly better than Qwen", 12, weight="bold")]
-    for i, (name, acc, bal) in enumerate(rows):
-        a = (acc * n - loc_wins * 2 * bal) / (qwen_wins - loc_wins)
-        caught = loc_wins * (2 * bal - a)
-        y = top + i * 44
-        b.append(text(x0 - 8, y + 20, name, 12, "end"))
-        b.append(f"<rect x='{x0}' y='{y + 4}' width='{loc_wins * sc:.1f}' height='24' fill='#e3e8f0'/>")
-        b.append(f"<rect x='{x0}' y='{y + 4}' width='{caught * sc:.1f}' height='24' fill='{GREEN}'/>")
-        b.append(text(x0 + caught * sc + 6, y + 21, f"about {caught:.0f} caught", 11, color=MUTED))
-        b.append(text(x1 + 8, y + 21, f"{loc_wins - caught:.0f} missed", 11, color=MUTED))
-    y = top + 44 * len(rows) + 14
-    b.append(f"<rect x='{x0}' y='{y - 10}' width='12' height='12' fill='{GREEN}'/>")
-    b.append(text(x0 + 18, y, "measure prefers LoC (correct)", 11, color=MUTED))
-    b.append(f"<rect x='{x0 + 220}' y='{y - 10}' width='12' height='12' fill='#e3e8f0'/>")
-    b.append(text(x0 + 238, y, "measure prefers Qwen (miss)", 11, color=MUTED))
+    """Accuracy and balanced accuracy of three measures on English LoC-vs-reader pairs (1-point gaps)."""
+    # "Per reader pair": (accuracy, balanced accuracy) for lm_oov, charlm_bpc, unknown
+    groups = [("LoC vs Qwen 8B (324 pairs; LoC truly better on 0.11)", [("lm_oov", 0.89, 0.57), ("charlm_bpc", 0.88, 0.60), ("unknown (top 5,000)", 0.89, 0.57)]),
+              ("LoC vs Tesseract PSM 6 (594 pairs; LoC truly better on 0.25)", [("lm_oov", 0.85, 0.80), ("charlm_bpc", 0.84, 0.79), ("unknown (top 5,000)", 0.80, 0.76)])]
+    w, x0, x1 = 760, 170, 700
+    sx = lambda v: x0 + (x1 - x0) * v
+    rh = 40
+    top = 44
+    h = top + 2 * (rh * 3 + 34) + 44
+    b = [text(x0, 16, "English pairs; measure picks the better reader", 12, color=MUTED)]
+    for v in (0, 0.25, 0.5, 0.75, 1.0):
+        b.append(f"<line x1='{sx(v):.1f}' y1='{top - 8}' x2='{sx(v):.1f}' y2='{h - 36}' stroke='{LINE}'/>")
+        b.append(text(sx(v), h - 22, f"{v:.2f}", 11, "middle", MUTED))
+    y = top
+    for title, rows in groups:
+        b.append(text(14, y + 6, title, 12, weight="bold"))
+        y += 18
+        for name, acc, bal in rows:
+            b.append(text(x0 - 8, y + 19, name, 12, "end"))
+            b.append(f"<rect x='{x0}' y='{y + 2}' width='{sx(acc) - x0:.1f}' height='14' fill='#bbbbbb'/>")
+            b.append(text(sx(acc) + 5, y + 13, f"{acc:.2f}", 11, color=MUTED))
+            b.append(f"<rect x='{x0}' y='{y + 18}' width='{sx(bal) - x0:.1f}' height='14' fill='{ORANGE}'/>")
+            b.append(text(sx(bal) + 5, y + 29, f"{bal:.2f}", 11, weight="bold"))
+            y += rh - 4 + 4
+        y += 16
+    b.append(f"<line x1='{sx(0.5):.1f}' y1='{top - 8}' x2='{sx(0.5):.1f}' y2='{h - 36}' stroke='{INK}' stroke-width='1.5' stroke-dasharray='5 4'/>")
+    b.append(text(sx(0.5) + 5, h - 6, "0.50 = chance for balanced accuracy", 11, color=INK))
+    b.append(f"<rect x='14' y='{h - 16}' width='12' height='12' fill='#bbbbbb'/>")
+    b.append(text(31, h - 5, "accuracy", 11, color=MUTED))
+    b.append(f"<rect x='100' y='{h - 16}' width='12' height='12' fill='{ORANGE}'/>")
+    b.append(text(117, h - 5, "balanced accuracy", 11, color=MUTED))
     return svg(w, h, "".join(b))
 
 

@@ -29,24 +29,34 @@ CER = [
 
 
 def cer():
-    w, h = 760, 330
-    pw, gap, x0, y0, y1 = 150, 24, 56, 50, 250
-    b = []
+    """Diverging bars: CER of 5.5.4 minus CER of 5.5.0, percentage points; positive = worse."""
+    w, rh = 760, 62
+    h = 90 + rh * len(CER)
+    x0, x1, lo, hi = 330, 730, -1.0, 2.0
+    top, bot = 50, 50 + rh * len(CER)
+
+    def x(v):
+        return x0 + (x1 - x0) * (v - lo) / (hi - lo)
+
+    b = [text(10, 18, "Change in CER, 5.5.4 minus 5.5.0, percentage points", 12, color=MUTED, weight="bold")]
+    for v in (-1, -0.5, 0, 0.5, 1, 1.5, 2):
+        b.append(f"<line x1='{x(v):.1f}' y1='{top - 8}' x2='{x(v):.1f}' y2='{bot}' stroke='{INK if v == 0 else LINE}' stroke-width='{1.5 if v == 0 else 1}'/>")
+        b.append(text(x(v), bot + 16, f"{v:+g}" if v else "0", 11, "middle", MUTED))
+    b.append(text(x(0) - 6, top - 14, "← better", 11, "end", MUTED))
+    b.append(text(x(0) + 6, top - 14, "worse →", 11, "start", MUTED))
     for i, (name, n, a, c) in enumerate(CER):
-        px = x0 + i * (pw + gap)
-        top = max(a, c) * 1.25
-        b.append(f"<line x1='{px}' y1='{y1}' x2='{px + pw}' y2='{y1}' stroke='{LINE}'/>")
-        for j, (v, col, lab) in enumerate(((a, OLD, "5.5.0"), (c, NEW, "5.5.4"))):
-            bh = (y1 - y0) * v / top
-            bx = px + 18 + j * 60
-            b.append(f"<rect x='{bx}' y='{y1 - bh:.1f}' width='46' height='{bh:.1f}' fill='{col}'/>")
-            b.append(text(bx + 23, y1 - bh - 6, f"{v:.2f}%", 12, "middle"))
-            b.append(text(bx + 23, y1 + 16, lab, 11, "middle", MUTED))
-        d = c - a
-        b.append(text(px + pw / 2, 24, f"{d:+.2f} points", 13, "middle", GREEN if d < 0 else NEW if d > 0.1 else MUTED, "bold"))
-        b.append(text(px + pw / 2, y1 + 40, name, 11, "middle"))
-        b.append(text(px + pw / 2, y1 + 55, f"{n} reads", 11, "middle", MUTED))
-    b.append(text(10, 14, "CER (share of characters wrong), lower is better. Each panel has its own scale.", 11, color=MUTED))
+        y = top + i * rh
+        d = round(c - a, 2)
+        col = NEW if d > 0 else GREEN
+        b.append(text(x0 - 14, y + 26, f"{name}, {n} reads", 12, "end"))
+        b.append(text(x0 - 14, y + 43, f"{a:.2f}% → {c:.2f}%", 12, "end", MUTED))
+        x_a, x_b = sorted((x(0), x(d)))
+        b.append(f"<rect x='{x_a:.1f}' y='{y + 14}' width='{max(x_b - x_a, 1.5):.1f}' height='30' fill='{col}'/>")
+        lab = f"{d:+.2f}"
+        if d < -0.1:
+            b.append(text(x_a - 6, y + 34, lab, 12, "end", weight="bold"))
+        else:
+            b.append(text(x_b + 6, y + 34, lab, 12, weight="bold"))
     return svg(w, h, "".join(b))
 
 
@@ -61,8 +71,8 @@ COL = {"eng": OLD, "frak2021": NEW, "deu_latf+deu": PURPLE}
 
 
 def timing():
-    w, h = 760, 380
-    x0, x1, y0 = 170, 720, 40
+    w, h = 760, 400
+    x0, x1, y0 = 170, 720, 62
     lo, hi = 0.5, 1.1
 
     def x(v):
@@ -80,8 +90,8 @@ def timing():
     b.append(text((x0 + x1) / 2, y0 + 11 * 26 + 38, "5.5.4 CPU time divided by 5.5.0 CPU time (median of 3 runs); below 1.0 means 5.5.4 is faster", 11, "middle", MUTED))
     b.append(text(x(1.0) + 4, y0 - 14, "no change", 11, color=MUTED))
     for k, (p, c) in enumerate(COL.items()):
-        b.append(f"<circle cx='{x0 + k * 120}' cy='{h - 14}' r='5' fill='{c}'/>")
-        b.append(text(x0 + k * 120 + 10, h - 10, p, 11))
+        b.append(f"<circle cx='{x0 + k * 120}' cy='{y0 - 22}' r='5' fill='{c}'/>")
+        b.append(text(x0 + k * 120 + 10, y0 - 18, p, 11))
     return svg(w, h, "".join(b))
 
 

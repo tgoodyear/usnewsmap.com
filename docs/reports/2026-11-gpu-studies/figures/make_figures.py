@@ -66,8 +66,8 @@ def figure1():
 def figure2():
     """Xiaomi-OCR-0 minus Tesseract, CER points, with 95% limits; zero line = tie."""
     w, h = 760, 270
-    x0, x1 = 300, 720
-    lo, hi = -2, 16
+    x0, x1 = 300, 610
+    lo, hi = -2, 20
 
     def x(v):
         return x0 + (x1 - x0) * (v - lo) / (hi - lo)

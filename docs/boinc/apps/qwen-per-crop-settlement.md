@@ -11,7 +11,7 @@ Status: Proposed, not adopted. Issue #1963 is open and the science decision has 
 - **Status.** Proposed, not adopted. Issue #1963 is open.
 - **What deciding it needs.** A Science Coordinator decision on the six open questions below, chiefly the 80% threshold, which the planned #1919 rerun on at least 300 matured units can test. The evidence so far is three failed units.
 
-![Share of text crops agreeing in the three failed units: nor 95%, dan+nor 97%, ces+spa about 46%, against the proposed 80% floor. The two Nordic units clear it; ces+spa fails for a different reason.](figures/qwen-per-crop-settlement.svg)
+![Share of text crops agreeing in the three failed units: the two Nordic units 95% and 97%, ces+spa 46% (113 of 248), against the proposed 80% floor. The two Nordic units clear it; ces+spa fails for a different reason.](figures/qwen-per-crop-settlement.svg)
 
 _Figure 1. The three units that failed under v2 (14 Nov table in Problem). The Nordic units would pass at 80%. The ces+spa return was a host failure that the empty-return guard already rejects._
 
