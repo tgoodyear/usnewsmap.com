@@ -115,15 +115,100 @@ def describe(record, at):
 
 STEP_LOCK = "usnm-boinc-step.lock"
 HANDOFF_LOCK = "usnm-boinc-handoff.lock"
+# Writer preference: an exclusive acquirer of the hand-off lock first takes this gate exclusively
+# and keeps it while it waits, so no new shared acquirer gets past it and a stream of shared steps
+# cannot starve it. A shared acquirer takes the gate shared only to pass through, then the
+# hand-off lock, then lets the gate go. Order everywhere: gate, hand-off lock, plan lock, step lock.
+GATE = HANDOFF_LOCK + ".gate"
+HOLDER_SUFFIX = ".holder"
+POLL_FIRST = 0.02
+POLL_MAX = 0.5
 
 
-def drain(directory, wait, plan=None):
+def holder_path(directory, name, pid=None, shared=False):
+    base = Path(directory) / (name + HOLDER_SUFFIX)
+    return Path(f"{base}.{pid}") if shared else base
+
+
+def note_holder(directory, name, step, plan=None, shared=False, pid=None):
+    """Record who holds the lock `name` (pid, step, plan, acquired_at) beside it, atomically.
+    Shared holders each get a file of their own, named by pid. Returns the path."""
+    pid = os.getpid() if pid is None else pid
+    path = holder_path(directory, name, pid, shared)
+    info = {"pid": pid, "step": step, "plan": plan, "acquired_at": stamp(now()),
+            "mode": "shared" if shared else "exclusive"}
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=".holder-", delete=False) as out:
+        temporary = Path(out.name)
+        json.dump(info, out, sort_keys=True)
+    os.replace(temporary, path)
+    return path
+
+
+def clear_holder(path):
+    with contextlib.suppress(OSError):
+        Path(path).unlink()
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def holders(directory, name):
+    """The recorded holders of lock `name` whose process still runs, as short texts."""
+    found = []
+    for path in sorted(Path(directory).glob(name + HOLDER_SUFFIX + "*")):
+        try:
+            info = json.loads(path.read_text())
+            pid = int(info["pid"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if not _alive(pid):
+            continue
+        what = f"pid {pid} step {info.get('step')}"
+        if info.get("plan"):
+            what += f" plan {info['plan']}"
+        found.append(f"{what} since {info.get('acquired_at')} ({info.get('mode')})")
+    return found
+
+
+def holder_text(directory, name):
+    found = holders(directory, name)
+    return f"{name} held by " + "; ".join(found) if found else f"{name} holder unknown"
+
+
+def lock_until(handle, mode, deadline, directory, name):
+    """flock `handle` in `mode`, polling with a short backoff until the monotonic `deadline`.
+    On timeout the error names the recorded holders of lock `name`."""
+    delay = POLL_FIRST
+    while True:
+        try:
+            fcntl.flock(handle, mode | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise LockError(f"an earlier step still holds the step lock: "
+                                f"{holder_text(directory, name)}") from None
+            time.sleep(min(delay, left))
+            delay = min(delay * 2, POLL_MAX)
+
+
+def drain(directory, wait, plan=None, step="lock-acquire"):
     """Take each host lock a fenced step runs under, once, and let it go (#1897). A mutating step
     that passed its fence check holds its lock until it ends, so returning from here means no step
     of an earlier generation is still writing. The locks, as onprem-step.sh takes them: the
     hand-off lock (hand-off steps, spool-out, batch-inventory, write-held-pages), taken shared
     and followed by the plan's own with a plan scope, and the step lock (submit-remote).
-    Raises LockError if one is still held after `wait` seconds in all."""
+    The hand-off lock goes through its gate, so a waiting exclusive drain is not starved by a
+    stream of shared steps. Raises LockError, naming the holder, if one is still held after `wait`
+    seconds in all."""
+    directory = Path(directory)
     deadline = time.monotonic() + max(0, wait)
     groups = [[(HANDOFF_LOCK, fcntl.LOCK_SH)] if plan else [(HANDOFF_LOCK, fcntl.LOCK_EX)]]
     if plan:
@@ -131,16 +216,19 @@ def drain(directory, wait, plan=None):
     groups.append([(STEP_LOCK, fcntl.LOCK_EX)])
     for group in groups:
         with contextlib.ExitStack() as held:
+            gate = None
+            if group[0][0] == HANDOFF_LOCK:
+                # Exclusive: the gate stays held to the end of the group. Shared: only to pass.
+                gate = held.enter_context(open(directory / GATE, "a"))
+                lock_until(gate, fcntl.LOCK_SH if plan else fcntl.LOCK_EX, deadline, directory, GATE)
             for name, mode in group:
-                step_lock = held.enter_context(open(Path(directory) / name, "a"))
-                while True:
-                    try:
-                        fcntl.flock(step_lock, mode | fcntl.LOCK_NB)
-                        break
-                    except BlockingIOError:
-                        if time.monotonic() >= deadline:
-                            raise LockError("an earlier step still holds the step lock") from None
-                        time.sleep(0.2)
+                handle = held.enter_context(open(directory / name, "a"))
+                lock_until(handle, mode, deadline, directory, name)
+                path = note_holder(directory, name, step, plan, shared=mode == fcntl.LOCK_SH)
+                held.callback(clear_holder, path)
+                if gate is not None and plan:
+                    fcntl.flock(gate, fcntl.LOCK_UN)
+                    gate = None
 
 
 def acquire(root, holder, host, pid, ttl=DEFAULT_TTL, drain_dir=None, drain_wait=0, plan=None):
@@ -235,7 +323,32 @@ def main(argv=None):
         if name in ("acquire", "renew"):
             one.add_argument("--ttl", type=int, default=DEFAULT_TTL)
     sub.add_parser("status")
+    one = sub.add_parser("note-holder", help="record who holds a host lock (onprem-step.sh)")
+    one.add_argument("--lock-dir", type=Path, required=True)
+    one.add_argument("--lock", required=True)
+    one.add_argument("--step", required=True)
+    one.add_argument("--pid", type=int, required=True)
+    one.add_argument("--shared", action="store_true")
+    one = sub.add_parser("holders", help="print the live recorded holders of a host lock")
+    one.add_argument("--lock-dir", type=Path, required=True)
+    one.add_argument("--lock", required=True)
     args = parser.parse_args(argv)
+    if args.command in ("note-holder", "holders"):
+        if not re.fullmatch(r"usnm-boinc-[A-Za-z0-9._-]+\.lock(\.gate)?", args.lock):
+            print("error: invalid lock name", file=sys.stderr)
+            return 1
+        if args.command == "holders":
+            print(holder_text(args.lock_dir, args.lock))
+            return 0
+        if args.plan is not None and not PLAN.fullmatch(args.plan):
+            print("error: invalid plan", file=sys.stderr)
+            return 1
+        try:
+            note_holder(args.lock_dir, args.lock, args.step, args.plan, args.shared, args.pid)
+        except OSError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 1
+        return 0
     try:
         if not args.root.is_dir() or args.root.is_symlink():
             raise LockError("hand-off root is not a directory")
