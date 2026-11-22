@@ -21,6 +21,7 @@ curated copy. A new manifest is made only when the last one's pages are mostly o
 server (90%) or it is a day old, so the fetcher's queue never piles up.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 import datetime as dt
 import fcntl
@@ -46,6 +47,11 @@ MAX_TRIES = 3
 # rest wait for the next run.
 MAX_CLAIM_CHECKS = 500
 CLAIM_CHECK_SECS = 60
+# Sidecar checks against the scan server (on-prem, not LoC) run this many at a time, and
+# build looks pages up this many to a chunk. One at a time, a queue of ~170k already-staged
+# pages took past the unit's 1 h limit, so no queue-ocr manifest was written at all.
+CHECK_WORKERS = 16
+CHECK_CHUNK = 512
 
 
 def log(msg, **kv):
@@ -407,19 +413,34 @@ def cmd_build(a):
             tries = json.load(f)
     now = dt.datetime.now(dt.timezone.utc)
     todo, checked, deferred = [], 0, 0
-    for q in outstanding:
-        if len(todo) >= a.max_pages:
-            break
-        t = tries.get(q["doc_id"])
-        if t and t["n"] >= MAX_TRIES and now - dt.datetime.fromisoformat(t["last"]) < dt.timedelta(days=7):
-            deferred += 1
-            continue
-        row = index.get((q["batch"], q["doc_id"]))
-        if row is not None:
-            checked += 1
-            if available(a.scan_server, row):
-                continue  # on the scan server now
-        todo.append(q)
+    workers = max(1, int(getattr(a, "check_workers", CHECK_WORKERS)))
+
+    def eligible():
+        nonlocal deferred
+        for q in outstanding:
+            t = tries.get(q["doc_id"])
+            if t and t["n"] >= MAX_TRIES and now - dt.datetime.fromisoformat(t["last"]) < dt.timedelta(days=7):
+                deferred += 1
+                continue
+            yield q
+
+    pages = eligible()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        while len(todo) < a.max_pages:
+            chunk = [q for _, q in zip(range(CHECK_CHUNK), pages)]
+            if not chunk:
+                break
+            rows = [index.get((q["batch"], q["doc_id"])) for q in chunk]
+            looked = [r for r in rows if r is not None]
+            # In order, so the pages taken are the queue's first, as one at a time.
+            found = iter(pool.map(lambda r: available(a.scan_server, r), looked))
+            for q, row in zip(chunk, rows):
+                if row is not None:
+                    checked += 1
+                    if next(found):
+                        continue  # on the scan server now
+                if len(todo) < a.max_pages:
+                    todo.append(q)
     by_reason = {}
     for q in todo:
         by_reason[q["reason"]] = by_reason.get(q["reason"], 0) + 1
@@ -737,6 +758,8 @@ def main(argv=None):
     b.add_argument("--curated-copy", default="/srv/curated")
     b.add_argument("--scan-server", default="http://usnm-scanfetch.tjg.fyi:8380")
     b.add_argument("--what-if", action="store_true")
+    b.add_argument("--check-workers", type=int, default=CHECK_WORKERS,
+                   help="sidecar checks against the scan server at a time")
     b.add_argument("--claims-lock", help="the quality follower's kept.tsv.lock: OCR's claims are published under it")
     q = sub.add_parser("build-quality")
     q.add_argument("--state", required=True)

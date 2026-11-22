@@ -127,6 +127,36 @@ class OcrClaimTest(unittest.TestCase):
                 self.assertEqual(Path(d, "ocr-active.txt").read_text().split(), sorted(want))
                 self.assertEqual(checked, [on, gone] if name == "answered" else [on])
 
+    def test_build_checks_scans_side_by_side_and_keeps_the_queue_s_order(self):
+        docs = [f"sn1_1900-01-01_ed-1_seq-{n}" for n in range(1, 1201)]
+        index = {("b", x): {"doc_id": x, "batch": "b"} for n, x in enumerate(docs) if n % 2 == 0}
+        there = {x for n, x in enumerate(docs) if n % 4 == 0}
+        checked = []
+
+        def available(server, row):
+            checked.append(row["doc_id"])
+            return row["doc_id"] in there
+
+        with tempfile.TemporaryDirectory() as d:
+            a = types.SimpleNamespace(state=d, reasons="user", scan_server="http://s", curated_url="http://c",
+                                      days=14, max_pages=300, curated_copy=d, what_if=True, check_workers=4)
+            with mock.patch.object(m, "staged_pairs", return_value=index), \
+                    mock.patch.object(m, "available", side_effect=available), \
+                    mock.patch.object(m, "Lake"), \
+                    mock.patch.object(m, "damage_of", return_value={}), \
+                    mock.patch.object(m, "manifest_bytes", return_value=b"p") as manifest, \
+                    mock.patch.object(m, "CHECK_CHUNK", 7), \
+                    mock.patch.object(m, "cached_rows", side_effect=lambda lake, state, kind, *x:
+                                      [q(x, "user", 1) for x in docs] if kind == "queued" else []), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                m.cmd_build(a)
+        order = [r["doc_id"] for r in m.pending([q(x, "user", 1) for x in docs], [], ["user"])]
+        want = [x for x in order if x not in there][:300]
+        self.assertEqual([r["doc_id"] for r in manifest.call_args.args[0]], want)
+        # Only indexed pages are looked up, and no further than the chunk that filled the manifest.
+        self.assertTrue(set(checked) <= {d for _, d in index})
+        self.assertLess(len(checked), 300 + 7)
+
     def test_a_missing_scan_is_looked_up_once_a_fetch_and_a_run_s_lookups_are_bounded(self):
         a_, b_, c_ = (f"sn1_1900-01-01_ed-1_seq-{n}" for n in (1, 2, 3))
         index = {("b", x): {"doc_id": x, "batch": "b", "fetched_at": "t1"} for x in (a_, b_, c_)}
