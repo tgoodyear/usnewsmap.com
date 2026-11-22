@@ -61,23 +61,31 @@ pub enum Hyphenation {
 }
 
 impl Hyphenation {
+    /// For an engine profile (its models joined with `+`, as `frak2021` or `deu_latf+eng`):
+    /// Fraktur when any model is a Fraktur one (`frak*` or `deu_latf`).
+    pub fn for_profile(profile: &str) -> Self {
+        if profile
+            .split('+')
+            .any(|m| m.starts_with("frak") || m == "deu_latf")
+        {
+            Self::Fraktur
+        } else {
+            Self::Hyphens
+        }
+    }
+
     /// For a page read as `ocr_engine`, a full tag
     /// (`tesseract/5.5.0 profile=frak2021 …`) or the older
     /// `tesseract-5.5.1/frak2021` form: [`Hyphenation::Fraktur`] when a model
     /// it read with is a Fraktur one. A value that doesn't parse as a tag is
     /// Fraktur only if it names `frak2021` or `deu_latf`.
     pub fn for_engine(ocr_engine: &str) -> Self {
-        let fraktur = match EngineTag::parse(ocr_engine) {
-            Ok(EngineTag::Tag(t)) => t
-                .profile()
-                .split('+')
-                .any(|m| m.starts_with("frak") || m == "deu_latf"),
-            _ => ocr_engine.contains("frak2021") || ocr_engine.contains("deu_latf"),
-        };
-        if fraktur {
-            Self::Fraktur
-        } else {
-            Self::Hyphens
+        match EngineTag::parse(ocr_engine) {
+            Ok(EngineTag::Tag(t)) => Self::for_profile(t.profile()),
+            _ if ocr_engine.contains("frak2021") || ocr_engine.contains("deu_latf") => {
+                Self::Fraktur
+            }
+            _ => Self::Hyphens,
         }
     }
 

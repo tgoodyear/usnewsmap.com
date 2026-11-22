@@ -1316,7 +1316,7 @@ async fn ocr_long_s_and_ligature_spellings_are_no_difference() {
 async fn ocr_fraktur_profile_joins_em_dash_breaks_as_the_import_does() {
     let fx = Fx::new().await;
     // frak2021 marks a line-end break with an em dash (#1065). The import joins it for a
-    // Fraktur profile, so a host that broke every line's last word matches one that didn't.
+    // Fraktur profile (any `frak*` model, as on import), so a host that broke every line's last word matches one that didn't.
     let joined = (0..60)
         .map(|i| format!("Zeile {i}: die Zeitung bringt heute Nachrichten aus der Stadt."))
         .collect::<Vec<_>>()
@@ -1333,8 +1333,8 @@ async fn ocr_fraktur_profile_joins_em_dash_breaks_as_the_import_does() {
     )
     .is_some());
     let (fa, fb) = (
-        named(App::Ocr, "a", ocr_outputs_profile(&joined, "frak2021")),
-        named(App::Ocr, "b", ocr_outputs_profile(&broken, "frak2021")),
+        named(App::Ocr, "a", ocr_outputs_profile(&joined, "fraktur_all_2")),
+        named(App::Ocr, "b", ocr_outputs_profile(&broken, "fraktur_all_2")),
     );
     let run = Run::new(&fx, App::Ocr).await;
     let (s, r) = run
@@ -1370,6 +1370,18 @@ async fn ocr_text_over_the_compare_cap_is_no_match() {
     let b = format!("{a}.");
     assert!(a.len() <= usnm_ocr_contract::boinc::MAX_TEXT);
     for m in ocr_both_ways(&fx, "cap", &a, &b).await {
+        assert!(m.is_empty(), "{m:?}");
+    }
+}
+
+#[tokio::test]
+async fn ocr_stored_form_over_the_compare_cap_is_no_match() {
+    let fx = Fx::new().await;
+    // Under the cap as raw text, three times it once the ligatures expand: no match, and no
+    // alignment of two 510,000-character texts.
+    let n = super::super::pairwise::OCR_COMPARE_MAX_CHARS - 30_000;
+    let (a, b) = ("\u{fb03}".repeat(n), "\u{fb04}".repeat(n));
+    for m in ocr_both_ways(&fx, "lig-cap", &a, &b).await {
         assert!(m.is_empty(), "{m:?}");
     }
 }

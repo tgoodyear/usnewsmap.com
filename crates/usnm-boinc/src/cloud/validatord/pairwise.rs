@@ -194,14 +194,14 @@ fn ocr_init(files: &[PathBuf], workunit: &str) -> anyhow::Result<()> {
 }
 
 /// How a `usnm_ocr` result's text is stored: [`Hyphenation::Fraktur`] when its engine profile
-/// is a Fraktur model, as `stored_form` decides for the import. `result.json` passed the init
+/// has a Fraktur model, by the rule `stored_form` applies to a full engine tag on import. `result.json` passed the init
 /// script, so it parses; a profile that can't be read is plain hyphens.
 fn ocr_hyphenation(result: &Path) -> Hyphenation {
     read_capped(result, ocr_boinc::MAX_JSON)
         .ok()
         .and_then(|b| serde_json::from_slice::<ocr_boinc::ResultManifest>(&b).ok())
         .map_or(Hyphenation::Hyphens, |m| {
-            Hyphenation::for_engine(&m.engine.profile)
+            Hyphenation::for_profile(&m.engine.profile)
         })
 }
 
@@ -225,8 +225,8 @@ fn ocr_stored(text: &str, hyphenation: Hyphenation) -> String {
 /// Whether two `usnm_ocr` texts match: equal, or within [`Kind::OCR_LIMITS`] by `outside`, both
 /// taken in their stored form ([`ocr_stored`]) so that long s and ligature spellings are no
 /// difference. The cheap tests come first and bound the cost of `outside`: equal bytes match; a
-/// text over [`OCR_COMPARE_MAX_CHARS`] (raw characters) does not; equal stored forms match; and
-/// normalised lengths outside the ratio limits do not.
+/// text over [`OCR_COMPARE_MAX_CHARS`] (raw characters) does not; equal stored forms match; a
+/// stored form over the cap does not; and normalised lengths outside the ratio limits do not.
 ///
 /// The measure is symmetric here. `outside` normalises both texts (as the gold set's are) and
 /// takes the replay's normalised length over the original's, so the text that is shorter after
@@ -243,6 +243,10 @@ fn ocr_match(a: &str, b: &str, hyphenation: Hyphenation) -> bool {
     let (a, b) = (ocr_stored(a, hyphenation), ocr_stored(b, hyphenation));
     if a == b {
         return true;
+    }
+    // Expanding ligatures can triple a text (`ﬃ`), so the cap binds again on the stored forms.
+    if a.chars().count().max(b.chars().count()) > OCR_COMPARE_MAX_CHARS {
+        return false;
     }
     let (a, b) = (a.as_str(), b.as_str());
     let norm = |t: &str| usnm_ocr_quality::text::normalize(t, false).chars().count();
