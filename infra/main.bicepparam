@@ -30,6 +30,7 @@ param spareEnvironment = bool(readEnvironmentVariable('USNM_SPARE_ENVIRONMENT', 
 param caeVnet = bool(readEnvironmentVariable('USNM_CAE_VNET', 'true'))
 param lakeBlobSoftDeleteDays = int(readEnvironmentVariable('USNM_LAKE_BLOB_SOFT_DELETE_DAYS', '3'))
 param ingestJobs = bool(readEnvironmentVariable('USNM_INGEST_JOBS', 'false'))
+param retireCurated = bool(readEnvironmentVariable('USNM_RETIRE_CURATED', 'false'))
 param useAcr = bool(readEnvironmentVariable('USNM_USE_ACR', 'false'))
 param imageTag = readEnvironmentVariable('USNM_IMAGE_TAG', 'main')
 param apiImageTag = readEnvironmentVariable('USNM_API_IMAGE_TAG', readEnvironmentVariable('USNM_IMAGE_TAG', 'main'))
