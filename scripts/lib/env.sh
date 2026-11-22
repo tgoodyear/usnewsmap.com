@@ -738,6 +738,20 @@ save_outputs() {
 # Azure won't delete a rule that still has associations, so every try below
 # would fail. Stops first, naming them; offboard.sh deletes them.
 # Returns 0 when there's nothing to check or the rule is already gone.
+# Retiring curated (the retire-curated lifecycle rule) deletes what Azure ingest jobs and
+# the search cluster read and write, so the settings can't combine them. provision() runs
+# this for every entry point (provision.sh, bootstrap.sh --ingest).
+curated_retire_check() {
+  local retire ingest cluster
+  retire=$(aget USNM_RETIRE_CURATED) || return 1
+  [ "$retire" = true ] || return 0
+  ingest=$(aget USNM_INGEST_JOBS) || return 1
+  cluster=$(aget USNM_SEARCH_CLUSTER) || return 1
+  if [ "$ingest" = true ] || [ "$cluster" = true ]; then
+    echo "error: USNM_RETIRE_CURATED empties curated/, which USNM_INGEST_JOBS and USNM_SEARCH_CLUSTER use: turn those off first (infra/README.md)" >&2
+    return 1
+  fi
+}
 ocr_nodes_off_check() {
   local nodes dcr out err errf
   nodes=$(aget USNM_OCR_NODES) || return 1
@@ -1111,6 +1125,7 @@ provision() {
   settings_check || die "not provisioning $ENV_NAME"
   experiment_marker || die "not provisioning $ENV_NAME"
   ocr_nodes_off_check || die "not provisioning $ENV_NAME"
+  curated_retire_check || die "not provisioning $ENV_NAME"
   principal_ids_check || die "not provisioning $ENV_NAME"
   for attempt in 1 2 3; do
     deploy_env_guardrails && deploy_policy_exemptions && deploy_stack && save_outputs && return 0
@@ -1141,6 +1156,7 @@ provision_what_if() {
   fi
   load_store || die "no what-if for $ENV_NAME"
   settings_check || die "no what-if for $ENV_NAME"
+  curated_retire_check || die "no what-if for $ENV_NAME"
   experiment_marker --dry-run || die "no what-if for $ENV_NAME"
   ocr_nodes_off_check || die "no what-if for $ENV_NAME"
   principal_ids_check || die "no what-if for $ENV_NAME"

@@ -79,11 +79,6 @@ fi
 if [ "$(aget USNM_INDEX_STORAGE_SERVE)" = true ] && [ "$(aget USNM_INDEX_STORAGE)" != true ]; then
   die "USNM_INDEX_STORAGE_SERVE requires USNM_INDEX_STORAGE; see docs/operations/rebuild-and-index-storage.md, Index storage cutover"
 fi
-# Retiring curated deletes what Azure ingest jobs and the search cluster read and write.
-if [ "$(aget USNM_RETIRE_CURATED)" = true ] &&
-  { [ "$(aget USNM_INGEST_JOBS)" = true ] || [ "$(aget USNM_SEARCH_CLUSTER)" = true ]; }; then
-  die "USNM_RETIRE_CURATED empties curated/, which USNM_INGEST_JOBS and USNM_SEARCH_CLUSTER use: turn those off first (infra/README.md)"
-fi
 need_stack_az
 [ -s "$ENV_FILE" ] || die "no settings for $ENV_NAME; run scripts/azure/bootstrap.sh --env $ENV_NAME first"
 az account set --subscription "$(aget AZURE_SUBSCRIPTION_ID)" 2> /dev/null ||
