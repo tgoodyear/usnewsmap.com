@@ -3,8 +3,9 @@
 //! "Validate gold results for the cloud server".
 //!
 //! The cloud server POSTs `/v1/validate/<app>` with a JSON body (see cloud-boinc
-//! `cloud/docs/architecture.md`, "Webhook call") and `Authorization: Bearer <WEBHOOK_TOKEN>`,
-//! and reads back a verdict per result. For `usnm_gold` and `usnm_gold_native` this runs what the
+//! `cloud/docs/architecture.md`, "Webhook call") and `Authorization: Bearer <WEBHOOK_TOKEN>`
+//! (and, with `WEBHOOK_SIGNING_SECRET` set there, `X-CB-Timestamp` and `X-CB-Signature`, checked
+//! when `Config::signing_secret` is set), and reads back a verdict per result. For `usnm_gold` and `usnm_gold_native` this runs what the
 //! stock `script_validator --init_script usnm_gold_check` runs: `gold::validate::check`, the
 //! function behind `usnm-boinc gold check --file <result> --expected-dir <gold dir>`. Exit 0 of
 //! that command is `valid`; any other exit is the validate error (`invalid`). The apps have no
@@ -46,6 +47,10 @@ const MAX_FILES: usize = 16;
 pub struct Config {
     /// The webhook bearer token the cloud server sends (its `WEBHOOK_TOKEN`).
     pub secret: String,
+    /// The webhook signing secret (the server's `WEBHOOK_SIGNING_SECRET`). When set, a call needs
+    /// a valid `X-CB-Signature` over `X-CB-Timestamp`, `.` and the raw body, and a timestamp
+    /// within `SIGNATURE_WINDOW_SECS` of this host's clock. When `None`, nothing is checked.
+    pub signing_secret: Option<String>,
     /// Where the durable state goes: the call cache (`calls/`) and quality's side effects
     /// (`quality/seen/`, `quality/pairs/`). A local directory or R2 (`usnm_store::open`); every
     /// write is a whole object, so several instances may share one store.
@@ -91,6 +96,67 @@ fn token_matches(given: &str, want: &str) -> bool {
         == 0
 }
 
+/// Either way, in seconds, a call's timestamp may differ from this host's clock (the spec's
+/// recommended freshness window).
+const SIGNATURE_WINDOW_SECS: i64 = 300;
+const SIGNATURE_PREFIX: &str = "v1=";
+
+/// HMAC-SHA-256 (RFC 2104) of the concatenated `parts`, in lowercase hex. Written out here so the
+/// service needs no `hmac` crate; the tests pin it to the RFC 4231 vectors.
+fn hmac_sha256_hex(key: &[u8], parts: &[&[u8]]) -> String {
+    let mut k = [0u8; 64];
+    if key.len() > 64 {
+        k[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+    let mut inner = Sha256::new();
+    inner.update(k.map(|b| b ^ 0x36));
+    for p in parts {
+        inner.update(p);
+    }
+    let mut outer = Sha256::new();
+    outer.update(k.map(|b| b ^ 0x5c));
+    outer.update(inner.finalize());
+    outer
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Checks the signature headers of a call against its raw body. `Err` is the reason to send
+/// back; it never says which part of the MAC differed.
+fn verify_signature(
+    secret: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+    now: i64,
+) -> Result<(), &'static str> {
+    let text = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let ts_text = text("x-cb-timestamp").ok_or("missing X-CB-Timestamp")?;
+    let sig = text("x-cb-signature").ok_or("missing X-CB-Signature")?;
+    let ts: i64 = ts_text.parse().map_err(|_| "bad X-CB-Timestamp")?;
+    let given = sig
+        .strip_prefix(SIGNATURE_PREFIX)
+        .ok_or("bad X-CB-Signature")?;
+    let want = hmac_sha256_hex(secret.as_bytes(), &[ts_text.as_bytes(), b".", body]);
+    // Both are hex of 32 bytes when valid, so the length is not secret.
+    let same = given.len() == want.len()
+        && given
+            .bytes()
+            .zip(want.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0;
+    if !same {
+        return Err("bad signature");
+    }
+    if ts.abs_diff(now) > SIGNATURE_WINDOW_SECS as u64 {
+        return Err("stale timestamp");
+    }
+    Ok(())
+}
+
 fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(header::AUTHORIZATION)?
@@ -112,6 +178,14 @@ async fn validate_route(
     // Authentication first; the body was already bounded by the body limit.
     if !bearer(&headers).is_some_and(|t| token_matches(t, &s.cfg.secret)) {
         return reply(StatusCode::UNAUTHORIZED, "missing or wrong bearer token");
+    }
+    if let Some(key) = &s.cfg.signing_secret {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        if let Err(why) = verify_signature(key, &headers, &body, now) {
+            return reply(StatusCode::UNAUTHORIZED, why);
+        }
     }
     if !GOLD_APPS.contains(&app.as_str()) && !PAIRWISE_APPS.contains(&app.as_str()) {
         return reply(StatusCode::NOT_FOUND, "no validator for this app");
@@ -457,6 +531,7 @@ mod tests {
         fn config(&self, max_body: usize) -> Config {
             Config {
                 secret: "hook".into(),
+                signing_secret: None,
                 state: Arc::new(usnm_store::LocalStore::new(self.state.path())),
                 work_dir: self.state.path().join("work"),
                 gold_dir: self.gold.path().to_owned(),
@@ -686,6 +761,122 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.status(), 400);
+    }
+
+    fn now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    fn sign(secret: &str, ts: &str, body: &[u8]) -> String {
+        format!(
+            "v1={}",
+            hmac_sha256_hex(secret.as_bytes(), &[ts.as_bytes(), b".", body])
+        )
+    }
+
+    /// Posts `body` with the given timestamp and signature headers (each omitted when `None`).
+    async fn post_headers(base: &str, body: &[u8], ts: Option<&str>, sig: Option<&str>) -> u16 {
+        let mut rq = reqwest::Client::new()
+            .post(format!("{base}/v1/validate/usnm_gold"))
+            .bearer_auth("hook")
+            .header("content-type", "application/json")
+            .body(body.to_vec());
+        if let Some(t) = ts {
+            rq = rq.header("X-CB-Timestamp", t);
+        }
+        if let Some(s) = sig {
+            rq = rq.header("X-CB-Signature", s);
+        }
+        rq.send().await.unwrap().status().as_u16()
+    }
+
+    #[test]
+    fn hmac_matches_the_rfc_4231_vectors() {
+        let hex = |parts: &[&[u8]], key: &[u8]| hmac_sha256_hex(key, parts);
+        assert_eq!(
+            hex(&[b"Hi ", b"There"], &[0x0b; 20]),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
+        // A key longer than the block is hashed first (test case 6).
+        assert_eq!(
+            hex(
+                &[b"Test Using Larger Than Block-Size Key - Hash Key First"],
+                &[0xaa; 131]
+            ),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_signing_secret_requires_a_fresh_valid_signature() {
+        let fx = Fx::new().await;
+        let mut cfg = fx.config(1 << 20);
+        cfg.signing_secret = Some("sek".into());
+        let base = listen(router(cfg).unwrap()).await;
+        let b = serde_json::to_vec(&body("s1", "usnm_gold", vec![res(1, vec![])])).unwrap();
+        let ts = now().to_string();
+        let good = sign("sek", &ts, &b);
+        // A valid signature passes.
+        assert_eq!(post_headers(&base, &b, Some(&ts), Some(&good)).await, 200);
+        // A tampered body fails: the signature was made over other bytes.
+        let other = serde_json::to_vec(&body("s2", "usnm_gold", vec![res(1, vec![])])).unwrap();
+        assert_eq!(
+            post_headers(&base, &other, Some(&ts), Some(&good)).await,
+            401
+        );
+        // A wrong secret fails.
+        let wrong = sign("not-sek", &ts, &b);
+        assert_eq!(post_headers(&base, &b, Some(&ts), Some(&wrong)).await, 401);
+        // A signature made for another timestamp fails.
+        let ts2 = (ts.parse::<i64>().unwrap() - 1).to_string();
+        assert_eq!(post_headers(&base, &b, Some(&ts2), Some(&good)).await, 401);
+        // A missing header fails, whichever it is.
+        assert_eq!(post_headers(&base, &b, Some(&ts), None).await, 401);
+        assert_eq!(post_headers(&base, &b, None, Some(&good)).await, 401);
+        assert_eq!(post_headers(&base, &b, None, None).await, 401);
+        // Malformed headers fail: no `v1=` prefix, a timestamp that is not an integer.
+        let bare = good.trim_start_matches("v1=");
+        assert_eq!(post_headers(&base, &b, Some(&ts), Some(bare)).await, 401);
+        let junk = sign("sek", "soon", &b);
+        assert_eq!(
+            post_headers(&base, &b, Some("soon"), Some(&junk)).await,
+            401
+        );
+        // A correctly signed but stale (or future) timestamp fails; the edge of the window passes.
+        for off in [-(SIGNATURE_WINDOW_SECS + 10), SIGNATURE_WINDOW_SECS + 10] {
+            let t = (now() + off).to_string();
+            let sig = sign("sek", &t, &b);
+            assert_eq!(
+                post_headers(&base, &b, Some(&t), Some(&sig)).await,
+                401,
+                "{off}"
+            );
+        }
+        let t = (now() - SIGNATURE_WINDOW_SECS + 30).to_string();
+        let sig = sign("sek", &t, &b);
+        assert_eq!(post_headers(&base, &b, Some(&t), Some(&sig)).await, 200);
+        // The bearer token is still needed.
+        let r = reqwest::Client::new()
+            .post(format!("{base}/v1/validate/usnm_gold"))
+            .header("X-CB-Timestamp", &ts)
+            .header("X-CB-Signature", &good)
+            .body(b.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 401);
+    }
+
+    #[tokio::test]
+    async fn without_a_signing_secret_the_headers_are_not_looked_at() {
+        let fx = Fx::new().await;
+        let base = fx.serve().await;
+        let b = serde_json::to_vec(&body("s3", "usnm_gold", vec![res(1, vec![])])).unwrap();
+        assert_eq!(post_headers(&base, &b, None, None).await, 200);
+        assert_eq!(post_headers(&base, &b, Some("1"), Some("v1=00")).await, 200);
     }
 
     #[tokio::test]

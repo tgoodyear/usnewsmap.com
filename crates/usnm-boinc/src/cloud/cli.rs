@@ -41,6 +41,11 @@ pub struct ValidatordArgs {
     /// File holding the webhook bearer token the cloud server sends (its WEBHOOK_TOKEN).
     #[arg(long)]
     secret_file: PathBuf,
+    /// File holding the webhook signing secret (the server's WEBHOOK_SIGNING_SECRET). When set,
+    /// a call needs a valid X-CB-Signature and a timestamp within 5 minutes; when not, calls are
+    /// checked by the bearer token only.
+    #[arg(long)]
+    signing_secret_file: Option<PathBuf>,
     /// The durable state: verdicts by call id and quality's seen copies and pair lines. A local
     /// directory, or `r2://<bucket>[/<prefix>]` with R2_ENDPOINT, R2_ACCESS_KEY_ID and
     /// R2_SECRET_ACCESS_KEY set (`usnm_store::open`).
@@ -184,6 +189,25 @@ fn read_token(file: &Option<PathBuf>, env: &str) -> anyhow::Result<String> {
     Ok(t)
 }
 
+/// The webhook signing secret, as the server keys its HMAC: the file's bytes unchanged (unlike a
+/// token, no whitespace is trimmed), except one final line ending, which an editor adds and
+/// the container's `printf '%s'` never writes. An empty secret is refused.
+#[cfg(any(test, feature = "cloud-validatord"))]
+fn read_signing_secret(path: &std::path::Path) -> anyhow::Result<String> {
+    let raw = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut s = String::from_utf8(raw).context("the signing secret is not UTF-8")?;
+    if s.ends_with('\n') {
+        s.pop();
+        if s.ends_with('\r') {
+            s.pop();
+        }
+    }
+    if s.is_empty() {
+        bail!("the signing secret is empty");
+    }
+    Ok(s)
+}
+
 pub async fn run(command: CloudCommands) -> anyhow::Result<()> {
     match command {
         #[cfg(any(test, feature = "cloud-validatord"))]
@@ -192,6 +216,17 @@ pub async fn run(command: CloudCommands) -> anyhow::Result<()> {
                 bail!("--listen is not a loopback address; add --allow-non-loopback to serve it");
             }
             let secret = read_token(&Some(a.secret_file), "")?;
+            let signing_secret = match a.signing_secret_file {
+                Some(p) => Some(read_signing_secret(&p)?),
+                None => {
+                    eprintln!(
+                        "warning: no --signing-secret-file: webhook signatures are not verified, \
+                         so a call is authenticated by the bearer token alone and a captured call \
+                         can be replayed"
+                    );
+                    None
+                }
+            };
             let admin = read_token(&a.token_file, "CBOINC_TOKEN")?;
             let fetch =
                 pull::Config::new(&a.base_url, admin, a.work_dir.clone(), false, vec![], 1)?;
@@ -199,6 +234,7 @@ pub async fn run(command: CloudCommands) -> anyhow::Result<()> {
                 .with_context(|| format!("opening the state store {}", a.state_url))?;
             let cfg = validatord::Config {
                 secret,
+                signing_secret,
                 state,
                 work_dir: a.work_dir,
                 gold_dir: a.gold_dir,
@@ -297,5 +333,27 @@ pub async fn run(command: CloudCommands) -> anyhow::Result<()> {
                 tokio::time::sleep(Duration::from_secs(a.interval_secs)).await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod signing_secret_tests {
+    use super::read_signing_secret;
+
+    fn read(bytes: &[u8]) -> anyhow::Result<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("s");
+        std::fs::write(&p, bytes).unwrap();
+        read_signing_secret(&p)
+    }
+
+    #[test]
+    fn the_signing_secret_keeps_its_whitespace_and_drops_one_line_ending() {
+        assert_eq!(read(b" sek ").unwrap(), " sek ");
+        assert_eq!(read(b" sek \n").unwrap(), " sek ");
+        assert_eq!(read(b"sek\r\n").unwrap(), "sek");
+        assert_eq!(read(b"sek\n\n").unwrap(), "sek\n");
+        assert!(read(b"").is_err());
+        assert!(read(b"\n").is_err());
     }
 }

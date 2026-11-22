@@ -25,13 +25,14 @@ Vars in `wrangler.jsonc`:
 
 Secrets, set with `wrangler secret put <name>`:
 
-| Name                                       | Value                                                                                                                |
-| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| `WEBHOOK_TOKEN`                            | The bearer token the cloud server sends (its `WEBHOOK_TOKEN`). The Worker checks it, and so does validatord.         |
-| `CBOINC_TOKEN`                             | An admin token of the cloud server, for reading outputs.                                                             |
-| `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | An R2 API token scoped to the state and gold buckets: read and write on the state bucket, read only on the gold one. |
+| Name                                       | Value                                                                                                                                                                                                                                                                               |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WEBHOOK_TOKEN`                            | The bearer token the cloud server sends (its `WEBHOOK_TOKEN`). The Worker checks it, and so does validatord.                                                                                                                                                                        |
+| `WEBHOOK_SIGNING_SECRET`                   | Optional. The signing secret of the cloud server (its `WEBHOOK_SIGNING_SECRET`). When set, validatord verifies `X-CB-Signature` and the `X-CB-Timestamp` window (the Worker forwards both headers unchanged); when not, validatord logs a warning and checks the bearer token only. |
+| `CBOINC_TOKEN`                             | An admin token of the cloud server, for reading outputs.                                                                                                                                                                                                                            |
+| `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | An R2 API token scoped to the state and gold buckets: read and write on the state bucket, read only on the gold one.                                                                                                                                                                |
 
-The Worker hands all eight to the container as environment variables (`containerEnv` in `route.mjs`) and refuses to start one when any is missing. The entrypoint writes `WEBHOOK_TOKEN` to a file only the container's user can read and removes it from the environment before validatord starts.
+The Worker hands all eight to the container as environment variables (`containerEnv` in `route.mjs`) and refuses to start one when any is missing. The entrypoint writes `WEBHOOK_TOKEN` to a file only the container's user can read and removes it from the environment before validatord starts; `WEBHOOK_SIGNING_SECRET`, when set, gets the same treatment and is passed as `--signing-secret-file`.
 
 ## Tests
 

@@ -33,6 +33,13 @@ home=/srv/validator
 mkdir -p "$home/run" "$home/gold" "$home/work"
 printf '%s' "$WEBHOOK_TOKEN" >"$home/run/webhook-token"
 unset WEBHOOK_TOKEN
+# Optional: with a signing secret validatord verifies X-CB-Signature and X-CB-Timestamp.
+signing_flag=""
+if [ -n "${WEBHOOK_SIGNING_SECRET:-}" ]; then
+  printf '%s' "$WEBHOOK_SIGNING_SECRET" >"$home/run/webhook-signing-secret"
+  signing_flag="--signing-secret-file $home/run/webhook-signing-secret"
+fi
+unset WEBHOOK_SIGNING_SECRET
 
 # The gold check rejects a report for a unit it has no expectations for, so the mirror must be
 # complete before the first call: a failed first sync stops the container.
@@ -47,7 +54,10 @@ rclone sync --checksum "$gold_remote" "$home/gold"
   done
 ) &
 
+# $signing_flag is empty or two words without spaces inside them, so it is left unquoted.
+# shellcheck disable=SC2086
 exec /usr/local/bin/usnm-boinc cloud validatord \
+  $signing_flag \
   --listen 0.0.0.0:8787 \
   --allow-non-loopback \
   --secret-file "$home/run/webhook-token" \

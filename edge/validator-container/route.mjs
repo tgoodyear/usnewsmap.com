@@ -53,5 +53,9 @@ export function containerEnv(env) {
     if (typeof env[n] !== "string" || env[n] === "") throw new Error(`${n} is not set`);
     out[n] = env[n];
   }
+  // Optional: with it, validatord verifies X-CB-Signature; without it, it warns and does not.
+  if (typeof env.WEBHOOK_SIGNING_SECRET === "string" && env.WEBHOOK_SIGNING_SECRET !== "") {
+    out.WEBHOOK_SIGNING_SECRET = env.WEBHOOK_SIGNING_SECRET;
+  }
   return out;
 }
