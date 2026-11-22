@@ -1,0 +1,12 @@
+[package]
+name = "proxy-rows"
+version = "0.1.0"
+edition = "2021"
+description = "Per-row damage rate and CER for the gain-proxy validation (#1415). Report tool, not part of the workspace."
+
+[workspace]
+
+[dependencies]
+usnm-ocr-survey = { path = "../../../../../crates/usnm-ocr-survey" }
+usnm-core = { path = "../../../../../crates/usnm-core", features = ["damage"] }
+serde_json = "1"
