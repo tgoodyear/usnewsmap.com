@@ -39,6 +39,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 use tokio::sync::Semaphore;
+use usnm_core::text::{normalize_ocr_for, Hyphenation};
 use usnm_ocr_contract::{boinc as ocr_boinc, quality as ocr_quality};
 use usnm_ocr_local::checks;
 
@@ -118,8 +119,13 @@ impl Kind {
         match self {
             Kind::Ndlocr => Ok((crate::ndlocr::compare(a, b).is_ok(), None)),
             Kind::Ocr => {
+                // Either result's profile may say Fraktur (they are one job's, so they agree).
+                let hyphenation = match (ocr_hyphenation(&a[2]), ocr_hyphenation(&b[2])) {
+                    (Hyphenation::Hyphens, Hyphenation::Hyphens) => Hyphenation::Hyphens,
+                    _ => Hyphenation::Fraktur,
+                };
                 let (a, b) = (text_of(&a[0])?, text_of(&b[0])?);
-                Ok((ocr_match(&a, &b), None))
+                Ok((ocr_match(&a, &b, hyphenation), None))
             }
             Kind::Quality => {
                 let verdict = quality_validate::compare(a, b, Some(line));
@@ -187,23 +193,62 @@ fn ocr_init(files: &[PathBuf], workunit: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Whether two `usnm_ocr` texts match: equal, or within [`Kind::OCR_LIMITS`] by `outside`.
-/// The cheap tests come first and bound the cost of `outside`: equal bytes match; a text over
-/// [`OCR_COMPARE_MAX_CHARS`] (raw characters) does not; nor do normalised lengths outside the
-/// ratio limits.
+/// How a `usnm_ocr` result's text is stored: [`Hyphenation::Fraktur`] when its engine profile
+/// has a Fraktur model, by the rule `stored_form` applies to a full engine tag on import. `result.json` passed the init
+/// script, so it parses; a profile that can't be read is plain hyphens.
+fn ocr_hyphenation(result: &Path) -> Hyphenation {
+    read_capped(result, ocr_boinc::MAX_JSON)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<ocr_boinc::ResultManifest>(&b).ok())
+        .map_or(Hyphenation::Hyphens, |m| {
+            Hyphenation::for_profile(&m.engine.profile)
+        })
+}
+
+/// A `usnm_ocr` text in the form the import stores it (`usnm_core::text::normalize_ocr_for`,
+/// settled): long s is `s`, the `ﬀ ﬁ ﬂ ﬃ ﬄ ﬅ ﬆ` ligatures are their letters, control characters
+/// are dropped and a word broken at a line end is joined. Two hosts that differ only in those
+/// spellings (one model build emitting `ſ` or `ﬁ` where another emits `s` or `fi`) give the
+/// same text, and `outside` measures texts in this form, as its doc says.
+fn ocr_stored(text: &str, hyphenation: Hyphenation) -> String {
+    let mut t = normalize_ocr_for(text, hyphenation);
+    for _ in 0..4 {
+        let next = normalize_ocr_for(&t, hyphenation);
+        if next == t {
+            break;
+        }
+        t = next;
+    }
+    t
+}
+
+/// Whether two `usnm_ocr` texts match: equal, or within [`Kind::OCR_LIMITS`] by `outside`, both
+/// taken in their stored form ([`ocr_stored`]) so that long s and ligature spellings are no
+/// difference. The cheap tests come first and bound the cost of `outside`: equal bytes match; a
+/// text over [`OCR_COMPARE_MAX_CHARS`] (raw characters) does not; equal stored forms match; a
+/// stored form over the cap does not; and normalised lengths outside the ratio limits do not.
 ///
 /// The measure is symmetric here. `outside` normalises both texts (as the gold set's are) and
 /// takes the replay's normalised length over the original's, so the text that is shorter after
 /// normalising is always passed as the original: the ratio is then at least 1 and only
 /// `max_ratio` binds, whichever result was the candidate, and whitespace that normalising drops
 /// changes neither the order nor the ratio. Both orders of a pair give one answer.
-fn ocr_match(a: &str, b: &str) -> bool {
+fn ocr_match(a: &str, b: &str, hyphenation: Hyphenation) -> bool {
     if a == b {
         return true;
     }
     if a.chars().count().max(b.chars().count()) > OCR_COMPARE_MAX_CHARS {
         return false;
     }
+    let (a, b) = (ocr_stored(a, hyphenation), ocr_stored(b, hyphenation));
+    if a == b {
+        return true;
+    }
+    // Expanding ligatures can triple a text (`ﬃ`), so the cap binds again on the stored forms.
+    if a.chars().count().max(b.chars().count()) > OCR_COMPARE_MAX_CHARS {
+        return false;
+    }
+    let (a, b) = (a.as_str(), b.as_str());
     let norm = |t: &str| usnm_ocr_quality::text::normalize(t, false).chars().count();
     let (na, nb) = (norm(a), norm(b));
     let (short, long, ns, nl) = if (na, a) <= (nb, b) {
