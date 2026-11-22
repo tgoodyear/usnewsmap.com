@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import selectors
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -1486,7 +1487,7 @@ def controller(unit, maintenance=(), fresh_s=900):
     if failed and last_run is not None and time.time() - last_run <= fresh_s:
         return {"ok": False, "seconds": max(0, end - start), "finished_at": int(time.time())} | failures
     if failed or latest is None or time.time() - latest["finished_at"] > fresh_s:
-        paused = paused_by(maintenance)
+        paused = paused_by(maintenance, unit)
         if paused:
             # Paused on purpose: nothing ran, so nothing ran long or failed.
             return {"ok": None, "seconds": 0, "finished_at": int(time.time()), **failures,
@@ -1495,22 +1496,83 @@ def controller(unit, maintenance=(), fresh_s=900):
     return latest | failures
 
 
-def paused_by(maintenance):
-    """The first maintenance unit that is running, or ended under 15 minutes ago, else None."""
-    for unit in maintenance:
-        status = dict(line.split("=", 1) for line in run([
-            "systemctl", "show", unit, "-p", "LoadState", "-p", "SubState",
-            "-p", "ExecMainStartTimestampMonotonic", "-p", "ExecMainExitTimestampMonotonic",
-        ]).decode().splitlines() if "=" in line)
-        if status.get("LoadState") != "loaded":
-            continue
-        start = int(status.get("ExecMainStartTimestampMonotonic", "0")) / 1e6
-        end = int(status.get("ExecMainExitTimestampMonotonic", "0")) / 1e6
-        now = time.clock_gettime(time.CLOCK_MONOTONIC)
-        if status.get("SubState") in ("start", "running") and start > end:
-            return unit
-        if start and end >= start and 0 <= now - end <= 900:
-            return unit
+# A file here pauses the controller checks on purpose (a deploy, a hand-run upkeep). /run is cleared
+# on reboot, so a forgotten marker cannot pause them for good; it counts for MAINTENANCE_MARKER_S.
+MAINTENANCE_MARKER = Path("/run/usnm-controller-maintenance")
+MAINTENANCE_MARKER_S = 4 * 3600
+CONTROLLER_TIMER_GLOB = "usnm-boinc-priority-controller@*.timer"
+PAUSED_TIMERS = "controller_timers_stopped"
+PAUSED_MARKER = "maintenance_marker"
+
+
+def _unit_status(unit):
+    return dict(line.split("=", 1) for line in run([
+        "systemctl", "show", unit, "-p", "LoadState", "-p", "SubState",
+        "-p", "ExecMainStartTimestampMonotonic", "-p", "ExecMainExitTimestampMonotonic",
+    ]).decode().splitlines() if "=" in line)
+
+
+def _running_or_just_ended(unit):
+    status = _unit_status(unit)
+    if status.get("LoadState") != "loaded":
+        return False
+    start = int(status.get("ExecMainStartTimestampMonotonic", "0")) / 1e6
+    end = int(status.get("ExecMainExitTimestampMonotonic", "0")) / 1e6
+    now = time.clock_gettime(time.CLOCK_MONOTONIC)
+    if status.get("SubState") in ("start", "running") and start > end:
+        return True
+    return bool(start and end >= start and 0 <= now - end <= 900)
+
+
+def _controller_timers_stopped(unit):
+    """True when the controller's tick timers are loaded and every one is inactive: stopped on
+    purpose, as a deploy does. Unreadable systemd is not a pause."""
+    timers = set()
+    if unit:
+        timers.add(unit.removesuffix(".service") + ".timer")
+    for line in run(["systemctl", "list-units", "--all", "--plain", "--no-legend", "--full", "--no-pager",
+                     CONTROLLER_TIMER_GLOB]).decode().splitlines():
+        fields = line.split()
+        if fields and re.fullmatch(r"usnm-boinc-priority-controller@[A-Za-z0-9_.-]+\.timer", fields[0]):
+            timers.add(fields[0])
+    states = []
+    for timer in sorted(timers):
+        status = dict(line.split("=", 1) for line in run(
+            ["systemctl", "show", timer, "-p", "LoadState", "-p", "ActiveState"]).decode().splitlines()
+            if "=" in line)
+        if status.get("LoadState") == "loaded":
+            states.append(status.get("ActiveState"))
+    return bool(states) and all(state == "inactive" for state in states)
+
+
+def paused_by(maintenance, unit=None):
+    """What pauses the controller on purpose, else None: the first maintenance unit that is running,
+    or ended under 15 minutes ago; a per-plan held-archive unit (usnm-boinc-held-archive@<plan>) in
+    the same state; a maintenance marker file (MAINTENANCE_MARKER); or every controller tick timer
+    stopped (a deploy)."""
+    for name in maintenance:
+        if _running_or_just_ended(name):
+            return name
+    try:
+        listed = run(["systemctl", "list-units", "--all", "--plain", "--no-legend", "--full", "--no-pager",
+                      *ARCHIVE_UNIT_GLOBS]).decode().splitlines()
+        for line in listed:
+            fields = line.split()
+            if (fields and ARCHIVE_UNIT.fullmatch(fields[0]) and fields[0] not in maintenance
+                    and _running_or_just_ended(fields[0])):
+                return fields[0]
+    except Exception:
+        pass
+    try:
+        if time.time() - MAINTENANCE_MARKER.stat().st_mtime <= MAINTENANCE_MARKER_S:
+            return PAUSED_MARKER
+    except OSError:
+        pass
+    try:
+        if _controller_timers_stopped(unit):
+            return PAUSED_TIMERS
+    except Exception:
+        pass
     return None
 
 
@@ -2197,6 +2259,9 @@ def collect(config):
                 document = fresh(future.result(), completed, name.split("_")[0])
                 expected = allowed.get(name, (None, None))[1]
                 if expected is not None and document["host_id"] != expected:
+                    # The reason code stays BINDING_MISMATCH (the alerts match it); the ids go to stderr.
+                    print(f"feed-source collect: {BINDING_MISMATCH} source={name} expected={expected} "
+                          f"reported={document['host_id']}", file=sys.stderr)
                     raise SupplyUnknown(BINDING_MISMATCH)
                 facts["sources"][name] = {"observed_at": document["observed_at"], "state": "fresh"}
                 if document.get("capacity_unproven"):
@@ -2336,6 +2401,30 @@ def collect(config):
     return facts
 
 
+def client_failure(error):
+    """A fixed, secret-free description of a client RPC failure: the exception class and a category."""
+    if isinstance(error, (TimeoutError, socket.timeout)):
+        category = "rpc_timeout"
+    elif isinstance(error, ConnectionError):
+        category = "rpc_connection"
+    elif isinstance(error, (OSError, http.client.HTTPException)):
+        category = "rpc_io"
+    elif isinstance(error, (ValueError, KeyError, TypeError, ET.ParseError)):
+        category = "rpc_invalid"
+    else:
+        category = "rpc_error"
+    return f"{type(error).__name__} {category}"
+
+
+def reported_tick_age(unit):
+    """Seconds since the controller unit last ended, for the stderr reason line; None if unknown."""
+    try:
+        end = int(_unit_status(unit).get("ExecMainExitTimestampMonotonic", "0")) / 1e6
+        return int(time.clock_gettime(time.CLOCK_MONOTONIC) - end) if end else None
+    except Exception:
+        return None
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="source", required=True)
@@ -2391,7 +2480,18 @@ def main(argv=None):
             result.update(server(args.project, args.window_env, args.container, args.container_project,
                                  args.feeder_guard, args.cohort_unit))
         elif args.source == "client":
-            result.update(client(args.data_dir, args.port, args.output.with_name(args.output.stem + ".session.json")))
+            session = args.output.with_name(args.output.stem + ".session.json")
+            try:
+                result.update(client(args.data_dir, args.port, session))
+            except Exception as first:
+                # One retry: a single RPC timeout is not a reason to report the source down.
+                print(f"feed-source client: {client_failure(first)} retrying", file=sys.stderr)
+                time.sleep(1)
+                try:
+                    result.update(client(args.data_dir, args.port, session))
+                except Exception as second:
+                    print(f"feed-source client: {client_failure(second)}", file=sys.stderr)
+                    raise
         elif args.source == "controller":
             if args.archive_runs:
                 # Read before the tick: an archive pauses the controller, so the tick is often unknown
@@ -2433,6 +2533,11 @@ def main(argv=None):
         except (OSError, ValueError, http.client.HTTPException):
             print("feed observation push unavailable", file=sys.stderr)
             return 1
+    if "error" in result:
+        # Fixed reason only: never the exception text, paths or credentials.
+        age = reported_tick_age(args.unit) if result["error"] == NO_RECENT_TICK else None
+        print(f"feed-source {args.source}: {result['error'].replace(' ', '_')}"
+              + (f" age={age}" if age is not None else ""), file=sys.stderr)
     return int("error" in result)
 
 

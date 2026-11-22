@@ -3024,3 +3024,84 @@ class PlanTickTests(unittest.TestCase):
 
     def test_the_status_states_match_the_collectors(self):
         self.assertEqual(F.PLAN_STATES_SEEN, C.PLAN_STATES)
+
+
+class PausedAndReasonTests(unittest.TestCase):
+    def systemd(self, units, timers):
+        """A fake systemctl: `units` maps archive unit -> (SubState, start, end); `timers` maps timer -> ActiveState."""
+        def run(argv, **_):
+            if argv[1] == "list-units":
+                names = timers if "usnm-boinc-priority-controller@*.timer" in argv else units
+                return "".join(f"{n} loaded x y d\n" for n in names).encode()
+            name = argv[2]
+            if name in timers:
+                return f"LoadState=loaded\nActiveState={timers[name]}\n".encode()
+            sub, start, end = units.get(name, ("dead", 0, 0))
+            return (f"LoadState=loaded\nSubState={sub}\nExecMainStartTimestampMonotonic={start}\n"
+                    f"ExecMainExitTimestampMonotonic={end}\n").encode()
+        return run
+
+    def paused(self, units, timers, marker=None):
+        unit = "usnm-boinc-priority-controller@main.service"
+        with patch.object(C, "run", side_effect=self.systemd(units, timers)), \
+                patch.object(C.time, "time", return_value=NOW), \
+                patch.object(C.time, "clock_gettime", return_value=5000), \
+                patch.object(C, "MAINTENANCE_MARKER", marker or Path("/nonexistent/marker")):
+            return C.paused_by((), unit)
+
+    def test_per_plan_held_archive_unit_pauses(self):
+        unit = "usnm-boinc-held-archive@main.service"
+        timers = {"usnm-boinc-priority-controller@main.timer": "active"}
+        self.assertEqual(self.paused({unit: ("start", 4400000000, 0)}, timers), unit)
+        self.assertIsNone(self.paused({unit: ("dead", 1000000000, 2000000000)}, timers))
+
+    def test_stopped_controller_timers_pause_but_one_active_does_not(self):
+        main = "usnm-boinc-priority-controller@main.timer"
+        other = "usnm-boinc-priority-controller@native-feed-3.timer"
+        self.assertEqual(self.paused({}, {main: "inactive", other: "inactive"}), C.PAUSED_TIMERS)
+        self.assertIsNone(self.paused({}, {main: "inactive", other: "active"}))
+        self.assertIsNone(self.paused({}, {}))
+
+    def test_maintenance_marker_pauses_while_fresh(self):
+        with tempfile.TemporaryDirectory() as folder:
+            marker = Path(folder) / "maintenance"
+            marker.write_text("")
+            os.utime(marker, (NOW - 60, NOW - 60))
+            active = {"usnm-boinc-priority-controller@main.timer": "active"}
+            self.assertEqual(self.paused({}, active, marker), C.PAUSED_MARKER)
+            os.utime(marker, (NOW - C.MAINTENANCE_MARKER_S - 60,) * 2)
+            self.assertIsNone(self.paused({}, active, marker))
+
+    def test_no_recent_tick_prints_a_fixed_reason(self):
+        with patch.object(C, "controller", side_effect=C.NoRecentTick()), \
+                patch.object(C, "reported_tick_age", return_value=1234), \
+                tempfile.TemporaryDirectory() as folder, contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(C.main(["controller", "--output", str(Path(folder) / "c.json")]), 1)
+        self.assertEqual(err.getvalue().strip(), "feed-source controller: no_recent_controller_tick age=1234")
+
+    def test_binding_mismatch_names_both_ids_on_stderr_and_keeps_the_code(self):
+        docs = CollectionTests.documents(self)
+        with patch.object(C, "own_clients", return_value={"client_0": ("/client-0", 11)}), \
+                patch.object(C, "read_source", side_effect=lambda path: deepcopy(docs.get(path, docs["/server"]))), \
+                patch.object(C, "fresh", side_effect=lambda d, *a: {**d, "host_id": 22}), \
+                patch.object(C.time, "time", return_value=NOW), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            facts = C.collect({"server": "/server", "controller": "/controller"})
+        self.assertEqual(facts["sources"]["client_0"]["reason"], C.BINDING_MISMATCH)
+        self.assertIn("expected=11 reported=22", err.getvalue())
+
+    def test_client_failure_is_logged_and_retried_once(self):
+        with tempfile.TemporaryDirectory() as folder:
+            out = Path(folder) / "client.json"
+            argv = ["client", "--data-dir", folder, "--output", str(out)]
+            with patch.object(C, "client", side_effect=[TimeoutError("secret"), {"ok": 1}]) as call, \
+                    patch.object(C.time, "sleep"), contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(C.main(argv), 0)
+            self.assertEqual(call.call_count, 2)
+            self.assertIn("TimeoutError rpc_timeout", err.getvalue())
+            self.assertNotIn("secret", err.getvalue())
+            with patch.object(C, "client", side_effect=ConnectionResetError("x")) as call, \
+                    patch.object(C.time, "sleep"), contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(C.main(argv), 1)
+            self.assertEqual(call.call_count, 2)
+            self.assertIn("feed-source client: source_unavailable", err.getvalue())
