@@ -780,7 +780,7 @@ case $TARGET:$STEP in
 esac
 lock_started=$SECONDS
 # Who holds a lock, for the failure text: the sidecar files handoff_lock.py note-holder writes.
-holders_of() { python3 "$LOCK_TOOL" holders --lock-dir "$RUN_DIR" --lock "$1" 2> /dev/null || echo "$1 holder unknown"; }
+holders_of() { python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" holders --lock-dir "$RUN_DIR" --lock "$1" 2> /dev/null || echo "$1 holder unknown"; }
 # take_lock FD LOCKFILE [FLOCK OPTION]: waits for the lock on FD for what is left of the lock wait.
 take_lock() {
   local left
@@ -796,9 +796,9 @@ take_lock() {
 holder_files=()
 note_holder() {
   local lock=$1; shift
-  python3 "$LOCK_TOOL" ${PLAN_SCOPE:+--plan "$PLAN_SCOPE"} note-holder --lock-dir "$RUN_DIR" --lock "$lock" \
+  python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" ${PLAN_SCOPE:+--plan "$PLAN_SCOPE"} note-holder --lock-dir "$RUN_DIR" --lock "$lock" \
     --step "$TARGET:$STEP" --pid $$ "$@" 2> /dev/null || return 0
-  if [ "$1" = --shared ]; then holder_files+=("$RUN_DIR/$lock.holder.$$"); else holder_files+=("$RUN_DIR/$lock.holder"); fi
+  if [ "${1:-}" = --shared ]; then holder_files+=("$RUN_DIR/$lock.holder.$$"); else holder_files+=("$RUN_DIR/$lock.holder"); fi
 }
 clear_holders() { [ ${#holder_files[@]} -eq 0 ] || rm -f "${holder_files[@]}"; }
 trap 'rm -f "${held_stdin:-}" "${archive_stdin:-}"; clear_holders' EXIT

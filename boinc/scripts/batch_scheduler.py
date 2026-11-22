@@ -844,14 +844,25 @@ class Admission:
     def held(self):
         return self._file is not None
 
-    def _priority_waiting(self, marker):
-        """True while a priority plan waits: the marker is held shared by it, so we can't take it."""
+    def _try_admission(self, handle, marker):
+        """One nonblocking attempt at the admission lock. A non-priority plan holds the marker
+        exclusively through the attempt, so no priority plan can mark itself waiting between the
+        check and the admission (it blocks for that instant); while a priority plan waits the
+        exclusive take fails and the plan is not admitted. The marker is released before the
+        caller sleeps or, once admitted, returns."""
+        if not self.priority:
+            try:
+                fcntl.flock(marker, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
         try:
-            fcntl.flock(marker, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return True
-        fcntl.flock(marker, fcntl.LOCK_UN)
-        return False
+        except BlockingIOError:
+            return False
+        finally:
+            if not self.priority:
+                fcntl.flock(marker, fcntl.LOCK_UN)
 
     def acquire(self):
         require(self._file is None, "the admission lock is already held")
@@ -862,12 +873,8 @@ class Admission:
             if self.priority:
                 fcntl.flock(marker, fcntl.LOCK_SH)
             while True:
-                if self.priority or not self._priority_waiting(marker):
-                    try:
-                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        break
-                    except BlockingIOError:
-                        pass
+                if self._try_admission(handle, marker):
+                    break
                 if self.clock() - started >= self.wait_secs:
                     handle.close()
                     marker.close()

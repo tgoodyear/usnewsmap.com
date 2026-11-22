@@ -734,6 +734,43 @@ class OnpremStep(unittest.TestCase):
                 self.assertFalse(Path(self.conf.name, "podman-args").exists())
 
     @unittest.skipUnless(shutil.which("flock"), "native flock is required")
+    def test_holder_records_really_run_and_name_the_holder_on_refusal(self):
+        import fcntl
+        import shlex
+
+        root = Path(self.conf.name, "handoff-root").resolve()
+        root.mkdir(mode=0o700)
+        script = f'exec {shlex.quote(shutil.which("flock"))} "$@"\n'
+        env = {"USNM_BOINC_HANDOFF_ROOT": str(root)}
+        args = ("--env", "prod", "--step", "submit", "--wait-mins", "1")
+        directory = Path(self.conf.name, "run")
+        directory.mkdir()
+        # The runner records itself (exclusive path, no shared flag, under set -u) while it runs.
+        seen = Path(self.conf.name, "holder-seen")
+        first = Path(self.conf.name, "first-bin")
+        first.mkdir()
+        (first / "podman").write_text(
+            "#!/usr/bin/env bash\n"
+            f"cp {shlex.quote(str(directory))}/usnm-boinc-step.lock.holder {shlex.quote(str(seen))}\n")
+        (first / "podman").chmod(0o755)
+        path = f"{first}:{Path(self.conf.name, 'bin')}:{os.environ['PATH']}"
+        done, _ = self.run_for_real(*args, flock_script=script, extra_env={**env, "PATH": path})
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue(seen.exists(), "note-holder never recorded the runner")
+        self.assertFalse((directory / "usnm-boinc-step.lock.holder").exists())
+        # A refused runner names the live holder instead of "holder unknown".
+        tool = Path(__file__).with_name("handoff_lock.py")
+        subprocess.run(["python3", str(tool), "--root", str(root), "note-holder", "--lock-dir", str(directory),
+                        "--lock", "usnm-boinc-step.lock", "--step", "bridge:other", "--pid", str(os.getpid())],
+                       check=True, capture_output=True)
+        with (directory / "usnm-boinc-step.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            done, _ = self.run_for_real(*args, flock_script=script, extra_env=env)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("bridge:other", done.stderr)
+        self.assertNotIn("holder unknown", done.stderr)
+
+    @unittest.skipUnless(shutil.which("flock"), "native flock is required")
     def test_real_mutex_refuses_overlap_times_out_and_then_accepts_a_released_lock(self):
         import fcntl
         import shlex

@@ -5973,6 +5973,35 @@ class AdmissionPriorityTests(unittest.TestCase):
                 marker.close()
             self.assertTrue(batch.Admission(path, 0.2, poll_secs=0.01).acquire())
 
+    def test_the_marker_stays_held_through_a_non_priority_admission_attempt(self):
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "admission.lock"
+            plan = batch.Admission(path, 0)
+            probe = plan.marker_path.open("a")
+            self.addCleanup(probe.close)
+            real, seen = fcntl.flock, []
+
+            def flock(handle, operation):
+                if operation == fcntl.LOCK_EX | fcntl.LOCK_NB and getattr(handle, "name", "") == str(path):
+                    # The instant of admission: a priority plan marking itself waiting must not get in.
+                    try:
+                        real(probe, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                        real(probe, fcntl.LOCK_UN)
+                        seen.append("marker free")
+                    except BlockingIOError:
+                        seen.append("marker held")
+                return real(handle, operation)
+
+            with mock.patch.object(batch.fcntl, "flock", flock):
+                self.assertTrue(plan.acquire())
+            self.assertEqual(seen, ["marker held"])
+            plan.release()
+            # Released after the attempt: a priority plan can mark itself waiting again.
+            real(probe, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            real(probe, fcntl.LOCK_UN)
+
     def test_a_priority_plans_timeout_drops_its_marker(self):
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
