@@ -740,6 +740,43 @@ class PublicConvert(unittest.TestCase):
                 self.assertEqual(perfect["char_edits"], 0)
 
 
+class ExcludePages(unittest.TestCase):
+    """--exclude-pages: keys are skipped before --pages counts, the rest stay in page-key order."""
+
+    def test_read_exclude_pages(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "x.txt"
+            f.write_text("# used\nsn1-a-b-0001.xml\n\nsn1-a-b-0002 # two\nsn2-c-d-0003.jpg\n", encoding="utf-8")
+            self.assertEqual(gold.read_exclude_pages(f), frozenset({"sn1-a-b-0001", "sn1-a-b-0002", "sn2-c-d-0003"}))
+        self.assertEqual(gold.read_exclude_pages(None), frozenset())
+
+    def test_fetch_skips_excluded_keys_and_takes_the_next_in_key_order(self):
+        import locfetch
+
+        keys = [f"sn1-r-f-{i:04d}" for i in range(6)]
+        docs = [{"document_metadata": {"document_id": k}} for k in keys]
+        pages = {k: {"key": k, "lccn": "sn1", "date": "1900-01-01", "edition": 1, "tail": "/" + k} for k in keys}
+        fetched = []
+
+        def fake_fetch(url, pacer, attempts=4):
+            if "?fo=json" in url:
+                return b"{}"
+            fetched.append(url)
+            return b"x"
+
+        with tempfile.TemporaryDirectory() as d, \
+                patch.object(gold, "hipe_docs", lambda src, which: docs), \
+                patch.object(gold, "ca_page", lambda doc_id: pages[doc_id]), \
+                patch.object(locfetch, "fetch", fake_fetch), \
+                patch.object(locfetch, "page_images", lambda item: {i: f"http://img/{i}" for i in range(len(keys))}), \
+                patch.object(locfetch, "page_altos", lambda item: {i: f"http://alto/{k}.xml" for i, k in enumerate(keys)}):
+            src = Path(d)
+            n = gold.fetch_overproof_ca_pages(src, 3, frozenset({keys[0], keys[2]}))
+            got = sorted(p.stem for p in (src / "loc").glob("*.xml"))
+        self.assertEqual(n, 3)
+        self.assertEqual(got, [keys[1], keys[3], keys[4]])
+
+
 class DownloadZip(unittest.TestCase):
     """download_zip() refetches a cached file that is not a readable zip, including one whose
     central directory is intact but whose member data is corrupt."""

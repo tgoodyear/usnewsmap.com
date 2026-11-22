@@ -1307,13 +1307,15 @@ def extract_encrypted_zip(z: Path, dest: Path, password: str) -> None:
 LOC_ITEM = "https://www.loc.gov/item/{lccn}/{date}/ed-{ed}/?fo=json"
 
 
-def fetch_overproof_ca_pages(src: Path, pages: int) -> int:
+def fetch_overproof_ca_pages(src: Path, pages: int, exclude: frozenset[str] = frozenset()) -> int:
     """For each Overproof dataset 3 page: loc.gov's issue JSON, then that page's ALTO and full image, paced
-    as locfetch does. Writes loc/pages.json (page key -> files and URLs). Returns the pages fetched."""
+    as locfetch does. Writes loc/pages.json (page key -> files and URLs). Returns the pages fetched. The pages are
+    taken in page-key order; keys in `exclude` are skipped first, so `pages` new pages come after them."""
     import locfetch
 
     want = sorted({pg["key"]: pg for d in hipe_docs(src, "ca")
                    if (pg := ca_page(d["document_metadata"]["document_id"]))}.values(), key=lambda p: p["key"])
+    want = [pg for pg in want if pg["key"] not in exclude]
     loc = src / "loc"
     loc.mkdir(parents=True, exist_ok=True)
     index_path = loc / "pages.json"
@@ -1344,6 +1346,18 @@ NEWSEYE = {
     "newseye-nlf-fi": (4599472, "ATR_ValidationSet_NLF_Newseye_GT_FI_M2+.zip", "ATR_TrainingSet_NLF_Newseye_GT_FI_M2+.zip"),
     "newseye-nlf-sv": (4599624, "ATR_ValidationSet_NLF_Newseye_GT_SV_M2+.zip", "ATR_TrainingSet_NLF_Newseye_GT_SV_M2+.zip"),
 }
+
+
+def read_exclude_pages(path: Path | None) -> frozenset[str]:
+    """Page keys (one per line; a trailing .xml/.jpg is dropped; blank lines and # comments ignored) to skip."""
+    if path is None:
+        return frozenset()
+    keys = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.split("#")[0].strip()
+        if line:
+            keys.add(line.removesuffix(".xml").removesuffix(".jpg"))
+    return frozenset(keys)
 
 
 def cmd_public_fetch(a: argparse.Namespace) -> int:
@@ -1404,7 +1418,7 @@ def cmd_public_fetch(a: argparse.Namespace) -> int:
             download(HIPE_RAW + path, a.src / name)
         extra = {"files": [HIPE_RAW + p for p in HIPE_OVERPROOF]}
         if a.dataset == "overproof-ca":
-            extra["pages_fetched"] = fetch_overproof_ca_pages(a.src, a.pages)
+            extra["pages_fetched"] = fetch_overproof_ca_pages(a.src, a.pages, read_exclude_pages(a.exclude_pages))
         write_source_note(a.src, a.dataset, **extra)
     elif a.dataset == "enp-berlin":
         for name in ("gt_page.zip", "img_full.zip"):
@@ -1475,6 +1489,8 @@ def main(argv: list[str] | None = None) -> int:
         if name == "public-fetch":
             q.add_argument("--confirm-download", action="store_true", help="agree to a download of up to several GB")
             q.add_argument("--pages", type=int, default=20, help="page images to download (datasets with separate images)")
+            q.add_argument("--exclude-pages", type=Path,
+                           help="overproof-ca: file of page keys to skip (one per line), applied before --pages")
             q.add_argument("--subset", choices=("validation", "training", "all"),
                            help="NewsEye sets: which zips (default validation; all for austrian)")
         else:
