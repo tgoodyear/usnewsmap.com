@@ -19,9 +19,9 @@
 // Two stateful rules, split by Check, so Azure sends one email when a check
 // starts and a resolved one when it clears; the evaluator sends no
 // transitions of its own:
-// - condition: a check firing in any event of the last 10 minutes (a
+// - condition: a check firing in any event of the last 20 minutes (a
 //   shortage that recovers between two evaluations still alerts). A check
-//   unknown in an event of the last 10 minutes counts only while that event's
+//   unknown in an event of the last 20 minutes counts only while that event's
 //   collection check is firing, which the evaluator holds for 180 seconds of
 //   unknown evaluations: one failed source read (a single unknown minute)
 //   sends no email. An unknown check names the source it waits on (#1698):
@@ -44,7 +44,7 @@
 //   Every other check keeps its plain code as before, which a separate Reason
 //   dimension would not (Azure keys an alert on every dimension's value).
 //   Also Check = delivery_test for a boinc_feed_delivery_test line in the
-//   last 10 minutes (feed_status.py --delivery-test), the end-to-end
+//   last 20 minutes (feed_status.py --delivery-test), the end-to-end
 //   notification check. That line never counts as a health event: it can't
 //   change the latest state or keep the missing rule quiet.
 //   Every hold is the evaluator's, not this query's (#2054): a check is firing
@@ -53,6 +53,8 @@
 //   hour, GPU hosts that ask for work idle for an hour), so this query takes
 //   any firing check as it always did. docs/boinc/server/boundaries-and-monitoring.md
 //   (Sustained conditions only) has the numbers.
+// Evaluated every 15 minutes over a 30-minute window with 20-minute lookbacks, so a line ingested late is still seen by
+// the next evaluation (a line seen twice only repeats a stateful alert).
 // - missing: no health event observed in the last 5 minutes
 //   (Check = collector_heartbeat): the evaluator stopped, its timer, the
 //   host, the agent or the association is gone, or the cap was reached.
@@ -119,7 +121,7 @@ resource dcr 'Microsoft.Insights/dataCollectionRules@2023-03-11' = {
 var lines = '''
 let FeedLines = union isfuzzy=true
     (Syslog
-    | where TimeGenerated > ago(10m)
+    | where TimeGenerated > ago(20m)
     | where _ResourceId =~ '__MACHINE_ID__' and ProcessName == 'usnm-boinc-feed-health'
     | project TimeGenerated, SyslogMessage),
     (datatable(TimeGenerated: datetime, SyslogMessage: string)[])
@@ -135,7 +137,7 @@ var queries = [
     displayName: 'BOINC feed condition'
     query: '''
 FeedEvents
-| where Observed between (ago(10m) .. now())
+| where Observed between (ago(20m) .. now())
 | mv-apply Held = Feed.checks on (
     where tostring(Held.code) == 'collection'
     | summarize CollectionFiring = countif(tostring(Held.state) == 'firing') > 0,
@@ -156,7 +158,7 @@ FeedEvents
 | union (
     FeedLines
     | where Feed.event == 'boinc_feed_delivery_test' and tobool(Feed.test)
-    | where Observed between (ago(10m) .. now())
+    | where Observed between (ago(20m) .. now())
     | project Check = 'delivery_test'
     | distinct Check
 )
@@ -187,8 +189,8 @@ resource alerts 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [for alert
     description: 'Read-only BOINC feed health (#1441). Fires only on sustained conditions (#2054; docs/boinc/server/boundaries-and-monitoring.md, Sustained conditions only). Check names the check; delivery_test is the end-to-end notification check (docs/boinc/server/boundaries-and-monitoring.md). Check the OCR dashboard BOINC feed / stale data panel. Do not start a second feed owner or automatically renew admission windows.'
     enabled: true
     severity: 2
-    evaluationFrequency: 'PT5M'
-    windowSize: 'PT10M'
+    evaluationFrequency: 'PT15M'
+    windowSize: 'PT30M'
     scopes: [workspace.id]
     // No Syslog table until the first line arrives.
     skipQueryValidation: true
