@@ -24,21 +24,23 @@ LINES = [
 LICENCE = "CC BY-NC-SA 4.0"
 
 
-def font(size: int = 28):
+def font(size: int = 28, path=None):
+    """The face the page is printed in: Pillow's default sans, or the font file `path`."""
     from PIL import ImageFont
 
-    return ImageFont.load_default(size=size)
+    return ImageFont.truetype(str(path), size) if path else ImageFont.load_default(size=size)
 
 
-def make_set(root: Path, lines=LINES, page_size=(800, 260), licence: str = LICENCE, for_scoring: bool = True) -> dict:
-    """Write set/ and alto/ under root and return {"set_dir", "alto_dir", "page_size", "box", "transcription"}."""
+def make_set(root: Path, lines=LINES, page_size=(800, 260), licence: str = LICENCE, for_scoring: bool = True,
+             scan_font=None) -> dict:
+    """Write set/ and alto/ under root (the page printed in `scan_font`, a font file, or Pillow's sans) and return {"set_dir", "alto_dir", "page_size", "box", "transcription"}."""
     from PIL import Image, ImageDraw
 
     set_dir, alto_dir = root / "set", root / "alto"
     (set_dir / "LICENSES").mkdir(parents=True)
     alto_dir.mkdir(parents=True)
     (set_dir / "LICENSES" / "LICENSE").write_text("synthetic test data\n", encoding="utf-8")
-    f = font()
+    f = font(path=scan_font)
     img = Image.new("L", page_size, 255)
     draw = ImageDraw.Draw(img)
     strings, truth_lines = [], []

@@ -2,10 +2,9 @@
 
 `crop_frame` cuts the scan around a word's ALTO box (a pad on every side, white outside the page). `render_word`
 draws the word's text in a font, then
-  * horizontally fits its ink to the ALTO box: the engine says this word fills this box, so a reading with the
-    wrong number of letters draws squeezed or stretched letters;
-  * vertically fits its ink to the rows that hold the scan's ink inside the box (`ink.ink_rows`), which is the
-    crop's own height and does not depend on what the text says;
+  * fits its ink to the box the scan's ink fills inside the ALTO box (`ink.ink_rows`, `ink.ink_cols`): the engine says
+    this word fills this box, so a reading with the wrong number of letters draws squeezed or stretched letters, and
+    the height is the crop's own, whatever the text says;
   * sets the ink threshold of the anti-aliased drawing so the mean stroke width is the scan's (`ink.stroke_width`).
 The result is a boolean ink mask in the frame, ready for the distances of step 3.
 
@@ -125,13 +124,16 @@ def render_word(text: str, frame_shape: tuple[int, int], x_span: tuple[int, int]
 def render_for_crop(text: str, page, box: list[float], font_path: str | Path) -> dict:
     """Scan crop and rendering of one word: {"scan": grey frame, "scan_mask", "render_mask", "meta"}.
 
-    The rendering's rows are the scan's ink rows inside the box (the box's rows when the crop has no ink)."""
+    The rendering's ink fills the rows and columns that hold the scan's ink inside the ALTO box (the box itself
+    when the crop has no ink): ALTO boxes carry a little slack, and the rendering should not inherit it."""
     frame, pad, (bx, by, bw, bh) = crop_frame(page, box)
-    scan_mask = ink.binarise(frame)
+    scan_mask = ink.drop_specks(ink.binarise(frame))
     inside = np.zeros_like(scan_mask)
     inside[by: by + bh, bx: bx + bw] = scan_mask[by: by + bh, bx: bx + bw]
-    rows = ink.ink_rows(inside)
-    y_span = (rows[0], rows[1]) if rows else (by, by + bh)
-    render_mask, meta = render_word(text, frame.shape, (bx, bx + bw), y_span, font_path, ink.stroke_width(inside))
-    meta.update({"pad": pad, "box_px": [bw, bh], "scan_ink": bool(inside.any()), "ink_rows": list(y_span)})
+    rows, cols = ink.ink_rows(inside), ink.ink_cols(inside)
+    y_span = rows if rows else (by, by + bh)
+    x_span = cols if cols else (bx, bx + bw)
+    render_mask, meta = render_word(text, frame.shape, x_span, y_span, font_path, ink.stroke_width(inside))
+    meta.update({"pad": pad, "box_px": [bw, bh], "scan_ink": bool(inside.any()), "ink_rows": list(y_span),
+                 "ink_cols": list(x_span)})
     return {"scan": frame, "scan_mask": scan_mask, "render_mask": render_mask, "meta": meta}

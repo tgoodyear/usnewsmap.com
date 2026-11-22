@@ -41,11 +41,26 @@ def stroke_width(mask: np.ndarray) -> float | None:
     return max(1.0, float(mask.sum()) / length)
 
 
+def _extent(counts: np.ndarray, frac: float) -> tuple[int, int] | None:
+    if counts.max(initial=0) == 0:
+        return None
+    idx = np.nonzero(counts >= max(1, frac * counts.max()))[0]
+    return int(idx[0]), int(idx[-1]) + 1
+
+
 def ink_rows(mask: np.ndarray, frac: float = 0.03) -> tuple[int, int] | None:
     """(top, bottom) rows, bottom exclusive, holding the word's ink: rows whose ink count is at least `frac` of the
     busiest row's, so a speck above a word does not stretch it. None for an empty mask."""
-    counts = mask.sum(axis=1)
-    if counts.max(initial=0) == 0:
-        return None
-    rows = np.nonzero(counts >= max(1, frac * counts.max()))[0]
-    return int(rows[0]), int(rows[-1]) + 1
+    return _extent(mask.sum(axis=1), frac)
+
+
+def ink_cols(mask: np.ndarray, frac: float = 0.03) -> tuple[int, int] | None:
+    """(left, right) columns, right exclusive, holding the word's ink, as ink_rows does for rows."""
+    return _extent(mask.sum(axis=0), frac)
+
+
+def drop_specks(mask: np.ndarray, size: int = 4) -> np.ndarray:
+    """The mask without connected pieces smaller than `size` pixels (paper noise, a neighbour's stray serif)."""
+    from skimage.morphology import remove_small_objects
+
+    return remove_small_objects(mask, max_size=size - 1) if mask.any() else mask

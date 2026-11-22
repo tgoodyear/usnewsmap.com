@@ -48,6 +48,15 @@ class InkTest(unittest.TestCase):
         self.assertEqual(ink.ink_rows(m), (10, 30))
         self.assertIsNone(ink.ink_rows(np.zeros((4, 4), bool)))
 
+    def test_ink_cols_and_specks(self):
+        m = np.zeros((40, 60), bool)
+        m[10:30, 10:50] = True
+        m[2, 55] = True
+        self.assertEqual(ink.ink_cols(m), (10, 56))  # a speck is a column of ink
+        clean = ink.drop_specks(m)
+        self.assertEqual(ink.ink_cols(clean), (10, 50))
+        self.assertTrue(clean[15, 20])
+
 
 class CropFrameTest(unittest.TestCase):
     def test_frame_is_white_outside_the_page(self):
@@ -119,6 +128,9 @@ class RenderTest(unittest.TestCase):
         self.assertLessEqual(abs(bottom - scan_rows[1]), 1)
         ys, _ = np.nonzero(out["render_mask"])
         self.assertLessEqual(abs(ys.min() - top), 3)  # a thicker stroke can grow the ink a little
+        left, right = out["meta"]["ink_cols"]
+        cols = ink.ink_cols(out["scan_mask"])
+        self.assertLessEqual(abs(left - cols[0]) + abs(right - cols[1]), 2)
         self.assertEqual(out["render_mask"].shape, out["scan"].shape)
 
     def test_preview_sheet(self):
