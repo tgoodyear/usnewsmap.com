@@ -21,14 +21,15 @@ neither: it defines no gutter and ignores no detection.
 
 Reading choices where the plan is silent (see the PR):
   - Only adjacent pairs count: a pair is dropped if another text region touches the gap rectangle.
-  - Gutters from different pairs in the same gap are merged into one: x ranges overlapping by at
-    least half the narrower, y ranges overlapping or within MERGE_Y_TOL of the page height. The merged
-    x range is the height-weighted mean of the parts, the y range their union.
+  - A gutter is a chain of segments [x0, x1, y0, y1], one per pair, so its x range can drift down a
+    skewed page. Segments of the same gap are chained when their y ranges are within MERGE_Y_TOL of
+    the page height and their x centres within MERGE_X_TOL of the page width. Gutter height is the sum
+    of its segments' heights (holes between segments do not count).
 
     refgutters.py --regions regions.jsonl --selection selection.tsv --out refs.json [--only-ca-page]
 
-Output is keyed JSON, keys sorted: id -> {excluded: [[x0, y0, x1, y1]], gutters: [[x0, x1, y0, y1]],
-height, width}. Prints the per-set counts.
+Output is keyed JSON, keys sorted: id -> {excluded: [[x0, y0, x1, y1]], gutters: [[[x0, x1, y0, y1], ...]],
+height, width} (a gutter is a list of segments). Prints the per-set counts.
 """
 import argparse
 import csv
@@ -44,7 +45,7 @@ EXCLUDED_TYPES = {
 }
 CELL = re.compile(r"T\d+C\d+$")
 MIN_OVERLAP = 0.5  # of the shorter region's height
-MERGE_X_OVERLAP = 0.5
+MERGE_X_TOL = 0.01  # of page width
 MERGE_Y_TOL = 0.01  # of page height
 
 
@@ -83,9 +84,14 @@ def pair_gutters(boxes):
     return out
 
 
-def merge_gutters(gutters, page_height):
-    """Merge gutters of the same gap into one (see module docstring)."""
-    n = len(gutters)
+def merge_gutters(segments, page_width, page_height):
+    """Chain the per-pair segments of one gap into gutters.
+
+    A gutter is a list of segments [x0, x1, y0, y1] sorted by y with no y overlap; its x range may
+    drift down the page (a skewed scan). Two segments are chained when their y ranges are within
+    MERGE_Y_TOL of the page height and their x centres within MERGE_X_TOL of the page width.
+    """
+    n = len(segments)
     parent = list(range(n))
 
     def find(i):
@@ -94,33 +100,36 @@ def merge_gutters(gutters, page_height):
             i = parent[i]
         return i
 
-    tol = MERGE_Y_TOL * page_height
+    ty, tx = MERGE_Y_TOL * page_height, MERGE_X_TOL * page_width
     for i in range(n):
         for j in range(i + 1, n):
-            a, b = gutters[i], gutters[j]
-            xo = min(a[1], b[1]) - max(a[0], b[0])
-            if xo <= 0 or xo < MERGE_X_OVERLAP * min(a[1] - a[0], b[1] - b[0]):
+            a, b = segments[i], segments[j]
+            if max(a[2], b[2]) - min(a[3], b[3]) > ty:
                 continue
-            if max(a[2], b[2]) - min(a[3], b[3]) > tol:
+            if abs((a[0] + a[1]) / 2 - (b[0] + b[1]) / 2) > tx:
                 continue
             parent[find(i)] = find(j)
     groups = defaultdict(list)
     for i in range(n):
-        groups[find(i)].append(gutters[i])
-    merged = []
+        groups[find(i)].append(segments[i])
+    out = []
     for g in groups.values():
-        w = [max(1e-9, p[3] - p[2]) for p in g]
-        tw = sum(w)
-        x0 = sum(p[0] * wi for p, wi in zip(g, w)) / tw
-        x1 = sum(p[1] * wi for p, wi in zip(g, w)) / tw
-        merged.append([x0, x1, min(p[2] for p in g), max(p[3] for p in g)])
-    merged.sort(key=lambda p: (p[0], p[2]))
-    return merged
+        g.sort(key=lambda s: (s[2], s[3]))
+        segs = []
+        for x0, x1, y0, y1 in g:
+            if segs and y0 < segs[-1][3]:
+                if y1 <= segs[-1][3]:
+                    continue
+                y0 = segs[-1][3]
+            segs.append([x0, x1, y0, y1])
+        out.append(segs)
+    out.sort(key=lambda g: (g[0][2], g[0][0]))
+    return out
 
 
-def page_reference(regions, page_height):
+def page_reference(regions, page_width, page_height):
     tboxes = [tuple(r["box"]) for r in regions if is_text(r.get("type")) and r.get("box")]
-    gut = merge_gutters(pair_gutters(tboxes), page_height)
+    gut = merge_gutters(pair_gutters(tboxes), page_width, page_height)
     exc = [list(r["box"]) for r in regions if is_excluded(r.get("type")) and r.get("box")]
     return gut, exc
 
@@ -146,14 +155,14 @@ def build(regions_path, selection_path, only_ca_page=False):
     refs = {}
     for pid, row in sorted(sel.items()):
         w, h = int(row["width"]), int(row["height"])
-        gut, exc = page_reference(by_page.get(pid, []), h)
+        gut, exc = page_reference(by_page.get(pid, []), w, h)
         refs[pid] = {"excluded": exc, "gutters": gut, "height": h, "width": w}
     return refs
 
 
 def counts(refs):
     ng = sum(len(v["gutters"]) for v in refs.values())
-    ht = sum(g[3] - g[2] for v in refs.values() for g in v["gutters"])
+    ht = sum(s[3] - s[2] for v in refs.values() for g in v["gutters"] for s in g)
     return {"gutter_height_px": round(ht), "gutters": ng, "pages": len(refs),
             "pages_with_gutters": sum(1 for v in refs.values() if v["gutters"])}
 

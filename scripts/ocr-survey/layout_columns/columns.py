@@ -19,7 +19,7 @@ Datasets used to tune and score it:
                [--ids-file FILE] [--shard-index I --shard-count N] [--workers K]
                [--cache-dir DIR] [--overlay-dir DIR] [--params-json JSON]
 
-Output is keyed JSON, keys sorted: page id -> {gutters: [[x0, x1, y0, y1]], height, width}, in the
+Output is keyed JSON, keys sorted: page id -> {gutters: [[[x0, x1, y0, y1], ...]], height, width} (a gutter is a list of segments), in the
 original image's pixels, plus "_meta" with the method and parameters.
 """
 import argparse
@@ -32,7 +32,7 @@ from dataclasses import asdict, dataclass, fields
 
 import numpy as np
 from PIL import Image
-from scipy.ndimage import uniform_filter, uniform_filter1d
+from scipy.ndimage import grey_opening, uniform_filter, uniform_filter1d
 from scipy.signal import find_peaks
 
 Image.MAX_IMAGE_PIXELS = None
@@ -40,31 +40,34 @@ Image.MAX_IMAGE_PIXELS = None
 
 @dataclass
 class Params:
+    """Defaults are the values frozen after tuning on de-rz (see the PR)."""
     # image
     work_width: int = 2000
     bg_window: float = 0.05      # local-mean window, fraction of work width
     ink_ratio: float = 0.82      # ink = gray < local mean * ratio
     # profile / valley detection (shared by both methods; fractions of the band or page)
     smooth: float = 0.003        # profile smoothing, fraction of width
-    prominence: float = 0.55     # valley prominence, fraction of the profile's 90th percentile
-    rel_height: float = 0.7      # valley width measured at this fraction of its prominence
-    valley_max: float = 0.35     # valley floor must be <= this fraction of the profile level
+    rule_width: float = 0.0      # column rules thinner than this are removed from the profile (fraction of width)
+    prominence: float = 0.6      # valley prominence, fraction of the profile's 90th percentile
+    rel_height: float = 0.5      # valley width measured at this fraction of its prominence
+    clip: float = 1.0            # profile is clipped at this multiple of its level (rules, borders, pictures)
+    valley_max: float = 0.2      # valley floor must be <= this fraction of the profile level
     min_ink: float = 0.03        # band profile level must be >= this fraction of band height
-    min_gutter: float = 0.006    # minimum gutter width, fraction of page width
+    min_gutter: float = 0.002    # minimum gutter width, fraction of page width
     min_col: float = 0.04        # minimum text width left and right of a gutter, fraction of width
     # banded
-    band_frac: float = 0.05      # band height, fraction of page height
+    band_frac: float = 0.08      # band height, fraction of page height
     band_overlap: float = 0.5
     deskew_deg: float = 1.0
     deskew_step: float = 0.25
     merge_overlap: float = 0.5   # x overlap (of the narrower) to join gutters of adjacent bands
-    max_hole: int = 1            # bands without the gutter that a run may bridge
-    min_run: float = 0.08        # shortest kept gutter, fraction of page height
+    max_hole: int = 2            # bands without the gutter that a run may bridge
+    min_run: float = 0.12        # shortest kept gutter, fraction of page height
     # fullheight baseline
-    fh_min_gutter: float = 0.008
-    fh_prominence: float = 0.5
-    fh_valley_max: float = 0.35
-    fh_min_col: float = 0.05
+    fh_min_gutter: float = 0.001
+    fh_prominence: float = 0.15
+    fh_valley_max: float = 0.7
+    fh_min_col: float = 0.15
 
 
 def params_from(json_text):
@@ -146,6 +149,9 @@ def best_profile(ink, p):
 def valleys(profile, band_h, min_gutter_px, min_col_px, prominence, valley_max, p):
     """Gutters [x0, x1] (profile pixels) as low-ink valleys of a column profile."""
     n = len(profile)
+    rw = int(p.rule_width * n)
+    if rw > 1:
+        profile = grey_opening(profile, size=rw, mode="nearest")
     k = max(1, int(p.smooth * n))
     s = uniform_filter1d(profile, size=k, mode="nearest") if k > 1 else profile
     level = float(np.percentile(s, 90))
@@ -155,7 +161,7 @@ def valleys(profile, band_h, min_gutter_px, min_col_px, prominence, valley_max, 
     if len(live) < 3:
         return []
     xl, xr = int(live[0]), int(live[-1])
-    sub = s[xl: xr + 1]
+    sub = np.minimum(s[xl: xr + 1], p.clip * level)
     peaks, props = find_peaks(-sub, prominence=prominence * level, width=max(1, min_gutter_px),
                               rel_height=p.rel_height)
     out = []
@@ -186,34 +192,36 @@ def find_banded(gray, p):
     for y0 in starts:
         prof, _ = best_profile(ink[y0: y0 + bh], p)
         per_band.append((y0, y0 + bh, valleys(prof, bh, min_g, min_c, p.prominence, p.valley_max, p)))
-    # join gutters of neighbouring bands into runs
-    runs = []  # dicts: x0s, x1s, y0, y1, last
+    # join gutters of neighbouring bands into runs; a run's segments are the bands' core ranges
+    # (the part of each band not shared with its neighbours), so they tile the page without overlap
+    pad = (bh - stride) / 2.0
+    runs = []
     for bi, (y0, y1, gs) in enumerate(per_band):
+        c0 = y0 if bi == 0 else y0 + pad
+        c1 = y1 if bi == len(per_band) - 1 else y1 - pad
         used = set()
         for g in gs:
             best, best_ov = None, 0.0
             for ri, r in enumerate(runs):
                 if bi - r["last"] > p.max_hole + 1 or ri in used:
                     continue
-                rx0, rx1 = float(np.mean(r["x0s"])), float(np.mean(r["x1s"]))
-                ov = min(g[1], rx1) - max(g[0], rx0)
-                if ov > 0 and ov >= p.merge_overlap * min(g[1] - g[0], rx1 - rx0) and ov > best_ov:
+                lx0, lx1 = r["segs"][-1][0], r["segs"][-1][1]
+                ov = min(g[1], lx1) - max(g[0], lx0)
+                if ov > 0 and ov >= p.merge_overlap * min(g[1] - g[0], lx1 - lx0) and ov > best_ov:
                     best, best_ov = ri, ov
+            seg = [g[0], g[1], float(c0), float(c1)]
             if best is None:
-                runs.append({"x0s": [g[0]], "x1s": [g[1]], "y0": y0, "y1": y1, "last": bi})
+                runs.append({"segs": [seg], "last": bi})
                 used.add(len(runs) - 1)
             else:
-                r = runs[best]
-                r["x0s"].append(g[0])
-                r["x1s"].append(g[1])
-                r["y1"] = y1
-                r["last"] = bi
+                runs[best]["segs"].append(seg)
+                runs[best]["last"] = bi
                 used.add(best)
     out = []
     for r in runs:
-        if r["y1"] - r["y0"] >= p.min_run * h:
-            out.append([float(np.mean(r["x0s"])), float(np.mean(r["x1s"])), float(r["y0"]), float(r["y1"])])
-    out.sort()
+        if sum(s[3] - s[2] for s in r["segs"]) >= p.min_run * h:
+            out.append(r["segs"])
+    out.sort(key=lambda g: (g[0][2], g[0][0]))
     return out
 
 
@@ -228,7 +236,7 @@ def find_fullheight(gray, p):
     prof = ink[ya:yb].sum(axis=0, dtype=np.float64)
     gs = valleys(prof, yb - ya, max(1, int(p.fh_min_gutter * w)), int(p.fh_min_col * w),
                  p.fh_prominence, p.fh_valley_max, p)
-    return [[g[0], g[1], float(ya), float(yb)] for g in gs]
+    return [[[g[0], g[1], float(ya), float(yb)]] for g in gs]
 
 
 METHODS = {"banded": find_banded, "fullheight": find_fullheight}
@@ -238,36 +246,38 @@ def detect(gray, orig_size, method, p):
     """Gutters in original-image pixels: [x0, x1, y0, y1]."""
     sx = orig_size[0] / gray.shape[1]
     sy = orig_size[1] / gray.shape[0]
-    return [[round(g[0] * sx), round(g[1] * sx), round(g[2] * sy), round(g[3] * sy)]
+    return [[[round(s[0] * sx), round(s[1] * sx), round(s[2] * sy), round(s[3] * sy)] for s in g]
             for g in METHODS[method](gray, p)]
 
 
 # ---------------------------------------------------------------- driver
 
-def overlay(gray, gutters, orig_size, path):
+def overlay(gray, gutters, orig_size, path, refs=None):
+    """Detected gutters as red outlines (filled lightly), reference gutters as blue outlines."""
     im = Image.fromarray(gray).convert("RGB")
+    from PIL import ImageDraw
     sx = gray.shape[1] / orig_size[0]
     sy = gray.shape[0] / orig_size[1]
-    a = np.asarray(im).copy()
-    for x0, x1, y0, y1 in gutters:
-        xs, xe, ys, ye = int(x0 * sx), int(x1 * sx), int(y0 * sy), int(y1 * sy)
-        reg = a[ys:ye, xs:max(xe, xs + 1)].astype(np.float32)
-        reg[..., 0] = reg[..., 0] * 0.4 + 150
-        reg[..., 1] *= 0.4
-        reg[..., 2] *= 0.4
-        a[ys:ye, xs:max(xe, xs + 1)] = reg.clip(0, 255).astype(np.uint8)
-    Image.fromarray(a).save(path)
+    layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
+    dr = ImageDraw.Draw(layer)
+    for g in gutters:
+        for x0, x1, y0, y1 in g:
+            dr.rectangle([x0 * sx, y0 * sy, max(x1 * sx, x0 * sx + 1), y1 * sy], fill=(255, 0, 0, 70), outline=(255, 0, 0, 255))
+    for g in refs or []:
+        for x0, x1, y0, y1 in g:
+            dr.rectangle([x0 * sx, y0 * sy, max(x1 * sx, x0 * sx + 1), y1 * sy], outline=(0, 60, 255, 255), width=2)
+    Image.alpha_composite(im.convert("RGBA"), layer).convert("RGB").save(path)
 
 
 def _one(args):
-    path, method, pdict, cache_dir, overlay_dir = args
+    path, method, pdict, cache_dir, overlay_dir, refs = args
     p = Params(**pdict)
     gray, size = load_gray(path, p.work_width, cache_dir)
     g = detect(gray, size, method, p)
     pid = os.path.splitext(os.path.basename(path))[0]
     if overlay_dir:
         os.makedirs(overlay_dir, exist_ok=True)
-        overlay(gray, g, size, os.path.join(overlay_dir, f"{pid}.{method}.png"))
+        overlay(gray, g, size, os.path.join(overlay_dir, f"{pid}.{method}.png"), (refs or {}).get(pid, {}).get("gutters"))
     return pid, {"gutters": g, "height": size[1], "width": size[0]}
 
 
@@ -291,11 +301,13 @@ def main(argv=None):
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--cache-dir")
     ap.add_argument("--overlay-dir")
+    ap.add_argument("--overlay-refs", help="reference gutters JSON (refgutters.py) to draw in blue on the overlays")
     ap.add_argument("--params-json", help="JSON object overriding Params fields")
     a = ap.parse_args(argv)
     p = params_from(a.params_json)
     paths = list_images(a.images, a.ids_file)[a.shard_index:: a.shard_count]
-    jobs = [(x, a.method, asdict(p), a.cache_dir, a.overlay_dir) for x in paths]
+    refs = json.load(open(a.overlay_refs)) if a.overlay_refs else None
+    jobs = [(x, a.method, asdict(p), a.cache_dir, a.overlay_dir, refs) for x in paths]
     res = {}
     t0 = time.time()
     if a.workers > 1:

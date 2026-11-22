@@ -51,7 +51,11 @@ def small_params(**kw):
 
 
 def centers(gs):
-    return sorted((g[0] + g[1]) / 2 for g in gs)
+    return sorted((g[0][0] + g[0][1]) / 2 for g in gs)
+
+
+def gh(g):
+    return sum(s[3] - s[2] for s in g)
 
 
 def test_banded_finds_two_gutters():
@@ -60,7 +64,7 @@ def test_banded_finds_two_gutters():
     assert len(g) == 2
     c = centers(g)
     assert abs(c[0] - 340) < 15 and abs(c[1] - 660) < 15
-    assert all(x[3] - x[2] > 0.6 * 1400 for x in g)
+    assert all(gh(x) > 0.6 * 1400 for x in g)
 
 
 def test_fullheight_finds_two_gutters():
@@ -74,8 +78,8 @@ def test_banded_beats_fullheight_with_headline_spanning_columns():
     full = columns.find_fullheight(img, small_params())
     # the full-height gutters run through the headline; the banded ones start below it
     assert len(banded) == 2 and len(full) == 2
-    assert all(g[2] < 100 for g in full)
-    assert all(g[2] >= 130 for g in banded)
+    assert all(g[0][2] < 100 for g in full)
+    assert all(g[0][2] >= 130 for g in banded)
 
 
 def test_deskew_keeps_gutters_on_a_skewed_page():
@@ -110,80 +114,104 @@ def reg(t, box):
     return {"type": t, "box": box}
 
 
+def G(x0, x1, y0, y1):
+    """A one-segment gutter."""
+    return [[x0, x1, y0, y1]]
+
+
 def test_reference_gutter_from_side_by_side_regions():
     regions = [reg("paragraph", [0, 0, 100, 1000]), reg("paragraph", [120, 0, 220, 1000])]
-    g, _ = refgutters.page_reference(regions, 1000)
-    assert g == [[100, 120, 0, 1000]]
+    g, _ = refgutters.page_reference(regions, 1000, 1000)
+    assert g == [G(100, 120, 0, 1000)]
 
 
 def test_reference_needs_half_overlap_of_shorter():
     # shared height 40 of the shorter 100: no gutter
     regions = [reg("paragraph", [0, 0, 100, 100]), reg("paragraph", [120, 60, 220, 160])]
-    assert refgutters.page_reference(regions, 1000)[0] == []
+    assert refgutters.page_reference(regions, 1000, 1000)[0] == []
     # shared height 60 of the shorter 100: gutter
     regions = [reg("paragraph", [0, 0, 100, 100]), reg("paragraph", [120, 40, 220, 140])]
-    assert refgutters.page_reference(regions, 1000)[0] == [[100, 120, 40, 100]]
+    assert refgutters.page_reference(regions, 1000, 1000)[0] == [G(100, 120, 40, 100)]
 
 
 def test_reference_skips_non_adjacent_pairs_and_non_text():
     regions = [reg("article", [0, 0, 100, 500]), reg("article", [120, 0, 220, 500]),
                reg("article", [240, 0, 340, 500]), reg("cartoon_or_advertisement", [0, 600, 100, 900]),
                reg("table", [120, 600, 220, 900]), reg("T0C0", [240, 600, 340, 900])]
-    g, exc = refgutters.page_reference(regions, 1000)
-    assert [x[:2] for x in g] == [[100, 120], [220, 240]]
+    g, exc = refgutters.page_reference(regions, 1000, 1000)
+    assert [x[0][:2] for x in g] == [[100, 120], [220, 240]]
     assert len(exc) == 3
 
 
-def test_reference_merges_pairs_of_one_gap():
-    regions = [reg("paragraph", [0, 0, 100, 300]), reg("paragraph", [0, 305, 100, 600]),
-               reg("paragraph", [120, 0, 220, 600])]
-    g, _ = refgutters.page_reference(regions, 1000)
-    assert len(g) == 1 and g[0][2] == 0 and g[0][3] == 600
+def test_reference_chains_segments_of_one_gap_and_follows_drift():
+    regions = [reg("paragraph", [0, 0, 100, 300]), reg("paragraph", [0, 305, 104, 600]),
+               reg("paragraph", [120, 0, 220, 300]), reg("paragraph", [124, 305, 220, 600])]
+    g, _ = refgutters.page_reference(regions, 1000, 1000)
+    assert len(g) == 1 and len(g[0]) == 2
+    assert g[0][0][:2] == [100, 120] and g[0][1][:2] == [104, 124]
 
 
 # ---- scoring
 
 def test_perfect_match():
-    ref = [[100, 120, 0, 1000]]
-    s = score.match_page([[102, 118, 0, 1000]], ref, 1000, [])
+    ref = [G(100, 120, 0, 1000)]
+    s = score.match_page([G(102, 118, 0, 1000)], ref, 1000, [])
     assert s["matched_det_height"] == 1000 and s["matched_ref_height"] == 1000
 
 
 def test_margin_is_one_percent_of_width():
-    ref = [[100, 120, 0, 1000]]
-    assert score.match_page([[95, 125, 0, 1000]], ref, 1000, [])["matched_n"] == 1   # 5 px < 10 px
-    assert score.match_page([[85, 125, 0, 1000]], ref, 1000, [])["matched_n"] == 0   # 15 px > 10 px
-    assert score.match_page([[85, 125, 0, 1000]], ref, 2000, [])["matched_n"] == 1   # width 2000: 20 px
+    ref = [G(100, 120, 0, 1000)]
+    assert score.match_page([G(95, 125, 0, 1000)], ref, 1000, [])["matched_n"] == 1   # 5 px < 10 px
+    assert score.match_page([G(85, 125, 0, 1000)], ref, 1000, [])["matched_n"] == 0   # 15 px > 10 px
+    assert score.match_page([G(85, 125, 0, 1000)], ref, 2000, [])["matched_n"] == 1   # width 2000: 20 px
 
 
 def test_half_height_rule():
-    ref = [[100, 120, 0, 1000]]
-    assert score.match_page([[100, 120, 0, 499]], ref, 1000, [])["matched_n"] == 0
-    assert score.match_page([[100, 120, 0, 500]], ref, 1000, [])["matched_n"] == 1
+    ref = [G(100, 120, 0, 1000)]
+    assert score.match_page([G(100, 120, 0, 499)], ref, 1000, [])["matched_n"] == 0
+    assert score.match_page([G(100, 120, 0, 500)], ref, 1000, [])["matched_n"] == 1
+
+
+def test_inside_gap_only_over_part_of_the_height():
+    ref = [G(100, 120, 0, 1000)]
+    det = [[[100, 120, 0, 400], [300, 320, 400, 1000]]]   # leaves the gap after y = 400
+    assert score.match_page(det, ref, 1000, [])["matched_n"] == 0
+    det = [[[100, 120, 0, 600], [300, 320, 600, 1000]]]
+    assert score.match_page(det, ref, 1000, [])["matched_n"] == 1
+
+
+def test_drifting_detection_matches_drifting_reference():
+    ref = [[[100, 120, 0, 500], [150, 170, 500, 1000]]]
+    det = [[[102, 118, 0, 500], [152, 168, 500, 1000]]]
+    s = score.match_page(det, ref, 1000, [])
+    assert s["matched_n"] == 1
+    # a straight detection covers only one half of the drifting reference
+    assert score.match_page([G(100, 120, 0, 1000)], ref, 1000, [])["matched_n"] == 1  # exactly half
+    assert score.match_page([G(100, 118, 0, 1000)], [[[100, 120, 0, 400], [200, 220, 400, 1000]]], 1000, [])["matched_n"] == 0
 
 
 def test_one_to_one_extra_detections_unmatched():
-    ref = [[100, 120, 0, 1000]]
-    s = score.match_page([[100, 110, 0, 1000], [110, 120, 0, 600]], ref, 1000, [])
+    ref = [G(100, 120, 0, 1000)]
+    s = score.match_page([G(100, 110, 0, 1000), G(110, 120, 0, 600)], ref, 1000, [])
     assert s["matched_n"] == 1 and s["matched_det_height"] == 1000 and s["det_height"] == 1600
 
 
 def test_greedy_takes_largest_overlap_first():
-    ref = [[100, 120, 0, 500], [100, 120, 400, 1000]]
-    det = [[100, 120, 0, 1000]]
+    ref = [G(100, 120, 0, 500), G(100, 120, 400, 1000)]
+    det = [G(100, 120, 0, 1000)]
     s = score.match_page(det, ref, 1000, [])
     assert s["matched_ref_height"] == 600  # the second reference (overlap 600) wins
 
 
 def test_detection_in_excluded_region_is_ignored():
-    s = score.match_page([[400, 420, 0, 1000]], [], 1000, [[300, 0, 600, 1000]])
+    s = score.match_page([G(400, 420, 0, 1000)], [], 1000, [[300, 0, 600, 1000]])
     assert s["det_n"] == 0 and s["det_ignored"] == 1 and s["det_height"] == 0
-    s = score.match_page([[400, 420, 0, 1000]], [], 1000, [[300, 0, 600, 400]])
+    s = score.match_page([G(400, 420, 0, 1000)], [], 1000, [[300, 0, 600, 400]])
     assert s["det_n"] == 1  # only 40% inside
 
 
 def test_excluded_fraction_union_not_double_counted():
-    f = score.excluded_fraction([0, 10, 0, 10], [[0, 0, 10, 6], [0, 4, 10, 10]])
+    f = score.excluded_fraction(G(0, 10, 0, 10), [[0, 0, 10, 6], [0, 4, 10, 10]])
     assert abs(f - 1.0) < 1e-9
 
 
@@ -200,8 +228,8 @@ def test_bootstrap_is_deterministic():
 
 
 def test_score_end_to_end(tmp_path):
-    refs = {"p1": {"gutters": [[100, 120, 0, 1000]], "excluded": [], "width": 1000, "height": 1000}}
-    det = {"p1": {"gutters": [[100, 120, 0, 1000], [500, 520, 0, 1000]]}}
+    refs = {"p1": {"gutters": [G(100, 120, 0, 1000)], "excluded": [], "width": 1000, "height": 1000}}
+    det = {"p1": {"gutters": [G(100, 120, 0, 1000), G(500, 520, 0, 1000)]}}
     r = score.score(det, refs)
     assert r["recall"] == 1.0 and r["precision"] == 0.5
     json.dumps(r, sort_keys=True)

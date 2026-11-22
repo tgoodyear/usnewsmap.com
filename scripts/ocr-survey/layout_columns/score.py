@@ -4,7 +4,9 @@
 Matching, as frozen in the plan:
   - A detected gutter matches a reference gutter if, over at least half the reference gutter's
     height (y axis), it lies within the reference gap widened by 1% of the page's own width on
-    each side.
+    each side. A gutter is a list of segments [x0, x1, y0, y1] (its x range may drift down a
+    skewed page); the covered height sums the y overlap of detected and reference segments whose
+    x range is inside the widened gap.
   - Greedy one-to-one, largest vertical overlap first. A reference gutter takes at most one
     detected gutter; extra detected gutters in the same gap stay unmatched.
   - A detected gutter mostly (more than half its area) inside an excluded region (ad, picture,
@@ -45,13 +47,14 @@ def _overlap(a0, a1, b0, b1):
     return max(0.0, min(a1, b1) - max(a0, b0))
 
 
-def excluded_fraction(g, boxes):
-    """Fraction of gutter g (x0, x1, y0, y1) covered by the union of boxes (x0, y0, x1, y1)."""
-    x0, x1, y0, y1 = g
-    area = (x1 - x0) * (y1 - y0)
-    if area <= 0 or not boxes:
-        return 0.0
-    # exact union area by sweeping over the clipped boxes' x edges
+def height(g):
+    """Height of a gutter: the sum of its segments' (x0, x1, y0, y1) heights."""
+    return sum(s[3] - s[2] for s in g)
+
+
+def _excluded_area(seg, boxes):
+    """Area of segment (x0, x1, y0, y1) covered by the union of boxes (x0, y0, x1, y1)."""
+    x0, x1, y0, y1 = seg
     clipped = []
     for b in boxes:
         bx0, bx1 = max(x0, b[0]), min(x1, b[2])
@@ -75,42 +78,62 @@ def excluded_fraction(g, boxes):
         if cur1 is not None:
             tot += cur1 - cur0
         cov += tot * (xb - xa)
-    return cov / area
+    return cov
+
+
+def excluded_fraction(g, boxes):
+    """Fraction of gutter g's area (all segments) inside the union of the excluded boxes."""
+    area = sum((s[1] - s[0]) * (s[3] - s[2]) for s in g)
+    if area <= 0 or not boxes:
+        return 0.0
+    return sum(_excluded_area(s, boxes) for s in g) / area
+
+
+def covered_height(d, r, m):
+    """Height over which detected gutter d lies within reference gutter r's gap widened by m.
+
+    Both are lists of segments (x0, x1, y0, y1); a gutter's x range may drift down the page, so the
+    test is made segment against segment, on their shared y range.
+    """
+    tot = 0.0
+    for sd in d:
+        for sr in r:
+            if sd[0] >= sr[0] - m and sd[1] <= sr[1] + m:
+                tot += _overlap(sd[2], sd[3], sr[2], sr[3])
+    return tot
 
 
 def match_page(det, ref, width, excluded):
-    """Per-page sums. det and ref are lists of [x0, x1, y0, y1]."""
+    """Per-page sums. det and ref are lists of gutters (lists of segments)."""
     kept = [d for d in det if excluded_fraction(d, excluded) <= IGNORE_FRAC]
     m = MARGIN * width
     cands = []
     for di, d in enumerate(kept):
         for ri, r in enumerate(ref):
-            rh = r[3] - r[2]
+            rh = height(r)
             if rh <= 0:
                 continue
-            if d[0] < r[0] - m or d[1] > r[1] + m:
-                continue
-            ov = _overlap(d[2], d[3], r[2], r[3])
-            if ov >= MIN_REF_COVER * rh:
-                cands.append((ov, di, ri))
+            cov = covered_height(d, r, m)
+            if cov >= MIN_REF_COVER * rh:
+                cands.append((cov, di, ri))
     cands.sort(key=lambda c: (-c[0], c[1], c[2]))
     ud, ur = set(), set()
     md = mr = 0.0
-    for ov, di, ri in cands:
+    for cov, di, ri in cands:
         if di in ud or ri in ur:
             continue
         ud.add(di)
         ur.add(ri)
-        md += kept[di][3] - kept[di][2]
-        mr += ref[ri][3] - ref[ri][2]
+        md += height(kept[di])
+        mr += height(ref[ri])
     return {
-        "det_height": sum(d[3] - d[2] for d in kept),
+        "det_height": sum(height(d) for d in kept),
         "det_ignored": len(det) - len(kept),
         "det_n": len(kept),
         "matched_det_height": md,
         "matched_ref_height": mr,
         "matched_n": len(ud),
-        "ref_height": sum(r[3] - r[2] for r in ref),
+        "ref_height": sum(height(r) for r in ref),
         "ref_n": len(ref),
     }
 
