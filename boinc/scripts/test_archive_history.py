@@ -1805,6 +1805,23 @@ class ReconcileTests(ReconcileFixture):
         self.assertEqual(code, 1)
         self.assertIn(page_key(99), errors[-1]["error"])
 
+    def test_a_resume_accepts_a_named_page_the_kind_filter_dropped(self):
+        # Page 4 is named but has a journal (reserved): --kind journal-less leaves it out of the run.
+        self.only_page_2_collides()
+        args = self.argv("--apply", "--confirm-controller-paused", "--confirm-plan-draining",
+                         "--kind", "journal-less", "--expect-journal-less", "1",
+                         "--page", page_key(2), "--page", page_key(4), bridge=False)
+        with mock.patch.object(archive, "handoff_step", side_effect=OSError("injected")):
+            code, _, errors = run(args)
+        self.assertEqual(code, 1, errors)
+        self.assertEqual(errors[-1]["error"], "OSError")
+        manifest = json.loads((self.archive_dir / "reconcile/0001/manifest.json").read_text())
+        self.assertEqual(manifest["named_pages"], sorted([page_key(2), page_key(4)]))
+        self.assertNotIn(page_key(4), [page["page"] for page in manifest["pages"]])
+        code, receipt, errors = run(args)
+        self.assertEqual(code, 0, errors)
+        self.assertEqual(receipt["run"], "0001")
+
     def test_a_resume_refuses_pages_outside_the_named_scope(self):
         self.interrupt_scoped_run(page_key(1), page_key(2))
         before = self.snapshot()

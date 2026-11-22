@@ -1319,6 +1319,7 @@ def plan_reconcile(scheduler, target, plans, container, bridge, args):
         "account": target.config["account"], "plan": target.name,
         "config_sha256": scheduler.digest(target.config), "kinds": sorted(args.kinds),
         "checked_plans": sorted(plan.name for plan in plans),
+        "named_pages": sorted(args.page),
         "checked_plan_digests": {plan.name: scheduler.digest(plan.config) for plan in plans},
         "bridge_jobs": None if bridge is None else {"listed": len(bridge),
                                                     "sha256": sha256_file(args.bridge_jobs)},
@@ -1488,7 +1489,10 @@ def reconcile(args):
                 outside = sorted(planned_pages - set(args.page))
                 require(not outside, f"reconcile run {batch.name} also gives back {outside[:5]}, which --page "
                                      "does not name; nothing more was changed")
-                unplanned = sorted(set(args.page) - planned_pages)
+                # Named pages the kind filter left out of the run are still the run's scope;
+                # a manifest without the list (older) is checked against its planned pages.
+                named = set(manifest["named_pages"]) if "named_pages" in manifest else planned_pages
+                unplanned = sorted(set(args.page) - named)
                 require(not unplanned, f"reconcile run {batch.name} does not include {unplanned[:5]}; "
                                        "nothing more was changed")
             if args.confirm_collision_only and not args.confirm_plan_draining:
