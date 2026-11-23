@@ -31,7 +31,6 @@ import argparse
 import json
 import os
 import re
-import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BUILD_ONLY = ("drop_examples", "min_examples")
@@ -41,6 +40,8 @@ V_MARGIN = 0.03  # of the page's height above and below
 TRUTHS = ("yes", "no")
 KEY_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 LANG_CODE = re.compile(r"^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
+# What worker.mjs's PUT /admin/clips accepts (it also refuses any key containing "..").
+CLIP_KEY = re.compile(r"^[A-Za-z0-9._\-/]{1,300}$")
 
 
 def slug(text: str) -> str:
@@ -145,6 +146,8 @@ def main(argv=None) -> None:
         task, box = build_task(row, args.lang, args.set, sizes[path])
         if len(task["id"]) > 300 or not re.match(r"^[A-Za-z0-9._~/-]+$", task["id"]):
             raise SystemExit(f"line {n}: task id {task['id']!r} has characters or a length the site refuses; rename the page or segment")
+        if not CLIP_KEY.match(task["crop"]) or ".." in task["crop"]:
+            raise SystemExit(f"line {n}: crop key {task['crop']!r} would be refused by /admin/clips (worker.mjs); shorten the set, page or segment name")
         for k in (task["id"], task["crop"]):
             if k in seen:
                 raise SystemExit(f"line {n}: {k} is used twice; page_id and segment_id must make each segment unique")
@@ -178,4 +181,4 @@ def main(argv=None) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    main()

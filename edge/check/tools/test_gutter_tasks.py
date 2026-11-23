@@ -104,6 +104,20 @@ class EndToEnd(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 gt.main(["--segments", os.path.join(d, "s.jsonl"), "--set", "g", "--language-config", LANGUAGE, "--out-dir", os.path.join(d, "o")])
 
+    def test_crop_keys_the_upload_route_refuses_stop_the_build(self):
+        from PIL import Image
+        for set_name, page_id in (("pilot..v1", "p"), ("g", "p" * 285)):
+            with self.subTest(set=set_name, page=len(page_id)), tempfile.TemporaryDirectory() as d:
+                Image.new("L", (100, 100), 200).save(os.path.join(d, "p.png"))
+                r = {"segment_id": "s1", "page_id": page_id, "image_path": "p.png", "x": 50, "y0": 10, "y1": 90, "method": "m", "role": "r"}
+                with open(os.path.join(d, "s.jsonl"), "w") as f:
+                    f.write(json.dumps(r) + "\n")
+                out = os.path.join(d, "o")
+                with self.assertRaises(SystemExit) as e:
+                    gt.main(["--segments", os.path.join(d, "s.jsonl"), "--set", set_name, "--language-config", LANGUAGE, "--out-dir", out])
+                self.assertIn("crop key", str(e.exception))
+                self.assertFalse(os.path.exists(out))
+
     def test_takes_no_positional_arguments(self):
         p = subprocess.run([sys.executable, "-I", os.path.join(HERE, "gutter_tasks.py"), "segments.jsonl"], capture_output=True, text=True)
         self.assertNotEqual(p.returncode, 0)
