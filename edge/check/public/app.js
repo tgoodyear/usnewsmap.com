@@ -2,7 +2,7 @@
 const $ = (id) => document.getElementById(id);
 const SESSION = "usnm-check-session";
 const NAMES = "usnm-check-names"; // "1" when the visitor turned letter names on in this browser
-let lineShown = true; // column gutter tasks: whether the line is drawn on the crop
+let lineShown = true; // column gutter tasks: whether the line is drawn on the crop shown; each new crop starts with it drawn
 let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false, loaded = false, failed = false, fontFailed = false, showNames = false, shownPrev;
 // On a slow connection an answer is saved in the background and the next word, fetched while this one was shown, appears at once.
 // `pending` holds answers not yet saved, oldest first; `ahead` holds the next words fetched for the word now shown; `stale` is set
@@ -490,7 +490,8 @@ async function next(had = controlFocused(), after = null, pressed, keepRest = tr
   slowTimer = setTimeout(() => { if (busy) navStatus("Loading the next word…"); }, 400);
   try {
     const r = first ? await first.p.then((x) => { used = true; return x; }, () => fetchNext()) : await fetchNext();
-    task = r.task; answered = Math.max(answered, r.answered); loaded = true; failed = false; navStatus("");
+    // A new word or crop starts with its line drawn: "Hide the line" applies to one crop only.
+    task = r.task; lineShown = true; answered = Math.max(answered, r.answered); loaded = true; failed = false; navStatus("");
     fontFailed = !(await fontReady(task));
     // The loading message may have appeared while the font loaded; the word is ready now, so it goes.
     navStatus(fontFailed ? "The font for this word didn't load." : "", fontFailed);
@@ -571,7 +572,7 @@ async function choose(choice) {
 function back() {
   if (!history.length || busy || stale) return;
   const had = controlFocused();
-  const h = history.pop(); task = h.task; render(h.choice); keepFocus(had); prefetch();
+  const h = history.pop(); task = h.task; lineShown = true; render(h.choice); keepFocus(had); prefetch();
   status("Change your answer, or pick the same one to keep it.");
 }
 
