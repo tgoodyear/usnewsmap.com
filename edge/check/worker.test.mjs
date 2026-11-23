@@ -916,3 +916,24 @@ test("a gutter line may lean: x1 (its x at y1) is kept on /api/next and the expo
   assert.equal(db.prepare("SELECT COUNT(*) AS k FROM tasks").get().k, 1, "a refused line stores nothing");
   assert.deepEqual(JSON.parse(db.prepare("SELECT body FROM tasks").get().body).line, lean);
 });
+
+test("a leaning gutter line refuses answers from a page that draws it vertical; a vertical one takes them from any page", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  const load = await adminCall(DB, "/admin/tasks", null, [
+    { id: "en-gutter/g1/p~s1", lang: "en-gutter", set: "g1", ...gutterBody(), line: { x: 0.5, y0: 0.1, y1: 0.9, x1: 0.47 } },
+    { id: "en-gutter/g1/p~s2", lang: "en-gutter", set: "g1", ...gutterBody({ segment_id: "s2" }) },
+  ].map((t) => JSON.stringify(t)).join("\n"));
+  assert.equal(load.status, 200);
+  const post = async (who, body) => worker.fetch(new Request("https://check.usnewsmap.com/api/answers", { method: "POST", headers: { authorization: "Bearer " + (await signSession(env.SESSION_KEY, who)) }, body: JSON.stringify(body) }), E, {});
+  assert.ok(DISPLAY_REVISION >= 2, "the revision that draws x1");
+  for (const display of [undefined, 1, DISPLAY_REVISION - 1]) assert.equal((await post("c1", { task: "en-gutter/g1/p~s1", choice: "a", display })).status, 426, String(display));
+  assert.equal(db.prepare("SELECT COUNT(*) AS k FROM answers").get().k, 0, "a stale page's answer is not stored");
+  assert.equal((await post("c1", { task: "en-gutter/g1/p~s1", choice: "a", display: DISPLAY_REVISION })).status, 200);
+  assert.equal((await post("c1", { task: "en-gutter/g1/p~s2", choice: "a", display: 1 })).status, 200, "a vertical line is drawn the same by every page");
+  // the statement itself refuses a stale page too, against a request that read the task before its line was made to lean
+  const { ANSWER_SQL } = await import("./worker.mjs");
+  assert.equal(db.prepare(ANSWER_SQL).run("en-gutter/g1/p~s1", "c2", "a", 0, 1, "unknown", "unknown").changes, 0);
+  assert.equal(db.prepare(ANSWER_SQL).run("en-gutter/g1/p~s2", "c2", "a", 0, 1, "unknown", "unknown").changes, 1);
+  assert.equal(db.prepare(ANSWER_SQL).run("en-gutter/g1/p~s1", "c2", "a", 0, DISPLAY_REVISION, "unknown", "unknown").changes, 1);
+});

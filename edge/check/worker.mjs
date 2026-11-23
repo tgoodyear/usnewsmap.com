@@ -32,8 +32,12 @@ const SETTLE_MIN = 3; // answers before a word can settle
 const DISPUTE_AT = 7; // answers after which a word that never agreed is closed as disputed
 // The page's display revision (public/app.js, DISPLAY). An answer to a word marked confusable_display must come from a page
 // at this revision or later: an open tab from before the served font keeps drawing the letters alike, and its answer would
-// otherwise count as a new one once the word is reopened. Raise both together when a display change needs the same.
-export const DISPLAY_REVISION = 1;
+// otherwise count as a new one once the word is reopened. An answer to a gutter task whose line leans (line.x1) must come
+// from revision 2 or later too: an older page ignores x1 and draws a vertical line, so its answer judges a different line.
+// Raise both together when a display change needs the same.
+export const DISPLAY_REVISION = 2;
+// SQL for "this task needs an up-to-date page" (the conditions above), on a row of `tasks`.
+const NEEDS_CURRENT_PAGE = `(confusable_display = 1 OR (json_extract(body, '$.kind') = 'gutter' AND json_type(body, '$.line.x1') IS NOT NULL))`;
 const enc = new TextEncoder();
 
 export default {
@@ -243,12 +247,12 @@ async function api(request, env, url) {
     const c = await contributorOf(request, env, { limited: true });
     const b = await body(request);
     if (typeof b.task !== "string" || b.task.length > 300 || !CHOICES.has(b.choice)) throw new HttpError(400, "task and choice required");
-    const t = await env.DB.prepare("SELECT id, settled, held, confusable_display, json_type(body, '$.private') AS blind, json_extract(body, '$.kind') AS kind FROM tasks WHERE id = ?").bind(b.task).first();
+    const t = await env.DB.prepare(`SELECT id, settled, held, confusable_display, json_type(body, '$.private') AS blind, json_extract(body, '$.kind') AS kind, ${NEEDS_CURRENT_PAGE} AS current_page FROM tasks WHERE id = ?`).bind(b.task).first();
     if (!t) throw new HttpError(404, "no such task");
     if (t.kind === "gutter" && GUTTER_REFUSED.has(b.choice)) throw new HttpError(400, "this question takes yes, no or can't tell");
     if (t.settled && t.blind) throw new HttpError(409, "this word is already checked");
     if (t.held) throw new HttpError(409, "this word is not open for answers");
-    if (t.confusable_display && !(Number(b.display) >= DISPLAY_REVISION)) throw new HttpError(426, "this page is out of date: reload it, then answer again");
+    if (t.current_page && !(Number(b.display) >= DISPLAY_REVISION)) throw new HttpError(426, "this page is out of date: reload it, then answer again");
     await record(env, b.task, c, b.choice, Date.now(), Number(b.display) || 0, fontOf(b.font), namesOf(b.names_shown));
     return json({ ok: true });
   }
@@ -373,13 +377,14 @@ WHERE id = ?1`;
 // A settled blind task (its body has `private`) takes no more answers, so a revision can't reopen it after its
 // readings were exported, and a held task (marked confusable_display, not yet reopened) takes none either. The
 // conditions are in the statement, so they hold against a racing request too. ?5 is the display revision the answer came
-// from: a marked task refuses an older one even if it was reopened after the request read the task. ?6 is the font state
+// from: a marked task, and a gutter task whose line leans, refuses an older one (a marked task even if it was reopened after the
+// request read the task; NEEDS_CURRENT_PAGE). ?6 is the font state
 // (FONT_STATES) and ?7 whether letter names were showing (NAMES_STATES); a replaced answer takes the new answer's states.
 export const ANSWER_SQL = `
 INSERT INTO answers (task_id, contributor, choice, at, font, names_shown)
 SELECT ?1, ?2, ?3, ?4, ?6, ?7
 WHERE NOT EXISTS (SELECT 1 FROM tasks WHERE id = ?1 AND ((settled = 1 AND json_type(body, '$.private') IS NOT NULL) OR held = 1
-  OR (confusable_display = 1 AND ?5 < ${DISPLAY_REVISION})))
+  OR (${NEEDS_CURRENT_PAGE} AND ?5 < ${DISPLAY_REVISION})))
 ON CONFLICT (task_id, contributor) DO UPDATE SET choice = excluded.choice, at = excluded.at, font = excluded.font, names_shown = excluded.names_shown`;
 
 export async function record(env, task, contributor, choice, at = Date.now(), display = DISPLAY_REVISION, font = "unknown", names = "unknown") {

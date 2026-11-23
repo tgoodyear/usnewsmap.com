@@ -6,7 +6,8 @@ let lineShown = true; // column gutter tasks: whether the line is drawn on the c
 let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false, loaded = false, failed = false, fontFailed = false, showNames = false, shownPrev;
 // Sent with every answer. The Worker refuses answers to a word marked confusable_display from a page older than this: an
 // already-open tab has the old stylesheet and font, and would send answers about letters it draws alike (worker.mjs, DISPLAY_REVISION).
-const DISPLAY = 1;
+// Revision 2 draws a gutter task's leaning line (line.x1); the Worker refuses answers to such a task from an older page.
+const DISPLAY = 2;
 
 let memory = {};
 function store(k, v) {
