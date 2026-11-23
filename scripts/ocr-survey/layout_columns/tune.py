@@ -15,8 +15,9 @@ Library).
     tune.py --merge part-0.json part-1.json ... [--top 10]
 
 A run is sharded by page: every shard writes, per configuration and set, the summed heights
-[det, matched det, ref, matched ref, pages]; --merge adds the shards and ranks the configurations by
-the equal-weight pooled F1 (precision and recall per set, then the mean over sets).
+[a+b, a, ref union, ref covered; coverage-precision det union, det covered, ref union, ref covered; one-to-one det, matched det, ref, matched ref; pages]; --merge adds the shards and ranks the configurations by
+the equal-weight pooled F1 under the amended primary metric (precision a/(a+b) and coverage recall per
+set, then the mean over sets); the coverage-precision and one-to-one pools are printed beside it.
 """
 import argparse
 import itertools
@@ -54,8 +55,10 @@ def _page(task):
         if ik != cur_key:
             ink, cur_key = columns.binarize(gray, p), ik
         g = columns.detect(gray, size, _G["method"], p, ink)
-        m = score.match_page(g, ref["gutters"], ref["width"], ref["excluded"])
-        out[key] = [m["det_height"], m["matched_det_height"], m["ref_height"], m["matched_ref_height"]]
+        m = score.match_page(g, ref["gutters"], ref["width"], ref["excluded"], ref.get("zones"))
+        out[key] = [m["ab_det"], m["a_det"], m["cov_ref_union"], m["cov_ref"],
+                    m["cov_det_union"], m["cov_det"], m["cov_ref_union"], m["cov_ref"],
+                    m["det_height"], m["matched_det_height"], m["ref_height"], m["matched_ref_height"]]
     return name, out
 
 
@@ -80,14 +83,14 @@ def run(a):
             tasks.append((name, pid))
     idx = [int(x) for x in str(a.shard_index).split(",")]
     tasks = [t for i in idx for t in tasks[i:: a.shard_count]]
-    acc = {k: {n: np.zeros(5) for n in sets} for k, _ in configs}
+    acc = {k: {n: np.zeros(13) for n in sets} for k, _ in configs}
     t0 = time.time()
     done = 0
     with mp.Pool(a.workers, initializer=_init, initargs=(sets, a.method, configs)) as pool:
         for name, out in pool.imap_unordered(_page, tasks, chunksize=2):
             for k, v in out.items():
-                acc[k][name][:4] += v
-                acc[k][name][4] += 1
+                acc[k][name][:12] += v
+                acc[k][name][12] += 1
             done += 1
             if done % 50 == 0 or done == len(tasks):
                 print(f"pages {done}/{len(tasks)} ({len(configs)} configs, {time.time() - t0:.0f}s)", flush=True)
@@ -106,17 +109,22 @@ def merge(a):
         meta.append(d.pop("_meta"))
         for k, s in d.items():
             for n, v in s.items():
-                tot.setdefault(k, {}).setdefault(n, np.zeros(5))
+                tot.setdefault(k, {}).setdefault(n, np.zeros(13))
                 tot[k][n] += v
     rows = []
     for k, s in tot.items():
-        vecs = {n: np.array([[v[0], v[1], v[2], v[3]]]) for n, v in s.items()}
-        p, r, f, prs = score.pool(vecs)
-        rows.append((f, p, r, k, prs))
+        pools = []
+        for off in (0, 4, 8):
+            v = {n: np.array([[x[off], x[off + 1], x[off + 2], x[off + 3]]]) for n, x in s.items()}
+            pools.append(score.pool(v))
+        rows.append((pools[0][2], k, pools))
     rows.sort(key=lambda x: -x[0])
-    for f, p, r, k, prs in rows[: a.top]:
+    for f, k, pools in rows[: a.top]:
+        pp, pr, pf, prs = pools[0]
         per = " ".join(f"{n}:{x[0]:.3f}/{x[1]:.3f}" for n, x in sorted(prs.items()))
-        print(f"F1={f:.4f} P={p:.4f} R={r:.4f} {k} | {per}")
+        cov = f"P={pools[1][0]:.3f} R={pools[1][1]:.3f} F1={pools[1][2]:.3f}"
+        o2o = f"P={pools[2][0]:.3f} R={pools[2][1]:.3f} F1={pools[2][2]:.3f}"
+        print(f"F1={pf:.4f} P={pp:.4f} R={pr:.4f} {k} | primary {per} | coverage {cov} | 1:1 {o2o}")
     print(f"{len(rows)} configs; wall seconds per shard: {[m['wall_seconds'] for m in meta]}")
     return 0
 

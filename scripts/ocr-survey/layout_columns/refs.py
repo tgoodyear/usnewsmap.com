@@ -26,6 +26,9 @@ Reference rule (frozen plan, second attempt):
   - a gap wider than 3% of the page width is not a gutter (GAP_CAP);
   - Europeana: the vertical separator regions, one segment each.
 
+Each reference page also carries `zones`, the boxes of its body-text class, which the amended precision
+(score.py) uses to find gutters that cut through text.
+
 Reading choices (see the PR):
   - finlam (not La Liberte) stores zone coordinates as percentages of the page (0..100), although the
     converter treats them as pixels; they are scaled here and its column gutters are rebuilt from the
@@ -49,6 +52,7 @@ BODY = {
     "Teklia/Newspapers-finlam": "ARTICLE-TEXT",
     "Teklia/Newspapers-finlam-La-Liberte": "TEXT",
     "NealCaren/co-newspaper-layout-yolo": "ARTICLE",
+    "biglam/europeana-newspapers-ground-truth": "paragraph",
 }
 MASK_TYPES = {
     "Teklia/Newspapers-finlam": {"picture", "advertisement", "table", "table_content"},
@@ -99,7 +103,10 @@ def row_reference(row):
     """{gutters, excluded, width, height} for one converted row."""
     ds, w, h = row["dataset"], row["width"], row["height"]
     if ds == FINLAM_PCT:
-        scale_row(row, w / 100.0, h / 100.0)
+        mx = max([b["box"][i] for k in ("text_regions", "nontext_regions", "separators") for b in row[k]
+                  for i in (0, 1, 2, 3)] or [0])
+        if mx <= 100.5 < min(w, h):  # percentages; a fixed converter writes pixels, left as they are
+            scale_row(row, w / 100.0, h / 100.0)
         boxes = [tuple(r["box"]) for r in row["text_regions"] if r["class"] == BODY[ds]]
         boxes = [b for b in boxes if b[2] > b[0] and b[3] > b[1]]
         gut = refgutters.merge_gutters(refgutters.pair_gutters(boxes), w, h) if len(boxes) > 1 else []
@@ -115,7 +122,8 @@ def row_reference(row):
         gut = cap_gutters(gut, w)
     mt = MASK_TYPES.get(ds)
     exc = [list(r["box"]) for r in row["nontext_regions"] if mt is None or r.get("type") in mt]
-    return {"excluded": exc, "gutters": gut, "height": h, "width": w}
+    zones = [list(r["box"]) for r in row["text_regions"] if r["class"] == BODY[ds]]
+    return {"excluded": exc, "gutters": gut, "height": h, "width": w, "zones": zones}
 
 
 def heldout_reference(regions_path, selection_path, body_type, only_ca_page=False):
@@ -134,7 +142,8 @@ def heldout_reference(regions_path, selection_path, body_type, only_ca_page=Fals
         boxes = [tuple(r["box"]) for r in regs if r.get("type") == body_type and r.get("box")]
         gut = refgutters.merge_gutters(refgutters.pair_gutters(boxes), w, h) if len(boxes) > 1 else []
         exc = [list(r["box"]) for r in regs if refgutters.is_excluded(r.get("type")) and r.get("box")]
-        out[pid] = {"excluded": exc, "gutters": cap_gutters(gut, w), "height": h, "width": w}
+        zones = [list(r["box"]) for r in regs if r.get("type") == body_type and r.get("box")]
+        out[pid] = {"excluded": exc, "gutters": cap_gutters(gut, w), "height": h, "width": w, "zones": zones}
     return out
 
 

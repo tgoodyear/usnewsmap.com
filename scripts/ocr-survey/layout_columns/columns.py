@@ -28,7 +28,7 @@ import math
 import os
 import sys
 import time
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, replace
 
 import numpy as np
 from PIL import Image
@@ -44,14 +44,14 @@ class Params:
     # image
     work_width: int = 2000
     bg_window: float = 0.05      # local-mean window, fraction of work width
-    ink_ratio: float = 0.82      # ink = gray < local mean * ratio
+    ink_ratio: float = 0.95      # ink = gray < local mean * ratio
     # profile / valley detection (shared by both methods; fractions of the band or page)
     smooth: float = 0.003        # profile smoothing, fraction of width
     rule_width: float = 0.0      # column rules thinner than this are removed from the profile (fraction of width)
-    prominence: float = 0.4      # valley prominence, fraction of the profile's 90th percentile
+    prominence: float = 0.45     # valley prominence, fraction of the profile's 90th percentile
     rel_height: float = 0.5      # valley width measured at this fraction of its prominence
     clip: float = 1.0            # profile is clipped at this multiple of its level (rules, borders, pictures)
-    valley_max: float = 0.35     # valley floor must be <= this fraction of the profile level
+    valley_max: float = 0.5      # valley floor must be <= this fraction of the profile level
     min_ink: float = 0.03        # band profile level must be >= this fraction of band height
     min_gutter: float = 0.0005   # minimum gutter width, fraction of page width
     min_col: float = 0.04        # minimum text width left and right of a gutter, fraction of width
@@ -62,10 +62,11 @@ class Params:
     deskew_step: float = 0.25
     merge_overlap: float = 0.3   # x overlap (of the narrower) to join gutters of adjacent bands
     max_hole: int = 1            # bands without the gutter that a run may bridge
-    min_run: float = 0.2         # shortest kept gutter, fraction of page height
+    min_run: float = 0.3         # shortest kept gutter, fraction of page height
     # fullheight baseline
-    fh_min_gutter: float = 0.001
-    fh_prominence: float = 0.3
+    fh_ink_ratio: float = 0.82   # the baseline's own ink threshold (tuned apart from the banded method's)
+    fh_min_gutter: float = 0.0005
+    fh_prominence: float = 0.4
     fh_valley_max: float = 0.7
     fh_min_col: float = 0.1
 
@@ -234,8 +235,8 @@ def find_banded(gray, p, ink=None):
 
 def find_fullheight(gray, p, ink=None):
     h, w = gray.shape
-    if ink is None:
-        ink = binarize(gray, p)
+    if ink is None or p.fh_ink_ratio != p.ink_ratio:
+        ink = binarize(gray, replace(p, ink_ratio=p.fh_ink_ratio))
     rows = ink.sum(axis=1, dtype=np.float64)
     live = np.nonzero(rows >= 0.01 * rows.max())[0] if rows.max() > 0 else []
     if len(live) < 3:

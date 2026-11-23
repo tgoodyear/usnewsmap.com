@@ -331,3 +331,148 @@ def test_pagecache_roundtrip(tmp_path):
     pagecache.save(str(tmp_path), "a", 2000, g, size)
     g2, s2 = columns.load_cached(str(tmp_path), "a", 2000)
     assert (g2 == g).all() and s2 == (300, 400)
+
+
+# ---- amended metric: height coverage
+
+def test_height_union_counts_each_gap_once():
+    assert score.height_union([[100, 120, 0, 500], [102, 118, 300, 800]]) == 800  # overlap counted once
+    assert score.height_union([[100, 120, 0, 500], [400, 420, 0, 500]]) == 1000  # two gutters side by side
+    assert score.height_union([]) == 0.0
+
+
+def test_one_long_detection_covers_stacked_reference_pieces():
+    ref = [G(100, 112, y, y + 90) for y in range(0, 1000, 100)]          # ten stacked pieces
+    det = [G(102, 110, 0, 1000)]
+    s = score.match_page(det, ref, 1000, [])
+    assert s["cov_ref"] / s["cov_ref_union"] == 1.0 and s["cov_det"] / s["cov_det_union"] == 0.9  # 90 of every 100 px
+    # one-to-one credits one piece only
+    assert s["matched_ref_height"] / s["ref_height"] == 0.1
+
+
+def test_coverage_precision_counts_only_detected_height_inside_a_reference_gap():
+    ref = [G(100, 120, 0, 500)]
+    det = [G(100, 120, 0, 1000)]
+    s = score.match_page(det, ref, 1000, [])
+    assert s["cov_det"] == 500 and s["cov_det_union"] == 1000 and s["cov_ref"] == 500
+
+
+def test_coverage_tolerance_is_one_percent_of_width_horizontally_only():
+    ref = [G(100, 120, 0, 500)]
+    assert score.match_page([G(92, 128, 0, 500)], ref, 1000, [])["cov_ref"] == 500    # 8 px < 10 px
+    assert score.match_page([G(85, 128, 0, 500)], ref, 1000, [])["cov_ref"] == 0      # 15 px > 10 px
+    assert score.match_page([G(100, 120, 500, 900)], ref, 1000, [])["cov_ref"] == 0   # no y overlap
+
+
+def test_coverage_overlapping_detections_count_once():
+    ref = [G(100, 120, 0, 500)]
+    det = [G(100, 120, 0, 400), G(102, 118, 200, 500)]
+    s = score.match_page(det, ref, 1000, [])
+    assert s["cov_det_union"] == 500 and s["cov_det"] == 500 and s["cov_ref"] == 500
+
+
+def test_score_sets_reports_coverage_primary_and_one_to_one_secondary():
+    ref = {"p1": {"gutters": [G(100, 112, y, y + 90) for y in range(0, 1000, 100)],
+                  "excluded": [], "width": 1000, "height": 1000}}
+    det = {"p1": {"gutters": [G(102, 110, 0, 1000)]}}
+    res = score.score_sets({"a": {"detections": det, "refs": ref}})
+    assert res["recall"] == 1.0 and res["one_to_one"]["recall"] < 0.2
+
+
+def test_finlam_pixel_rows_are_not_rescaled():
+    tr = [{"class": "ARTICLE-TEXT", "box": [140, 200, 630, 1800]}, {"class": "ARTICLE-TEXT", "box": [644, 200, 1260, 1800]}]
+    r = row("Teklia/Newspapers-finlam", width=1400, height=2000, text_regions=tr)
+    assert refs.row_reference(r)["gutters"][0][0][:2] == [630.0, 644.0]
+
+
+# ---- American Stories contender (no weights needed: letterbox, decode, NMS, gutters from boxes)
+
+def test_letterbox_centres_and_pads():
+    import asmodel
+    img = np.full((400, 200, 3), 50, np.uint8)   # tall page
+    im, r, (left, top) = asmodel.letterbox(img, size=640)
+    assert im.shape == (640, 640, 3) and r == 1.6 and top == 0 and left == 160
+    assert im[0, 0, 0] == 114 and im[320, 320, 0] == 50
+
+
+def test_decode_maps_boxes_back_to_the_page():
+    import asmodel
+    out = np.zeros((1, 14, 3), np.float32)
+    out[0, :4, 0] = [320, 320, 200, 100]   # centre box in the letterboxed frame
+    out[0, 4, 0] = 0.9                      # class article
+    out[0, :4, 1] = [322, 322, 198, 100]   # overlapping duplicate, lower score, same class
+    out[0, 4, 1] = 0.5
+    out[0, :4, 2] = [100, 100, 20, 20]     # below the confidence threshold
+    out[0, 5, 2] = 0.001
+    d = asmodel.decode(out, 1.6, (160, 0), (400, 200))
+    assert len(d) == 1
+    x0, y0, x1, y1, conf, k = d[0]
+    assert abs(x0 - (220 - 160) / 1.6) < 1e-3 and abs(x1 - (420 - 160) / 1.6) < 1e-3 and k == 0
+
+
+def test_nms_is_class_agnostic():
+    import asmodel
+    b = np.array([[0, 0, 100, 100], [5, 5, 100, 100], [200, 0, 300, 100]], np.float32)
+    keep = asmodel.nms_agnostic(b, np.array([0.9, 0.8, 0.7]), 0.1, 2000)
+    assert sorted(keep.tolist()) == [0, 2]
+
+
+def test_gutters_from_boxes_use_article_only_and_ignore_nontext():
+    import asmodel
+    dets = [(10, 10, 450, 900, 0.9, 0), (470, 10, 900, 900, 0.9, 0), (0, 0, 1000, 5, 0.9, 3)]  # headline: neither
+    g = asmodel.gutters_from_boxes(dets, (1000, 1000), (1.0, 1.0))
+    assert len(g) == 1 and g[0][0][:2] == [450.0, 470.0]
+    dets.append((440, 0, 480, 1000, 0.9, 9))   # a table covering the gutter: the gutter is ignored
+    assert asmodel.gutters_from_boxes(dets, (1000, 1000), (1.0, 1.0)) == []
+
+
+# ---- second amendment: precision a / (a + b)
+
+def test_gutter_through_the_middle_of_a_text_zone_is_b():
+    zones = [[100, 0, 400, 1000]]
+    s = score.match_page([G(240, 260, 100, 600)], [], 1000, [], zones)
+    assert s["a_det"] == 0 and s["b_det"] == 500 and s["ab_det"] == 500   # precision 0
+
+
+def test_full_height_gutter_past_headings_is_a_plus_c():
+    ref = [G(100, 120, 0, 300), G(100, 120, 700, 1000)]                  # reference breaks around headings
+    zones = [[0, 0, 98, 300], [122, 0, 300, 300], [0, 700, 98, 1000], [122, 700, 300, 1000]]
+    s = score.match_page([G(104, 116, 0, 1000)], ref, 1000, [], zones)
+    assert s["a_det"] == 600 and s["b_det"] == 0 and s["ab_det"] == 600       # a / (a + b) = 1
+    assert s["cov_det_union"] == 1000                                         # (c) is the 400 px of headings
+    p = s["a_det"] / s["ab_det"]
+    assert p == 1.0 and s["cov_det"] / s["cov_det_union"] == 0.6             # coverage precision is the secondary
+
+
+def test_a_wins_where_a_and_b_overlap():
+    ref = [G(100, 120, 0, 500)]
+    zones = [[50, 0, 170, 500]]       # the zone shrunk by 10 px still covers x 60..160, the gutter is inside it too
+    s = score.match_page([G(104, 116, 0, 500)], ref, 1000, [], zones)
+    assert s["a_det"] == 500 and s["b_det"] == 0
+
+
+def test_zone_shrunk_by_the_tolerance_excludes_a_gutter_at_its_edge():
+    zones = [[100, 0, 400, 1000]]          # shrunk to x 110..390 at width 1000
+    s = score.match_page([G(105, 115, 0, 1000)], [], 1000, [], zones)
+    assert s["b_det"] == 0                  # the gutter reaches outside the shrunk zone
+    s = score.match_page([G(112, 118, 0, 1000)], [], 1000, [], zones)
+    assert s["b_det"] == 1000
+
+
+def test_page_with_no_a_or_b_adds_nothing_to_precision():
+    import numpy as np
+    page1 = {"det_height": 10.0, "matched_det_height": 0.0, "ref_height": 0.0, "matched_ref_height": 0.0,
+             "ab_det": 0.0, "a_det": 0.0, "cov_ref_union": 0.0, "cov_ref": 0.0}
+    page2 = dict(page1, ab_det=100.0, a_det=80.0, cov_ref_union=100.0, cov_ref=50.0)
+    v = score._vec([page1, page2], "primary")
+    p, r = score.set_pr(v)
+    assert p == 0.8 and r == 0.5
+
+
+def test_score_sets_primary_precision_is_a_over_ab_with_secondaries():
+    ref = {"p1": {"gutters": [G(100, 120, 0, 300), G(100, 120, 700, 1000)], "excluded": [], "width": 1000,
+                  "height": 1000, "zones": [[0, 0, 98, 300], [122, 0, 300, 300]]}}
+    det = {"p1": {"gutters": [G(104, 116, 0, 1000)]}}
+    res = score.score_sets({"a": {"detections": det, "refs": ref}})
+    assert res["precision"] == 1.0 and abs(res["coverage"]["precision"] - 0.6) < 1e-9
+    assert "one_to_one" in res and abs(res["per_set"]["a"]["unscored_share_c"] - 0.4) < 1e-9
