@@ -267,6 +267,8 @@ const GUTTER_ANSWERS = [["a", "Yes"], ["b", "No"]];
 function renderGutter(card, t, prev) {
   const q = document.createElement("p"); q.className = "question"; q.textContent = cfg.question || ""; card.appendChild(q);
   const view = document.createElement("div"); view.className = "gutterview";
+  // Focusable so keyboard-only volunteers can scroll a tall crop with the arrow keys.
+  view.tabIndex = 0; view.setAttribute("role", "region"); view.setAttribute("aria-label", "Page crop; scroll to see the whole line");
   const inner = document.createElement("div"); inner.className = "gutterinner";
   const im = new Image(); im.src = "/clips/" + t.crop; im.alt = "a stretch of newspaper page with a vertical line drawn on it"; inner.appendChild(im);
   const ln = document.createElement("div"); ln.className = "gline"; ln.id = "gline"; ln.hidden = !lineShown;
