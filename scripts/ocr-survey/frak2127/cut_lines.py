@@ -22,7 +22,7 @@ with a model.
     cut_lines.py --data /srv/frak2127/data --heldout heldout-pages.txt \
         --unicharset frak2021.lstm-unicharset --out lines --heldout-out lines-heldout --jobs 12
 """
-import argparse, csv, glob, hashlib, json, os, re, sys, time
+import argparse, csv, glob, hashlib, json, os, re, subprocess, sys, time
 import unicodedata
 from multiprocessing import Pool
 
@@ -33,10 +33,13 @@ from frak_norm import normalise
 
 PAD_PX = 4          # fixed padding around the polygon's bounding box, in page pixels
 MIN_SIDE_PX = 5     # a clipped box narrower or shorter than this is degenerate
-# Training crops taller than this are scaled down (aspect kept, Lanczos) so the training set fits
-# the CT's disk. frak2021's network reads lines at 36 px, so nothing it sees is lost. Dev and
-# held-out crops keep the page's own resolution.
-TRAIN_MAX_HEIGHT_PX = 48
+# Training crops taller than this are scaled down to it (aspect kept, box filter, which is area
+# averaging like the area map Tesseract itself uses to shrink a line) so the training set fits the
+# CT's disk. 36 px is frak2021's network input height: Tesseract scales every line to it anyway.
+# Dev and held-out crops keep the page's own resolution. Training crops are kept only inside .lstmf.
+TRAIN_HEIGHT_PX = 36
+LSTMF_LINES = 100   # lines per .lstmf (tesseract reloads the file for every page it appends)
+START_LANG = "frak2021"
 HELDOUT_SHA256 = "6b0c03e714d1d254e7bf144c8d93d3413fc1a2eae6710cdabd5d694c89e97ce5"
 YEAR = re.compile(r"_(\d{4})(?:-\d{2}-\d{2})?_")
 Image.MAX_IMAGE_PIXELS = None
@@ -98,8 +101,30 @@ def line_text(tl):
     return None
 
 
+def write_lstmf(base, part, tessdata):
+    """One multi-page TIFF of line crops plus a WordStr box per page (chr_finetune.sh's line box,
+    with the page number), read by `tesseract --psm 13 lstm.train` into base.lstmf."""
+    part[0][1].save(base + ".tif", save_all=True, append_images=[c for _, c, _ in part[1:]], compression="tiff_deflate")
+    with open(base + ".box", "w", encoding="utf-8") as f:
+        for i, (_, c, text) in enumerate(part):
+            w, h = c.size
+            f.write(f"WordStr 0 0 {w} {h} {i} #{text}\n\t {w} {h} {w + 1} {h + 1} {i}\n")
+    subprocess.run(["tesseract", base + ".tif", base, "--psm", "13", "-l", START_LANG, "--tessdata-dir", tessdata,
+                    "lstm.train"], check=True, env=dict(os.environ, OMP_THREAD_LIMIT="1"),
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    os.remove(base + ".tif")
+    os.remove(base + ".box")
+
+
+def lstmf_lines(path):
+    """Number of lines in an .lstmf (a DocumentData: a count, then the pages)."""
+    with open(path, "rb") as f:
+        return int.from_bytes(f.read(4), "little")
+
+
 def cut_page(job):
-    st, stem, xml, imgdir, split, outdir, charset = job
+    st, stem, xml, imgdir, split, outdir, lstmf_dir, tessdata, charset = job
+    for_lstmf, lstmf_of = [], {}
     stats = {"lines": 0, "kept": 0, "chars": 0, "empty": 0, "degenerate": 0, "unencodable": 0, "unencodable_chars": 0}
     rows = []
     root = etree.parse(xml).getroot()
@@ -110,7 +135,8 @@ def cut_page(job):
         assert alt, f"no image for {st}:{stem}"
         img_path = alt[0]
     im = None
-    os.makedirs(outdir, exist_ok=True)
+    if split != "train":
+        os.makedirs(outdir, exist_ok=True)
     k = 0
     for tl in (e for e in root.iter() if local(e.tag) == "TextLine"):
         k += 1
@@ -139,20 +165,38 @@ def cut_page(job):
             continue
         name = f"{st}__{re.sub(r'[^A-Za-z0-9_.-]', '_', stem)}__{k:04d}"
         crop = im.crop(box)
-        if split == "train" and crop.height > TRAIN_MAX_HEIGHT_PX:
-            crop = crop.resize((max(1, round(crop.width * TRAIN_MAX_HEIGHT_PX / crop.height)), TRAIN_MAX_HEIGHT_PX), Image.LANCZOS)
-            stats["scaled"] = stats.get("scaled", 0) + 1
-        crop.save(os.path.join(outdir, name + ".png"), optimize=False)
-        with open(os.path.join(outdir, name + ".gt.txt"), "w", encoding="utf-8") as f:
-            f.write(text + "\n")
         bad = sorted({c for c in unicodedata.normalize("NFD", text) if c != " " and c not in charset})
         stats["kept"] += 1
         stats["chars"] += len(text)
         if bad:
             stats["unencodable"] += 1
             stats["unencodable_chars"] += len(text)
+        if split == "train":
+            if crop.height > TRAIN_HEIGHT_PX:
+                crop = crop.resize((max(1, round(crop.width * TRAIN_HEIGHT_PX / crop.height)), TRAIN_HEIGHT_PX), Image.BOX)
+                stats["scaled"] = stats.get("scaled", 0) + 1
+        else:
+            crop.save(os.path.join(outdir, name + ".png"))
+            with open(os.path.join(outdir, name + ".gt.txt"), "w", encoding="utf-8") as f:
+                f.write(text + "\n")
+        if split in ("train", "dev") and not bad:
+            for_lstmf.append((name, crop, text))
         rows.append({"name": name, "set": st, "page": stem, "split": split, "line_id": tl.get("id"),
-                     "box": box, "chars": len(text), "unencodable": "".join(bad)})
+                     "box": box, "chars": len(text), "unencodable": "".join(bad), "text": text})
+    # Training and dev lines go to .lstmf files of at most LSTMF_LINES lines each.
+    if for_lstmf:
+        ldir = os.path.join(lstmf_dir, split)
+        os.makedirs(ldir, exist_ok=True)
+        for j in range(0, len(for_lstmf), LSTMF_LINES):
+            part = for_lstmf[j:j + LSTMF_LINES]
+            base = os.path.join(ldir, f"{part[0][0]}__{len(part)}")
+            write_lstmf(base, part, tessdata)
+            got = lstmf_lines(base + ".lstmf")
+            stats["lstmf_lines"] = stats.get("lstmf_lines", 0) + got
+            for name, _, _ in part:
+                lstmf_of[name] = os.path.basename(base) + ".lstmf"
+    for r in rows:
+        r["lstmf"] = lstmf_of.get(r["name"])
     return st, stem, split, stats, rows
 
 
@@ -163,6 +207,8 @@ def main():
     ap.add_argument("--unicharset", required=True, help="the start model's lstm-unicharset")
     ap.add_argument("--out", required=True)
     ap.add_argument("--heldout-out", required=True)
+    ap.add_argument("--lstmf-out", required=True, help="train/ and dev/ .lstmf files go here")
+    ap.add_argument("--tessdata", required=True, help="holds frak2021.traineddata and configs/ (for lstm.train)")
     ap.add_argument("--jobs", type=int, default=12)
     a = ap.parse_args()
     raw = open(a.heldout, "rb").read()
@@ -170,7 +216,8 @@ def main():
     heldout = set(raw.decode().split())
     assert len(heldout) == 115
     assert os.path.realpath(a.out) != os.path.realpath(a.heldout_out)
-    for d in (a.out, a.heldout_out):
+    assert "heldout" not in os.path.realpath(a.lstmf_out)
+    for d in (a.out, a.heldout_out, a.lstmf_out):
         if os.path.isdir(d) and os.listdir(d):
             sys.exit(f"{d} is not empty; give a new directory (nothing is deleted)")
     charset = set()
@@ -183,7 +230,7 @@ def main():
         if split.startswith("unused"):
             continue
         base = a.heldout_out if split == "heldout" else a.out
-        jobs.append((st, stem, xml, imgdir, split, os.path.join(base, split), charset))
+        jobs.append((st, stem, xml, imgdir, split, os.path.join(base, split), a.lstmf_out, a.tessdata, charset))
     os.makedirs(a.out, exist_ok=True)
     os.makedirs(a.heldout_out, exist_ok=True)
     idx = {d: open(os.path.join(d, "lines.jsonl"), "w", encoding="utf-8") for d in (a.out, a.heldout_out)}
@@ -212,7 +259,7 @@ def main():
                 assert r["page"] not in heldout and r["page"] not in test_pages, r
     with open(os.path.join(a.heldout_out, "lines.jsonl"), encoding="utf-8") as f:
         assert {json.loads(l)["page"] for l in f} <= heldout
-    out = {"pad_px": PAD_PX, "min_side_px": MIN_SIDE_PX, "train_max_height_px": TRAIN_MAX_HEIGHT_PX, "heldout_sha256": HELDOUT_SHA256, "by_set_split": summary}
+    out = {"pad_px": PAD_PX, "min_side_px": MIN_SIDE_PX, "train_height_px": TRAIN_HEIGHT_PX, "lstmf_lines": LSTMF_LINES, "heldout_sha256": HELDOUT_SHA256, "by_set_split": summary}
     for d in (a.out, a.heldout_out):
         json.dump(out, open(os.path.join(d, "summary.json"), "w"), indent=1, sort_keys=True)
     print(json.dumps(out, indent=1, sort_keys=True))
