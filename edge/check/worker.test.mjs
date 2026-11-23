@@ -906,7 +906,7 @@ test("a gutter line may lean: x1 (its x at y1) is kept on /api/next and the expo
   assert.deepEqual(next.line, lean);
   const [row] = (await (await worker.fetch(new Request("https://check.usnewsmap.com/api/export?lang=en-gutter"), E, {})).text()).trim().split("\n").map((l) => JSON.parse(l));
   assert.deepEqual(row.line, lean);
-  for (const line of [{ ...lean, x1: 1.2 }, { ...lean, x1: -0.1 }, { ...lean, x1: "0.4" }, { ...lean, x1: null }, { ...lean, x: 2 }, { x: 0.5, y0: 0.1 }, undefined, [0.5, 0.1, 0.9]]) {
+  for (const line of [{ ...lean, x1: 1.2 }, { ...lean, x1: -0.1 }, { ...lean, x1: "0.4" }, { ...lean, x1: null }, { ...lean, x: 2 }, { x: 0.5, y0: 0.1 }, { x: 0.5, y0: 0.9, y1: 0.1 }, { x: 0.5, y0: 0.4, y1: 0.4 }, { ...lean, y0: 0.9, y1: 0.1 }, undefined, [0.5, 0.1, 0.9]]) {
     const r = await adminCall(DB, "/admin/tasks", null, JSON.stringify({ id: "en-gutter/g1/p~s2", lang: "en-gutter", set: "g1", ...gutterBody({ segment_id: "s2" }), line }));
     assert.equal(r.status, 400, JSON.stringify(line));
     assert.match((await r.json()).error, /^en-gutter\/g1\/p~s2: .*line/);

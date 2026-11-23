@@ -8,11 +8,13 @@ const CHOICES = new Set(["a", "b", "neither", "unsure", "notext"]);
 export const GUTTER_REVEALED = ["method", "role", "segment_id", "page_id"];
 export const GUTTER_REFUSED = new Set(["neither", "notext"]);
 // A gutter task's `line` as fractions of the crop: x at y0, y0..y1 down the crop, and optionally x1, its x at y1, for a line
-// that leans to follow a tilted page (absent: a vertical line, x1 = x). /admin/tasks refuses a gutter task with any other line.
+// that leans to follow a tilted page (absent: a vertical line, x1 = x), with y0 < y1. /admin/tasks refuses a gutter task with
+// any other line.
 const fraction = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
 export function gutterLineError(line) {
   if (!line || typeof line !== "object" || Array.isArray(line)) return "a gutter task needs line {x, y0, y1, x1?}";
   for (const k of ["x", "y0", "y1"]) if (!fraction(line[k])) return `line.${k} must be a number from 0 to 1`;
+  if (!(line.y0 < line.y1)) return "line.y0 must be above line.y1 (y0 < y1)";
   if (line.x1 !== undefined && !fraction(line.x1)) return "line.x1 must be a number from 0 to 1";
   return null;
 }
