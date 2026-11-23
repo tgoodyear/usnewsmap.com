@@ -58,7 +58,9 @@ def _job(args):
         n = pf.metadata.row_group(rg).num_rows
         need = [i for i in wanted if start <= i < start + n]
         if need:
-            col = pf.read_row_group(rg, columns=["page_image"]).column("page_image").to_pylist()
+            names = pf.schema_arrow.names
+            colname = "page_image" if "page_image" in names else "image"  # Europeana names it `image`
+            col = pf.read_row_group(rg, columns=[colname]).column(colname).to_pylist()
             for i in need:
                 g, size = to_gray(col[i - start]["bytes"], work_width)
                 save(out_dir, wanted[i], work_width, g, size)
