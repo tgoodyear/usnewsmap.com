@@ -138,25 +138,34 @@ def hipe_lines(d, key):
     return [unit[a:b].replace("¬", "-") for a, b in d[key]["line_offsets"]]
 
 
+def overproof_articles(records, want):
+    """(page key, article) for each dataset 3 record on a wanted page. records: (file name, record index, doc).
+    One document_id can hold several different articles (records 118-120 of the train file share one), so
+    each article's id is the document_id suffixed with its record position, and only an exact duplicate
+    (same document_id and same text) is refused."""
+    seen = set()
+    for fname, idx, d in records:
+        m = d["document_metadata"]
+        if "/dataset3/" not in m.get("primary_dataset_filename", ""):
+            continue
+        key = overproof_key(m["document_id"])
+        if key not in want:
+            continue
+        text = "\n".join(hipe_lines(d, "ground_truth"))
+        if (m["document_id"], text) in seen:
+            raise SystemExit(f"Overproof article {m['document_id']} appears twice with the same text")
+        seen.add((m["document_id"], text))
+        yield key, {"id": f"{m['document_id']}@{fname}:{idx}", "text": text}
+
+
 def load_truth(pages, overproof_dir, asgold_dir):
     want = {p["truth_key"]: pid for pid, p in pages.items() if p["set"] == "overproof"}
     out = {pid: {"articles": [], "set": p["set"]} for pid, p in pages.items()}
-    seen = set()
     hipe = os.path.join(overproof_dir, "hipe")
-    for f in sorted(os.listdir(hipe)):
-        if not f.endswith(".jsonl"):
-            continue
-        for d in read_jsonl(os.path.join(hipe, f)):
-            m = d["document_metadata"]
-            if "/dataset3/" not in m.get("primary_dataset_filename", ""):
-                continue
-            key = overproof_key(m["document_id"])
-            if key not in want:
-                continue
-            if m["document_id"] in seen:
-                raise SystemExit(f"Overproof article {m['document_id']} appears twice")
-            seen.add(m["document_id"])
-            out[want[key]]["articles"].append({"id": m["document_id"], "text": "\n".join(hipe_lines(d, "ground_truth"))})
+    records = ((f, i, d) for f in sorted(os.listdir(hipe)) if f.endswith(".jsonl")
+               for i, d in enumerate(read_jsonl(os.path.join(hipe, f))))
+    for key, art in overproof_articles(records, set(want)):
+        out[want[key]]["articles"].append(art)
     want = {p["truth_key"]: pid for pid, p in pages.items() if p["set"] == "asgold"}
     raw = os.path.join(asgold_dir, "raw")
     refs = {r["id"]: r["ref"] for r in read_jsonl(os.path.join(raw, "refs.jsonl"))}

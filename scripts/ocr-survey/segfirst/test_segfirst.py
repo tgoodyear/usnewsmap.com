@@ -120,6 +120,20 @@ class Scorer(unittest.TestCase):
         self.assertFalse(S.crosses([[10, 10, 50, 20], [60, 10, 90, 20]], seg))
         self.assertFalse(S.crosses([[10, 110, 50, 120], [150, 110, 200, 120]], seg))
 
+    def test_overproof_shared_document_id(self):
+        def rec(doc_id, text):
+            return {"document_metadata": {"document_id": doc_id, "primary_dataset_filename": "x/dataset3/a.txt"},
+                    "ground_truth": {"line_offsets": [[0, len(text)]], "transcription_unit": text}}
+        did = "sn88074142-8-00280761485-1871122101-0816"
+        key = "sn88074142-00280761485-1871122101-0816"
+        recs = [("t.jsonl", 0, rec(did, "first article")), ("t.jsonl", 1, rec(did, "second article")),
+                ("t.jsonl", 2, rec("sn1-1-2-187101011-0001", "other page"))]
+        out = list(S.overproof_articles(recs, {key}))
+        self.assertEqual([a["id"] for _, a in out], [did + "@t.jsonl:0", did + "@t.jsonl:1"])
+        self.assertEqual([k for k, _ in out], [key, key])
+        with self.assertRaises(SystemExit):
+            list(S.overproof_articles(recs + [("u.jsonl", 0, rec(did, "first article"))], {key}))
+
     def test_bootstrap_paired_shape(self):
         a = np.array([[5, 10, 8, 10, 1, 10]] * 4, dtype=float)
         b = np.array([[6, 10, 8, 10, 1, 10]] * 4, dtype=float)
