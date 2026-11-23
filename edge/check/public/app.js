@@ -7,7 +7,7 @@ let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = 
 // On a slow connection an answer is saved in the background and the next word, fetched while this one was shown, appears at once.
 // `pending` holds answers not yet saved, oldest first; `ahead` holds the next words fetched for the word now shown; `stale` is set
 // when the Worker says this page is out of date, and stops answering until a reload.
-let pending = [], sending = false, inflight = null, ahead = null, stale = false, slowTimer = null, wake = null, drained = [];
+let pending = [], sending = false, inflight = null, ahead = null, stale = false, slowTimer = null, wake = null, drained = [], refused = 0;
 const counted = new Set(); // words answered on this page, so a changed answer isn't counted twice
 // Sent with every answer. The Worker refuses answers to a word marked confusable_display from a page older than this: an
 // already-open tab has the old stylesheet and font, and would send answers about letters it draws alike (worker.mjs, DISPLAY_REVISION).
@@ -64,7 +64,9 @@ async function authed(path, opts = {}) {
     try {
       return await getJSON(path, { ...opts, headers: { ...(opts.headers || {}), authorization: "Bearer " + tok } });
     } catch (e) {
-      if (e.status === 401 && attempt === 0) { store(SESSION, null); continue; }
+      // Answers save while the next words load, so a 401 can come back after another request has already renewed the
+      // session: only a session still stored as the one refused is thrown away; otherwise the retry uses the new one.
+      if (e.status === 401 && attempt === 0) { if (store(SESSION) === tok) store(SESSION, null); continue; }
       throw e;
     }
   }
@@ -408,6 +410,8 @@ function showProgress() {
   const n = pending.length;
   let text = answered ? `${answered} answered` : "";
   if (n) text += `${text ? " · " : ""}${n === 1 ? "1 answer" : n + " answers"} ${pending[0].tries ? "waiting for the connection" : "saving"}…`;
+  // A refused answer stays noted here, where moving to the next word doesn't clear it.
+  if (refused) text += `${text ? " · " : ""}${refused === 1 ? "1 answer" : refused + " answers"} refused, not saved`;
   $("progress").textContent = text;
 }
 
@@ -523,7 +527,9 @@ async function sendAnswers() {
           status(`This page is out of date. Reload it, then answer again. ${pending.length === 1 ? "1 answer wasn't" : pending.length + " answers weren't"} saved.`, true);
           break;
         }
-        if (e.status === 400) { unqueue(p); status("An answer was refused: " + e.message, true); continue; }
+        if (e.status === 400) { unqueue(p); refused++; status("An answer was refused: " + e.message, true); continue; }
+        // A changed answer for this word is already queued behind it: send that instead of retrying the old one first.
+        if (pending.some((q) => q !== p && q.id === p.id)) { unqueue(p); continue; }
         p.tries++;
         showProgress();
         await new Promise((ok) => { wake = ok; setTimeout(ok, e.status === 429 ? 5000 : Math.min(30000, 1000 * 2 ** Math.min(p.tries, 5))); });
