@@ -6,7 +6,8 @@ let lineShown = true; // column gutter tasks: whether the line is drawn on the c
 let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false, loaded = false, failed = false, fontFailed = false, showNames = false, shownPrev;
 // Sent with every answer. The Worker refuses answers to a word marked confusable_display from a page older than this: an
 // already-open tab has the old stylesheet and font, and would send answers about letters it draws alike (worker.mjs, DISPLAY_REVISION).
-const DISPLAY = 1;
+// Revision 2 draws a gutter task's leaning line (line.x1); the Worker refuses answers to such a task from an older page.
+const DISPLAY = 2;
 
 let memory = {};
 function store(k, v) {
@@ -261,6 +262,8 @@ function fontState(t) {
 // Column gutter tasks (README.md, "Column gutter judgments"): one crop with a line drawn over it, and the question whether the line
 // runs down a gap between columns. Yes is stored as `a`, No as `b`; neither and not text don't apply. The line is a CSS overlay at
 // the task's fractions of the crop, so the picture itself is never changed and the line can be hidden to see the print under it.
+// A line with `x1` (its x at y1; x is its x at y0) leans to follow a tilted page: it is drawn as an SVG line over the whole crop,
+// in percentages of it, so it keeps its ends on the same print as the picture scales. A line without x1 is the vertical div.
 const isGutter = (t) => !!t && t.kind === "gutter";
 const GUTTER_ANSWERS = [["a", "Yes"], ["b", "No"]];
 
@@ -270,10 +273,26 @@ function renderGutter(card, t, prev) {
   // Focusable so keyboard-only volunteers can scroll a tall crop with the arrow keys.
   view.tabIndex = 0; view.setAttribute("role", "region"); view.setAttribute("aria-label", "Page crop; scroll to see the whole line");
   const inner = document.createElement("div"); inner.className = "gutterinner";
-  const im = new Image(); im.src = "/clips/" + t.crop; im.alt = "a stretch of newspaper page with a vertical line drawn on it"; inner.appendChild(im);
-  const ln = document.createElement("div"); ln.className = "gline"; ln.id = "gline"; ln.hidden = !lineShown;
   const { x, y0, y1 } = t.line;
-  Object.assign(ln.style, { left: 100 * x + "%", top: 100 * y0 + "%", height: 100 * (y1 - y0) + "%" });
+  const x1 = typeof t.line.x1 === "number" ? t.line.x1 : x;
+  const leans = x1 !== x;
+  const im = new Image(); im.src = "/clips/" + t.crop;
+  im.alt = leans ? "a stretch of newspaper page with a slanting line drawn down it" : "a stretch of newspaper page with a vertical line drawn on it";
+  inner.appendChild(im);
+  const ln = document.createElement("div"); ln.className = "gline"; ln.id = "gline"; ln.hidden = !lineShown;
+  if (leans) {
+    ln.classList.add("lean");
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg"); svg.setAttribute("aria-hidden", "true"); svg.setAttribute("focusable", "false");
+    for (const cls of ["halo", "stroke"]) {
+      const l = document.createElementNS(NS, "line"); l.setAttribute("class", cls);
+      for (const [a, v] of [["x1", x], ["y1", y0], ["x2", x1], ["y2", y1]]) l.setAttribute(a, 100 * v + "%");
+      svg.appendChild(l);
+    }
+    ln.appendChild(svg);
+  } else {
+    Object.assign(ln.style, { left: 100 * x + "%", top: 100 * y0 + "%", height: 100 * (y1 - y0) + "%" });
+  }
   inner.appendChild(ln); view.appendChild(inner); card.appendChild(view);
   const bar = document.createElement("div"); bar.className = "gutterbar";
   const key = document.createElement("span"); key.className = "gkey";
