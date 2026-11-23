@@ -2,6 +2,7 @@
 const $ = (id) => document.getElementById(id);
 const SESSION = "usnm-check-session";
 const NAMES = "usnm-check-names"; // "1" when the visitor turned letter names on in this browser
+let lineShown = true; // column gutter tasks: whether the line is drawn on the crop
 let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false, loaded = false, failed = false, fontFailed = false, showNames = false, shownPrev;
 // Sent with every answer. The Worker refuses answers to a word marked confusable_display from a page older than this: an
 // already-open tab has the old stylesheet and font, and would send answers about letters it draws alike (worker.mjs, DISPLAY_REVISION).
@@ -257,6 +258,51 @@ function fontState(t) {
   try { return document.fonts.check(`32px "${family}"`, t.a + t.b) ? "loaded" : "not_loaded"; } catch { return "unknown"; }
 }
 
+// Column gutter tasks (README.md, "Column gutter judgments"): one crop with a line drawn over it, and the question whether the line
+// runs down a gap between columns. Yes is stored as `a`, No as `b`; neither and not text don't apply. The line is a CSS overlay at
+// the task's fractions of the crop, so the picture itself is never changed and the line can be hidden to see the print under it.
+const isGutter = (t) => !!t && t.kind === "gutter";
+const GUTTER_ANSWERS = [["a", "Yes"], ["b", "No"]];
+
+function renderGutter(card, t, prev) {
+  const q = document.createElement("p"); q.className = "question"; q.textContent = cfg.question || ""; card.appendChild(q);
+  const view = document.createElement("div"); view.className = "gutterview";
+  const inner = document.createElement("div"); inner.className = "gutterinner";
+  const im = new Image(); im.src = "/clips/" + t.crop; im.alt = "a stretch of newspaper page with a vertical line drawn on it"; inner.appendChild(im);
+  const ln = document.createElement("div"); ln.className = "gline"; ln.id = "gline"; ln.hidden = !lineShown;
+  const { x, y0, y1 } = t.line;
+  Object.assign(ln.style, { left: 100 * x + "%", top: 100 * y0 + "%", height: 100 * (y1 - y0) + "%" });
+  inner.appendChild(ln); view.appendChild(inner); card.appendChild(view);
+  const bar = document.createElement("div"); bar.className = "gutterbar";
+  const key = document.createElement("span"); key.className = "gkey";
+  const sw = document.createElement("span"); sw.className = "swatch"; sw.setAttribute("aria-hidden", "true");
+  key.append(sw, document.createTextNode(" The line to judge"));
+  const tog = document.createElement("button"); tog.type = "button"; tog.className = "small"; tog.id = "toggle-line"; tog.setAttribute("aria-pressed", String(!lineShown));
+  const label = () => (lineShown ? "Hide the line (L)" : "Show the line (L)");
+  tog.textContent = label();
+  tog.addEventListener("click", toggleLine);
+  bar.append(key, tog); card.appendChild(bar);
+  const opts = document.createElement("div"); opts.className = "options gutteropts";
+  GUTTER_ANSWERS.forEach(([choice, text], k) => {
+    const b = document.createElement("button"); b.type = "button"; b.className = "opt"; b.id = "opt" + (k + 1); b.disabled = busy;
+    if (prev === choice) b.classList.add("chosen");
+    const kk = document.createElement("span"); kk.className = "key"; kk.textContent = `${k + 1}`;
+    const big = document.createElement("span"); big.className = "yn"; big.textContent = text;
+    b.append(kk, big);
+    b.addEventListener("click", () => choose(choice));
+    opts.appendChild(b);
+  });
+  card.appendChild(opts);
+}
+
+function toggleLine() {
+  if (!isGutter(task)) return;
+  lineShown = !lineShown;
+  const ln = $("gline"), tog = $("toggle-line");
+  if (ln) ln.hidden = !lineShown;
+  if (tog) { tog.textContent = lineShown ? "Hide the line (L)" : "Show the line (L)"; tog.setAttribute("aria-pressed", String(!lineShown)); }
+}
+
 function render(prev) {
   shownPrev = prev;
   const card = $("card"); card.textContent = "";
@@ -264,6 +310,8 @@ function render(prev) {
   $("back").disabled = history.length === 0 || busy;
   const live = !!task && !busy && !fontFailed;
   $("neither").disabled = $("unsure").disabled = $("notext").disabled = $("skip").disabled = !live;
+  // A column gutter task has only yes, no and can't tell.
+  $("neither").hidden = $("notext").hidden = isGutter(task);
   if (!task && !loaded) {
     const d = document.createElement("div"); d.className = "done";
     if (busy || !failed) { d.textContent = "Loading the next word…"; card.appendChild(d); return; }
@@ -286,6 +334,14 @@ function render(prev) {
     d.appendChild(again); card.appendChild(d); return;
   }
   const t = task;
+  if (isGutter(t)) {
+    renderGutter(card, t, prev);
+    if (t.source) {
+      const src = document.createElement("a"); src.href = t.source; src.target = "_blank"; src.rel = "noopener"; src.className = "label"; src.textContent = "See the whole page";
+      card.appendChild(src);
+    }
+    return;
+  }
   if (t.label) { const top = document.createElement("div"); top.className = "label"; top.textContent = t.label; card.appendChild(top); }
   const lv = document.createElement("div"); lv.className = "lineview";
   const li = new Image(); li.src = "/clips/" + t.line; li.alt = "the printed line"; lv.appendChild(li);
@@ -339,6 +395,7 @@ async function next(had = controlFocused()) {
 
 async function choose(choice) {
   if (!task || busy || fontFailed) return;
+  if (isGutter(task) && (choice === "neither" || choice === "notext")) return;
   const had = controlFocused();
   busy = true; render();
   try {
@@ -375,6 +432,13 @@ async function work(code) {
   catch { $("card").textContent = "We don't have this language. "; const a = document.createElement("a"); a.href = "/"; a.textContent = "See the list"; $("card").appendChild(a); return; }
   document.title = `${cfg.name}: USNewsMap letter check`;
   $("intro").textContent = cfg.intro || "";
+  // A language may carry its own rules text and a list of notes for edge cases (the column gutter language does); the others use the page's.
+  if (typeof cfg.rules === "string" && cfg.rules) $("rules").textContent = cfg.rules;
+  if (Array.isArray(cfg.guidance) && cfg.guidance.length) {
+    const ul = $("guidance"); ul.textContent = "";
+    for (const g of cfg.guidance) { const li = document.createElement("li"); li.textContent = g; ul.appendChild(li); }
+    ul.hidden = false;
+  }
   $("download-link").href = "/api/export?lang=" + encodeURIComponent(code); $("download").hidden = false;
   $("neither").addEventListener("click", () => choose("neither"));
   $("unsure").addEventListener("click", () => choose("unsure"));
@@ -395,6 +459,7 @@ async function work(code) {
     else if (e.key === "4") choose("unsure");
     else if (e.key === "5") choose("notext");
     else if (e.key === "s" || e.key === "S") skip();
+    else if (e.key === "l" || e.key === "L") toggleLine();
     else if (e.key === "ArrowLeft" || e.key === "Backspace") back();
   });
   await next();

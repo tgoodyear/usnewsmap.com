@@ -840,3 +840,57 @@ test("holding a task keeps its answers, counts and outcome, takes it out of the 
   assert.deepEqual((await (await adminCall(DB, "/admin/confusable", { action: "reopen", tasks: ["chr/s/2"] })).json()).unchanged, ["chr/s/2"]);
   assert.equal(full("chr/s/2").held, 1);
 });
+
+// ---------- column gutter judgments (#2107) ----------
+
+const gutterBody = (extra = {}) => ({ kind: "gutter", crop: "en-gutter/g1/crops/p_s1.jpg", line: { x: 0.5, y0: 0.1, y1: 0.9 }, source: "https://example.test/p",
+  private: { role: "pilot", segment_id: "s1", page_id: "p", method: "projection", truth: "yes", ...extra } });
+
+test("a gutter task takes yes, no and can't tell, and refuses neither and not text; other tasks still take all five", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('en-gutter/g1/p~s1', 'en-gutter', 'g1', ?), ('en/s/1', 'en', 's', '{\"a\":\"x\",\"b\":\"y\"}')").run(JSON.stringify(gutterBody()));
+  const post = async (who, body) => worker.fetch(new Request("https://check.usnewsmap.com/api/answers", { method: "POST", headers: { authorization: "Bearer " + (await signSession(env.SESSION_KEY, who)) }, body: JSON.stringify(body) }), E, {});
+  for (const choice of ["neither", "notext"]) {
+    const r = await post("c1", { task: "en-gutter/g1/p~s1", choice });
+    assert.equal(r.status, 400, choice);
+    assert.match((await r.json()).error, /yes, no or can't tell/);
+  }
+  assert.equal(db.prepare("SELECT COUNT(*) AS k FROM answers").get().k, 0, "a refused answer is not stored");
+  for (const [who, choice] of [["c1", "a"], ["c2", "b"], ["c3", "unsure"]]) assert.equal((await post(who, { task: "en-gutter/g1/p~s1", choice })).status, 200, choice);
+  assert.equal((await post("c4", { task: "en/s/1", choice: "neither" })).status, 200);
+  assert.equal((await post("c5", { task: "en/s/1", choice: "notext" })).status, 200);
+});
+
+test("a gutter task's private fields stay off /api/next and the export until it settles, then the export adds kind, line, source and what was private", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  const load = await adminCall(DB, "/admin/tasks", null, [
+    { id: "en-gutter/g1/p~s1", lang: "en-gutter", set: "g1", ...gutterBody() },
+    { id: "en-gutter/g1/p~s2", lang: "en-gutter", set: "g1", ...gutterBody({ segment_id: "s2", method: "valley" }) },
+  ].map((t) => JSON.stringify(t)).join("\n"));
+  assert.equal(load.status, 200);
+  const token = await signSession(env.SESSION_KEY, "viewer");
+  const next = (await (await worker.fetch(new Request("https://check.usnewsmap.com/api/next?lang=en-gutter", { headers: { authorization: "Bearer " + token } }), E, {})).json()).task;
+  assert.equal(next.kind, "gutter");
+  assert.deepEqual(next.line, { x: 0.5, y0: 0.1, y1: 0.9 });
+  assert.equal(next.crop, "en-gutter/g1/crops/p_s1.jpg");
+  for (const secret of ["projection", "valley", "pilot", "truth", "private", "segment_id", "method"]) assert.equal(JSON.stringify(next).includes(secret), false, secret);
+  const post = async (who, task, choice) => worker.fetch(new Request("https://check.usnewsmap.com/api/answers", { method: "POST", headers: { authorization: "Bearer " + (await signSession(env.SESSION_KEY, who)) }, body: JSON.stringify({ task, choice }) }), E, {});
+  const exported = async () => (await (await worker.fetch(new Request("https://check.usnewsmap.com/api/export?lang=en-gutter"), E, {})).text()).trim().split("\n").map((l) => JSON.parse(l));
+  await post("c1", "en-gutter/g1/p~s1", "a");
+  await post("c2", "en-gutter/g1/p~s1", "a");
+  let [open] = await exported();
+  assert.deepEqual([open.kind, open.line, open.source, open.settled], ["gutter", { x: 0.5, y0: 0.1, y1: 0.9 }, "https://example.test/p", false]);
+  for (const k of ["method", "role", "segment_id", "page_id", "truth", "private"]) assert.equal(k in open, false, `${k} is hidden while open`);
+  assert.deepEqual(open.counts, { a: 2, b: 0, neither: 0, unsure: 0, notext: 0 });
+  await post("c3", "en-gutter/g1/p~s1", "unsure");
+  const [done, other] = await exported();
+  assert.deepEqual([done.settled, done.outcome], [true, "a"]);
+  assert.deepEqual([done.method, done.role, done.segment_id, done.page_id, done.truth], ["projection", "pilot", "s1", "p", "yes"]);
+  assert.equal(other.settled, false);
+  assert.equal("method" in other, false, "another open task stays hidden");
+  // a settled task takes no more answers
+  assert.equal((await post("c4", "en-gutter/g1/p~s1", "b")).status, 409);
+  assert.equal(db.prepare("SELECT n FROM tasks WHERE id = 'en-gutter/g1/p~s1'").get().n, 3);
+});

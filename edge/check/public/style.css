@@ -110,3 +110,21 @@ footer { color: var(--muted); font-size: .85rem; border-top: 1px solid var(--lin
 .script.named .cell { display: inline-flex; flex-direction: column; align-items: center; padding: 0 .09em; vertical-align: top; }
 .script.named .glyph { letter-spacing: 0; padding: 0; margin: 0; }
 .script.named .n { font-family: var(--font-ui); font-size: .8rem; font-weight: 600; line-height: 1.3; letter-spacing: 0; color: var(--muted); user-select: none; -webkit-user-select: none; }
+/* Column gutter tasks: a tall crop with a line drawn over it. The crop scrolls inside a box of limited height, so the answer
+   buttons stay in reach on a phone; the line is inside the scrolling content, so it moves with the picture. The line is a
+   colour the newspaper's grey print never has, with a pale edge so it shows on dark print and on paper alike. */
+.question { margin: 0; font-weight: 600; max-width: 65ch; }
+.gutterview { max-height: min(70vh, 640px); overflow: auto; border: 1px solid var(--line); border-radius: 6px; background: #fff; -webkit-overflow-scrolling: touch; }
+.gutterinner { position: relative; width: 100%; }
+.gutterinner img { width: 100%; display: block; filter: grayscale(1); }
+.gline { position: absolute; width: 3px; margin-left: -1.5px; background: #e0115f; box-shadow: 0 0 0 1px rgba(255, 255, 255, .85); pointer-events: none; }
+.gline[hidden] { display: none; }
+.gutterbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.gkey { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: .9rem; }
+.swatch { display: inline-block; width: 3px; height: 1.2em; background: #e0115f; box-shadow: 0 0 0 1px rgba(255, 255, 255, .85); }
+.gutteropts { grid-template-columns: 1fr 1fr; }
+@media (max-width: 480px) { .gutteropts { grid-template-columns: 1fr 1fr; } }
+.gutteropts .opt { align-items: center; text-align: center; min-height: 64px; justify-content: center; }
+.gutteropts .yn { font-size: 1.4rem; font-weight: 600; }
+ul.guidance { padding-left: 1.2em; margin-top: 0; }
+ul.guidance[hidden] { display: none; }

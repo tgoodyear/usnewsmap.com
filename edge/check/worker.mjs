@@ -3,6 +3,10 @@
 // /admin/*. README.md describes the data, the settling rule and how tasks are loaded.
 
 const CHOICES = new Set(["a", "b", "neither", "unsure", "notext"]);
+// A column gutter task (kind "gutter", README.md "Column gutter judgments") asks yes / no / can't tell: a = yes, b = no, unsure.
+// Neither and notext have no meaning for it and are refused.
+export const GUTTER_REVEALED = ["method", "role", "segment_id", "page_id"];
+export const GUTTER_REFUSED = new Set(["neither", "notext"]);
 // What the page reports about the bundled font when an answer was given (public/app.js, fontState): `loaded` and
 // `not_loaded` for the font the page declares for the word's script, `none` when no bundled font applies to the word,
 // `unknown` when the page couldn't tell (the browser has no font loading API) or is from before the value existed.
@@ -230,8 +234,9 @@ async function api(request, env, url) {
     const c = await contributorOf(request, env, { limited: true });
     const b = await body(request);
     if (typeof b.task !== "string" || b.task.length > 300 || !CHOICES.has(b.choice)) throw new HttpError(400, "task and choice required");
-    const t = await env.DB.prepare("SELECT id, settled, held, confusable_display, json_type(body, '$.private') AS blind FROM tasks WHERE id = ?").bind(b.task).first();
+    const t = await env.DB.prepare("SELECT id, settled, held, confusable_display, json_type(body, '$.private') AS blind, json_extract(body, '$.kind') AS kind FROM tasks WHERE id = ?").bind(b.task).first();
     if (!t) throw new HttpError(404, "no such task");
+    if (t.kind === "gutter" && GUTTER_REFUSED.has(b.choice)) throw new HttpError(400, "this question takes yes, no or can't tell");
     if (t.settled && t.blind) throw new HttpError(409, "this word is already checked");
     if (t.held) throw new HttpError(409, "this word is not open for answers");
     if (t.confusable_display && !(Number(b.display) >= DISPLAY_REVISION)) throw new HttpError(426, "this page is out of date: reload it, then answer again");
@@ -289,6 +294,9 @@ async function api(request, env, url) {
         a_is: t.private ? reveal.a_is : t.a_is, b_is: t.private ? reveal.b_is : t.b_is,
         ...(t.private ? { strata: t.private.strata, truth: reveal.truth } : {}),
         ...(t.lookalikes ? { lookalikes: t.lookalikes } : {}),
+        // A column gutter task: the line as drawn and, once settled, what `private` held (which method drew it, its role, the
+        // segment and page it is from, and the truth for a calibration item). Unsettled, none of the private fields are here.
+        ...(t.kind === "gutter" ? { kind: "gutter", line: t.line, ...Object.fromEntries(GUTTER_REVEALED.filter((k) => reveal[k] !== undefined).map((k) => [k, reveal[k]])) } : {}),
         // Pairs of one base letter that differ only in combining marks (lookalike.py): {a, a_marks, b, b_marks, base}.
         ...(t.mark_only ? { mark_only: t.mark_only } : {}),
         counts: { a: r.a || 0, b: r.b || 0, neither: r.neither || 0, unsure: r.unsure || 0, notext: r.notext || 0 },

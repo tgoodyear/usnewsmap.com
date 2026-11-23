@@ -8,7 +8,7 @@ import { readFileSync, readdirSync } from "node:fs";
 
 const dir = new URL("./languages/", import.meta.url);
 const files = readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
-const KNOWN = new Set(["dir", "drop_examples", "equivalents", "intro", "labels", "marks", "min_examples", "name", "notes", "title"]);
+const KNOWN = new Set(["dir", "drop_examples", "equivalents", "guidance", "intro", "labels", "marks", "min_examples", "name", "notes", "question", "rules", "title"]);
 const strings = (obj) => obj && typeof obj === "object" && !Array.isArray(obj) && Object.values(obj).every((v) => typeof v === "string" && v);
 
 test("there are language configurations", () => assert.ok(files.length > 0));
@@ -38,6 +38,8 @@ for (const file of files) {
       assert.match(label, /^[\p{L} ]{1,20}$/u, `the label of ${JSON.stringify(letter)} is short, plain words`);
       assert.ok(!/\bcyrillic\b|\bhebrew\b|\bletter\b|\bsmall\b|\bcapital\b/i.test(label), "not the Unicode character name");
     }
+    for (const key of ["question", "rules"]) if (key in cfg) assert.ok(typeof cfg[key] === "string" && cfg[key].trim(), `${key} is text`);
+    if ("guidance" in cfg) assert.ok(Array.isArray(cfg.guidance) && cfg.guidance.every((g) => typeof g === "string" && g.trim()), "guidance is a list of text");
     if ("drop_examples" in cfg) assert.equal(typeof cfg.drop_examples, "string");
     if ("min_examples" in cfg) assert.ok(Number.isInteger(cfg.min_examples) && cfg.min_examples > 0);
     // Keys in ascending order at every level, as written by json.dumps(sort_keys=True).
