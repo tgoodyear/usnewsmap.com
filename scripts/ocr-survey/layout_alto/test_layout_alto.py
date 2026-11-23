@@ -393,3 +393,78 @@ def test_scan_batch_handles_an_issue_split_in_the_tar(tmp_path):
     _, res = join_bw.scan_batch(("b_ver01", str(tp), pages, str(out_alto)))
     assert res["p1"]["status"] == "joined" and res["p1"]["issue_pages"] == 2 and res["p1"]["seq"] == "seq-2"
     assert not any(n.startswith("spill") for n in os.listdir(tmp_path))
+
+
+# ---------------------------------------------------------------- METS join
+
+METS = """<mets xmlns="http://www.loc.gov/METS/" xmlns:mods="http://www.loc.gov/mods/v3" xmlns:xlink="http://www.w3.org/1999/xlink">
+<dmdSec ID="issueModsBib"><mdWrap><xmlData><mods:mods/></xmlData></mdWrap></dmdSec>
+%s
+<fileSec>%s</fileSec>
+<structMap><div TYPE="np:issue">%s</div></structMap></mets>"""
+
+
+def write_mets(path, pages):
+    """pages: [(reel, reel seq)] -> an issue METS with np:page divs in that order."""
+    dmd = "".join(f'<dmdSec ID="pageModsBib{i}"><mdWrap><xmlData><mods:mods><mods:relatedItem>'
+                  f'<mods:identifier type="reel number">{r}</mods:identifier>'
+                  f'<mods:identifier type="reel sequence number">{s}</mods:identifier></mods:relatedItem></mods:mods></xmlData></mdWrap></dmdSec>'
+                  for i, (r, s) in enumerate(pages, 1))
+    fs = "".join(f'<fileGrp ID="g{i}"><file ID="m{i}" USE="master"><FLocat xlink:href="./{int(s):04d}.tif"/></file>'
+                 f'<file ID="ocrFile{i}" USE="ocr"><FLocat xlink:href="./{int(s):04d}.xml"/></file></fileGrp>' for i, (r, s) in enumerate(pages, 1))
+    st = "".join(f'<div TYPE="np:page" DMDID="pageModsBib{i}"><fptr FILEID="m{i}"/><fptr FILEID="ocrFile{i}"/></div>' for i in range(1, len(pages) + 1))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(METS % (dmd, fs, st))
+
+
+def test_mets_join_matches_reel_and_sequence_exactly(tmp_path):
+    import join_mets
+    mets = tmp_path / "mets"
+    write_mets(str(mets / "b_ver01/mets/sn1/1900010201.xml"), [("R1", "5"), ("R1", "6"), ("R2", "6"), ("R1", "7")])
+    write_mets(str(mets / "b_ver01/mets/sn1/1900010301.xml"), [("R1", "5"), ("R1", "5")])
+    refs = tmp_path / "refs"
+    refs.mkdir()
+    def row(pid, batch, date, reel, frame, ed=1):
+        return {"page_id": pid, "split": "train", "width": 10, "height": 10, "image_path": "x",
+                "meta": {"ca_identity": {"batch": batch, "lccn": "sn1", "date": date, "edition": ed, "reel": reel, "frame": frame}}}
+    rows = [row("a", "b_ver01", "1900-01-02", "R1", 6), row("b", "b_ver01", "1900-01-02", "R2", 6), row("c", "b_ver01", "1900-01-02", "R9", 6),
+            row("d", "b_ver01", "1900-01-03", "R1", 5), row("e", "b_ver01", "1900-01-09", "R1", 5), row("f", "other_ver01", "1900-01-02", "R1", 6),
+            row("g", "b_ver01", "1900-01-02", "R1", 5, ed=2)]
+    (refs / "biglam__loc_beyond_words__train.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+    (refs / "biglam__loc_beyond_words__val.jsonl").write_text("")
+    out = join_mets.mets_join(str(refs), str(mets), 300)
+    st = {p: v["status"] for p, v in out["pages"].items()}
+    assert st == {"a": "joined", "b": "joined", "c": "no_page_match", "d": "multiple_match", "e": "no_mets_issue",
+                  "f": "no_mets_batch", "g": "no_mets_issue"}
+    assert out["pages"]["a"]["seq"] == 2 and out["pages"]["b"]["seq"] == 3 and out["pages"]["a"]["ocr"] == "./0006.xml"
+    assert out["pages"]["a"]["mets_pages"] == 4
+    assert join_mets.member_name(out["pages"]["a"]) == "sn1/1900/01/02/ed-1/seq-2/ocr.xml"
+    assert out["_meta"]["selected"] == sorted(["a", "b"], key=join_mets.sha_key)
+    assert join_mets.mets_join(str(refs), str(mets), 1)["_meta"]["selected"] == out["_meta"]["selected"][:1]
+
+
+def test_fetch_batch_writes_the_named_member_and_counts_issue_pages(tmp_path):
+    import io
+    import tarfile
+    import join_mets
+    tp = tmp_path / "b_ver01.tar.bz2"
+    with tarfile.open(tp, "w:bz2") as tf:
+        for k in (1, 2, 3):
+            data = alto([(0, 0, 10, 10, ["a"])], page=(1000 + k, 1400))
+            ti = tarfile.TarInfo(f"sn1/1900/01/02/ed-1/seq-{k}/ocr.xml")
+            ti.size = len(data)
+            tf.addfile(ti, io.BytesIO(data))
+    (tmp_path / "alto").mkdir()
+    v = {"lccn": "sn1", "date": "1900-01-02", "edition": 1, "seq": 2}
+    _, out = join_mets.fetch_batch(("b_ver01", str(tp), {"p": v, "q": dict(v, seq=9)}, str(tmp_path / "alto")))
+    assert out["p"] == {"alto_size": (1002.0, 1400.0), "tar_issue_pages": 3, "found": True}
+    assert out["q"]["found"] is False and sorted(os.listdir(tmp_path / "alto")) == ["p.xml"]
+
+
+def test_subset_aucs():
+    pp = {"a": {"cross_share": 0.1, "cross_share_planted": 0.9}, "b": {"cross_share": 0.1, "cross_share_planted": 0.2},
+          "c": {"cross_share": 0.5, "cross_share_planted": 0.4}, "d": {"skipped": "no_gutter"}}
+    r = testb.subset_aucs(pp, {"a", "b"})
+    assert r["in_subset"]["pages_scored"] == 2 and r["in_subset"]["auc"] == 1.0
+    assert r["not_in_subset"]["pages_scored"] == 1 and r["not_in_subset"]["auc"] == 0.0

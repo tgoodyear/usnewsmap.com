@@ -107,12 +107,23 @@ def distributions(join_dir, join, gutters, ids, progress=True):
     return out, rows
 
 
+def subset_aucs(per_page, ids):
+    """AUC of the pages in `ids` and of the others (original vs planted cross_share), from test_b's per-page scores."""
+    out = {}
+    for name, keep in (("in_subset", lambda p: p in ids), ("not_in_subset", lambda p: p not in ids)):
+        o = [v["cross_share"] for p, v in per_page.items() if "cross_share" in v and keep(p)]
+        q = [v["cross_share_planted"] for p, v in per_page.items() if "cross_share" in v and keep(p)]
+        out[name] = {"pages_scored": len(o), "auc": signals.auc([0] * len(o) + [1] * len(q), o + q)}
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--join-dir", required=True)
     ap.add_argument("--gutters", required=True)
     ap.add_argument("--as-gutters")
     ap.add_argument("--limit", type=int, default=300)
+    ap.add_argument("--subset-ids", help="file of page ids: also report the AUC on these pages and on the others")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     join = json.load(open(os.path.join(a.join_dir, "join.json")))
@@ -121,6 +132,8 @@ def main(argv=None):
     res["banded"]["test_b"] = test_b(a.join_dir, join, gutters, a.limit)
     ids = sorted(p for p, v in join["pages"].items() if v["status"] == "joined")
     res["banded"]["distributions_all_joined"], _ = distributions(a.join_dir, join, gutters, ids)
+    if a.subset_ids:
+        res["banded"]["test_b_subsets"] = subset_aucs(res["banded"]["test_b"]["per_page"], {ln.strip() for ln in open(a.subset_ids) if ln.strip()})
     if a.as_gutters:
         asg = json.load(open(a.as_gutters))
         sel = sorted((p for p, v in join["pages"].items() if v["status"] == "joined"), key=sha_key)[: a.limit]
