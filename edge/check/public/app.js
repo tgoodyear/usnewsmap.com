@@ -492,7 +492,8 @@ async function next(had = controlFocused(), after = null, pressed, keepRest = tr
     const r = first ? await first.p.then((x) => { used = true; return x; }, () => fetchNext()) : await fetchNext();
     task = r.task; answered = Math.max(answered, r.answered); loaded = true; failed = false; navStatus("");
     fontFailed = !(await fontReady(task));
-    if (fontFailed) navStatus("The font for this word didn't load.", true);
+    // The loading message may have appeared while the font loaded; the word is ready now, so it goes.
+    navStatus(fontFailed ? "The font for this word didn't load." : "", fontFailed);
   } catch (e) {
     failed = true;
     navStatus(e.status === 429 ? "Slow down a little, then try again." : "The next word didn't load. " + e.message, true);
