@@ -4454,7 +4454,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
          refill_cap=None, other_app_budget=None, sibling_archived=None, sibling_claims=None,
          resume_native=False, release_spot_hold=None, release_container_hold=None, pair_log=None,
          resolution_log=None, loc_text=None, admission=None, refresh_sibling_claims=None,
-         gold_refill_when_empty=False):
+         gold_refill_when_empty=False, backlog_refill_when_empty=False):
     """One tick. `admission` (an Admission, #1836) is the lock of a plan that ticks beside others:
     gold, and publishing held pages through claims, exports, submits and spot replays, run only
     while it is held, after reading every plan's journals, claims (`refresh_sibling_claims`) and
@@ -4898,6 +4898,11 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     # tick). With --gold-refill-when-empty it refills anyway while BOINC has none of the plan's
     # work unsent, so hosts don't sit idle through a gold tick on top of a long refill cycle.
     gold_holds = gold_ran and not (gold_refill_when_empty and has_ocr_attribution and ocr_unsent == 0)
+    # Results still waiting to be collected stop the refill (`held`, below), and a collect that
+    # takes minutes leaves a tail on most ticks, so hosts sat idle for hours. With
+    # --backlog-refill-when-empty the refill goes ahead anyway while BOINC has none of the plan's
+    # app unsent; the room the retained backlog takes is counted either way.
+    backlog_open = bool(backlog_refill_when_empty and has_ocr_attribution and ocr_unsent == 0)
 
     uncertain = any(job["stage"] == "submitting" for job in server.values())
     require(not uncertain, "uncertain server submission blocks fresh allocation")
@@ -4966,7 +4971,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # Every tick, so the list stays current when this one claims nothing (#1754).
         feed.settled_messages = settled_messages(records, claimed_messages(state.get("claims"), sibling_claims))
         feed.publish_settled()
-    if admitted and target and not held and not drain and not gold_holds and not native_paused:
+    if admitted and target and (not held or backlog_open) and not drain and not gold_holds and not native_paused:
         if free > 0:
             if feed:
                 feed.settled_messages = settled_messages(
@@ -5259,7 +5264,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     elif native_paused:
         backpressure = True
         backpressure_reason = "native_paused"
-    elif held > 0:
+    elif held > 0 and not backlog_open:
         backpressure = True
         backpressure_reason = "collection_backlog"
     elif gold_holds:
@@ -5444,6 +5449,10 @@ def main(argv=None):
     parser.add_argument("--gold-refill-when-empty", action="store_true",
                         help="refill on a gold tick too while BOINC has none of the plan's app unsent "
                              "(per-app server status needed); a gold tick otherwise only collects")
+    parser.add_argument("--backlog-refill-when-empty", action="store_true",
+                        help="refill although results wait to be collected while BOINC has none of the "
+                             "plan's app unsent (per-app server status needed); otherwise a tick with "
+                             "uncollected results only collects")
     parser.add_argument("--other-app-budget", type=int, default=None,
                         help="count at most this many of other apps' unassimilated workunits toward "
                              "--max-global-pending (needed, and above it), and hold all apps' work to the "
@@ -5675,6 +5684,8 @@ def main(argv=None):
                 tick_kwargs["refill_cap"] = args.refill_cap
             if args.gold_refill_when_empty:
                 tick_kwargs["gold_refill_when_empty"] = True
+            if args.backlog_refill_when_empty:
+                tick_kwargs["backlog_refill_when_empty"] = True
             if args.other_app_budget is not None:
                 tick_kwargs["other_app_budget"] = args.other_app_budget
             admission = None

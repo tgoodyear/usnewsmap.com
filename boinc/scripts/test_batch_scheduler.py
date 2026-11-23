@@ -476,6 +476,28 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(self.tick()["published"], 4)
         self.assertEqual(len([action for action in self.fake.actions if action[0] == "submit"]), 5)
 
+    def test_a_backlog_tick_refills_only_when_asked_and_nothing_is_unsent(self):
+        # --backlog-refill-when-empty: results waiting to be collected stop the refill, and a
+        # collect that leaves a tail on every tick kept the hosts idle for hours.
+        self.tick()
+        self.tick()
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        base_state, base_fake = copy.deepcopy(self.state), copy.deepcopy(self.fake)
+
+        def run(unsent, **kwargs):
+            self.state, self.fake = copy.deepcopy(base_state), copy.deepcopy(base_fake)
+            return batch.tick(self.config, self.state, self.fake, lambda: None, NOW,
+                              server_status=status_xml(ocr_unsent=unsent), **kwargs)
+
+        for unsent, flag in ((0, False), (5, True)):
+            event = run(unsent, backlog_refill_when_empty=flag)
+            self.assertEqual((event["collection_backlog"], event["backpressure_reason"]),
+                             (2, "collection_backlog"))
+        event = run(0, backlog_refill_when_empty=True)
+        self.assertEqual(event["collection_backlog"], 2)
+        self.assertNotEqual(event["backpressure_reason"], "collection_backlog")
+
     def test_interrupted_export_recovers_authoritative_records(self):
         self.fake.crash_export = True
         with self.assertRaisesRegex(RuntimeError, "interrupted"):
