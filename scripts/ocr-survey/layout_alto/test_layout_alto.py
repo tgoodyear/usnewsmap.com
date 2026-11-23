@@ -373,3 +373,23 @@ def test_json_keys_are_sorted_in_testb_output(tmp_path):
     text = (tmp_path / "o.json").read_text()
     d = json.loads(text)
     assert list(d) == sorted(d) and list(d["banded"]) == sorted(d["banded"])
+
+
+def test_scan_batch_handles_an_issue_split_in_the_tar(tmp_path):
+    import io
+    import tarfile
+    tp = tmp_path / "b_ver01.tar.bz2"
+    names = [("sn1/1900/01/02/ed-1/seq-1/ocr.xml", (1000, 1400)), ("sn1/1900/01/03/ed-1/seq-1/ocr.xml", (1000, 1000)),
+             ("sn1/1900/01/02/ed-1/seq-2/ocr.xml", (1000, 1000))]
+    with tarfile.open(tp, "w:bz2") as tf:
+        for name, page in names:
+            data = alto([(0, 0, 10, 10, ["a"])], page=page)
+            ti = tarfile.TarInfo(name)
+            ti.size = len(data)
+            tf.addfile(ti, io.BytesIO(data))
+    out_alto = tmp_path / "alto"
+    out_alto.mkdir()
+    pages = [{"page_id": "p1", "split": "train", "batch": "b_ver01", "lccn": "sn1", "date": "1900-01-02", "edition": 1, "width": 1000, "height": 1000}]
+    _, res = join_bw.scan_batch(("b_ver01", str(tp), pages, str(out_alto)))
+    assert res["p1"]["status"] == "joined" and res["p1"]["issue_pages"] == 2 and res["p1"]["seq"] == "seq-2"
+    assert not any(n.startswith("spill") for n in os.listdir(tmp_path))

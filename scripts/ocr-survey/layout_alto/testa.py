@@ -158,7 +158,7 @@ def main(argv=None):
     ap.add_argument("--gutters", required=True)
     ap.add_argument("--as-gutters")
     ap.add_argument("--render-compare-dir", required=True)
-    ap.add_argument("--testb-json", required=True)
+    ap.add_argument("--testb-json", help="test B output; without it test A runs and its result is HELD (not reportable) until B is known")
     ap.add_argument("--out", required=True)
     ap.add_argument("--bootstrap", type=int, default=200)
     ap.add_argument("--seed", type=int, default=2107)
@@ -166,8 +166,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     sys.path.insert(0, a.render_compare_dir)
     sets = [tuple(s.split(",", 2)) for s in a.set]
-    tb = json.load(open(a.testb_json))["banded"]["test_b"]
-    out = {"test_b": {"auc": tb["auc"], "passes": tb["passes"]}}
+    tb = json.load(open(a.testb_json))["banded"]["test_b"] if a.testb_json else {"auc": None, "passes": True}
+    out = {"test_b": {"auc": tb["auc"], "passes": tb["passes"], "pending": not a.testb_json}, "held_until_test_b": not a.testb_json}
     if not tb["passes"]:
         out["reported"] = False
         out["note"] = "test B failed: test A is not reported as a result (the signal is broken)"
@@ -181,7 +181,7 @@ def main(argv=None):
         res["decision"] = {"gain": allp["gain"], "gain_bar": GAIN_BAR, "gain_ci95": allp["gain_ci95"],
                            "gain_meets_bar": bool(allp["gain"] is not None and allp["gain"] >= GAIN_BAR),
                            "ci_lower_above_0": bool(lo is not None and lo > 0),
-                           "test_b_passes": True,
+                           "test_b_passes": None if not a.testb_json else True,
                            "wrong_words_on_crossing_lines": floor, "floor": WRONG_FLOOR,
                            "descriptive_only": bool(floor < WRONG_FLOOR)}
         d = res["decision"]
