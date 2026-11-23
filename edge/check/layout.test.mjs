@@ -388,8 +388,8 @@ test("a Cherokee word is answerable only once the served font has loaded", async
   assert.equal(await ready({})(word), true);
   assert.equal(await ready(fonts([]))(null), true);
   // and the page keeps its answer controls off, and refuses the keyboard shortcuts, while the font has failed
-  assert.match(appJs, /const live = !!task && !busy && !fontFailed;/);
-  assert.match(appJs, /if \(!task \|\| busy \|\| fontFailed\) return;/);
+  assert.match(appJs, /const live = !!task && !busy && !fontFailed && !stale;/);
+  assert.match(appJs, /if \(!task \|\| busy \|\| fontFailed \|\| stale\) return;/);
 });
 
 test("each answer carries what the page knows about the bundled font", () => {

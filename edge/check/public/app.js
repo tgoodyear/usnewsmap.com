@@ -5,9 +5,9 @@ const NAMES = "usnm-check-names"; // "1" when the visitor turned letter names on
 let lineShown = true; // column gutter tasks: whether the line is drawn on the crop
 let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false, loaded = false, failed = false, fontFailed = false, showNames = false, shownPrev;
 // On a slow connection an answer is saved in the background and the next word, fetched while this one was shown, appears at once.
-// `pending` holds answers not yet saved, oldest first; `ahead` is the next word fetched for the word now shown; `stale` is set
+// `pending` holds answers not yet saved, oldest first; `ahead` holds the next words fetched for the word now shown; `stale` is set
 // when the Worker says this page is out of date, and stops answering until a reload.
-let pending = [], sending = false, ahead = null, stale = false, slowTimer = null, wake = null;
+let pending = [], sending = false, inflight = null, ahead = null, stale = false, slowTimer = null, wake = null, drained = [];
 const counted = new Set(); // words answered on this page, so a changed answer isn't counted twice
 // Sent with every answer. The Worker refuses answers to a word marked confusable_display from a page older than this: an
 // already-open tab has the old stylesheet and font, and would send answers about letters it draws alike (worker.mjs, DISPLAY_REVISION).
@@ -413,44 +413,91 @@ function showProgress() {
 
 // The clips a word shows, fetched ahead so the next word appears with its pictures.
 function clipKeys(t) { return !t ? [] : isGutter(t) ? [t.crop] : [t.line, t.word].filter(Boolean); }
-function preload(t) { for (const k of clipKeys(t)) { const im = new Image(); im.src = "/clips/" + k; } }
+// Pictures fetched ahead are held until they load: some mobile browsers cancel the download of an Image that is collected.
+const held = new Map();
+function preload(t) {
+  for (const k of clipKeys(t)) {
+    if (held.has(k)) continue;
+    const im = new Image();
+    im.onload = im.onerror = () => { if (held.get(k) === im) held.delete(k); };
+    held.set(k, im);
+    im.src = "/clips/" + k;
+    if (im.decode) im.decode().catch(() => {});
+  }
+}
+// Let go of pictures for words neither shown nor ahead.
+function pruneHeld() {
+  const keep = new Set([task, ...(ahead ? ahead.list.map((x) => x.task) : [])].flatMap(clipKeys));
+  for (const k of [...held.keys()]) if (!keep.has(k)) held.delete(k);
+}
 
-// The Worker reads at most 50 ids to skip, so the words this page must not be given again come first.
-function fetchNext(also = []) {
+// The Worker reads at most 50 ids to skip, so the words this page must not be given again come first. While more answers
+// wait to be saved than fit, the fetch waits for saves, so a word with an unsaved answer is never served again.
+const SKIP_MAX = 50;
+async function fetchNext(also = []) {
+  while (new Set([...also, ...pending.map((p) => p.id)]).size > SKIP_MAX) {
+    if (stale) throw new Error("This page is out of date.");
+    await new Promise((ok) => drained.push(ok));
+  }
   const q = new URLSearchParams({ lang });
-  const skip = [...new Set([...also, ...pending.map((p) => p.id), ...skipped.slice().reverse()])].slice(0, 50);
+  const skip = [...new Set([...also, ...pending.map((p) => p.id), ...skipped.slice().reverse()])].slice(0, SKIP_MAX);
   if (skip.length) q.set("skip", skip.join(","));
   return authed("/api/next?" + q);
 }
 
-// Fetch the word after the one now shown, so answering it can move on without waiting for the network.
-function prefetch() {
+// Up to AHEAD words are fetched to follow the word shown, so answering can move on without waiting for the network.
+// `ahead` is { forId, list }: forId is the word shown, list the words to follow it, in order, each { p, task, dead }.
+const AHEAD = 2;
+function dropAhead(keep = []) {
+  if (ahead) for (const x of ahead.list) if (!keep.includes(x)) x.dead = true;
   ahead = null;
-  if (!task || stale) return;
-  const forId = task.id;
-  const p = fetchNext([forId]).then((r) => { preload(r.task); return r; });
-  p.catch(() => { /* fetched again when needed */ });
-  ahead = { forId, p };
+}
+// A word ahead is fetched once the one before it has arrived, skipping the word shown and those before it.
+function aheadItem(forId, prior) {
+  const item = { task: undefined, dead: false }, last = prior[prior.length - 1];
+  item.p = (last ? last.p : Promise.resolve(null)).then((r) => {
+    if (item.dead || stale) throw new Error("not needed");
+    if (r && !r.task) return r; // no more words
+    return fetchNext([forId, ...prior.filter((x) => x.task).map((x) => x.task.id)]);
+  }).then((r) => { item.task = r.task; if (!item.dead) preload(r.task); return r; });
+  item.p.catch(() => { /* fetched again when needed */ });
+  return item;
+}
+function prefetch(keep = []) {
+  dropAhead(keep);
+  if (task && !stale) {
+    ahead = { forId: task.id, list: keep };
+    while (ahead.list.length < AHEAD) ahead.list.push(aheadItem(task.id, ahead.list.slice()));
+  } else for (const x of keep) x.dead = true;
+  pruneHeld();
 }
 
-async function next(had = controlFocused(), after = null, pressed) {
-  const early = after && ahead && ahead.forId === after ? ahead.p : null;
-  ahead = null;
+// Once the page is out of date, its reload message stays in place of news about the next word.
+function navStatus(text, error) { if (!stale) status(text, error); }
+
+// `after` is the word being left: the first word fetched ahead for it is shown; with `keepRest`, the others stay ahead.
+async function next(had = controlFocused(), after = null, pressed, keepRest = true) {
+  const list = after && ahead && ahead.forId === after ? ahead.list : [];
+  const first = list[0], rest = keepRest ? list.slice(1) : [];
+  dropAhead(first ? [first, ...rest] : []);
+  let used = false;
   busy = true; render(pressed);
   clearTimeout(slowTimer);
-  slowTimer = setTimeout(() => { if (busy) status("Loading the next word…"); }, 400);
+  slowTimer = setTimeout(() => { if (busy) navStatus("Loading the next word…"); }, 400);
   try {
-    const r = early ? await early.catch(() => fetchNext()) : await fetchNext();
-    task = r.task; answered = Math.max(answered, r.answered); loaded = true; failed = false; status("");
+    const r = first ? await first.p.then((x) => { used = true; return x; }, () => fetchNext()) : await fetchNext();
+    task = r.task; answered = Math.max(answered, r.answered); loaded = true; failed = false; navStatus("");
     fontFailed = !(await fontReady(task));
-    if (fontFailed) status("The font for this word didn't load.", true);
+    if (fontFailed) navStatus("The font for this word didn't load.", true);
   } catch (e) {
     failed = true;
-    status(e.status === 429 ? "Slow down a little, then try again." : "The next word didn't load. " + e.message, true);
+    navStatus(e.status === 429 ? "Slow down a little, then try again." : "The next word didn't load. " + e.message, true);
   } finally {
     clearTimeout(slowTimer);
     busy = false; render(); keepFocus(had);
-    if (!failed && !fontFailed) prefetch();
+    const keep = used && !failed && !fontFailed ? rest : [];
+    for (const x of rest) if (!keep.includes(x)) x.dead = true;
+    if (!failed && !fontFailed) prefetch(keep); else pruneHeld();
   }
 }
 
@@ -463,17 +510,20 @@ async function sendAnswers() {
     while (pending.length && !stale) {
       const p = pending[0];
       try {
-        await authed("/api/answers", { method: "POST", headers: { "content-type": "application/json" }, body: p.body });
-        pending.shift();
+        inflight = p;
+        try {
+          await authed("/api/answers", { method: "POST", headers: { "content-type": "application/json" }, body: p.body });
+        } finally { inflight = null; }
+        unqueue(p);
       } catch (e) {
         // A checked word of a blind set takes no more answers (someone else settled it); the answer is not needed.
-        if (e.status === 409) { pending.shift(); continue; }
+        if (e.status === 409) { unqueue(p); continue; }
         if (e.status === 426) {
-          stale = true; ahead = null; render();
+          stale = true; dropAhead(); pruneHeld(); render(); unqueue(null);
           status(`This page is out of date. Reload it, then answer again. ${pending.length === 1 ? "1 answer wasn't" : pending.length + " answers weren't"} saved.`, true);
           break;
         }
-        if (e.status === 400) { pending.shift(); status("An answer was refused: " + e.message, true); continue; }
+        if (e.status === 400) { unqueue(p); status("An answer was refused: " + e.message, true); continue; }
         p.tries++;
         showProgress();
         await new Promise((ok) => { wake = ok; setTimeout(ok, e.status === 429 ? 5000 : Math.min(30000, 1000 * 2 ** Math.min(p.tries, 5))); });
@@ -482,6 +532,13 @@ async function sendAnswers() {
       showProgress();
     }
   } finally { sending = false; showProgress(); }
+}
+
+// Take a saved (or no longer needed) answer off the queue, and let a fetch waiting for room in the skip list go on.
+function unqueue(p) {
+  const k = pending.indexOf(p);
+  if (k >= 0) pending.splice(k, 1);
+  for (const ok of drained.splice(0)) ok();
 }
 
 addEventListener("beforeunload", (e) => { if (pending.length) { e.preventDefault(); e.returnValue = ""; } });
@@ -495,8 +552,8 @@ async function choose(choice) {
   const id = task.id;
   history.push({ task, choice });
   if (history.length > 50) history.shift();
-  // A changed answer (Back, then another choice) replaces the one still waiting to be saved.
-  const queued = pending.findIndex((p, k) => p.id === id && (k > 0 || !sending));
+  // A changed answer (Back, then another choice) replaces the one still waiting to be saved, unless it is being sent now.
+  const queued = pending.findIndex((p) => p.id === id && p !== inflight);
   if (queued >= 0) pending.splice(queued, 1);
   if (!counted.has(id)) { counted.add(id); answered++; }
   pending.push({ id, body, tries: 0 });
@@ -511,7 +568,7 @@ function back() {
   status("Change your answer, or pick the same one to keep it.");
 }
 
-function skip() { if (!task || busy || stale) return; skipped.push(task.id); next(controlFocused(), task.id); }
+function skip() { if (!task || busy || stale) return; skipped.push(task.id); next(controlFocused(), task.id, undefined, false); }
 
 async function work(code) {
   lang = code;
