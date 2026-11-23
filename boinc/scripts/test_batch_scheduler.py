@@ -494,9 +494,11 @@ class SchedulerTests(unittest.TestCase):
             event = run(unsent, backlog_refill_when_empty=flag)
             self.assertEqual((event["collection_backlog"], event["backpressure_reason"]),
                              (2, "collection_backlog"))
+            self.assertEqual(len(self.fake.jobs), len(base_fake.jobs))  # nothing exported or submitted
         event = run(0, backlog_refill_when_empty=True)
         self.assertEqual(event["collection_backlog"], 2)
         self.assertNotEqual(event["backpressure_reason"], "collection_backlog")
+        self.assertGreater(len(self.fake.jobs), len(base_fake.jobs))  # the refill exported and submitted more pages
 
     def test_interrupted_export_recovers_authoritative_records(self):
         self.fake.crash_export = True
