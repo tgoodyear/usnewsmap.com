@@ -354,6 +354,31 @@ python3 tools/en_pick.py --pages pages-pilot.jsonl --set xiaomi-loc-v1 --languag
 
 **Analysis.** `tools/en_pick_analysis.py --export check-en.jsonl --set xiaomi-loc-v1 --calibration-set cal-v1` gives Xiaomi's win rate (Xiaomi picks over Xiaomi plus LoC picks) with a page-clustered bootstrap interval, overall and by decade and damage band, the shares of neither, can't tell, not text and disputed, and for the calibration set how often the settled pick matches the truth. Rows with a `truth` are never in the pilot figures.
 
+## Column gutter judgments (#2107)
+
+`en-gutter` is a separate language with its own queue, page (`/en-gutter`) and export (`/api/export?lang=en-gutter`). Each task is one crop of a newspaper page with a vertical line drawn over it, and one question: does this line run down a gap between columns of text without crossing any printed text? It uses the pick page's answers, sessions and settling rule (two thirds of at least three answers); there is no schema change.
+
+**Answers.** Yes is stored as `a`, No as `b` and Can't tell as `unsure`. The Worker answers 400 to `neither` and `notext` for a task whose body has `kind: "gutter"`. The page shows Yes (1), No (2) and Can't tell (4), a button and key (L) that hide and show the line, and the language configuration's `question`, `rules` and `guidance` (the notes on edge cases: a column rule counts as a gap; an advertisement, picture or heading across columns counts as printed text; a line mostly in a gap that clips a few letters is a No). It has no readings, font or letter names. A language configuration may carry `rules` (replacing the page's instructions) and `guidance` (a list shown under them); the other languages have neither.
+
+**Task body.**
+
+```json
+{"id": "en-gutter/<set>/<page_id>~<segment_id>", "lang": "en-gutter", "set": "<set>", "kind": "gutter",
+ "crop": "<clip key>", "line": {"x": 0.5, "y0": 0.04, "y1": 0.96}, "source": "<page URL>",
+ "private": {"role": "...", "segment_id": "...", "page_id": "...", "method": "...", "truth": "yes"}}
+```
+
+`line` is the line's position as fractions of the crop; the page draws it as a CSS overlay, so the image is the plain crop and the line can be hidden. `private` holds which method drew the line, its role (for example a pilot item or a calibration item), the segment and page, and for a calibration item `truth` (`yes` or `no`). Like other blind tasks, the Worker leaves `private` off `/api/next`, and the export has `kind`, `line` and `source` from the start but `method`, `role`, `segment_id`, `page_id` and `truth` only once the task has settled.
+
+**Making tasks.** `tools/gutter_tasks.py` takes JSON lines `{segment_id, page_id, image_path, x, y0, y1, method, role, truth?, column_width?, source?}` in page pixels (its docstring has the format) and writes `clips/en-gutter/<set>/crops/*.jpg`, `tasks.jsonl`, `language.json` and `report.json`, the layout `load.sh` takes (`--lang en-gutter`). A crop is the segment plus 1.5 column widths either side (12% of the page's width where `column_width` is not given) and 3% of the page's height above and below, cut inside the page and scaled down if its longer side is over `--max-side`. It refuses a line outside the page, a repeated page and segment, or a truth other than yes or no. Calibration items are ordinary tasks in the same set, so volunteers can't tell them apart; never seed answers for them.
+
+```sh
+python3 tools/gutter_tasks.py --segments segments.jsonl --set gutter-v1 --language-config languages/en-gutter.json --out-dir out-gutter
+edge/check/load.sh --vault NAME --host USER@HOST --dir out-gutter --lang en-gutter
+```
+
+**Analysis.** `tools/gutter_analysis.py --export check-en-gutter.jsonl [--out segments.jsonl] [--dump admin-dump.jsonl]` writes one row per settled segment (counts, outcome as yes, no, unsure or disputed, method, role and truth). Unsure and disputed segments are counted apart from the decided ones. With an admin dump it also gives each volunteer's accuracy on the calibration items. It computes no rates or per-method figures; the #2107 study does.
+
 ## Loading a language
 
 On the build host (pve-big for Cherokee and Yiddish), make the files. For Cherokee:
@@ -479,6 +504,6 @@ Changing `SESSION_KEY` (`--rotate`) signs everyone out; their earlier answers st
 node --test edge/check/worker.test.mjs edge/check/layout.test.mjs edge/check/languages.test.mjs edge/check/fonts.test.mjs
 ```
 
-The `check site` job in `ci.yml` runs these, a Wrangler dry-run build (`npx wrangler@4.154.0 deploy --dry-run`), shellcheck of the scripts and the tools' unit tests whenever anything under `edge/check/` but its Markdown changes. `languages.test.mjs` checks each language configuration's fields and that its keys are sorted. `fonts.test.mjs` checks the served font against the hash in `public/fonts/README.md`. `worker.test.mjs` runs the marking and reopening on SQLite with the real schema. `tools/test_cherokee_labels.py` checks the Cherokee names against the Unicode names and that the three files agree. `tools/test_names_report.py` runs the names report on a synthetic export. `layout.test.mjs` renders names on and off in headless Chrome at 375px, left to right and right to left. `tools/test_mark_report.py` runs the mark report on a small synthetic export. `tools/test_merged_lines.py` and `tools/test_merged_lines_loaded.py` test the rule, the line tools' use of it (they need Pillow) and the loaded-task tool on small `tar.bz2` archives built in the tests. `tools/test_recompute_marks.py` runs `recompute_marks.py` on small synthetic bodies and against a local stand-in for the two admin routes (it needs Pillow with Raqm, and skips otherwise). `tools/test_lookalike.py` holds the table of letter pairs the threshold comes from and needs Pillow with a FreeType that reads woff2 (it skips otherwise).
+The `check site` job in `ci.yml` runs these, a Wrangler dry-run build (`npx wrangler@4.154.0 deploy --dry-run`), shellcheck of the scripts and the tools' unit tests whenever anything under `edge/check/` but its Markdown changes. `languages.test.mjs` checks each language configuration's fields and that its keys are sorted. `fonts.test.mjs` checks the served font against the hash in `public/fonts/README.md`. `worker.test.mjs` runs the marking and reopening on SQLite with the real schema. `tools/test_gutter_tasks.py` tests the column gutter builder (crop geometry, the task body, validation; the build itself needs Pillow) and its analysis on synthetic rows. `tools/test_cherokee_labels.py` checks the Cherokee names against the Unicode names and that the three files agree. `tools/test_names_report.py` runs the names report on a synthetic export. `layout.test.mjs` renders names on and off in headless Chrome at 375px, left to right and right to left. `tools/test_mark_report.py` runs the mark report on a small synthetic export. `tools/test_merged_lines.py` and `tools/test_merged_lines_loaded.py` test the rule, the line tools' use of it (they need Pillow) and the loaded-task tool on small `tar.bz2` archives built in the tests. `tools/test_recompute_marks.py` runs `recompute_marks.py` on small synthetic bodies and against a local stand-in for the two admin routes (it needs Pillow with Raqm, and skips otherwise). `tools/test_lookalike.py` holds the table of letter pairs the threshold comes from and needs Pillow with a FreeType that reads woff2 (it skips otherwise).
 
 `layout.test.mjs` renders every language's sample words in headless Chrome, one highlighted letter at a time, and fails if a highlight box overlaps another character. It skips when no Chrome is found (set `CHROME=/path/to/chrome`) unless `CI` is set.

@@ -1,0 +1,12 @@
+{
+  "guidance": [
+    "A printed vertical line between columns (a column rule) counts as a gap. The line may run along it.",
+    "An advertisement, a picture or a heading that spans several columns counts as printed text. A line through one does not run down a gap.",
+    "If the line is mostly in a gap but clips a few letters, answer No."
+  ],
+  "intro": "These crops come from English-language newspaper pages in Chronicling America, the Library of Congress's collection of historic American newspapers. A line is drawn on each crop where a program thinks two columns of text are separated.",
+  "name": "English column gutters",
+  "question": "Does this line run down a gap between columns of text without crossing any printed text?",
+  "rules": "A colored line is drawn on a piece of a newspaper page. Say whether it runs down the white gap between two columns of text without crossing any printed text. Use the button to hide the line and look at the print under it. If you can't tell, pick Can't tell. You don't need to read the text, only to see where the print is.",
+  "title": "English newspaper column gutters"
+}
