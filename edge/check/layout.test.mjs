@@ -388,8 +388,8 @@ test("a Cherokee word is answerable only once the served font has loaded", async
   assert.equal(await ready({})(word), true);
   assert.equal(await ready(fonts([]))(null), true);
   // and the page keeps its answer controls off, and refuses the keyboard shortcuts, while the font has failed
-  assert.match(appJs, /const live = !!task && !busy && !fontFailed;/);
-  assert.match(appJs, /if \(!task \|\| busy \|\| fontFailed\) return;/);
+  assert.match(appJs, /const live = !!task && !busy && !fontFailed && !stale;/);
+  assert.match(appJs, /if \(!task \|\| busy \|\| fontFailed \|\| stale\) return;/);
 });
 
 test("each answer carries what the page knows about the bundled font", () => {
@@ -559,4 +559,30 @@ test("the option is offered only for a language that has letter names", () => {
   assert.match(appJs, /if \(hasNames\(\)\) \{[\s\S]*?\$\("names-wrap"\)\.hidden = false;/);
   assert.match(appJs, /showNames = store\(NAMES\) === "1";/);
   assert.equal(Object.entries(languages).filter(([, c]) => c.labels).map(([k]) => k).sort().join(), "chr,chr-lines,chr-rare,sr");
+});
+
+test("a 401 that comes back late doesn't throw away a session another request has already renewed", async () => {
+  const start = appJs.indexOf("let memory = {};");
+  const end = appJs.indexOf("// ---------- home");
+  assert.ok(start > 0 && end > start, "app.js no longer has the markers this test slices between");
+  let issued = 0, release;
+  const gate = new Promise((ok) => { release = ok; });
+  const reply = (status, body) => ({ ok: status < 400, status, statusText: String(status), json: async () => body });
+  const fetch = async (path, opts = {}) => {
+    if (path === "/api/config") return reply(200, { turnstile_site_key: "k" });
+    if (path === "/api/session") return reply(200, { session: "s" + ++issued });
+    const tok = opts.headers.authorization.slice("Bearer ".length);
+    if (tok === "old") { if (path === "/slow") await gate; return reply(401, {}); }
+    return reply(200, { tok });
+  };
+  const window = { turnstile: { render: (el, o) => { o.callback("ts"); return 1; }, remove() {} } };
+  const document = { getElementById: () => ({ classList: { toggle() {} } }) };
+  const { authed, store } = new Function("fetch", "window", "document", `const $ = (id) => document.getElementById(id), SESSION = "usnm-check-session";\n${appJs.slice(start, end)}\nreturn { authed, store };`)(fetch, window, document);
+  store("usnm-check-session", "old");
+  const slow = authed("/slow"), quick = await authed("/quick");
+  assert.equal(quick.tok, "s1");
+  release();
+  assert.equal((await slow).tok, "s1", "the late 401 retried with the renewed session");
+  assert.equal(issued, 1, "only one new session was made");
+  assert.equal(store("usnm-check-session"), "s1");
 });
