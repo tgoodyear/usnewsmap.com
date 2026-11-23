@@ -4,23 +4,26 @@ Input (--segments) is JSON lines, one candidate gutter segment each, in the page
 
   {"segment_id": "<id, unique within the page>", "page_id": "<lccn>/<date>/ed-N/seq-N", "image_path": "<page image>",
    "x": 1234.5, "y0": 400, "y1": 2100, "method": "<what drew the line>", "role": "<why it is in the set>",
-   "truth": "yes" | "no" (optional), "column_width": 410 (optional), "source": "<page URL>" (optional)}
+   "truth": "yes" | "no" (optional), "column_width": 410 (optional), "source": "<page URL>" (optional),
+   "x_bottom": 1228.0 (optional)}
 
-`x` is the line's horizontal position and `y0`..`y1` its vertical extent. `method` and `role` stay private until the task
+`x` is the line's horizontal position and `y0`..`y1` its vertical extent. On a tilted page a straight line along a gutter
+leans: then `x` is its position at y0 and `x_bottom` its position at y1 (absent: a vertical line, x_bottom = x). `method` and `role` stay private until the task
 settles, so a volunteer never sees which method drew the line or whether it is a calibration item. `truth` is a human's
 judgment of the segment (yes: it runs down a gap without crossing print): a calibration item, never loaded with seed answers.
 `column_width` is the page's column width in pixels, if known. Paths are relative to --root (default: the folder of --segments).
 
-Each segment becomes one JPEG crop: the segment plus a margin on each side of 1.5 column widths (12% of the page's width where
+Each segment becomes one JPEG crop: the segment (both ends of a leaning line) plus a margin on each side of 1.5 column widths (12% of the page's width where
 the column width is unknown), and 3% of the page's height above and below, cut inside the page. The crop is cut from the page
-image with no line drawn on it; the page draws the line over it from the task's `line` (x, y0, y1 as fractions of the crop).
+image with no line drawn on it; the page draws the line over it from the task's `line` (x, y0, y1 as fractions of the crop,
+and x1, x_bottom as a fraction of the crop's width, only for a row with x_bottom).
 A crop whose longer side is over --max-side is scaled down to it.
 
 Writes OUT_DIR/clips/<lang>/<set>/crops/<page>_s<segment>.jpg, OUT_DIR/tasks.jsonl and OUT_DIR/language.json (the --language-config
 without its build-only fields), the layout load.sh sends. A task is
 
   {"id": "en-gutter/<set>/<page_id>~<segment_id>", "lang", "set", "kind": "gutter", "crop": "<clip key>",
-   "line": {"x", "y0", "y1"}, "source": ..., "private": {"role", "segment_id", "page_id", "method", "truth"?}}
+   "line": {"x", "y0", "y1", "x1"?}, "source": ..., "private": {"role", "segment_id", "page_id", "method", "truth"?}}
 
 Answers are `a` for yes, `b` for no and `unsure` for can't tell (worker.mjs; no schema change). Needs Pillow.
 
@@ -53,18 +56,23 @@ def read_jsonl(path: str) -> list:
         return [json.loads(line) for line in f if line.strip()]
 
 
-def crop_box(x: float, y0: float, y1: float, width: int, height: int, column_width=None) -> tuple:
-    """(left, top, right, bottom) in page pixels: the segment plus its margins, cut inside the page."""
+def crop_box(x: float, y0: float, y1: float, width: int, height: int, column_width=None, x_bottom=None) -> tuple:
+    """(left, top, right, bottom) in page pixels: the segment (both ends of a leaning line) plus its margins, cut inside the page."""
     side = COLUMN_MARGIN * column_width if column_width else PAGE_MARGIN * width
     top, bottom = y0 - V_MARGIN * height, y1 + V_MARGIN * height
-    return (max(0, int(x - side)), max(0, int(top)), min(width, int(x + side + 1)), min(height, int(bottom + 1)))
+    lo, hi = (x, x) if x_bottom is None else (min(x, x_bottom), max(x, x_bottom))
+    return (max(0, int(lo - side)), max(0, int(top)), min(width, int(hi + side + 1)), min(height, int(bottom + 1)))
 
 
-def line_fractions(x: float, y0: float, y1: float, box: tuple) -> dict:
-    """The line as fractions of the crop, which is what the page draws it from; they stay right when the crop is scaled down."""
+def line_fractions(x: float, y0: float, y1: float, box: tuple, x_bottom=None) -> dict:
+    """The line as fractions of the crop, which is what the page draws it from; they stay right when the crop is scaled down.
+    x1 (the line's x at y1) is there only for a leaning line, a row with x_bottom."""
     left, top, right, bottom = box
     w, h = right - left, bottom - top
-    return {"x": round((x - left) / w, 5), "y0": round((y0 - top) / h, 5), "y1": round((y1 - top) / h, 5)}
+    line = {"x": round((x - left) / w, 5), "y0": round((y0 - top) / h, 5), "y1": round((y1 - top) / h, 5)}
+    if x_bottom is not None:
+        line["x1"] = round((x_bottom - left) / w, 5)
+    return line
 
 
 def validate(row: dict, size: tuple, n: int) -> None:
@@ -73,7 +81,7 @@ def validate(row: dict, size: tuple, n: int) -> None:
     for k in ("segment_id", "page_id", "image_path", "method", "role"):
         if not isinstance(row.get(k), str) or not row[k].strip():
             raise ValueError(f"{where}: {k} must be a non-empty string")
-    for k in ("x", "y0", "y1"):
+    for k in ("x", "y0", "y1") + (("x_bottom",) if "x_bottom" in row else ()):
         if isinstance(row.get(k), bool) or not isinstance(row.get(k), (int, float)):
             raise ValueError(f"{where}: {k} must be a number")
     if "truth" in row and row["truth"] not in TRUTHS:
@@ -84,6 +92,8 @@ def validate(row: dict, size: tuple, n: int) -> None:
     w, h = size
     if not (0 <= row["x"] <= w and 0 <= row["y0"] < row["y1"] <= h):
         raise ValueError(f"{where}: the line (x {row['x']}, y {row['y0']}..{row['y1']}) is not inside the {w}x{h} page")
+    if "x_bottom" in row and not 0 <= row["x_bottom"] <= w:
+        raise ValueError(f"{where}: the line's bottom end (x_bottom {row['x_bottom']}) is not inside the {w}x{h} page")
 
 
 def task_id(lang: str, set_name: str, row: dict) -> str:
@@ -97,12 +107,12 @@ def clip_key(lang: str, set_name: str, row: dict) -> str:
 
 def build_task(row: dict, lang: str, set_name: str, size: tuple) -> tuple:
     """(task body, crop box in page pixels)."""
-    box = crop_box(row["x"], row["y0"], row["y1"], size[0], size[1], row.get("column_width"))
+    box = crop_box(row["x"], row["y0"], row["y1"], size[0], size[1], row.get("column_width"), row.get("x_bottom"))
     private = {"role": row["role"], "segment_id": row["segment_id"], "page_id": row["page_id"], "method": row["method"]}
     if "truth" in row:
         private["truth"] = row["truth"]
     task = {"id": task_id(lang, set_name, row), "lang": lang, "set": set_name, "kind": "gutter",
-            "crop": clip_key(lang, set_name, row), "line": line_fractions(row["x"], row["y0"], row["y1"], box),
+            "crop": clip_key(lang, set_name, row), "line": line_fractions(row["x"], row["y0"], row["y1"], box, row.get("x_bottom")),
             "source": row.get("source"), "private": private}
     return task, box
 

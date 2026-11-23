@@ -31,6 +31,17 @@ class Geometry(unittest.TestCase):
         f = gt.line_fractions(1000, 500, 1500, box)
         self.assertEqual(f, {"x": 0.5, "y0": round(120 / 1240, 5), "y1": round(1120 / 1240, 5)})
 
+    def test_a_leaning_line_widens_the_crop_to_hold_both_ends(self):
+        self.assertEqual(gt.crop_box(1000, 500, 1500, 3000, 4000, column_width=200, x_bottom=960), (660, 380, 1301, 1621))
+        self.assertEqual(gt.crop_box(1000, 500, 1500, 3000, 4000, column_width=200, x_bottom=1040), (700, 380, 1341, 1621))
+        self.assertEqual(gt.crop_box(1000, 500, 1500, 3000, 4000, x_bottom=1000), gt.crop_box(1000, 500, 1500, 3000, 4000))
+
+    def test_x1_is_the_bottom_end_as_a_fraction_of_the_crop_width(self):
+        box = (660, 380, 1300, 1620)
+        f = gt.line_fractions(1000, 500, 1500, box, x_bottom=960)
+        self.assertEqual(f, {"x": round(340 / 640, 5), "y0": round(120 / 1240, 5), "y1": round(1120 / 1240, 5), "x1": 0.46875})
+        self.assertNotIn("x1", gt.line_fractions(1000, 500, 1500, box))
+
     def test_slugs_have_only_characters_a_clip_key_allows(self):
         key = gt.clip_key("en-gutter", "s1", {"page_id": "sn83030213/1910-01-02/ed-1/seq-1", "segment_id": "c 2/x~y"})
         self.assertEqual(key, "en-gutter/s1/crops/sn83030213_1910-01-02_ed-1_seq-1_sc_2_x_y.jpg")
@@ -43,9 +54,12 @@ class Validation(unittest.TestCase):
     def test_a_good_row_passes(self):
         gt.validate(self.ROW, (200, 100), 1)
         gt.validate({**self.ROW, "truth": "no", "column_width": 40}, (200, 100), 1)
+        gt.validate({**self.ROW, "x_bottom": 0}, (200, 100), 1)
+        gt.validate({**self.ROW, "x_bottom": 200}, (200, 100), 1)
 
     def test_bad_rows_are_refused(self):
-        for bad in ({"truth": "maybe"}, {"x": 201}, {"y1": 101}, {"y0": 90}, {"column_width": 0}, {"method": ""}, {"x": "5"}, {"role": None}):
+        for bad in ({"truth": "maybe"}, {"x": 201}, {"y1": 101}, {"y0": 90}, {"column_width": 0}, {"method": ""}, {"x": "5"}, {"role": None},
+                    {"x_bottom": 201}, {"x_bottom": -1}, {"x_bottom": "90"}, {"x_bottom": None}, {"x_bottom": True}):
             with self.assertRaises(ValueError, msg=str(bad)):
                 gt.validate({**self.ROW, **bad}, (200, 100), 1)
 
@@ -63,6 +77,15 @@ class Task(unittest.TestCase):
             self.assertNotIn(secret, json.dumps(public))
         self.assertEqual(set(task["line"]), {"x", "y0", "y1"})
         self.assertEqual(box, (640, 380, 1361, 1621))
+
+    def test_a_leaning_line_has_x1_and_a_crop_around_both_ends(self):
+        row = {"segment_id": "s1", "page_id": "p", "x": 1000, "y0": 500, "y1": 1500, "x_bottom": 1050, "method": "m", "role": "r"}
+        task, box = gt.build_task(row, "en-gutter", "g1", (3000, 4000))
+        self.assertEqual(box, (640, 380, 1411, 1621))
+        self.assertEqual(list(task["line"]), ["x", "y0", "y1", "x1"])
+        left, _, right, _ = box
+        self.assertEqual(task["line"]["x1"], round((1050 - left) / (right - left), 5))
+        self.assertTrue(0 <= task["line"]["x"] < task["line"]["x1"] <= 1)
 
     def test_no_truth_means_no_truth_key(self):
         task, _ = gt.build_task({"segment_id": "s", "page_id": "p", "x": 5, "y0": 1, "y1": 9, "method": "m", "role": "r"}, "en-gutter", "g", (10, 10))
@@ -93,6 +116,30 @@ class EndToEnd(unittest.TestCase):
             self.assertIn("question", lang)
             report = json.load(open(os.path.join(out, "report.json")))
             self.assertEqual((report["segments"], report["with_truth"], report["by_method"]), (2, 1, {"m1": 1, "m2": 1}))
+            self.assertTrue(all(set(t["line"]) == {"x", "y0", "y1"} for t in tasks), "no x_bottom, no x1")
+
+    def test_rows_without_x_bottom_build_the_same_bytes_as_before_and_a_leaning_row_keeps_its_ends_in_the_crop(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            Image.new("L", (3000, 4000), 200).save(os.path.join(d, "p.png"))
+            rows = [{"segment_id": "s1", "page_id": "pg/1", "image_path": "p.png", "x": 900, "y0": 400, "y1": 1000, "method": "m", "role": "r",
+                     "column_width": 300},
+                    {"segment_id": "s2", "page_id": "pg/1", "image_path": "p.png", "x": 1500, "y0": 200, "y1": 3800, "x_bottom": 1440, "method": "m",
+                     "role": "r"}]
+            with open(os.path.join(d, "segments.jsonl"), "w") as f:
+                f.write("\n".join(json.dumps(r) for r in rows) + "\n")
+            out = os.path.join(d, "out")
+            gt.main(["--segments", os.path.join(d, "segments.jsonl"), "--set", "g1", "--language-config", LANGUAGE, "--out-dir", out, "--max-side", "4000"])
+            with open(os.path.join(out, "tasks.jsonl"), encoding="utf-8") as f:
+                lines = f.read().splitlines()
+            # The vertical row's task line is what the tool wrote before x_bottom existed.
+            self.assertEqual(lines[0], json.dumps({"id": "en-gutter/g1/pg/1~s1", "lang": "en-gutter", "set": "g1", "kind": "gutter",
+                                                   "crop": "en-gutter/g1/crops/pg_1_ss1.jpg", "line": {"x": round(450 / 901, 5), "y0": round(120 / 841, 5), "y1": round(720 / 841, 5)},
+                                                   "source": None, "private": {"role": "r", "segment_id": "s1", "page_id": "pg/1", "method": "m"}}))
+            lean = json.loads(lines[1])
+            with Image.open(os.path.join(out, "clips", lean["crop"])) as im:
+                self.assertEqual(im.size, (781, 3841))
+            self.assertEqual(lean["line"], {"x": round(420 / 781, 5), "y0": round(120 / 3841, 5), "y1": round(3720 / 3841, 5), "x1": round(360 / 781, 5)})
 
     def test_duplicate_segments_are_refused(self):
         from PIL import Image
@@ -135,6 +182,10 @@ def export_row(i, outcome, settled=True, **extra):
 
 
 class Analysis(unittest.TestCase):
+    def test_a_leaning_line_passes_through_with_its_x1(self):
+        rows, _ = an.segment_rows([export_row(1, "a", line={"x": .5, "y0": .1, "y1": .9, "x1": .45})])
+        self.assertEqual(rows[0]["line"], {"x": .5, "y0": .1, "y1": .9, "x1": .45})
+
     def test_outcomes_are_per_segment_and_unsure_and_disputed_are_apart(self):
         export = [export_row(1, "a"), export_row(2, "b"), export_row(3, "unsure"), export_row(4, "disputed"), export_row(5, None, settled=False),
                   export_row(6, "a", held=True), {"id": "en/x", "kind": None, "settled": True, "outcome": "a"}, export_row(7, "a", set="other")]

@@ -7,6 +7,15 @@ const CHOICES = new Set(["a", "b", "neither", "unsure", "notext"]);
 // Neither and notext have no meaning for it and are refused.
 export const GUTTER_REVEALED = ["method", "role", "segment_id", "page_id"];
 export const GUTTER_REFUSED = new Set(["neither", "notext"]);
+// A gutter task's `line` as fractions of the crop: x at y0, y0..y1 down the crop, and optionally x1, its x at y1, for a line
+// that leans to follow a tilted page (absent: a vertical line, x1 = x). /admin/tasks refuses a gutter task with any other line.
+const fraction = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1;
+export function gutterLineError(line) {
+  if (!line || typeof line !== "object" || Array.isArray(line)) return "a gutter task needs line {x, y0, y1, x1?}";
+  for (const k of ["x", "y0", "y1"]) if (!fraction(line[k])) return `line.${k} must be a number from 0 to 1`;
+  if (line.x1 !== undefined && !fraction(line.x1)) return "line.x1 must be a number from 0 to 1";
+  return null;
+}
 // What the page reports about the bundled font when an answer was given (public/app.js, fontState): `loaded` and
 // `not_loaded` for the font the page declares for the word's script, `none` when no bundled font applies to the word,
 // `unknown` when the page couldn't tell (the browser has no font loading API) or is from before the value existed.
@@ -541,6 +550,10 @@ async function admin(request, env, url) {
       const t = JSON.parse(line);
       if (typeof t.id !== "string" || typeof t.lang !== "string" || typeof t.set !== "string") throw new HttpError(400, "id, lang and set required");
       const { id, lang: l, set, if_body: expected, ...shown } = t;
+      if (shown.kind === "gutter") {
+        const bad = gutterLineError(shown.line);
+        if (bad) throw new HttpError(400, `${id}: ${bad}`);
+      }
       if (expected !== undefined) {
         if (typeof expected !== "string") throw new HttpError(400, "if_body must be the stored body text");
         stmts.push(env.DB.prepare("UPDATE tasks SET body = ? WHERE id = ? AND lang = ? AND set_name = ? AND body = ?").bind(JSON.stringify(shown), id, l, set, expected));

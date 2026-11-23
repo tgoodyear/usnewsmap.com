@@ -894,3 +894,25 @@ test("a gutter task's private fields stay off /api/next and the export until it 
   assert.equal((await post("c4", "en-gutter/g1/p~s1", "b")).status, 409);
   assert.equal(db.prepare("SELECT n FROM tasks WHERE id = 'en-gutter/g1/p~s1'").get().n, 3);
 });
+
+test("a gutter line may lean: x1 (its x at y1) is kept on /api/next and the export, and a line outside the crop is refused", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  const lean = { x: 0.5, y0: 0.1, y1: 0.9, x1: 0.47 };
+  const load = await adminCall(DB, "/admin/tasks", null, JSON.stringify({ id: "en-gutter/g1/p~s1", lang: "en-gutter", set: "g1", ...gutterBody(), line: lean }));
+  assert.equal(load.status, 200);
+  const token = await signSession(env.SESSION_KEY, "viewer");
+  const next = (await (await worker.fetch(new Request("https://check.usnewsmap.com/api/next?lang=en-gutter", { headers: { authorization: "Bearer " + token } }), E, {})).json()).task;
+  assert.deepEqual(next.line, lean);
+  const [row] = (await (await worker.fetch(new Request("https://check.usnewsmap.com/api/export?lang=en-gutter"), E, {})).text()).trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(row.line, lean);
+  for (const line of [{ ...lean, x1: 1.2 }, { ...lean, x1: -0.1 }, { ...lean, x1: "0.4" }, { ...lean, x1: null }, { ...lean, x: 2 }, { x: 0.5, y0: 0.1 }, undefined, [0.5, 0.1, 0.9]]) {
+    const r = await adminCall(DB, "/admin/tasks", null, JSON.stringify({ id: "en-gutter/g1/p~s2", lang: "en-gutter", set: "g1", ...gutterBody({ segment_id: "s2" }), line }));
+    assert.equal(r.status, 400, JSON.stringify(line));
+    assert.match((await r.json()).error, /^en-gutter\/g1\/p~s2: .*line/);
+  }
+  const r = await adminCall(DB, "/admin/tasks", null, JSON.stringify({ id: "en-gutter/g1/p~s1", lang: "en-gutter", set: "g1", if_body: "x", ...gutterBody(), line: { ...lean, x1: 3 } }));
+  assert.equal(r.status, 400, "a conditional replacement is checked too");
+  assert.equal(db.prepare("SELECT COUNT(*) AS k FROM tasks").get().k, 1, "a refused line stores nothing");
+  assert.deepEqual(JSON.parse(db.prepare("SELECT body FROM tasks").get().body).line, lean);
+});
