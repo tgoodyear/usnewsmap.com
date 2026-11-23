@@ -1,8 +1,8 @@
 {
   "guidance": [
     "A printed vertical line between columns (a column rule) counts as a gap. The line may run along it.",
-    "If there is text on one side of the line and blank paper on the other, answer Yes when the line runs beside the text without touching it. It still marks the edge of a column.",
-    "An advertisement, a picture or a heading that spans several columns counts as printed text. A line through one does not run down a gap.",
+    "If there is print on only one side of the line, or on neither side (blank paper, the foot of a page), answer Yes as long as the line touches no print. The dark edge of the scan is not print.",
+    "An advertisement, a picture or a heading that spans several columns counts as printed text. A line through one does not run down a gap, but a line in the gap between two pictures or cartoon panels does.",
     "If the line is mostly in a gap but clips a few letters, answer No."
   ],
   "intro": "These crops come from English-language newspaper pages in Chronicling America, the Library of Congress's collection of historic American newspapers. A line is drawn on each crop where a program thinks two columns of text are separated.",
