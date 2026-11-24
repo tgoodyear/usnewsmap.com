@@ -16,6 +16,7 @@ a separate tree for the scoring step that comes later. No image, text or model i
 | `build_wordlist.py` | Arm C's German word list: DTA 1800–1899 core corpus plus wordfreq German, normalised |
 | `trusted_words.py` | Arm C: words where LoC and stock frak2021 agree, in the word list, cut as word crops |
 | `synth_lines.py` | Arm C: degradation tuned on dev, then synthetic training lines from the glyph bank |
+| `score_heldout.py` | Reads the held-out lines once with A, B and C and applies the issue's scoring and decision rule |
 | `test_frak_norm.py` | Tests of the normalisation |
 
 ## Splits

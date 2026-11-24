@@ -29,13 +29,13 @@ def edit_distance(a: str, b: str) -> int:
 
 
 def read_shard(job):
-    pngs, tessdata, lang = job
+    pngs, tessdata, lang, oem = job
     with tempfile.TemporaryDirectory() as td:
         lst = os.path.join(td, "list.txt")
         open(lst, "w").write("\n".join(pngs) + "\n")
         env = dict(os.environ, OMP_THREAD_LIMIT="1")
         subprocess.run(["tesseract", lst, os.path.join(td, "out"), "--psm", "13", "-l", lang,
-                        "--tessdata-dir", tessdata], check=True, env=env,
+                        "--tessdata-dir", tessdata] + (["--oem", str(oem)] if oem is not None else []), check=True, env=env,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         text = open(os.path.join(td, "out.txt"), encoding="utf-8").read()
     parts = text.split("\f")  # tesseract writes the separator between pages
@@ -50,11 +50,12 @@ def score_pair(pair):
     return os.path.basename(png)[:-4], ref, hyp, edit_distance(ref, hyp)
 
 
-def score(lines_dir, tessdata, lang, jobs=20, shard=200):
-    assert "heldout" not in os.path.realpath(lines_dir), "phase 1 never reads the held-out lines"
+def score(lines_dir, tessdata, lang, jobs=20, shard=200, heldout_ok=False, oem=None):
+    """heldout_ok and oem are for score_heldout.py only; model selection never reads held-out lines."""
+    assert heldout_ok or "heldout" not in os.path.realpath(lines_dir), "model selection never reads the held-out lines"
     pngs = sorted(glob.glob(os.path.join(lines_dir, "*.png")))
     assert pngs, lines_dir
-    shards = [(pngs[i:i + shard], tessdata, lang) for i in range(0, len(pngs), shard)]
+    shards = [(pngs[i:i + shard], tessdata, lang, oem) for i in range(0, len(pngs), shard)]
     with Pool(jobs) as pool:
         read = [pair for part in pool.imap_unordered(read_shard, shards) for pair in part]
         rows = sorted(pool.map(score_pair, read, chunksize=100))
