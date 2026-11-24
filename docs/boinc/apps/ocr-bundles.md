@@ -624,6 +624,84 @@ with a create-only `curated/ocr-local/revoked/<stamp>.json` naming its `engine` 
 published text stays until a full rebuild ([onprem-ocr.md](../../operations/onprem-ocr.md),
 "Our OCR in releases (#296)").
 
+## Cherokee line jobs on GHN pages (#1622)
+
+The 699 _Phoenix_ pages that only Georgia Historic Newspapers (GHN) holds have no LoC ALTO, so
+their line boxes come from the line finder at staging instead. The design and its measurements
+are in step 4 of [the report](../../reports/2026-11-cherokee/report.md). The finder is S1 and
+the reader `chr_phoenix`, as [#2128](https://github.com/tgoodyear/usnewsmap.com/issues/2128)
+adopted them. The run follows the section above, with these differences.
+
+**Worker.** A GHN page's job has its page under its wire key (`ghn` before the LCCN) and its
+scan URLs on GHN's IIIF service, and a worker built before this refuses it (`Job::validate`).
+The jobs also use the word route (`--line-words`, profile `chr_phoenix+eng`, #1666). So they
+need new `usnm_ocr` and `usnm_gold` versions under `docker_lines`, built from a main that has
+both. Publish them held with a version number neither app has used: 1.9 (109) if it is still
+free ([app-release.md](app-release.md), "A worker for line jobs only"). They are pinned and
+targeted like the 1.8 (108) line jobs, in batch 1621 (`LINE_BATCH`), so nothing else changes
+on the server.
+
+**Gold and trust.** As in steps 1 and 2 above, on the new worker's digest: one fresh gold
+root per host, pinned with `GOLD_DOCKER_LINES_VERSION=109`, collected from `results/1621` in
+the English page configuration. Then `gold-trust` writes a line scope of its own for the word
+route, `GOLD_LINE_SCOPE=chr/chr_phoenix+eng`, with the approved English `GOLD_MAX_CER` and
+`GOLD_MANIFEST_SHA256` of step 2 and evidence naming #2128 and #2094. The `chr/chr_phoenix`
+entry of the 1621 run stays as it is. Check the diff as step 2 says, with
+`select(.scope.profile == "chr_phoenix+eng")` in place of the language filter.
+
+**Boxes.** On the machine that holds the GHN images, run the staging step
+(`scripts/ocr-survey/chr_ghn_layout/ghn_boxes.py`; the report's "Reproducing" has the
+commands). It writes `line-boxes/ghn/<local id>/boxes.jsonl` for each page and
+`line-boxes/summary.jsonl`, and `ghn_boxes.py pilot` writes the pilot's 5 `ghn:` ids to
+`pilot.txt`. Look at the pilot pages' boxes by eye before staging them.
+
+**Stage.** `usnm-boinc line-stage-ghn` takes the place of `line-stage`. It checks each image
+against [`ghn-pages.jsonl`](../../reports/2026-11-cherokee/ghn-pages.jsonl) and each
+`boxes.jsonl` against its image. It refuses a page the merged-lines check held and a page with
+no Cherokee line. Then it writes the scan under the page's wire key with a sidecar, the boxes,
+and a prefetch manifest, and prints the four `HANDOFF_` values. For the pilot:
+
+```sh
+usnm-boinc line-stage-ghn --ghn-pages docs/reports/2026-11-cherokee/ghn-pages.jsonl \
+  --select pilot.txt --images <the GHN fetcher's output directory> \
+  --line-boxes line-boxes --manifest-name chr-ghn-1622-pilot --out <new dir>
+tar -C <new dir> -c keep line-boxes manifests |
+  <to CT 230> usnm-boinc-step --env prod --target scans --step receive --wait-mins 10
+```
+
+**Export** with `HANDOFF_LINE_WORDS=1`, the new worker and a plan of its own:
+
+```sh
+usnm-boinc-step --env prod --target handoff --step export --wait-mins 30 \
+  --var HANDOFF_LINE_READ=chr --var HANDOFF_LINE_WORDS=1 --var HANDOFF_PLAN=chr-ghn-1622 \
+  --var ENGINE_IMAGE=<the 1.9 worker's digest> \
+  --var HANDOFF_BATCH=<from line-stage-ghn> --var HANDOFF_MANIFEST=<from line-stage-ghn> \
+  --var HANDOFF_PAGES=<from line-stage-ghn> --var HANDOFF_SCANS=<from line-stage-ghn> \
+  --var EXPECTED_HANDOFF_URL=<HANDOFF_URL from handoff.env>
+```
+
+`handoff-job.sh` sees the wire keys and runs `usnm-boinc export --line-read chr --line-boxes
+... --line-words`. One export is all GHN pages or none. It reserves no native ledger row: the
+pages are not in the search pipeline, and a ledger row would give them a bare id there.
+
+**Submit, collect and check** as in step 5, with `LINE_APP_VERSION=109`, to hosts the
+`chr/chr_phoenix+eng` entry lists. `import` assembles each page from its readings
+(`lines::boxes::assemble`) and judges it with `line-assemble-v1`. It writes the counts, the
+verdict and the page's `ghn:` id to `line-merge.json`, and the assembled text and ALTO to
+`line-assemble/`. Then it marks the record held, `line-assemble-v1: <verdict>; ghn:<...> is not
+ingested yet (#1622)`, whatever the verdict, and publishes nothing to `ocr-out`. `line-report`
+gives such a page `doc_id`, `verdict` `no_loc_text`, and `line_merge.rule` `line-assemble-v1`.
+A failed GHN job isn't retried through `retry`, because it has no ledger row: export the page
+again in a new plan.
+
+**Pilot stop rule.** Stop at any collect failure, or if fewer than 4 of the 5 pilot pages are
+admitted by `line-assemble-v1`. Record the pilot's `line-report` summary on #1622 before any
+other export.
+
+**Into the index.** Not yet. The held pages wait for the ingest of `ghn:` pages, which is
+separate work: a `ghn:` page has no LoC row to compare with, and `ocr-sync` and the release take
+bare ids today.
+
 ## Rotating a plan onto a new worker version
 
 A plan pins its bundles to `bundle_app_version`. Publishing a newer `usnm_ocr` version makes
