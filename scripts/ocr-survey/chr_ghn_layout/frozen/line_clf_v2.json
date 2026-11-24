@@ -1,0 +1,77 @@
+{
+ "name": "chr-line-clf-v2",
+ "issue": "#2128 amendment 3.3 (gate passed, comment 7138964230); frozen at chr-2128 77d692ae",
+ "t": 0.46,
+ "cnn_sha256": "5bda2baa808ac5912381bd4cb45cdaf640f1e666840b387e3457dee27cf58937",
+ "v2_model_sha256": "d29a9d4ed6a2a0d3166c78e246899d6b78cda934a1eaee93e005cffb9b061220",
+ "v2": {
+  "features": [
+   "ll_chr",
+   "ll_eng",
+   "conf_chr",
+   "conf_eng",
+   "syl_share",
+   "rel_h",
+   "p_chr"
+  ],
+  "scaler_mean": [
+   -6.291181500778532,
+   -2.5181421190454563,
+   0.2903773433926338,
+   0.7369639509497473,
+   0.9991813894387019,
+   0.9956834365289117,
+   0.14522762260829541
+  ],
+  "scaler_scale": [
+   1.9453607763747514,
+   1.8578643700470512,
+   0.24353457074543136,
+   0.22594731300710624,
+   0.0285996580057583,
+   0.18211335392519987,
+   0.34841363723808744
+  ],
+  "coef": [
+   0.19493187106428045,
+   -1.6354841110486324,
+   1.5293383860045373,
+   -0.5616297059967437,
+   -0.04383009921352477,
+   0.0753869717883374,
+   2.120482608843587
+  ],
+  "intercept": -6.303627487716841,
+  "lm": {
+   "order": 5,
+   "smoothing": "Witten-Bell, interpolated, uniform base over vocab+1",
+   "chr": {
+    "sha256": "b8fb978e48aeaabfe2b5cfdbc3c17c117074d5f2319ab0e5d96d487947ad7650",
+    "lines": 20342,
+    "chars": 1258651,
+    "vocab": 86
+   },
+   "eng": {
+    "text_sha256": "633d4919c8244760e99d97499d0fc3509b8b9a0499a1a5550bab1ea216c7aeba",
+    "lines": 78294,
+    "chars": 2665879,
+    "vocab": 114,
+    "pages": 324,
+    "wordlist_sha256": "9e66281f7e51445eab6857488ff6e3d768afffadb7fb1adbef5e4617bee4a53b"
+   }
+  }
+ },
+ "ensemble": {
+  "features": [
+   "logit(p_v2)",
+   "logit(p_cnn)"
+  ],
+  "coef": [
+   0.5907512365400814,
+   0.3748722014382491
+  ],
+  "intercept": -0.13518532336431432
+ },
+ "chr_phoenix_sha256": "88eb101611962ec6b6b421985203aa6722849da6b7350197e11ce2c0ff71f7f8",
+ "eng_best_sha256": "8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba"
+}

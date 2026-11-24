@@ -480,12 +480,13 @@ python3 $S/chr_layout_qa.py --found found-clean.jsonl --scans <scan copies>
 python3 $S/chr_scan_stats.py --set loc=<scan copies> --set ghn=ghn-pages.jsonl --ghn-images <the fetcher's output directory>
 ```
 
-**The campaign's boxes (#1622, finder S1 of #2128).** The staging step's commands, with the same software. `--train` is the training features of `chr_line_script.py features` on the 160 pages outside the #1622 sample (`feats-train.jsonl` above). `find` refuses a column finder other than the frozen `337fc0aa` file and a Tesseract other than 5.5.0, and checks every image against `ghn-pages.jsonl`. The runbook ([ocr-bundles.md](../../boinc/apps/ocr-bundles.md), "Cherokee line jobs on GHN pages (#1622)") goes on from `pilot.txt`.
+**The campaign's boxes (#1622, finder S1 of #2128).** The staging step's commands, with the same software. `--train` is the training features of `chr_line_script.py features` on the 160 pages outside the #1622 sample (`feats-train.jsonl` above). `find` refuses a column finder other than the frozen `337fc0aa` file and a Tesseract other than 5.5.0, and checks every image against `ghn-pages.jsonl`. `write` classifies lines with the #2128 amendment 3.3 ensemble ([ocr/models/chr-line-clf-v2](../../../ocr/models/chr-line-clf-v2/README.md) lists its inputs and checks) and holds faded pages as well as pages with merged lines. The runbook ([ocr-bundles.md](../../boinc/apps/ocr-bundles.md), "Cherokee line jobs on GHN pages (#1622)") goes on from `pilot.txt`.
 
 ```sh
 L=scripts/ocr-survey/chr_ghn_layout
 python3 $L/ghn_boxes.py find --ghn-pages docs/reports/2026-11-cherokee/ghn-pages.jsonl --images <the fetcher's output directory> --tessdata <dir with eng.traineddata> --out found-s1.jsonl --jobs 6
-python3 $L/ghn_boxes.py write --ghn-pages docs/reports/2026-11-cherokee/ghn-pages.jsonl --images <the fetcher's output directory> --found found-s1.jsonl --train feats-train.jsonl --out-dir line-boxes
+gh release download model-chr-line-clf-v2-20261124 --repo tgoodyear/usnewsmap.com --dir chr-line-clf-v2
+python3 $L/ghn_boxes.py write --ghn-pages docs/reports/2026-11-cherokee/ghn-pages.jsonl --images <the fetcher's output directory> --found found-s1.jsonl --train feats-train.jsonl --chr-tessdata <dir with chr_phoenix.traineddata> --eng-tessdata <dir with tessdata_best eng.traineddata> --cnn chr-line-clf-v2/chr_line_clf_v2_cnn.pt --chr-text <the #2128 R3 corpus.txt> --eng-text chr-line-clf-v2/eng-lm-lines.txt --out-dir line-boxes
 python3 $L/ghn_boxes.py pilot --ghn-pages docs/reports/2026-11-cherokee/ghn-pages.jsonl --summary line-boxes/summary.jsonl --out pilot.txt
 ```
 

@@ -1,0 +1,49 @@
+{
+  "name": "chr-line-clf-v2",
+  "issue": "https://github.com/tgoodyear/usnewsmap.com/issues/2128",
+  "frozen_at": "branch chr-2128, commit 77d692ae (amendment 3.3, comment 7138319378)",
+  "gate": {
+    "comment": 7138964230,
+    "pages": 23,
+    "stratum": "not held",
+    "recall": 0.911,
+    "recall_ci": [
+      0.819,
+      0.987
+    ],
+    "latin_share_of_calls": 0.004,
+    "latin_share_ci": [
+      0.0,
+      0.011
+    ],
+    "scorer": "7b29dd4e"
+  },
+  "threshold": 0.46,
+  "cnn": {
+    "file": "chr_line_clf_v2_cnn.pt",
+    "sha256": "5bda2baa808ac5912381bd4cb45cdaf640f1e666840b387e3457dee27cf58937",
+    "framework": "PyTorch 2.6 state_dict",
+    "input": "grey crop of the S1 box padded 4 px, 32 px high, aspect kept, left-aligned on white, 256 px wide",
+    "training": "13,169 labelled GHN lines from 76 spent pages of #2128 (first check, tuning pages, 3.1 and 3.2 gates), 2,278 New Testament-aligned Cherokee lines (GHN silver and aligned training lines, test set v2), 6,000 LoC English lines; fading, blur, brightness and noise augmentation; 4 epochs"
+  },
+  "v2_model_sha256": "d29a9d4ed6a2a0d3166c78e246899d6b78cda934a1eaee93e005cffb9b061220",
+  "language_models": {
+    "chr": {
+      "text": "the #2128 R3 corpus: the 1860 New Testament minus 274 excluded verses, plus ChrEn 2020's Cherokee side",
+      "sha256": "b8fb978e48aeaabfe2b5cfdbc3c17c117074d5f2319ab0e5d96d487947ad7650",
+      "released": false,
+      "why_not": "ChrEn (Zhang, Frey and Bansal, EMNLP 2020) is for research use; rebuild with scripts/ocr-survey/chr2128/r3_corpus.py on branch chr-2128"
+    },
+    "eng": {
+      "file": "eng-lm-lines.txt",
+      "text": "LoC's OCR text of the 324 Phoenix pages, lines outside Cherokee blocks whose words of 3 or more letters are all in /usr/share/dict/american-english",
+      "lines": 78294,
+      "lines_sha256": "633d4919c8244760e99d97499d0fc3509b8b9a0499a1a5550bab1ea216c7aeba"
+    }
+  },
+  "readers": {
+    "chr_phoenix_sha256": "88eb101611962ec6b6b421985203aa6722849da6b7350197e11ce2c0ff71f7f8",
+    "eng_tessdata_best_sha256": "8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba"
+  },
+  "deployment": "Used by scripts/ocr-survey/chr_ghn_layout/ghn_boxes.py write for the GHN campaign (#1622)."
+}

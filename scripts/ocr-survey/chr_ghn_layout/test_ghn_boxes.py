@@ -10,6 +10,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import ghn_boxes  # noqa: E402
+import line_clf_v2  # noqa: E402
 
 HAVE_NUMPY = importlib.util.find_spec("numpy") is not None
 DOC = "ghn:sn83020866_1828-02-21_ed-1_seq-1"
@@ -33,8 +34,13 @@ class FrozenColumns(unittest.TestCase):
         self.assertIn(ghn_boxes.COLUMNS_SHA256[:12], finder)
         self.assertIn("89fb1017", finder)
         self.assertIn("tesseract 5.5.0", finder)
-        self.assertIn("8b82fe7e", ghn_boxes.classifier_version("t" * 64))
-        for v in (finder, ghn_boxes.classifier_version("t" * 64)):
+        frozen = line_clf_v2.load_frozen()
+        clf = ghn_boxes.classifier_version("t" * 64, frozen)
+        self.assertIn("8b82fe7e", clf)
+        self.assertIn("77d692ae", clf)
+        self.assertIn("5bda2baa808a", clf)
+        self.assertIn("p_line >= 0.46", clf)
+        for v in (finder, clf):
             self.assertLessEqual(len(v), 512)
 
 
@@ -51,19 +57,21 @@ class Rows(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ghn_boxes.line_id(bad)
 
-    def test_rows_are_a_page_row_then_lines_called_cherokee_at_one_half(self):
-        lines = [{"box": [10, 10, 90, 20], "tid": "r0.1.1.1", "p_chr": 0.97},
-                 {"box": [10, 30, 90, 40], "tid": "r0.1.1.2", "p_chr": 0.4999},
-                 {"box": [10, 50, 90, 60], "tid": "r1.1.1.1", "p_chr": 0.5},
+    def test_rows_are_a_page_row_then_lines_called_cherokee_at_the_ensemble_threshold(self):
+        lines = [{"box": [10, 10, 90, 20], "tid": "r0.1.1.1", "p_chr": 0.2, "p_v2": 0.9, "p_cnn": 0.8, "p_line": 0.97},
+                 {"box": [10, 30, 90, 40], "tid": "r0.1.1.2", "p_chr": 0.9, "p_v2": 0.3, "p_cnn": 0.4, "p_line": 0.4599},
+                 {"box": [10, 50, 90, 60], "tid": "r1.1.1.1", "p_chr": 0.5, "p_v2": 0.5, "p_cnn": 0.5, "p_line": 0.46},
                  {"box": [10, 70, 10, 80], "tid": "r1.1.1.2", "p_chr": None},
-                 {"box": [10, 80, 90, 90], "tid": "r1.1.1.3", "p_chr": None}]
-        rows = ghn_boxes.page_rows(self.rec(lines), self.PAGE, "F", "C", 0.08)
+                 {"box": [10, 80, 90, 90], "tid": "r1.1.1.3", "p_chr": None, "p_v2": None, "p_cnn": None, "p_line": None}]
+        rows = ghn_boxes.page_rows(self.rec(lines), self.PAGE, "F", "C", 0.08, 0.46)
         head = rows[0]
-        self.assertEqual(head, {"classifier": "C", "doc_id": DOC, "finder": "F", "height": 100, "held": False,
-                                "kind": "page", "scan_sha256": "a" * 64, "tall_share": 0.01, "width": 100})
+        self.assertEqual(head, {"classifier": "C", "contrast": None, "doc_id": DOC, "finder": "F", "height": 100,
+                                "held": False, "held_reasons": [], "kind": "page", "scan_sha256": "a" * 64,
+                                "tall_share": 0.01, "width": 100})
         self.assertEqual([(r["id"], r["chr"]) for r in rows[1:]],
                          [("r0b1p1l1", True), ("r0b1p1l2", False), ("r1b1p1l1", True), ("r1b1p1l3", False)])
-        self.assertEqual(rows[2]["p_chr"], 0.4999)
+        self.assertEqual((rows[2]["p_chr"], rows[2]["p_v2"], rows[2]["p_cnn"], rows[2]["p_line"]), (0.9, 0.3, 0.4, 0.4599))
+        self.assertIsNone(rows[4]["p_line"])
         # Keys are sorted, as usnm-boinc's lines::boxes reads them.
         with tempfile.TemporaryDirectory() as tmp:
             path = ghn_boxes.boxes_path(tmp, DOC)
@@ -75,15 +83,21 @@ class Rows(unittest.TestCase):
             self.assertEqual(json.loads(text[1])["kind"], "line")
 
     def test_a_page_over_the_merged_lines_share_is_held(self):
-        rows = ghn_boxes.page_rows(self.rec([], share=0.081), self.PAGE, "F", "C", 0.08)
-        self.assertTrue(rows[0]["held"])
-        rows = ghn_boxes.page_rows(self.rec([], share=0.08), self.PAGE, "F", "C", 0.08)
+        rows = ghn_boxes.page_rows(self.rec([], share=0.081), self.PAGE, "F", "C", 0.08, 0.46)
+        self.assertEqual((rows[0]["held"], rows[0]["held_reasons"]), (True, ["merged_lines"]))
+        rows = ghn_boxes.page_rows(self.rec([], share=0.08), self.PAGE, "F", "C", 0.08, 0.46)
         self.assertFalse(rows[0]["held"])
+
+    def test_a_faded_page_is_held_with_its_reason(self):
+        rows = ghn_boxes.page_rows(self.rec([]), self.PAGE, "F", "C", 0.08, 0.46, faded=True)
+        self.assertEqual((rows[0]["held"], rows[0]["held_reasons"]), (True, ["faded"]))
+        rows = ghn_boxes.page_rows(self.rec([], share=0.2), self.PAGE, "F", "C", 0.08, 0.46, faded=True)
+        self.assertEqual(rows[0]["held_reasons"], ["merged_lines", "faded"])
 
     def test_a_box_off_the_page_stops_the_run(self):
         with self.assertRaises(SystemExit):
             ghn_boxes.page_rows(self.rec([{"box": [10, 10, 101, 20], "tid": "r0.1.1.1"}]), self.PAGE,
-                                "F", "C", 0.08)
+                                "F", "C", 0.08, 0.46)
 
 
 class PageList(unittest.TestCase):
@@ -137,6 +151,51 @@ class Pilot(unittest.TestCase):
         # Fewer usable pages in the batch than the pilot takes: refused, not a shorter pilot.
         with self.assertRaises(SystemExit):
             ghn_boxes.pilot_pages(pages, summary, 8)
+
+
+class Classifier(unittest.TestCase):
+    """The ported v2 ensemble (#2128 amendment 3.3). The reference values are two boxes of the 3.3 gate
+    as chr-2128's clf2.py and dev3.py scored them (p_v2 and p_line rounded to 6 places there)."""
+    REF = [([-18.49105, -5.1266, 0.06224, 0.32773, 0.0, 1.1831, 0.0032], 0.007385, 0.140298, 0.023893),
+           ([-4.06028, -5.49982, 0.91029, 0.47294, 1.0, 0.56338, 0.29998], 0.864772, 0.387505, 0.687688)]
+
+    def test_the_frozen_model_is_the_gated_one(self):
+        fr = line_clf_v2.load_frozen()
+        self.assertEqual(fr["t"], 0.46)
+        self.assertEqual(fr["cnn_sha256"], "5bda2baa808ac5912381bd4cb45cdaf640f1e666840b387e3457dee27cf58937")
+        self.assertEqual(fr["v2"]["features"], ["ll_chr", "ll_eng", "conf_chr", "conf_eng", "syl_share", "rel_h", "p_chr"])
+        self.assertEqual(fr["v2"]["lm"]["chr"]["sha256"], "b8fb978e48aeaabfe2b5cfdbc3c17c117074d5f2319ab0e5d96d487947ad7650")
+
+    def test_scores_match_the_gate_run(self):
+        fr = line_clf_v2.load_frozen()
+        for x, p_v2, p_cnn, p_line in self.REF:
+            self.assertAlmostEqual(line_clf_v2.v2_prob(x, fr), p_v2, places=5)
+            self.assertAlmostEqual(line_clf_v2.ensemble_prob(p_v2, p_cnn, fr), p_line, places=5)
+
+    def test_witten_bell_is_a_distribution_and_prefers_seen_text(self):
+        m = line_clf_v2.WittenBell(["ᏣᎳᎩ ᏧᎴᎯᏌᏅᎯ", "ᏣᎳᎩ ᎠᏂᏴᏫᏯ"])
+        for hist in ("", "ᏣᎳ", "\x02\x02\x02\x02", "zzzz"):
+            total = sum(m.prob(c, hist) for c in m.vocab) + m.prob("\x00", hist)
+            self.assertAlmostEqual(total, 1.0)
+        self.assertGreater(m.ll("ᏣᎳᎩ"), m.ll("abc"))
+        self.assertEqual(m.ll(""), m.unk_lp)
+
+    def test_a_wrong_text_or_model_file_is_refused(self):
+        fr = line_clf_v2.load_frozen()
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp, "x.txt")
+            t.write_text("ᏣᎳᎩ\n")
+            with self.assertRaises(SystemExit):
+                line_clf_v2.language_models(t, t, fr)
+            for name in ("chr_phoenix.traineddata", "eng.traineddata"):
+                Path(tmp, name).write_bytes(b"x")
+            with self.assertRaises(SystemExit):
+                ghn_boxes.check_tessdata(tmp, tmp, fr)
+
+    def test_faded_is_the_lowest_quarter_by_contrast_then_id(self):
+        con = {f"p{i}": float(c) for i, c in enumerate([200, 150, 150, 250, 100, 180, 220, 230, 240])}
+        self.assertEqual(line_clf_v2.faded_pages(con), {"p4", "p1"})
+        self.assertEqual(line_clf_v2.faded_pages({}), set())
 
 
 @unittest.skipUnless(HAVE_NUMPY, "needs numpy")
