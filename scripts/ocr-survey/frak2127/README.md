@@ -12,6 +12,7 @@ a separate tree for the scoring step that comes later. No image, text or model i
 | `cut_lines.py` | PAGE-XML lines to `<name>.png` + `<name>.gt.txt`, with the split rule and the held-out checks |
 | `frak_score.py` | Reads crops at PSM 13 and scores them: normalised, pooled CER (refuses held-out paths) |
 | `train_b.py` | Arm B: the fixed budget and stopping rule, the dev-only checkpoint choice |
+| `select_bank_pages.py` | Freezes arm C's US German bank pages and their exclusion manifest (amendment 1) |
 | `test_frak_norm.py` | Tests of the normalisation |
 
 ## Splits
@@ -65,3 +66,15 @@ python3 train_b.py --lines lines --train-lstmf lstmf/train --dev-lstmf lstmf/dev
 Outputs in `--work`: `dev_scores.jsonl` (one row per evaluation), `dev_<iteration>.jsonl` (every dev
 line's reading), `models/frakB_<iteration>.traineddata`, `train.log`, `result.json` and the chosen
 `frak2127_b.traineddata`.
+
+## Arm C bank pages
+
+`select_bank_pages.py` freezes 250 US German Chronicling America pages for the glyph bank. The
+German titles are the 85 LCCNs of the Fraktur pilot's German sample (`ocr/fraktur-pilot/pages.jsonl`).
+A page needs a keep-set scan, LoC ALTO in the bulk store (its batch archive, and a locstats row with
+words), a `ger` page-language decision where its batch has one, and no appearance in a US German
+evaluation artefact (the de968 crops, the check site's German set, the Qwen calibration pages, the
+Fraktur pilot pages, the reading-order fixtures, and #835's 1910 `iahi_feebas` pages by rule). Pages are
+ranked by `sha256("2127:bank:" + page_id)`, queued by decade within each title, and taken a title at a
+time, at most 15 a title. It writes `pages.txt`, `pages.jsonl`, `exclusion-manifest.json` and
+`summary.json`. Needs `pyarrow`.
