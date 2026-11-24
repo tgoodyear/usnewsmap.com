@@ -264,9 +264,17 @@ def make_chunk(job):
     return made, missing
 
 
-def run(bank, lines_jsonl, preset, out, mode, tessdata, n, run_seed, jobs, chunk=200):
+def run(bank, lines_jsonl, preset, out, mode, tessdata, n, run_seed, jobs, chunk=200, resume=False):
     os.makedirs(out, exist_ok=True)
     work = [(run_seed, k, min(n, k + chunk), preset, out, mode, tessdata) for k in range(0, n, chunk)]
+    if resume:
+        # A chunk's lines depend only on its seed, so an unfinished chunk is made again whole
+        # (same names, same lines); finished chunks are left alone.
+        have = set(os.listdir(out))
+        def done(w):
+            return all(f"synth__{w[0]}__{k:06d}__1.lstmf" in have for k in range(w[1], w[2]))
+        work = [w for w in work if not done(w)]
+        print(f"[synth resume] {len(work)} unfinished chunks", flush=True)
     made, missing, t0 = 0, collections.Counter(), time.time()
     if W.get("key") != (bank, lines_jsonl):
         init(bank, lines_jsonl)  # once, in the parent: the forked workers share it
@@ -307,7 +315,8 @@ def render_cmd(a):
     preset = tuned["chosen"]
     real = sum(1 for l in open(a.train_list) if l.strip())
     n = round(real * SYNTH_PER_REAL)
-    made, missing = run(a.bank, a.lines, preset, a.out, "render", a.tessdata, n, f"{SEED}", a.jobs)
+    made, missing = run(a.bank, a.lines, preset, a.out, "render", a.tessdata, n, f"{SEED}", a.jobs, resume=a.resume)
+    made = sum(1 for f in os.listdir(a.out) if f.endswith(".lstmf"))
     summary = {"real_train_lines": real, "synth_per_real": SYNTH_PER_REAL, "target": n, "made": made,
                "preset": preset, "skipped_for_missing": dict(missing.most_common()), "seed": SEED}
     json.dump(summary, open(os.path.join(a.out, "summary.json"), "w"), ensure_ascii=False, indent=1)
@@ -325,9 +334,10 @@ def main():
         p.add_argument("--jobs", type=int, default=12)
     t.add_argument("--dev-read", required=True)
     r.add_argument("--train-list", required=True); r.add_argument("--tune", required=True)
+    r.add_argument("--resume", action="store_true", help="remake only the chunks a stopped run left unfinished")
     a = ap.parse_args()
     for d in (a.out,):
-        if os.path.isdir(d) and os.listdir(d):
+        if os.path.isdir(d) and os.listdir(d) and not getattr(a, "resume", False):
             sys.exit(f"{d} is not empty; give a new directory")
     tune(a) if a.cmd == "tune" else render_cmd(a)
 
