@@ -43,5 +43,11 @@
   },
   "sha256:67b0e05ea81b915d6ba1ef615ad632f7f641ec5fc16a86e5ba4f1043a7271d51": {
     "arm64-apple-darwin": "sha256:29a8048b2f2d2b1199ab0966d90c8796c39ecdaced062468c0cb780966ca8650"
+  },
+  "sha256:e23798d7f91712b42ba6bfeab05583012fa0997bf188dad32ae9e76b6c3ea22c": {
+    "x86_64-pc-linux-gnu": "sha256:5647ac688f1f013b805b4962cfd7fdb24e968b7c7d735f2cd4e38cdbc0ee7938",
+    "x86_64-apple-darwin": "sha256:5647ac688f1f013b805b4962cfd7fdb24e968b7c7d735f2cd4e38cdbc0ee7938",
+    "arm64-apple-darwin": "sha256:f28fc1044d84b9570d7d96ff7d1b8fe8765ca410c5512a9ef1d82f6d53b7cff4",
+    "aarch64-unknown-linux-gnu": "sha256:f28fc1044d84b9570d7d96ff7d1b8fe8765ca410c5512a9ef1d82f6d53b7cff4"
   }
 }
