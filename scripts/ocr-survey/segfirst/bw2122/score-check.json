@@ -1,0 +1,443 @@
+{
+ "all": {
+  "L": {
+   "article_cer_median": 0.0569553021626915,
+   "article_cer_pooled": 0.0905566325117696,
+   "trigram_recall": 0.6848,
+   "trigrams": 625,
+   "unigram_recall": 0.8505392912172574,
+   "unigrams": 649
+  },
+  "W": {
+   "article_cer_median": 0.11537021054859878,
+   "article_cer_pooled": 0.14400443090556633,
+   "trigram_recall": 0.7632,
+   "trigrams": 625,
+   "unigram_recall": 0.901386748844376,
+   "unigrams": 649
+  },
+  "W-L": {
+   "article_cer_pooled": 0.053447798393796736,
+   "trigram_recall": 0.07840000000000003,
+   "unigram_recall": 0.05084745762711862
+  },
+  "captions": 12,
+  "pages": 10,
+  "titles": 4
+ },
+ "captions": [
+  {
+   "L": [
+    52,
+    75,
+    68,
+    77,
+    13,
+    453
+   ],
+   "W": [
+    66,
+    75,
+    76,
+    77,
+    116,
+    453
+   ],
+   "decade": "1910s",
+   "id": "5b7d7d436dc3580001001036",
+   "page": "sn85058396_1918-04-11_ed-1_seq-12",
+   "title": "sn85058396",
+   "type_from": "L",
+   "type_size": 99.0
+  },
+  {
+   "L": [
+    76,
+    88,
+    85,
+    90,
+    8,
+    491
+   ],
+   "W": [
+    79,
+    88,
+    87,
+    90,
+    4,
+    491
+   ],
+   "decade": "1910s",
+   "id": "5bbca2796dc3580001002377",
+   "page": "sn85058396_1918-04-11_ed-1_seq-12",
+   "title": "sn85058396",
+   "type_from": "L",
+   "type_size": 99.0
+  },
+  {
+   "L": [
+    46,
+    58,
+    56,
+    60,
+    8,
+    316
+   ],
+   "W": [
+    34,
+    58,
+    47,
+    60,
+    83,
+    316
+   ],
+   "decade": "1910s",
+   "id": "5a01c5be2ef3300001002856",
+   "page": "sn85058396_1917-10-15_ed-1_seq-1",
+   "title": "sn85058396",
+   "type_from": "L",
+   "type_size": 114.0
+  },
+  {
+   "L": [
+    7,
+    33,
+    20,
+    35,
+    56,
+    191
+   ],
+   "W": [
+    21,
+    33,
+    32,
+    35,
+    14,
+    191
+   ],
+   "decade": "1910s",
+   "id": "5da31aecf3504300010016d0",
+   "page": "sn83045211_1918-10-08_ed-1_seq-1",
+   "title": "sn83045211",
+   "type_from": "L",
+   "type_size": 104.0
+  },
+  {
+   "L": [
+    55,
+    73,
+    71,
+    75,
+    34,
+    399
+   ],
+   "W": [
+    68,
+    73,
+    74,
+    75,
+    11,
+    399
+   ],
+   "decade": "1910s",
+   "id": "5db71f8ff350430001002328",
+   "page": "sn85038411_1917-10-24_ed-1_seq-9",
+   "title": "sn85038411",
+   "type_from": "L",
+   "type_size": 66.0
+  },
+  {
+   "L": [
+    36,
+    37,
+    38,
+    39,
+    0,
+    218
+   ],
+   "W": [
+    37,
+    37,
+    39,
+    39,
+    0,
+    218
+   ],
+   "decade": "1910s",
+   "id": "59c9781d3e7a180001000692",
+   "page": "sn85058396_1917-11-07_ed-1_seq-4",
+   "title": "sn85058396",
+   "type_from": "L",
+   "type_size": 150.0
+  },
+  {
+   "L": [
+    53,
+    56,
+    57,
+    58,
+    2,
+    341
+   ],
+   "W": [
+    32,
+    56,
+    43,
+    58,
+    81,
+    341
+   ],
+   "decade": "1910s",
+   "id": "5dbb4215ebaf180001004ca0",
+   "page": "sn85038411_1917-11-27_ed-2_seq-1",
+   "title": "sn85038411",
+   "type_from": "L",
+   "type_size": 76.0
+  },
+  {
+   "L": [
+    22,
+    35,
+    30,
+    37,
+    38,
+    217
+   ],
+   "W": [
+    33,
+    35,
+    37,
+    37,
+    24,
+    217
+   ],
+   "decade": "1910s",
+   "id": "5d91fc9cf350430001000d1a",
+   "page": "sn83045211_1917-06-13_ed-1_seq-1",
+   "title": "sn83045211",
+   "type_from": "L",
+   "type_size": 108.0
+  },
+  {
+   "L": [
+    9,
+    55,
+    32,
+    57,
+    76,
+    338
+   ],
+   "W": [
+    29,
+    55,
+    47,
+    57,
+    26,
+    338
+   ],
+   "decade": "1910s",
+   "id": "5d4390f7ebaf180001001a6d",
+   "page": "sn85058396_1918-03-09_ed-1_seq-23",
+   "title": "sn85058396",
+   "type_from": "L",
+   "type_size": 100.5
+  },
+  {
+   "L": [
+    38,
+    51,
+    48,
+    53,
+    8,
+    283
+   ],
+   "W": [
+    45,
+    51,
+    51,
+    53,
+    34,
+    283
+   ],
+   "decade": "1910s",
+   "id": "5d8fa22bca9e6f0001003180",
+   "page": "sn85058396_1918-03-09_ed-1_seq-23",
+   "title": "sn85058396",
+   "type_from": "L",
+   "type_size": 102.0
+  },
+  {
+   "L": [
+    17,
+    29,
+    22,
+    31,
+    34,
+    157
+   ],
+   "W": [
+    14,
+    29,
+    20,
+    31,
+    47,
+    157
+   ],
+   "decade": "1910s",
+   "id": "5b0d729b572c860001003a6e",
+   "page": "sn83045487_1917-04-23_ed-1_seq-10",
+   "title": "sn83045487",
+   "type_from": "L",
+   "type_size": 96.0
+  },
+  {
+   "L": [
+    17,
+    35,
+    25,
+    37,
+    50,
+    207
+   ],
+   "W": [
+    19,
+    35,
+    32,
+    37,
+    80,
+    207
+   ],
+   "decade": "1910s",
+   "id": "59dbc3322ef3300001001734",
+   "page": "sn85058396_1918-07-25_ed-1_seq-10",
+   "title": "sn85058396",
+   "type_from": "L",
+   "type_size": 99.0
+  }
+ ],
+ "descriptive": {
+  "by_decade": {
+   "1910s": {
+    "L": {
+     "article_cer_median": 0.0569553021626915,
+     "article_cer_pooled": 0.0905566325117696,
+     "trigram_recall": 0.6848,
+     "trigrams": 625,
+     "unigram_recall": 0.8505392912172574,
+     "unigrams": 649
+    },
+    "W": {
+     "article_cer_median": 0.11537021054859878,
+     "article_cer_pooled": 0.14400443090556633,
+     "trigram_recall": 0.7632,
+     "trigrams": 625,
+     "unigram_recall": 0.901386748844376,
+     "unigrams": 649
+    },
+    "W-L": {
+     "article_cer_pooled": 0.053447798393796736,
+     "trigram_recall": 0.07840000000000003,
+     "unigram_recall": 0.05084745762711862
+    },
+    "captions": 12,
+    "pages": 10,
+    "titles": 4
+   }
+  },
+  "type_size_from": {
+   "L": 12
+  },
+  "without_largest_type": {
+   "L": {
+    "article_cer_median": 0.08521303258145363,
+    "article_cer_pooled": 0.09637488947833775,
+    "trigram_recall": 0.6666666666666666,
+    "trigrams": 588,
+    "unigram_recall": 0.8426229508196721,
+    "unigrams": 610
+   },
+   "W": {
+    "article_cer_median": 0.12014134275618374,
+    "article_cer_pooled": 0.1532567049808429,
+    "trigram_recall": 0.7482993197278912,
+    "trigrams": 588,
+    "unigram_recall": 0.8950819672131147,
+    "unigrams": 610
+   },
+   "W-L": {
+    "article_cer_pooled": 0.05688181550250515,
+    "trigram_recall": 0.08163265306122458,
+    "unigram_recall": 0.05245901639344264
+   },
+   "captions": 11,
+   "left_out": 1,
+   "pages": 9,
+   "titles": 4
+  }
+ },
+ "inputs": {
+  "bwcap_sha256": "b02259ba011d22a84ad6b7e13baff6dab7e5f3b2da96f4df45997da2176ed9bc",
+  "ids_sha256": "0586d4f0a8e2bba0398148e229cd6b0e2e52b5e3cfba6677c8adec3b802adc4c",
+  "pages_sha256": "30d4cb770108515788b808964aec2dee2a5bd35215ef1b4c287f72fe6cd8eb9e",
+  "score2122_sha256": "9056f059e67c53651329cc8ba2e0ad982f5450f952b22c78762b5ab724febf6b"
+ },
+ "intervals": {
+  "L": {
+   "cer_pooled": [
+    0.04568866425296292,
+    0.22654867256637168
+   ],
+   "trigram_recall": [
+    0.4593128390596745,
+    0.8196150644905942
+   ],
+   "unigram_recall": [
+    0.6990291262135923,
+    0.9386892177589852
+   ]
+  },
+  "W": {
+   "cer_pooled": [
+    0.07736389684813753,
+    0.210541667492027
+   ],
+   "trigram_recall": [
+    0.6105919003115264,
+    0.8582003017729158
+   ],
+   "unigram_recall": [
+    0.78,
+    0.9553349875930521
+   ]
+  },
+  "W-L": {
+   "cer_pooled": [
+    -0.09915595287519822,
+    0.1310312121433009
+   ],
+   "trigram_recall": [
+    -0.1034482758620689,
+    0.2639703935172921
+   ],
+   "unigram_recall": [
+    -0.08139534883720922,
+    0.18961353498745462
+   ]
+  }
+ },
+ "pages_skipped_aspect": [],
+ "rule": {
+  "met": false,
+  "trigram_W_minus_L": 0.07840000000000003,
+  "trigram_ge_0.02": true,
+  "trigram_interval_above_0": false,
+  "unigram_W_minus_L": 0.05084745762711862,
+  "unigram_interval_lower_above_-0.005": false
+ },
+ "settings": {
+  "bootstrap": "titles, then pages within title",
+  "draws": 1000,
+  "large_type_share": 0.1,
+  "seed": 2122
+ }
+}
