@@ -13,7 +13,10 @@ Two steps, both on a dev container:
           reserved test page. The pool is split by decade; decades take turns (round robin), and each
           turn takes the decade's next page in sha256(PREFIX + doc_id) order that keeps its title
           under --per-title and its batch under --per-batch, until --pages. The page must be in the
-          batch's locstats parquet (which archive holds its ALTO). Writes pages.tsv, a manifest and
+          batch's locstats parquet (which archive holds its ALTO). With --batch-count N (batch-first, to cut
+          streaming): first N batches in sha256(BATCH_PREFIX + batch) order, at most --batches-per-title
+          per title and at most --max-decade-share of N per decade (a batch's decade is the most common
+          decade of its eligible pages), then up to --per-batch pages per batch in sha256 page order. Writes pages.tsv, a manifest and
           <out>.summary.json (held, eligible and selected counts by title, batch and decade).
       alto_weak.py select --held-list keep.txt --held-list buffer.txt --scans-root /cold/ocr-scans
                           --titles-json titles.json --locstats-dir /data/locstats --locbulk-dir /data/locbulk/ocr
@@ -58,6 +61,7 @@ sys.path.insert(0, HERE)
 import colgeom  # noqa: E402
 
 PREFIX = "2107:colv2:"
+BATCH_PREFIX = "2107:colv2:batch:"
 LINE_VGAP = 2.5   # times the median line height
 DOC_RE = re.compile(r"^(?P<lccn>[a-z0-9]+)_(?P<date>\d{4}-\d{2}-\d{2})_ed-(?P<ed>\d+)_seq-(?P<seq>\d+)$")
 
@@ -346,40 +350,84 @@ def cmd_select(a):
             stats["eligible_batches"].add(b)
             stats["eligible_by_decade"][dec] = stats["eligible_by_decade"].get(dec, 0) + 1
             stats["eligible_titles_by_decade"].setdefault(dec, set()).add(lccn)
-    by_dec = {}
-    for p in sorted(pool):
-        by_dec.setdefault(p[0], []).append(p)
-    decs = sorted(by_dec)
-    pos = {d: 0 for d in decs}
-    per_title, per_batch, chosen = {}, {}, []
     stat_cache = {}
-    # round robin over decades; within a decade, the next page in sha256 order that the caps allow
-    while len(chosen) < a.pages and any(pos[d] < len(by_dec[d]) for d in decs):
-        for d in decs:
-            if len(chosen) >= a.pages:
+    per_title, per_batch, chosen = {}, {}, []
+
+    def take(did, b, rel, d):
+        """Add a page if it is in its batch's locstats; returns True when taken."""
+        if b not in stat_cache:
+            stat_cache[b] = _locstats_rows(a.locstats_dir, [b])
+        rows = stat_cache[b].get((b, did), [])
+        if not rows:
+            manifest.append({"doc_id": did, "batch": b, "status": "not_in_locstats"})
+            return False
+        lccn = DOC_RE.match(did).group("lccn")
+        arch = sorted(rows, key=lambda r: -r["batch_version"])[0]["archive"]
+        img = os.path.join(a.scans_root, rel) if rel else os.path.join(a.scans_root, b, image_rel(did))
+        chosen.append({"doc_id": did, "batch": b, "archive": arch, "image_path": img, "lccn": lccn, "decade": d,
+                       "source_rel": rel or ""})
+        manifest.append({"doc_id": did, "batch": b, "status": "selected"})
+        per_title[lccn] = per_title.get(lccn, 0) + 1
+        per_batch[b] = per_batch.get(b, 0) + 1
+        return True
+
+    batch_pick = None
+    if a.batch_count:
+        # batch-first: batches in sha256(BATCH_PREFIX + batch) order; a batch is taken while every eligible title in
+        # it has fewer than --batches-per-title batches and its decade (the most common decade of its eligible
+        # pages) has fewer than --max-decade-share of --batch-count; then up to --per-batch pages from each taken
+        # batch in sha256 page order, under --per-title, until --pages.
+        pages_of = {}
+        for p in pool:
+            pages_of.setdefault(p[3], []).append(p)
+        dec_of = {}
+        for bb, ps in pages_of.items():
+            cnt = {}
+            for p in ps:
+                cnt[p[0]] = cnt.get(p[0], 0) + 1
+            dec_of[bb] = max(sorted(cnt), key=lambda d: cnt[d])
+        dec_cap = max(1, int(a.max_decade_share * a.batch_count))
+        title_batches, dec_batches, batch_pick = {}, {}, []
+        for bb in sorted(pages_of, key=lambda x: (hashlib.sha256((BATCH_PREFIX + x).encode()).hexdigest(), x)):
+            if len(batch_pick) >= a.batch_count:
                 break
-            lst = by_dec[d]
-            while pos[d] < len(lst):
-                _, _, did, b, rel = lst[pos[d]]
-                pos[d] += 1
-                lccn = DOC_RE.match(did).group("lccn")
-                if per_title.get(lccn, 0) >= a.per_title or per_batch.get(b, 0) >= a.per_batch:
+            ts = {DOC_RE.match(p[2]).group("lccn") for p in pages_of[bb]}
+            if dec_batches.get(dec_of[bb], 0) >= dec_cap or any(title_batches.get(t, 0) >= a.batches_per_title for t in ts):
+                continue
+            batch_pick.append(bb)
+            dec_batches[dec_of[bb]] = dec_batches.get(dec_of[bb], 0) + 1
+            for t in ts:
+                title_batches[t] = title_batches.get(t, 0) + 1
+        for bb in batch_pick:
+            n = 0
+            for d, _, did, _, rel in sorted(pages_of[bb], key=lambda p: (p[1], p[2])):
+                if len(chosen) >= a.pages or n >= a.per_batch:
+                    break
+                if per_title.get(DOC_RE.match(did).group("lccn"), 0) >= a.per_title:
                     continue
-                if b not in stat_cache:
-                    stat_cache[b] = _locstats_rows(a.locstats_dir, [b])
-                rows = stat_cache[b].get((b, did), [])
-                if not rows:
-                    manifest.append({"doc_id": did, "batch": b, "status": "not_in_locstats"})
-                    continue
-                arch = sorted(rows, key=lambda r: -r["batch_version"])[0]["archive"]
-                img = os.path.join(a.scans_root, rel) if rel else os.path.join(a.scans_root, b, image_rel(did))
-                chosen.append({"doc_id": did, "batch": b, "archive": arch, "image_path": img, "lccn": lccn, "decade": d,
-                               "source_rel": rel or ""})
-                manifest.append({"doc_id": did, "batch": b, "status": "selected"})
-                per_title[lccn] = per_title.get(lccn, 0) + 1
-                per_batch[b] = per_batch.get(b, 0) + 1
-                break
-        print("selected %d/%d" % (len(chosen), a.pages), flush=True)
+                n += take(did, bb, rel, d)
+            print("batches %d/%d pages %d/%d" % (batch_pick.index(bb) + 1, len(batch_pick), len(chosen), a.pages), flush=True)
+    else:
+        by_dec = {}
+        for p in sorted(pool):
+            by_dec.setdefault(p[0], []).append(p)
+        decs = sorted(by_dec)
+        pos = {d: 0 for d in decs}
+        # round robin over decades; within a decade, the next page in sha256 order that the caps allow
+        while len(chosen) < a.pages and any(pos[d] < len(by_dec[d]) for d in decs):
+            for d in decs:
+                if len(chosen) >= a.pages:
+                    break
+                lst = by_dec[d]
+                while pos[d] < len(lst):
+                    _, _, did, b, rel = lst[pos[d]]
+                    pos[d] += 1
+                    lccn = DOC_RE.match(did).group("lccn")
+                    if per_title.get(lccn, 0) >= a.per_title or per_batch.get(b, 0) >= a.per_batch:
+                        continue
+                    if take(did, b, rel, d):
+                        break
+            print("selected %d/%d" % (len(chosen), a.pages), flush=True)
     with open(a.out, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["doc_id", "batch", "archive", "image_path", "lccn", "decade", "source_rel"],
                            delimiter="\t")
@@ -396,7 +444,10 @@ def cmd_select(a):
     summ.update({"exclusion_lists": excl.counts, "pages": len(chosen), "prefix": PREFIX, "per_title": a.per_title,
                  "per_batch": a.per_batch, "title_lang": a.title_lang if titles is not None else None,
                  "selected_titles": len(per_title), "selected_batches": len(per_batch),
-                 "selected_by_decade": _count(c["decade"] for c in chosen)})
+                 "selected_by_decade": _count(c["decade"] for c in chosen),
+                 "batch_first": bool(a.batch_count), "batches_picked": batch_pick,
+                 "archives_bytes": sum(os.path.getsize(os.path.join(a.locbulk_dir, x))
+                                       for x in sorted({c["archive"] for c in chosen}))})
     with open(a.out + ".summary.json", "w") as f:
         json.dump(summ, f, indent=1, sort_keys=True)
     print(json.dumps(summ, sort_keys=True))
@@ -528,6 +579,9 @@ def main(argv=None):
                    " ALTO is in the target language")
     s.add_argument("--pages", type=int, default=500)
     s.add_argument("--per-batch", type=int, default=1000000)
+    s.add_argument("--batch-count", type=int, default=0, help="batch-first selection: take this many batches first")
+    s.add_argument("--batches-per-title", type=int, default=2)
+    s.add_argument("--max-decade-share", type=float, default=0.15)
     s.add_argument("--out", required=True)
     s.add_argument("--manifest-out", required=True)
     b = sub.add_parser("build")
