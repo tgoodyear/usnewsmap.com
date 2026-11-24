@@ -176,6 +176,10 @@ class Prepare(unittest.TestCase):
             open(os.path.join(d, "sn1_1900-01-02_ed-1_seq-03.jp2"), "w").close()
             self.assertEqual(ep.scan_path(d, row), os.path.join(d, "sn1_1900-01-02_ed-1_seq-03.jp2"))
 
+    def test_status_136_as_the_worker_reads_it(self):
+        self.assertTrue(ep.is_status_136(136) and ep.is_status_136(-8))
+        self.assertFalse(ep.is_status_136(1) or ep.is_status_136(-9))
+
     def test_read_members_stops_at_the_last_wanted(self):
         with tempfile.TemporaryDirectory() as d:
             arc = os.path.join(d, "x_ver01.tar.bz2")

@@ -36,6 +36,8 @@ On English body text, when our whole-page Tesseract and LoC's OCR read the same 
 
 ## Readings and tasks
 
+- **Image Tesseract reads:** the held JP2, as production. On a status-136 crash, LoC's IIIF JPEG of the page, as production does (#454).
+
 - **Readings:**
   - **L:** LoC's ALTO words. A line-end HYP stays on its word.
   - **T:** Tesseract 5.5.0 `eng`, PSM 3, `--dpi 300`, one thread, on the scan file. These are the worker's settings, as in #2122 arm W.
@@ -135,7 +137,9 @@ Run as `nobody`. Scans were read in place from `/data/ocr-scans-cold`. ALTO came
 
 **Pages:**
 - All 20 pages had a scan, a locstats row and an ALTO member.
-- **6 pages:** Tesseract 5.5.0 died with SIGFPE (exit 136) on the scan. Their dates are 1759, 1804, 1826, 1832, 1858 and 1919. The fault reproduces with a single thread.
+- **6 pages:** Tesseract 5.5.0 died with SIGFPE (status 136) on the JP2. Their dates are 1759, 1804, 1826, 1832, 1858 and 1919.
+  - All 20 pilot scans are JP2; the other 14 read normally.
+  - The same 6 pages read normally when Pillow decodes them to PNG first. Details are in `TESS-CRASH.md`.
 - **4 pages:** fewer than 50% of LoC's words paired, so these pages were left out whole. Their dates are 1848, 1877, 1941 and 1956. One of them, a 1848 page, shows Tesseract with 15,100 words against LoC's 8,261. The likely causes are a scale or rotation mismatch, or a page with mostly non-text.
 - **10 pages gave tasks.**
 
@@ -166,6 +170,11 @@ Run as `nobody`. Scans were read in place from `/data/ocr-scans-cold`. ALTO came
 - Sample 2 is LoC's `beating` against Tesseract's `ating`. Tesseract's box covers only part of the printed word, yet IoU ≥ 0.5. The task is still valid, since the print decides it.
 
 **Decisions to take before freezing:**
-1. **SIGFPE pages.** In the main run, a page where Tesseract fails is a Tesseract failure. It counts against T in a coverage measure and is reported. It is not replaced by a reserve, since replacing it would hide a real worker fault. Proposal: debug the SIGFPE separately; it may be the scans' JP2 resolution header combined with `--dpi 300`. That is an issue for the worker, not for this test.
+1. **SIGFPE pages: mirror production.** The worker passes the raw JP2 to Tesseract. On status 136 it reads LoC's IIIF JPEG of the page, once (`worker.rs`, #454). This test does the same with `english_pages.py --fallback-jpegs`.
+   - Before the main build, the IIIF JPEG of each such page is fetched once from LoC, at no more than one request a second, and kept.
+   - That page's crops and boxes then come from the JPEG, and the page is listed in `jpeg_fallback`.
+   - A page is counted as a Tesseract failure only when the JPEG read fails too.
+   - The 6 pilot pages were not re-run here: nothing was fetched, and Pillow-PNG is not production's path.
+   - Expected share: about 30% of pages, judging by the pilot.
 2. **Page alignment failures (4 of 14).** Proposal: keep the 50% gate. Report the failed pages and their causes. A failed page counts as "no evidence", not as a loss for either engine.
 3. **Splits and joins (9% of LoC words).** These are outside ΔWER and reported as a bound, as above.

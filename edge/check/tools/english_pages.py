@@ -19,6 +19,12 @@ Tesseract. Tesseract `eng` at PSM 3 with the worker's arguments, as #2122's arm 
 WORK/tess/<doc_id>.{txt,tsv}; a failure is recorded, not retried. WORK/meta.json records the Tesseract version,
 the traineddata path and sha256, this script's sha256 and the arguments.
 
+A JP2 on which Tesseract dies with SIGFPE (status 136) is read once more from LoC's IIIF JPEG of the page, as the
+production worker does (crates/usnm-ocr-worker/src/worker.rs, #454): the JPEG must be in --fallback-jpegs as
+<doc_id>.jpg (this script fetches nothing). The page's image is then the JPEG, for its crops too, and the page is
+listed in the report's `jpeg_fallback`. Without a JPEG, or if that run fails too, the page is left out as
+`tesseract_status_136` (or `tesseract_failed` for any other failure).
+
 Writes WORK/pages.jsonl, one row per page with both readings (tess_pick.py's input; paths relative to WORK), and
 WORK/prepare-report.json (pages read, left out and why).
 """
@@ -120,6 +126,11 @@ def tesseract(job):
     return doc_id, p.returncode, p.stderr[-2000:]
 
 
+def is_status_136(code):
+    """SIGFPE: 136 from a shell or container, -8 from subprocess (the worker's Exited::is_status_136)."""
+    return code in (136, -8)
+
+
 def tess_meta():
     v = subprocess.run(["tesseract", "--version"], capture_output=True, text=True)
     lp = subprocess.run(["tesseract", "--list-langs"], capture_output=True, text=True)
@@ -159,6 +170,8 @@ def main(argv=None):
     ap.add_argument("--locstats", required=True)
     ap.add_argument("--work", required=True)
     ap.add_argument("--workers", type=int, default=3)
+    ap.add_argument("--fallback-jpegs", help="LoC's IIIF JPEGs as <doc_id>.jpg, read when Tesseract dies with SIGFPE on the "
+                    "JP2, as the production worker does (#454)")
     a = ap.parse_args(argv)
     for sub in ("alto", "tess"):
         os.makedirs(os.path.join(a.work, sub), exist_ok=True)
@@ -204,14 +217,26 @@ def main(argv=None):
     meta["selection_sha256"] = sha256_file(a.selection)
     json.dump(meta, open(os.path.join(a.work, "meta.json"), "w"), indent=1, sort_keys=True)
     jobs = [(d, scans[d], os.path.join(a.work, "tess")) for d in sorted(alto)]
-    errors = {}
+    errors, fallback = {}, {}
     with mp.Pool(a.workers) as pool:
         for n, (d, code, err) in enumerate(pool.imap_unordered(tesseract, jobs), 1):
-            if code != 0:
-                errors[d] = err
-                left[d] = "tesseract_failed"
             print(f"tesseract {n}/{len(jobs)} {d} rc={code}", flush=True)
+            if code == 0:
+                continue
+            jpeg = os.path.join(a.fallback_jpegs, d + ".jpg") if a.fallback_jpegs else None
+            if is_status_136(code) and scans[d].endswith(".jp2") and jpeg and os.path.isfile(jpeg):
+                # As the worker does (worker.rs, #454): one more run, on LoC's IIIF JPEG of the page.
+                _, code2, err2 = tesseract((d, jpeg, os.path.join(a.work, "tess")))
+                print(f"tesseract {d} IIIF JPEG fallback rc={code2}", flush=True)
+                if code2 == 0:
+                    scans[d] = jpeg
+                    fallback[d] = jpeg
+                    continue
+                err = err + "\nJPEG fallback: " + err2
+            errors[d] = {"returncode": code, "stderr": err}
+            left[d] = "tesseract_status_136" if is_status_136(code) else "tesseract_failed"
     rep["tesseract_errors"] = errors
+    rep["jpeg_fallback"] = sorted(fallback)
     with open(os.path.join(a.work, "pages.jsonl"), "w") as f:
         for r in sel:
             d = r["doc_id"]
