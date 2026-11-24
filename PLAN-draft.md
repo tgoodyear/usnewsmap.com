@@ -136,7 +136,7 @@ Run as `nobody`. Scans were read in place from `/data/ocr-scans-cold`. ALTO came
 **Pages:**
 - All 20 pages had a scan, a locstats row and an ALTO member.
 - **6 pages:** Tesseract 5.5.0 died with SIGFPE (exit 136) on the scan. Their dates are 1759, 1804, 1826, 1832, 1858 and 1919. The fault reproduces with a single thread.
-- **4 pages:** fewer than 50% of LoC's words paired, so these pages were left out whole. Their dates are 1877, 1941, 1948 and 1956. One of them, a 1848 page, shows Tesseract with 15,100 words against LoC's 8,261. The likely causes are a scale or rotation mismatch, or a page with mostly non-text.
+- **4 pages:** fewer than 50% of LoC's words paired, so these pages were left out whole. Their dates are 1848, 1877, 1941 and 1956. One of them, a 1848 page, shows Tesseract with 15,100 words against LoC's 8,261. The likely causes are a scale or rotation mismatch, or a page with mostly non-text.
 - **10 pages gave tasks.**
 
 **Words, on the 14 pages that Tesseract read (67,280 LoC words):**
