@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """LoC ALTO for Beyond Words training pages, from the bulk batch archives (#2107 combined segmenter).
 
-  --stage map      Beyond Words' source_url gives (lccn, reel, folder, file); the scan index (index-full.jsonl, as
-                   bwfalse.bw_map reads it) gives the Chronicling America doc id <lccn>_<date>_ed-N_seq-N. A page
-                   with no doc id, or with more than one, gets no ALTO (counted).
+  --stage map      Beyond Words' source_url gives the scan stem (bwfalse.scan_stem). The Chronicling America doc id
+                   <lccn>_<date>_ed-N_seq-N comes from newspaper-navigator's beyond_words_data regions (--bw-regions:
+                   each region's subject_url is the page's Chronicling America URL, its location.standard the image
+                   URL, as bwcap.py #2122 reads them), or else from the scan index (--index, as bwfalse.bw_map). A
+                   page with no doc id, or with more than one, gets no ALTO (counted).
   --stage extract  The locstats index names each doc's archive; each archive is streamed once, stopping at its last
                    wanted page (bwcap.py's method, #2122). Writes <alto-dir>/<doc id>.xml with a sidecar (archive,
                    member, sha256), then alto-map.json for wordboxes.py --alto-map (page id -> alto, scan size).
 Pages without ALTO keep NaN word features; they are counted, never filled from another source.
 Data: biglam/loc_beyond_words (CC0); Library of Congress, Chronicling America (ALTO, scans).
 
-    alto_bulk.py --stage map --rows BW_TRAIN.jsonl --ids ids.txt --index index-full.jsonl --out doc-map.json
+    alto_bulk.py --stage map --rows BW_TRAIN.jsonl --ids ids.txt (--bw-regions bw.json | --index index-full.jsonl)
+                 --out doc-map.json
     alto_bulk.py --stage extract --doc-map doc-map.json --scan-sizes scan-sizes.json --locstats-dir D
                  --locbulk-dir D --alto-dir D --out alto-map.json [--workers 3]
 """
@@ -22,6 +25,7 @@ import json
 import multiprocessing as mp
 import os
 import sys
+import re
 import tarfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -40,6 +44,21 @@ def member_doc(name):
         return None
 
 
+CA_URL = re.compile(r"^https?://chroniclingamerica\.loc\.gov/lccn/(?P<lccn>[a-z0-9]+)/(?P<date>\d{4}-\d{2}-\d{2})/ed-(?P<ed>\d+)/seq-(?P<seq>\d+)/?$")
+
+
+def regions_docs(path):
+    """scan stem -> set of doc ids, from beyond_words_data regions."""
+    out = collections.defaultdict(set)
+    data = json.load(open(path))
+    for r in (data["data"] if isinstance(data, dict) else data):
+        m = CA_URL.match(r["meta_data"]["subject_url"])
+        img = r["location"]["standard"]
+        if m and "/data/" in img:
+            out[bwfalse.scan_stem(img)].add("%s_%s_ed-%d_seq-%d" % (m["lccn"], m["date"], int(m["ed"]), int(m["seq"])))
+    return out
+
+
 def stage_map(a):
     ids = [ln.strip() for ln in open(a.ids) if ln.strip()]
     want = set(ids)
@@ -53,7 +72,13 @@ def stage_map(a):
                 tails[str(r["page_id"])] = bwfalse.path_tail(u)
     by_tail = collections.defaultdict(set)
     need = set(tails.values())
-    with open(a.index) as f:
+    by_stem = regions_docs(a.bw_regions) if a.bw_regions else {}
+    stems = {}
+    for r in bwfalse.read_rows(a.rows):
+        u = bwfalse.lit(r["meta"]).get("source_url") or ""
+        if str(r["page_id"]) in want and "/data/" in u:
+            stems[str(r["page_id"])] = bwfalse.scan_stem(u)
+    with open(a.index) if a.index else open(os.devnull) as f:
         for ln in f:
             r = json.loads(ln)
             if not bwfalse.DOC.match(r.get("doc_id", "")):
@@ -63,7 +88,7 @@ def stage_map(a):
                 by_tail[t].add(r["doc_id"])
     out, st = {}, collections.Counter()
     for pid in ids:
-        docs = sorted(by_tail.get(tails.get(pid), ()))
+        docs = sorted(by_stem.get(stems.get(pid), ())) or sorted(by_tail.get(tails.get(pid), ()))
         st["one doc" if len(docs) == 1 else "no doc" if not docs else "several docs"] += 1
         if len(docs) == 1:
             out[pid] = docs[0]
@@ -100,12 +125,9 @@ def _archive_job(job):
 def stage_extract(a):
     import pyarrow.parquet as pq
     dm = json.load(open(a.doc_map))["docs"]
-    sizes = json.load(open(a.scan_sizes))
+    sizes = json.load(open(a.scan_sizes)) if a.scan_sizes else None  # None: extract every mapped doc, no map yet
     os.makedirs(a.alto_dir, exist_ok=True)
-    docs = {d for p, d in dm.items() if p in sizes}
-    by_lccn = collections.defaultdict(set)
-    for d in docs:
-        by_lccn[d.split("_")[0]].add(d)
+    docs = {d for p, d in dm.items() if sizes is None or p in sizes}
     arch = collections.defaultdict(set)
     for pth in sorted(glob.glob(os.path.join(a.locstats_dir, "*.parquet"))):
         t = pq.read_table(pth, columns=["doc_id", "archive"])
@@ -123,6 +145,10 @@ def stage_extract(a):
         for n, (name, got, left) in enumerate(pool.imap_unordered(_archive_job, [(k, v, a.alto_dir) for k, v in sorted(jobs.items())]), 1):
             not_found += left
             print("archives %d/%d (%s: %d, not found %d)" % (n, len(jobs), name, got, len(left)), flush=True)
+    if sizes is None:
+        print(json.dumps({"extracted_docs": len(docs) - len(not_indexed) - len(not_found), "not_in_locstats": len(not_indexed),
+                          "not_found_in_archive": len(not_found)}, sort_keys=True))
+        return 0
     amap = {}
     for p, d in sorted(dm.items()):
         x = os.path.join(a.alto_dir, d + ".xml")
@@ -142,6 +168,7 @@ def main(argv=None):
     ap.add_argument("--rows")
     ap.add_argument("--ids")
     ap.add_argument("--index")
+    ap.add_argument("--bw-regions", help="newspaper-navigator beyond_words_data regions JSON")
     ap.add_argument("--doc-map")
     ap.add_argument("--scan-sizes")
     ap.add_argument("--locstats-dir")
