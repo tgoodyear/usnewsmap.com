@@ -65,7 +65,7 @@ class Rows(unittest.TestCase):
                  {"box": [10, 80, 90, 90], "tid": "r1.1.1.3", "p_chr": None, "p_v2": None, "p_cnn": None, "p_line": None}]
         rows = ghn_boxes.page_rows(self.rec(lines), self.PAGE, "F", "C", 0.08, 0.46)
         head = rows[0]
-        self.assertEqual(head, {"classifier": "C", "contrast": None, "doc_id": DOC, "finder": "F", "height": 100,
+        self.assertEqual(head, {"chr_threshold": 0.46, "classifier": "C", "contrast": None, "doc_id": DOC, "finder": "F", "height": 100,
                                 "held": False, "held_reasons": [], "kind": "page", "scan_sha256": "a" * 64,
                                 "tall_share": 0.01, "width": 100})
         self.assertEqual([(r["id"], r["chr"]) for r in rows[1:]],
@@ -78,7 +78,7 @@ class Rows(unittest.TestCase):
             self.assertEqual(path, Path(tmp, "ghn", "sn83020866_1828-02-21_ed-1_seq-1", "boxes.jsonl"))
             ghn_boxes.write_rows(path, rows)
             text = path.read_text().splitlines()
-            self.assertTrue(text[0].startswith('{"classifier": '))
+            self.assertTrue(text[0].startswith('{"chr_threshold": 0.46, "classifier": '))
             self.assertTrue(text[1].startswith('{"box": '))
             self.assertEqual(json.loads(text[1])["kind"], "line")
 

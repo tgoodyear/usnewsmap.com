@@ -48,11 +48,12 @@ page's `file` is under it); --tessdata holds eng.traineddata; --select lists `gh
 
 boxes.jsonl: a page row, then one row a box in S1's order (region, then Tesseract's block, paragraph and
 line), keys sorted:
-  {"classifier", "contrast", "doc_id", "finder", "height", "held", "held_reasons", "kind": "page",
-   "scan_sha256", "tall_share", "width"}
+  {"chr_threshold", "classifier", "contrast", "doc_id", "finder", "height", "held", "held_reasons",
+   "kind": "page", "scan_sha256", "tall_share", "width"}
   {"box": [x0, y0, x1, y1], "chr", "id": "r<region>b<block>p<par>l<line>", "kind": "line", "p_chr", "p_cnn",
    "p_line", "p_v2"}
-"chr" is p_line >= 0.46; the p_ scores are null for a box with no shape score. Needs Tesseract 5.5.0 and
+"chr" is p_line >= chr_threshold (0.46); the p_ scores are null for a box with no shape score.
+usnm-boinc's reader (crates/usnm-boinc/src/lines/boxes.rs) checks the calls against p_line. Needs Tesseract 5.5.0 and
 Python with numpy, scipy, Pillow, scikit-learn and PyTorch (the image of ocr/script-detect/Containerfile
 has them).
 """
@@ -154,7 +155,8 @@ def page_rows(rec, page, finder, classifier, flag_share, t, faded=False):
     """boxes.jsonl's rows for one page: S1's record `rec` after classification and the page checks. Each
     line of `rec` carries p_chr, p_v2, p_cnn and p_line (any may be None); the call is p_line >= t."""
     reasons = (["merged_lines"] if rec["tall_share"] > flag_share else []) + (["faded"] if faded else [])
-    head = {"classifier": classifier, "contrast": rec.get("contrast"), "doc_id": page["doc_id"], "finder": finder,
+    head = {"chr_threshold": t, "classifier": classifier, "contrast": rec.get("contrast"), "doc_id": page["doc_id"],
+            "finder": finder,
             "height": rec["height"], "held": bool(reasons), "held_reasons": reasons, "kind": "page",
             "scan_sha256": page["scan"]["sha256"], "tall_share": rec["tall_share"], "width": rec["width"]}
     rows = [head]
@@ -288,6 +290,7 @@ def cmd_write(a):
             sys.exit(f"{r['doc_id']} was found with another column finder ({r['columns_py_sha256']})")
         r["page"] = r["doc_id"]
     import line_clf_v2 as v2
+    tesseract_version()  # the classifier's readings were fitted with Tesseract 5.5.0
     frozen = v2.load_frozen()
     check_tessdata(a.chr_tessdata, a.eng_tessdata, frozen)
     v2.language_models(a.chr_text, a.eng_text, frozen)  # refuse wrong texts before the long run
