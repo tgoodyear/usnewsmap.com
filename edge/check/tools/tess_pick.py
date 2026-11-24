@@ -33,6 +33,10 @@ NFKC, lowercase, line-end hyphens joined, punctuation removed except apostrophes
     its LoC line is a merged line (merged_lines.py, #1978); either reading has no letter or digit once normalised
     (punctuation only); or either normalises to more than one word (U.S. against US);
   * otherwise a disagreement, and a candidate task.
+German (--text-lang deu, #2127's US test). Each reading first gets #2127's normalisation
+(scripts/ocr-survey/frak2127/frak_norm.py: NFC, long s to s, r rotunda to r, every quote mark to ", every dash and
+hyphen to -), then the normalisation above. The hyphen-cut rule reads the #2127-normalised text, so Fraktur's
+double hyphen (⸗, =) cuts a word as - does. Alignment, the reasons and the sampling are unchanged.
 The page shows the normalised readings (small letters, no punctuation), so a volunteer judges exactly what is scored.
 
 Sampling. Per page, up to --per-page candidates, those first by sha256(seed:task id:rank) (a simple random sample of
@@ -53,7 +57,7 @@ readings as the engines gave them), `tess_conf`, `page_candidates` and `page_sam
 normalised truth word), `truth_word` and `region`.
 
   python3 tess_pick.py --pages pages.jsonl --lang en --set tess-loc-v1 --language-config languages/en.json \
-    --out-dir OUT [--seed 2122] [--per-page 6] [--min-iou 0.5] [--max-other 0.2] [--min-page-aligned 0.5]
+    --out-dir OUT [--text-lang eng|deu] [--seed 2122] [--per-page 6] [--min-iou 0.5] [--max-other 0.2] [--min-page-aligned 0.5]
 """
 import argparse
 import hashlib
@@ -100,6 +104,25 @@ def normalise(text):
         else:
             out.append(ch)
     return " ".join("".join(out).split())
+
+
+_PRE = {"eng": None}
+
+
+def prenorm(text_lang):
+    """The normalisation a reading gets before normalise(): none for English, #2127's frak_norm for German."""
+    if text_lang not in _PRE:
+        if text_lang != "deu":
+            raise SystemExit(f"--text-lang {text_lang}: eng or deu")
+        sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "scripts", "ocr-survey", "frak2127"))
+        import frak_norm
+        _PRE["deu"] = frak_norm.normalise
+    return _PRE[text_lang]
+
+
+def norm(text, text_lang="eng"):
+    pre = prenorm(text_lang)
+    return normalise(pre(text) if pre else text)
 
 
 # ---------------------------------------------------------------- words
@@ -199,11 +222,12 @@ def align(loc: list, tess: list, min_iou: float, max_other: float) -> tuple:
     return pairs, why, len(tess) - len(paired_t)
 
 
-def hyphen_cut(words: list) -> set:
+def hyphen_cut(words: list, text_lang: str = "eng") -> set:
     """Indexes of words cut by a hyphen: a word ending in one, and the first word of the next line after it."""
-    out = set()
+    out, pre = set(), prenorm(text_lang)
     for k, w in enumerate(words):
-        if w["text"].rstrip() and w["text"].rstrip()[-1] in HYPHENS:
+        t = (pre(w["text"]) if pre else w["text"]).rstrip()
+        if t and t[-1] in HYPHENS:
             out.add(k)
             if k + 1 < len(words) and words[k + 1]["line"] != w["line"]:
                 out.add(k + 1)
@@ -229,14 +253,14 @@ def who_is_right(loc: str, tess: str, truth: str) -> str:
     return "neither"
 
 
-def truth_words(loc: list, regions: list) -> dict:
+def truth_words(loc: list, regions: list, text_lang: str = "eng") -> dict:
     """{LoC word index: (region id, normalised truth word)} for words whose box centre is in a region and that the
     region's truth aligns to (en_pick.truth_for on normalised words)."""
     out = {}
     for reg in regions:
         inside = _in_box(loc, reg["box"])
-        toks = [normalise(loc[k]["text"]) or "∅" for k in inside]
-        for pos, word in en_pick.truth_for(toks, normalise(reg["text"]).split()).items():
+        toks = [norm(loc[k]["text"], text_lang) or "∅" for k in inside]
+        for pos, word in en_pick.truth_for(toks, norm(reg["text"], text_lang).split()).items():
             out[inside[pos]] = (reg["id"], word)
     return out
 
@@ -264,8 +288,9 @@ def page_candidates(page: dict, loc: list, tess: list, args, stats: Counter) -> 
         return [], c
     for r in why.values():
         c["unaligned_" + r] += 1
-    cut_l, cut_t, merged_l = hyphen_cut(loc), hyphen_cut(tess), merged(loc)
-    truth = truth_words(loc, page["regions"]) if page.get("regions") else None
+    tl = getattr(args, "text_lang", "eng")
+    cut_l, cut_t, merged_l = hyphen_cut(loc, tl), hyphen_cut(tess, tl), merged(loc)
+    truth = truth_words(loc, page["regions"], tl) if page.get("regions") else None
     key = en_pick.slug(page["page"])
     rows = []
     for i, (j, score, other) in sorted(pairs.items()):
@@ -276,7 +301,7 @@ def page_candidates(page: dict, loc: list, tess: list, args, stats: Counter) -> 
         if i in cut_l or j in cut_t:
             c["left_out_hyphen_cut"] += 1
             continue
-        nl, nt = normalise(raw_l), normalise(raw_t)
+        nl, nt = norm(raw_l, tl), norm(raw_t, tl)
         if nl == nt:
             c["agree_exact" if raw_l == raw_t else "agree_after_normalisation"] += 1
             continue
@@ -392,6 +417,8 @@ def main(argv=None) -> None:
     ap.add_argument("--set", required=True)
     ap.add_argument("--language-config", required=True)
     ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--text-lang", default="eng", choices=("eng", "deu"),
+                    help="deu: #2127's normalisation (frak_norm.py) before the one above")
     ap.add_argument("--seed", default="2122", help="seeds the sampling (public)")
     ap.add_argument("--side-key", help="file holding the secret that decides which reading is a (default: a new random one)")
     ap.add_argument("--per-page", type=int, default=6)

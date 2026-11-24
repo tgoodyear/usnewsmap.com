@@ -60,16 +60,8 @@ def ids_in(path):
     return out
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--pilot-pages", required=True); ap.add_argument("--keep-listing", required=True)
-    ap.add_argument("--locbulk-listing", required=True); ap.add_argument("--locstats-dir", required=True)
-    ap.add_argument("--langs-dir", required=True)
-    ap.add_argument("--exclude", action="append", required=True)
-    ap.add_argument("--n", type=int, default=250); ap.add_argument("--cap", type=int, default=15)
-    ap.add_argument("--out", required=True)
-    a = ap.parse_args()
-
+def build_frame(a):
+    """The candidate frame and what was left out, from main()'s input arguments (also used by select_us_pages.py)."""
     titles = sorted({r["lccn"] for r in map(json.loads, open(a.pilot_pages)) if r["sample"] == "ger"})
     tset = set(titles)
     # Scans.
@@ -132,6 +124,23 @@ def main():
         r["archive"] = arch
         r["rank_key"] = key("2127:bank:" + pid)
         frame.append(r)
+    return {"titles": titles, "frame": frame, "excluded": excluded, "reasons": reasons,
+            "excl_by_source": excl_by_source, "lang_batches": lang_batches, "counts": counts}
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--pilot-pages", required=True); ap.add_argument("--keep-listing", required=True)
+    ap.add_argument("--locbulk-listing", required=True); ap.add_argument("--locstats-dir", required=True)
+    ap.add_argument("--langs-dir", required=True)
+    ap.add_argument("--exclude", action="append", required=True)
+    ap.add_argument("--n", type=int, default=250); ap.add_argument("--cap", type=int, default=15)
+    ap.add_argument("--out", required=True)
+    a = ap.parse_args()
+
+    F = build_frame(a)
+    titles, frame, excluded, reasons = F["titles"], F["frame"], F["excluded"], F["reasons"]
+    excl_by_source, lang_batches, counts = F["excl_by_source"], F["lang_batches"], F["counts"]
     # Selection.
     by_title = collections.defaultdict(lambda: collections.defaultdict(list))
     for r in frame:

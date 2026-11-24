@@ -16,7 +16,9 @@ archive_alto.py); archives are read --workers at a time. Each ALTO is written to
 Tesseract. Tesseract `eng` at PSM 3 with the worker's arguments, as #2122's arm W (segfirst.py at b045416f):
 `tesseract <scan> <out> -l eng --psm 3 --dpi 300 txt tsv` with OMP_THREAD_LIMIT=1, on the scan file. Outputs:
 WORK/tess/<doc_id>.{txt,tsv}; a failure is recorded, not retried. WORK/meta.json records the Tesseract version,
-the traineddata path and sha256, this script's sha256 and the arguments.
+the traineddata path and sha256, this script's sha256 and the arguments. --tess-lang MODEL and --tessdata-dir DIR
+read with another model at the same settings (#2127's US test: `--tess-lang frak2127_b`, `-l frak2127_b --psm 3
+--dpi 300 --tessdata-dir DIR`).
 
 Writes WORK/pages.jsonl, one row per page with both readings (tess_pick.py's input; paths relative to WORK), and
 WORK/prepare-report.json (pages read, left out and why).
@@ -110,24 +112,30 @@ def in_locstats(locstats_dir, archive, doc_ids):
     return {d for d in doc_ids if d in have or canonical(d) in have}
 
 
+def tess_args(lang="eng", tessdata_dir=None):
+    args = ["-l", lang] + TESS_ARGS[2:]
+    return args + (["--tessdata-dir", tessdata_dir] if tessdata_dir else [])
+
+
 def tesseract(job):
-    doc_id, image, out_dir = job
+    doc_id, image, out_dir, args = job
     base = os.path.join(out_dir, doc_id)
     env = dict(os.environ, OMP_THREAD_LIMIT="1")
-    p = subprocess.run(["tesseract", image, base] + TESS_ARGS + ["txt", "tsv"], env=env, stdin=subprocess.DEVNULL,
+    p = subprocess.run(["tesseract", image, base] + args + ["txt", "tsv"], env=env, stdin=subprocess.DEVNULL,
                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     return doc_id, p.returncode, p.stderr[-2000:]
 
 
-def tess_meta():
+def tess_meta(args=TESS_ARGS, lang="eng", tessdata_dir=None):
     v = subprocess.run(["tesseract", "--version"], capture_output=True, text=True)
     lp = subprocess.run(["tesseract", "--list-langs"], capture_output=True, text=True)
     tessdata = None
     for ln in (lp.stdout + lp.stderr).splitlines():
         if "List of available languages in" in ln:
             tessdata = ln.split('"')[1] if '"' in ln else ln.split(" in ")[-1].rstrip(":")
-    td = os.path.join(tessdata, "eng.traineddata") if tessdata else None
-    return {"tesseract_version": (v.stdout + v.stderr).splitlines()[0].strip(), "args": TESS_ARGS,
+    tessdata = tessdata_dir or tessdata
+    td = os.path.join(tessdata, lang + ".traineddata") if tessdata else None
+    return {"tesseract_version": (v.stdout + v.stderr).splitlines()[0].strip(), "args": args,
             "omp_thread_limit": 1, "traineddata": td,
             "traineddata_sha256": sha256_file(td) if td and os.path.exists(td) else None}
 
@@ -145,6 +153,8 @@ def main(argv=None):
     ap.add_argument("--locstats", required=True)
     ap.add_argument("--work", required=True)
     ap.add_argument("--workers", type=int, default=3)
+    ap.add_argument("--tess-lang", default="eng", help="Tesseract model (-l), e.g. frak2127_b")
+    ap.add_argument("--tessdata-dir", help="folder holding the model's traineddata (default: Tesseract's own)")
     a = ap.parse_args(argv)
     for sub in ("alto", "tess"):
         os.makedirs(os.path.join(a.work, sub), exist_ok=True)
@@ -185,11 +195,12 @@ def main(argv=None):
     with open(os.path.join(a.work, "alto.jsonl"), "w") as f:
         for d in sorted(alto):
             f.write(json.dumps({"doc_id": d, **alto[d]}, sort_keys=True) + "\n")
-    meta = tess_meta()
+    targs = tess_args(a.tess_lang, a.tessdata_dir)
+    meta = tess_meta(targs, a.tess_lang, a.tessdata_dir)
     meta["script_sha256"] = sha256_file(os.path.abspath(__file__))
     meta["selection_sha256"] = sha256_file(a.selection)
     json.dump(meta, open(os.path.join(a.work, "meta.json"), "w"), indent=1, sort_keys=True)
-    jobs = [(d, scans[d], os.path.join(a.work, "tess")) for d in sorted(alto)]
+    jobs = [(d, scans[d], os.path.join(a.work, "tess"), targs) for d in sorted(alto)]
     errors = {}
     with mp.Pool(a.workers) as pool:
         for n, (d, code, err) in enumerate(pool.imap_unordered(tesseract, jobs), 1):

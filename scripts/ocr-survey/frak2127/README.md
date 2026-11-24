@@ -17,6 +17,7 @@ a separate tree for the scoring step that comes later. No image, text or model i
 | `trusted_words.py` | Arm C: words where LoC and stock frak2021 agree, in the word list, cut as word crops |
 | `synth_lines.py` | Arm C: degradation tuned on dev, then synthetic training lines from the glyph bank |
 | `score_heldout.py` | Reads the held-out lines once with A, B and C and applies the issue's scoring and decision rule |
+| `select_us_pages.py` | Draws the 60 US German pages for the test of B against LoC (comment 7132047952) |
 | `test_frak_norm.py` | Tests of the normalisation |
 
 ## Splits

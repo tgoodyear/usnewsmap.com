@@ -41,6 +41,19 @@ class Normalise(unittest.TestCase):
         self.assertEqual(tp.normalise("ſo"), "so")  # NFKC: the long s is s
         self.assertEqual(tp.normalise("—"), "")
 
+    def test_german_applies_frak_norm_first(self):
+        self.assertEqual(tp.norm("ſeyn", "deu"), "seyn")
+        self.assertEqual(tp.norm("Waſſeꝛ", "deu"), "wasser")
+        self.assertEqual(tp.norm("Waſſeꝛ", "eng"), "wasseꝛ")
+        self.assertEqual(tp.norm("„Haus“", "deu"), "haus")
+
+    def test_german_double_hyphen_cuts_a_word(self):
+        words = [w("Ver⸗", 0, 0, 0), w("ein", 0, 30, 1), w("und", 60, 30, 1)]
+        self.assertEqual(tp.hyphen_cut(words, "eng"), set())
+        self.assertEqual(tp.hyphen_cut(words, "deu"), {0, 1})
+        words[0]["text"] = "Ver="
+        self.assertEqual(tp.hyphen_cut(words, "deu"), {0, 1})
+
 
 class Align(unittest.TestCase):
     def test_mutual_best_pair(self):
