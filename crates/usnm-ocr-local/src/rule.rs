@@ -397,6 +397,36 @@ pub mod line_merge {
     }
 }
 
+/// Rule `line-assemble-v1` (#1622), for a line job's page that has no LoC text: a Georgia
+/// Historic Newspapers page whose boxes came from the line finder, not from LoC's ALTO. The page
+/// is the job's readings in the boxes' order, so there are no other lines to hold against LoC's.
+/// It is admitted when every box has a reading (a result has one line of text a box, which the
+/// job's own check makes sure of) and at least
+/// [`MIN_MODEL_SHARE`](line_merge::MIN_MODEL_SHARE) of the readings are not empty, the share
+/// `line-merge-v1` asks of the lines it read.
+pub mod line_assemble {
+    use super::{line_merge, Keep};
+
+    pub const VERSION: &str = "line-assemble-v1";
+
+    /// Whether the page whose job read `readings` (one a box, in order) is admitted, with its
+    /// counts either way: `cherokee` is the boxes read, `model` those with a reading.
+    pub fn verdict(readings: &[&str]) -> (line_merge::Counts, Result<(), Keep>) {
+        let counts = line_merge::Counts {
+            cherokee: readings.len(),
+            model: readings.iter().filter(|r| !r.trim().is_empty()).count(),
+        };
+        let verdict = if counts.cherokee == 0
+            || (counts.model as f64) < line_merge::MIN_MODEL_SHARE * counts.cherokee as f64
+        {
+            Err(Keep::ModelShare)
+        } else {
+            Ok(())
+        };
+        (counts, verdict)
+    }
+}
+
 /// The rule and the metric, as a version's `ocr_local.json` records them, with the completeness
 /// thresholds the build ran on.
 pub fn record(completeness: &Completeness) -> Value {
@@ -706,6 +736,17 @@ mod tests {
         models=sha256:843614a53083 route=boinc@r1 contract=0";
     const ENGLISH: &str = "tesseract/5.5.0 profile=eng image=sha256:3f9a0c1d2e4b \
         models=sha256:75ba1066e1a4 route=boinc@r1 contract=0";
+
+    #[test]
+    fn line_assemble_admits_a_page_with_half_its_boxes_read() {
+        let (counts, v) = line_assemble::verdict(&["ᎠᎴ", "", "ᎾᏍᎩ", " "]);
+        assert_eq!((counts.cherokee, counts.model), (4, 2));
+        assert_eq!(v, Ok(()));
+        let (counts, v) = line_assemble::verdict(&["ᎠᎴ", "", " "]);
+        assert_eq!((counts.cherokee, counts.model), (3, 1));
+        assert_eq!(v, Err(Keep::ModelShare));
+        assert_eq!(line_assemble::verdict(&[]).1, Err(Keep::ModelShare));
+    }
 
     fn line<'a>(loc: &'a str, ours: &'a str, read: Option<&'a str>) -> line_merge::Line<'a> {
         line_merge::Line { loc, ours, read }

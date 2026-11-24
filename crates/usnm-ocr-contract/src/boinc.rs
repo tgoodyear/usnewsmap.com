@@ -29,6 +29,12 @@ pub const MAX_LINE_ID: usize = 32;
 pub const MAX_LINE_COORD: u32 = 100_000;
 /// The languages a line job can read: their line route is a model trained on the print.
 pub const LINE_LANGUAGES: &[&str] = &["chr"];
+/// Where a LoC page's scan URLs point.
+pub const LOC_SCAN_ROOT: &str = "https://tile.loc.gov/";
+/// Where a Georgia Historic Newspapers page's scan URLs point (#1622): GHN's IIIF image service,
+/// as the GHN fetcher takes the images (`usnm_ocr_worker::ghn::IMAGES`). A job is for a GHN page
+/// when its page key is the page's wire spelling (`usnm_core::page_id::GHN_WIRE_PREFIX`).
+pub const GHN_SCAN_ROOT: &str = "https://iiif-ha.galib.uga.edu/iiif/2/newspapers/";
 /// `result.json`, error markers, and a page job's `request.json`.
 pub const MAX_JSON: usize = 16 * 1024;
 /// A `request.json` of any kind: a line job's carries its line boxes.
@@ -279,7 +285,16 @@ impl Job {
                 || (self.v == Self::version_for(true, lines) && retry),
             "unsupported BOINC job version or attempt"
         );
-        self.message.validate()?;
+        let key = self.message.validate()?;
+        // A GHN page (#1622) is spelled with `ghn` before its LCCN, its scan is on GHN's IIIF
+        // service, and only a line job reads one: it has no LoC text for a page job to stand
+        // beside.
+        let ghn = usnm_core::page_id::ghn_wire_lccn(&key.lccn).is_some();
+        ensure!(
+            !ghn || self.lines.is_some(),
+            "a GHN page is read by line jobs only"
+        );
+        let scan_root = if ghn { GHN_SCAN_ROOT } else { LOC_SCAN_ROOT };
         ensure!(
             self.engine.kind == crate::routing::EngineKind::for_language(self.route_language()),
             "engine does not match language route"
@@ -299,7 +314,7 @@ impl Job {
         );
         for url in [&self.scan.url, &self.scan.iiif_base] {
             ensure!(
-                url.starts_with("https://tile.loc.gov/")
+                url.starts_with(scan_root)
                     && url.len() <= 512
                     && !url.chars().any(|c| c.is_control() || c.is_whitespace()),
                 "invalid scan URL"
@@ -1022,6 +1037,44 @@ mod line_tests {
             ],
             [VERSION, RETRY_VERSION, LINES_VERSION, LINES_RETRY_VERSION]
         );
+    }
+
+    /// A line job for a GHN page (#1622): the page's wire key, and its scan on GHN's IIIF.
+    fn ghn_line_job() -> Job {
+        let mut job = line_job(2);
+        job.message.page = "ghnsn83020866/1828-02-21/ed-1/seq-1".into();
+        job.message.batch = "gua_cph".into();
+        job.batch_version = 3;
+        let base =
+            format!("{GHN_SCAN_ROOT}batch_gua_cph_ver03%2Fdata%2Fcph_1828-02-21_1%2F0001.jp2");
+        job.scan.url = format!("{base}/full/full/0/default.jpg");
+        job.scan.iiif_base = base;
+        job.scan.md5 = None;
+        job.id = job.identity().unwrap();
+        job
+    }
+
+    #[test]
+    fn a_ghn_page_takes_ghns_scan_urls_and_only_in_a_line_job() {
+        let job = ghn_line_job();
+        job.validate().unwrap();
+        // Its scan must be on GHN's IIIF service, not LoC's, and a LoC page's on LoC's.
+        let mut loc_url = job.clone();
+        loc_url.scan.url =
+            "https://tile.loc.gov/image-services/iiif/x/full/full/0/default.jpg".into();
+        loc_url.id = loc_url.identity().unwrap();
+        assert!(loc_url.validate().is_err());
+        let mut loc_page = line_job(2);
+        loc_page.scan = job.scan.clone();
+        loc_page.id = loc_page.identity().unwrap();
+        assert!(loc_page.validate().is_err());
+        // A page job can't read a GHN page.
+        let mut page: Job = serde_json::from_str(LEGACY).unwrap();
+        page.message = job.message.clone();
+        page.batch_version = job.batch_version;
+        page.scan = job.scan.clone();
+        page.id = page.identity().unwrap();
+        assert!(page.validate().is_err());
     }
 
     fn rejected(edit: impl FnOnce(&mut Job)) -> bool {

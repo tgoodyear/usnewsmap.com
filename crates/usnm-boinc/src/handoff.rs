@@ -74,7 +74,8 @@ pub async fn get_file(store: &dyn ObjectStore, path: &str, to: &Path) -> anyhow:
 }
 
 /// A line job's sidecars (#1621), from the dispatch root in `store`: exactly
-/// `dispatch/jobs/<id>/line-read/loc.xml` and `.../record.json`, beside the job's record under
+/// `dispatch/jobs/<id>/line-read/loc.xml` (`boxes.jsonl` for a GHN page, #1622) and
+/// `.../record.json`, beside the job's record under
 /// `root` (which must be there already, to say it is a line job), and checked against each
 /// other. Nothing for a page job. Returns how many objects it copied.
 pub async fn get_line_read(
@@ -88,7 +89,13 @@ pub async fn get_line_read(
     }
     let job_dir = dir(root, id)?;
     let mut n = 0;
-    for file in [crate::lines::LOC_ALTO_FILE, crate::lines::LINE_READ_FILE] {
+    // A GHN page's job (#1622) has the line finder's boxes in place of LoC's ALTO.
+    let basis = if crate::lines::is_ghn(&record.job) {
+        crate::lines::BOXES_FILE
+    } else {
+        crate::lines::LOC_ALTO_FILE
+    };
+    for file in [basis, crate::lines::LINE_READ_FILE] {
         get_file(
             store,
             &format!("{DISPATCH}/jobs/{id}/{file}"),

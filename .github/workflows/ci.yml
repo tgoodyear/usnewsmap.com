@@ -953,6 +953,7 @@ jobs:
           python3 -m unittest -v scripts/ocr-survey/test_gold.py
           python3 -m unittest -v scripts/ocr-survey/test_cherokee_testset.py
           python3 -m unittest -v scripts/ocr-survey/test_loc_column.py
+          python3 -m unittest -v scripts/ocr-survey/chr_ghn_layout/test_ghn_boxes.py
           python3 -m unittest discover -s scripts/ocr-survey -p test_transcription.py -v
       - name: The Rust scorer's golden files match gold.py (#457)
         if: needs.changes.outputs.ocr_gold == 'true'

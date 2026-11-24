@@ -163,6 +163,7 @@ impl Fixture {
             deadline_retries: vec![],
             line_read: None,
             loc_alto: None,
+            line_boxes: None,
             line_words: false,
         };
         Self {
@@ -4746,4 +4747,180 @@ async fn the_handoff_brings_a_line_jobs_sidecars_exactly() {
             .unwrap(),
         0
     );
+}
+
+/// The fixture page as a GHN page (#1622): its wire key, a scan on GHN's IIIF service, and the
+/// line finder's boxes in place of LoC's ALTO. `held` is the merged-lines check's verdict.
+const GHN_WIRE: &str = "ghnsn00000001/1900-01-01/ed-1/seq-1";
+const GHN_DOC: &str = "ghn:sn00000001_1900-01-01_ed-1_seq-1";
+
+impl Fixture {
+    fn ghn(&mut self, held: bool) {
+        let key: PageKey = GHN_WIRE.parse().unwrap();
+        let base = prefetch::decode(bytes::Bytes::from(
+            std::fs::read(&self.options.manifest).unwrap(),
+        ))
+        .unwrap()
+        .remove(0);
+        let old = scan_path(
+            &self.options.scans,
+            &base,
+            ImageSize::Full,
+            ScanFormat::Jpeg,
+        );
+        let scan = std::fs::read(&old).unwrap();
+        let row = ManifestRow::new(&key, &base.batch, base.batch_version, None, "mixed", 0.0);
+        let path = scan_path(&self.options.scans, &row, ImageSize::Full, ScanFormat::Jpeg);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &scan).unwrap();
+        let mut side: Sidecar =
+            serde_json::from_slice(&std::fs::read(sidecar_path(&old)).unwrap()).unwrap();
+        side.doc_id = key.doc_id();
+        side.iiif_base = format!("{}batch_x%2F0001.jp2", boinc::GHN_SCAN_ROOT);
+        side.loc_url = format!("{}/full/full/0/default.jpg", side.iiif_base);
+        std::fs::write(sidecar_path(&path), serde_json::to_vec(&side).unwrap()).unwrap();
+        std::fs::write(&self.options.manifest, prefetch::encode(&[row]).unwrap()).unwrap();
+        std::fs::write(&self.options.pages, GHN_WIRE).unwrap();
+        let (w, h) = usnm_boinc::lines::scan_size(&scan).unwrap();
+        let page = serde_json::json!({"classifier": "test-classifier", "doc_id": GHN_DOC,
+            "finder": "test-finder", "height": h, "held": held, "kind": "page",
+            "scan_sha256": boinc::sha256(&scan), "tall_share": 0.02, "width": w});
+        let line = |id: &str, y: u32, p: f64| {
+            serde_json::json!({"box": [2, y, w - 2, y + 4], "chr": p >= 0.5, "id": id,
+                "kind": "line", "p_chr": p})
+        };
+        let rows = [
+            page,
+            line("r0b1p1l1", 2, 0.9),
+            line("r0b1p1l2", 8, 0.1),
+            line("r1b1p1l1", 14, 0.7),
+        ];
+        let text: String = rows.iter().map(|r| format!("{r}\n")).collect();
+        let dir = self.tmp.path().join("line-boxes");
+        let id: usnm_core::page_id::PageId = GHN_DOC.parse().unwrap();
+        let file = usnm_boinc::lines::boxes::path(&dir, &id);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, text).unwrap();
+        self.options.line_read = Some("chr".into());
+        self.options.line_boxes = Some(dir);
+    }
+}
+
+#[tokio::test]
+async fn a_ghn_page_is_read_from_the_finders_boxes_and_held_under_its_ghn_id() {
+    let mut fx = Fixture::new("eng").await;
+    fx.ghn(false);
+    let ledger_before = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    let id = fx.export().await;
+    assert_eq!(fx.export().await, id);
+    let record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    assert_eq!(record.stage, Stage::Reserved);
+    assert_eq!(record.job.message.page, GHN_WIRE);
+    assert!(record.job.scan.url.starts_with(boinc::GHN_SCAN_ROOT));
+    let lines = record.job.lines.as_ref().unwrap();
+    assert_eq!(
+        lines
+            .lines
+            .iter()
+            .map(|l| l.id.as_str())
+            .collect::<Vec<_>>(),
+        ["r0b1p1l1", "r1b1p1l1"]
+    );
+    // No native ledger row: nothing in the search pipeline names the page.
+    let ledger_after = ledger::load(fx.stores.curated.as_ref()).await.unwrap();
+    assert!(ledger_after
+        .outstanding(&record.job.message.key().unwrap().doc_id())
+        .is_none());
+    assert_eq!(ledger_before.outcomes.len(), ledger_after.outcomes.len());
+    let job_dir = fx.options.root.join("jobs").join(&id);
+    let (basis, line_read) = usnm_boinc::lines::sidecars(&job_dir).unwrap();
+    assert!(matches!(basis, usnm_boinc::lines::Basis::Boxes(_)));
+    assert!(line_read.loc_alto_sha256.is_none());
+    // The page is assembled from the readings, judged with line-assemble-v1, and held.
+    let files = fx.line_result(&id, "ᎦᏙᎯ ᎠᎴ\n\n");
+    fx.import(&id, &files).await.unwrap();
+    let record = usnm_boinc::load(&fx.options.root, &id).unwrap();
+    assert_eq!(
+        record.held.as_deref(),
+        Some(format!("line-assemble-v1: admit; {GHN_DOC} is not ingested yet (#1622)").as_str())
+    );
+    let stats: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(job_dir.join(usnm_boinc::lines::MERGE_FILE)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stats["doc_id"], GHN_DOC);
+    assert_eq!(
+        stats["admission"],
+        serde_json::json!({"rule": "line-assemble-v1", "verdict": "admit", "cherokee": 2, "model": 1})
+    );
+    assert_eq!(
+        std::fs::read_to_string(job_dir.join(usnm_boinc::lines::ASSEMBLED_TEXT_FILE)).unwrap(),
+        "ᎦᏙᎯ ᎠᎴ"
+    );
+    assert!(fx.stores.out.list("pages").await.unwrap().is_empty());
+    assert!(fx.stores.out.list("alto").await.unwrap().is_empty());
+    // A second import of the held page changes nothing.
+    fx.import(&id, &files).await.unwrap();
+    let report = usnm_boinc::lines::report(&fx.options.root, None).unwrap();
+    assert_eq!(report.len(), 1);
+    assert_eq!(report[0].doc_id.as_deref(), Some(GHN_DOC));
+    assert_eq!(report[0].verdict, "no_loc_text");
+    assert_eq!(report[0].line_merge.rule, "line-assemble-v1");
+}
+
+#[tokio::test]
+async fn a_ghn_export_refuses_loc_pages_pages_loc_holds_and_skips_held_pages() {
+    // A page held by the merged-lines check is passed over.
+    let mut fx = Fixture::new("eng").await;
+    fx.ghn(true);
+    let ids = usnm_boinc::export(
+        &fx.options,
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+    )
+    .await
+    .unwrap();
+    assert!(ids.is_empty());
+    // A page LoC holds is refused.
+    let mut fx = Fixture::new("eng").await;
+    fx.ghn(false);
+    let loc: PageKey = "sn00000001/1900-01-01/ed-1/seq-1".parse().unwrap();
+    let dir = fx.tmp.path().join("loc-alto");
+    let path = usnm_boinc::lines::loc_alto_path(&dir, &loc).unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, LOC_CHEROKEE_ALTO).unwrap();
+    fx.options.loc_alto = Some(dir);
+    assert!(usnm_boinc::export(
+        &fx.options,
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+    )
+    .await
+    .is_err());
+    // A GHN page needs the boxes, and the boxes are for GHN pages only.
+    let mut fx = Fixture::new("eng").await;
+    fx.ghn(false);
+    fx.options.line_boxes = None;
+    fx.options.loc_alto = Some(fx.tmp.path().join("nowhere"));
+    assert!(usnm_boinc::export(
+        &fx.options,
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+    )
+    .await
+    .is_err());
+    let mut fx = Fixture::new("eng").await;
+    fx.line_read(LOC_CHEROKEE_ALTO);
+    fx.options.line_boxes = Some(fx.tmp.path().join("line-boxes"));
+    assert!(usnm_boinc::export(
+        &fx.options,
+        &fx.state,
+        fx.stores.curated.as_ref(),
+        fx.stores.reference.as_ref(),
+    )
+    .await
+    .is_err());
 }

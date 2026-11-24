@@ -52,6 +52,10 @@ enum Commands {
     /// Stage one line export's pages (#1621) from local copies: scans with sidecars, LoC's
     /// ALTO and a prefetch manifest, checked against the page list, for the BOINC host.
     LineStage(job::LineStageArgs),
+    /// Stage one line export of Georgia Historic Newspapers pages (#1622), which have no LoC
+    /// ALTO: scans under their wire keys, the line finder's boxes and a prefetch manifest,
+    /// checked against the GHN page list, for the BOINC host.
+    LineStageGhn(job::LineStageGhnArgs),
     /// Reconcile an uncertain submission after checking the server for its workunit name.
     Reconcile(job::ReconcileArgs),
     /// Read stock batch_collect_assimilator's spool and publish native ALTO/Parquet.
@@ -138,6 +142,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::LineReport(args) => job::line_report(args),
         Commands::LinePages(args) => job::line_pages(args),
         Commands::LineStage(args) => job::line_stage(args),
+        Commands::LineStageGhn(args) => job::line_stage_ghn(args),
         Commands::LineCrops(args) => job::line_crops(args).await,
         Commands::Reconcile(args) => job::reconcile(args),
         Commands::Collect(args) => job::collect(args).await,

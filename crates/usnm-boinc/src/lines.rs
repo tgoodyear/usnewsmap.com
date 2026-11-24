@@ -13,6 +13,10 @@
 //!   Cherokee line the model's reading unless it fails
 //!   (`usnm_core::cherokee_type::merge_lines`), with the counts in [`MERGE_FILE`]. The page
 //!   then enters the release as our OCR, LoC's text kept as `text_loc`.
+//! - A page with no LoC text (#1622), a Georgia Historic Newspapers page, takes its boxes from
+//!   the line finder at staging instead (`export --line-boxes`, [`boxes`]): the job reads its
+//!   Cherokee lines, and `import` assembles the page from the readings under rule
+//!   `line-assemble-v1` and holds it, since ingest of those pages into search is separate work.
 use anyhow::{ensure, Context};
 use async_trait::async_trait;
 use image::GrayImage;
@@ -28,6 +32,7 @@ use usnm_core::ids::PageKey;
 use usnm_ocr_contract::boinc::{self, Job, LineBox, ResultManifest};
 use usnm_ocr_worker::engine::{LineReading, Tesseract, WordReading};
 
+pub mod boxes;
 pub mod script;
 pub mod stage;
 
@@ -43,16 +48,30 @@ pub const LINE_READ_DIR: &str = "line-read";
 pub const LOC_ALTO_FILE: &str = "line-read/loc.xml";
 /// What `export` read it with ([`LineReadRecord`]).
 pub const LINE_READ_FILE: &str = "line-read/record.json";
-/// The merge's counts, written by `import`.
+/// For a page with no LoC text (#1622): the page's line boxes from the line finder, kept beside
+/// the job by `export --line-boxes` in place of [`LOC_ALTO_FILE`] ([`boxes`]).
+pub const BOXES_FILE: &str = "line-read/boxes.jsonl";
+/// The merge's counts, written by `import`. For a page with no LoC text (#1622) it also holds
+/// the page's `ghn:` id and rule `line-assemble-v1`'s verdict.
 pub const MERGE_FILE: &str = "line-merge.json";
+/// A page with no LoC text, as `import` assembled it (#1622): its stored text and its ALTO,
+/// kept in the job's journal until those pages' ingest is built.
+pub const ASSEMBLED_TEXT_FILE: &str = "line-assemble/text.txt";
+pub const ASSEMBLED_ALTO_FILE: &str = "line-assemble/layout.xml";
 /// LoC's ALTO is in inch1200; read it at the job's DPI.
 const ALTO_DPI: f64 = 300.0;
 
-/// What `export` kept about a line job's page, beside [`LOC_ALTO_FILE`].
+/// What `export` kept about a line job's page, beside [`LOC_ALTO_FILE`], or beside
+/// [`BOXES_FILE`] for a page with no LoC text. Exactly one of `loc_alto_sha256` and
+/// `boxes_sha256` is set; a LoC page's record serializes as before.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LineReadRecord {
-    pub loc_alto_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loc_alto_sha256: Option<String>,
+    /// The sha256 of the page's `boxes.jsonl` (#1622).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boxes_sha256: Option<String>,
     pub scan_height: u32,
     pub scan_width: u32,
     /// The title's catalog languages, for rule v1's judgement ([`report`]).
@@ -267,6 +286,14 @@ fn line_words(rect: Rect, text: &str, conf: Option<f64>) -> Vec<Word> {
         .collect()
 }
 
+/// Whether `job` reads a page with no LoC text (#1622): its page key is a GHN page's wire
+/// spelling (`usnm_core::page_id::GHN_WIRE_PREFIX`).
+pub fn is_ghn(job: &Job) -> bool {
+    job.message
+        .key()
+        .is_ok_and(|k| usnm_core::page_id::ghn_wire_lccn(&k.lccn).is_some())
+}
+
 /// The ALTO's description. `date_time` is the result's completion time, never the clock's, so
 /// the same result always gives the same bytes.
 fn description(
@@ -373,7 +400,11 @@ pub async fn ocr_lines(
     };
     let mut desc = description(
         job,
-        "LoC ALTO line boxes, one crop each",
+        if is_ghn(job) {
+            "line finder boxes, one crop each"
+        } else {
+            "LoC ALTO line boxes, one crop each"
+        },
         Some(&completed_at),
     )?;
     desc.ocr
@@ -584,7 +615,7 @@ pub fn merge(
     completed_at: Option<&str>,
 ) -> anyhow::Result<Merged> {
     ensure!(
-        boinc::sha256(loc_alto) == record.loc_alto_sha256,
+        record.loc_alto_sha256.as_deref() == Some(boinc::sha256(loc_alto).as_str()),
         "LoC's ALTO changed since export"
     );
     let readings: BTreeMap<&str, &str> = job
@@ -685,14 +716,27 @@ pub fn merge(
     })
 }
 
-/// A line job's sidecars from its journal directory, checked against each other.
-pub fn sidecars(job_dir: &Path) -> anyhow::Result<(Vec<u8>, LineReadRecord)> {
-    let loc = crate::read(&job_dir.join(LOC_ALTO_FILE), boinc::MAX_ALTO).with_context(|| {
-        format!(
-            "a line job's LoC ALTO, {} under its journal directory",
-            LOC_ALTO_FILE
-        )
-    })?;
+/// What a line job's page is read against: LoC's ALTO, or for a page with no LoC text the line
+/// finder's boxes (#1622).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Basis {
+    Loc(Vec<u8>),
+    Boxes(Vec<u8>),
+}
+
+impl Basis {
+    /// The sidecar's path under a journal directory, and its bytes.
+    fn file(&self) -> (&'static str, &[u8]) {
+        match self {
+            Basis::Loc(b) => (LOC_ALTO_FILE, b),
+            Basis::Boxes(b) => (BOXES_FILE, b),
+        }
+    }
+}
+
+/// A line job's sidecars from its journal directory, checked against each other: the record,
+/// and the LoC ALTO or the boxes it names.
+pub fn sidecars(job_dir: &Path) -> anyhow::Result<(Basis, LineReadRecord)> {
     let record: LineReadRecord = serde_json::from_slice(
         &crate::read(&job_dir.join(LINE_READ_FILE), boinc::MAX_JSON).with_context(|| {
             format!(
@@ -701,22 +745,79 @@ pub fn sidecars(job_dir: &Path) -> anyhow::Result<(Vec<u8>, LineReadRecord)> {
             )
         })?,
     )?;
-    ensure!(
-        boinc::sha256(&loc) == record.loc_alto_sha256,
-        "a line job's LoC ALTO is not the one it was exported with"
-    );
-    Ok((loc, record))
+    let basis = match (&record.loc_alto_sha256, &record.boxes_sha256) {
+        (Some(sha), None) => {
+            let loc =
+                crate::read(&job_dir.join(LOC_ALTO_FILE), boinc::MAX_ALTO).with_context(|| {
+                    format!(
+                        "a line job's LoC ALTO, {} under its journal directory",
+                        LOC_ALTO_FILE
+                    )
+                })?;
+            ensure!(
+                boinc::sha256(&loc) == *sha,
+                "a line job's LoC ALTO is not the one it was exported with"
+            );
+            Basis::Loc(loc)
+        }
+        (None, Some(sha)) => {
+            let b =
+                crate::read(&job_dir.join(BOXES_FILE), boxes::MAX_BOXES).with_context(|| {
+                    format!(
+                        "a line job's boxes, {} under its journal directory",
+                        BOXES_FILE
+                    )
+                })?;
+            ensure!(
+                boinc::sha256(&b) == *sha,
+                "a line job's boxes are not the ones it was exported with"
+            );
+            Basis::Boxes(b)
+        }
+        _ => anyhow::bail!("a line-read record names LoC's ALTO or the page's boxes, not both"),
+    };
+    Ok((basis, record))
 }
 
 /// Copies a line job's sidecars from `from` to `to` (a retry's journal directory), checked.
 pub fn copy_sidecars(from: &Path, to: &Path) -> anyhow::Result<()> {
-    let (loc, record) = sidecars(from)?;
-    crate::atomic(&to.join(LOC_ALTO_FILE), &loc)?;
+    let (basis, record) = sidecars(from)?;
+    let (name, bytes) = basis.file();
+    crate::atomic(&to.join(name), bytes)?;
     crate::atomic(
         &to.join(LINE_READ_FILE),
         &serde_json::to_vec_pretty(&record)?,
     )?;
     Ok(())
+}
+
+/// LoC's ALTO and the record of the LoC page's line job journaled in `job_dir`.
+fn loc_sidecars(job_dir: &Path) -> anyhow::Result<(Vec<u8>, LineReadRecord)> {
+    match sidecars(job_dir)? {
+        (Basis::Loc(loc), record) => Ok((loc, record)),
+        (Basis::Boxes(_), _) => {
+            anyhow::bail!("a page with no LoC text is assembled (lines::boxes), not merged")
+        }
+    }
+}
+
+/// The assembled page of the GHN line job journaled in `job_dir` (#1622), from its result text.
+pub fn assemble_in(
+    job_dir: &Path,
+    job: &Job,
+    result_text: &[u8],
+    completed_at: Option<&str>,
+) -> anyhow::Result<boxes::Assembled> {
+    match sidecars(job_dir)? {
+        (Basis::Boxes(b), record) => boxes::assemble(
+            job,
+            &b,
+            &record,
+            std::str::from_utf8(result_text)?,
+            completed_at,
+        ),
+        (Basis::Loc(_), _) => anyhow::bail!("a LoC page's line job is merged, not assembled"),
+    }
 }
 
 /// The merged page of the line job journaled in `job_dir`, from its result text.
@@ -726,7 +827,7 @@ pub fn merge_in(
     result_text: &[u8],
     completed_at: Option<&str>,
 ) -> anyhow::Result<Merged> {
-    let (loc, record) = sidecars(job_dir)?;
+    let (loc, record) = loc_sidecars(job_dir)?;
     merge(
         job,
         &loc,
@@ -775,7 +876,7 @@ pub fn admission(
 ) -> anyhow::Result<Admission> {
     use usnm_ocr_local::rule::line_merge;
     ensure!(
-        boinc::sha256(loc_alto) == record.loc_alto_sha256,
+        record.loc_alto_sha256.as_deref() == Some(boinc::sha256(loc_alto).as_str()),
         "LoC's ALTO changed since export"
     );
     let readings: BTreeMap<&str, &str> = job
@@ -853,7 +954,7 @@ pub fn admission_in(
     published: &str,
     result_text: &[u8],
 ) -> anyhow::Result<Admission> {
-    let (loc, record) = sidecars(job_dir)?;
+    let (loc, record) = loc_sidecars(job_dir)?;
     admission(
         job,
         &loc,
@@ -868,10 +969,15 @@ pub fn admission_in(
 pub struct ReportRow {
     pub job: String,
     pub page: String,
+    /// The page's id where it is not the job's page key: a GHN page's `ghn:` id (#1622).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_id: Option<String>,
     pub stats: MergeStats,
     /// Rule v1's verdict on the merged page against LoC's text: `pass`, or why LoC's stays.
+    /// `no_loc_text` for a page with none (#1622).
     pub verdict: String,
-    /// Rule `line-merge-v1`'s verdict, the rule that decides a line job's page.
+    /// The line-merge rule's verdict, the rule that decides a line job's page:
+    /// `line-assemble-v1`'s for a page with no LoC text.
     pub line_merge: Admission,
     /// The language and damage rate rule v1 found for the merged page and for LoC's text.
     pub ours: (Option<String>, Option<f64>),
@@ -909,6 +1015,31 @@ pub fn report(root: &Path, spool: Option<&Path>) -> anyhow::Result<Vec<ReportRow
         } else {
             continue;
         };
+        if is_ghn(&record.job) {
+            let page = assemble_in(&job_dir, &record.job, &text, None)?;
+            let line_read: LineReadRecord = serde_json::from_slice(&crate::read(
+                &job_dir.join(LINE_READ_FILE),
+                boinc::MAX_JSON,
+            )?)?;
+            let ours = crate::normalized_text(&record.job, page.text.as_bytes())?;
+            let languages: Vec<&str> = line_read
+                .title_languages
+                .iter()
+                .map(String::as_str)
+                .collect();
+            let (scores, _, _) = usnm_ocr_local::rule::judge(&ours, None, &languages);
+            rows.push(ReportRow {
+                job: id,
+                page: record.job.message.page.clone(),
+                doc_id: Some(page.doc_id),
+                stats: page.stats,
+                verdict: "no_loc_text".into(),
+                line_merge: page.admission,
+                ours: (scores.lang, scores.damage_rate),
+                loc: (None, None),
+            });
+            continue;
+        }
         let merged = merge_in(&job_dir, &record.job, &text, None)?;
         let line_merge = admission_in(&job_dir, &record.job, &merged.alto, &text)?;
         let line_read: LineReadRecord = serde_json::from_slice(&crate::read(
@@ -928,6 +1059,7 @@ pub fn report(root: &Path, spool: Option<&Path>) -> anyhow::Result<Vec<ReportRow
         rows.push(ReportRow {
             job: id,
             page: record.job.message.page.clone(),
+            doc_id: None,
             stats: merged.stats,
             verdict: match verdict {
                 Ok(()) => "pass".into(),
@@ -1138,7 +1270,8 @@ mod tests {
         let refs: Vec<(&str, [u32; 4])> = boxes.iter().map(|(i, r)| (i.as_str(), *r)).collect();
         let job = line_job(scan, &refs);
         let record = LineReadRecord {
-            loc_alto_sha256: boinc::sha256(alto),
+            loc_alto_sha256: Some(boinc::sha256(alto)),
+            boxes_sha256: None,
             scan_height: 2000,
             scan_width: 2000,
             title_languages: vec!["eng".into(), "chr".into()],
@@ -1202,7 +1335,7 @@ mod tests {
         // A result for other lines, or LoC's ALTO changed, is refused.
         assert!(merge(&job, alto, &record, "a\nb\n", None).is_err());
         let mut changed = record.clone();
-        changed.loc_alto_sha256 = boinc::sha256(b"other");
+        changed.loc_alto_sha256 = Some(boinc::sha256(b"other"));
         assert!(merge(&job, alto, &changed, result, None).is_err());
         let other = line_job(scan, &[("b9l9", [1, 1, 2, 2])]);
         assert!(merge(&other, alto, &record, "Ꭰ\n", None).is_err());
@@ -1335,7 +1468,8 @@ mod tests {
         let refs: Vec<(&str, [u32; 4])> = boxes.iter().map(|(i, r)| (i.as_str(), *r)).collect();
         let mut job = line_job(scan, &refs);
         let record = LineReadRecord {
-            loc_alto_sha256: boinc::sha256(alto),
+            loc_alto_sha256: Some(boinc::sha256(alto)),
+            boxes_sha256: None,
             scan_height: 2000,
             scan_width: 2000,
             title_languages: vec!["eng".into(), "chr".into()],

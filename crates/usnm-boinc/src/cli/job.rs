@@ -53,12 +53,19 @@ pub struct ExportArgs {
     cosmos: Option<String>,
     /// Read only the page's lines in this language, one LoC ALTO line box at a time at PSM 13,
     /// with its line model (#1621): `chr`. A page without such lines is skipped and reported.
-    #[arg(long, requires = "loc_alto", conflicts_with_all = ["claims", "deadline_retries"])]
+    #[arg(long, conflicts_with_all = ["claims", "deadline_retries"])]
     line_read: Option<String>,
     /// LoC's bulk OCR archives unpacked (`<lccn>/<yyyy>/<mm>/<dd>/ed-<n>/seq-<m>/ocr.xml`),
-    /// for --line-read.
+    /// for --line-read. With --line-boxes it is only a check: a page LoC holds is refused.
     #[arg(long, requires = "line_read")]
     loc_alto: Option<PathBuf>,
+    /// With --line-read, for pages with no LoC text (#1622): the line finder's boxes, one
+    /// `ghn/<local id>/boxes.jsonl` a page, from the staging step
+    /// (`scripts/ocr-survey/chr_ghn_layout/ghn_boxes.py`). Every page in --pages is then a
+    /// GHN page's wire key (`ghn` before its LCCN), no native ledger row is reserved, and
+    /// `import` holds the assembled page under rule `line-assemble-v1`.
+    #[arg(long, requires = "line_read")]
+    line_boxes: Option<PathBuf>,
     /// With --line-read: read each word of a line in its script (#1666). The line model reads
     /// the line, and the English model reads the words that are Latin. The job's profile is
     /// `chr_phoenix+eng` and its pages are decided by `line-merge-v2`. A worker built before
@@ -85,6 +92,7 @@ pub async fn export(args: ExportArgs) -> anyhow::Result<()> {
         cosmos,
         line_read,
         loc_alto,
+        line_boxes,
         line_words,
     } = args;
     let docs: Arc<dyn DocStore> = if let Some(endpoint) = cosmos {
@@ -110,6 +118,7 @@ pub async fn export(args: ExportArgs) -> anyhow::Result<()> {
             deadline_retries,
             line_read,
             loc_alto,
+            line_boxes,
             line_words,
         },
         &State::new(docs),
@@ -880,6 +889,54 @@ pub fn line_stage(args: LineStageArgs) -> anyhow::Result<()> {
         &select,
         &args.scans,
         &args.loc_alto,
+        &args.manifest_name,
+        &args.out,
+    )?;
+    println!("HANDOFF_BATCH={}", staged.batch);
+    println!("HANDOFF_MANIFEST={}", staged.manifest);
+    println!("HANDOFF_PAGES={}", staged.pages.join(","));
+    println!("HANDOFF_SCANS={}", staged.scans.join(","));
+    Ok(())
+}
+
+#[derive(Args)]
+pub struct LineStageGhnArgs {
+    /// The GHN page list (`docs/reports/2026-11-cherokee/ghn-pages.jsonl`, #1622).
+    #[arg(long)]
+    ghn_pages: PathBuf,
+    /// The pages to stage, one `ghn:` id per line: 1 to 100, of one batch.
+    #[arg(long)]
+    select: PathBuf,
+    /// The GHN fetcher's output directory: each page's `file` is under it.
+    #[arg(long)]
+    images: PathBuf,
+    /// The line finder's boxes, `ghn/<local id>/boxes.jsonl` a page
+    /// (`scripts/ocr-survey/chr_ghn_layout/ghn_boxes.py write`).
+    #[arg(long)]
+    line_boxes: PathBuf,
+    /// The prefetch manifest's directory name under `manifests/`.
+    #[arg(long)]
+    manifest_name: String,
+    /// A new directory for the staging tree.
+    #[arg(long)]
+    out: PathBuf,
+}
+
+/// Writes a GHN line export's staging tree and prints the hand-off export's inputs as
+/// `NAME=value` lines.
+pub fn line_stage_ghn(args: LineStageGhnArgs) -> anyhow::Result<()> {
+    let pages = crate::lines::stage::read_ghn_pages(&args.ghn_pages)?;
+    let select = String::from_utf8(crate::read(&args.select, 64 * 1024)?)?
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let staged = crate::lines::stage::stage_ghn(
+        &pages,
+        &select,
+        &args.images,
+        &args.line_boxes,
         &args.manifest_name,
         &args.out,
     )?;

@@ -1077,6 +1077,9 @@ class OnpremStep(unittest.TestCase):
         done = self.run_step(ssh="usnm-boinc-step --env prod --target handoff --step export "
                                  "--var HANDOFF_LINE_READ=chr --what-if")
         self.assertEqual(done.returncode, 0, done.stderr)
+        done = self.run_step(ssh="usnm-boinc-step --env prod --target handoff --step export "
+                                 "--var HANDOFF_LINE_READ=chr --var HANDOFF_LINE_WORDS=1 --what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
 
     def test_line_report_is_an_operators_step_taking_only_job_ids(self):
         self.write_handoff_env()
@@ -1123,6 +1126,35 @@ class OnpremStep(unittest.TestCase):
             self.assertIn(b"pruned 1", done.stdout)
             self.assertFalse(old.exists())
             self.assertTrue(Path(stage, alto).exists())
+
+    def test_scans_receive_takes_a_ghn_line_exports_boxes(self):
+        # #1622: a GHN page's line boxes, by its ghn: doc id, in place of LoC's ALTO.
+        with tempfile.TemporaryDirectory() as d:
+            stage = os.path.join(d, "stage")
+            boxes = "line-boxes/ghn/sn83020866_1828-02-21_ed-1_seq-1/boxes.jsonl"
+            done = self.receive([("keep/gua_cph/ghnsn83020866/1828-02-21/1/1.jpg", b"scan"),
+                                 ("keep/gua_cph/ghnsn83020866/1828-02-21/1/1.jpg.json", b"{}"),
+                                 (boxes, b"{}\n"), ("manifests/chr-ghn-a/manifest.parquet", b"PAR1")], stage)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn(b"received 4 files", done.stdout)
+            self.assertEqual(Path(stage, boxes).read_bytes(), b"{}\n")
+            for name in ("line-boxes/ghn/sn83020866_1828-02-21_ed-1_seq-1/other.jsonl",
+                         "line-boxes/loc/sn83020866_1828-02-21_ed-1_seq-1/boxes.jsonl",
+                         "line-boxes/ghn/../x/boxes.jsonl",
+                         "line-boxes/ghn/sn83020866/1828-02-21/ed-1/seq-1/boxes.jsonl"):
+                with self.subTest(name=name):
+                    done = self.receive([(name, b"x")], stage)
+                    self.assertNotEqual(done.returncode, 0)
+            done = self.receive([(boxes, b"x" * (4 * 1024 * 1024 + 1))], stage)
+            self.assertNotEqual(done.returncode, 0)
+            old = Path(stage, "line-boxes/ghn/sn83020866_1828-02-28_ed-1_seq-1/boxes.jsonl")
+            old.parent.mkdir(parents=True)
+            old.write_bytes(b"old")
+            os.utime(old, (0, 0))
+            done = self.receive([("manifests/chr-ghn-a/manifest.parquet", b"PAR1")], stage)
+            self.assertIn(b"pruned 1", done.stdout)
+            self.assertFalse(old.exists())
+            self.assertTrue(Path(stage, boxes).exists())
 
     def test_handoff_env_without_a_final_newline(self):
         # The last setting still counts, and it doesn't run into HANDOFF_STEP.

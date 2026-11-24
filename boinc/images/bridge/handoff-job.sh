@@ -27,7 +27,17 @@
 #                         [HANDOFF_LINE_READ=chr] line jobs (#1621) of cohort pages staged on the
 #                         BOINC host (HANDOFF_LOCAL_SCANS=1, from usnm-boinc line-stage): each
 #                         page's scan, its LoC ALTO (loc-alto/) and the manifest come from the
-#                         staging tree (usnm-boinc export --line-read --loc-alto)
+#                         staging tree (usnm-boinc export --line-read --loc-alto). GHN pages
+#                         (#1622, from usnm-boinc line-stage-ghn), named by their wire keys
+#                         (ghn<lccn>/...), take the line finder's boxes
+#                         (line-boxes/ghn/<doc id>/boxes.jsonl) in place of LoC's ALTO
+#                         (usnm-boinc export --line-read --line-boxes); one export is all GHN
+#                         pages or none
+#                         [HANDOFF_LINE_WORDS=1] with HANDOFF_LINE_READ: read each word in its
+#                         script (#1666; usnm-boinc export --line-words)
+#                         [HANDOFF_TIMEOUT_SECS=<1 to 3600>] with HANDOFF_LINE_READ: the jobs' page
+#                         deadline (usnm-boinc export --timeout-secs); a GHN page exported again
+#                         after a failure takes another one (#1622)
 #                         copies scans/ and the manifest down, runs usnm-boinc export (the
 #                         ocr-sync lease in Cosmos, the native ledger reservation) and writes
 #                         back the journal entries it touched; prints the job ids
@@ -243,6 +253,16 @@ case "${HANDOFF_STEP:-}" in
       [ "${HANDOFF_LOCAL_SCANS:-}" = 1 ] && [ -n "${HANDOFF_SCANS:-}" ] ||
         fail "HANDOFF_LINE_READ reads the pages staged on the BOINC host: HANDOFF_SCANS, on-prem"
     fi
+    case "${HANDOFF_LINE_WORDS:-}" in
+      "") ;;
+      1) [ -n "${HANDOFF_LINE_READ:-}" ] || fail "HANDOFF_LINE_WORDS goes with HANDOFF_LINE_READ" ;;
+      *) fail "HANDOFF_LINE_WORDS is 1 or unset" ;;
+    esac
+    if [ -n "${HANDOFF_TIMEOUT_SECS:-}" ]; then
+      [ -n "${HANDOFF_LINE_READ:-}" ] || fail "HANDOFF_TIMEOUT_SECS goes with HANDOFF_LINE_READ"
+      [[ $HANDOFF_TIMEOUT_SECS =~ ^[1-9][0-9]{0,3}$ ]] && [ "$HANDOFF_TIMEOUT_SECS" -le 3600 ] ||
+        fail "HANDOFF_TIMEOUT_SECS is the jobs' page deadline, 1 to 3600 seconds"
+    fi
     # On the BOINC host (#1116) the scans the controller pushed are mounted at /scans: export
     # reads them there, and the jobs' pages (the scans themselves) don't go back up.
     scans_dir="$work/scans"
@@ -304,19 +324,36 @@ case "${HANDOFF_STEP:-}" in
     tr ',' '\n' <<< "$HANDOFF_PAGES" > "$work/pages.txt"
     claim_args=()
     if [ -n "${HANDOFF_LINE_READ:-}" ]; then
-      # Each page's LoC ALTO, as usnm-boinc's lines::loc_alto_path names it.
+      # Each page's LoC ALTO, as usnm-boinc's lines::loc_alto_path names it, or for a GHN page
+      # (#1622, its wire key: ghn before its LCCN) its boxes, as lines::boxes::path names them.
       IFS=, read -r -a pages <<< "$HANDOFF_PAGES"
       [ "${#pages[@]}" -le 100 ] || fail "HANDOFF_PAGES is at most 100 pages"
+      ghn="" loc=""
       for page in "${pages[@]}"; do
         [[ $page =~ ^([a-z0-9]+)/([0-9]{4})-([0-9]{2})-([0-9]{2})/(ed-[0-9]{1,4})/(seq-[0-9]{1,5})$ ]] ||
           fail "HANDOFF_PAGES has a page key that isn't <lccn>/<yyyy-mm-dd>/ed-<n>/seq-<m>: $page"
-        alto="loc-alto/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/${BASH_REMATCH[3]}/${BASH_REMATCH[4]}/${BASH_REMATCH[5]}/${BASH_REMATCH[6]}/ocr.xml"
-        [ -f "$local_scans/$alto" ] && [ ! -L "$local_scans/$alto" ] ||
-          fail "no $alto among the files staged on this host"
-        mkdir -p "$(dirname "$work/$alto")"
-        cp "$local_scans/$alto" "$work/$alto"
+        lccn=${BASH_REMATCH[1]}
+        staged="loc-alto/$lccn/${BASH_REMATCH[2]}/${BASH_REMATCH[3]}/${BASH_REMATCH[4]}/${BASH_REMATCH[5]}/${BASH_REMATCH[6]}/ocr.xml"
+        if [[ $lccn =~ ^ghn([a-z]{1,3}[0-9]+)$ ]]; then
+          ghn=1
+          rest=${page#*/}
+          staged="line-boxes/ghn/${BASH_REMATCH[1]}_${rest//\//_}/boxes.jsonl"
+        else
+          loc=1
+        fi
+        [ -f "$local_scans/$staged" ] && [ ! -L "$local_scans/$staged" ] ||
+          fail "no $staged among the files staged on this host"
+        mkdir -p "$(dirname "$work/$staged")"
+        cp "$local_scans/$staged" "$work/$staged"
       done
-      claim_args=(--line-read "$HANDOFF_LINE_READ" --loc-alto "$work/loc-alto")
+      [ -z "$ghn" ] || [ -z "$loc" ] || fail "HANDOFF_PAGES mixes GHN and LoC pages: one export is one or the other"
+      if [ -n "$ghn" ]; then
+        claim_args=(--line-read "$HANDOFF_LINE_READ" --line-boxes "$work/line-boxes")
+      else
+        claim_args=(--line-read "$HANDOFF_LINE_READ" --loc-alto "$work/loc-alto")
+      fi
+      [ "${HANDOFF_LINE_WORDS:-}" != 1 ] || claim_args+=(--line-words)
+      [ -z "${HANDOFF_TIMEOUT_SECS:-}" ] || claim_args+=(--timeout-secs "$HANDOFF_TIMEOUT_SECS")
     fi
     if [ "${HANDOFF_CLAIMS:-}" = 1 ]; then
       IFS=, read -r -a pages <<< "$HANDOFF_PAGES"
