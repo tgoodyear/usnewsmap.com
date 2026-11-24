@@ -42,3 +42,31 @@ silver.py build --aligned work/silver/aligned.jsonl --reads chr=... --reads chr_
 ```
 
 S1, S2 and the scorer are run on the 154 layout-test pages only after their commit is posted on the issue.
+
+## Phase 2
+
+### Experiment 1
+
+At `89fb1017`, `s0_find.py`, `s1_columns.py` and `s2_split.py` run on the 154 layout-test pages, followed by
+`score_layout.py` (S0 as the baseline, 2,000 draws, seed 2128). `exp1_report.py` then writes `results.json`,
+with the verdicts and the per-page outliers.
+
+### R3 and R4c (Amendment 1)
+
+| Script | What it does |
+|---|---|
+| `exclusion.py` | The 274 excluded verses (every verse an aligned GHN test line touches). A text counts as excluded if it falls inside one of their letter spans or holds a run of 20 of their letters. |
+| `exclude_manifest.py` | One manifest of the test pages no training step may use: test set v2's 29 pages and the 210 GHN test pages. |
+| `r3_corpus.py` | The synthetic text: the NT verses minus the excluded ones, plus the Cherokee of ChrEn's 2020 parallel splits and its monolingual file. Any unit holding an excluded run is dropped, the units are shuffled, and the result is asserted. |
+| `r3_synth_lines.py` | Round two's `chr_synth_lines.py` functions, with random left and right margins (0.05 to 1.5 body heights) and slivers only in a margin of at least 0.6 bodies. It asserts that no line holds excluded text. |
+| `augment_line_ends.py` | The same margins and slivers for the real LoC lines (half of them get re-cut margins). |
+| `ghn_words.py` | Re-reads phase 1's GHN training-page crops with `chr_phoenix`, keeping word boxes, and with stock `chr`. |
+| `ghn_alto.py` | Stacks each GHN training page's Cherokee crops into one image and writes pixel ALTO for it from `chr_phoenix`'s words, so `usnm-glyphs build` can cut glyphs as it does from LoC's ALTO. Boxes over 1.8 times the page median height, or over 1.8 times the median of the page medians, are left out. |
+| `r4c_lines.py` | R4c's GHN lines: consensus lines (stock `chr` equals `chr_phoenix`, at least 10 letters, every word in the model B word list) plus the 51 aligned lines. Any line aligned to an excluded verse, or holding excluded text, is dropped. |
+| `train/start_model.sh` | Builds the start model: round two's base (`7af4310b…`, stock `chr` with the NT word list) with Ꮐ added to the unicharset. The new starter traineddata comes from `combine_lang_model` with the base's own word, punctuation and number lists. Training uses `--continue_from base.lstm --old_traineddata base.traineddata`, so lstmtraining keeps the base network and maps its output layer onto the new character set, adding one output for Ꮐ. |
+| `train/make_lstmf.sh`, `train/lists.py` | Round two's lstmf and list steps. The evaluation list is the real LoC lines of about one page in twenty, chosen by hash; R4c's GHN lines are training-only, so both arms share the evaluation list. |
+| `train/train.sh`, `train/select_checkpoint.py` | lstmtraining with at most 20,000 iterations and a 0.005 target. Every kept checkpoint is then scored with `lstmeval` on the evaluation list, and the lowest error wins. |
+| `train/prep_r3_r4c.sh` | Runs all the data steps in order. |
+
+The glyph bank is built with `usnm-glyphs` from this commit: `build`, then `clean --k 9 --min-agree 0.5
+--exclude-manifest`. Its input is LoC's 190 pages plus the GHN training-page composites.
