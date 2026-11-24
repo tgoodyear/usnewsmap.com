@@ -31,23 +31,31 @@ async function getJSON(path, opts = {}) {
 }
 
 // A session comes from a Turnstile check, once per browser; it holds a random id and nothing else.
-let sessionWaiters = null;
+let sessionWaiters = null, checking = false; // checking: the browser check is showing, so its instruction stays in the status line
 async function session() {
   const s = store(SESSION);
   if (s) return s;
   if (sessionWaiters) return sessionWaiters;
   sessionWaiters = (async () => {
     const { turnstile_site_key } = await getJSON("/api/config");
-    while (!window.turnstile) await new Promise((r) => setTimeout(r, 100));
-    status("Starting… if a check box appears below, tick it to begin.");
+    // Wait for Turnstile's own object: until its script has run, window.turnstile can be something else (an element whose id is
+    // "turnstile" is one), and a first visit whose script loads after this one failed with "render is not a function".
+    // A script that never loads (blocked, offline) ends the wait with a message instead of "Loading" for ever.
+    for (const until = Date.now() + 30000; !(window.turnstile && typeof window.turnstile.render === "function"); ) {
+      if (Date.now() > until) throw new Error("the browser check didn't load; check your connection or ad blocker, then reload");
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    checking = true;
+    status("Starting… if a check box appears above the word, tick it to begin.");
     // Each attempt gets its own widget, removed afterwards whether it worked or not, so a retry
     // (or a new sign-in after a 401) starts a fresh check instead of waiting on a spent one.
     let widget = null, token;
     try {
       token = await new Promise((resolve, reject) => {
-        widget = window.turnstile.render("#turnstile", { sitekey: turnstile_site_key, appearance: "interaction-only", callback: resolve, "error-callback": () => reject(new Error("browser check failed")) });
+        widget = window.turnstile.render("#turnstile-box", { sitekey: turnstile_site_key, appearance: "interaction-only", callback: resolve, "error-callback": () => reject(new Error("browser check failed")) });
       });
     } finally {
+      checking = false;
       if (widget !== null) { try { window.turnstile.remove(widget); } catch { /* already gone */ } }
     }
     const { session: tok } = await getJSON("/api/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ turnstile: token }) });
@@ -477,7 +485,7 @@ function prefetch(keep = []) {
 }
 
 // Once the page is out of date, its reload message stays in place of news about the next word.
-function navStatus(text, error) { if (!stale) status(text, error); }
+function navStatus(text, error) { if (!stale && !(checking && !error)) status(text, error); }
 
 // `after` is the word being left: the first word fetched ahead for it is shown; with `keepRest`, the others stay ahead.
 async function next(had = controlFocused(), after = null, pressed, keepRest = true) {

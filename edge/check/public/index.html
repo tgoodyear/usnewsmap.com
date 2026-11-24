@@ -27,6 +27,7 @@
     <p class="how" id="rules">The box marks one word in a line. Pick the reading whose letters match the printed word. Highlighted letters show where the two readings differ, but check every letter: pick a reading only if all its letters match the print, highlighted or not. If neither reading matches, pick Neither. If you can't make out the letters, pick Can't tell. If the box holds no letters (a picture or a smudge), pick Not text. You don't need to know the language, only to match shapes.</p>
     <ul class="how guidance" id="guidance" hidden></ul>
     <label class="toggle" id="names-wrap" hidden><input type="checkbox" id="names"> Show letter names</label>
+    <div id="turnstile-box"></div>
     <div class="card" id="card" aria-live="polite"></div>
     <div class="row">
       <button class="small" id="neither" type="button" disabled>Neither matches (3)</button>
@@ -37,8 +38,6 @@
     </div>
     <div class="status" id="status"></div>
   </section>
-
-  <div id="turnstile"></div>
 
   <footer>
     <p>Answers are published under <a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noopener">CC0</a>. <span id="download" hidden><a id="download-link" href="/">Download this language's answers</a> (JSON lines). </span>We keep a random id per browser, so each browser's answer to a word counts once, and the time of each answer. See the <a href="https://usnewsmap.com/privacy" target="_blank" rel="noopener">privacy page</a>. Page images: Library of Congress, Chronicling America. Code: <a href="https://github.com/tgoodyear/usnewsmap.com/tree/main/edge/check" target="_blank" rel="noopener">GitHub</a>.</p>

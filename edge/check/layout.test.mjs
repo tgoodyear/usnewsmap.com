@@ -586,3 +586,19 @@ test("a 401 that comes back late doesn't throw away a session another request ha
   assert.equal(issued, 1, "only one new session was made");
   assert.equal(store("usnm-check-session"), "s1");
 });
+
+test("the first session waits for Turnstile's script even when window.turnstile is already something else", async () => {
+  const start = appJs.indexOf("let memory = {};");
+  const end = appJs.indexOf("// ---------- home");
+  assert.ok(start > 0 && end > start, "app.js no longer has the markers this test slices between");
+  // the page has no element with id "turnstile" (it would be window.turnstile until the script replaced it)
+  assert.doesNotMatch(readFileSync(join(publicDir, "index.html"), "utf8"), /id="turnstile"/);
+  const reply = (status, body) => ({ ok: status < 400, status, statusText: String(status), json: async () => body });
+  const fetch = async (path) => (path === "/api/config" ? reply(200, { turnstile_site_key: "k" }) : reply(200, { session: "s1" }));
+  // what a named element looks like before the script runs: truthy, no render
+  const window = { turnstile: { tagName: "DIV" } };
+  setTimeout(() => { window.turnstile = { render: (el, o) => { o.callback("ts"); return 1; }, remove() {} }; }, 300);
+  const document = { getElementById: () => ({ classList: { toggle() {} } }) };
+  const { session } = new Function("fetch", "window", "document", `const $ = (id) => document.getElementById(id), SESSION = "usnm-check-session";\n${appJs.slice(start, end)}\nreturn { session };`)(fetch, window, document);
+  assert.equal(await session(), "s1");
+});
