@@ -398,11 +398,12 @@ pub async fn prepare(
         previous.stage == Stage::Failed && previous.bundle.is_none(),
         "only a terminal failed single-page job may be retried"
     );
-    // A GHN page's line job (#1622) has no native ledger row to carry a retry's lineage: a page
-    // that fails is exported again in a new plan.
+    // A GHN page's line job (#1622) has no native ledger row to carry a retry's lineage. A page
+    // that fails is exported again in a new plan with another page deadline: the deadline is in
+    // the job's identity, so the new job and workunit don't collide with the failed one.
     ensure!(
         !crate::lines::is_ghn(&previous.job),
-        "a GHN page's line job is not retried; export the page again"
+        "a GHN page's line job is not retried; export the page again in a new plan with another --timeout-secs"
     );
     if previous.retry.is_none() && previous.ledger.is_some() {
         let key = previous.job.message.key()?;

@@ -1891,6 +1891,12 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertIn("--line-read chr --line-boxes ", export)
         self.assertIn(" --line-words", export)
         self.assertNotIn("--loc-alto", export)
+        self.assertNotIn("--timeout-secs", export)
+        os.remove(self.log)
+        r = self.handoff("export", **{**line, "HANDOFF_TIMEOUT_SECS": "2400"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        (export,) = [c for c in self.calls() if c.startswith("export ")]
+        self.assertIn(" --timeout-secs 2400", export)
         self.assertIn("BOXES", calls)
         # Without the boxes, mixed with a LoC page, or with a bad HANDOFF_LINE_WORDS, nothing runs.
         alto = "loc-alto/sn83020866/1828/03/06/ed-1/seq-1/ocr.xml"
@@ -1901,6 +1907,7 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         for extra, message in (({}, "no " + boxes),
                                ({"HANDOFF_PAGES": mixed}, "no " + boxes),
                                ({"HANDOFF_LINE_WORDS": "yes"}, "HANDOFF_LINE_WORDS is 1"),
+                               ({"HANDOFF_TIMEOUT_SECS": "0"}, "1 to 3600 seconds"),
                                ({"HANDOFF_LINE_READ": "", "HANDOFF_LOCAL_SCANS": ""}, "goes with HANDOFF_LINE_READ")):
             with self.subTest(extra=extra):
                 if os.path.exists(self.log):

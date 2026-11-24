@@ -35,6 +35,9 @@
 #                         pages or none
 #                         [HANDOFF_LINE_WORDS=1] with HANDOFF_LINE_READ: read each word in its
 #                         script (#1666; usnm-boinc export --line-words)
+#                         [HANDOFF_TIMEOUT_SECS=<1 to 3600>] with HANDOFF_LINE_READ: the jobs' page
+#                         deadline (usnm-boinc export --timeout-secs); a GHN page exported again
+#                         after a failure takes another one (#1622)
 #                         copies scans/ and the manifest down, runs usnm-boinc export (the
 #                         ocr-sync lease in Cosmos, the native ledger reservation) and writes
 #                         back the journal entries it touched; prints the job ids
@@ -255,6 +258,11 @@ case "${HANDOFF_STEP:-}" in
       1) [ -n "${HANDOFF_LINE_READ:-}" ] || fail "HANDOFF_LINE_WORDS goes with HANDOFF_LINE_READ" ;;
       *) fail "HANDOFF_LINE_WORDS is 1 or unset" ;;
     esac
+    if [ -n "${HANDOFF_TIMEOUT_SECS:-}" ]; then
+      [ -n "${HANDOFF_LINE_READ:-}" ] || fail "HANDOFF_TIMEOUT_SECS goes with HANDOFF_LINE_READ"
+      [[ $HANDOFF_TIMEOUT_SECS =~ ^[1-9][0-9]{0,3}$ ]] && [ "$HANDOFF_TIMEOUT_SECS" -le 3600 ] ||
+        fail "HANDOFF_TIMEOUT_SECS is the jobs' page deadline, 1 to 3600 seconds"
+    fi
     # On the BOINC host (#1116) the scans the controller pushed are mounted at /scans: export
     # reads them there, and the jobs' pages (the scans themselves) don't go back up.
     scans_dir="$work/scans"
@@ -345,6 +353,7 @@ case "${HANDOFF_STEP:-}" in
         claim_args=(--line-read "$HANDOFF_LINE_READ" --loc-alto "$work/loc-alto")
       fi
       [ "${HANDOFF_LINE_WORDS:-}" != 1 ] || claim_args+=(--line-words)
+      [ -z "${HANDOFF_TIMEOUT_SECS:-}" ] || claim_args+=(--timeout-secs "$HANDOFF_TIMEOUT_SECS")
     fi
     if [ "${HANDOFF_CLAIMS:-}" = 1 ]; then
       IFS=, read -r -a pages <<< "$HANDOFF_PAGES"

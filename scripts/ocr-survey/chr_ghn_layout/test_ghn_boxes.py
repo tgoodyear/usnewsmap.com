@@ -123,6 +123,9 @@ class Pilot(unittest.TestCase):
         self.assertEqual(ids, ghn_boxes.pilot_pages(pages, list(reversed(summary)), 5))
         with self.assertRaises(SystemExit):
             ghn_boxes.pilot_pages(pages, [], 5)
+        # Fewer usable pages in the batch than the pilot takes: refused, not a shorter pilot.
+        with self.assertRaises(SystemExit):
+            ghn_boxes.pilot_pages(pages, summary, 8)
 
 
 @unittest.skipUnless(HAVE_NUMPY, "needs numpy")

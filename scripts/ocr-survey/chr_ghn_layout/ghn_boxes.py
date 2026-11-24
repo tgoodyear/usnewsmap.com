@@ -260,7 +260,10 @@ def pilot_pages(pages, summary, count):
     if not order:
         sys.exit("no page has a Cherokee line that is not held")
     batch = pages[order[0]]["batch"]
-    return [d for d in order if pages[d]["batch"] == batch][:count]
+    ids = [d for d in order if pages[d]["batch"] == batch][:count]
+    if len(ids) < count:
+        sys.exit(f"only {len(ids)} usable pages in {batch}; the pilot takes {count}")
+    return ids
 
 
 def cmd_pilot(a):

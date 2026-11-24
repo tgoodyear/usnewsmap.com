@@ -691,8 +691,12 @@ verdict and the page's `ghn:` id to `line-merge.json`, and the assembled text an
 `line-assemble/`. Then it marks the record held, `line-assemble-v1: <verdict>; ghn:<...> is not
 ingested yet (#1622)`, whatever the verdict, and publishes nothing to `ocr-out`. `line-report`
 gives such a page `doc_id`, `verdict` `no_loc_text`, and `line_merge.rule` `line-assemble-v1`.
-A failed GHN job isn't retried through `retry`, because it has no ledger row: export the page
-again in a new plan.
+A failed GHN job isn't retried through `retry`, because it has no ledger row. Export the page
+again in a new plan (`HANDOFF_PLAN=chr-ghn-1622-r<n>`) with another page deadline
+(`--var HANDOFF_TIMEOUT_SECS=<seconds>`, which the hand-off passes as `export --timeout-secs`;
+1800 by default). The deadline is part of the job's
+identity, so the new job and its workunit differ from the failed one's; the same deadline would
+build the same job id, which the journal already holds under the old plan.
 
 **Pilot stop rule.** Stop at any collect failure, or if fewer than 4 of the 5 pilot pages are
 admitted by `line-assemble-v1`. Record the pilot's `line-report` summary on #1622 before any
