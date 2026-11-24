@@ -144,13 +144,23 @@ def main():
         if it not in done:
             cont = ckpt if os.path.exists(ckpt) else os.path.join(a.work, "frak2021.lstm")
             log(f"training to iteration {it} from {os.path.basename(cont)}")
-            with open(os.path.join(a.work, "train.log"), "a") as lf:
-                subprocess.run(["lstmtraining", "--continue_from", cont, "--traineddata", start,
-                                "--model_output", os.path.join(a.work, "out", "frakB"),
-                                "--train_listfile", os.path.join(a.work, "train.list"),
-                                "--eval_listfile", os.path.join(a.work, "dev.list"),
-                                "--max_iterations", str(it), "--target_error_rate", str(TARGET_ERROR_RATE),
-                                "--max_image_MB", str(MAX_IMAGE_MB)], check=True, stdout=lf, stderr=subprocess.STDOUT)
+            logf = os.path.join(a.work, "train.log")
+            off = os.path.getsize(logf) if os.path.exists(logf) else 0
+            with open(logf, "a") as lf:
+                rc = subprocess.run(["lstmtraining", "--continue_from", cont, "--traineddata", start,
+                                     "--model_output", os.path.join(a.work, "out", "frakB"),
+                                     "--train_listfile", os.path.join(a.work, "train.list"),
+                                     "--eval_listfile", os.path.join(a.work, "dev.list"),
+                                     "--max_iterations", str(it), "--target_error_rate", str(TARGET_ERROR_RATE),
+                                     "--max_image_MB", str(MAX_IMAGE_MB)], stdout=lf, stderr=subprocess.STDOUT).returncode
+            if rc != 0:
+                # lstmtraining 5.5.0 can crash on exit while its evaluation thread is still reading the
+                # dev list, after it has written the checkpoint. Accept the run only if it got there.
+                with open(logf, "rb") as lf:
+                    lf.seek(off)
+                    tail = lf.read().decode("utf-8", "replace")
+                assert "Finished!" in tail and f"/{it}/" in tail and "wrote checkpoint" in tail, f"lstmtraining failed ({rc})"
+                log(f"lstmtraining exited {rc} after finishing iteration {it} and writing its checkpoint; continuing")
             subprocess.run(["lstmtraining", "--stop_training", "--continue_from", ckpt, "--traineddata", start,
                             "--model_output", model], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             # Keep this point's trainer state too, so any checkpoint can be revisited.
