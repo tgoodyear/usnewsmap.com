@@ -20,9 +20,11 @@ holds the images, the line finder #2128 adopted and the line classifier #1830 ch
   page over until a second layout attempt or a look by hand:
   - "merged_lines": the merged-lines share (boxes over 1.8 times the page's median height,
     chr_layout_qa.py) is over --flag-share (0.08, the level #1622 used);
-  - "faded": the page is in the lowest quarter of the run's pages by #2128 amendment 2's contrast
-    (greyscale scan scaled to 1,000 px wide, p95 - p5), floor(N/4) pages by (contrast, doc id). The gate
-    didn't test faded pages, so they wait.
+  - "faded": the page is in frozen/faded_pages.txt, the lowest quarter of the campaign's 699 GHN pages
+    (all with at least one box) by #2128 amendment 2's contrast (greyscale scan scaled to 1,000 px wide,
+    p95 - p5): floor(699/4) = 174 pages by (contrast, doc id), cut at 179.0. The list is fixed, so a
+    partial run (--select) holds the same pages as a full one. The gate didn't test faded pages, so they
+    wait. Each page's contrast is still measured and written.
 
 The column finder's method follows jscancella/NYTribuneOCRExperiments (findText_usingSums.py, projection
 profiles; GPL-3.0), reimplemented in #2107 with no code copied; #2107 also draws on
@@ -72,6 +74,8 @@ COLUMNS_PY = HERE / "frozen" / "columns_337fc0aa.py"
 COLUMNS_SHA256 = "37a9f2fb4da35f6f04e3a4f865db65e652324a483a5bb653504c346cf7834a04"
 TESSERACT = "5.5.0"
 FLAG_SHARE = 0.08
+FADED_PAGES = HERE / "frozen" / "faded_pages.txt"
+FADED_PAGES_SHA256 = "5480de18abad32af8f3747ee992dfc783731d3ef4bfca92049a98f0f23819bcd"
 # A GHN page's id (ADR-0026): `ghn:` and a LoC doc_id's shape, one safe path segment.
 DOC_ID = re.compile(r"ghn:[a-z0-9]{1,16}_[0-9]{4}-[0-9]{2}-[0-9]{2}_ed-[1-9][0-9]{0,3}_seq-[1-9][0-9]{0,4}")
 
@@ -261,6 +265,15 @@ def _clf_one(args):
     return s, v2.contrast(im)
 
 
+def faded_pages(path=FADED_PAGES, want=FADED_PAGES_SHA256):
+    """The campaign's faded pages, refused unless the file is the frozen list."""
+    got = sha256_file(path)
+    if got != want:
+        sys.exit(f"{path} has sha256 {got}, not the frozen faded list's {want}")
+    with open(path, encoding="utf-8") as f:
+        return {l.strip() for l in f if l.strip()}
+
+
 def check_tessdata(chr_tessdata, eng_tessdata, frozen):
     """chr_phoenix and tessdata_best eng, the models the classifier was fitted with."""
     import line_clf_v2 as v2
@@ -295,6 +308,7 @@ def cmd_write(a):
     check_tessdata(a.chr_tessdata, a.eng_tessdata, frozen)
     v2.language_models(a.chr_text, a.eng_text, frozen)  # refuse wrong texts before the long run
     v2.load_cnn(a.cnn, frozen)
+    faded = faded_pages()
     classifier = classifier_version(sha256_file(a.train), frozen)
     # classify_lines.py's main, on these records: the same models, the same features.
     ls.KEEP = [i for i, n in enumerate(ls.NAMES) if n not in cl.DROP]
@@ -321,7 +335,6 @@ def cmd_write(a):
             rec["contrast"] = con
             if k % 10 == 0:
                 print(f"classified {k}/{len(found)} pages", file=sys.stderr, flush=True)
-    faded = v2.faded_pages({r["doc_id"]: r["contrast"] for r in found})
     summary = []
     for rec, share in zip(found, shares):
         rec["tall_share"] = share

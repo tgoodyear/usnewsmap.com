@@ -233,7 +233,8 @@ def contrast(im):
 
 
 def faded_pages(contrasts):
-    """Amendment 2's faded stratum: the lowest floor(N/4) pages by (contrast, doc id)."""
+    """Amendment 2's faded stratum: the lowest floor(N/4) pages by (contrast, doc id). It made
+    frozen/faded_pages.txt from the campaign's 699 pages; staging reads that list."""
     ranked = sorted(contrasts, key=lambda d: (contrasts[d], d))
     return set(ranked[:len(ranked) // 4])
 

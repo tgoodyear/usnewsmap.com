@@ -192,6 +192,16 @@ class Classifier(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 ghn_boxes.check_tessdata(tmp, tmp, fr)
 
+    def test_the_faded_list_is_the_frozen_quarter_of_the_campaign(self):
+        faded = ghn_boxes.faded_pages()
+        self.assertEqual(len(faded), 699 // 4)
+        self.assertTrue(all(ghn_boxes.DOC_ID.fullmatch(d) for d in faded))
+        with tempfile.TemporaryDirectory() as tmp:
+            other = Path(tmp, "faded.txt")
+            other.write_text("\n".join(sorted(faded)[1:]) + "\n")
+            with self.assertRaises(SystemExit):
+                ghn_boxes.faded_pages(other)
+
     def test_faded_is_the_lowest_quarter_by_contrast_then_id(self):
         con = {f"p{i}": float(c) for i, c in enumerate([200, 150, 150, 250, 100, 180, 220, 230, 240])}
         self.assertEqual(line_clf_v2.faded_pages(con), {"p4", "p1"})
