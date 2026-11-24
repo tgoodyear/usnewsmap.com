@@ -233,7 +233,7 @@ function examples(text, diff, labels = new Map(), marks = new Map(), named = fal
     box.appendChild(ex);
   });
   if (letters(text).length === 0) {
-    const n = document.createElement("span"); n.className = "note"; n.textContent = "Pick this if nothing is printed in the box."; box.appendChild(n);
+    const n = document.createElement("span"); n.className = "note"; n.dir = "ltr"; n.textContent = "Pick this if nothing is printed in the box."; box.appendChild(n);
   }
   return box;
 }
@@ -360,6 +360,13 @@ function render(prev) {
     const d = document.createElement("div"); d.className = "done";
     const s = document.createElement("strong"); s.textContent = "No words left for you";
     d.append(s, document.createTextNode("You've answered every open word, or the rest have enough answers. Thank you. Check back later for more."));
+    // Skipped words are left out for the page's life; they may still be open, so offer them again rather than say none are left.
+    if (skipped.length) {
+      d.lastChild.textContent = `You've answered or skipped every open word you were given. Thank you. ${skipped.length === 1 ? "1 skipped word" : skipped.length + " skipped words"} may still need answers. `;
+      const again = document.createElement("button"); again.type = "button"; again.className = "small"; again.id = "retry";
+      again.textContent = "Show skipped words"; again.addEventListener("click", () => { skipped = []; next(true); });
+      d.appendChild(again);
+    }
     card.appendChild(d); return;
   }
   if (fontFailed) {
