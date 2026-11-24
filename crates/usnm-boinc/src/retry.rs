@@ -398,6 +398,12 @@ pub async fn prepare(
         previous.stage == Stage::Failed && previous.bundle.is_none(),
         "only a terminal failed single-page job may be retried"
     );
+    // A GHN page's line job (#1622) has no native ledger row to carry a retry's lineage: a page
+    // that fails is exported again in a new plan.
+    ensure!(
+        !crate::lines::is_ghn(&previous.job),
+        "a GHN page's line job is not retried; export the page again"
+    );
     if previous.retry.is_none() && previous.ledger.is_some() {
         let key = previous.job.message.key()?;
         let bytes = opts
@@ -1304,7 +1310,8 @@ mod tests {
         atomic(&parent_path.join("page"), page).unwrap();
         let loc = b"<alto/>";
         let line_read = crate::lines::LineReadRecord {
-            loc_alto_sha256: boinc::sha256(loc),
+            loc_alto_sha256: Some(boinc::sha256(loc)),
+            boxes_sha256: None,
             scan_height: 10,
             scan_width: 10,
             title_languages: vec!["eng".into()],
@@ -1382,7 +1389,10 @@ mod tests {
         assert_eq!(child.job.v, boinc::LINES_RETRY_VERSION);
         let child_path = dir(&root, &id).unwrap();
         let (got, record) = crate::lines::sidecars(&child_path).unwrap();
-        assert_eq!((got.as_slice(), record), (&loc[..], line_read.clone()));
+        assert_eq!(
+            (got, record),
+            (crate::lines::Basis::Loc(loc.to_vec()), line_read.clone())
+        );
         // An interrupted preparation that lost them gets them back when it resumes.
         std::fs::remove_dir_all(child_path.join(crate::lines::LINE_READ_DIR)).unwrap();
         let mut interrupted = child.clone();

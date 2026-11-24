@@ -11,6 +11,10 @@
 //!   (`loc-alto/`), and a prefetch manifest of the pages (`manifests/<name>/`). Each file is
 //!   checked against the inventory first. `onprem-step.sh --target scans --step receive` takes
 //!   the tree as a tar.
+//! - [`stage_ghn`] does the same for Georgia Historic Newspapers pages (#1622), which have no
+//!   LoC ALTO: from the GHN page list (`ghn-pages.jsonl`), the fetcher's images and the line
+//!   finder's boxes, it writes each page's scan under its wire key, its `boxes.jsonl`
+//!   (`line-boxes/ghn/<local id>/`) and the manifest, for `export --line-boxes`.
 use anyhow::{ensure, Context};
 use chrono::{NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
@@ -27,6 +31,11 @@ use usnm_ocr_worker::{
 /// Where a staging tree keeps LoC's ALTO, beside `keep/`: `loc-alto/<lccn>/<yyyy>/<mm>/<dd>/
 /// ed-<n>/seq-<m>/ocr.xml`.
 pub const STAGE_ALTO_DIR: &str = "loc-alto";
+/// Where a GHN staging tree keeps each page's line boxes (#1622), beside `keep/`:
+/// `line-boxes/ghn/<local id>/boxes.jsonl` (`super::boxes::path`).
+pub const STAGE_BOXES_DIR: &str = "line-boxes";
+/// The scan's sidecar `user_agent` for a GHN page's copy: the GHN fetcher took it (#1590).
+pub const GHN_COPY: &str = "usnm-boinc line-stage-ghn (the GHN fetcher's copy of GHN's IIIF JPEG)";
 /// Where a staging tree keeps its prefetch manifest: `manifests/<name>/manifest.parquet`.
 pub const STAGE_MANIFEST_DIR: &str = "manifests";
 /// The largest scan `onprem-step.sh --target scans --step receive` takes; its ALTO limit is
@@ -298,6 +307,21 @@ pub struct Staged {
 /// must not exist yet: each page's scan from `scans` with its sidecar, its ALTO from
 /// `loc_alto`, and a prefetch manifest named `manifest_name`. Every file must be the one
 /// `inventory` recorded, and every page must have lines to read.
+fn check_manifest_name(manifest_name: &str) -> anyhow::Result<()> {
+    ensure!(
+        manifest_name.len() <= 64
+            && manifest_name
+                .bytes()
+                .next()
+                .is_some_and(|b| b.is_ascii_alphanumeric())
+            && manifest_name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')),
+        "a manifest name is 1 to 64 of [A-Za-z0-9_-], starting with a letter or digit, as the BOINC host's receive takes"
+    );
+    Ok(())
+}
+
 pub fn stage(
     inventory: &[PageEntry],
     select: &BTreeSet<String>,
@@ -310,17 +334,7 @@ pub fn stage(
         !select.is_empty() && select.len() <= 100,
         "stage 1 to 100 pages at a time (one export)"
     );
-    ensure!(
-        manifest_name.len() <= 64
-            && manifest_name
-                .bytes()
-                .next()
-                .is_some_and(|b| b.is_ascii_alphanumeric())
-            && manifest_name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')),
-        "a manifest name is 1 to 64 of [A-Za-z0-9_-], starting with a letter or digit, as the BOINC host's receive takes"
-    );
+    check_manifest_name(manifest_name)?;
     ensure!(
         !out.exists(),
         "{} exists; stage into a new directory",
@@ -447,6 +461,235 @@ pub fn stage(
             0.0,
         ));
         staged.pages.push(e.page.clone());
+        staged.scans.push(
+            keep.strip_prefix(&tmp)?
+                .to_str()
+                .context("non-UTF-8 path")?
+                .to_owned(),
+        );
+    }
+    crate::atomic(
+        &tmp.join(STAGE_MANIFEST_DIR).join(&staged.manifest),
+        &usnm_ocr_contract::prefetch::encode(&rows)?,
+    )?;
+    std::fs::rename(&tmp, out)?;
+    Ok(staged)
+}
+
+/// The local copy of a GHN page's scan, as `ghn-pages.jsonl` records it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GhnScan {
+    pub bytes: u64,
+    pub sha256: String,
+    /// The full-size JPEG on GHN's IIIF service.
+    pub url: String,
+}
+
+/// One line of `ghn-pages.jsonl` (#1622, `chr_ghn_pages.py`): a GHN page, its batch, and the
+/// fetcher's copy of its image. Fields in alphabetical order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GhnPageEntry {
+    /// GHN's batch without its version (`gua_cph`).
+    pub batch: String,
+    pub batch_version: u16,
+    pub components: u8,
+    /// The page's `ghn:` id.
+    pub doc_id: String,
+    /// The image's path under the fetcher's output directory.
+    pub file: String,
+    pub height: u32,
+    /// Null until a finder has run.
+    pub lines: Option<usize>,
+    /// Where the page's listing came from: an IIIF `manifest`, or an issue's `html` page.
+    pub listing: String,
+    /// The page in LoC's key shape, GHN's own LCCN (no wire prefix).
+    pub page: String,
+    pub scan: GhnScan,
+    pub source: String,
+    pub test_set: bool,
+    pub width: u32,
+}
+
+/// Reads `ghn-pages.jsonl`.
+pub fn read_ghn_pages(path: &Path) -> anyhow::Result<Vec<GhnPageEntry>> {
+    let text = String::from_utf8(crate::read(path, 64 << 20)?)?;
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).with_context(|| format!("a line of {}", path.display())))
+        .collect()
+}
+
+/// Writes the staging tree of a GHN line export (#1622) for `select` (`ghn:` ids, 1 to 100, of
+/// one batch) into `out`, which must not exist yet: each page's scan from `images` (the
+/// fetcher's output directory) with a sidecar, under the page's wire key; its line boxes from
+/// `line_boxes`; and a prefetch manifest named `manifest_name`. Every file must be the one
+/// `pages` recorded, and every page must have Cherokee lines to read and not be held by the
+/// merged-lines check.
+pub fn stage_ghn(
+    pages: &[GhnPageEntry],
+    select: &BTreeSet<String>,
+    images: &Path,
+    line_boxes: &Path,
+    manifest_name: &str,
+    out: &Path,
+) -> anyhow::Result<Staged> {
+    use usnm_core::page_id::{PageId, Source};
+    ensure!(
+        !select.is_empty() && select.len() <= 100,
+        "stage 1 to 100 pages at a time (one export)"
+    );
+    check_manifest_name(manifest_name)?;
+    ensure!(
+        !out.exists(),
+        "{} exists; stage into a new directory",
+        out.display()
+    );
+    let by_id: BTreeMap<&str, &GhnPageEntry> =
+        pages.iter().map(|e| (e.doc_id.as_str(), e)).collect();
+    let mut entries = Vec::new();
+    for doc in select {
+        let e = by_id
+            .get(doc.as_str())
+            .with_context(|| format!("{doc} is not in the GHN page list"))?;
+        let id: PageId = e.doc_id.parse()?;
+        ensure!(
+            id.source() == Source::Ghn && e.source == "ghn",
+            "{doc} is not a GHN page"
+        );
+        let key = id
+            .ghn_wire_key()
+            .with_context(|| format!("{doc} has no wire key"))?;
+        ensure!(
+            e.page.parse::<PageKey>()?.doc_id() == id.local(),
+            "{doc}'s page and doc_id differ"
+        );
+        entries.push((*e, id, key));
+    }
+    let batches: BTreeSet<(&str, u16)> = entries
+        .iter()
+        .map(|(e, ..)| (e.batch.as_str(), e.batch_version))
+        .collect();
+    ensure!(
+        batches.len() == 1,
+        "one export takes one batch; these pages are in {batches:?}"
+    );
+    let (batch, batch_version) = *batches.iter().next().unwrap();
+    ensure!(
+        usnm_ocr_contract::message::is_base_batch_name(batch),
+        "invalid base batch {batch}"
+    );
+    let tmp = out.with_extension("partial");
+    ensure!(!tmp.exists(), "{} exists; remove it first", tmp.display());
+    std::fs::create_dir_all(&tmp)?;
+    let mut rows = Vec::new();
+    let mut staged = Staged {
+        batch: batch.to_owned(),
+        manifest: format!("{manifest_name}/manifest.parquet"),
+        pages: Vec::new(),
+        scans: Vec::new(),
+    };
+    for (e, id, key) in &entries {
+        let doc = &e.doc_id;
+        ensure!(
+            !e.file
+                .split('/')
+                .any(|c| c.is_empty() || c == "." || c == "..")
+                && !e.file.starts_with('/'),
+            "{doc}'s image path {} leaves the fetcher's directory",
+            e.file
+        );
+        ensure!(
+            e.scan.bytes <= STAGE_MAX_SCAN,
+            "{doc}'s scan is {} bytes; the BOINC host takes at most {STAGE_MAX_SCAN}",
+            e.scan.bytes
+        );
+        let src = images.join(&e.file);
+        let bytes = crate::read(&src, boinc::MAX_SCAN)?;
+        ensure!(
+            bytes.len() as u64 == e.scan.bytes && boinc::sha256(&bytes) == e.scan.sha256,
+            "{} is not the scan the GHN page list recorded for {doc}",
+            src.display()
+        );
+        ensure!(
+            super::scan_size(&bytes)? == (e.width, e.height),
+            "{}'s size is not the one the GHN page list recorded",
+            src.display()
+        );
+        let boxes_src = super::boxes::path(line_boxes, id);
+        let boxes = crate::read(&boxes_src, super::boxes::MAX_BOXES)
+            .with_context(|| format!("{doc}'s line boxes"))?;
+        let found =
+            super::boxes::parse(&boxes).with_context(|| format!("{}", boxes_src.display()))?;
+        ensure!(
+            found.id == *id
+                && found.page.scan_sha256 == e.scan.sha256
+                && (found.page.width, found.page.height) == (e.width, e.height),
+            "{} is not for {doc}'s scan",
+            boxes_src.display()
+        );
+        ensure!(
+            !found.page.held,
+            "{doc} is held by the merged-lines check (share {:.3}); export would skip it",
+            found.page.tall_share
+        );
+        let n = found.cherokee().len();
+        ensure!(
+            (1..=boinc::MAX_LINES).contains(&n),
+            "{doc} has {n} Cherokee lines to read; export would skip it"
+        );
+        let iiif_base = e
+            .scan
+            .url
+            .strip_suffix("/full/full/0/default.jpg")
+            .filter(|b| b.starts_with(boinc::GHN_SCAN_ROOT))
+            .context("the recorded scan URL is not a full-size JPEG on GHN's IIIF service")?;
+        let keep = prefetch::page_path(
+            &tmp.join("keep"),
+            batch,
+            &key.lccn,
+            key.date,
+            key.edition,
+            key.seq,
+            ImageSize::Full,
+            ScanFormat::Jpeg,
+        );
+        let fetched_at = std::fs::metadata(&src)?
+            .modified()
+            .map(chrono::DateTime::<Utc>::from)
+            .unwrap_or_else(|_| Utc::now());
+        let side = prefetch::Sidecar {
+            doc_id: key.doc_id(),
+            batch: batch.to_owned(),
+            batch_version,
+            loc_url: e.scan.url.clone(),
+            iiif_base: iiif_base.to_owned(),
+            resolution: "full".into(),
+            fetched_at,
+            bytes: e.scan.bytes,
+            sha256: e.scan.sha256.clone(),
+            download_ms: 0,
+            user_agent: GHN_COPY.into(),
+            format: ScanFormat::Jpeg.name().into(),
+            md5: None,
+        };
+        ensure!(prefetch::matches_sidecar(&bytes, &side));
+        crate::atomic(&keep, &bytes)?;
+        crate::atomic(
+            &prefetch::sidecar_path(&keep),
+            &serde_json::to_vec_pretty(&side)?,
+        )?;
+        crate::atomic(&super::boxes::path(&tmp.join(STAGE_BOXES_DIR), id), &boxes)?;
+        rows.push(ManifestRow::new(
+            key,
+            batch,
+            batch_version,
+            None,
+            "mixed",
+            0.0,
+        ));
+        staged.pages.push(key.to_string());
         staged.scans.push(
             keep.strip_prefix(&tmp)?
                 .to_str()
@@ -687,6 +930,122 @@ mod tests {
             &BTreeSet::from([page]),
             &[scans],
             &alto,
+            "x",
+            &tmp.path().join("changed"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not the scan"), "{err}");
+    }
+
+    #[test]
+    fn stages_a_ghn_page_under_its_wire_key_with_its_boxes() {
+        use super::super::boxes::tests::{boxes_file, DOC, WIRE};
+        let tmp = tempfile::tempdir().unwrap();
+        let images = tmp.path().join("ghn");
+        let file = "images/sn83020866/1828-02-21/ed-1/seq-1.jpg";
+        let mut jpg = Vec::new();
+        image::GrayImage::from_pixel(100, 100, image::Luma([255]))
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpg),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        std::fs::create_dir_all(images.join(file).parent().unwrap()).unwrap();
+        std::fs::write(images.join(file), &jpg).unwrap();
+        let sha = boinc::sha256(&jpg);
+        let entry = GhnPageEntry {
+            batch: "gua_cph".into(),
+            batch_version: 3,
+            components: 1,
+            doc_id: DOC.into(),
+            file: file.into(),
+            height: 100,
+            lines: None,
+            listing: "manifest".into(),
+            page: "sn83020866/1828-02-21/ed-1/seq-1".into(),
+            scan: GhnScan {
+                bytes: jpg.len() as u64,
+                sha256: sha.clone(),
+                url: format!(
+                    "{}batch_gua_cph_ver03%2Fdata%2Fcph_1828-02-21_1%2F0001.jp2/full/full/0/default.jpg",
+                    boinc::GHN_SCAN_ROOT
+                ),
+            },
+            source: "ghn".into(),
+            test_set: false,
+            width: 100,
+        };
+        // The wire form of a page list line round-trips as `chr_ghn_pages.py` writes it.
+        let line = serde_json::to_string(&entry).unwrap();
+        assert_eq!(serde_json::from_str::<GhnPageEntry>(&line).unwrap(), entry);
+        let boxes = tmp.path().join("boxes");
+        let id: usnm_core::page_id::PageId = DOC.parse().unwrap();
+        let at = super::super::boxes::path(&boxes, &id);
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(&at, boxes_file(&sha, false)).unwrap();
+        let select = BTreeSet::from([DOC.to_owned()]);
+        let out = tmp.path().join("stage");
+        let staged = stage_ghn(
+            std::slice::from_ref(&entry),
+            &select,
+            &images,
+            &boxes,
+            "chr-ghn-test",
+            &out,
+        )
+        .unwrap();
+        assert_eq!(staged.batch, "gua_cph");
+        assert_eq!(staged.pages, [WIRE]);
+        assert_eq!(
+            staged.scans,
+            ["keep/gua_cph/ghnsn83020866/1828-02-21/1/1.jpg"]
+        );
+        let side: prefetch::Sidecar = serde_json::from_slice(
+            &std::fs::read(out.join("keep/gua_cph/ghnsn83020866/1828-02-21/1/1.jpg.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(side.doc_id, "ghnsn83020866_1828-02-21_ed-1_seq-1");
+        assert!(side.iiif_base.starts_with(boinc::GHN_SCAN_ROOT));
+        assert_eq!(
+            std::fs::read(out.join("line-boxes/ghn/sn83020866_1828-02-21_ed-1_seq-1/boxes.jsonl"))
+                .unwrap(),
+            std::fs::read(&at).unwrap()
+        );
+        let rows = usnm_ocr_contract::prefetch::decode(bytes::Bytes::from(
+            std::fs::read(out.join("manifests/chr-ghn-test/manifest.parquet")).unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key().unwrap().to_string(), WIRE);
+        // A held page, boxes for another scan, or a changed image are refused.
+        std::fs::write(&at, boxes_file(&sha, true)).unwrap();
+        let err = stage_ghn(
+            std::slice::from_ref(&entry),
+            &select,
+            &images,
+            &boxes,
+            "x",
+            &tmp.path().join("held"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("merged-lines check"), "{err}");
+        std::fs::write(&at, boxes_file(&"b".repeat(64), false)).unwrap();
+        assert!(stage_ghn(
+            std::slice::from_ref(&entry),
+            &select,
+            &images,
+            &boxes,
+            "x",
+            &tmp.path().join("other"),
+        )
+        .is_err());
+        std::fs::write(&at, boxes_file(&sha, false)).unwrap();
+        std::fs::write(images.join(file), b"changed").unwrap();
+        let err = stage_ghn(
+            std::slice::from_ref(&entry),
+            &select,
+            &images,
+            &boxes,
             "x",
             &tmp.path().join("changed"),
         )

@@ -729,10 +729,17 @@ pub struct ExportOptions {
     /// deadline. A job whose page isn't selected is passed over.
     pub deadline_retries: Vec<String>,
     /// Read only the page's lines in this language, one LoC ALTO line box at a time, with the
-    /// language's line route (#1621): `chr`. Needs `loc_alto`; not for queue-fed pages.
+    /// language's line route (#1621): `chr`. Needs `loc_alto` or `line_boxes`; not for queue-fed
+    /// pages.
     pub line_read: Option<String>,
-    /// LoC's bulk OCR, unpacked: `<lccn>/<yyyy>/<mm>/<dd>/ed-<n>/seq-<m>/ocr.xml`.
+    /// LoC's bulk OCR, unpacked: `<lccn>/<yyyy>/<mm>/<dd>/ed-<n>/seq-<m>/ocr.xml`. With
+    /// `line_boxes` it is only checked: a page LoC holds is refused.
     pub loc_alto: Option<PathBuf>,
+    /// With `line_read`, for pages with no LoC text (#1622): the line finder's boxes,
+    /// `<dir>/ghn/<local id>/boxes.jsonl` (`lines::boxes`). Every selected page is then a GHN
+    /// page, by its wire key (`usnm_core::page_id::GHN_WIRE_PREFIX`), and no native ledger row
+    /// is reserved for it: these pages are not in the search pipeline yet.
+    pub line_boxes: Option<PathBuf>,
     /// With `line_read`: read each word in its script (#1666), the line model on the line and
     /// the English model on the words that are Latin, under profile `chr_phoenix+eng` and rule
     /// `line-merge-v2`. Without it the line job is the one of #1621, `chr_phoenix` alone.
@@ -773,12 +780,19 @@ pub async fn export(
             boinc::LINE_LANGUAGES.contains(&language.as_str()),
             "no line route for {language}"
         );
-        ensure!(opts.loc_alto.is_some(), "a line read needs LoC's ALTO");
+        ensure!(
+            opts.loc_alto.is_some() || opts.line_boxes.is_some(),
+            "a line read needs LoC's ALTO or the line finder's boxes"
+        );
         ensure!(
             opts.claims.is_none() && opts.deadline_retries.is_empty(),
             "a line read is for cohort pages, not queue-fed ones"
         );
     }
+    ensure!(
+        opts.line_boxes.is_none() || opts.line_read.is_some(),
+        "the line finder's boxes are for a line read"
+    );
     let _lock = Lock::take(&opts.root)?;
     // A page this plan journaled already keeps the deadline it was exported with, so a resumed
     // export builds the same job, whatever --timeout-secs is now (#1159). A page journaled
@@ -820,6 +834,17 @@ pub async fn export(
     for s in &selected {
         let k: PageKey = s.parse()?;
         ensure!(k.to_string() == *s, "noncanonical page key");
+        // A GHN page (#1622) is read from the line finder's boxes, and only so.
+        let ghn = usnm_core::page_id::ghn_wire_lccn(&k.lccn).is_some();
+        ensure!(
+            ghn == opts.line_boxes.is_some(),
+            "{}",
+            if ghn {
+                format!("{s} is a GHN page: it is read with --line-read and --line-boxes")
+            } else {
+                format!("{s} is not a GHN page: --line-boxes is for GHN pages only")
+            }
+        );
     }
     let selected_docs: BTreeSet<String> = selected
         .iter()
@@ -867,9 +892,11 @@ pub async fn export(
             .or_else(|| kept_timeouts.get(&page).copied())
             .unwrap_or(opts.timeout_secs);
         let (scan, side) = cached(&opts.scans, &row)?;
+        // A GHN page's title is the LoC title of the LCCN inside its wire key (#1622).
+        let title_lccn = usnm_core::page_id::ghn_wire_lccn(&row.lccn).unwrap_or(&row.lccn);
         let title_languages = snapshot
             .titles
-            .get(&row.lccn)
+            .get(title_lccn)
             .context("selected title is not published")?;
         let now = Utc::now();
         // A queued page keeps its queue message and ledger row; a cohort page
@@ -904,8 +931,69 @@ pub async fn export(
         };
         // A line read: the page's Cherokee lines from LoC's ALTO, in scan pixels. A page
         // without any is passed over.
-        let line_read = match (&opts.line_read, &opts.loc_alto) {
-            (Some(language), Some(loc_alto)) => {
+        let line_read = match (&opts.line_read, &opts.loc_alto, &opts.line_boxes) {
+            (Some(language), loc_alto, Some(line_boxes)) => {
+                let key = message.key()?;
+                let id = usnm_core::page_id::PageId::from_wire_key(&key)?;
+                // Never a page LoC holds: its line job is the one with LoC's ALTO.
+                if let Some(loc_alto) = loc_alto {
+                    let lccn =
+                        usnm_core::page_id::ghn_wire_lccn(&key.lccn).context("not a GHN page")?;
+                    let loc = PageKey::new(lccn, key.date, key.edition, key.seq)?;
+                    let path = lines::loc_alto_path(loc_alto, &loc)?;
+                    ensure!(
+                        !path.exists(),
+                        "{id} is a page LoC holds ({}); read it with LoC's ALTO",
+                        path.display()
+                    );
+                }
+                let path = lines::boxes::path(line_boxes, &id);
+                if !path.is_file() {
+                    eprintln!("skipped {id}: no line boxes at {}", path.display());
+                    continue;
+                }
+                let bytes = read(&path, lines::boxes::MAX_BOXES)?;
+                let found = lines::boxes::parse(&bytes)
+                    .with_context(|| format!("the line boxes for {id}"))?;
+                let (scan_width, scan_height) = lines::scan_size(&scan)?;
+                ensure!(
+                    found.id == id
+                        && found.page.scan_sha256 == side.sha256
+                        && (found.page.width, found.page.height) == (scan_width, scan_height),
+                    "the line boxes at {} are not for {id}'s scan",
+                    path.display()
+                );
+                if found.page.held {
+                    eprintln!(
+                        "skipped {id}: held by the merged-lines check (share {:.3})",
+                        found.page.tall_share
+                    );
+                    continue;
+                }
+                let boxes = found.cherokee();
+                if boxes.is_empty() || boxes.len() > boinc::MAX_LINES {
+                    eprintln!(
+                        "skipped {id}: {} {language} lines (1 to {} are read)",
+                        boxes.len(),
+                        boinc::MAX_LINES
+                    );
+                    continue;
+                }
+                let record = lines::LineReadRecord {
+                    loc_alto_sha256: None,
+                    boxes_sha256: Some(boinc::sha256(&bytes)),
+                    scan_height,
+                    scan_width,
+                    title_languages: title_languages.clone(),
+                };
+                let read = boinc::LineRead {
+                    language: language.clone(),
+                    psm: boinc::LINE_PSM,
+                    lines: boxes,
+                };
+                Some((read, (lines::BOXES_FILE, bytes), record))
+            }
+            (Some(language), Some(loc_alto), None) => {
                 let path = lines::loc_alto_path(loc_alto, &message.key()?)?;
                 if !path.is_file() {
                     eprintln!(
@@ -929,7 +1017,8 @@ pub async fn export(
                     continue;
                 }
                 let record = lines::LineReadRecord {
-                    loc_alto_sha256: boinc::sha256(&alto),
+                    loc_alto_sha256: Some(boinc::sha256(&alto)),
+                    boxes_sha256: None,
                     scan_height,
                     scan_width,
                     title_languages: title_languages.clone(),
@@ -939,7 +1028,7 @@ pub async fn export(
                     psm: boinc::LINE_PSM,
                     lines: boxes,
                 };
-                Some((read, alto, record))
+                Some((read, (lines::LOC_ALTO_FILE, alto), record))
             }
             _ => None,
         };
@@ -1008,8 +1097,8 @@ pub async fn export(
             }
             old
         } else {
-            if let Some((_, alto, record)) = &line_read {
-                atomic(&job_dir.join(lines::LOC_ALTO_FILE), alto)?;
+            if let Some((_, (name, bytes), record)) = &line_read {
+                atomic(&job_dir.join(name), bytes)?;
                 atomic(
                     &job_dir.join(lines::LINE_READ_FILE),
                     &serde_json::to_vec_pretty(record)?,
@@ -1048,7 +1137,10 @@ pub async fn export(
             .iter()
             .map(|r| r.queued())
             .collect::<anyhow::Result<Vec<_>>>()?;
-        if opts.claims.is_some() {
+        if opts.line_boxes.is_some() {
+            // GHN pages (#1622) are not in the search pipeline, and a ledger row would give
+            // them a bare id there: nothing is reserved. `import` holds their pages.
+        } else if opts.claims.is_some() {
             // Their rows are in the ledger already: check, don't write.
             ocr_local::boinc::adopt(state, curated, &snapshot, &rows).await?;
         } else {
@@ -1162,6 +1254,43 @@ pub async fn import(
     let key = record.job.message.key()?;
     let raw_text = text.clone();
     let raw_alto = alto.clone();
+    // A GHN page's line job (#1622): the page is its Cherokee readings in the boxes' order,
+    // judged with line-assemble-v1. It has no LoC row to publish beside, and its ingest into
+    // search is separate work, so it is kept and held here under its `ghn:` id, whatever the
+    // verdict.
+    if record.job.lines.is_some() && lines::is_ghn(&record.job) {
+        let job_dir = dir(root, id)?;
+        let page = lines::assemble_in(&job_dir, &record.job, &text, Some(&result.completed_at))?;
+        let mut file = serde_json::to_value(&page.stats)?;
+        file["admission"] = serde_json::to_value(&page.admission)?;
+        file["doc_id"] = page.doc_id.clone().into();
+        atomic(
+            &job_dir.join(lines::MERGE_FILE),
+            &serde_json::to_vec_pretty(&file)?,
+        )?;
+        atomic(
+            &job_dir.join(lines::ASSEMBLED_TEXT_FILE),
+            normalized_text(&record.job, page.text.as_bytes())?.as_bytes(),
+        )?;
+        atomic(
+            &job_dir.join(lines::ASSEMBLED_ALTO_FILE),
+            page.alto.as_bytes(),
+        )?;
+        if !accepted.join("result.json").exists() {
+            atomic(&accepted.join("text.txt"), &raw_text)?;
+            atomic(&accepted.join("layout.xml"), &raw_alto)?;
+            atomic(&accepted.join("result.json"), &result_bytes)?;
+        }
+        let reason = format!(
+            "{}: {}; {} is not ingested yet (#1622)",
+            page.admission.rule, page.admission.verdict, page.doc_id
+        );
+        if record.held.as_deref() != Some(reason.as_str()) {
+            record.held = Some(reason);
+            save(root, &record)?;
+        }
+        return Ok(());
+    }
     // A line job's result is its Cherokee lines: the page is LoC's, with them merged in
     // (#1621).
     let (text, alto) = if record.job.lines.is_some() {

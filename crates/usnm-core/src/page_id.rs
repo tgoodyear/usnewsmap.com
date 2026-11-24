@@ -179,6 +179,64 @@ impl From<PageId> for String {
     }
 }
 
+/// What a GHN page's LCCN starts with in a BOINC job's page key (#1622).
+///
+/// A BOINC job's message holds a LoC page key, and a GHN page never has one (ADR-0026). So on
+/// that wire a GHN page is spelled as a key whose LCCN is this prefix and then GHN's own LCCN:
+/// `ghn:sn83020866_1828-02-21_ed-1_seq-1` is `ghnsn83020866/1828-02-21/ed-1/seq-1`. Released
+/// workers' key check takes it, and it can't equal a LoC key, because a LoC LCCN has at most three
+/// letters before its digits and a wire key's has at least four.
+pub const GHN_WIRE_PREFIX: &str = "ghn";
+
+/// GHN's own LCCN inside a wire key's LCCN: [`GHN_WIRE_PREFIX`], then one to three letters and
+/// then digits. None for any other LCCN, every LoC one included.
+pub fn ghn_wire_lccn(lccn: &str) -> Option<&str> {
+    let rest = lccn.strip_prefix(GHN_WIRE_PREFIX)?;
+    let letters = rest.bytes().take_while(u8::is_ascii_lowercase).count();
+    ((1..=3).contains(&letters)
+        && rest.len() > letters
+        && rest[letters..].bytes().all(|b| b.is_ascii_digit()))
+    .then_some(rest)
+}
+
+impl PageId {
+    /// The page key a BOINC job's message carries for this page: the wire spelling of a `ghn`
+    /// page ([`GHN_WIRE_PREFIX`]). None for every other source, and for a GHN page whose LCCN
+    /// can't be spelled that way (no letters before its digits, or too long for a key).
+    pub fn ghn_wire_key(&self) -> Option<PageKey> {
+        if self.source != Source::Ghn {
+            return None;
+        }
+        let key = PageKey::from_doc_id(&self.local).ok()?;
+        let wire = PageKey::new(
+            &format!("{GHN_WIRE_PREFIX}{}", key.lccn),
+            key.date,
+            key.edition,
+            key.seq,
+        )
+        .ok()?;
+        ghn_wire_lccn(&wire.lccn).is_some().then_some(wire)
+    }
+
+    /// The page a BOINC job's key names: the `ghn` page for a key [`PageId::ghn_wire_key`]
+    /// spells, else the `loc` page.
+    pub fn from_wire_key(key: &PageKey) -> Result<Self, PageIdError> {
+        match ghn_wire_lccn(&key.lccn) {
+            Some(lccn) => {
+                let local = PageKey::new(lccn, key.date, key.edition, key.seq)
+                    .map_err(|e| PageIdError::Local {
+                        kind: Source::Ghn,
+                        local: key.to_string(),
+                        reason: e.to_string(),
+                    })?
+                    .doc_id();
+                PageId::new(Source::Ghn, &local)
+            }
+            None => PageId::loc(key),
+        }
+    }
+}
+
 /// Letters, digits, `_` and `-`, as every stored id so far uses.
 fn plain(s: &str) -> bool {
     !s.is_empty()
@@ -316,6 +374,46 @@ mod tests {
         assert!(ghn.page_key().is_none());
         assert_eq!(ghn.stored(), format!("ghn:{LOC}"));
         assert_eq!(ghn.path(), format!("ghn/{LOC}"));
+    }
+
+    #[test]
+    fn a_ghn_page_has_a_wire_key_that_is_no_loc_key_and_converts_back() {
+        let ghn: PageId = "ghn:sn83020866_1828-02-21_ed-1_seq-1".parse().unwrap();
+        let wire = ghn.ghn_wire_key().unwrap();
+        assert_eq!(wire.to_string(), "ghnsn83020866/1828-02-21/ed-1/seq-1");
+        assert_eq!(PageId::from_wire_key(&wire).unwrap(), ghn);
+        let gua: PageId = "ghn:gua1179162_1930-12-31_ed-2_seq-12".parse().unwrap();
+        let wire = gua.ghn_wire_key().unwrap();
+        assert_eq!(wire.lccn, "ghngua1179162");
+        assert_eq!(PageId::from_wire_key(&wire).unwrap(), gua);
+        // A LoC key is the LoC page, and a LoC page has no wire spelling of its own.
+        let loc: PageKey = "sn83020866/1828-02-21/ed-1/seq-1".parse().unwrap();
+        assert_eq!(
+            PageId::from_wire_key(&loc).unwrap(),
+            PageId::loc(&loc).unwrap()
+        );
+        assert!(PageId::loc(&loc).unwrap().ghn_wire_key().is_none());
+    }
+
+    #[test]
+    fn only_ghn_and_a_lettered_lccn_is_a_wire_lccn() {
+        assert_eq!(ghn_wire_lccn("ghnsn83020866"), Some("sn83020866"));
+        assert_eq!(ghn_wire_lccn("ghngua1179162"), Some("gua1179162"));
+        for lccn in [
+            "sn83020866",
+            "ghn83020866",
+            "ghnabcd123",
+            "ghnsn",
+            "ghnsn12a",
+            "gua1179162",
+        ] {
+            assert_eq!(ghn_wire_lccn(lccn), None, "{lccn}");
+        }
+        // A GHN LCCN with no letters, or one too long for a key, has no wire spelling.
+        let digits: PageId = "ghn:2001234567_1900-01-01_ed-1_seq-1".parse().unwrap();
+        assert!(digits.ghn_wire_key().is_none());
+        let long: PageId = "ghn:sn123456789012_1900-01-01_ed-1_seq-1".parse().unwrap();
+        assert!(long.ghn_wire_key().is_none());
     }
 
     #[test]

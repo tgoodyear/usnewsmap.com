@@ -1861,6 +1861,61 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
                 self.assertIn(message, r.stderr)
                 self.assertFalse([c for c in self.calls() if c.startswith("export ")])
 
+    def test_handoff_ghn_line_export_reads_the_staged_boxes(self):
+        # #1622: a GHN page, by its wire key, takes its line boxes from the staging tree.
+        mount = os.path.join(self.tmp, "scans-mount")
+        page = "ghnsn83020866/1828-02-21/ed-1/seq-1"
+        scan = "keep/gua_cph/ghnsn83020866/1828-02-21/1/1.jpg"
+        boxes = "line-boxes/ghn/sn83020866_1828-02-21_ed-1_seq-1/boxes.jsonl"
+        manifest = "chr-ghn-a/manifest.parquet"
+        for rel, body in ((scan, "jpg"), (scan + ".json", "{}"), (boxes, "BOXES"),
+                          ("manifests/" + manifest, "PAR1")):
+            os.makedirs(os.path.dirname(os.path.join(mount, rel)), exist_ok=True)
+            Path(mount, rel).write_text(body)
+        self.stub(self.COPY_STUB + "\n" +
+                  'if [ "$1" = export ]; then\n'
+                  '  for ((i = 1; i <= $#; i++)); do\n'
+                  '    [ "${!i}" = --line-boxes ] && j=$((i + 1)) && cat "${!j}/ghn/sn83020866_1828-02-21_ed-1_seq-1/boxes.jsonl" >> "$STUB_LOG"\n'
+                  '  done\n'
+                  '  echo >> "$STUB_LOG"\n'
+                  'fi')
+        line = dict(HANDOFF_MANIFEST=manifest, HANDOFF_PAGES=page, HANDOFF_BATCH="gua_cph",
+                    HANDOFF_SCANS=scan, HANDOFF_PLAN="chr-ghn-1", ENGINE_IMAGE="sha256:" + "a" * 64,
+                    HANDOFF_LINE_READ="chr", HANDOFF_LINE_WORDS="1", HANDOFF_LOCAL_SCANS="1",
+                    USNM_HANDOFF_SCANS_MOUNT=mount)
+        r = self.handoff("export", **line)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.calls()
+        self.assertFalse([c for c in calls if c.startswith("handoff get")], calls)
+        (export,) = [c for c in calls if c.startswith("export ")]
+        self.assertIn("--line-read chr --line-boxes ", export)
+        self.assertIn(" --line-words", export)
+        self.assertNotIn("--loc-alto", export)
+        self.assertIn("BOXES", calls)
+        # Without the boxes, mixed with a LoC page, or with a bad HANDOFF_LINE_WORDS, nothing runs.
+        alto = "loc-alto/sn83020866/1828/03/06/ed-1/seq-1/ocr.xml"
+        os.makedirs(os.path.dirname(os.path.join(mount, alto)), exist_ok=True)
+        Path(mount, alto).write_text("<alto/>")
+        mixed = page + ",sn83020866/1828-03-06/ed-1/seq-1"
+        os.remove(Path(mount, boxes))
+        for extra, message in (({}, "no " + boxes),
+                               ({"HANDOFF_PAGES": mixed}, "no " + boxes),
+                               ({"HANDOFF_LINE_WORDS": "yes"}, "HANDOFF_LINE_WORDS is 1"),
+                               ({"HANDOFF_LINE_READ": "", "HANDOFF_LOCAL_SCANS": ""}, "goes with HANDOFF_LINE_READ")):
+            with self.subTest(extra=extra):
+                if os.path.exists(self.log):
+                    os.remove(self.log)
+                r = self.handoff("export", **{**line, **extra})
+                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertIn(message, r.stderr)
+                self.assertFalse([c for c in self.calls() if c.startswith("export ")])
+        Path(mount, boxes).write_text("BOXES")
+        if os.path.exists(self.log):
+            os.remove(self.log)
+        r = self.handoff("export", **{**line, "HANDOFF_PAGES": mixed})
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("mixes GHN and LoC pages", r.stderr)
+
     def test_handoff_line_report_brings_each_jobs_files_down_then_reports(self):
         self.stub(self.COPY_STUB)
         j1, j2 = "1" * 64, "2" * 64

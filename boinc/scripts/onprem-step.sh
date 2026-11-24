@@ -54,7 +54,9 @@
 # sends them over ssh: copies of the scan fetcher's files, named keep/<batch>/<lccn>/<date>/<ed>/
 # <seq>.<jp2|jpg> with their .json sidecars. A line export's staging tree (#1621, usnm-boinc
 # line-stage) adds each page's LoC ALTO, loc-alto/<lccn>/<yyyy>/<mm>/<dd>/ed-<n>/seq-<m>/ocr.xml,
-# and its prefetch manifest, manifests/<name>/manifest.parquet. Only that layout is taken
+# and its prefetch manifest, manifests/<name>/manifest.parquet. A GHN line export's tree (#1622,
+# usnm-boinc line-stage-ghn) has each page's line boxes, line-boxes/ghn/<doc id>/boxes.jsonl, in
+# place of the ALTO. Only that layout is taken
 # (regular files, size capped); each is written to $USNM_BOINC_SCAN_STAGE (default
 # /srv/usnm-boinc/project/handoff-scans) through a temporary name, and staged files older than 4
 # days are pruned. The hand-off export reads them (mounted read-only as /scans), and the
@@ -118,7 +120,7 @@ HANDOFF_RETRY_VARS=" RETRY_JOB RETRY_IMAGE RETRY_APP_VERSION RETRY_REASON RETRY_
 HANDOFF_COLLECT_VARS=" JOB_ID JOB_IDS HOST_ID COLLECT_PARALLEL "
 # The line jobs' check (#1621), as root on the host: it only reads.
 HANDOFF_LINE_REPORT_VARS=" JOB_IDS "
-HANDOFF_EXPORT_VARS=" HANDOFF_PAGES HANDOFF_BATCH HANDOFF_BATCHES HANDOFF_PLAN HANDOFF_MANIFEST ENGINE_IMAGE HANDOFF_SCANS HANDOFF_JOBS HANDOFF_CLAIMS HANDOFF_DEADLINE_RETRIES HANDOFF_LINE_READ "
+HANDOFF_EXPORT_VARS=" HANDOFF_PAGES HANDOFF_BATCH HANDOFF_BATCHES HANDOFF_PLAN HANDOFF_MANIFEST ENGINE_IMAGE HANDOFF_SCANS HANDOFF_JOBS HANDOFF_CLAIMS HANDOFF_DEADLINE_RETRIES HANDOFF_LINE_READ HANDOFF_LINE_WORDS "
 # handoff.env must set these, as the Azure job sets them (its AZURE_CLIENT_ID is Container
 # Apps' identity; the Arc identity needs none).
 HANDOFF_HOST_VARS=" HANDOFF_URL COSMOS_ENDPOINT CURATED_URL REFERENCE_URL OUT_URL QUEUE_URL IDENTITY_ENDPOINT IMDS_ENDPOINT "
@@ -402,6 +404,8 @@ name_re = re.compile(r"keep/[a-z]{2,10}_[A-Za-z0-9_]+/[A-Za-z0-9_-]+/[0-9]{4}-[0
 # A line export (#1621): LoC ALTO for each page, and a prefetch manifest of the pages.
 alto_re = re.compile(r"loc-alto/[a-z0-9]{1,16}/[0-9]{4}/[0-9]{2}/[0-9]{2}/ed-[0-9]{1,4}/seq-[0-9]{1,5}/ocr\.xml")
 manifest_re = re.compile(r"manifests/[A-Za-z0-9][A-Za-z0-9_-]{0,63}/manifest\.parquet")
+# A GHN line export (#1622): the line finder boxes of each page, by its ghn: doc id.
+boxes_re = re.compile(r"line-boxes/ghn/[a-z]{1,3}[0-9]{1,12}_[0-9]{4}-[0-9]{2}-[0-9]{2}_ed-[0-9]{1,4}_seq-[0-9]{1,5}/boxes\.jsonl")
 count = total = members = 0
 with tarfile.open(fileobj=sys.stdin.buffer, mode="r|", tarinfo=Member) as tar:
     for m in tar:
@@ -416,10 +420,12 @@ with tarfile.open(fileobj=sys.stdin.buffer, mode="r|", tarinfo=Member) as tar:
             cap = 32 * 1024 * 1024
         elif m.isreg() and manifest_re.fullmatch(m.name):
             cap = 16 * 1024 * 1024
+        elif m.isreg() and boxes_re.fullmatch(m.name):
+            cap = 4 * 1024 * 1024
         elif m.isreg() and name_re.fullmatch(m.name):
             cap = 64 * 1024 if m.name.endswith(".json") else 64 * 1024 * 1024
         else:
-            sys.exit(f"error: {m.name!r} is not a staged scan, sidecar, LoC ALTO or line manifest")
+            sys.exit(f"error: {m.name!r} is not a staged scan, sidecar, LoC ALTO, line boxes or line manifest")
         count += 1
         total += m.size
         if m.size > cap or count > 1000 or total > 32 * 1024 ** 3:
@@ -443,7 +449,7 @@ with tarfile.open(fileobj=sys.stdin.buffer, mode="r|", tarinfo=Member) as tar:
 # Prune what no job needs any more: a scan is read until its job is submitted, and the lease is 36 hours.
 cutoff = time.time() - 4 * 86400
 pruned = 0
-for top in ("keep", "loc-alto", "manifests"):
+for top in ("keep", "loc-alto", "line-boxes", "manifests"):
     for root, dirs, files in os.walk(os.path.join(stage, top), topdown=False):
         for f in files:
             p = os.path.join(root, f)
