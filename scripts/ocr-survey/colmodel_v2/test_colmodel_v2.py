@@ -206,6 +206,7 @@ def test_select_and_build_end_to_end(tmp_path):
     rc = alto_weak.main(["select", "--scans-index", str(tmp_path / "index.jsonl"), "--scans-root", str(tmp_path / "scans"),
                          "--locstats-dir", str(tmp_path / "locstats"), "--locbulk-dir", str(tmp_path / "locbulk"),
                          "--exclude", "test=%s" % (tmp_path / "test.txt"), "--no-exclude-issues", "--pages", "10",
+                         "--per-title", "10",
                          "--out", str(tmp_path / "pages.tsv"), "--manifest-out", str(tmp_path / "sel.tsv")])
     assert rc == 0
     with open(tmp_path / "sel.tsv") as f:
@@ -341,3 +342,42 @@ def test_exclusion_lists(tmp_path):
 def test_held_entry():
     assert alto_weak.held_entry("nbu_x/2017270200/1895-12-26/1/2.jpg") == ("2017270200_1895-12-26_ed-1_seq-2", "nbu_x")
     assert alto_weak.held_entry("nbu_x/2017270200/1895-12-26/1/2.jpg.json") == (None, None)
+    assert alto_weak.held_entry("buffer/ak_y/sn84021930/1901-03-27/1/2.jp2") == ("sn84021930_1901-03-27_ed-1_seq-2", "ak_y")
+
+
+def test_select_caps_titles_and_balances_decades(tmp_path):
+    pa = pytest.importorskip("pyarrow")
+    import pyarrow.parquet as pq
+    rel, ids = [], []
+    for lccn, years in (("sn1", range(1880, 1890)), ("sn2", range(1900, 1910)), ("sn3", range(1900, 1903)),
+                        ("sn9", range(1900, 1905))):
+        for y in years:
+            for seq in (1, 2):
+                d = "%s_%d-01-01_ed-1_seq-%d" % (lccn, y, seq)
+                ids.append(d)
+                rel.append("buffer/bb_x/%s/%d-01-01/1/%d.jpg" % (lccn, y, seq))
+    (tmp_path / "held.txt").write_text("\n".join(rel) + "\n")
+    (tmp_path / "locbulk").mkdir()
+    (tmp_path / "locbulk" / "bb_x_ver01.tar.bz2").write_bytes(b"")
+    (tmp_path / "locstats").mkdir()
+    pq.write_table(pa.table({"batch": ["bb_x"] * len(ids), "batch_version": [1] * len(ids), "doc_id": ids,
+                             "words": [1] * len(ids), "archive": ["bb_x_ver01.tar.bz2"] * len(ids)}),
+                   tmp_path / "locstats" / "bb_x_ver01.parquet")
+    (tmp_path / "titles.json").write_text(json.dumps([{"lccn": "sn1", "languages": ["eng"]}, {"lccn": "sn2", "languages": ["eng"]},
+                                                      {"lccn": "sn3", "languages": ["eng"]},
+                                                      {"lccn": "sn9", "languages": ["eng", "ger"]}]))
+    out = tmp_path / "pages.tsv"
+    assert alto_weak.main(["select", "--held-list", str(tmp_path / "held.txt"), "--scans-root", "/S", "--titles-json",
+                           str(tmp_path / "titles.json"), "--locstats-dir", str(tmp_path / "locstats"), "--locbulk-dir",
+                           str(tmp_path / "locbulk"), "--pages", "100", "--per-title", "4", "--out", str(out),
+                           "--manifest-out", str(tmp_path / "m.tsv")]) == 0
+    with open(out) as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+    by_title = {}
+    for r in rows:
+        by_title[r["lccn"]] = by_title.get(r["lccn"], 0) + 1
+    assert by_title == {"sn1": 4, "sn2": 4, "sn3": 4}
+    assert rows[0]["image_path"].startswith("/S/buffer/bb_x/")
+    assert {r["decade"] for r in rows[:2]} == {"1880", "1900"}  # decades alternate
+    summ = json.load(open(str(out) + ".summary.json"))
+    assert summ["not_target_language_pages"] == 10 and summ["eligible_titles"] == 3

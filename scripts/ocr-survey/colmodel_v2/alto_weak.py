@@ -7,15 +7,18 @@ looks clean (colgeom.FILTERS, recorded in every manifest row).
 
 Two steps, both on a dev container:
 
-  select  pick candidate pages: scans we hold (the scans index with the image file present, or a
-          --held-list listing of the scan store made where it lives) joined to the
-          per-batch locstats parquet index (which archive holds the page's ALTO), minus every
-          reserved test page, in sha256(PREFIX + doc_id) order, at most --per-batch pages from each
-          of at most --batches batches (batches also in sha256(PREFIX + batch) order), until --pages.
-      alto_weak.py select --scans-index index-full.jsonl --scans-root /tank/ocr/scans/keep
-                          --locstats-dir /data/locstats --locbulk-dir /data/locbulk/ocr
+  select  pick candidate pages. Eligible pool: scans we hold (the scans index, or --held-list listings
+          of the scan store made where it lives), whose batch has an archive in locbulk, whose title
+          is in --title-lang only (--titles-json, the search release's title catalogue), minus every
+          reserved test page. The pool is split by decade; decades take turns (round robin), and each
+          turn takes the decade's next page in sha256(PREFIX + doc_id) order that keeps its title
+          under --per-title and its batch under --per-batch, until --pages. The page must be in the
+          batch's locstats parquet (which archive holds its ALTO). Writes pages.tsv, a manifest and
+          <out>.summary.json (held, eligible and selected counts by title, batch and decade).
+      alto_weak.py select --held-list keep.txt --held-list buffer.txt --scans-root /cold/ocr-scans
+                          --titles-json titles.json --locstats-dir /data/locstats --locbulk-dir /data/locbulk/ocr
                           --exclude en2107=pages-300.txt --exclude bwval=bw-val.txt ...
-                          --pages 500 --per-batch 50 --out pages.tsv --manifest-out select-manifest.tsv
+                          --pages 500 --per-title 10 --out pages.tsv --manifest-out select-manifest.tsv
 
   build   stream each needed archive once (tar r|bz2; never a whole-locbulk scan), take the wanted
           pages' ocr.xml, derive column regions and the filter metrics, write labels.
@@ -246,9 +249,11 @@ def _locstats_rows(locstats_dir, batches):
 
 
 def held_entry(rel):
-    """(doc_id, batch) of a held-scan path <batch>/<lccn>/<yyyy-mm-dd>/<ed>/<seq>.jpg, else (None, None)."""
-    p = rel.strip("/").split("/")
-    if len(p) != 5 or not p[4].endswith(".jpg"):
+    """(doc_id, batch) of a held-scan path [keep/|buffer/]<batch>/<lccn>/<yyyy-mm-dd>/<ed>/<seq>.jpg|.jp2, else (None, None)."""
+    p = rel.strip().strip("/").split("/")
+    if p and p[0] in ("keep", "buffer"):
+        p = p[1:]
+    if len(p) != 5 or not (p[4].endswith(".jpg") or p[4].endswith(".jp2")):
         return None, None
     try:
         did = "%s_%s_ed-%d_seq-%d" % (p[1], p[2], int(p[3]), int(p[4][:-4]))
@@ -257,17 +262,36 @@ def held_entry(rel):
     return (did, p[0]) if DOC_RE.match(did) else (None, None)
 
 
+def decade_of(doc_id):
+    return int(DOC_RE.match(doc_id).group("date")[:3]) * 10
+
+
+def read_titles(path):
+    """lccn -> list of language codes from a titles.json (the search release's title catalogue)."""
+    with open(path) as f:
+        return {t["lccn"]: [colgeom.norm_lang(x) for x in t.get("languages") or []] for t in json.load(f)}
+
+
+def _archives(locbulk_dir):
+    out = {}
+    for fn in os.listdir(locbulk_dir):
+        m = re.match(r"^(.+)_ver(\d+)\.tar\.bz2$", fn)
+        if m:
+            out.setdefault(m.group(1), []).append(fn)
+    return out
+
+
 def cmd_select(a):
+    """Eligible pool -> sha256-ordered, decade-balanced, per-title and per-batch capped selection."""
     excl = Exclusions(a.exclude, issues=a.exclude_issues)
-    held, listed = {}, None
+    held = {}   # batch -> {doc_id: path relative to --scans-root, or None (scans index form)}
     if a.held_list:
-        listed = set()
-        with open(a.held_list) as f:
-            for ln in f:
-                did, b = held_entry(ln.strip())
-                if did:
-                    held.setdefault(b, {})[did] = None
-                    listed.add((b, did))
+        for path in a.held_list:
+            with open(path) as f:
+                for ln in f:
+                    did, b = held_entry(ln)
+                    if did:
+                        held.setdefault(b, {}).setdefault(did, ln.strip().strip("/"))
     else:
         with open(a.scans_index) as f:
             for ln in f:
@@ -275,54 +299,106 @@ def cmd_select(a):
                     continue
                 r = json.loads(ln)
                 did, b = r.get("doc_id"), r.get("batch")
-                if not did or not b or not DOC_RE.match(did):
-                    continue
-                held.setdefault(b, {})[did] = r.get("batch_version")
+                if did and b and DOC_RE.match(did):
+                    held.setdefault(b, {})[did] = None
     if a.only_batches:
         keep = set(read_id_list(a.only_batches))
         held = {b: v for b, v in held.items() if b in keep}
-    batches = sorted(held, key=lambda b: (sha_key(b), b))
-    manifest, chosen, used_batches = [], [], 0
-    for b in batches:
-        if len(chosen) >= a.pages or used_batches >= a.batches:
-            break
-        cands = sorted(held[b], key=lambda d: (sha_key(d), d))
-        stats = _locstats_rows(a.locstats_dir, [b])
-        took = 0
-        for did in cands:
-            if took >= a.per_batch or len(chosen) >= a.pages:
-                break
+    titles = read_titles(a.titles_json) if a.titles_json else None
+    archives = _archives(a.locbulk_dir)
+    stats = {"held_pages": 0, "held_batches": len(held), "held_titles": set(), "no_archive_pages": 0,
+             "no_archive_batches": 0, "not_target_language_pages": 0, "unknown_title_pages": 0, "excluded": {},
+             "eligible_pages": 0, "eligible_titles": set(), "eligible_batches": set(), "eligible_by_decade": {},
+             "eligible_titles_by_decade": {}}
+    pool = []   # (decade, sha key, doc_id, batch, rel)
+    manifest = []
+    for b in sorted(held):
+        has_arch = b in archives
+        if not has_arch:
+            stats["no_archive_batches"] += 1
+        for did, rel in held[b].items():
+            stats["held_pages"] += 1
+            lccn = DOC_RE.match(did).group("lccn")
+            stats["held_titles"].add(lccn)
+            if not has_arch:
+                stats["no_archive_pages"] += 1
+                manifest.append({"doc_id": did, "batch": b, "status": "no_locbulk_archive"})
+                continue
+            if titles is not None:
+                langs = titles.get(lccn)
+                if langs is None:
+                    stats["unknown_title_pages"] += 1
+                    manifest.append({"doc_id": did, "batch": b, "status": "title_not_in_catalogue"})
+                    continue
+                if langs != [a.title_lang]:
+                    stats["not_target_language_pages"] += 1
+                    manifest.append({"doc_id": did, "batch": b, "status": "title_language:" + "+".join(map(str, langs))})
+                    continue
             why = excl.reason(did)
-            img = os.path.join(a.scans_root, b, image_rel(did))
-            rows = stats.get((b, did), [])
-            arch = None
-            if rows:
-                ver = held[b][did]
-                pick = [r for r in rows if ver is None or r["batch_version"] == ver] or rows
-                arch = pick[0]["archive"]
-            if why is None and (listed is None and not os.path.exists(img)):
-                why = "no_image"
-            if why is None and arch is None:
-                why = "not_in_locstats"
-            if why is None and not os.path.exists(os.path.join(a.locbulk_dir, arch)):
-                why = "archive_missing"
-            manifest.append({"doc_id": did, "batch": b, "status": why or "selected"})
-            if why is None:
-                chosen.append({"doc_id": did, "batch": b, "archive": arch, "image_path": img})
-                took += 1
-        if took:
-            used_batches += 1
-        print(f"batches {used_batches}/{a.batches} pages {len(chosen)}/{a.pages}", flush=True)
+            if why:
+                stats["excluded"][why] = stats["excluded"].get(why, 0) + 1
+                manifest.append({"doc_id": did, "batch": b, "status": why})
+                continue
+            dec = decade_of(did)
+            pool.append((dec, sha_key(did), did, b, rel))
+            stats["eligible_pages"] += 1
+            stats["eligible_titles"].add(lccn)
+            stats["eligible_batches"].add(b)
+            stats["eligible_by_decade"][dec] = stats["eligible_by_decade"].get(dec, 0) + 1
+            stats["eligible_titles_by_decade"].setdefault(dec, set()).add(lccn)
+    by_dec = {}
+    for p in sorted(pool):
+        by_dec.setdefault(p[0], []).append(p)
+    decs = sorted(by_dec)
+    pos = {d: 0 for d in decs}
+    per_title, per_batch, chosen = {}, {}, []
+    stat_cache = {}
+    # round robin over decades; within a decade, the next page in sha256 order that the caps allow
+    while len(chosen) < a.pages and any(pos[d] < len(by_dec[d]) for d in decs):
+        for d in decs:
+            if len(chosen) >= a.pages:
+                break
+            lst = by_dec[d]
+            while pos[d] < len(lst):
+                _, _, did, b, rel = lst[pos[d]]
+                pos[d] += 1
+                lccn = DOC_RE.match(did).group("lccn")
+                if per_title.get(lccn, 0) >= a.per_title or per_batch.get(b, 0) >= a.per_batch:
+                    continue
+                if b not in stat_cache:
+                    stat_cache[b] = _locstats_rows(a.locstats_dir, [b])
+                rows = stat_cache[b].get((b, did), [])
+                if not rows:
+                    manifest.append({"doc_id": did, "batch": b, "status": "not_in_locstats"})
+                    continue
+                arch = sorted(rows, key=lambda r: -r["batch_version"])[0]["archive"]
+                img = os.path.join(a.scans_root, rel) if rel else os.path.join(a.scans_root, b, image_rel(did))
+                chosen.append({"doc_id": did, "batch": b, "archive": arch, "image_path": img, "lccn": lccn, "decade": d,
+                               "source_rel": rel or ""})
+                manifest.append({"doc_id": did, "batch": b, "status": "selected"})
+                per_title[lccn] = per_title.get(lccn, 0) + 1
+                per_batch[b] = per_batch.get(b, 0) + 1
+                break
+        print("selected %d/%d" % (len(chosen), a.pages), flush=True)
     with open(a.out, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["doc_id", "batch", "archive", "image_path"], delimiter="\t")
+        w = csv.DictWriter(f, fieldnames=["doc_id", "batch", "archive", "image_path", "lccn", "decade", "source_rel"],
+                           delimiter="\t")
         w.writeheader()
         w.writerows(chosen)
     with open(a.manifest_out, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["doc_id", "batch", "status"], delimiter="\t")
         w.writeheader()
-        w.writerows(manifest)
-    summ = {"exclusion_lists": excl.counts, "pages": len(chosen), "batches": used_batches,
-            "statuses": _count(m["status"] for m in manifest), "prefix": PREFIX}
+        w.writerows(sorted(manifest, key=lambda m: m["doc_id"]))
+    picked = {m["doc_id"] for m in manifest}
+    manifest += [{"doc_id": p[2], "batch": p[3], "status": "eligible_not_drawn"} for p in pool if p[2] not in picked]
+    summ = {k: (len(v) if isinstance(v, set) else v) for k, v in stats.items() if k != "eligible_titles_by_decade"}
+    summ["eligible_titles_by_decade"] = {d: len(v) for d, v in sorted(stats["eligible_titles_by_decade"].items())}
+    summ.update({"exclusion_lists": excl.counts, "pages": len(chosen), "prefix": PREFIX, "per_title": a.per_title,
+                 "per_batch": a.per_batch, "title_lang": a.title_lang if titles is not None else None,
+                 "selected_titles": len(per_title), "selected_batches": len(per_batch),
+                 "selected_by_decade": _count(c["decade"] for c in chosen)})
+    with open(a.out + ".summary.json", "w") as f:
+        json.dump(summ, f, indent=1, sort_keys=True)
     print(json.dumps(summ, sort_keys=True))
     return 0
 
@@ -436,8 +512,13 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("select")
     s.add_argument("--scans-index", help="scans index JSONL (doc_id, batch, batch_version); or use --held-list")
-    s.add_argument("--held-list", help="held scan paths <batch>/<lccn>/<date>/<ed>/<seq>.jpg, one per line, relative"
-                   " to --scans-root (a listing made where the scans live; files need not be present here yet)")
+    s.add_argument("--held-list", action="append", help="held scan paths [keep/|buffer/]<batch>/<lccn>/<date>/<ed>/<seq>.jpg,"
+                   " one per line, relative to --scans-root (a listing made where the scans live; files need not be"
+                   " present here yet); repeatable")
+    s.add_argument("--titles-json", help="title catalogue (lccn, languages); with it, only titles whose languages are"
+                   " exactly [--title-lang] are eligible")
+    s.add_argument("--title-lang", default="eng")
+    s.add_argument("--per-title", type=int, default=10)
     s.add_argument("--scans-root", required=True)
     s.add_argument("--locstats-dir", required=True)
     s.add_argument("--locbulk-dir", required=True)
@@ -446,8 +527,7 @@ def main(argv=None):
     s.add_argument("--only-batches", help="file of batch names (one per line) to draw from, e.g. the batches whose"
                    " ALTO is in the target language")
     s.add_argument("--pages", type=int, default=500)
-    s.add_argument("--per-batch", type=int, default=50)
-    s.add_argument("--batches", type=int, default=20)
+    s.add_argument("--per-batch", type=int, default=1000000)
     s.add_argument("--out", required=True)
     s.add_argument("--manifest-out", required=True)
     b = sub.add_parser("build")
