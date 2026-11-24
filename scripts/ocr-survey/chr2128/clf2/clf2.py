@@ -233,7 +233,7 @@ def cmd_devset(a):
         if r["doc_id"] in pages:
             found[r["doc_id"]] = [[int(v) for v in x["box"]] for x in r["lines"]
                                   if x["box"][2] > x["box"][0] and x["box"][3] > x["box"][1]]
-    out, stats = [], defaultdict(int)
+    out, noink, stats = [], [], defaultdict(int)
     for p in pages:
         rows = jsonl(Path(a.boxes_dir) / p.split(":", 1)[1] / "boxes.jsonl")
         head, boxes = rows[0], rows[1:]
@@ -246,11 +246,15 @@ def cmd_devset(a):
         for b in boxes:
             if b.get("p_chr") is None:
                 stats["no_p_chr"] += 1
+                noink.append({"item_id": f"{p}#{b['id']}", "page_id": p, "box_id": b["id"], "held_flag": held[p],
+                              "scan": str(img), "box": b["box"], "p_chr": None, "old_call": False})
                 continue
             out.append({"item_id": f"{p}#{b['id']}", "page_id": p, "box_id": b["id"], "held_flag": held[p],
                         "scan": str(img), "box": b["box"], "p_chr": b["p_chr"], "old_call": b["chr"] is True,
                         "rel_h": (b["box"][3] - b["box"][1]) / med})
     cs_write(a.out, out)
+    if a.noink_out:
+        cs_write(a.noink_out, noink)
     stats["items"] = len(out)
     print(json.dumps(stats))
 
@@ -492,6 +496,8 @@ def main(argv=None):
         s = sub.add_parser(name)
         for k in args:
             s.add_argument(k, required=True)
+        if name == "devset":
+            s.add_argument("--noink-out", help="also write the boxes with no p_chr (no ink) here")
         if name == "read":
             s.add_argument("--workers", type=int, default=4)
     a = ap.parse_args(argv)
