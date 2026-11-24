@@ -33,7 +33,8 @@ NFKC, lowercase, line-end hyphens joined, punctuation removed except apostrophes
     its LoC line is a merged line (merged_lines.py, #1978); either reading has no letter or digit once normalised
     (punctuation only); or either normalises to more than one word (U.S. against US);
   * otherwise a disagreement, and a candidate task.
-The page shows the normalised readings (small letters, no punctuation), so a volunteer judges exactly what is scored.
+The page shows the raw readings, as the engines gave them (as the other pick languages do); normalisation only
+decides whether the two differ, and `private.normalised` keeps the normalised forms the analysis scores.
 
 Sampling. Per page, up to --per-page candidates, those first by sha256(seed:task id:rank) (a simple random sample of
 the page's disagreements, with no de-duplication, so each page's tasks can be weighted back to its candidates).
@@ -47,12 +48,12 @@ word error rate difference).
 
 A task's `private` (kept off /api/next, and out of /api/export until the task settles: edge/check/README.md, "Blind
 tasks") holds `a_is` and `b_is` (`tesseract` or `loc`), `page_id`, `loc_word` and `tess_word` (word indexes),
-`iou` and `other_cover` (the alignment's confidence), `similarity` (of the two normalised readings), `raw` (both
-readings as the engines gave them), `tess_conf`, `page_candidates` and `page_sampled` (for weights), `strata`
+`iou` and `other_cover` (the alignment's confidence), `similarity` (of the two normalised readings), `normalised`
+(both readings as scored), `tess_conf`, `page_candidates` and `page_sampled` (for weights), `strata`
 (`decade`, `damage_band`), and on a gold page `truth` (`tesseract`, `loc` or `neither`: which reading equals the
 normalised truth word), `truth_word` and `region`.
 
-  python3 tess_pick.py --pages pages.jsonl --lang en --set tess-loc-v1 --language-config languages/en.json \
+  python3 tess_pick.py --pages pages.jsonl --lang en-read --set tess-loc-v1 --language-config languages/en-read.json \
     --out-dir OUT [--seed 2122] [--per-page 6] [--min-iou 0.5] [--max-other 0.2] [--min-page-aligned 0.5]
 """
 import argparse
@@ -287,8 +288,8 @@ def page_candidates(page: dict, loc: list, tess: list, args, stats: Counter) -> 
             c["left_out_several_words"] += 1
             continue
         c["disagree"] += 1
-        row = {"id": f"{args.lang}/{args.set}/{key}~{i}", "page": page, "i": i, "j": j, "loc": nl, "tesseract": nt,
-               "raw": {"loc": raw_l, "tesseract": raw_t}, "iou": score, "other": other, "conf": tess[j]["conf"],
+        row = {"id": f"{args.lang}/{args.set}/{key}~{i}", "page": page, "i": i, "j": j, "loc": bt.clean(raw_l), "tesseract": bt.clean(raw_t),
+               "norm": {"loc": nl, "tesseract": nt}, "iou": score, "other": other, "conf": tess[j]["conf"],
                "loc_box": loc[i]["box"], "tess_box": tess[j]["box"], "line_box": loc[i]["line_box"],
                "similarity": round(SequenceMatcher(None, nl, nt, autojunk=False).ratio(), 4)}
         if truth is not None:
@@ -339,7 +340,7 @@ def write_task(r: dict, args, img, out_dir: str, f) -> None:
     ad, bd = bt.letter_diff(a, b, {})
     private = {"a_is": a_is, "b_is": b_is, "iou": r["iou"], "loc_word": r["i"], "other_cover": r["other"],
                "page_candidates": r["page_candidates"], "page_id": page.get("page_id"), "page_sampled": r["page_sampled"],
-               "raw": r["raw"], "similarity": r["similarity"],
+               "normalised": r["norm"], "similarity": r["similarity"],
                "strata": {"damage_band": en_pick.band(page.get("damage_rate")), "decade": en_pick.decade(page["date"])},
                "tess_conf": r["conf"], "tess_word": r["j"]}
     if "truth" in r:
@@ -388,7 +389,7 @@ def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--pages", required=True)
     ap.add_argument("--root", help="folder the pages' paths are relative to (default: the folder of --pages)")
-    ap.add_argument("--lang", default="en")
+    ap.add_argument("--lang", default="en-read")
     ap.add_argument("--set", required=True)
     ap.add_argument("--language-config", required=True)
     ap.add_argument("--out-dir", required=True)

@@ -24,7 +24,7 @@ def w(text, x, y, line, ww=50, h=20):
 
 
 class Args:
-    lang, set, min_iou, max_other, min_page_aligned = "en", "t", 0.5, 0.2, 0.5
+    lang, set, min_iou, max_other, min_page_aligned = "en-read", "t", 0.5, 0.2, 0.5
 
 
 def page(**kw):
@@ -80,9 +80,11 @@ class Classify(unittest.TestCase):
                 w("US", 60, 30, 1), w("a", 120, 30, 1), w("cat.", 180, 30, 1)]
         rows, c = self.run_page(loc, tess)
         self.assertEqual([(r["loc"], r["tesseract"]) for r in rows], [("tbe", "the")])
+        rows2, _ = self.run_page([w("a", 0, 0, 0), w("Tbe,", 60, 0, 0)], [w("a", 0, 0, 0), w("the.", 60, 0, 0)])
+        self.assertEqual([(r["loc"], r["tesseract"], r["norm"]["loc"]) for r in rows2], [("Tbe,", "the.", "tbe")])  # raw shown
         self.assertEqual((c["agree_after_normalisation"], c["left_out_hyphen_cut"], c["left_out_several_words"],
                           c["left_out_punctuation_only"], c["disagree"]), (2, 2, 1, 1, 1))
-        self.assertEqual(rows[0]["raw"], {"loc": "tbe", "tesseract": "the"})
+        self.assertEqual(rows[0]["norm"], {"loc": "tbe", "tesseract": "the"})
 
     def test_page_with_boxes_that_do_not_line_up_is_left_out(self):
         loc = [w("a", 0, 0, 0), w("b", 60, 0, 0), w("c", 120, 0, 0)]
@@ -133,13 +135,13 @@ class Build(unittest.TestCase):
             open(os.path.join(d, "p.tsv"), "w").write(tsv)
             with open(os.path.join(d, "pages.jsonl"), "w") as f:
                 f.write(json.dumps(page(alto="p.xml", image="p.png", tsv="p.tsv", damage_rate=0.3)) + "\n")
-            cfg = os.path.join(HERE, "..", "languages", "en.json")
+            cfg = os.path.join(HERE, "..", "languages", "en-read.json")
             out = os.path.join(d, "out")
             tp.main(["--pages", os.path.join(d, "pages.jsonl"), "--set", "t", "--language-config", cfg, "--out-dir", out])
             tasks = [json.loads(l) for l in open(os.path.join(out, "tasks.jsonl"))]
             self.assertEqual(len(tasks), 1)
             t = tasks[0]
-            self.assertEqual(t["id"], "en/t/sn1_1900-01-01_ed-1_seq-1~1")
+            self.assertEqual(t["id"], "en-read/t/sn1_1900-01-01_ed-1_seq-1~1")
             self.assertEqual({t["a"], t["b"]}, {"tbe", "the"})
             p = t["private"]
             self.assertEqual({p["a_is"]: t["a"], p["b_is"]: t["b"]}, {"loc": "tbe", "tesseract": "the"})
@@ -162,6 +164,17 @@ class Prepare(unittest.TestCase):
         self.assertEqual(ep.member_doc("sn1/1900-01-01/ed-1/seq-2/ocr.xml"), "sn1_1900-01-01_ed-1_seq-2")
         self.assertIsNone(ep.member_doc("sn1/1900/01/01/ed-1/seq-2/ocr.txt"))
         self.assertEqual(ep.canonical("sn1_1900-01-01_ed-01_seq-002"), "sn1_1900-01-01_ed-1_seq-2")
+
+    def test_scan_path_flat_then_held_layout(self):
+        with tempfile.TemporaryDirectory() as d:
+            row = {"doc_id": "sn1_1900-01-02_ed-1_seq-03", "batch": "x_y", "format": "jp2"}
+            self.assertIsNone(ep.scan_path(d, row))
+            held = os.path.join(d, "buffer", "x_y", "sn1", "1900-01-02", "1")
+            os.makedirs(held)
+            open(os.path.join(held, "3.jp2"), "w").close()
+            self.assertEqual(ep.scan_path(d, row), os.path.join(held, "3.jp2"))
+            open(os.path.join(d, "sn1_1900-01-02_ed-1_seq-03.jp2"), "w").close()
+            self.assertEqual(ep.scan_path(d, row), os.path.join(d, "sn1_1900-01-02_ed-1_seq-03.jp2"))
 
     def test_read_members_stops_at_the_last_wanted(self):
         with tempfile.TemporaryDirectory() as d:

@@ -4,8 +4,9 @@ archives and a whole-page Tesseract reading of each scan. No network requests.
   python3 english_pages.py --selection pilot.tsv --scans DIR --locbulk /data/locbulk/ocr --locstats /data/locstats \
       --work DIR [--workers 3]
 
---selection is select_pages.py's TSV (doc_id, path_form, archive, damage_rate, ...). --scans holds each page's scan
-as <doc_id>.<format> (copied from the held scans; its sha256 is checked against the selection's scan_sha256).
+--selection is select_pages.py's TSV (doc_id, path_form, batch, archive, damage_rate, ...). --scans holds each page's scan
+as <doc_id>.<format>, or is a held-scan root read in place (keep/ and buffer/ by batch; scan_path()); its sha256 is
+checked against the selection's scan_sha256.
 
 ALTO. The page's archive is the one the selection names; the locstats index (<archive stem>.parquet, the per-batch
 index of what each archive holds) must list the doc_id, or the page is left out as `not_in_locstats`. The archive is
@@ -132,6 +133,19 @@ def tess_meta():
             "traineddata_sha256": sha256_file(td) if td and os.path.exists(td) else None}
 
 
+def scan_path(scans, row):
+    """The page's scan: <scans>/<doc_id>.<format>, or the held layout <scans>/{keep,buffer}/<batch>/<lccn>/<date>/<ed>/<seq>.<format>
+    (as /tank/ocr/scans and its cold copy hold them, read in place). None when neither exists."""
+    d, fmt = row["doc_id"], row.get("format") or "jp2"
+    m = DOC.match(d)
+    for p in [os.path.join(scans, "%s.%s" % (d, fmt))] + [
+            os.path.join(scans, area, row.get("batch", ""), m["lccn"], m["date"], str(int(m["ed"])), "%d.%s" % (int(m["seq"]), fmt))
+            for area in ("keep", "buffer")]:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
 def source_url(doc_id):
     m = DOC.match(doc_id)
     return "https://www.loc.gov/resource/%s/%s/ed-%d/?sp=%d" % (m["lccn"], m["date"], int(m["ed"]), int(m["seq"]))
@@ -155,8 +169,8 @@ def main(argv=None):
     scans = {}
     for r in sel:
         d = r["doc_id"]
-        path = os.path.join(a.scans, "%s.%s" % (d, r.get("format") or "jp2"))
-        if not os.path.exists(path):
+        path = scan_path(a.scans, r)
+        if path is None:
             left[d] = "no_scan"
         elif r.get("scan_sha256") and sha256_file(path) != r["scan_sha256"]:
             left[d] = "scan_sha256_differs"

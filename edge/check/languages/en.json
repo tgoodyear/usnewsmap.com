@@ -1,12 +1,5 @@
 {
-  "guidance": [
-    "Capital and small letters count as the same, and punctuation doesn't count: the readings are shown in small letters with punctuation left out, so compare only the letters and digits.",
-    "On older pages the long s (ſ), which looks like an f without the bar across, counts as s: a reading with f in its place does not match.",
-    "If the box cuts off part of the word, look at the line above it to see the whole word.",
-    "If a letter is too worn or blotted to tell which reading it supports, pick Can't tell."
-  ],
   "intro": "These words come from English-language newspaper pages in Chronicling America, the Library of Congress's collection of historic American newspapers. Two machine readings (OCR) disagree on each word.",
   "name": "English",
-  "rules": "The box marks one word in a line. Which reading matches the printed word? Pick it only if all its letters match the print; highlighted letters show where the two readings differ. If neither reading matches, pick Neither. If you can't make out the letters, pick Can't tell. If the box holds no letters (a picture or a smudge), pick Not text.",
   "title": "English newspapers"
 }
