@@ -43,7 +43,7 @@ def main():
         subprocess.run(["lstmtraining", "--stop_training", "--continue_from", c, "--traineddata", td,
                         "--model_output", model], check=True, capture_output=True)
         r = subprocess.run(["lstmeval", "--model", model, "--eval_listfile", a.eval_list], capture_output=True, text=True)
-        m = re.search(r"Eval Char error rate=([\d.]+), Word error rate=([\d.]+)", r.stdout + r.stderr)
+        m = re.search(r"BCER eval=([\d.]+), BWER eval=([\d.]+)", r.stdout + r.stderr)  # lstmeval 5.5.0, percent
         rows.append({"checkpoint": os.path.basename(c), "iteration": iteration(c, a.name),
                      "eval_cer": float(m.group(1)) if m else None, "eval_wer": float(m.group(2)) if m else None})
         print(json.dumps(rows[-1]), flush=True)
