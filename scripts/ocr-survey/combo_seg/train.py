@@ -3,15 +3,18 @@
 
 A page-level dev split (sha256("2107:comboseg:dev:"+page id) order, --dev-frac of the pages) is held out from
 fitting. On it the report gives the weighted AUC, label counts and permutation importances (sklearn, 5 repeats,
-random_state 2107, scoring ROC AUC). With --refs, the keep threshold is chosen on the dev pages as the one with
-the best pooled score.py primary F1 over a fixed grid; the final model is then refitted on all pages.
+random_state 2107, scoring ROC AUC). With --refs, the keep threshold is chosen on the dev pages from GRID: the
+threshold with the best pooled score.py primary F1 among those whose dev precision is no more than PRECISION_FLOOR
+(0.01) below --baseline-dev-precision (the page type's baseline method run on the same dev pages); if none
+qualifies, the threshold with the highest dev precision. The final model is then refitted on all pages.
 Beyond Words negatives (label_source "negatives") are weighted so that their total weight is at most that of the
-reference-set negatives: the weight is cap * f, with f from NEG_FACTORS chosen on the dev pages (best dev F1,
-ties to the smaller f), then frozen with the model. An explicit --source-weight negatives=W must not exceed the cap. Nothing
+reference-set negatives: the weight is cap * f, with f from NEG_FACTORS chosen on the dev pages (best dev F1 at
+the threshold the rule above picks, ties to the smaller f), then frozen with the model. An explicit --source-weight negatives=W must not exceed the cap. Nothing
 here reads a test page; the caller is responsible for giving training pages only.
 
     train.py --features a.jsonl [b.jsonl ...] --out-model model.pkl --report report.json
-             [--dev-frac 0.2] [--refs refs.json [refs2.json ...]] [--source-weight negatives=0.5 ...]
+             [--dev-frac 0.2] [--refs refs.json [refs2.json ...] --baseline-dev-precision P]
+             [--source-weight negatives=0.5 ...]
 """
 import argparse
 import json
@@ -27,7 +30,8 @@ import feats  # noqa: E402
 import gbdt  # noqa: E402
 import score  # noqa: E402
 
-GRID = [round(t, 2) for t in np.arange(0.1, 0.91, 0.05)]
+GRID = (0.02, 0.05, 0.10, 0.20, 0.30, 0.50)
+PRECISION_FLOOR = 0.01  # dev precision may fall at most this far below the baseline's
 NEG_FACTORS = (0.25, 0.5, 1.0)  # of the cap: total Beyond Words negative weight <= total reference negative weight
 
 
@@ -54,6 +58,16 @@ def dev_scores(rows, probs, refs):
     return out
 
 
+def select_threshold(ds, baseline_precision, floor=PRECISION_FLOOR):
+    """(threshold, qualified): best F1 among thresholds with precision >= baseline - floor, else highest precision.
+
+    Ties: higher precision, then the higher threshold."""
+    ok = [t for t in GRID if ds[t]["precision"] >= baseline_precision - floor - 1e-12]
+    if ok:
+        return max(ok, key=lambda t: (round(ds[t]["f1"], 9), round(ds[t]["precision"], 9), t)), True
+    return max(GRID, key=lambda t: (round(ds[t]["precision"], 9), round(ds[t]["f1"], 9), t)), False
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--features", nargs="+", required=True)
@@ -61,6 +75,8 @@ def main(argv=None):
     ap.add_argument("--report", required=True)
     ap.add_argument("--dev-frac", type=float, default=0.2)
     ap.add_argument("--refs", nargs="*", default=[])
+    ap.add_argument("--baseline-dev-precision", type=float,
+                    help="the baseline method's pooled primary precision on the same dev pages (required with --refs)")
     ap.add_argument("--source-weight", action="append", default=[], help="NAME=WEIGHT for a label source")
     ap.add_argument("--importance-repeats", type=int, default=5)
     a = ap.parse_args(argv)
@@ -82,6 +98,9 @@ def main(argv=None):
     refs = {}
     for path in a.refs:
         refs.update(json.load(open(path))["pages"])
+    if refs and a.baseline_dev_precision is None:
+        raise SystemExit("--refs needs --baseline-dev-precision (the threshold rule's precision floor)")
+    rep["baseline_dev_precision"] = a.baseline_dev_precision
     # Beyond Words negatives: weighted so their total weight is at most the reference negatives' (coordinator
     # decision); the factor is chosen on the dev split only, then frozen with the model.
     neg_w = sum(r["weight"] for r in tr_rows if r.get("label_source") == "negatives" and r["label"] == 0)
@@ -99,7 +118,8 @@ def main(argv=None):
             for fac in NEG_FACTORS:
                 c = gbdt.fit(tr_rows, dict(sw, negatives=fac * cap))
                 ds = dev_scores(dv_rows, gbdt.predict(c, dv_rows), refs)
-                trial[fac] = max(v["f1"] for v in ds.values())
+                t, _ = select_threshold(ds, a.baseline_dev_precision)
+                trial[fac] = ds[t]["f1"]
             fac = max(NEG_FACTORS, key=lambda f: (round(trial[f], 6), -f))
             sw["negatives"] = fac * cap
             rep["negatives_weight_search"] = {"factors_of_cap": {str(k): v for k, v in trial.items()}, "chosen_factor": fac}
@@ -120,7 +140,9 @@ def main(argv=None):
     if refs and dv_rows:
         ds = dev_scores(dv_rows, gbdt.predict(clf, dv_rows), refs)
         rep["dev_threshold_grid"] = {str(k): v for k, v in ds.items()}
-        threshold = max(GRID, key=lambda t: (round(ds[t]["f1"], 6), -abs(t - 0.5)))
+        threshold, qualified = select_threshold(ds, a.baseline_dev_precision)
+        rep["threshold_rule"] = {"floor": PRECISION_FLOOR, "qualified": qualified,
+                                 "picked_by": "best F1 within the precision floor" if qualified else "highest precision (none qualified)"}
     rep["threshold"] = threshold
     final = gbdt.fit(rows, sw)
     gbdt.save(final, a.out_model, {"threshold": threshold, "pages": len({r["page_id"] for r in rows}),

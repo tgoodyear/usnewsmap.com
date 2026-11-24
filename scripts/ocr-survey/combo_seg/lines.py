@@ -8,9 +8,8 @@ other candidate overlapping vertically; rule snap (a near-vertical dark run over
 max(6 px, 0.15% of page width) wide) else the 3-px line with the fewest dark pixels. Dark = gray <= the page's
 Otsu threshold.
 
-The fit is meant to run on the full-resolution page, as banded v2 does (build_features.py --paths). On the
-2,000 px page cache instead (no --paths), the 6 px rule minimum applies in cache pixels, which is wider than v2's
-at full resolution: a disclosed difference, used only where full-resolution pages are not available.
+The fit runs on the full-resolution page, as banded v2 does (build_features.py --paths, required); there is no
+page-cache fallback.
 """
 import os
 import sys

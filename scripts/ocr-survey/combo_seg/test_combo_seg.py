@@ -234,9 +234,10 @@ def test_negatives_weight_cap(tmp_path):
     rp.write_text(json.dumps({"pages": {"p%d" % s: ref for s in range(6)}}))
     with pytest.raises(SystemExit):
         train.main(["--features", str(fp), "--out-model", str(tmp_path / "m.pkl"), "--report", str(tmp_path / "r.json"),
-                    "--refs", str(rp), "--dev-frac", "0.34", "--source-weight", "negatives=1000"])
+                    "--refs", str(rp), "--dev-frac", "0.34", "--baseline-dev-precision", "0.5",
+                    "--source-weight", "negatives=1000"])
     train.main(["--features", str(fp), "--out-model", str(tmp_path / "m.pkl"), "--report", str(tmp_path / "r.json"),
-                "--refs", str(rp), "--dev-frac", "0.34"])
+                "--refs", str(rp), "--dev-frac", "0.34", "--baseline-dev-precision", "0.5"])
     rep = json.load(open(tmp_path / "r.json"))
     assert rep["negatives_weight_search"]["chosen_factor"] in train.NEG_FACTORS
     assert rep["source_weights"]["negatives"] <= rep["negatives_weight_cap"] + 1e-12
@@ -250,3 +251,65 @@ def test_export_pages_filter():
     assert out == [] and c["other_half_page"] == 1
     out, c = export_engutter.build(ex, tasks, segs, "s", set(), pages={"p"})
     assert out[0]["label"] == 0 and c["labelled_non_gold"] == 1
+
+
+def test_threshold_rule_precision_floor():
+    import train
+    assert train.GRID == (0.02, 0.05, 0.10, 0.20, 0.30, 0.50)
+    ds = {0.02: (0.80, 0.95), 0.05: (0.85, 0.90), 0.10: (0.89, 0.85), 0.20: (0.92, 0.70), 0.30: (0.95, 0.50),
+          0.50: (0.97, 0.30)}
+    ds = {t: {"precision": p, "recall": r, "f1": 2 * p * r / (p + r)} for t, (p, r) in ds.items()}
+    # floor 0.90 - 0.01 = 0.89: 0.10 (F1 0.870) beats 0.20 (0.797) and above; 0.05 has the best F1 (0.874) but fails it
+    assert train.select_threshold(ds, 0.90) == (0.10, True)
+    assert train.select_threshold(ds, 0.50) == (0.05, True)
+    # nobody reaches 0.99 - 0.01: the highest precision wins
+    assert train.select_threshold(ds, 0.99) == (0.50, False)
+
+
+def test_threshold_requires_baseline(tmp_path):
+    import train
+    rows = _rows(3)
+    fp = tmp_path / "f.jsonl"
+    fp.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    _, _, ref, _, _ = synth()
+    rp = tmp_path / "refs.json"
+    rp.write_text(json.dumps({"pages": {"p%d" % s: ref for s in range(3)}}))
+    with pytest.raises(SystemExit):
+        train.main(["--features", str(fp), "--out-model", str(tmp_path / "m.pkl"), "--report", str(tmp_path / "r.json"),
+                    "--refs", str(rp)])
+
+
+def test_build_features_requires_full_resolution(tmp_path):
+    import build_features
+    with pytest.raises(SystemExit):  # --paths is required
+        build_features.main(["--page-cache", str(tmp_path), "--detections-dir", str(tmp_path), "--out", str(tmp_path / "o")])
+    img = tmp_path / "a.png"
+    img.write_bytes(b"x")
+    z = tmp_path / "b.zip"
+    z.write_bytes(b"x")
+    paths = {"a": str(img), "b": str(z) + "!images/b.jpg", "c": str(tmp_path / "gone.parquet") + "#row=3",
+             "d": str(tmp_path / "gone.jpg")}
+    have, miss = build_features.split_available(["a", "b", "c", "d", "e"], paths)
+    assert have == ["a", "b"] and miss == ["c", "d", "e"]
+
+
+def test_build_features_lists_missing_pages(tmp_path):
+    import build_features
+    from PIL import Image
+    img, words, ref, det, boxes = synth()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    np.savez(cache / "p0.2000.npz", gray=img, size=np.array([W, H]))
+    Image.fromarray(img).save(tmp_path / "p0.png")
+    dd = tmp_path / "det"
+    dd.mkdir()
+    (dd / "v1.json").write_text(json.dumps({p: {"gutters": det["v1"], "width": W, "height": H} for p in ("p0", "p1")}))
+    (tmp_path / "refs.json").write_text(json.dumps({"pages": {"p0": ref, "p1": ref}}))
+    (tmp_path / "paths.json").write_text(json.dumps({"p0": str(tmp_path / "p0.png")}))
+    out = tmp_path / "f.jsonl"
+    build_features.main(["--page-cache", str(cache), "--detections-dir", str(dd), "--paths", str(tmp_path / "paths.json"),
+                         "--refs", str(tmp_path / "refs.json"), "--out", str(out), "--workers", "1"])
+    miss = json.load(open(str(out) + ".missing.json"))
+    assert miss["count"] == 1 and miss["pages"] == ["p1"] and miss["kept"] == 1
+    rows = [json.loads(ln) for ln in open(out)]
+    assert rows and {r["page_id"] for r in rows} == {"p0"}

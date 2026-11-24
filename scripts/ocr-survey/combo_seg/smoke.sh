@@ -49,10 +49,11 @@ done
 "$PY" "$C/combo_seg/wordboxes.py" --page-cache "$W/cache" --pages-from "$W/cg-refs.json" --out-dir "$W/words" --lang deu --workers 3
 for S in liberte cg; do
   "$PY" "$C/combo_seg/build_features.py" --page-cache "$W/cache" --detections-dir "$W/det-$S" --refs "$W/$S-refs.json" \
-      --words-dir "$W/words" --set-name "$S" --out "$W/feats-$S.jsonl" --workers 3
+      --paths "$W/$S-paths.json" --words-dir "$W/words" --set-name "$S" --out "$W/feats-$S.jsonl" --workers 3
 done
 "$PY" "$C/combo_seg/train.py" --features "$W/feats-liberte.jsonl" "$W/feats-cg.jsonl" --refs "$W/liberte-refs.json" "$W/cg-refs.json" \
-    --out-model "$W/model.pkl" --report "$W/train-report.json" --dev-frac 0.2
+    --out-model "$W/model.pkl" --report "$W/train-report.json" --dev-frac 0.2 \
+    --baseline-dev-precision "${BASELINE_DEV_P:-0}"   # smoke only: a real run passes the baseline's dev precision
 "$PY" "$C/combo_seg/infer.py" --features "$W/feats-liberte.jsonl" --model "$W/model.pkl" --pages-from "$W/liberte-refs.json" \
     --out "$W/detections-liberte.json"
 "$PY" - "$W" <<'EOF'
