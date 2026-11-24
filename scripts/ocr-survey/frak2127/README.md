@@ -11,8 +11,11 @@ a separate tree for the scoring step that comes later. No image, text or model i
 | `frak_norm.py` | The issue's normalisation, for training labels and for scoring |
 | `cut_lines.py` | PAGE-XML lines to `<name>.png` + `<name>.gt.txt`, with the split rule and the held-out checks |
 | `frak_score.py` | Reads crops at PSM 13 and scores them: normalised, pooled CER (refuses held-out paths) |
-| `train_b.py` | Arm B: the fixed budget and stopping rule, the dev-only checkpoint choice |
+| `train_b.py` | Arms B and C (`--arm C --synth-lstmf`): the fixed budget and stopping rule, the dev-only checkpoint choice |
 | `select_bank_pages.py` | Freezes arm C's US German bank pages and their exclusion manifest (amendment 1) |
+| `build_wordlist.py` | Arm C's German word list: DTA 1800–1899 core corpus plus wordfreq German, normalised |
+| `trusted_words.py` | Arm C: words where LoC and stock frak2021 agree, in the word list, cut as word crops |
+| `synth_lines.py` | Arm C: degradation tuned on dev, then synthetic training lines from the glyph bank |
 | `test_frak_norm.py` | Tests of the normalisation |
 
 ## Splits
@@ -78,3 +81,41 @@ Fraktur pilot pages, the reading-order fixtures, and #835's 1910 `iahi_feebas` p
 ranked by `sha256("2127:bank:" + page_id)`, queued by decade within each title, and taken a title at a
 time, at most 15 a title. It writes `pages.txt`, `pages.jsonl`, `exclusion-manifest.json` and
 `summary.json`. Needs `pyarrow`.
+
+## Arm C: glyph bank and synthetic lines (amendment 1)
+
+How the bank was built, in order. Every step ran in the dev CT as `nobody`.
+
+1. **Word list** (`build_wordlist.py`).
+   - The Deutsches Textarchiv's 1800–1899 core corpus as plain text
+     (`dta_kernkorpus_1800-1899_2020-09-23_text.zip` from deutschestextarchiv.de/download, CC BY-SA 4.0,
+     sha256 `3e90914b…3682`), every word seen at least twice.
+   - Plus wordfreq 3.1.1's `large_de` list (from the PyPI wheel, sha256 `4b1c6ecf…7473`; the list's
+     sha256 is `8ef04d3f…3c12`; word data CC BY-SA 4.0).
+   - Both are normalised with `frak_norm` and lower-cased.
+2. **LoC ALTO and scans.** The 250 bank pages' `ocr.xml` files come from their batches' bulk archives,
+   streamed through the CT so that only those files are kept. The scans come from the scan host's keep set.
+3. **Trusted words** (`trusted_words.py`).
+   - Stock frak2021 0.905 reads each page at PSM 3, writing TSV word boxes.
+   - A LoC word's partner is the frak2021 word with the highest IoU, which must be at least 0.5.
+   - A word is trusted when both readings normalise to the same string, its core has at least 3
+     letters and is letters only, and it is in the word list.
+   - Each trusted word is cut with `usnm_glyphs::word_crop`.
+4. **Bank** (Rust, `crates/usnm-glyphs`).
+   - `select_bank_words.py` limits the bank to fit the CT's disk. It takes trusted words in hash order
+     while any of their letters has fewer than 3,000 glyphs, so rare letters keep all their words.
+   - `usnm-glyphs build-words --words trusted/words-bank.jsonl --out bank` splits each crop into one glyph
+     per letter of the core (`split_word`). ſ is already folded into s, umlauts and ß are letters of
+     their own, and a ligature gives its letters.
+   - `usnm-glyphs clean --bank bank --k 9 --min-agree 0.5` is the same neighbour vote and settings as
+     `chr_phoenix`.
+5. **Synthetic lines** (`synth_lines.py`).
+   - The text is real training lines' text (never dev or held-out text).
+   - Each glyph is set at its own height in its word crop, and marks are set from DejaVu Serif.
+   - `tune` picks one of five degradation presets. The criterion is the operation profile and CER of
+     stock frak2021 on 800 rendered lines, against stock frak2021 on the 17 dev pages' real lines.
+   - `render` makes one synthetic line per three of B's real training lines, scales them to 36 px and
+     writes `.lstmf` files.
+   - No traced font: `chr_phoenix`'s synthetic lines didn't use theirs either.
+6. **Training.** `train_b.py --arm C --synth-lstmf …` uses B's budget, rule and seed, on B's real lines
+   plus the synthetic lines.

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Arm B of #2127: fine-tune frak2021 0.905 on the real training lines; pick the checkpoint on dev.
+"""Arms B and C of #2127: fine-tune frak2021 0.905 on the real training lines (B), or on them plus
+arm C's synthetic lines (C, --arm C --synth-lstmf); pick the checkpoint on dev.
 
 The budget and the stopping rule are fixed here, before any run, and are the same for arm C:
 
@@ -64,7 +65,11 @@ def main():
     ap.add_argument("--start", required=True); ap.add_argument("--heldout", required=True)
     ap.add_argument("--split-csv", required=True); ap.add_argument("--work", required=True)
     ap.add_argument("--jobs", type=int, default=20)
+    ap.add_argument("--arm", default="B", choices=["B", "C"], help="C adds --synth-lstmf to B's real lines")
+    ap.add_argument("--synth-lstmf", help="arm C: the synthetic lines' .lstmf folder (synth_lines.py render)")
     a = ap.parse_args()
+    A = a.arm
+    assert (A == "C") == bool(a.synth_lstmf), "arm C, and only arm C, takes --synth-lstmf"
     assert sha256(a.start) == START_SHA256, "start model is not frak2021 0.905"
     heldout = set(open(a.heldout).read().split())
     test = {r["Filename"] for r in csv.DictReader(open(a.split_csv)) if r["Test"] == "1"}
@@ -90,16 +95,21 @@ def main():
             skipped += 1
             continue
         train.append(p)
+    real_n = len(train)
+    synth = sorted(glob.glob(os.path.join(a.synth_lstmf, "*.lstmf"))) if a.synth_lstmf else []
+    for p in synth:
+        assert os.path.basename(p).startswith("synth__"), p
+    train += synth
     random.Random(SEED).shuffle(train)
     dev = sorted(glob.glob(os.path.join(a.dev_lstmf, "*.lstmf")))
     dev_png_dir = os.path.join(a.lines, "dev")
     dev_pngs = [os.path.basename(p)[:-4] for p in glob.glob(os.path.join(dev_png_dir, "*.png"))]
-    check([lstmf_name(p) for p in train], "train")
+    check([lstmf_name(p) for p in train if not os.path.basename(p).startswith("synth__")], "train")
     check([lstmf_name(p) for p in dev] + dev_pngs, "dev")
     assert len({page_of(n)[1] for n in dev_pngs}) == 17
     open(os.path.join(a.work, "train.list"), "w").write("\n".join(train) + "\n")
     open(os.path.join(a.work, "dev.list"), "w").write("\n".join(dev) + "\n")
-    log(f"train.list {len(train)} lines ({skipped} unencodable left out); dev.list {len(dev)}; dev crops {len(dev_pngs)}")
+    log(f"train.list {len(train)} lines ({real_n} real, {len(synth)} synthetic; {skipped} unencodable left out); dev.list {len(dev)}; dev crops {len(dev_pngs)}")
 
     start = os.path.join(a.work, "frak2021.traineddata")
     if not os.path.exists(start):
@@ -120,7 +130,7 @@ def main():
     def evaluate(it, model):
         if it in done:
             return done[it]
-        lang = f"frakB_{it}"
+        lang = f"frak{A}_{it}"
         dst = os.path.join(tessdata, lang + ".traineddata")
         if model != dst:
             shutil.copy(model, dst)
@@ -137,10 +147,10 @@ def main():
         return res
 
     evaluate(0, start)
-    ckpt = os.path.join(a.work, "out", "frakB_checkpoint")
+    ckpt = os.path.join(a.work, "out", f"frak{A}_checkpoint")
     best_it, best, since = None, None, 0
     for it in range(EVAL_EVERY, MAX_ITERATIONS + 1, EVAL_EVERY):
-        model = os.path.join(tessdata, f"frakB_{it}.traineddata")
+        model = os.path.join(tessdata, f"frak{A}_{it}.traineddata")
         if it not in done:
             cont = ckpt if os.path.exists(ckpt) else os.path.join(a.work, "frak2021.lstm")
             log(f"training to iteration {it} from {os.path.basename(cont)}")
@@ -148,7 +158,7 @@ def main():
             off = os.path.getsize(logf) if os.path.exists(logf) else 0
             with open(logf, "a") as lf:
                 rc = subprocess.run(["lstmtraining", "--continue_from", cont, "--traineddata", start,
-                                     "--model_output", os.path.join(a.work, "out", "frakB"),
+                                     "--model_output", os.path.join(a.work, "out", f"frak{A}"),
                                      "--train_listfile", os.path.join(a.work, "train.list"),
                                      "--eval_listfile", os.path.join(a.work, "dev.list"),
                                      "--max_iterations", str(it), "--target_error_rate", str(TARGET_ERROR_RATE),
@@ -164,7 +174,7 @@ def main():
             subprocess.run(["lstmtraining", "--stop_training", "--continue_from", ckpt, "--traineddata", start,
                             "--model_output", model], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             # Keep this point's trainer state too, so any checkpoint can be revisited.
-            shutil.copy(ckpt, os.path.join(a.work, "out", f"frakB_{it}.checkpoint"))
+            shutil.copy(ckpt, os.path.join(a.work, "out", f"frak{A}_{it}.checkpoint"))
         r = evaluate(it, model)
         if best is None or r["cer"] < best:
             best_it, best, since = it, r["cer"], 0
@@ -173,11 +183,11 @@ def main():
         if since >= PATIENCE:
             log(f"stopping: {PATIENCE} evaluations without a better dev CER")
             break
-    final = os.path.join(a.work, "frak2127_b.traineddata")
-    shutil.copy(os.path.join(tessdata, f"frakB_{best_it}.traineddata"), final)
+    final = os.path.join(a.work, f"frak2127_{A.lower()}.traineddata")
+    shutil.copy(os.path.join(tessdata, f"frak{A}_{best_it}.traineddata"), final)
     out = {"selected_iteration": best_it, "dev_cer": best, "start_dev_cer": done[0]["cer"],
            "last_iteration": max(done), "sha256": sha256(final), "max_iterations": MAX_ITERATIONS,
-           "eval_every": EVAL_EVERY, "patience": PATIENCE, "seed": SEED, "train_lines": len(train),
+           "eval_every": EVAL_EVERY, "patience": PATIENCE, "seed": SEED, "arm": A, "train_lines": len(train), "real_lines": real_n, "synth_lines": len(synth),
            "unencodable_left_out": skipped, "dev_lstmf": len(dev), "dev_crops": len(dev_pngs)}
     json.dump(out, open(os.path.join(a.work, "result.json"), "w"), indent=1)
     log("done " + json.dumps(out))

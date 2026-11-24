@@ -4,6 +4,7 @@
 //! ```sh
 //! usnm-glyphs build --alto-dir loc --images images --out bank
 //! usnm-glyphs clean --bank bank
+//! usnm-glyphs build-words --words trusted/words.jsonl --out bank   # crops cut elsewhere (#2127)
 //! usnm-glyphs add-checked --bank bank --out bank-checked --export check-chr-rare.jsonl \
 //!     --index glyph-index.jsonl --images images --exclude-manifest manifest.json
 //! ```
@@ -39,6 +40,18 @@ enum Cmd {
         alto_dir: PathBuf,
         #[arg(long)]
         images: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value_t = 8)]
+        threads: usize,
+    },
+    /// Cut and label the glyphs of trusted words already cut as crops, from any script (#2127):
+    /// `--words` is JSON lines of `{"id", "page", "crop", "label", "box", ...}`, where `crop` is a
+    /// word crop (usnm_glyphs::word_crop) relative to the words file's folder, `box` its place on
+    /// the scan and `label` the word's letters. Other fields are kept in each glyph's row.
+    BuildWords {
+        #[arg(long)]
+        words: PathBuf,
         #[arg(long)]
         out: PathBuf,
         #[arg(long, default_value_t = 8)]
@@ -91,6 +104,11 @@ fn main() -> Result<()> {
             out,
             threads,
         } => build(&alto_dir, &images, &out, threads),
+        Cmd::BuildWords {
+            words,
+            out,
+            threads,
+        } => build_words(&words, &out, threads),
         Cmd::Clean {
             bank,
             k,
@@ -297,6 +315,116 @@ fn build(alto_dir: &Path, images: &Path, out: &Path, threads: usize) -> Result<(
     println!(
         "{}",
         json!({"stats": summary["stats"], "glyphs": glyphs, "letters": per.len(), "missing": missing})
+    );
+    Ok(())
+}
+
+/// The glyph rows and features of one trusted-word crop, or `None` when it doesn't split.
+/// A word's glyph rows and their features, in the same order.
+type WordOut = (Vec<Value>, Vec<Vec<f32>>);
+
+fn build_word(w: &Value, base: &Path, out: &Path) -> Result<Option<WordOut>> {
+    let get = |k: &str| {
+        w[k].as_str()
+            .with_context(|| format!("word row without {k}: {w}"))
+    };
+    let (id, page, label) = (get("id")?, get("page")?, get("label")?);
+    let crop = image::open(base.join(get("crop")?))?.to_luma8();
+    let ink = Ink::of(&crop);
+    let letters: Vec<char> = label.chars().collect();
+    let Some(boxes) = split_word(&ink, letters.len()) else {
+        return Ok(None);
+    };
+    let at = |i: usize| w["box"][i].as_u64().unwrap_or(0) as u32;
+    let (cx, cy) = (at(0), at(1));
+    let (mut rows, mut feats) = (Vec::new(), Vec::new());
+    for (i, (ch, b)) in letters.iter().zip(&boxes).enumerate() {
+        let gid = format!("{id}_{i}");
+        let dir = out.join("glyphs").join(format!("{:04x}", u32::from(*ch)));
+        fs::create_dir_all(&dir)?;
+        let (gx0, gy0) = (b[0].saturating_sub(2), b[1].saturating_sub(2));
+        let (gx1, gy1) = ((b[2] + 2).min(crop.width()), (b[3] + 2).min(crop.height()));
+        let glyph: GrayImage =
+            image::imageops::crop_imm(&crop, gx0, gy0, gx1 - gx0, gy1 - gy0).to_image();
+        glyph.save(dir.join(format!("{gid}.png")))?;
+        feats.push(feature(&ink, *b));
+        let mut row = w.clone();
+        row["id"] = json!(gid);
+        row["word_id"] = json!(id);
+        row["letter"] = json!(ch.to_string());
+        row["page"] = json!(page);
+        row["word"] = json!(label);
+        row["how"] = json!("agree");
+        row["position"] = json!(i);
+        row["initial"] = json!(i == 0);
+        row["box"] = json!([cx + b[0], cy + b[1], cx + b[2], cy + b[3]]);
+        row["crop_box"] = w["box"].clone();
+        rows.push(row);
+    }
+    Ok(Some((rows, feats)))
+}
+
+fn build_words(words: &Path, out: &Path, threads: usize) -> Result<()> {
+    anyhow::ensure!(
+        !out.join("index.jsonl").exists(),
+        "{} already holds a bank",
+        out.display()
+    );
+    fs::create_dir_all(out.join("glyphs"))?;
+    let base = words.parent().unwrap_or(Path::new("."));
+    let rows = read_jsonl(words)?;
+    let t = threads.max(1);
+    let results: Vec<(usize, Result<Option<WordOut>>)> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..t)
+            .map(|k| {
+                let rows = &rows;
+                s.spawn(move || {
+                    rows.iter()
+                        .enumerate()
+                        .filter(|(i, _)| i % t == k)
+                        .map(|(i, w)| (i, build_word(w, base, out)))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let mut all: Vec<_> = handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("a word thread"))
+            .collect();
+        all.sort_by_key(|(i, _)| *i);
+        all
+    });
+    let mut index = BufWriter::new(fs::File::create(out.join("index.jsonl"))?);
+    let mut fout = BufWriter::new(fs::File::create(out.join("features.f32"))?);
+    let (mut split_ok, mut split_failed, mut glyphs) = (0u64, 0u64, 0u64);
+    let mut per: BTreeMap<String, u64> = BTreeMap::new();
+    for (_, r) in results {
+        let Some((rows, feats)) = r? else {
+            split_failed += 1;
+            continue;
+        };
+        split_ok += 1;
+        for (row, f) in rows.iter().zip(&feats) {
+            writeln!(index, "{row}")?;
+            for x in f {
+                fout.write_all(&x.to_le_bytes())?;
+            }
+            *per.entry(row["letter"].as_str().unwrap_or_default().to_owned())
+                .or_default() += 1;
+            glyphs += 1;
+        }
+    }
+    index.flush()?;
+    fout.flush()?;
+    let summary = json!({"stats": {"words": rows.len(), "split_ok": split_ok, "split_failed": split_failed},
+        "glyphs": glyphs, "letters": per.len(), "per_letter": per, "feature_side": FEATURE_SIDE});
+    fs::write(
+        out.join("summary-build.json"),
+        serde_json::to_string_pretty(&summary)?,
+    )?;
+    println!(
+        "{}",
+        json!({"stats": summary["stats"], "glyphs": glyphs, "letters": per.len()})
     );
     Ok(())
 }
