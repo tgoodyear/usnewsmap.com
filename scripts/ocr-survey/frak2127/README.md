@@ -10,6 +10,8 @@ a separate tree for the scoring step that comes later. No image, text or model i
 | --- | --- |
 | `frak_norm.py` | The issue's normalisation, for training labels and for scoring |
 | `cut_lines.py` | PAGE-XML lines to `<name>.png` + `<name>.gt.txt`, with the split rule and the held-out checks |
+| `frak_score.py` | Reads crops at PSM 13 and scores them: normalised, pooled CER (refuses held-out paths) |
+| `train_b.py` | Arm B: the fixed budget and stopping rule, the dev-only checkpoint choice |
 | `test_frak_norm.py` | Tests of the normalisation |
 
 ## Splits
@@ -41,3 +43,25 @@ python3 cut_lines.py --data DATA --heldout heldout-pages.txt \
     --unicharset frak2021.lstm-unicharset --tessdata TESSDATA --out lines --lstmf-out lstmf \
     --heldout-out lines-heldout --jobs 12
 ```
+
+## Arm B training
+
+`train_b.py` fine-tunes `frak2021` 0.905 (sha256 checked against `ocr/engines/tesseract/models.lock`)
+with `lstmtraining --continue_from`, same character set, as `chr_finetune.sh` does. Fixed before the
+run, and the same for arm C:
+
+- Budget: 200,000 training iterations (one line each).
+- Every 10,000 iterations the checkpoint becomes a model and is read on the 17 dev pages
+  (`frak_score.py`); training stops early after 5 evaluations in a row without a better dev CER.
+- The chosen model is the evaluated checkpoint with the lowest dev CER (earliest on a tie). The start
+  model's dev CER is reported as iteration 0 but is not a candidate.
+- `lstmtraining`'s evaluation list is the dev lines. The training list is shuffled with seed 2127.
+
+```sh
+python3 train_b.py --lines lines --train-lstmf lstmf/train --dev-lstmf lstmf/dev \
+    --start frak2021-0.905.traineddata --heldout heldout-pages.txt --split-csv cg/split.csv --work work/b
+```
+
+Outputs in `--work`: `dev_scores.jsonl` (one row per evaluation), `dev_<iteration>.jsonl` (every dev
+line's reading), `models/frakB_<iteration>.traineddata`, `train.log`, `result.json` and the chosen
+`frak2127_b.traineddata`.
