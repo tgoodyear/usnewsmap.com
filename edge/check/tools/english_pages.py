@@ -18,7 +18,7 @@ Tesseract. Tesseract `eng` at PSM 3 with the worker's arguments, as #2122's arm 
 WORK/tess/<doc_id>.{txt,tsv}; a failure is recorded, not retried. WORK/meta.json records the Tesseract version,
 the traineddata path and sha256, this script's sha256 and the arguments. --tess-lang MODEL and --tessdata-dir DIR
 read with another model at the same settings (#2127's US test: `--tess-lang frak2127_b`, `-l frak2127_b --psm 3
---dpi 300 --tessdata-dir DIR`).
+--dpi 300 --tessdata-dir DIR`; DIR needs the model and a configs/ folder holding Tesseract's txt and tsv configs).
 
 Writes WORK/pages.jsonl, one row per page with both readings (tess_pick.py's input; paths relative to WORK), and
 WORK/prepare-report.json (pages read, left out and why).
@@ -117,13 +117,31 @@ def tess_args(lang="eng", tessdata_dir=None):
     return args + (["--tessdata-dir", tessdata_dir] if tessdata_dir else [])
 
 
+def _run_tess(image, base, args):
+    env = dict(os.environ, OMP_THREAD_LIMIT="1")
+    return subprocess.run(["tesseract", image, base] + args + ["txt", "tsv"], env=env, stdin=subprocess.DEVNULL,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+
+
 def tesseract(job):
+    """(doc_id, return code, stderr tail, how). A JP2 that crashes Tesseract's own JPEG 2000 path (SIGFPE,
+    TESS-CRASH.md on enpick-2122) is decoded by Pillow to a lossless PNG of the same pixels and read again
+    (how = "png_fallback"); the PNG is deleted after the read."""
     doc_id, image, out_dir, args = job
     base = os.path.join(out_dir, doc_id)
-    env = dict(os.environ, OMP_THREAD_LIMIT="1")
-    p = subprocess.run(["tesseract", image, base] + args + ["txt", "tsv"], env=env, stdin=subprocess.DEVNULL,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-    return doc_id, p.returncode, p.stderr[-2000:]
+    p = _run_tess(image, base, args)
+    if p.returncode in (-8, 136) and image.endswith(".jp2"):
+        from PIL import Image
+        Image.MAX_IMAGE_PIXELS = None
+        png = base + ".fallback.png"
+        with Image.open(image) as im:
+            im.save(png)
+        try:
+            p = _run_tess(png, base, args)
+        finally:
+            os.remove(png)
+        return doc_id, p.returncode, p.stderr[-2000:], "png_fallback"
+    return doc_id, p.returncode, p.stderr[-2000:], "direct"
 
 
 def tess_meta(args=TESS_ARGS, lang="eng", tessdata_dir=None):
@@ -201,14 +219,16 @@ def main(argv=None):
     meta["selection_sha256"] = sha256_file(a.selection)
     json.dump(meta, open(os.path.join(a.work, "meta.json"), "w"), indent=1, sort_keys=True)
     jobs = [(d, scans[d], os.path.join(a.work, "tess"), targs) for d in sorted(alto)]
-    errors = {}
+    errors, read_how = {}, {}
     with mp.Pool(a.workers) as pool:
-        for n, (d, code, err) in enumerate(pool.imap_unordered(tesseract, jobs), 1):
-            if code != 0:
+        for n, (d, code, err, how) in enumerate(pool.imap_unordered(tesseract, jobs), 1):
+            read_how[d] = how
+            if code != 0 or not os.path.exists(os.path.join(a.work, "tess", d + ".tsv")):
                 errors[d] = err
                 left[d] = "tesseract_failed"
             print(f"tesseract {n}/{len(jobs)} {d} rc={code}", flush=True)
     rep["tesseract_errors"] = errors
+    rep["png_fallback"] = sorted(d for d, h in read_how.items() if h == "png_fallback")
     with open(os.path.join(a.work, "pages.jsonl"), "w") as f:
         for r in sel:
             d = r["doc_id"]
@@ -219,7 +239,7 @@ def main(argv=None):
                 "page": r["path_form"], "page_id": d, "source": source_url(d), "date": m["date"],
                 "label": "%s, %s, page %d" % (m["lccn"], m["date"], int(m["seq"])),
                 "alto": os.path.join("alto", d + ".xml"), "image": os.path.abspath(scans[d]),
-                "tsv": os.path.join("tess", d + ".tsv"),
+                "tsv": os.path.join("tess", d + ".tsv"), "tess_input": read_how.get(d),
                 "damage_rate": float(r["damage_rate"]) if r.get("damage_rate") else None}) + "\n")
     rep["written"] = len(sel) - len(left)
     json.dump(rep, open(os.path.join(a.work, "prepare-report.json"), "w"), indent=1, sort_keys=True)
