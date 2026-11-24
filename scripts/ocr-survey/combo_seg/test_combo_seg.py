@@ -207,3 +207,46 @@ def test_wordbox_parsers(tmp_path):
                     '</PrintSpace></Page></Layout></alto>')
     w, l_ = wordboxes.alto_boxes(str(alto), 1000, 1500)
     assert w == [[50.0, 100.0, 125.0, 115.0, 90.0]] and l_ == [[50.0, 100.0, 250.0, 115.0]]
+
+
+def test_v2_lines_pool_like_the_v2_scoring_adapter():
+    import refit
+    v1 = [[[640, 660, 200, 700]]]
+    ln = refit.v1_lines(v1)[0][0]
+    ln = dict(ln, x_top=645.0, x_bottom=655.0, fit="white", theta=0.5)
+    ps = pool.pieces({"v2": [[ln]]})
+    assert ps[0]["x0"] == 640.0 and ps[0]["x1"] == 660.0 and ps[0]["xc"] == 650.0
+    assert [ps[0][k] for k in ("x0", "x1", "y0", "y1")] == refit.scoring_gutters([[ln]])[0][0]
+    _, cands = pool.pool_page({"v2": [[ln]], "v1": v1}, W, H)
+    assert len(cands) == 1 and cands[0]["atoms"][0]["x_source"] == "v2"
+
+
+def test_negatives_weight_cap(tmp_path):
+    import train
+    rows = _rows(6)
+    for r in rows[:40]:
+        if r["label"] == -1:
+            r.update(label=0, label_source="negatives")
+    fp = tmp_path / "f.jsonl"
+    fp.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    _, _, ref, _, _ = synth()
+    rp = tmp_path / "refs.json"
+    rp.write_text(json.dumps({"pages": {"p%d" % s: ref for s in range(6)}}))
+    with pytest.raises(SystemExit):
+        train.main(["--features", str(fp), "--out-model", str(tmp_path / "m.pkl"), "--report", str(tmp_path / "r.json"),
+                    "--refs", str(rp), "--dev-frac", "0.34", "--source-weight", "negatives=1000"])
+    train.main(["--features", str(fp), "--out-model", str(tmp_path / "m.pkl"), "--report", str(tmp_path / "r.json"),
+                "--refs", str(rp), "--dev-frac", "0.34"])
+    rep = json.load(open(tmp_path / "r.json"))
+    assert rep["negatives_weight_search"]["chosen_factor"] in train.NEG_FACTORS
+    assert rep["source_weights"]["negatives"] <= rep["negatives_weight_cap"] + 1e-12
+
+
+def test_export_pages_filter():
+    tasks = [{"id": "t1", "set": "s", "private": {"segment_id": "s1"}}]
+    segs = [{"segment_id": "s1", "page_id": "p", "x": 1, "y0": 0, "y1": 9, "method": "m", "role": "banded"}]
+    ex = [{"id": "t1", "set": "s", "kind": "gutter", "settled": True, "outcome": "b", "counts": {}}]
+    out, c = export_engutter.build(ex, tasks, segs, "s", set(), pages={"q"})
+    assert out == [] and c["other_half_page"] == 1
+    out, c = export_engutter.build(ex, tasks, segs, "s", set(), pages={"p"})
+    assert out[0]["label"] == 0 and c["labelled_non_gold"] == 1

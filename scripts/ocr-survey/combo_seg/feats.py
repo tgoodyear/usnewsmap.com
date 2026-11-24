@@ -20,6 +20,8 @@ Labels (one per atom, from its output piece, the fitted line's x range over the 
     does); its text share is the share inside a body-text zone shrunk by 1% (score.text_pieces). Positive if
     the matched share >= 0.5; negative if the text share >= 0.5; otherwise unlabelled (the scorer's unscored
     zone (c)). An atom more than half inside an excluded region is unlabelled (the scorer ignores it).
+    Chronicling Germany references (cg_refs.py, the Europeana rule) mark only vertical separators as gutters, so
+    its positives are ruled gutters only; un-ruled gaps there fall outside the zones and stay unlabelled.
   - negatives-only pages (Beyond Words): negative if at least half the line's height lies inside a marked
     non-text box (headlines only when at least 25% of the page width wide, as in the banded v2 plan's step 2);
     otherwise unlabelled.
@@ -247,7 +249,7 @@ def page_rows(pid, detections, size, gray, boxes=None, words=None, ref=None, neg
         y0, y1 = a["y0"], a["y1"]
         others = [o["x_start"] * s for cj, aj, o in all_atoms if cj != ci and _y_overlap(o["y0"], o["y1"], y0, y1) > 0
                   and abs(o["x_start"] - a["x_start"]) * s >= 1]
-        f = lines.fit(ink, a["x_start"] * s, y0 * sy, y1 * sy, a["half_gutter"] * s, others, px_scale=s)
+        f = lines.fit(ink, a["x_start"] * s, y0 * sy, y1 * sy, a["half_gutter"] * s, others)
         if f is None:
             continue
         xt, xb = f["x_top"] / s, f["x_bottom"] / s

@@ -6,14 +6,14 @@ Writes, in --out-dir:
   as-boxes.json    American Stories boxes (conf floor 0.01, agnostic NMS 0.1), {page id: [[x0, y0, x1, y1, conf, class]]}
   tr-boxes.json    trained YOLOv8m boxes (conf floor 0.01, per-class NMS 0.7, imgsz 1280), same shape
 Gutters from the two box sets are drawn at pooling time (as at 0.01, tr at 0.25), by diag.gutters_generic.
-The banded v2 finder is not run here: when branch banded-v2-2107 lands, its output is given to
-build_features.py as v2.json.
+  v2-lines.json    with --paths: banded v2 (branch banded-v2-2107, 54eb0e99), v1 refitted on the full-resolution page
+                   by layout_columns/refit.py via layout_diag/v2common.run_v2; {"pages": {id: v2 lines}}
 
 American Stories: Dell et al., arXiv:2308.12477; ONNX mirror NealCaren/american-stories-onnx (research use only:
 weights are never committed, the path is a flag). Trained model: Ultralytics YOLOv8 (AGPL-3.0), #2107 best.pt.
 
     detect.py --page-cache DIR --pages-from refs.json --out-dir DIR --as-model PATH --as-sha256 HEX
-              [--trained-model best.pt --trained-sha256 HEX] [--threads 4] [--shard-index I --shard-count N]
+              [--trained-model best.pt --trained-sha256 HEX] [--paths paths.json] [--threads 4] [--shard-index I --shard-count N]
 """
 import argparse
 import hashlib
@@ -56,6 +56,7 @@ def main(argv=None):
     ap.add_argument("--trained-model")
     ap.add_argument("--trained-sha256")
     ap.add_argument("--threads", type=int, default=4)
+    ap.add_argument("--paths", help="page id -> image: also run banded v2 (refit on the full-resolution page)")
     ap.add_argument("--shard-index", type=int, default=0)
     ap.add_argument("--shard-count", type=int, default=1)
     a = ap.parse_args(argv)
@@ -78,12 +79,20 @@ def main(argv=None):
     ids = page_ids(a.pages_from)[a.shard_index:: a.shard_count]
     os.makedirs(a.out_dir, exist_ok=True)
     p0 = columns.Params()
-    v1, asb, trb = {}, {}, {}
+    v1, asb, trb, v2 = {}, {}, {}, {}
+    paths = json.load(open(a.paths)) if a.paths else None
+    if paths is not None:
+        sys.path.insert(0, os.path.join(HERE, "..", "layout_diag"))
+        import v2common
     t0 = time.time()
     for n, pid in enumerate(ids, 1):
         gray, size = columns.load_cached(a.page_cache, pid)
         sx, sy = size[0] / gray.shape[1], size[1] / gray.shape[0]
         v1[pid] = {"gutters": columns.detect(gray, size, "banded", p0), "height": size[1], "width": size[0]}
+        if paths is not None:  # banded v2: v1 refitted on the full-resolution page (v2common.run_v2)
+            _, size2, full = v2common.load_page(v2common.read_bytes(paths[pid]))
+            assert tuple(size2) == tuple(size), "page cache and image differ in size: " + pid
+            thr, v2[pid] = v2common.run_v2(v1[pid]["gutters"], full)
         asb[pid] = [[round(d[0] * sx), round(d[1] * sy), round(d[2] * sx), round(d[3] * sy), round(d[4], 3), asmodel.NAMES[d[5]]]
                     for d in det.boxes(gray)]
         if tr is not None:
@@ -99,6 +108,9 @@ def main(argv=None):
     v1["_meta"] = {"method": "banded", "params": "columns.Params() defaults", "pages": len(ids)}
     json.dump(v1, open(os.path.join(a.out_dir, "v1%s.json" % sfx), "w"), sort_keys=True)
     json.dump(asb, open(os.path.join(a.out_dir, "as-boxes%s.json" % sfx), "w"), sort_keys=True)
+    if paths is not None:
+        json.dump({"_meta": {"method": "banded v2 (layout_columns/refit.py)", "pages": len(ids)}, "pages": v2},
+                  open(os.path.join(a.out_dir, "v2-lines%s.json" % sfx), "w"), sort_keys=True)
     if tr is not None:
         json.dump(trb, open(os.path.join(a.out_dir, "tr-boxes%s.json" % sfx), "w"), sort_keys=True)
     return 0

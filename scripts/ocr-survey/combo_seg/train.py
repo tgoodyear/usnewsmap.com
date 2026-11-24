@@ -4,7 +4,10 @@
 A page-level dev split (sha256("2107:comboseg:dev:"+page id) order, --dev-frac of the pages) is held out from
 fitting. On it the report gives the weighted AUC, label counts and permutation importances (sklearn, 5 repeats,
 random_state 2107, scoring ROC AUC). With --refs, the keep threshold is chosen on the dev pages as the one with
-the best pooled score.py primary F1 over a fixed grid; the final model is then refitted on all pages. Nothing
+the best pooled score.py primary F1 over a fixed grid; the final model is then refitted on all pages.
+Beyond Words negatives (label_source "negatives") are weighted so that their total weight is at most that of the
+reference-set negatives: the weight is cap * f, with f from NEG_FACTORS chosen on the dev pages (best dev F1,
+ties to the smaller f), then frozen with the model. An explicit --source-weight negatives=W must not exceed the cap. Nothing
 here reads a test page; the caller is responsible for giving training pages only.
 
     train.py --features a.jsonl [b.jsonl ...] --out-model model.pkl --report report.json
@@ -25,6 +28,7 @@ import gbdt  # noqa: E402
 import score  # noqa: E402
 
 GRID = [round(t, 2) for t in np.arange(0.1, 0.91, 0.05)]
+NEG_FACTORS = (0.25, 0.5, 1.0)  # of the cap: total Beyond Words negative weight <= total reference negative weight
 
 
 def read_rows(paths):
@@ -75,6 +79,31 @@ def main(argv=None):
     rep = {"features": list(feats.FEATURES), "params": gbdt.PARAMS, "source_weights": sw, "dev_frac": a.dev_frac,
            "pages": {"train": len({r["page_id"] for r in tr_rows}), "dev": len(dev)},
            "atoms": {"train": counts(tr_rows), "dev": counts(dv_rows)}}
+    refs = {}
+    for path in a.refs:
+        refs.update(json.load(open(path))["pages"])
+    # Beyond Words negatives: weighted so their total weight is at most the reference negatives' (coordinator
+    # decision); the factor is chosen on the dev split only, then frozen with the model.
+    neg_w = sum(r["weight"] for r in tr_rows if r.get("label_source") == "negatives" and r["label"] == 0)
+    ref_w = sum(r["weight"] for r in tr_rows if r.get("label_source") == "ref" and r["label"] == 0)
+    if neg_w > 0:
+        cap = ref_w / neg_w
+        rep["negatives_weight_cap"] = cap
+        if "negatives" in sw:
+            if sw["negatives"] > cap + 1e-12:
+                raise SystemExit("--source-weight negatives=%g exceeds the cap %g" % (sw["negatives"], cap))
+        else:
+            if not (refs and dv_rows):
+                raise SystemExit("Beyond Words negatives need --refs and a dev split to choose their weight")
+            trial = {}
+            for fac in NEG_FACTORS:
+                c = gbdt.fit(tr_rows, dict(sw, negatives=fac * cap))
+                ds = dev_scores(dv_rows, gbdt.predict(c, dv_rows), refs)
+                trial[fac] = max(v["f1"] for v in ds.values())
+            fac = max(NEG_FACTORS, key=lambda f: (round(trial[f], 6), -f))
+            sw["negatives"] = fac * cap
+            rep["negatives_weight_search"] = {"factors_of_cap": {str(k): v for k, v in trial.items()}, "chosen_factor": fac}
+        rep["source_weights"] = sw
     clf = gbdt.fit(tr_rows, sw)
     lab_dv = [r for r in dv_rows if r["label"] in (0, 1)]
     if lab_dv:
@@ -87,9 +116,6 @@ def main(argv=None):
                                         random_state=gbdt.SEED)
             imp = sorted(zip(feats.FEATURES, pi.importances_mean, pi.importances_std), key=lambda t: -t[1])
             rep["permutation_importance_dev_auc"] = [{"feature": f, "mean": float(m), "std": float(s)} for f, m, s in imp]
-    refs = {}
-    for path in a.refs:
-        refs.update(json.load(open(path))["pages"])
     threshold = 0.5
     if refs and dv_rows:
         ds = dev_scores(dv_rows, gbdt.predict(clf, dv_rows), refs)

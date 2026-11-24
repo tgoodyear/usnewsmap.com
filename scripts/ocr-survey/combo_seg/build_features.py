@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Pool candidates, extract features and assign labels for the combined segmenter (#2107).
 
-Reads detect.py's outputs (v1.json, as-boxes.json, optional tr-boxes.json, optional v2.json from the banded v2
-finder), the page cache, optional word boxes (wordboxes.py) and one label source:
+Reads detect.py's outputs (v1.json, as-boxes.json, optional tr-boxes.json, optional v2-lines.json: banded v2 lines
+from detect.py --paths, or banded v2's own v1v2.json copied under that name), the page cache, optional word boxes (wordboxes.py) and one label source:
   --refs refs.json             reference pages (layout_columns/refs.py or cg_refs.py shape): positives and negatives
   --negatives negs.json        {page id: [[x0, y0, x1, y1, class], ...]} marked non-text boxes (Beyond Words):
                                negatives only
@@ -10,7 +10,7 @@ finder), the page cache, optional word boxes (wordboxes.py) and one label source
 With no label source the rows are unlabelled (inference). Writes one JSON line per atom (feats.page_rows).
 
     build_features.py --page-cache DIR --detections-dir DIR --out feats.jsonl [--pages-from FILE] [--refs FILE]
-                      [--negatives FILE] [--line-labels FILE] [--words-dir DIR] [--set-name NAME] [--workers 2]
+                      [--negatives FILE] [--line-labels FILE] [--words-dir DIR] [--paths paths.json] [--set-name NAME] [--workers 2]
                       [--as-conf 0.01] [--tr-conf 0.25]
 """
 import argparse
@@ -40,7 +40,12 @@ def load_dets(d):
         x = json.load(open(p))
         x.pop("_meta", None)
         return x
-    return {"v1": rd("v1.json"), "v2": rd("v2.json"), "as": rd("as-boxes.json"), "tr": rd("tr-boxes.json")}
+    out = {"v1": rd("v1.json"), "v2": None, "as": rd("as-boxes.json"), "tr": rd("tr-boxes.json")}
+    v2 = rd("v2-lines.json")
+    if v2 is not None:  # detect.py --paths, or banded v2's v1v2.json ({"pages": {id: {"v2_lines": ...}}})
+        pages = v2.get("pages", v2)
+        out["v2"] = {p: {"gutters": (x["v2_lines"] if isinstance(x, dict) else x)} for p, x in pages.items()}
+    return out
 
 
 def page_inputs(pid, size):
@@ -62,6 +67,11 @@ def page_inputs(pid, size):
 
 def _one(pid):
     gray, size = columns.load_cached(G["cache"], pid)
+    full = None
+    if G["paths"] is not None:  # the line fit runs on the full-resolution page, as banded v2 does
+        import v2common
+        _, size2, full = v2common.load_page(v2common.read_bytes(G["paths"][pid]))
+        assert tuple(size2) == tuple(size), "page cache and image differ in size: " + pid
     det, boxes = page_inputs(pid, size)
     words = None
     if G["words_dir"]:
@@ -71,7 +81,7 @@ def _one(pid):
     ref = G["refs"].get(pid) if G["refs"] is not None else None
     neg = G["negs"].get(pid, []) if G["negs"] is not None else None
     ll = G["lines"].get(pid, []) if G["lines"] is not None else None
-    return feats.page_rows(pid, det, size, gray, boxes=boxes, words=words, ref=ref, neg_boxes=neg, line_labels=ll,
+    return feats.page_rows(pid, det, size, full if full is not None else gray, boxes=boxes, words=words, ref=ref, neg_boxes=neg, line_labels=ll,
                            set_name=G["set_name"])
 
 
@@ -85,6 +95,7 @@ def main(argv=None):
     ap.add_argument("--negatives")
     ap.add_argument("--line-labels")
     ap.add_argument("--words-dir")
+    ap.add_argument("--paths", help="page id -> image (file, zip!member or parquet#row=N): fit lines at full resolution")
     ap.add_argument("--set-name")
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--as-conf", type=float, default=0.01)
@@ -92,7 +103,8 @@ def main(argv=None):
     ap.add_argument("--tr-box-floor", type=float, default=0.01, help="trained-model boxes kept for the crossing features")
     a = ap.parse_args(argv)
     G.update(cache=a.page_cache, dets=load_dets(a.detections_dir), words_dir=a.words_dir, set_name=a.set_name,
-             as_conf=a.as_conf, tr_conf=a.tr_conf, tr_floor=a.tr_box_floor, refs=None, negs=None, lines=None)
+             as_conf=a.as_conf, tr_conf=a.tr_conf, tr_floor=a.tr_box_floor, refs=None, negs=None, lines=None,
+             paths=json.load(open(a.paths)) if a.paths else None)
     if a.refs:
         G["refs"] = json.load(open(a.refs))["pages"]
     if a.negatives:

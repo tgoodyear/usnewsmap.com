@@ -23,7 +23,8 @@ Beyond Words (CC0): train pages with at least one marked non-text box (photograp
   editorial cartoon, map, advertisement, or a headline >= 25% of the page width): negatives only. Validation pages
   are the English false-gutter measure and are never used.
 en-gutter volunteer labels: tasks of set en2107-l2 by role; the bw-nontext gold negatives lie on Beyond Words
-  validation pages and are left out.
+  validation pages and are left out. The other pages split 50/50 by sha256("2107:comboseg:engutter:"+page_id):
+  engutter-train-pages.txt may train, engutter-test-pages.txt is the English test half.
 Finlam, Colorado, Europeana: listed with the reason they are left out or caveated.
 
     train_inventory.py --refs-dir DIR --ledger-root DIR --cg-inventory TSV --engutter-tasks FILE --out-dir DIR
@@ -174,10 +175,17 @@ def engutter(a, inv):
         c["%s / %s" % (pv["role"], pv["method"])] += 1
         pages[pv["method"]].add(pv["page_id"])
     trainable = [k for k in c if not k.endswith("bw-nontext")]
+    tp = sorted(set().union(*[pages[m] for m in pages if m != "bw-nontext"]), key=lambda p: (key("2107:comboseg:engutter:", p), p))
+    half = len(tp) // 2
+    sh_test = write_list(os.path.join(a.out_dir, "engutter-test-pages.txt"), sorted(tp[:half]))
+    sh_train = write_list(os.path.join(a.out_dir, "engutter-train-pages.txt"), sorted(tp[half:]))
     inv["en_gutter_l2"] = {"tasks_by_role_method": dict(sorted(c.items())),
                            "pages_by_method": {k: len(v) for k, v in sorted(pages.items())},
                            "pages_trainable": len(set().union(*[pages[m] for m in pages if m != "bw-nontext"])),
                            "tasks_trainable_if_settled": sum(c[k] for k in trainable),
+                           "split": {"rule": "first half of the trainable pages in sha256('2107:comboseg:engutter:'+page_id) order is test",
+                                     "test_pages": half, "train_pages": len(tp) - half,
+                                     "test_pages_sha256": sh_test, "train_pages_sha256": sh_train},
                            "settled_now": "see export_engutter.py summary"}
 
 

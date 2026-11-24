@@ -9,12 +9,17 @@ that gets features, a label and a keep/drop decision, so a gutter can be kept do
 it crosses a headline or an advertisement.
 
 Detector inputs are columns.py's gutter format (a gutter is a list of pieces [x0, x1, y0, y1]); a piece may
-instead be a dict {"seg": [x0, x1, y0, y1], "x_top", "x_bottom", "fit", "theta", "conf"} (a fitted line, as the
-banded v2 finder is to write them). Detector names, in the priority used to place an atom's starting x:
+instead be a dict {"seg": [x0, x1, y0, y1], "x_top", "x_bottom", "fit", "theta", "conf"}, or a banded v2 line
+as layout_columns/refit.refit_gutters writes it (v2eval.py saves them as pages[id]["v2_lines"]). Detector names, in the priority used to place an atom's starting x:
 v2 (banded v2), v1 (banded v1, 337fc0aa), as (American Stories article gutters at 0.01), tr (the trained
 YOLOv8m's article gutters at 0.25).
 """
+import os
+import sys
+
 import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "layout_columns"))
 
 DETECTORS = ("v2", "v1", "as", "tr")
 X_TOL = 0.01      # of page width: pieces closer than this in x line up (score.MARGIN)
@@ -24,8 +29,18 @@ MIN_ATOM = 0.004  # of page height: shorter atoms are dropped
 
 
 def as_piece(p):
-    """(x0, x1, y0, y1, extra dict) from a list piece or a dict piece."""
-    if isinstance(p, dict):
+    """(x0, x1, y0, y1, extra dict) from a list piece, a {"seg": ...} dict, or a banded v2 line.
+
+    A v2 line (layout_columns/refit.refit_gutters: x0, x1, y0, y1 of the v1 piece, x_top, x_bottom, half, fit,
+    theta, ...) becomes the piece refit.scoring_gutters scores: the v1 width centred on the line's x at the
+    piece's vertical centre; the line itself is kept in extra (x_top, x_bottom) to place the atom.
+    """
+    if isinstance(p, dict) and "x_top" in p and "half" in p and "seg" not in p:
+        import refit
+        xc = refit.line_x(p, (p["y0"] + p["y1"]) / 2.0)
+        s = [xc - p["half"], xc + p["half"], p["y0"], p["y1"]]
+        extra = {k: p[k] for k in ("x_top", "x_bottom", "fit", "theta") if k in p}
+    elif isinstance(p, dict):
         s = p["seg"]
         extra = {k: v for k, v in p.items() if k != "seg"}
     else:
