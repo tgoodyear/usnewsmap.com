@@ -101,9 +101,16 @@ class PageList(unittest.TestCase):
             select.write_text("ghn:sn83020866_1900-01-01_ed-1_seq-1\n")
             with self.assertRaises(SystemExit):
                 ghn_boxes.selected(pages, select)
-            path.write_text(json.dumps({**row, "source": "loc", "doc_id": "sn1_1900-01-01_ed-1_seq-1"}) + "\n")
+            for bad in ({**row, "source": "loc", "doc_id": "sn1_1900-01-01_ed-1_seq-1"},
+                        {**row, "doc_id": "ghn:../../escaped"}, {**row, "doc_id": "ghn:sn1/1900-01-01_ed-1_seq-1"}):
+                path.write_text(json.dumps(bad) + "\n")
+                with self.assertRaises(SystemExit):
+                    ghn_boxes.read_pages(path)
+            path.write_text((json.dumps(row) + "\n") * 2)
             with self.assertRaises(SystemExit):
                 ghn_boxes.read_pages(path)
+            with self.assertRaises(SystemExit):
+                ghn_boxes.boxes_path(tmp, "ghn:../../escaped")
 
 
 class Pilot(unittest.TestCase):
@@ -121,6 +128,10 @@ class Pilot(unittest.TestCase):
         self.assertEqual(len({pages[d]["batch"] for d in ids}), 1)
         self.assertFalse({page(1, "gua_cph"), page(2, "gua_cph"), page(1, "gua_cia"), page(2, "gua_cia")} & set(ids))
         self.assertEqual(ids, ghn_boxes.pilot_pages(pages, list(reversed(summary)), 5))
+        # A page listed twice in the summary counts once.
+        self.assertEqual(len(set(ghn_boxes.pilot_pages(pages, summary + summary, 7))), 7)
+        with self.assertRaises(SystemExit):
+            ghn_boxes.pilot_pages(pages, summary + summary, 8)
         with self.assertRaises(SystemExit):
             ghn_boxes.pilot_pages(pages, [], 5)
         # Fewer usable pages in the batch than the pilot takes: refused, not a shorter pilot.

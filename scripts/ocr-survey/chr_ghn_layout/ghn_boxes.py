@@ -47,6 +47,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -57,6 +58,8 @@ COLUMNS_PY = HERE / "frozen" / "columns_337fc0aa.py"
 COLUMNS_SHA256 = "37a9f2fb4da35f6f04e3a4f865db65e652324a483a5bb653504c346cf7834a04"
 TESSERACT = "5.5.0"
 FLAG_SHARE = 0.08
+# A GHN page's id (ADR-0026): `ghn:` and a LoC doc_id's shape, one safe path segment.
+DOC_ID = re.compile(r"ghn:[a-z0-9]{1,16}_[0-9]{4}-[0-9]{2}-[0-9]{2}_ed-[1-9][0-9]{0,3}_seq-[1-9][0-9]{0,4}")
 
 
 def sha256_file(path):
@@ -105,10 +108,14 @@ def line_id(tid):
 def read_pages(path):
     with open(path, encoding="utf-8") as f:
         rows = [json.loads(l) for l in f if l.strip()]
+    pages = {}
     for r in rows:
-        if r.get("source") != "ghn" or not r.get("doc_id", "").startswith("ghn:"):
-            sys.exit(f"{path}: {r.get('doc_id')!r} is not a GHN page")
-    return {r["doc_id"]: r for r in rows}
+        if r.get("source") != "ghn" or not DOC_ID.fullmatch(str(r.get("doc_id", ""))):
+            sys.exit(f"{path}: {r.get('doc_id')!r} is not a GHN page id")
+        if r["doc_id"] in pages:
+            sys.exit(f"{path}: {r['doc_id']} is listed twice")
+        pages[r["doc_id"]] = r
+    return pages
 
 
 def selected(pages, select):
@@ -148,6 +155,8 @@ def page_rows(rec, page, finder, classifier, flag_share):
 
 
 def boxes_path(out_dir, doc_id):
+    if not DOC_ID.fullmatch(doc_id):
+        sys.exit(f"{doc_id!r} is not a GHN page id")
     return Path(out_dir) / "ghn" / doc_id.split(":", 1)[1] / "boxes.jsonl"
 
 
@@ -255,7 +264,7 @@ def cmd_write(a):
 
 def pilot_pages(pages, summary, count):
     """The pilot's `ghn:` ids, as `pilot` describes them."""
-    usable = [s["doc_id"] for s in summary if s["chr_lines"] > 0 and not s["held"]]
+    usable = sorted({s["doc_id"] for s in summary if s["chr_lines"] > 0 and not s["held"] and s["doc_id"] in pages})
     order = sorted(usable, key=lambda d: hashlib.sha256(f"1622:ghn-pilot:{d}".encode()).hexdigest())
     if not order:
         sys.exit("no page has a Cherokee line that is not held")
