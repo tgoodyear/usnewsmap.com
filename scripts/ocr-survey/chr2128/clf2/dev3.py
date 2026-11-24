@@ -566,6 +566,48 @@ def cmd_freeze(a):
     print(json.dumps(fr, indent=1))
 
 
+def cmd_ensemble_score(a):
+    """Score boxes with the frozen ensemble (frozen.json): p_v2 from the v2 scored file, p_cnn from the
+    frozen CNN on the box crop, prob = LR(logit p_v2, logit p_cnn). No-ink boxes (no p_chr, no v2 score)
+    are left unscored, as before."""
+    import hashlib
+    import torch
+    from PIL import Image
+    Image.MAX_IMAGE_PIXELS = None
+    torch.set_num_threads(a.threads)
+    fr = json.load(open(a.frozen))
+    cnn_path = Path(a.frozen).parent / fr["cnn"]
+    assert hashlib.sha256(open(cnn_path, "rb").read()).hexdigest() == fr["cnn_sha256"]
+    assert hashlib.sha256(open(a.v2_model, "rb").read()).hexdigest() == fr["v2_model_sha256"]
+    net = make_net()
+    net.load_state_dict(torch.load(cnn_path))
+    net.eval()
+    rows = jsonl(a.scored)
+    rows.sort(key=lambda r: r["scan"])
+    X = np.zeros((len(rows), H, W), np.uint8)
+    cur = im = None
+    for i, r in enumerate(rows):
+        if r["scan"] != cur:
+            cur = r["scan"]
+            im = Image.open(cur).convert("L")
+        X[i] = norm_crop(im, r["box"])
+    out = []
+    with torch.no_grad():
+        for s in range(0, len(X), 512):
+            x = torch.from_numpy(X[s:s + 512].astype(np.float32) / 255).unsqueeze(1)
+            out.append(torch.sigmoid(net(x).squeeze(1)).numpy())
+    pc = np.concatenate(out)
+    pv = np.array([r["prob"] for r in rows])
+    e = fr["ensemble"]
+    z = e["coef"][0] * logit(pv) + e["coef"][1] * logit(pc) + e["intercept"]
+    pe = 1 / (1 + np.exp(-z))
+    with open(a.out, "w", encoding="utf-8") as f:
+        for r, v, c, pp in zip(rows, pv, pc, pe):
+            f.write(json.dumps({**r, "p_v2": float(v), "p_cnn": round(float(c), 6), "prob": round(float(pp), 6)},
+                               ensure_ascii=False) + "\n")
+    print(json.dumps({"boxes": len(rows), "calls_at_t": int((pe >= fr["t"]).sum()), "t": fr["t"]}))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -585,6 +627,10 @@ def main(argv=None):
     for k in ("--out-dir", "--model", "--chr-text", "--phoenix-pages", "--alto-root", "--wordlist"):
         s.add_argument(k, required=True)
     s.add_argument("--reads", action="append", required=True)
+    s = sub.add_parser("ensemble_score")
+    for k in ("--frozen", "--v2-model", "--scored", "--out"):
+        s.add_argument(k, required=True)
+    s.add_argument("--threads", type=int, default=6)
     s = sub.add_parser("freeze"); s.add_argument("--dir", required=True); s.add_argument("--v2-model", required=True)
     s = sub.add_parser("cnn_final"); s.add_argument("--dir", required=True)
     s.add_argument("--epochs", type=int, default=4); s.add_argument("--threads", type=int, default=6)

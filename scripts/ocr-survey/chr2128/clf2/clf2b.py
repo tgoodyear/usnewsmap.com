@@ -127,7 +127,7 @@ def cmd_draw(a):
     excl |= cal_pages
     pl = [r for r in summary if r["boxes"] >= 1 and r["doc_id"] not in excl]
     contrast = {r["page_id"]: r["contrast"] for r in jsonl(a.contrast)}
-    nh = sorted((r["doc_id"] for r in pl if not r["held"]), key=lambda p: sha("2128:clf2b:" + p))[:23]
+    nh = sorted((r["doc_id"] for r in pl if not r["held"]), key=lambda p: sha(a.key + p))[:23]
     pages = sorted(nh)
     out = Path(a.out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -147,13 +147,13 @@ def cmd_sheets(a):
     sample, cal = jsonl(a.sample), jsonl(a.cal)
     items = []
     for r in sample:
-        items.append((sha("2128:clf2b-shuffle:" + r["page_id"] + ":" + r["box_id"]),
+        items.append((sha(a.shuffle_key + r["page_id"] + ":" + r["box_id"]),
                       {k: v for k, v in r.items() if k != "scan"}, Path(r["scan"]), tuple(r["box"])))
     for c in cal:
         if c.get("img_sha256"):
             assert file_sha(c["img"]) == c["img_sha256"], c["img"]
         row = {k: v for k, v in c.items() if k not in ("img", "img_sha256", "pad", "box")}
-        items.append((sha("2128:clf2b-shuffle:" + c["page_id"] + ":" + c["box_id"]), row, Path(c["img"]), tuple(c["box"])))
+        items.append((sha(a.shuffle_key + c["page_id"] + ":" + c["box_id"]), row, Path(c["img"]), tuple(c["box"])))
     items.sort(key=lambda t: t[0])
     by_img = collections.defaultdict(list)
     for i, t in enumerate(items):
@@ -179,7 +179,7 @@ def cmd_sheets(a):
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
     os.chmod(kp, 0o600)
     man = {"issue": "#2128 Amendment 3.2, gate sheets", "sample_sha256": file_sha(a.sample), "cal_sha256": file_sha(a.cal),
-           "shuffle_key": "2128:clf2b-shuffle:",
+           "shuffle_key": a.shuffle_key,
            "crops": {"total": len(crops), "ghn_called": sum(r["called"] for r in sample),
                      "ghn_sampled_not_called": sum(not r["called"] for r in sample), "calibration": len(cal)},
            "sheets": {"count": n, "per_sheet": cs.PER_SHEET}}
@@ -200,6 +200,9 @@ def main(argv=None):
             s.add_argument(k, required=True)
         if name == "draw":
             s.add_argument("--exclude-pages", action="append", required=True)
+            s.add_argument("--key", default="2128:clf2b:")
+        if name == "sheets":
+            s.add_argument("--shuffle-key", default="2128:clf2b-shuffle:")
     a = ap.parse_args(argv)
     globals()["cmd_" + a.cmd](a)
 
