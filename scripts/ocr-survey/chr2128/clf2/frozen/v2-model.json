@@ -1,0 +1,73 @@
+{
+ "issue": "#2128 Amendment 3",
+ "features": [
+  "ll_chr",
+  "ll_eng",
+  "conf_chr",
+  "conf_eng",
+  "syl_share",
+  "rel_h",
+  "p_chr"
+ ],
+ "lm": {
+  "order": 5,
+  "smoothing": "Witten-Bell, interpolated, uniform base over vocab+1",
+  "chr": {
+   "text": "in/ct245/chr2128/train/corpus.txt",
+   "sha256": "b8fb978e48aeaabfe2b5cfdbc3c17c117074d5f2319ab0e5d96d487947ad7650",
+   "lines": 20342,
+   "chars": 1258651,
+   "vocab": 86
+  },
+  "eng": {
+   "phoenix_pages": "in/inputs/ghn-699/phoenix-pages.jsonl",
+   "phoenix_pages_sha256": "0c60903df3e0f7883b69c69f2a6b3d5a2e634204ad640841c0f71f31b4a70a0c",
+   "pages": 324,
+   "wordlist_sha256": "9e66281f7e51445eab6857488ff6e3d768afffadb7fb1adbef5e4617bee4a53b",
+   "lines": 78294,
+   "chars": 2665879,
+   "vocab": 114,
+   "text_sha256": "633d4919c8244760e99d97499d0fc3509b8b9a0499a1a5550bab1ea216c7aeba"
+  }
+ },
+ "scaler_mean": [
+  -6.291181500778532,
+  -2.5181421190454563,
+  0.2903773433926338,
+  0.7369639509497473,
+  0.9991813894387019,
+  0.9956834365289117,
+  0.14522762260829541
+ ],
+ "scaler_scale": [
+  1.9453607763747514,
+  1.8578643700470512,
+  0.24353457074543136,
+  0.22594731300710624,
+  0.0285996580057583,
+  0.18211335392519987,
+  0.34841363723808744
+ ],
+ "coef": [
+  0.19493187106428045,
+  -1.6354841110486324,
+  1.5293383860045373,
+  -0.5616297059967437,
+  -0.04383009921352477,
+  0.0753869717883374,
+  2.120482608843587
+ ],
+ "intercept": -6.303627487716841,
+ "fit": {
+  "items_sha256": "eb8a55709ff7f893c6ad89ddce84d1d78f573933a0f48a6ba2319374ca778f20",
+  "reads_sha256": "8c1b57833761bc94de55524e1c8be29ca5a886983842d89506bd1a03c6a052c3",
+  "pages": 154,
+  "lines": 81846,
+  "cherokee": 11894,
+  "latin": 69952,
+  "accuracy_at_0.5": 0.997727439337292,
+  "cherokee_recall_at_0.5": 0.9917605515385909,
+  "latin_correct_at_0.5": 0.9987419945105215,
+  "sklearn": "LogisticRegression(max_iter=2000), default L2 C=1, on standardised features"
+ }
+}

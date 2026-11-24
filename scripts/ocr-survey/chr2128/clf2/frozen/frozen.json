@@ -1,0 +1,26 @@
+{
+ "issue": "#2128 classifier v2 ensemble (dev, spent pages), frozen pending review",
+ "v2_model": "work/fit-oof/model.json",
+ "v2_model_sha256": "d29a9d4ed6a2a0d3166c78e246899d6b78cda934a1eaee93e005cffb9b061220",
+ "cnn": "cnn-final.pt",
+ "cnn_sha256": "5bda2baa808ac5912381bd4cb45cdaf640f1e666840b387e3457dee27cf58937",
+ "cnn_input": "grey crop of the S1 box (pad 4 px), height 32, aspect kept, left-aligned on white, width 256",
+ "clip": null,
+ "ensemble": {
+  "features": [
+   "logit(p_v2)",
+   "logit(p_cnn)"
+  ],
+  "coef": [
+   0.5907512365400814,
+   0.3748722014382491
+  ],
+  "intercept": -0.13518532336431432
+ },
+ "t": 0.46,
+ "pooled_in_sample": {
+  "recall": 0.9272830965920746,
+  "latin_share": 0.02731864144901776
+ },
+ "labelled_lines": 13169
+}

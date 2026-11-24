@@ -193,6 +193,91 @@ def cmd_crops(a):
     print(json.dumps({"universe": len(uni), "external": dict(collections.Counter(e["src"] for e in ext))}))
 
 
+# ---------------------------------------------------------------- column clip
+CLIP_MARGIN = 0.01   # of page width
+
+
+def clip_boxes(rows, width):
+    """Clip each box horizontally to its S1 column's text edges plus CLIP_MARGIN * page width. A column's
+    edges are the median left and right edges of its boxes (justified text: most lines start and end
+    there); S1's region rectangles reach the page edge for outer columns, so they don't bound the spill
+    into the gutter or the scan margin. Columns with fewer than 5 boxes are left alone; a box is never
+    widened, and never clipped below 8 px wide."""
+    m = round(CLIP_MARGIN * width)
+    g = collections.defaultdict(list)
+    for r in rows:
+        mm = re.match(r"(r\d+)", r["box_id"])
+        g[mm.group(1) if mm else ""].append(r)
+    out = {}
+    for col, rs in g.items():
+        if len(rs) < 5:
+            continue
+        lo = float(np.median([r["box"][0] for r in rs])) - m
+        hi = float(np.median([r["box"][2] for r in rs])) + m
+        for r in rs:
+            x0, y0, x1, y1 = r["box"]
+            nx0, nx1 = max(x0, round(lo)), min(x1, round(hi))
+            if (nx0, nx1) != (x0, x1) and nx1 - nx0 >= 8:
+                out[r["box_id"]] = [nx0, y0, nx1, y1]
+    return out
+
+
+def cmd_clip(a):
+    """Write a clipped copy of the dev universe (--out-dir) and the items whose box changed (to reread)."""
+    d, o = Path(a.dir), Path(a.out_dir)
+    o.mkdir(parents=True, exist_ok=True)
+    uni = jsonl(d / "universe.jsonl")
+    width = {r["doc_id"]: r["width"] for r in jsonl(a.found)}
+    by = collections.defaultdict(list)
+    for u in uni:
+        by[u["page_id"]].append(u)
+    clipped = {}
+    for p, rs in by.items():
+        for bid, b in clip_boxes(rs, width[p]).items():
+            clipped[(p, bid)] = b
+    items = []
+    for u in uni:
+        b = clipped.get((u["page_id"], u["box_id"]))
+        u["box_orig"] = u["box"]
+        if b:
+            u["box"] = b
+            if not u["noink"]:
+                items.append({"item_id": f"{u['page_id']}#{u['box_id']}", "page_id": u["page_id"], "box_id": u["box_id"],
+                              "scan": u["scan"], "box": b, "p_chr": None, "rel_h": u["x"][5]})
+    clf2.cs_write(o / "universe-clipped.jsonl", uni)
+    clf2.cs_write(o / "reread-items.jsonl", items)
+    labs = jsonl(d / "labels.jsonl")
+    ch = [l for l in labs if (l["page_id"], l["box_id"]) in clipped]
+    res = {"margin_frac": CLIP_MARGIN, "boxes": len(uni), "clipped": len(clipped), "reread": len(items),
+           "labelled_clipped": len(ch), "labelled_clipped_by_label": dict(collections.Counter(l["label"] for l in ch))}
+    (o / "clip.json").write_text(json.dumps(res, indent=1) + "\n")
+    print(json.dumps(res, indent=1))
+
+
+def cmd_rescore(a):
+    """v2 scores for the clipped universe: clipped boxes get their new readings, the rest keep the old
+    ones; p_chr and relative height are the unclipped box's (the shape score isn't recomputed)."""
+    o = Path(a.out_dir)
+    uni = jsonl(o / "universe-clipped.jsonl")
+    reads = {}
+    for f in a.reads:
+        for r in jsonl(f):
+            reads[r["item_id"]] = r
+    for r in jsonl(o / "reread.jsonl"):
+        reads[r["item_id"]] = r
+    model = json.load(open(a.model))
+    mc, me, info = clf2.build_models(a)
+    assert info["chr"]["sha256"] == model["lm"]["chr"]["sha256"] and info["eng"]["text_sha256"] == model["lm"]["eng"]["text_sha256"]
+    live = [u for u in uni if not u["noink"]]
+    items = [{"item_id": f"{u['page_id']}#{u['box_id']}", "rel_h": u["x"][5], "p_chr": u["x"][6]} for u in live]
+    X = clf2.features(items, [reads[i["item_id"]] for i in items], mc, me)
+    p = clf2.predict(model, X)
+    for u, x, pp in zip(live, X, p):
+        u["x"], u["p_v2"] = [round(v, 5) for v in x], round(float(pp), 6)
+    clf2.cs_write(o / "universe.jsonl", uni)
+    print(json.dumps({"scored": len(live)}))
+
+
 # ---------------------------------------------------------------- CNN
 def make_net():
     import torch.nn as nn
@@ -228,7 +313,7 @@ def augment(x, g):
     return x.clamp(0, 1)
 
 
-def train_predict(Xtr, ytr, Xte, epochs, seed):
+def train_predict(Xtr, ytr, Xte, epochs, seed, return_net=False):
     import torch
     torch.manual_seed(seed)
     g = torch.Generator().manual_seed(seed)
@@ -254,12 +339,35 @@ def train_predict(Xtr, ytr, Xte, epochs, seed):
             tot += float(loss) * len(b)
         print(f"  epoch {ep + 1}: loss {tot / len(idx):.4f}", file=sys.stderr, flush=True)
     net.eval()
+    if return_net:
+        return net
     out = []
     with torch.no_grad():
         for s in range(0, len(Xte), 512):
             x = torch.from_numpy(np.asarray(Xte[s:s + 512]).astype(np.float32) / 255).unsqueeze(1)
             out.append(torch.sigmoid(net(x).squeeze(1)).numpy())
     return np.concatenate(out) if out else np.zeros(0)
+
+
+def cmd_cnn_final(a):
+    """The frozen CNN: trained on every spent labelled line plus the external lines; saves the weights."""
+    import hashlib
+    import torch
+    torch.set_num_threads(a.threads)
+    d = Path(a.dir)
+    uni = jsonl(d / "universe.jsonl")
+    U = np.load(d / "crops-u.npy", mmap_mode="r")
+    E = np.load(d / "crops-e.npy")
+    ye = np.array([e["y"] for e in jsonl(d / "ext.jsonl")], np.int64)
+    pos = {(u["page_id"], u["box_id"]): i for i, u in enumerate(uni)}
+    labs = jsonl(d / "labels.jsonl")
+    li = np.array([pos[(l["page_id"], l["box_id"])] for l in labs])
+    ly = np.array([l["y"] for l in labs], np.int64)
+    o = np.argsort(li)
+    net = train_predict(np.concatenate([E, U[li[o]]]), np.concatenate([ye, ly[o]]), U[:0], a.epochs, 2128, return_net=True)
+    torch.save(net.state_dict(), d / "cnn-final.pt")
+    h = hashlib.sha256(open(d / "cnn-final.pt", "rb").read()).hexdigest()
+    print(json.dumps({"train": int(len(ye) + len(ly)), "sha256": h}))
 
 
 def cmd_cnn(a):
@@ -430,6 +538,34 @@ def cmd_eval(a):
     (d / "eval.json").write_text(json.dumps(res, indent=1) + "\n")
 
 
+def cmd_freeze(a):
+    """Frozen ensemble: LR on [logit v2, logit CNN] fitted on every spent labelled line (HT weights, the
+    CNN's out-of-fold scores), t chosen on the pooled spent samples (max recall, Latin share <= 0.03)."""
+    from sklearn.linear_model import LogisticRegression
+    d = Path(a.dir)
+    uni = jsonl(d / "universe.jsonl")
+    pos = {(u["page_id"], u["box_id"]): i for i, u in enumerate(uni)}
+    labs = jsonl(d / "labels.jsonl")
+    li = np.array([pos[(l["page_id"], l["box_id"])] for l in labs])
+    y = np.array([l["y"] for l in labs], float)
+    w = np.array([l["w"] for l in labs])
+    X = np.stack([logit(np.array([u["p_v2"] for u in uni])), logit(np.load(d / "cnn-oof.npy"))], 1)
+    lr = LogisticRegression().fit(X[li], y, sample_weight=w)
+    s = lr.predict_proba(X)[:, 1]
+    t = pick_t(s[li], y, w)
+    rec, ls = rates(s[li], y, w, t)
+    import hashlib
+    fr = {"issue": "#2128 classifier v2 ensemble (dev, spent pages), frozen pending review",
+          "v2_model": a.v2_model, "v2_model_sha256": hashlib.sha256(open(a.v2_model, "rb").read()).hexdigest(),
+          "cnn": "cnn-final.pt", "cnn_sha256": hashlib.sha256(open(d / "cnn-final.pt", "rb").read()).hexdigest(),
+          "cnn_input": f"grey crop of the S1 box (pad 4 px), height {H}, aspect kept, left-aligned on white, width {W}",
+          "clip": None, "ensemble": {"features": ["logit(p_v2)", "logit(p_cnn)"], "coef": lr.coef_[0].tolist(),
+                                     "intercept": float(lr.intercept_[0])},
+          "t": t, "pooled_in_sample": {"recall": rec, "latin_share": ls}, "labelled_lines": len(labs)}
+    (d / "frozen.json").write_text(json.dumps(fr, indent=1) + "\n")
+    print(json.dumps(fr, indent=1))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -442,6 +578,16 @@ def main(argv=None):
     for k in ("--dir", "--silver", "--aligned-ghn", "--aligned", "--loc-images", "--fitset", "--inventory", "--ghn-root"):
         s.add_argument(k, required=True)
     s.add_argument("--n-english", type=int, default=6000)
+    s = sub.add_parser("clip")
+    for k in ("--dir", "--found", "--out-dir"):
+        s.add_argument(k, required=True)
+    s = sub.add_parser("rescore")
+    for k in ("--out-dir", "--model", "--chr-text", "--phoenix-pages", "--alto-root", "--wordlist"):
+        s.add_argument(k, required=True)
+    s.add_argument("--reads", action="append", required=True)
+    s = sub.add_parser("freeze"); s.add_argument("--dir", required=True); s.add_argument("--v2-model", required=True)
+    s = sub.add_parser("cnn_final"); s.add_argument("--dir", required=True)
+    s.add_argument("--epochs", type=int, default=4); s.add_argument("--threads", type=int, default=6)
     s = sub.add_parser("cnn"); s.add_argument("--dir", required=True)
     s.add_argument("--epochs", type=int, default=4); s.add_argument("--folds", type=int, default=5)
     s.add_argument("--threads", type=int, default=6)
