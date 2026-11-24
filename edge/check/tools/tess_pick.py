@@ -36,6 +36,9 @@ NFKC, lowercase, line-end hyphens joined, punctuation removed except apostrophes
 The page shows the raw readings, as the engines gave them (as the other pick languages do); normalisation only
 decides whether the two differ, and `private.normalised` keeps the normalised forms the analysis scores.
 
+Gold sets (--gold tesseract=N,loc=N,neither=N): from pages with regions, each truth class is filled up to its quota
+by taking pages in turn (gold_sample), instead of --per-page.
+
 Sampling. Per page, up to --per-page candidates, those first by sha256(seed:task id:rank) (a simple random sample of
 the page's disagreements, with no de-duplication, so each page's tasks can be weighted back to its candidates).
 
@@ -312,6 +315,39 @@ def sample(rows: list, per_page: int, seed) -> list:
     return picked
 
 
+def parse_quota(text: str) -> dict:
+    """'tesseract=54,loc=54,neither=12' -> {'tesseract': 54, 'loc': 54, 'neither': 12}."""
+    out = {}
+    for part in text.split(","):
+        k, _, v = part.partition("=")
+        if k not in ("tesseract", "loc", "neither") or not v.isdigit():
+            raise SystemExit(f"--gold wants tesseract=N,loc=N,neither=N, got {text!r}")
+        out[k] = int(v)
+    return out
+
+
+def gold_sample(rows_by_page: dict, quota: dict, seed) -> dict:
+    """{page: rows} for a gold set: per truth class, up to its quota, taking pages in turn (pages ordered by
+    sha256(seed:page)) and each page's rows by rank, so no page dominates a class. page_candidates is the page's
+    rows with a truth, page_sampled what is taken from it."""
+    order = sorted(rows_by_page, key=lambda p: hashlib.sha256(f"{seed}:{p}".encode()).hexdigest())
+    out = {p: [] for p in order}
+    for cls in ("tesseract", "loc", "neither"):
+        queues = {p: sorted([r for r in rows_by_page[p] if r.get("truth") == cls], key=lambda r: en_pick.rank(seed, r["id"]))
+                  for p in order}
+        need, k = quota.get(cls, 0), 0
+        while need > 0 and any(queues.values()):
+            p = order[k % len(order)]
+            if queues[p]:
+                out[p].append(queues[p].pop(0))
+                need -= 1
+            k += 1
+    for p, picked in out.items():
+        for r in picked:
+            r["page_candidates"], r["page_sampled"] = len(rows_by_page[p]), len(picked)
+    return {p: v for p, v in out.items() if v}
+
+
 def union(a, b) -> list:
     x0, y0 = min(a[0], b[0]), min(a[1], b[1])
     return [x0, y0, max(a[0] + a[2], b[0] + b[2]) - x0, max(a[1] + a[3], b[1] + b[3]) - y0]
@@ -399,6 +435,8 @@ def main(argv=None) -> None:
     ap.add_argument("--min-iou", type=float, default=0.5)
     ap.add_argument("--max-other", type=float, default=0.2, help="another word covering this share of a box makes it a split or join")
     ap.add_argument("--min-page-aligned", type=float, default=0.5, help="leave out a page where fewer of LoC's words pair")
+    ap.add_argument("--gold", help="gold set: quotas per truth class, e.g. tesseract=54,loc=54,neither=12 (pages with regions); "
+                    "replaces --per-page")
     ap.add_argument("--no-clips", action="store_true", help="count only: write the reports and no tasks or images")
     ap.add_argument("--quality", type=int, default=85)
     args = ap.parse_args(argv)
@@ -410,7 +448,8 @@ def main(argv=None) -> None:
     args.side_key = load_side_key(args)
     stats, per_page = Counter(), []
     tasks = open(os.path.join(args.out_dir, "tasks.jsonl"), "w", encoding="utf-8") if not args.no_clips else None
-    for page in en_pick.read_jsonl(args.pages):
+    pages, all_rows = en_pick.read_jsonl(args.pages), {}
+    for page in pages:
         stats["pages"] += 1
         img_path = os.path.join(root, page["image"])
         with Image.open(img_path) as im:
@@ -418,12 +457,23 @@ def main(argv=None) -> None:
         loc = en_pick.parse_alto(open(os.path.join(root, page["alto"]), "rb").read(), size)
         tess = parse_tsv(open(os.path.join(root, page["tsv"]), encoding="utf-8").read())
         rows, c = page_candidates(page, loc, tess, args, stats)
-        picked = sample(rows, args.per_page, args.seed)
-        stats["sampled"] += len(picked)
+        all_rows[page["page"]] = rows
         per_page.append({"page": page["page"], "page_id": page.get("page_id"), "date": page["date"],
-                         "damage_rate": page.get("damage_rate"), "sampled": len(picked), **dict(sorted(c.items()))})
+                         "damage_rate": page.get("damage_rate"), **dict(sorted(c.items()))})
+    if args.gold:
+        picked_by_page = gold_sample(all_rows, parse_quota(args.gold), args.seed)
+    else:
+        picked_by_page = {p: sample(rows, args.per_page, args.seed) for p, rows in all_rows.items()}
+    for p in per_page:
+        p["sampled"] = len(picked_by_page.get(p["page"], []))
+        stats["sampled"] += p["sampled"]
+        for r in picked_by_page.get(p["page"], []):
+            if "truth" in r:
+                stats["sampled_truth_" + r["truth"]] += 1
+    for page in pages:
+        picked = picked_by_page.get(page["page"], [])
         if tasks and picked:
-            img = Image.open(img_path).convert("L")
+            img = Image.open(os.path.join(root, page["image"])).convert("L")
             for r in sorted(picked, key=lambda r: r["id"]):
                 write_task(r, args, img, args.out_dir, tasks)
     if tasks:

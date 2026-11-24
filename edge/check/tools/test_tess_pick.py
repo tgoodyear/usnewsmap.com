@@ -107,6 +107,17 @@ class Classify(unittest.TestCase):
         self.assertTrue(all(r["page_candidates"] == 10 and r["page_sampled"] == 3 for r in got))
         self.assertEqual([r["id"] for r in got], [r["id"] for r in tp.sample(list(reversed(rows)), 3, "2122")])
 
+    def test_gold_sample_fills_quotas_round_robin(self):
+        rows = {f"p{k}": [{"id": f"en-read/g/p{k}~{i}", "truth": c} for i, c in enumerate(["tesseract"] * 5 + ["loc"] * 5 + ["neither"])]
+                for k in range(3)}
+        got = tp.gold_sample(rows, tp.parse_quota("tesseract=4,loc=3,neither=1"), "2122")
+        flat = [r for v in got.values() for r in v]
+        self.assertEqual(Counter(r["truth"] for r in flat), Counter(tesseract=4, loc=3, neither=1))
+        self.assertLessEqual(max(sum(r["truth"] == "tesseract" for r in v) for v in got.values()), 2)
+        self.assertTrue(all(r["page_candidates"] == 11 for r in flat))
+        with self.assertRaises(SystemExit):
+            tp.parse_quota("tess=1")
+
     def test_side_is_balanced_and_keyed(self):
         sides = Counter(tp.side("k", f"en/t/p~{k}") for k in range(400))
         self.assertTrue(150 < sides["tesseract"] < 250)

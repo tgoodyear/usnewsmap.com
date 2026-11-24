@@ -25,6 +25,9 @@ production worker does (crates/usnm-ocr-worker/src/worker.rs, #454): the JPEG mu
 listed in the report's `jpeg_fallback`. Without a JPEG, or if that run fails too, the page is left out as
 `tesseract_status_136` (or `tesseract_failed` for any other failure).
 
+With --resume, ALTO already extracted (sha256 as recorded) and Tesseract runs already done on the same image (a
+marker per outcome: .ok, .136, .failed) are kept; a JP2 that crashed is not read again, only its JPEG fallback.
+
 Writes WORK/pages.jsonl, one row per page with both readings (tess_pick.py's input; paths relative to WORK), and
 WORK/prepare-report.json (pages read, left out and why).
 """
@@ -123,7 +126,20 @@ def tesseract(job):
     env = dict(os.environ, OMP_THREAD_LIMIT="1")
     p = subprocess.run(["tesseract", image, base] + TESS_ARGS + ["txt", "tsv"], env=env, stdin=subprocess.DEVNULL,
                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    # A marker per outcome, so a later run (--resume) neither reads a page again nor retries a JP2 that crashed.
+    marker = base + (".ok" if p.returncode == 0 else ".136" if is_status_136(p.returncode) else ".failed")
+    with open(marker, "w") as f:
+        f.write(image + "\n")
     return doc_id, p.returncode, p.stderr[-2000:]
+
+
+def done_before(out_dir, doc_id, image):
+    """(returncode, '') from a marker an earlier run left for this image, else None."""
+    base = os.path.join(out_dir, doc_id)
+    for ext, code in ((".ok", 0), (".136", 136), (".failed", 1)):
+        if os.path.exists(base + ext) and open(base + ext).read().strip() == image:
+            return code
+    return None
 
 
 def is_status_136(code):
@@ -170,6 +186,8 @@ def main(argv=None):
     ap.add_argument("--locstats", required=True)
     ap.add_argument("--work", required=True)
     ap.add_argument("--workers", type=int, default=3)
+    ap.add_argument("--resume", action="store_true", help="keep ALTO and Tesseract results an earlier run in --work left "
+                    "(checked by sha256 and by the image read), and redo only the rest")
     ap.add_argument("--fallback-jpegs", help="LoC's IIIF JPEGs as <doc_id>.jpg, read when Tesseract dies with SIGFPE on the "
                     "JP2, as the production worker does (#454)")
     a = ap.parse_args(argv)
@@ -194,7 +212,18 @@ def main(argv=None):
         if r["doc_id"] in scans:
             by_archive.setdefault(r["archive"], []).append(r["doc_id"])
     alto, jobs = {}, []
+    kept = {}
+    if a.resume and os.path.exists(os.path.join(a.work, "alto.jsonl")):
+        for r in map(json.loads, open(os.path.join(a.work, "alto.jsonl"))):
+            path = os.path.join(a.work, "alto", r["doc_id"] + ".xml")
+            if os.path.exists(path) and sha256_file(path) == r["sha256"]:
+                kept[r["doc_id"]] = {k: v for k, v in r.items() if k != "doc_id"}
     for archive, docs in sorted(by_archive.items()):
+        for d in [d for d in docs if d in kept]:
+            alto[d] = kept[d]
+        docs = [d for d in docs if d not in kept]
+        if not docs:
+            continue
         listed = in_locstats(a.locstats, archive, docs)
         for d in set(docs) - listed:
             left[d] = "not_in_locstats"
@@ -216,17 +245,24 @@ def main(argv=None):
     meta["script_sha256"] = sha256_file(os.path.abspath(__file__))
     meta["selection_sha256"] = sha256_file(a.selection)
     json.dump(meta, open(os.path.join(a.work, "meta.json"), "w"), indent=1, sort_keys=True)
-    jobs = [(d, scans[d], os.path.join(a.work, "tess")) for d in sorted(alto)]
+    tess_dir = os.path.join(a.work, "tess")
+    earlier = {d: done_before(tess_dir, d, scans[d]) for d in sorted(alto)} if a.resume else {}
+    jobs = [(d, scans[d], tess_dir) for d in sorted(alto) if earlier.get(d) is None]
+    results = [(d, code, "(earlier run)") for d, code in earlier.items() if code is not None]
     errors, fallback = {}, {}
     with mp.Pool(a.workers) as pool:
-        for n, (d, code, err) in enumerate(pool.imap_unordered(tesseract, jobs), 1):
+        for n, (d, code, err) in enumerate(results + list(pool.imap_unordered(tesseract, jobs)), 1):
             print(f"tesseract {n}/{len(jobs)} {d} rc={code}", flush=True)
             if code == 0:
                 continue
             jpeg = os.path.join(a.fallback_jpegs, d + ".jpg") if a.fallback_jpegs else None
             if is_status_136(code) and scans[d].endswith(".jp2") and jpeg and os.path.isfile(jpeg):
                 # As the worker does (worker.rs, #454): one more run, on LoC's IIIF JPEG of the page.
-                _, code2, err2 = tesseract((d, jpeg, os.path.join(a.work, "tess")))
+                code2 = done_before(tess_dir, d, jpeg) if a.resume else None
+                if code2 is None:
+                    _, code2, err2 = tesseract((d, jpeg, tess_dir))
+                else:
+                    err2 = "(earlier run)"
                 print(f"tesseract {d} IIIF JPEG fallback rc={code2}", flush=True)
                 if code2 == 0:
                     scans[d] = jpeg
