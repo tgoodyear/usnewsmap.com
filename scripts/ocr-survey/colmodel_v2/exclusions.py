@@ -9,7 +9,8 @@ then drops every page of that issue.
             meta.ca_identity {lccn, date, edition} -> issue ids.
   asgold    en-asgold: asgold-ca-map.json (s9-heldout/en-asgold) "ca.doc_id" and selection.tsv "ca_page".
   overproof Overproof dataset 3 (Chronicling America) as curated in HIPE-OCRepair-2026: the
-            overproof-combined JSONL files; document ids <lccn>-<n>-<reel>-<yyyymmdd><ed>-<file>
+            overproof-combined JSONL files (data/v0.9/overproof/en/); document_metadata.document_id
+            <lccn>-<n>-<reel>-<yyyymmdd><ed>-<file>
             (gold.py's CA_DOC_ID) -> issue ids. The file number is a reel image number, not a page
             sequence, so only the issue is known.
   ids       a plain list (e.g. ~/code/enjudge-2107/out/pages-300.txt), copied after a format check.
@@ -78,8 +79,9 @@ def cmd_overproof(a):
                 if not ln.strip():
                     continue
                 d = json.loads(ln)
+                meta = d.get("document_metadata") or {}
                 for key in ("document_id", "doc_id", "id"):
-                    v = d.get(key)
+                    v = meta.get(key) or d.get(key)
                     m = CA_DOC_ID.match(str(v)) if v else None
                     if m:
                         dt = m.group("date")

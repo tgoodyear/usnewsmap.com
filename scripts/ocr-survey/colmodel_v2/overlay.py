@@ -56,6 +56,7 @@ def main(argv=None):
     ap.add_argument("--ids-file", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--width", type=int, default=1400)
+    ap.add_argument("--lang", default="eng")
     a = ap.parse_args(argv)
     from PIL import Image
     ids = alto_weak.read_id_list(a.ids_file)
@@ -76,7 +77,7 @@ def main(argv=None):
         img = Image.open(pages[pid]["image_path"])
         with open(os.path.join(a.alto_dir, pid + ".xml"), "rb") as f:
             parsed = alto_weak.parse_alto(f.read(), img.size)
-        lab = alto_weak.label_page(parsed, img.size[0], img.size[1])
+        lab = alto_weak.label_page(parsed, img.size[0], img.size[1], a.lang)
         m = lab["metrics"]
         verdict = "ACCEPTED" if lab["passed"] else "REJECTED (" + ",".join(lab["failed"]) + ")"
         fmt = lambda v: "-" if v is None else ("%.3f" % v if isinstance(v, float) else str(v))  # noqa: E731

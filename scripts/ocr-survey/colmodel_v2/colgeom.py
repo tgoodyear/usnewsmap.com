@@ -29,13 +29,18 @@ Clean-page filters for the weak English labels (all must hold; each is recorded 
                                         body-size lines that a gutter stops just above and resumes
                                         just below (merged across the gutter; see cross_share)
   coverage >= MIN_COVERAGE              share of line height inside some column region
-  width_consistency >= MIN_WIDTH_CONS   share of column-region height whose width is within
-                                        WIDTH_TOL of the height-weighted median region width
+  width_consistency >= MIN_WIDTH_CONS   share of column-region height whose width is between
+                                        WIDTH_LO and WIDTH_HI times the height-weighted median region
+                                        width (catches slivers and merged columns, keeps sections
+                                        whose columns differ moderately in width)
   block_align >= MIN_BLOCK_ALIGN        share of TextBlocks (by area) with at least 90% of their
                                         area inside one column region, among blocks that overlap any
-  english >= MIN_ENGLISH                share of words that are one of the, of, and, to, a, in, that,
-                                        is, for, was (a crude language check; LoC titles are mostly
-                                        English but not all)
+  lang_ok >= 1                          the page is in the target language (default eng): the ALTO
+                                        TextBlock `language` attribute, majority by line count, names
+                                        it; a page whose ALTO has no language attribute needs a
+                                        stop-word share (lang_share) of at least MIN_LANG_SHARE
+                                        (eng: the, of, and, to, a, in, that, is, for, was;
+                                        ger: der, die, und, in, den, von, zu, das, mit, des)
   aspect within 1%                      ALTO Page WIDTH/HEIGHT against the image's aspect
 
 Sources of method: cross_share and the line-crossing test follow #2107 step 2 (layout_alto/signals.py,
@@ -54,19 +59,24 @@ MIN_LINES = 50
 MIN_COLUMNS = 2
 MAX_CROSS = 0.02
 MIN_COVERAGE = 0.70
-WIDTH_TOL = 0.25
+WIDTH_LO = 0.55
+WIDTH_HI = 1.8
 MIN_WIDTH_CONS = 0.80
 MIN_BLOCK_ALIGN = 0.85
-MIN_ENGLISH = 0.10
+MIN_LANG_SHARE = 0.10
 ASPECT_TOL = 0.01
 
 FILTERS = (
     ("lines", ">=", MIN_LINES), ("columns", ">=", MIN_COLUMNS), ("gutters", ">=", 1),
     ("cross_share", "<=", MAX_CROSS), ("coverage", ">=", MIN_COVERAGE),
     ("width_consistency", ">=", MIN_WIDTH_CONS), ("block_align", ">=", MIN_BLOCK_ALIGN),
-    ("english", ">=", MIN_ENGLISH), ("aspect_err", "<=", ASPECT_TOL),
+    ("lang_ok", ">=", 1), ("aspect_err", "<=", ASPECT_TOL),
 )
-ENGLISH_WORDS = {"the", "of", "and", "to", "a", "in", "that", "is", "for", "was"}
+LANG_WORDS = {
+    "eng": {"the", "of", "and", "to", "a", "in", "that", "is", "for", "was"},
+    "ger": {"der", "die", "und", "in", "den", "von", "zu", "das", "mit", "des"},
+}
+LANG_CODES = {"eng": "eng", "en": "eng", "english": "eng", "ger": "ger", "deu": "ger", "de": "ger", "german": "ger"}
 
 
 def _w(b):
@@ -247,7 +257,7 @@ def width_consistency(regions):
         if acc >= tot / 2:
             med = w
             break
-    ok = sum(h for w, h in pairs if abs(w - med) <= WIDTH_TOL * med)
+    ok = sum(h for w, h in pairs if WIDTH_LO * med <= w <= WIDTH_HI * med)
     return ok / tot if tot > 0 else None
 
 
@@ -266,12 +276,28 @@ def block_align(blocks, regions):
     return ok / tot if tot > 0 else None
 
 
-def english_share(words):
+def lang_share(words, lang="eng"):
+    """Share of words that are one of the language's ten stop words; None without words."""
     words = [w.lower().strip(".,;:!?\"'()") for w in words]
     words = [w for w in words if w]
     if not words:
         return None
-    return sum(1 for w in words if w in ENGLISH_WORDS) / len(words)
+    return sum(1 for w in words if w in LANG_WORDS[lang]) / len(words)
+
+
+def norm_lang(code):
+    """ALTO language attribute -> 'eng', 'ger', or the code itself lower-cased (e.g. 'pol'); None if empty."""
+    if not code:
+        return None
+    c = code.strip().lower().split("-")[0].split("_")[0]
+    return LANG_CODES.get(c, c)
+
+
+def lang_ok(alto_lang, share, lang="eng"):
+    """1.0 if the page is in `lang` (see lang_ok in the module docstring), else 0.0."""
+    if alto_lang is not None:
+        return 1.0 if alto_lang == lang else 0.0
+    return 1.0 if share is not None and share >= MIN_LANG_SHARE else 0.0
 
 
 def judge(metrics):

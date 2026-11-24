@@ -7,7 +7,8 @@ looks clean (colgeom.FILTERS, recorded in every manifest row).
 
 Two steps, both on a dev container:
 
-  select  pick candidate pages: scans we hold (the scans index, image file present) joined to the
+  select  pick candidate pages: scans we hold (the scans index with the image file present, or a
+          --held-list listing of the scan store made where it lives) joined to the
           per-batch locstats parquet index (which archive holds the page's ALTO), minus every
           reserved test page, in sha256(PREFIX + doc_id) order, at most --per-batch pages from each
           of at most --batches batches (batches also in sha256(PREFIX + batch) order), until --pages.
@@ -25,7 +26,9 @@ a header line is skipped), or JSONL with a page_id / doc_id field. A page is exc
 listed or, with --exclude-issues (default on), when any page of the same issue (LCCN, date, edition)
 is listed. The manifest names the list that excluded it.
 
-Outputs of build: OUT/labels.jsonl (accepted pages: page_id, source "loc-alto", licence, image_path,
+--lang ger builds German labels from the German-language Chronicling America titles the same way.
+
+Outputs of build: OUT/labels.jsonl (accepted pages: page_id, source "loc-alto", lang, licence, image_path,
 width, height, columns [[x0, y0, x1, y1]] in image pixels, gutters, metrics), OUT/manifest.tsv (every
 page: status accepted | rejected | no_alto | no_image | bad_alto, failed filters, metrics),
 OUT/alto/<doc_id>.xml (the ALTO read, so no archive is streamed twice), OUT/summary.json.
@@ -163,13 +166,15 @@ def parse_alto(xml, image_size):
             return None
         return [v[0] * sx, v[1] * sy, (v[0] + v[2]) * sx, (v[1] + v[3]) * sy]
 
-    lines, blocks, words = [], [], []
+    lines, blocks, words, langs = [], [], [], {}
+    block_lang = None
     for el in root.iter():
         t = _local(el.tag)
         if t == "TextBlock":
             b = box(el)
             if b:
                 blocks.append(b)
+            block_lang = colgeom.norm_lang(el.get("language") or el.get("LANG") or el.get("lang"))
         elif t == "TextLine":
             b = box(el)
             sb = []
@@ -184,10 +189,12 @@ def parse_alto(xml, image_size):
                 b = [min(x[0] for x in sb), min(x[1] for x in sb), max(x[2] for x in sb), max(x[3] for x in sb)]
             if b:
                 lines.append(b)
-    return {"lines": lines, "blocks": blocks, "words": words, "alto_size": (d[0], d[1])}
+                if block_lang:
+                    langs[block_lang] = langs.get(block_lang, 0) + 1
+    return {"lines": lines, "blocks": blocks, "words": words, "alto_size": (d[0], d[1]), "langs": langs}
 
 
-def label_page(parsed, width, height):
+def label_page(parsed, width, height, lang="eng"):
     """Column regions, gutters and filter metrics for one parsed ALTO page."""
     lines = parsed["lines"]
     if lines:
@@ -199,13 +206,18 @@ def label_page(parsed, width, height):
     regions = colgeom.columnize(lines, width, height, max_vgap=vgap, min_members=3)
     gutters = colgeom.gutters_from_regions(regions, width, height)
     aw, ah = parsed["alto_size"]
+    langs = parsed.get("langs") or {}
+    alto_lang = max(sorted(langs), key=lambda k: langs[k]) if langs else None
+    share = colgeom.lang_share(parsed["words"], lang)
     metrics = {
         "aspect_err": abs((aw / ah) / (width / height) - 1.0),
         "block_align": colgeom.block_align(parsed["blocks"], regions),
         "columns": len(regions),
         "coverage": colgeom.coverage(lines, regions),
         "cross_share": colgeom.cross_share(lines, gutters, width, bridge=vgap, body_h=body_h),
-        "english": colgeom.english_share(parsed["words"]),
+        "alto_lang": alto_lang,
+        "lang_ok": colgeom.lang_ok(alto_lang, share, lang),
+        "lang_share": share,
         "gutters": len(gutters),
         "lines": len(lines),
         "width_consistency": colgeom.width_consistency(regions),
@@ -233,18 +245,42 @@ def _locstats_rows(locstats_dir, batches):
     return out
 
 
+def held_entry(rel):
+    """(doc_id, batch) of a held-scan path <batch>/<lccn>/<yyyy-mm-dd>/<ed>/<seq>.jpg, else (None, None)."""
+    p = rel.strip("/").split("/")
+    if len(p) != 5 or not p[4].endswith(".jpg"):
+        return None, None
+    try:
+        did = "%s_%s_ed-%d_seq-%d" % (p[1], p[2], int(p[3]), int(p[4][:-4]))
+    except ValueError:
+        return None, None
+    return (did, p[0]) if DOC_RE.match(did) else (None, None)
+
+
 def cmd_select(a):
     excl = Exclusions(a.exclude, issues=a.exclude_issues)
-    held = {}
-    with open(a.scans_index) as f:
-        for ln in f:
-            if not ln.strip():
-                continue
-            r = json.loads(ln)
-            did, b = r.get("doc_id"), r.get("batch")
-            if not did or not b or not DOC_RE.match(did):
-                continue
-            held.setdefault(b, {})[did] = r.get("batch_version")
+    held, listed = {}, None
+    if a.held_list:
+        listed = set()
+        with open(a.held_list) as f:
+            for ln in f:
+                did, b = held_entry(ln.strip())
+                if did:
+                    held.setdefault(b, {})[did] = None
+                    listed.add((b, did))
+    else:
+        with open(a.scans_index) as f:
+            for ln in f:
+                if not ln.strip():
+                    continue
+                r = json.loads(ln)
+                did, b = r.get("doc_id"), r.get("batch")
+                if not did or not b or not DOC_RE.match(did):
+                    continue
+                held.setdefault(b, {})[did] = r.get("batch_version")
+    if a.only_batches:
+        keep = set(read_id_list(a.only_batches))
+        held = {b: v for b, v in held.items() if b in keep}
     batches = sorted(held, key=lambda b: (sha_key(b), b))
     manifest, chosen, used_batches = [], [], 0
     for b in batches:
@@ -264,7 +300,7 @@ def cmd_select(a):
                 ver = held[b][did]
                 pick = [r for r in rows if ver is None or r["batch_version"] == ver] or rows
                 arch = pick[0]["archive"]
-            if why is None and not os.path.exists(img):
+            if why is None and (listed is None and not os.path.exists(img)):
                 why = "no_image"
             if why is None and arch is None:
                 why = "not_in_locstats"
@@ -364,16 +400,17 @@ def cmd_build(a):
                 row["failed"] = str(e)[:80]
                 parsed = None
             if parsed is not None:
-                lab = label_page(parsed, w, h)
+                lab = label_page(parsed, w, h, a.lang)
                 row.update(_metric_cells(lab["metrics"]))
                 row["status"] = "accepted" if lab["passed"] else "rejected"
                 row["failed"] = ",".join(lab["failed"])
                 if lab["passed"]:
                     labels.append({"columns": lab["columns"], "gutters": lab["gutters"], "height": h,
                                    "image_path": p["image_path"], "licence": "public domain (LoC Chronicling America)",
-                                   "metrics": lab["metrics"], "page_id": did, "source": "loc-alto", "width": w})
+                                   "lang": a.lang, "metrics": lab["metrics"], "page_id": did, "source": "loc-alto",
+                                   "width": w})
         rows.append(row)
-    keys = ["doc_id", "batch", "status", "failed"] + [m for m, _, _ in colgeom.FILTERS]
+    keys = ["doc_id", "batch", "status", "failed"] + [m for m, _, _ in colgeom.FILTERS] + ["alto_lang", "lang_share"]
     with open(os.path.join(a.out_dir, "manifest.tsv"), "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=keys, delimiter="\t", extrasaction="ignore")
         w.writeheader()
@@ -382,7 +419,10 @@ def cmd_build(a):
         for lab in labels:
             f.write(json.dumps(lab, sort_keys=True) + "\n")
     fail_counts = _count(x for r in rows for x in r["failed"].split(",") if r["status"] == "rejected" and x)
-    summ = {"accepted": len(labels), "pages": len(rows), "statuses": _count(r["status"] for r in rows),
+    summ = {"accepted": len(labels), "pages": len(rows), "statuses": _count(r["status"] for r in rows), "lang": a.lang,
+            "alto_lang": _count(str(r.get("alto_lang") or "none") for r in rows if r["status"] in ("accepted", "rejected")),
+            "rejected_in_lang_by_filter": _count(x for r in rows for x in r["failed"].split(",")
+                                                 if r["status"] == "rejected" and x and "lang_ok" not in r["failed"]),
             "rejected_by_filter": fail_counts, "filters": colgeom.filter_spec(),
             "columns_per_accepted_page_mean": (sum(len(x["columns"]) for x in labels) / len(labels)) if labels else None}
     with open(os.path.join(a.out_dir, "summary.json"), "w") as f:
@@ -395,12 +435,16 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("select")
-    s.add_argument("--scans-index", required=True)
+    s.add_argument("--scans-index", help="scans index JSONL (doc_id, batch, batch_version); or use --held-list")
+    s.add_argument("--held-list", help="held scan paths <batch>/<lccn>/<date>/<ed>/<seq>.jpg, one per line, relative"
+                   " to --scans-root (a listing made where the scans live; files need not be present here yet)")
     s.add_argument("--scans-root", required=True)
     s.add_argument("--locstats-dir", required=True)
     s.add_argument("--locbulk-dir", required=True)
     s.add_argument("--exclude", action="append", default=[], help="NAME=FILE, repeatable")
     s.add_argument("--exclude-issues", action=argparse.BooleanOptionalAction, default=True)
+    s.add_argument("--only-batches", help="file of batch names (one per line) to draw from, e.g. the batches whose"
+                   " ALTO is in the target language")
     s.add_argument("--pages", type=int, default=500)
     s.add_argument("--per-batch", type=int, default=50)
     s.add_argument("--batches", type=int, default=20)
@@ -411,6 +455,7 @@ def main(argv=None):
     b.add_argument("--locbulk-dir", required=True)
     b.add_argument("--out-dir", required=True)
     b.add_argument("--workers", type=int, default=2)
+    b.add_argument("--lang", default="eng", choices=sorted(colgeom.LANG_WORDS), help="target language of the labels")
     a = ap.parse_args(argv)
     return cmd_select(a) if a.cmd == "select" else cmd_build(a)
 

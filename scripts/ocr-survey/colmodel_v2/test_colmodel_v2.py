@@ -117,21 +117,26 @@ def test_blocks_across_gutters_fail_block_align():
     assert "block_align" in lab["failed"]
 
 
-def test_non_english_and_aspect_filters():
+def test_language_and_aspect_filters():
     lines = column_lines()
-    xml = alto_xml(lines, per_column_blocks(lines)).replace(b'CONTENT="the"', b'CONTENT="der"').replace(
-        b'CONTENT="of"', b'CONTENT="und"').replace(b'CONTENT="and"', b'CONTENT="die"').replace(
-        b'CONTENT="to"', b'CONTENT="zu"').replace(b'CONTENT="a"', b'CONTENT="ein"').replace(
-        b'CONTENT="in"', b'CONTENT="im"').replace(b'CONTENT="that"', b'CONTENT="dass"').replace(
-        b'CONTENT="was"', b'CONTENT="war"').replace(b'CONTENT="for"', b'CONTENT="fur"')
-    lab = alto_weak.label_page(alto_weak.parse_alto(xml, (W, H)), W, H)
-    assert "english" in lab["failed"]
-    lab = alto_weak.label_page(alto_weak.parse_alto(alto_xml(lines, per_column_blocks(lines)), (W, H)), W, int(H * 1.05))
+    good = alto_xml(lines, per_column_blocks(lines))
+    german = good
+    for en, de in (("the", "der"), ("of", "und"), ("and", "die"), ("to", "zu"), ("a", "ein"), ("in", "im"),
+                   ("that", "dass"), ("was", "war"), ("for", "fur")):
+        german = german.replace(b'CONTENT="%s"' % en.encode(), b'CONTENT="%s"' % de.encode())
+    lab = alto_weak.label_page(alto_weak.parse_alto(german, (W, H)), W, H)
+    assert "lang_ok" in lab["failed"] and lab["metrics"]["alto_lang"] is None
+    tagged = good.replace(b"<TextBlock ", b'<TextBlock language="ger" ')
+    lab = alto_weak.label_page(alto_weak.parse_alto(tagged, (W, H)), W, H)
+    assert lab["failed"] == ["lang_ok"] and lab["metrics"]["alto_lang"] == "ger"
+    assert alto_weak.label_page(alto_weak.parse_alto(tagged, (W, H)), W, H, lang="ger")["passed"]
+    lab = alto_weak.label_page(alto_weak.parse_alto(good, (W, H)), W, int(H * 1.05))
     assert "aspect_err" in lab["failed"]
 
 
 def test_width_consistency():
     assert colgeom.width_consistency([[0, 0, 100, 1000], [120, 0, 220, 1000]]) == 1.0
+    assert colgeom.width_consistency([[0, 0, 100, 1000], [120, 0, 250, 1000]]) == 1.0  # 1.3x: a wider section
     assert colgeom.width_consistency([[0, 0, 100, 1000], [120, 0, 420, 1000], [440, 0, 740, 1000]]) < 0.7
 
 
@@ -325,8 +330,14 @@ def test_exclusion_lists(tmp_path):
     assert (tmp_path / "bw.txt").read_text() == "sn1_1900-01-02_ed-1_seq-0\n"
     (tmp_path / "hipe").mkdir()
     (tmp_path / "hipe" / "x_overproof-combined_v1.0_test_en.jsonl").write_text(
-        json.dumps({"document_id": "sn86063758-0-00271743506-1859080801-0012"}) + "\n")
+        json.dumps({"document_metadata": {"document_id": "sn86063758-0-00271743506-1859080801-0012"}}) + "\n"
+        + json.dumps({"document_metadata": {"document_id": "13023000"}}) + "\n")
     exclusions.main(["overproof", "--hipe-dir", str(tmp_path / "hipe"), "--out", str(tmp_path / "op.txt")])
     assert (tmp_path / "op.txt").read_text() == "sn86063758_1859-08-08_ed-1_seq-0\n"
     ex = alto_weak.Exclusions(["overproof=%s" % (tmp_path / "op.txt")])
     assert ex.reason("sn86063758_1859-08-08_ed-1_seq-3") == "excluded_issue:overproof"
+
+
+def test_held_entry():
+    assert alto_weak.held_entry("nbu_x/2017270200/1895-12-26/1/2.jpg") == ("2017270200_1895-12-26_ed-1_seq-2", "nbu_x")
+    assert alto_weak.held_entry("nbu_x/2017270200/1895-12-26/1/2.jpg.json") == (None, None)
