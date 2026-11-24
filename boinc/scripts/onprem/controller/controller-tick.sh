@@ -56,7 +56,8 @@
 # A plan other than main skips its tick (exit 0, one boinc_batch_skipped line) while a held-page
 # archive runs: the scheduled unit (--held-archive-unit), a hand-run usnm-held-archive-* unit, or
 # any run holding held-archive.sh's lock (--held-archive-lock). A run with --gap-mins lets that
-# lock go between batches and says so with <lock>.gap: the plan then ticks. A drain plan also skips while
+# lock go between batches and says so with <lock>.gap: the plan then ticks. A unit whose run is
+# queued behind another archive (its invocation ID in <lock>.queued.d) counts only through the lock. A drain plan also skips while
 # main's timer is stopped, as the shared drain service did: an operator's pause. This is checked
 # before the lock, every --lock-recheck-secs (default 30) while waiting for it, and once it is
 # taken. main is never skipped: the archive stops main's timer and starts a main tick itself
@@ -250,6 +251,13 @@ skipped() {
   printf '{"event": "boinc_batch_skipped", "schema_version": 1, "at": %s, "plan": %s, "reason": "%s"}\n' \
     "$(date +%s)" "$(json_string "$PLAN")" "$1"
 }
+# Whether an archive unit's current run is only queued for another archive's locks: held-archive.sh
+# names the run's systemd invocation in <lock>.queued.d while it waits (#2131).
+archive_queued() {
+  local id
+  id=$(systemctl show "$1" -p InvocationID --value 2> /dev/null || true)
+  [[ $id =~ ^[0-9a-f]{32}$ ]] && [ -e "$HELD_ARCHIVE_LOCK.queued.d/$id" ]
+}
 # Why a plan other than main doesn't tick now, if it doesn't. A oneshot unit is "activating"
 # while it runs, so is-active alone would miss it.
 skip_reason() {
@@ -257,15 +265,19 @@ skip_reason() {
   # Between two batches of a run with --gap-mins (#2012) the unit is active but nothing is
   # paused: held-archive.sh has let its archive lock go and says so with this file, so the
   # plan ticks. The lock below still skips while a batch is dispatched or bridged.
+  # A run still queued behind another archive's locks (#2131) holds and pauses nothing: it is
+  # skipped for only while one of those locks is held, which the lock check below sees.
   if [ ! -e "$HELD_ARCHIVE_LOCK.gap" ]; then
     case $(systemctl show "$HELD_ARCHIVE_UNIT" -p ActiveState --value 2> /dev/null || true) in
-      active | activating | deactivating | reloading) echo held_archive_running; return 0 ;;
+      active | activating | deactivating | reloading)
+        archive_queued "$HELD_ARCHIVE_UNIT" || { echo held_archive_running; return 0; } ;;
     esac
-    if [ -n "$(systemctl list-units --plain --no-legend --state=active,activating,deactivating \
-      'usnm-held-archive-*' 2> /dev/null || true)" ]; then
-      echo held_archive_running
-      return 0
-    fi
+    local unit _
+    while read -r unit _; do
+      [ -n "$unit" ] || continue
+      archive_queued "$unit" || { echo held_archive_running; return 0; }
+    done < <(systemctl list-units --plain --no-legend --state=active,activating,deactivating \
+      'usnm-held-archive-*' 2> /dev/null || true)
   fi
   if [ -e "$HELD_ARCHIVE_LOCK" ] && ! flock -n "$HELD_ARCHIVE_LOCK" true; then
     echo held_archive_running
