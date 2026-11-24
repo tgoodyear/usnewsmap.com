@@ -33,8 +33,12 @@ Clean-page filters for the weak English labels (all must hold; each is recorded 
                                         WIDTH_LO and WIDTH_HI times the height-weighted median region
                                         width (catches slivers and merged columns, keeps sections
                                         whose columns differ moderately in width)
-  block_align >= MIN_BLOCK_ALIGN        share of TextBlocks (by area) with at least 90% of their
-                                        area inside one column region, among blocks that overlap any
+  block_align >= MIN_BLOCK_ALIGN        share of TextBlocks (by area) with at least 90% of their width
+                                        inside one overlapping column region's x range, among blocks
+                                        that overlap any (x only: stacked regions of one column are
+                                        fine; a block across a gutter is not). Changed after the
+                                        pilot overlays: the first version also failed blocks that
+                                        span a column split by a picture
   lang_ok >= 1                          the page is in the target language (default eng): the ALTO
                                         TextBlock `language` attribute, majority by line count, names
                                         it; a page whose ALTO has no language attribute needs a
@@ -262,16 +266,22 @@ def width_consistency(regions):
 
 
 def block_align(blocks, regions):
+    """Area share of TextBlocks lying in one column horizontally.
+
+    A block is aligned when, among the regions it overlaps, one holds at least 90% of the block's width
+    in x. Only the x axis counts: a block that spans two stacked regions of the same column (a column
+    split by a picture or a gap) is aligned; a block reaching across a gutter is not."""
     tot = ok = 0.0
     for b in blocks:
         a = _area(b)
-        if a <= 0:
+        w = _w(b)
+        if a <= 0 or w <= 0:
             continue
-        inters = [_inter(b, r) for r in regions]
-        if not inters or max(inters) <= 0:
+        over = [r for r in regions if _inter(b, r) > 0]
+        if not over:
             continue
         tot += a
-        if max(inters) >= 0.9 * a:
+        if max(_xover(b, r) for r in over) >= 0.9 * w:
             ok += a
     return ok / tot if tot > 0 else None
 
