@@ -5,8 +5,9 @@ The method is chr_synth_lines.py's (ocr/models/chr-phoenix/recipe): each letter 
 glyph of that letter from the bank; marks the bank has no glyphs for (digits, punctuation) are set
 from DejaVu Serif; the line is then degraded like a scan. Two changes for Latin type:
   - Glyphs are not scaled to one body height (Fraktur has ascenders and descenders). Each glyph is
-    scaled by the line height over its own word crop's height, and set at its height in that crop,
-    so x-height, ascenders, descenders and the baseline carry over from the page.
+    scaled so its word's x-height becomes XHEIGHT of the line height, and set where it stood against
+    its word's baseline (both measured on the word's own x-height letters), so ascenders and
+    descenders carry over from the page.
   - The degradation strength is chosen on the 17 model-selection pages (`tune`, below).
 
 Text. Each synthetic line's text is a real training line's text (lines.jsonl rows with split
@@ -58,27 +59,33 @@ PRESETS = {
     "heavy": dict(blur_p=0.85, blur=(0.6, 1.6), spread=0.35, loss=0.20, lo=(30, 90), hi=(170, 230), noise=(6, 18), jpeg=(30, 70)),
     "heavier": dict(blur_p=0.95, blur=(0.9, 2.0), spread=0.40, loss=0.25, lo=(40, 110), hi=(150, 215), noise=(10, 24), jpeg=(20, 50)),
 }
-X_LETTERS = set("acemnorsuvwxz")
+# Letters that sit on the baseline with no ascender or descender in Fraktur (not s, which holds ſ,
+# nor z, which descends). A word's baseline and x-height are the medians of these letters' boxes.
+X_LETTERS = set("acemnoruvwx")
+BASELINE, XHEIGHT = 0.74, 0.40   # where the baseline sits and how tall the x-height is, as shares of H
 
 
 def load_bank(bank):
+    """Kept glyphs by letter: (png, top of the png below the word's baseline in x-heights, the word's x-height)."""
+    rows = [json.loads(l) for l in open(os.path.join(bank, "index.jsonl"), encoding="utf-8")]
+    words = collections.defaultdict(list)
+    for r in rows:
+        if r["letter"] in X_LETTERS:
+            words[r["word_id"]].append(r["box"])
+    metric = {w: (statistics.median(b[3] for b in bs), statistics.median(b[3] - b[1] for b in bs))
+              for w, bs in words.items()}
     pools = collections.defaultdict(list)
-    base, xh = [], []
-    for line in open(os.path.join(bank, "index.jsonl"), encoding="utf-8"):
-        r = json.loads(line)
-        if not r.get("kept"):
+    for r in rows:
+        if not r.get("kept") or r["word_id"] not in metric:
+            continue
+        base, xh = metric[r["word_id"]]
+        if xh < 4:
             continue
         b, c = r["box"], r["crop_box"]
-        ch = c[3] - c[1]
-        if ch <= 0:
-            continue
-        # The saved glyph is its box plus 2 px, clamped to the word crop (usnm-glyphs build-words).
-        top = max(c[1], b[1] - 2) - c[1]
-        pools[r["letter"]].append((os.path.join(bank, "glyphs", f"{ord(r['letter']):04x}", r["id"] + ".png"), top / ch, ch))
-        if r["letter"] in X_LETTERS:
-            base.append((b[3] - c[1]) / ch)
-            xh.append((b[3] - b[1]) / ch)
-    return pools, statistics.median(base), statistics.median(xh)
+        top = max(c[1], b[1] - 2)  # the saved glyph is its box plus 2 px, clamped to the word crop
+        pools[r["letter"]].append((os.path.join(bank, "glyphs", f"{ord(r['letter']):04x}", r["id"] + ".png"),
+                                   (top - base) / xh, xh))
+    return pools, BASELINE, XHEIGHT
 
 
 def load_glyph(p, cache):
@@ -115,11 +122,11 @@ def render(text, pools, rng, H, baseline, xh, cache):
         if ch.isalpha():
             if not pools.get(ch):
                 return None, ch
-            p, top, cropH = rng.choice(pools[ch])
+            p, top, wxh = rng.choice(pools[ch])
             g = load_glyph(p, cache)
-            s = H / cropH
+            s = xh * H / wxh
             g = np.asarray(Image.fromarray(g).resize((max(1, round(g.shape[1] * s)), max(1, round(g.shape[0] * s))), Image.BILINEAR), np.float32)
-            y = int(round(top * H))
+            y = int(round(baseline * H + top * xh * H))
         else:
             m = mark(ch, H, xh)
             if m is None:
@@ -261,7 +268,10 @@ def run(bank, lines_jsonl, preset, out, mode, tessdata, n, run_seed, jobs, chunk
     os.makedirs(out, exist_ok=True)
     work = [(run_seed, k, min(n, k + chunk), preset, out, mode, tessdata) for k in range(0, n, chunk)]
     made, missing, t0 = 0, collections.Counter(), time.time()
-    with Pool(jobs, initializer=init, initargs=(bank, lines_jsonl)) as pool:
+    if W.get("key") != (bank, lines_jsonl):
+        init(bank, lines_jsonl)  # once, in the parent: the forked workers share it
+        W["key"] = (bank, lines_jsonl)
+    with Pool(jobs) as pool:
         for i, (m, miss) in enumerate(pool.imap_unordered(make_chunk, work), 1):
             made += m
             missing.update(miss)
@@ -312,7 +322,7 @@ def main():
     for p in (t, r):
         p.add_argument("--bank", required=True); p.add_argument("--lines", required=True)
         p.add_argument("--tessdata", required=True); p.add_argument("--out", required=True)
-        p.add_argument("--jobs", type=int, default=20)
+        p.add_argument("--jobs", type=int, default=12)
     t.add_argument("--dev-read", required=True)
     r.add_argument("--train-list", required=True); r.add_argument("--tune", required=True)
     a = ap.parse_args()
