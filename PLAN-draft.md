@@ -1,4 +1,4 @@
-# Plan (draft for freezing): does our Tesseract read English Chronicling America body text better than LoC's OCR? (#2122, route 2)
+# Plan, frozen before any sample page is built: does our Tesseract read English Chronicling America body text better than LoC's OCR? (#2122, route 2)
 
 Route 1, the Beyond Words caption test (comment 7129161579), passed. A pass there tests captions only. Its plan said body-text evidence must come from a pick-between-readings queue on the check site. This is that queue. Human truth comes only from picks: nobody types.
 
@@ -178,3 +178,13 @@ Run as `nobody`. Scans were read in place from `/data/ocr-scans-cold`. ALTO came
    - Expected share: about 30% of pages, judging by the pilot.
 2. **Page alignment failures (4 of 14).** Proposal: keep the 50% gate. Report the failed pages and their causes. A failed page counts as "no evidence", not as a loss for either engine.
 3. **Splits and joins (9% of LoC words).** These are outside ΔWER and reported as a bound, as above.
+
+## Settled at the freeze (coordinator, 24 Nov)
+
+- **Language code:** the queue uses its own code, `en-read`. `languages/en.json` (#1867) is untouched.
+- **JP2 crashes:** handled as production handles them. If Tesseract crashes on a page's JP2, the page is read from LoC's IIIF JPEG, fetched once. It counts as a Tesseract failure only if that read fails too. The crash is reported to Compute as a worker issue.
+- **Closing date:** the analysis runs once, 8 weeks after the sample is loaded, or earlier if every task has settled or closed.
+  - **At least 150 pages with a settled task:** the decision rule applies.
+  - **Fewer than 150:** the result is descriptive and decides nothing.
+  - **Settle rate:** reported by week.
+- **What a pass allows:** the body-text evidence the per-language rule asks for, alongside the caption result (comment 7133172084). Replacing LoC's text in search still needs the #1915 completeness gate and a separate decision with the maintainer.
