@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Training data for R3 (#2128), from the study's data directory.
+# Training data for R3 and R4c (#2128), from the study's data directory.
 #   prep_r3_r4c.sh --root DIR --glyphs BIN [--jobs N]
 # DIR holds inputs/ (LoC scans, tessdata, NT text, test-set manifests, ChrEn, the #1621 model B files,
 # langdata_lstm), work/ (LoC ALTO from the batch tars, S0's classified lines, phase 1's training-page reads
@@ -59,11 +59,18 @@ step "synthetic lines"
   --exclude-manifest $T/exclude.json --nt-text $NT --exclude-verses $XV --out $T/synth --lines 20000 --seed 2128 \
   --marks-share 0.4 --punct-rate 0.15 --quote-rate 0.08 --edge-rate 0.3
 
+step "R4c's GHN lines"
+[ -d $T/ghn ] || python3 "$HERE/r4c_lines.py" --words $T/ghn-words.jsonl --wordlist inputs/dict-1621/B_stock_nt.txt \
+  --aligned-rows work/r4/aligned.jsonl --aligned-lines out/r4-candidates/lines.jsonl --crops-dir work/crops \
+  --nt-text $NT --exclude-verses $XV --out $T/ghn
+
 step "start model with Ꮐ"
 [ -s $T/start/lang/chr/chr.traineddata ] || bash "$HERE/train/start_model.sh" \
   --base inputs/dict-1621/models/B_stock_nt/chr.traineddata --langdata inputs/langdata_lstm --out $T/start
 
 step "lstmf and lists"
-for d in real synth; do bash "$HERE/train/make_lstmf.sh" --src $T/$d --out $T/lstmf --jobs "$JOBS"; done
+for d in real synth ghn; do bash "$HERE/train/make_lstmf.sh" --src $T/$d --out $T/lstmf --jobs "$JOBS"; done
 python3 "$HERE/train/lists.py" --lstmf $T/lstmf --real real --synth synth --out-dir $T/lists-r3
+python3 "$HERE/train/lists.py" --lstmf $T/lstmf --real real --synth synth --extra ghn --out-dir $T/lists-r4c
+cmp $T/lists-r3/eval.list $T/lists-r4c/eval.list
 step "PREP-DONE"
