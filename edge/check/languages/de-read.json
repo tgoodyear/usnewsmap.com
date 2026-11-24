@@ -1,0 +1,13 @@
+{
+  "guidance": [
+    "Only the letters and digits count. Capital and small letters count as the same, and punctuation doesn't count: if the readings differ only in a comma or a capital, compare the letters.",
+    "The long ſ, which looks like an f without the bar across, counts as s, and the round r (ꝛ) counts as r: a reading with f in the place of a long ſ does not match.",
+    "Umlauts count: ä, ö and ü are not a, o and u. In Fraktur an umlaut is often printed as a small e or two strokes above the letter.",
+    "If the box cuts off part of the word, look at the line above it to see the whole word.",
+    "If a letter is too worn or blotted to tell which reading it supports, pick Can't tell."
+  ],
+  "intro": "These words come from German-language newspapers printed in the United States, held by the Library of Congress in Chronicling America. They are printed in Fraktur, a blackletter type, where r, x, k, t, B and V can look alike. Two machine readings (OCR) disagree on each word.",
+  "name": "German: which reading",
+  "rules": "The box marks one word in a line. Which reading matches the printed word? Pick it only if all its letters match the print; highlighted letters show where the two readings differ. If neither reading matches, pick Neither. If you can't make out the letters, pick Can't tell. If the box holds no letters (a picture or a smudge), pick Not text.",
+  "title": "German newspapers: which reading matches"
+}
