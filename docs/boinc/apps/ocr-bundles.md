@@ -638,8 +638,18 @@ The jobs also use the word route (`--line-words`, profile `chr_phoenix+eng`, #16
 need new `usnm_ocr` and `usnm_gold` versions under `docker_lines`, built from a main that has
 both. Publish them held with a version number neither app has used: 1.9 (109) if it is still
 free ([app-release.md](app-release.md), "A worker for line jobs only"). They are pinned and
-targeted like the 1.8 (108) line jobs, in batch 1621 (`LINE_BATCH`), so nothing else changes
-on the server.
+targeted like the 1.8 (108) line jobs, in batch 1621 (`LINE_BATCH`).
+
+**Server.** The server needs two changes before the run, as the 1.8 roll did (#1682):
+
+- The server image's `gold-engine-platforms.json` must bind the new worker to its Tesseract
+  engines. Without that, `gold` submit refuses the worker. The binding for worker `e23798d7`
+  (main `3b1a9974`) is in #2135. Each platform maps to the `USNM_TESSERACT_IMAGE` in that
+  architecture's published image config: amd64 `5647ac68`, arm64 `f28fc104`.
+- `submit-remote` and `spool-out` run from the server image, and a server built before #1622
+  rejects GHN jobs (`Job::validate`). Build the server and bridge images from a main that has
+  both #1622 and the binding, switch `SERVER_IMAGE` on the BOINC host, and install main's
+  `onprem-step.sh` there.
 
 **Gold and trust.** As in steps 1 and 2 above, on the new worker's digest: one fresh gold
 root per host, pinned with `GOLD_DOCKER_LINES_VERSION=109`, collected from `results/1621` in
