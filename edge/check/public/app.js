@@ -46,7 +46,7 @@ async function session() {
       await new Promise((r) => setTimeout(r, 100));
     }
     checking = true;
-    status("Starting… if a check box appears above the word, tick it to begin.");
+    status("Running a one-time browser check… if a check box appears above the word, tick it to begin.");
     // Each attempt gets its own widget, removed afterwards whether it worked or not, so a retry
     // (or a new sign-in after a 401) starts a fresh check instead of waiting on a spent one.
     let widget = null, token;
@@ -597,6 +597,10 @@ function skip() { if (!task || busy || stale) return; skipped.push(task.id); nex
 async function work(code) {
   lang = code;
   $("work").hidden = false;
+  // A first visit has a browser check to run before any word can be fetched: start it now, alongside the language's
+  // configuration, instead of after it. next() waits on the same check (session() shares one attempt); a failure here is
+  // reported, and retried, when next() asks again.
+  session().catch(() => {});
   try { cfg = await getJSON("/api/languages/" + code); }
   catch { $("card").textContent = "We don't have this language. "; const a = document.createElement("a"); a.href = "/"; a.textContent = "See the list"; $("card").appendChild(a); return; }
   document.title = `${cfg.name}: USNewsMap letter check`;
