@@ -50,6 +50,8 @@ SHA = {"combo": "eddf61bedddaefa714d000446a0043f7d10b62f79e93679038c51251e47bb52
        "cg-german-test": "e67d4a615e3cc2007f7f2c64c35e2197f6087934ee2fdbc5164628964b9d1bda"}
 BW_NONTEXT = {"photograph", "illustration", "comics/cartoon", "editorial cartoon", "map", "advertisement"}
 N_V2, N_TEST = 500, 500
+TRAIN_KEY = "2107:comboseg:train:"
+TRAIN_N = {"liberte": 1500, "cg": 615, "bw": 600}  # addendum to the frozen plan (comment 7131932511)
 
 
 def key(prefix, pid):
@@ -157,6 +159,8 @@ def beyond_words(a, inv, lists):
             if bx:
                 with_neg += 1
                 if split == "train":
+                    lists.setdefault("bw-train-with-negatives", []).append(r["page_id"])
+                if split == "train":
                     negs[r["page_id"]] = {"boxes": bx, "size": [r["width"], r["height"]], "ca_identity": r["meta"].get("ca_identity")}
         out[split] = {"pages": n, "pages_with_negative_box": with_neg, "boxes_by_type": dict(sorted(nbox.items()))}
         if split == "train":
@@ -187,6 +191,18 @@ def engutter(a, inv):
                                      "test_pages": half, "train_pages": len(tp) - half,
                                      "test_pages_sha256": sh_test, "train_pages_sha256": sh_train},
                            "settled_now": "see export_engutter.py summary"}
+
+
+def training_subset(a, inv, lists):
+    """The fixed training sample: each source in sha256(TRAIN_KEY + page id) order, the first N (written in that
+    order)."""
+    src = {"liberte": lists["liberte-train-pool"], "cg": lists["cg-spent-nontest"], "bw": lists["bw-train-with-negatives"]}
+    out = {}
+    for k, ids in src.items():
+        pick = sorted(ids, key=lambda p: (key(TRAIN_KEY, p), p))[:TRAIN_N[k]]
+        out[k] = {"pages": len(pick), "available": len(ids),
+                  "sha256": write_list(os.path.join(a.out_dir, "train-subset-%s.txt" % k), pick)}
+    inv["training_subset"] = dict(out, rule="sha256('%s'+page_id) order, first N" % TRAIN_KEY)
 
 
 def others(a, inv):
@@ -236,6 +252,7 @@ def main(argv=None):
     beyond_words(a, inv, lists)
     engutter(a, inv)
     others(a, inv)
+    training_subset(a, inv, lists)
     for k, v in lists.items():
         inv.setdefault("lists_sha256", {})[k] = write_list(os.path.join(a.out_dir, k + ".txt"), v)
     sample(a, inv, lists, image)

@@ -143,6 +143,12 @@ def main(argv=None):
         threshold, qualified = select_threshold(ds, a.baseline_dev_precision)
         rep["threshold_rule"] = {"floor": PRECISION_FLOOR, "qualified": qualified,
                                  "picked_by": "best F1 within the precision floor" if qualified else "highest precision (none qualified)"}
+        by_set = {}
+        for name in sorted({r.get("set") or "" for r in dv_rows}):
+            sub = [r for r in dv_rows if (r.get("set") or "") == name]
+            if any(r["page_id"] in refs for r in sub):
+                by_set[name or "unnamed"] = {str(k): v for k, v in dev_scores(sub, gbdt.predict(clf, sub), refs).items()}
+        rep["dev_threshold_grid_by_set"] = by_set
     rep["threshold"] = threshold
     final = gbdt.fit(rows, sw)
     gbdt.save(final, a.out_model, {"threshold": threshold, "pages": len({r["page_id"] for r in rows}),

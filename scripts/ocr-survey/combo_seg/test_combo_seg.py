@@ -313,3 +313,65 @@ def test_build_features_lists_missing_pages(tmp_path):
     assert miss["count"] == 1 and miss["pages"] == ["p1"] and miss["kept"] == 1
     rows = [json.loads(ln) for ln in open(out)]
     assert rows and {r["page_id"] for r in rows} == {"p0"}
+
+
+def test_fetch_gives_up_after_three_404s(tmp_path):
+    import io
+    import urllib.error
+    import fetch_scans
+    calls = []
+    t = [0.0]
+
+    def opener(req):
+        calls.append((req.full_url, t[0]))
+        if "bad" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 404, "nf", {}, None)
+        return io.BytesIO(b"jpegbytes")
+
+    def sleep(s):
+        t[0] += s
+    f = fetch_scans.Fetcher(1.0, opener=opener, clock=lambda: t[0], sleep=sleep)
+    st, info = fetch_scans.fetch_entry(f, {"stem": "bad", "url": "http://x/bad"}, str(tmp_path))
+    assert st == "gave_up_404" and info["attempts"] == 3 and len(calls) == 3
+    assert all(b[1] - a[1] >= 1.0 for a, b in zip(calls, calls[1:]))
+    st, info = fetch_scans.fetch_entry(f, {"stem": "ok", "url": "http://x/ok"}, str(tmp_path))
+    side = json.load(open(tmp_path / "ok.jpg.json"))
+    assert st == "fetched" and side["bytes"] == 9 and len(side["sha256"]) == 64
+    assert fetch_scans.fetch_entry(f, {"stem": "ok", "url": "http://x/ok"}, str(tmp_path))[0] == "held"
+
+
+def test_english_rules_1_and_3():
+    import english_rules
+    boxes = [[0, 0, 100, 500]]
+    banded = [[[40, 50, 0, 500]], [[200, 210, 0, 500]]]   # one gutter through the box, one outside
+    keep = [[[200, 210, 0, 500]]]                          # drops the false one, keeps the real one
+    few = [[[200, 210, 0, 300]]]                           # drops the false one and much of the real one
+    vb = np.array([english_rules.page_vec(banded, boxes)] * 20, dtype=float)
+    r = english_rules.rules(np.array([english_rules.page_vec(keep, boxes)] * 20, dtype=float), vb)
+    assert r["rule1_pass"] and r["rule3_pass"] and r["outside_height"]["ratio"] == 1.0
+    r = english_rules.rules(np.array([english_rules.page_vec(few, boxes)] * 20, dtype=float), vb)
+    assert r["rule1_pass"] and not r["rule3_pass"] and abs(r["outside_height"]["ratio"] - 0.6) < 1e-9
+
+
+def test_baseline_combo_adds_as_where_v1_has_none():
+    import baselines
+    v1 = [[[330, 350, 200, 1300]]]   # AS gaps under the 3% cap: 330-350 (v1 has it) and 650-670 (v1 has none)
+    boxes = [[60, 200, 330, 1300, 0.9, "article"], [350, 200, 650, 1300, 0.9, "article"],
+             [670, 200, 940, 1300, 0.9, "article"]]
+    assert baselines.baseline_gutters("v1", v1, boxes, (W, H)) == v1
+    c = baselines.baseline_gutters("combo", v1, boxes, (W, H))
+    assert c[0] == v1[0] and len(c) == 2 and 650 <= c[1][0][0] and c[1][0][1] <= 670
+
+
+def test_training_subset_order():
+    import train_inventory
+    ids = ["p%d" % i for i in range(50)]
+    pick = sorted(ids, key=lambda p: (train_inventory.key(train_inventory.TRAIN_KEY, p), p))[:10]
+    assert pick == sorted(reversed(ids), key=lambda p: (train_inventory.key(train_inventory.TRAIN_KEY, p), p))[:10]
+    assert train_inventory.TRAIN_N == {"liberte": 1500, "cg": 615, "bw": 600}
+
+
+def test_alto_member_doc():
+    import alto_bulk
+    assert alto_bulk.member_doc("sn84026749/1918/02/15/ed-1/seq-7/ocr.xml") == "sn84026749_1918-02-15_ed-1_seq-7"
+    assert alto_bulk.member_doc("sn84026749/1918/02/15/ed-1/seq-7/ocr.txt") is None
