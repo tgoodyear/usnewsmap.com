@@ -208,6 +208,8 @@ def cmd_sheets(a):
     out = Path(a.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     sample = jsonl(a.sample)
+    if a.stratum:  # Amendment 3.1: only the pages of one stratum are labelled
+        sample = [r for r in sample if a.stratum in r["strata"]]
     used = {r["line_id"] for f in (a.first_key, a.dev_key) for r in jsonl(f) if r.get("source") == "calibration"}
     vocab = {w.strip().lower() for w in open(a.wordlist, encoding="utf-8") if w.strip()}
     aligned = jsonl(a.aligned)
@@ -271,7 +273,7 @@ def cmd_sheets(a):
     items = []
     for r in sample:
         row = {kk: v for kk, v in r.items() if kk != "scan"}
-        items.append((sha("2128:clf2-gate-shuffle:" + r["page_id"] + ":" + r["box_id"]), row, Path(r["scan"]), tuple(r["box"])))
+        items.append((sha(a.shuffle_key + r["page_id"] + ":" + r["box_id"]), row, Path(r["scan"]), tuple(r["box"])))
     sizes = {}
     for script, group in (("cherokee", cal_chr), ("latin", cal_lat)):
         for c in group:
@@ -283,7 +285,7 @@ def cmd_sheets(a):
             row = {"source": "calibration", "page_id": c["page_id"], "box_id": c["box_id"], "line_id": c["line_id"],
                    "known_script": script, "lookalike": c.get("lookalike", False),
                    "lookalike_share": c.get("lookalike_share"), "cal_source": c.get("cal_source", "testset_v2_alto")}
-            items.append((sha("2128:clf2-gate-shuffle:" + c["page_id"] + ":" + c["box_id"]), row, img, px))
+            items.append((sha(a.shuffle_key + c["page_id"] + ":" + c["box_id"]), row, img, px))
     items.sort(key=lambda t: t[0])
     by_img = collections.defaultdict(list)
     for i, t in enumerate(items):
@@ -309,7 +311,8 @@ def cmd_sheets(a):
         for r in keyrows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
     os.chmod(kp, 0o600)
-    man = {"issue": "#2128 Amendment 3, gate sheets", "sample_sha256": file_sha(a.sample),
+    man = {"issue": "#2128 Amendment 3 / 3.1, gate sheets", "sample_sha256": file_sha(a.sample),
+           "stratum": a.stratum, "pages": len({r["page_id"] for r in sample}), "shuffle_key": a.shuffle_key,
            "crops": {"total": len(crops), "ghn_called": sum(r["called"] for r in sample),
                      "ghn_sampled_not_called": sum(not r["called"] for r in sample),
                      "cal_cherokee": len(cal_chr), "cal_lookalike": len(look),
@@ -341,6 +344,9 @@ def main(argv=None):
             s.add_argument("--draws", type=int, default=1000)
         if name == "draw":
             s.add_argument("--n", type=int, required=True)
+        if name == "sheets":
+            s.add_argument("--stratum", help="keep only the sample pages in this stratum (e.g. not_held)")
+            s.add_argument("--shuffle-key", default="2128:clf2-gate-shuffle:")
         if name == "sample":
             s.add_argument("--t", type=float, required=True)
     a = ap.parse_args(argv)
