@@ -30,8 +30,8 @@ clipped to the page, in 8-bit grey. Lines with no text of their own or that norm
 skipped (`empty`); so are polygons under three points or boxes under 5 px on a side (`degenerate`).
 Training crops taller than 36 px, `frak2021`'s network input height, are scaled down to it with a
 box filter (area averaging, as Tesseract shrinks a line itself), so the training set fits the dev
-CT's disk, and are kept only inside `.lstmf` files of up to 100 lines (a multi-page TIFF plus a
-WordStr box per page, read by `tesseract --psm 13 lstm.train`). Dev lines get `.lstmf` files at the
+CT's disk, and are kept only inside `.lstmf` files, one line each as in `chr_finetune.sh` (a TIFF plus a WordStr
+box, read by `tesseract --psm 13 lstm.train`). Dev lines get `.lstmf` files at the
 page's resolution and also stay as PNG for scoring. Held-out lines are PNG only, in their own tree.
 Lines with a character outside `frak2021`'s character set get no `.lstmf` (lstmtraining could not
 encode them); they are counted as `unencodable`.

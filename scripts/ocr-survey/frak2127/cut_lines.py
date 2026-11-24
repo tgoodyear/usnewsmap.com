@@ -38,7 +38,8 @@ MIN_SIDE_PX = 5     # a clipped box narrower or shorter than this is degenerate
 # CT's disk. 36 px is frak2021's network input height: Tesseract scales every line to it anyway.
 # Dev and held-out crops keep the page's own resolution. Training crops are kept only inside .lstmf.
 TRAIN_HEIGHT_PX = 36
-LSTMF_LINES = 100   # lines per .lstmf (tesseract reloads the file for every page it appends)
+LSTMF_LINES = 1     # lines per .lstmf: tesseract reloads and rewrites the file for every page it appends,
+                    # so more lines per file cost far more disk writes; one line per file, as chr_finetune.sh
 START_LANG = "frak2021"
 HELDOUT_SHA256 = "6b0c03e714d1d254e7bf144c8d93d3413fc1a2eae6710cdabd5d694c89e97ce5"
 YEAR = re.compile(r"_(\d{4})(?:-\d{2}-\d{2})?_")
