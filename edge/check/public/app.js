@@ -364,7 +364,8 @@ function render(prev) {
     if (skipped.length) {
       d.lastChild.textContent = `You've answered or skipped every open word you were given. Thank you. ${skipped.length === 1 ? "1 skipped word" : skipped.length + " skipped words"} may still need answers. `;
       const again = document.createElement("button"); again.type = "button"; again.className = "small"; again.id = "retry";
-      again.textContent = "Show skipped words"; again.addEventListener("click", () => { skipped = []; next(true); });
+      again.textContent = "Show skipped words"; // A failed fetch puts the skipped words back, so the button stays offered next to the error.
+      again.addEventListener("click", async () => { const keep = skipped; skipped = []; await next(true); if (failed && !task) { skipped = keep.concat(skipped); render(); } });
       d.appendChild(again);
     }
     card.appendChild(d); return;
