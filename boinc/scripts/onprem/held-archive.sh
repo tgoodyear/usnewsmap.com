@@ -172,9 +172,24 @@ LOCK_WAITER=""
 on_lock_wait_stop() {
   [ -z "$LOCK_WAITER" ] || kill -TERM "$LOCK_WAITER" 2> /dev/null || true
   [ -z "$LOCK_WAITER" ] || wait "$LOCK_WAITER" 2> /dev/null || true
+  unmark_queued
   exit 143
 }
 trap on_lock_wait_stop TERM INT
+# While the run waits, <lock>.queued.d/<invocation ID> tells the plans' ticks (controller-tick.sh)
+# that this unit is only queued, so they don't skip for it (#2131). The ID is systemd's for this
+# run, so a marker left by a run that was killed never matches a later one.
+QUEUED_DIR=$LOCK.queued.d
+QUEUED_MARKER=""
+mark_queued() {
+  [[ ${INVOCATION_ID:-} =~ ^[0-9a-f]{32}$ ]] || return 0
+  mkdir -p "$QUEUED_DIR" && touch "$QUEUED_DIR/$INVOCATION_ID" && QUEUED_MARKER=$QUEUED_DIR/$INVOCATION_ID ||
+    echo "warning: could not mark this run queued in $QUEUED_DIR; other plans skip while it waits" >&2
+}
+unmark_queued() {
+  [ -z "$QUEUED_MARKER" ] || rm -f "$QUEUED_MARKER"
+  QUEUED_MARKER=""
+}
 take_lock() {
   flock -n "$1" && return 0
   local left=$((LOCK_WAIT_SECS - (SECONDS - LOCK_WAIT_START))) waiter
@@ -182,6 +197,7 @@ take_lock() {
     if ! $LOCK_WAITED; then
       printf '{"event": "boinc_held_archive_lock_wait", "waiting": true, "wait_mins": %s}\n' "$LOCK_WAIT_MINS"
       LOCK_WAITED=true
+      mark_queued
     fi
     flock -w "$left" "$1" &
     LOCK_WAITER=$!
@@ -189,6 +205,7 @@ take_lock() {
     wait "$waiter" && { LOCK_WAITER=""; return 0; }
     LOCK_WAITER=""
   fi
+  unmark_queued
   die "another held-page archive is running (waited $((SECONDS - LOCK_WAIT_START)) s, --lock-wait-mins $LOCK_WAIT_MINS)"
 }
 exec 6> "$LOCK.run"
@@ -207,6 +224,7 @@ take_lock 6
 rm -f "$SKIP_MARKER"
 exec 9> "$LOCK"
 take_lock 9
+unmark_queued
 trap - TERM INT
 rm -f "$GAP_FILE"
 if $LOCK_WAITED; then

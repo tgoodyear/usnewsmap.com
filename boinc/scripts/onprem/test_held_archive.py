@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent / "held-archive.sh"
@@ -642,6 +643,56 @@ class HeldArchive(unittest.TestCase):
         self.assertEqual([e["waiting"] for e in events], [True, False])
         self.assertGreaterEqual(events[1]["waited_seconds"], 1)
         self.assertEqual(self.summary(done)["batches"], ["0001", "0002"])
+
+    def test_a_queued_run_marks_its_invocation_while_it_waits_and_clears_it(self):
+        # controller-tick.sh doesn't skip other plans for a run that is only queued (#2131).
+        lock = self.root / "lock"
+        queued = Path(f"{lock}.queued.d")
+        invocation = "0123456789abcdef0123456789abcdef"
+        holder = subprocess.Popen(["flock", f"{lock}.run", "sleep", "2"], start_new_session=True)
+        self.addCleanup(self.end_group, holder)
+        time.sleep(0.3)
+        root = self.root
+        environment = {**os.environ, "PATH": f"{root / 'bin'}{os.pathsep}{os.environ['PATH']}",
+                       "FAKE_LOG": str(root / "log"), "FAKE_TIMER": str(root / "timer"),
+                       "FAKE_LEFT": str(root / "left"), "USNM_HELD_ARCHIVE_LOCK": str(lock),
+                       "INVOCATION_ID": invocation}
+        run = subprocess.Popen(
+            ["bash", str(SCRIPT), "--config", str(root / "config.json"), "--state-dir", str(root / "state"),
+             "--archive-dir", str(root / "archive"), "--tool", str(root / "tool.py"), "--wait-mins", "1",
+             "--lock-wait-mins", "1"],
+            env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for _ in range(100):
+            if (queued / invocation).exists():
+                break
+            time.sleep(0.05)
+        self.assertTrue((queued / invocation).exists(), "the queued run left no marker")
+        out, err = run.communicate(timeout=60)
+        self.assertEqual(run.returncode, 0, err)
+        self.assertIn("boinc_held_archive_lock_wait", out)
+        self.assertEqual(list(queued.iterdir()), [])
+
+    def test_a_queued_run_that_times_out_clears_its_marker(self):
+        lock = self.root / "lock"
+        holder = subprocess.Popen(["flock", f"{lock}.run", "sleep", "30"], start_new_session=True)
+        self.addCleanup(self.end_group, holder)
+        time.sleep(0.3)
+        done = self.run_archive("--lock-wait-mins", "1", USNM_HELD_ARCHIVE_LOCK_WAIT_SECS="1",
+                                INVOCATION_ID="fedcba9876543210fedcba9876543210")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("another held-page archive is running", done.stderr)
+        self.assertEqual(list(Path(f"{lock}.queued.d").iterdir()), [])
+
+    def test_a_run_outside_systemd_marks_nothing(self):
+        lock = self.root / "lock"
+        holder = subprocess.Popen(["flock", f"{lock}.run", "sleep", "2"], start_new_session=True)
+        self.addCleanup(self.end_group, holder)
+        time.sleep(0.3)
+        environment = {k: v for k, v in os.environ.items() if k != "INVOCATION_ID"}
+        with unittest.mock.patch.dict(os.environ, environment, clear=True):
+            done = self.run_archive("--lock-wait-mins", "1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertFalse(Path(f"{lock}.queued.d").exists())
 
     def test_skip_if_busy_skips_the_slot_when_another_archive_runs(self):
         lock = self.root / "lock"

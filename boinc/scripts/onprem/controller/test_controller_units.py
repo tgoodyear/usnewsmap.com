@@ -43,12 +43,13 @@ sys.exit(int(os.environ.get("FAKE_EXIT", "0")))
 '''
 
 # The fake systemctl: show (the scheduled archive's state, from $FAKE_ARCHIVE_FILE or
-# $FAKE_ARCHIVE_STATE), list-units (a hand-run archive unit, $FAKE_ARCHIVE_UNITS) and is-active
-# (main's timer, $FAKE_MAIN_TIMER).
+# $FAKE_ARCHIVE_STATE, and any archive unit's InvocationID, $FAKE_ARCHIVE_INVOCATION), list-units
+# (a hand-run archive unit, $FAKE_ARCHIVE_UNITS) and is-active (main's timer, $FAKE_MAIN_TIMER).
 FAKE_SYSTEMCTL = r'''#!/bin/sh
 echo "systemctl $*" >> "$FAKE_SYSTEMCTL_LOG"
 case "$1" in
   show)
+    case "$*" in *InvocationID*) echo "${FAKE_ARCHIVE_INVOCATION:-}"; exit 0 ;; esac
     if [ -n "$FAKE_ARCHIVE_FILE" ] && [ -f "$FAKE_ARCHIVE_FILE" ]; then cat "$FAKE_ARCHIVE_FILE"
     else echo "${FAKE_ARCHIVE_STATE:-inactive}"; fi ;;
   list-units) [ -z "$FAKE_ARCHIVE_UNITS" ] || echo "$FAKE_ARCHIVE_UNITS loaded activating start archive" ;;
@@ -643,6 +644,34 @@ class Tick(Fixture):
         gap.unlink()
         self.skipped(self.tick("native-feed-4", FAKE_ARCHIVE_STATE="active"), "held_archive_running")
         self.assertEqual(len(self.runs()), 4)
+
+    def test_a_plan_ticks_while_an_archive_is_only_queued(self):
+        # held-archive.sh names a queued run's invocation in <lock>.queued.d (#2131): it holds and
+        # pauses nothing until it has the locks, so other plans tick; once it has them, they skip.
+        self.flags("native-feed-4", NATIVE_FLAGS)
+        invocation = "0123456789abcdef0123456789abcdef"
+        queued = self.root / "archive.lock.queued.d"
+        queued.mkdir()
+        (queued / invocation).write_text("")
+        for env in ({"FAKE_ARCHIVE_STATE": "activating"},
+                    {"FAKE_ARCHIVE_UNITS": "usnm-held-archive-queue-feed-11.service"}):
+            with self.subTest(**env):
+                self.assertEqual(self.tick("native-feed-4", FAKE_ARCHIVE_INVOCATION=invocation, **env).returncode, 0)
+        self.assertEqual(len(self.runs()), 2)
+        # Another run's ID, no ID, or one that isn't systemd's shape: the unit counts as running.
+        for other in ("fedcba9876543210fedcba9876543210", "", "../../etc"):
+            with self.subTest(invocation=other):
+                self.skipped(self.tick("native-feed-4", FAKE_ARCHIVE_STATE="activating",
+                                       FAKE_ARCHIVE_INVOCATION=other), "held_archive_running")
+        # Queued, but another archive's batch holds the archive lock: still skipped.
+        holder = self.hold(self.root / "archive.lock", 2)
+        self.skipped(self.tick("native-feed-4", FAKE_ARCHIVE_STATE="activating",
+                               FAKE_ARCHIVE_INVOCATION=invocation), "held_archive_running")
+        holder.wait(timeout=30)
+        (queued / invocation).unlink()
+        self.skipped(self.tick("native-feed-4", FAKE_ARCHIVE_STATE="activating",
+                               FAKE_ARCHIVE_INVOCATION=invocation), "held_archive_running")
+        self.assertEqual(len(self.runs()), 2)
 
     def test_a_drain_plan_skips_while_mains_timer_is_stopped(self):
         # As the shared drain service's ExecCondition: an operator's pause of main pauses the drains.
