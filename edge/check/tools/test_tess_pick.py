@@ -191,6 +191,14 @@ class Prepare(unittest.TestCase):
         self.assertTrue(ep.is_status_136(136) and ep.is_status_136(-8))
         self.assertFalse(ep.is_status_136(1) or ep.is_status_136(-9))
 
+    def test_scan_path_jpeg_format_is_a_jpg_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            held = os.path.join(d, "keep", "x_y", "sn1", "1900-01-02", "1")
+            os.makedirs(held)
+            open(os.path.join(held, "3.jpg"), "w").close()
+            self.assertEqual(ep.scan_path(d, {"doc_id": "sn1_1900-01-02_ed-1_seq-3", "batch": "x_y", "format": "jpeg"}),
+                             os.path.join(held, "3.jpg"))
+
     def test_read_members_stops_at_the_last_wanted(self):
         with tempfile.TemporaryDirectory() as d:
             arc = os.path.join(d, "x_ver01.tar.bz2")

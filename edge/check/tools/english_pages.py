@@ -165,11 +165,13 @@ def scan_path(scans, row):
     (as /tank/ocr/scans and its cold copy hold them, read in place). None when neither exists."""
     d, fmt = row["doc_id"], row.get("format") or "jp2"
     m = DOC.match(d)
-    for p in [os.path.join(scans, "%s.%s" % (d, fmt))] + [
-            os.path.join(scans, area, row.get("batch", ""), m["lccn"], m["date"], str(int(m["ed"])), "%d.%s" % (int(m["seq"]), fmt))
-            for area in ("keep", "buffer")]:
-        if os.path.isfile(p):
-            return p
+    exts = [fmt] + (["jpg"] if fmt == "jpeg" else [])  # the index says "jpeg"; held files are .jpg
+    for ext in exts:
+        for p in [os.path.join(scans, "%s.%s" % (d, ext))] + [
+                os.path.join(scans, area, row.get("batch", ""), m["lccn"], m["date"], str(int(m["ed"])), "%d.%s" % (int(m["seq"]), ext))
+                for area in ("keep", "buffer")]:
+            if os.path.isfile(p):
+                return p
     return None
 
 

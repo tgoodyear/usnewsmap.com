@@ -11,7 +11,7 @@ region.
 
 en-asgold (American Stories gold, Apache-2.0 text): the pages selection.tsv maps to a Chronicling America page
 (ca_page); the image is the gold set's own scan (images/<id>.jpg), LoC's ALTO comes from the bulk archive the
-asgold-ca-map.json JP2 URL names (checked in the locstats index, read as english_pages.read_members does). Regions are
+asgold-ca-map.json JP2 URL names, or else the one the locstats index lists for the page (checked in the locstats index, read as english_pages.read_members does). Regions are
 regions.jsonl's transcribed `article` regions (box [x0, y0, x1, y1]); headlines and captions are left out, since the
 queue is body text.
 
@@ -28,14 +28,34 @@ import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TOOLS = os.path.normpath(os.path.join(HERE, "..", "..", "..", "edge", "check", "tools"))
-sys.path.insert(0, TOOLS if os.path.isdir(TOOLS) else HERE)
+# english_pages.py: edge/check/tools in the repository, or ../tools beside a deployed copy
+for _d in (os.path.join(HERE, "..", "..", "..", "edge", "check", "tools"), os.path.join(HERE, "..", "tools"), HERE):
+    if os.path.exists(os.path.join(_d, "english_pages.py")):
+        sys.path.insert(0, os.path.normpath(_d))
+        break
 import english_pages as ep  # noqa: E402
 
 
 def archive_from_jp2_url(url):
     m = re.search(r"/batch_([a-z]+_[A-Za-z0-9]+_ver\d\d)/", url)
     return m.group(1) + ".tar.bz2" if m else None
+
+
+_LOCSTATS = {}
+
+
+def search_locstats(locstats, doc_id):
+    """The archive the locstats index lists for doc_id, reading every per-batch index once (for the few gold pages
+    whose map names no JP2). None when no index lists it."""
+    import glob
+    import pyarrow.parquet as pq
+    if not _LOCSTATS:
+        for f in sorted(glob.glob(os.path.join(locstats, "*.parquet"))):
+            t = pq.read_table(f, columns=["doc_id", "archive"])
+            for d, a in zip(t.column("doc_id").to_pylist(), t.column("archive").to_pylist()):
+                _LOCSTATS[d] = a
+        _LOCSTATS.setdefault("", None)
+    return _LOCSTATS.get(doc_id) or _LOCSTATS.get(ep.canonical(doc_id))
 
 
 def asgold_pages(asgold, locbulk, locstats, work):
@@ -53,7 +73,9 @@ def asgold_pages(asgold, locbulk, locstats, work):
         if not d:
             continue
         ca = by_doc.get(d)
-        archive = archive_from_jp2_url(ca["jp2"]) if ca else None
+        archive = archive_from_jp2_url(ca.get("jp2", "")) if ca else None
+        if not archive:
+            archive = search_locstats(locstats, d)
         if not archive or not ep.in_locstats(locstats, archive, [d]):
             left[d] = "not_in_locstats"
             continue
