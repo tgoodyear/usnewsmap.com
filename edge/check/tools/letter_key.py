@@ -421,7 +421,7 @@ def run_hocr(args) -> None:
 def build(args) -> None:
     from PIL import Image
     Image.MAX_IMAGE_PIXELS = None  # whole newspaper scans, from held files
-    if not KEY_NAME.match(args.key_name):
+    if not KEY_NAME.match(args.key_name) or ".." in args.key_name:  # the Worker refuses clip keys with ".."
         raise SystemExit("--key-name: letters, digits, . _ - only")
     with open(args.language_config, encoding="utf-8") as f:
         cfg = json.load(f)

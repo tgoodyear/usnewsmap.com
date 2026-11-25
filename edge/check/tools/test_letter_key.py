@@ -188,6 +188,8 @@ class Build(unittest.TestCase):
             body2 = json.loads(open(os.path.join(out2, "tasks.jsonl")).read())
             self.assertEqual(body2["key"], "en-read/s1/key-v2/t_d_ed-1_seq-1.json")
             self.assertEqual(list(body2), list(body))
+            with self.assertRaises(SystemExit):
+                lk.main(["--pages", pages, "--hocr-dir", hocr, "--build-dir", bd, "--out-dir", os.path.join(d, "y"), "--language-config", cfg, "--key-name", "key..v3"])
             # a task without its ALTO word can't have its line left out: the build refuses
             del task["private"]
             open(os.path.join(bd, "tasks.jsonl"), "w").write(json.dumps(task) + "\n")
