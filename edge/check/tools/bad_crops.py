@@ -5,7 +5,7 @@
 
 A task settles as `bad_crop` when two thirds of its answers (at least 3) say Bad crop: the box shows more than one line, cuts
 off the word or marks the wrong thing. It is a build defect, not reader evidence, and is held with hold_reason `bad_crop`.
-For each one this prints the task id, its set and page, and the clip keys it was built with (`clips` in the export: a pick
+For each one this prints the task id, its set and page (a gutter task's `page_id`), and the clip keys it was built with (`clips` in the export: a pick
 task's `line` and `word`, a gutter task's `crop`), with its answer counts. --json writes one JSON object per task instead.
 """
 import argparse
@@ -17,7 +17,7 @@ def bad_crops(rows: list) -> list:
     for r in rows:
         if r.get("outcome") != "bad_crop":
             continue
-        out.append({"id": r["id"], "set": r.get("set"), "page": r.get("page"), "kind": r.get("kind", "pick"),
+        out.append({"id": r["id"], "set": r.get("set"), "page": r.get("page") or r.get("page_id"), "kind": r.get("kind", "pick"),
                     "clips": r.get("clips") or {}, "counts": r.get("counts") or {}})
     return sorted(out, key=lambda t: t["id"])
 

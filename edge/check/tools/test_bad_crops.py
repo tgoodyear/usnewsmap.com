@@ -13,7 +13,7 @@ ROWS = [
     {"id": "chr-lines/s/p1~2", "set": "s", "page": "p1", "settled": True, "outcome": "bad_crop", "held": True, "hold_reason": "bad_crop",
      "clips": {"line": "chr-lines/s/l/p1.jpg", "word": "chr-lines/s/w/p1~2.jpg"}, "counts": {"a": 1, "b": 0, "neither": 0, "unsure": 0, "notext": 0, "badcrop": 2}},
     {"id": "chr-lines/s/p1~3", "set": "s", "page": "p1", "settled": True, "outcome": "a", "counts": {"a": 3}},
-    {"id": "en-gutter/g/p~s1", "set": "g", "kind": "gutter", "settled": True, "outcome": "bad_crop", "clips": {"crop": "en-gutter/g/p~s1.jpg"},
+    {"id": "en-gutter/g/p~s1", "set": "g", "kind": "gutter", "page_id": "sn123/1900-01-01/ed-1/seq-2", "settled": True, "outcome": "bad_crop", "clips": {"crop": "en-gutter/g/p~s1.jpg"},
      "counts": {"a": 0, "b": 0, "unsure": 0, "badcrop": 3}},
 ]
 
@@ -24,6 +24,7 @@ class BadCrops(unittest.TestCase):
         self.assertEqual([t["id"] for t in found], ["chr-lines/s/p1~2", "en-gutter/g/p~s1"])
         self.assertEqual(found[0]["clips"], {"line": "chr-lines/s/l/p1.jpg", "word": "chr-lines/s/w/p1~2.jpg"})
         self.assertEqual((found[0]["kind"], found[1]["kind"]), ("pick", "gutter"))
+        self.assertEqual(found[1]["page"], "sn123/1900-01-01/ed-1/seq-2", "a gutter task's page is its page_id")
 
     def test_command_line(self):
         with tempfile.TemporaryDirectory() as d:
