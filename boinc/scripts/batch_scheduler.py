@@ -787,6 +787,9 @@ CLAIM_SECONDS = 300
 # a step on it. A plan holds a few hundred claims at a time; with a lease of a day or more and a
 # tick every few minutes, every due claim is renewed long before its lease runs out.
 RENEW_BATCH = STEP_IDS
+# A claim whose renewal failed waits this long before it is tried again (#2146), so claims that
+# keep failing can't take every tick's batch and leave the others to run out.
+RENEW_RETRY_SECS = 900
 # Each plan's list of pages whose held result is settled (archived_held, its own and the
 # --check-state-dir plans'), each with its job's message sha256, as <prefix><plan>.<NNNN>.json: the claim
 # step reads every plan's list and deletes such a message when it comes back instead of claiming
@@ -2551,6 +2554,8 @@ class QueueFeed:
         for page, claim in self.claims.items():
             if claim.get("release") or "lease_lost" in claim or not isinstance(claim.get("message"), str):
                 continue
+            if type(claim.get("renew_retry_at")) is int and now < claim["renew_retry_at"]:
+                continue
             journal = journals.get(page)
             if journal is not None and settled(journal):
                 continue
@@ -2565,6 +2570,9 @@ class QueueFeed:
             summary = renew([(self.claims[page]["doc_id"], self.claims[page]["message"],
                               self.claims[page].get("claimed_at")) for page in pages])
         except (RuntimeError, ValueError, OSError) as error:
+            for page in pages:
+                self.claims[page]["renew_retry_at"] = int(now) + RENEW_RETRY_SECS
+            self.persist()
             log_event({"event": "boinc_batch_claim_renew_failed", "schema_version": 1,
                        "plan": self.config["plan"], "claims": len(pages), "error": str(error)[:500]})
             return
@@ -2577,6 +2585,11 @@ class QueueFeed:
                 continue
             claim = self.claims[page]
             claim["lease_from"], claim["lease_until"] = int(min(now, until)), int(until)
+            claim.pop("renew_retry_at", None)
+            # A claim recorded before claimed_at existed learns it here, so from now on it is
+            # renewed as this claim only, not by its message sha256 alone.
+            if not isinstance(claim.get("claimed_at"), str) and isinstance(entry.get("claimed_at"), str):
+                claim["claimed_at"] = entry["claimed_at"]
             renewed.append(page)
         for entry in summary.get("lost") or []:
             page = by_doc.get(entry.get("doc_id")) if isinstance(entry, dict) else None
@@ -2585,8 +2598,12 @@ class QueueFeed:
             why = entry.get("why") if isinstance(entry.get("why"), str) else "unknown"
             self.claims[page]["lease_lost"] = {"at": int(now), "why": why[:64]}
             lost.append({"page": page, "why": why[:64]})
-        self.persist()
         failed = summary.get("failed") or []
+        for entry in failed if isinstance(failed, list) else []:
+            page = by_doc.get(entry.get("doc_id")) if isinstance(entry, dict) else None
+            if page is not None:
+                self.claims[page]["renew_retry_at"] = int(now) + RENEW_RETRY_SECS
+        self.persist()
         log_event({"event": "boinc_batch_claim_renew", "schema_version": 1, "plan": self.config["plan"],
                    "asked": len(pages), "renewed": len(renewed), "lost": lost,
                    "failed": len(failed) if isinstance(failed, list) else None,

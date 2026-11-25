@@ -3341,6 +3341,9 @@ class RenewFake(QueueFake):
         self.renewals = []
         self.lost = {}
         self.fail = None
+        # What the step reports as claimed_at for a claim sent without one (a claim recorded
+        # before claimed_at existed): the claim file's own.
+        self.file_claimed_at = "2026-11-24T10:00:00.000000Z"
 
     def renew(self, claims):
         self.actions.append(("renew", len(claims)))
@@ -3348,7 +3351,7 @@ class RenewFake(QueueFake):
         if self.fail:
             raise self.fail
         return {"schema_version": 1, "nonce": "n",
-                "renewed": [{"doc_id": doc, "message_sha256": sha, "claimed_at": at,
+                "renewed": [{"doc_id": doc, "message_sha256": sha, "claimed_at": at or self.file_claimed_at,
                              "lease_until": iso(NOW + 36 * 3600)}
                             for doc, sha, at in claims if doc not in self.lost],
                 "lost": [{"doc_id": doc, "message_sha256": sha, "why": self.lost[doc]}
@@ -3419,6 +3422,36 @@ class ClaimLeaseRenewalTests(unittest.TestCase):
         self.feed.renew_held({}, NOW)
         self.assertEqual(self.fake.renewals, [[(self.doc(1), message(1)["message_sha256"], None)]])
 
+    def test_a_legacy_claim_learns_its_claimed_at_on_its_first_renewal(self):
+        # Renewed once by its message alone, then as this claim only (#2146 review): another
+        # plan's later claim of the same message can't be renewed in its place.
+        self.claim([message(1)])
+        claim = self.state["claims"][self.page(1)]
+        claim.pop("lease_from")
+        claim.pop("lease_until")
+        self.feed.renew_held({}, NOW)
+        self.assertEqual(claim["claimed_at"], self.fake.file_claimed_at)
+        self.feed.renew_held({}, NOW + 30 * self.HOUR)
+        self.assertEqual(self.fake.renewals[-1], [(self.doc(1), message(1)["message_sha256"], self.fake.file_claimed_at)])
+
+    def test_failed_renewals_back_off_so_other_claims_get_their_turn(self):
+        hour = self.HOUR
+        self.claim([leased(number, NOW - 20 * hour, NOW + (10 + number) * hour) for number in range(1, 5)])
+        with mock.patch.object(batch, "RENEW_BATCH", 2):
+            self.fake.fail = RuntimeError("handoff/renew failed")
+            with mock.patch("sys.stderr", io.StringIO()):
+                self.feed.renew_held({}, NOW)
+            self.assertEqual([doc for doc, _, _ in self.fake.renewals[-1]], [self.doc(1), self.doc(2)])
+            self.fake.fail = None
+            # The two that failed wait out the back-off; the next two are tried meanwhile.
+            with mock.patch("sys.stderr", io.StringIO()):
+                self.feed.renew_held({}, NOW + 60)
+            self.assertEqual([doc for doc, _, _ in self.fake.renewals[-1]], [self.doc(3), self.doc(4)])
+            with mock.patch("sys.stderr", io.StringIO()):
+                self.feed.renew_held({}, NOW + batch.RENEW_RETRY_SECS + 61)
+            self.assertEqual([doc for doc, _, _ in self.fake.renewals[-1]], [self.doc(1), self.doc(2)])
+        self.assertNotIn("renew_retry_at", self.state["claims"][self.page(1)])
+
     def test_a_lost_lease_is_marked_and_logged_and_nothing_is_deleted(self):
         hour = self.HOUR
         self.claim([leased(1, NOW - 20 * hour, NOW + 16 * hour), leased(2, NOW - 20 * hour, NOW + 16 * hour)])
@@ -3457,14 +3490,17 @@ class ClaimLeaseRenewalTests(unittest.TestCase):
                     if "boinc_batch_claim_renew_failed" in line]
         self.assertEqual(len(failures), 1)
         self.assertIn("handoff/renew failed", failures[0]["error"])
-        # The claims are as they were, and the next tick tries again.
+        # The claims are as they were; the two that failed wait out the back-off, so the next
+        # tick renews only the two the second tick claimed, and a later one tries the two again.
         self.assertFalse([c for c in self.state["claims"].values() if "lease_lost" in c])
         self.fake.fail = None
         with contextlib.redirect_stderr(io.StringIO()):
             batch.tick(self.config, self.state, self.fake, lambda: None, NOW + 60)
-        # The two again, and the two the second tick claimed.
-        self.assertEqual([a for a in self.fake.actions if a[0] == "renew"], [("renew", 2), ("renew", 4)])
-        self.assertTrue(all(self.state["claims"][self.page(number)]["lease_until"] == NOW + 36 * hour
+        self.assertEqual([a for a in self.fake.actions if a[0] == "renew"], [("renew", 2), ("renew", 2)])
+        with contextlib.redirect_stderr(io.StringIO()):
+            batch.tick(self.config, self.state, self.fake, lambda: None, NOW + batch.RENEW_RETRY_SECS + 61)
+        self.assertEqual([a for a in self.fake.actions if a[0] == "renew"][-1], ("renew", 2))
+        self.assertTrue(all(self.state["claims"][self.page(number)]["lease_until"] >= NOW + 36 * hour
                             for number in (1, 2, 3, 4)))
 
     def test_a_tick_renews_at_most_one_step_of_claims(self):
