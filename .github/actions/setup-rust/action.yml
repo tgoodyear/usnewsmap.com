@@ -27,7 +27,11 @@ runs:
       with:
         toolchain: ${{ steps.rust-toolchain.outputs.channel }}
         components: ${{ inputs.components }}
+    # The on-prem runners (home-infra#206) keep their own caches: a persistent target dir,
+    # sccache shared over the CI VLAN and a crates.io proxy, set in each runner's environment.
+    # Restoring GitHub's cache there would only download what they already hold.
     - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      if: runner.environment == 'github-hosted'
       with:
         key: ci-no-debug-v1-${{ inputs.cache-key }}
         save-if: ${{ github.ref == 'refs/heads/main' }}
