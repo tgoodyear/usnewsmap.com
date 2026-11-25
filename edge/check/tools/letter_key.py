@@ -28,7 +28,7 @@ An instance (one printed letter) qualifies only when
 Among the qualifying instances of a glyph at a level, the first --per-glyph by sha256(seed:glyph:page:word:char) are taken.
 
 Then the quality checks (off with --no-quality-checks). Up to 20 candidates per glyph from the page and 10 from each
-other page of the issue and each other issue of the title (sha256 order) are pooled. Each is ink-snapped (ink_snap: its
+other page of the issue and each other issue of the title (sha256 order) are pooled, at most 60 (page first). Each is ink-snapped (ink_snap: its
 LSTM box refitted to the connected components of the word's ink, dilated a pixel vertically so broken strokes join; dropped when
 cut at the edge, joined to a neighbour, crowded by foreign ink, too small or too dark), then dropped when its size is
 outside --min-size..--max-size times the pool's median, then when its normalised shape (binarised, centred, 20 x 20) is
@@ -82,7 +82,8 @@ sys.path.insert(0, HERE)  # `python3 -I` leaves the script directory off the pat
 import en_pick  # noqa: E402
 
 LEVELS = ("page", "issue", "title", "font")
-CAPS = (20, 10, 10)  # candidates per glyph checked from the page, each other page of the issue, each other issue
+CAPS = (20, 10, 10)
+POOL_MAX = 60  # candidates per glyph that the size and shape checks compare  # candidates per glyph checked from the page, each other page of the issue, each other issue
 KEY_NAME = re.compile(r"^[A-Za-z0-9._-]{1,40}$")
 
 
@@ -363,7 +364,8 @@ def choose(page: str, pool: dict, pages: dict, glyphs: list, per_glyph: int, see
                     entry = {"g": g, "level": level, "picks": cand[:per_glyph]}
                     break
         else:
-            pooled = [(level, x) for level, cand in lv for x in cand if snaps.get(ikey(x), {}).get("ok")]
+            # page first, then issue, then title, at most POOL_MAX: the shape matrix stays small however many issues a title has
+            pooled = [(level, x) for level, cand in lv for x in cand if snaps.get(ikey(x), {}).get("ok")][:POOL_MAX]
             pooled = size_filter(pooled, snaps, size_band)
             dist = shape_filter([x for _, x in pooled], snaps, mad_k)
             for level in ("page", "issue", "title"):
@@ -439,8 +441,8 @@ def ink_snap(word_img, origin: tuple, cbox: list, band: list, joined: float = 1.
     top-left in the scan, `cbox` the char box [x0, y0, x1, y1] and `band` the line's type [top, bottom], in the scan.
 
     The crop is binarised (Otsu), dilated by one pixel up and down so broken Fraktur strokes join, and split into connected
-    components. The letter is the components whose ink lies mostly (half or more) inside the LSTM box; its box is
-    theirs. It fails (`ok` False, with `why`) when over 30% of the ink inside the LSTM box belongs to pieces lying
+    components. The letter is the components whose ink lies mostly (half or more) inside the LSTM box, and then those
+    lying mostly inside their box (a capital's separate strokes); its box is theirs. It fails (`ok` False, with `why`) when over 30% of the ink inside the LSTM box belongs to pieces lying
     mostly outside it, or the letter is more than `joined` times as wide as the LSTM box (joined: a neighbour cast or
     printed onto it), when no component is inside (no_ink), when its ink reaches the crop's edge (cut),
     when other components' ink is more than `foreign` of the ink inside its box (foreign), when it is under a quarter
@@ -475,13 +477,22 @@ def ink_snap(word_img, origin: tuple, cbox: list, band: list, joined: float = 1.
         return {"ok": False, "why": "joined"}
     if not sel:
         return {"ok": False, "why": "no_ink"}
-    xs, ys = [], []
-    for i in range(w * h):
-        if ink[i] and lab[i] in sel:
-            y, x = divmod(i, w)
-            xs.append(x)
-            ys.append(y)
-    fx0, fy0, fx1, fy1 = min(xs), min(ys), max(xs) + 1, max(ys) + 1
+    def fit(sel):
+        xs, ys = [], []
+        for i in range(w * h):
+            if ink[i] and lab[i] in sel:
+                y, x = divmod(i, w)
+                xs.append(x)
+                ys.append(y)
+        return xs, (min(xs), min(ys), max(xs) + 1, max(ys) + 1)
+
+    xs, (fx0, fy0, fx1, fy1) = fit(sel)
+    # pieces lying mostly inside the letter's box belong to it too (a capital's separate strokes, an i's dot)
+    within = Counter(lab[i] for i in range(w * h) if ink[i] and fx0 <= i % w < fx1 and fy0 <= i // w < fy1)
+    grown = sel | {c for c, n in within.items() if c not in sel and n * 2 >= total[c]}
+    if grown != sel:
+        sel = grown
+        xs, (fx0, fy0, fx1, fy1) = fit(sel)
     n_ink = len(xs)
     band_h = max(1, band[1] - band[0])
     if fx0 == 0 or fy0 == 0 or fx1 == w or fy1 == h:
@@ -524,7 +535,12 @@ def size_filter(pooled: list, snaps: dict, band: tuple) -> list:
 
 
 def shape_distance(a: bytes, b: bytes) -> float:
-    return sum(x != y for x, y in zip(a, b)) / len(a)
+    """The share of the SHAPE x SHAPE pixels that differ (shapes are 0/1 bytes)."""
+    return bin(_packed(a) ^ _packed(b)).count("1") / len(a)
+
+
+def _packed(shape: bytes) -> int:
+    return int("".join("1" if v else "0" for v in shape) or "0", 2)
 
 
 def shape_filter(cands: list, snaps: dict, k: float) -> dict:
@@ -532,10 +548,14 @@ def shape_filter(cands: list, snaps: dict, k: float) -> dict:
     the medoid, when there are under 3)."""
     if not cands:
         return {}
-    shapes = [snaps[ikey(x)]["shape"] for x in cands]
     if len(cands) < 3:
         return {ikey(x): 0.0 for x in cands}
-    d = [[shape_distance(a, b) for b in shapes] for a in shapes]
+    bits = [_packed(snaps[ikey(x)]["shape"]) for x in cands]
+    n = len(snaps[ikey(cands[0])]["shape"])
+    d = [[0.0] * len(cands) for _ in cands]
+    for i in range(len(cands)):
+        for j in range(i + 1, len(cands)):
+            d[i][j] = d[j][i] = bin(bits[i] ^ bits[j]).count("1") / n
     m = min(range(len(cands)), key=lambda i: (sum(d[i]), i))
     dist = d[m]
     med = _median(dist)
