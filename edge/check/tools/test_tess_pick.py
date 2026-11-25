@@ -118,6 +118,30 @@ class Classify(unittest.TestCase):
         with self.assertRaises(SystemExit):
             tp.parse_quota("tess=1")
 
+    def test_word_box_reaching_into_line_above_is_cut_to_the_line(self):
+        r = {"loc_box": [100, 100, 80, 20], "tess_box": [95, 60, 90, 60], "line_box": [0, 98, 1000, 122], "line_med_h": 20}
+        box, cut = tp.word_geometry(r, (2000, 2000), True, 0.25)
+        self.assertTrue(cut)
+        self.assertEqual((box[1], box[1] + box[3]), (96, 120))  # the LoC line band, a tenth of a word height above
+        self.assertEqual(tp.word_geometry(r, (2000, 2000), False, 0.25), ([95, 60, 90, 60], False))
+
+    def test_loc_box_reaching_into_another_line_uses_tesseracts(self):
+        r = {"loc_box": [100, 60, 80, 60], "tess_box": [100, 100, 80, 20], "line_box": [0, 60, 1000, 122], "line_med_h": 20}
+        box, cut = tp.word_geometry(r, (2000, 2000), True, 0.25)
+        self.assertEqual((cut, box[1], box[3]), (True, 98, 22))
+
+    def test_offset_box_inside_the_line_is_not_cut(self):
+        r = {"loc_box": [100, 98, 80, 24], "tess_box": [100, 108, 80, 14], "line_box": [0, 96, 1000, 124], "line_med_h": 22}
+        self.assertEqual(tp.word_geometry(r, (2000, 2000), True, 0.25), ([100, 98, 80, 24], False))
+
+    def test_box_a_few_pixels_past_the_line_band_is_not_cut(self):
+        r = {"loc_box": [100, 106, 80, 18], "tess_box": [100, 96, 80, 28], "line_box": [0, 104, 1000, 124], "line_med_h": 18}
+        self.assertEqual(tp.word_geometry(r, (2000, 2000), True, 0.25), ([100, 96, 80, 28], False))
+
+    def test_small_change_keeps_old_box(self):
+        r = {"loc_box": [100, 100, 80, 20], "tess_box": [100, 98, 80, 23], "line_box": [0, 98, 1000, 122]}
+        self.assertEqual(tp.word_geometry(r, (2000, 2000), True, 0.25), ([100, 98, 80, 23], False))
+
     def test_side_is_balanced_and_keyed(self):
         sides = Counter(tp.side("k", f"en/t/p~{k}") for k in range(400))
         self.assertTrue(150 < sides["tesseract"] < 250)

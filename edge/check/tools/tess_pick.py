@@ -39,6 +39,11 @@ decides whether the two differ, and `private.normalised` keeps the normalised fo
 Gold sets (--gold tesseract=N,loc=N,neither=N): from pages with regions, each truth class is filled up to its quota
 by taking pages in turn (gold_sample), instead of --per-page.
 
+Crops (--clip-band, en-read v1b): a word crop is the union of the two readings' boxes. When one engine's box reaches
+into the line above or below, the crop showed part of that line; with --clip-band the box is cut vertically to the
+printed line (line_band, word_geometry), for tasks whose crop gets more than --clip-shrink shorter, and those tasks get new
+clip keys. Readings, pairs, ids and sampling are unchanged; the report counts `clipped_to_line`.
+
 Sampling. Per page, up to --per-page candidates, those first by sha256(seed:task id:rank) (a simple random sample of
 the page's disagreements, with no de-duplication, so each page's tasks can be weighted back to its candidates).
 
@@ -271,6 +276,10 @@ def page_candidates(page: dict, loc: list, tess: list, args, stats: Counter) -> 
     cut_l, cut_t, merged_l = hyphen_cut(loc), hyphen_cut(tess), merged(loc)
     truth = truth_words(loc, page["regions"]) if page.get("regions") else None
     key = en_pick.slug(page["page"])
+    heights = {}
+    for w in loc:
+        heights.setdefault(w["line"], []).append(w["box"][3])
+    line_med = {k: sorted(v)[len(v) // 2] for k, v in heights.items()}
     rows = []
     for i, (j, score, other) in sorted(pairs.items()):
         raw_l, raw_t = loc[i]["text"], tess[j]["text"]
@@ -294,6 +303,7 @@ def page_candidates(page: dict, loc: list, tess: list, args, stats: Counter) -> 
         row = {"id": f"{args.lang}/{args.set}/{key}~{i}", "page": page, "i": i, "j": j, "loc": bt.clean(raw_l), "tesseract": bt.clean(raw_t),
                "norm": {"loc": nl, "tesseract": nt}, "iou": score, "other": other, "conf": tess[j]["conf"],
                "loc_box": loc[i]["box"], "tess_box": tess[j]["box"], "line_box": loc[i]["line_box"],
+               "line_med_h": line_med.get(loc[i]["line"]),
                "similarity": round(SequenceMatcher(None, nl, nt, autojunk=False).ratio(), 4)}
         if truth is not None:
             if i not in truth:
@@ -353,11 +363,51 @@ def union(a, b) -> list:
     return [x0, y0, max(a[0] + a[2], b[0] + b[2]) - x0, max(a[1] + a[3], b[1] + b[3]) - y0]
 
 
-def write_task(r: dict, args, img, out_dir: str, f) -> None:
-    page = r["page"]
+def line_band(r: dict):
+    """(y0, y1): the printed line a word is on: the band of its LoC TextLine (the line's word boxes). When LoC's own
+    word box is the one that reaches into another line (over 1.6 times the median word height of its line, and over
+    1.6 times Tesseract's box), the line band contains it, so Tesseract's box is the band. The rows where the two boxes
+    overlap are not used: on a box that is only offset or short, that cut real letters off (v1b review)."""
+    (_, yl, _, hl), (_, yt, _, ht) = r["loc_box"], r["tess_box"]
+    med = r.get("line_med_h")
+    if med and hl > 1.6 * med and hl > 1.6 * ht and ht > 0:
+        return (yt, yt + ht)
+    lb = (r["line_box"][1], r["line_box"][3])
+    return lb if lb[1] > lb[0] else None
+
+
+def word_geometry(r: dict, size: tuple, clip_band: bool, shrink: float):
+    """([x, y, w, h] of the word in scan pixels, affected): the union of both readings' boxes, cut vertically to
+    line_band() when clip_band is on and that makes the word crop more than `shrink` shorter (one engine's box
+    reaching into the line above or below); else the union as before, so unaffected tasks stay byte-identical."""
     x, y, w, h = union(r["loc_box"], r["tess_box"])
+    if not clip_band:
+        return [x, y, w, h], False
+    band = line_band(r)
+    if band is None:
+        return [x, y, w, h], False
+    # Only a side that reaches more than half a word height past the band is cut, and to the band plus a tenth of
+    # a word height: LoC's line boxes can sit a few pixels off the ink, and cutting to them exactly took letters off.
+    med = r.get("line_med_h") or (band[1] - band[0])
+    y0 = max(y, band[0] - 0.1 * med) if band[0] - y > 0.5 * med else y
+    y1 = min(y + h, band[1] + 0.1 * med) if (y + h) - band[1] > 0.5 * med else y + h
+    if y1 <= y0 or (y0, y1) == (y, y + h):
+        return [x, y, w, h], False
+
+    def crop_h(yy, hh):
+        pad = max(3, hh // 6)
+        return min(size[1], int(yy + hh + pad)) - max(0, int(yy - pad))
+    if crop_h(y0, y1 - y0) < (1 - shrink) * crop_h(y, h):
+        return [x, y0, w, y1 - y0], True
+    return [x, y, w, h], False
+
+
+def write_task(r: dict, args, img, out_dir: str, f) -> bool:
+    """Write one task and its clips; True when its word box was cut to the line (new clip keys, --clip-band)."""
+    page = r["page"]
+    (x, y, w, h), cut = word_geometry(r, img.size, getattr(args, "clip_band", False), getattr(args, "clip_shrink", 0.25))
     prefix = f"{args.lang}/{args.set}"
-    stem = r["id"].split("/", 2)[2].replace("~", "_w")
+    stem = r["id"].split("/", 2)[2].replace("~", "_w") + (args.clip_suffix if cut else "")
     word_key, line_key = f"{prefix}/words/{stem}.jpg", f"{prefix}/lines/{stem}.jpg"
     for k in (word_key, line_key):
         os.makedirs(os.path.dirname(os.path.join(out_dir, "clips", k)), exist_ok=True)
@@ -387,6 +437,7 @@ def write_task(r: dict, args, img, out_dir: str, f) -> None:
         "box": [round((x - cx0) / cw, 4), round((y - cy0) / ch, 4), round(w / cw, 4), round(h / ch, 4)],
         "a": a, "b": b, "a_diff": ad, "b_diff": bd, "private": private,
     }, ensure_ascii=False) + "\n")
+    return cut
 
 
 def load_side_key(args) -> str:
@@ -437,6 +488,11 @@ def main(argv=None) -> None:
     ap.add_argument("--min-page-aligned", type=float, default=0.5, help="leave out a page where fewer of LoC's words pair")
     ap.add_argument("--gold", help="gold set: quotas per truth class, e.g. tesseract=54,loc=54,neither=12 (pages with regions); "
                     "replaces --per-page")
+    ap.add_argument("--clip-band", action="store_true", help="cut a word box that reaches into another printed line to "
+                    "its line (line_band) when that makes the word crop more than --clip-shrink shorter; such tasks get new "
+                    "clip keys (--clip-suffix), since served clips are cached as immutable")
+    ap.add_argument("--clip-shrink", type=float, default=0.25)
+    ap.add_argument("--clip-suffix", default="_b")
     ap.add_argument("--no-clips", action="store_true", help="count only: write the reports and no tasks or images")
     ap.add_argument("--quality", type=int, default=85)
     args = ap.parse_args(argv)
@@ -475,7 +531,7 @@ def main(argv=None) -> None:
         if tasks and picked:
             img = Image.open(os.path.join(root, page["image"])).convert("L")
             for r in sorted(picked, key=lambda r: r["id"]):
-                write_task(r, args, img, args.out_dir, tasks)
+                stats["clipped_to_line"] += write_task(r, args, img, args.out_dir, tasks)
     if tasks:
         tasks.close()
         cfg = json.load(open(args.language_config, encoding="utf-8"))
