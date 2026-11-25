@@ -32,7 +32,8 @@ other page of the issue and each other issue of the title (sha256 order) are poo
 LSTM box refitted to the connected components of the word's ink, dilated a pixel vertically so broken strokes join; dropped when
 cut at the edge, joined to a neighbour, crowded by foreign ink, too small or too dark), then dropped when its size is
 outside --min-size..--max-size times the pool's median, then when its normalised shape (binarised, centred, 20 x 20) is
-further from the pool's medoid than median + --mad-k x MAD. The glyph takes up to --per-glyph of the survivors, closest
+further from the pool's medoid than median + --mad-k x MAD. A passing picture shows the letter's own ink only (its
+components, grown a pixel): anything else in its rectangle is set to the paper. The glyph takes up to --per-glyph of the survivors, closest
 to the medoid first, from the first level that has any; with none it is drawn in the typeface. The report counts each
 check's drops (ink_snap) and the share of glyphs drawn in the typeface (font_share_per_key).
 
@@ -501,8 +502,9 @@ def ink_snap(word_img, origin: tuple, cbox: list, band: list, joined: float = 1.
                  for y in range(fy1 - fy0) for x in range(fx1 - fx0))
     sq.paste(Image.frombytes("L", (fx1 - fx0, fy1 - fy0), only), ((side - (fx1 - fx0)) // 2, (side - (fy1 - fy0)) // 2))
     shape = bytes(1 if v >= 128 else 0 for v in sq.resize((SHAPE, SHAPE), Image.BILINEAR).tobytes())
+    keep = Image.frombytes("L", (w, h), bytes(255 if ink[i] and lab[i] in sel else 0 for i in range(w * h)))
     return {"ok": True, "fit": [fx0 + ox, fy0 + oy, fx1 + ox, fy1 + oy], "ink": n_ink, "shape": shape,
-            "rel": [(fx1 - fx0) / band_h, (fy1 - fy0) / band_h]}
+            "rel": [(fx1 - fx0) / band_h, (fy1 - fy0) / band_h], "keep": keep, "origin": [ox, oy]}
 
 
 def _median(v: list) -> float:
@@ -545,7 +547,7 @@ def shape_filter(cands: list, snaps: dict, k: float) -> dict:
 def snap_page(job) -> tuple:
     """Ink-snap one source page's candidates and cut the tiles of those that pass: (stats, {key: snap}, {key: tile PNG})."""
     import io
-    from PIL import Image, ImageOps
+    from PIL import Image, ImageFilter, ImageOps
     Image.MAX_IMAGE_PIXELS = None
     path, cands, height, margin = job
     snaps, tiles, why = {}, {}, Counter()
@@ -558,9 +560,16 @@ def snap_page(job) -> tuple:
         word = img.crop((ox, oy, min(img.width, bx1 + m), min(img.height, by1 + m)))
         sn = ink_snap(word, (ox, oy), x["box"], x["band"])
         why["passed" if sn["ok"] else sn["why"]] += 1
+        keep = sn.pop("keep", None)
         snaps[ikey(x)] = sn
         if sn["ok"]:
-            t = ImageOps.autocontrast(img.crop(crop_box(dict(x, box=sn["fit"]), img.size, margin)), cutoff=1)
+            # The picture keeps the line's height, but shows the letter's own ink only: everything else (a rule, a
+            # neighbouring letter, the next line's descenders) is set to the paper.
+            box = crop_box(dict(x, box=sn["fit"]), img.size, margin)
+            t = ImageOps.autocontrast(img.crop(box), cutoff=1)
+            mask = Image.new("L", t.size, 0)
+            mask.paste(keep.filter(ImageFilter.MaxFilter(3)), (sn["origin"][0] - box[0], sn["origin"][1] - box[1]))
+            t = Image.composite(t, Image.new("L", t.size, 255), mask)
             t = t.resize((max(1, round(t.width * height / t.height)), height), Image.LANCZOS)
             buf = io.BytesIO()
             t.save(buf, "PNG")

@@ -140,6 +140,9 @@ class InkSnap(unittest.TestCase):
         self.assertTrue(sn["ok"], sn)
         self.assertEqual(sn["fit"], [110, 206, 118, 225])
         self.assertEqual(len(sn["shape"]), lk.SHAPE * lk.SHAPE)
+        keep = sn["keep"]  # the letter's own ink, for masking the picture: not the second letter
+        self.assertEqual(keep.getpixel((10, 10)), 255)
+        self.assertEqual(keep.getpixel((25, 10)), 0)
 
     def test_a_broken_stroke_joins(self):
         im = word_image(lambda d: (d.rectangle((10, 6, 17, 14), outline=0, width=2), d.rectangle((10, 16, 17, 25), outline=0, width=2)))  # a one-pixel gap
