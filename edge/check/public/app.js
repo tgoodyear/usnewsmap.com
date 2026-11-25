@@ -377,7 +377,8 @@ function renderKey(card, t) {
 async function fillKey(panel, t) {
   panel.dataset.filled = "1"; panel.textContent = "Loading the letter key…";
   let map;
-  try { map = await keyMap(t.key); } catch { if (task === t) panel.textContent = "The letter key didn't load."; return; }
+  // A failed load clears the flag, so closing and opening the key tries again.
+  try { map = await keyMap(t.key); } catch { delete panel.dataset.filled; if (task === t) panel.textContent = "The letter key didn't load."; return; }
   if (task !== t || !panel.isConnected) return;
   panel.textContent = "";
   if (!map || typeof map.sprite !== "string" || !/^[A-Za-z0-9._\-/]{1,300}$/.test(map.sprite) || map.sprite.includes("..")) { panel.textContent = "The letter key didn't load."; return; }

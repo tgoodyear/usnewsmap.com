@@ -75,6 +75,11 @@ class Selection(unittest.TestCase):
         self.tess[3] = tess_word("ach", 50, 40, 1)
         got = lk.instances("p", self.loc, self.tess, [], GLYPHS, EQ, 0.5, 90, ligatures=["ch"])
         self.assertEqual([x["g"] for x in got if x["word"] == 3], ["a"])
+        # a reader's "st" for a printed ſt ligature: matched through the equivalents, as agreement is
+        self.loc[3] = loc_word("aſt", 50, 40, 1)
+        self.tess[3] = tess_word("ast", 50, 40, 1)
+        got = lk.instances("p", self.loc, self.tess, [], GLYPHS, EQ, 0.5, 90, ligatures=["ſt"])
+        self.assertEqual([x["g"] for x in got if x["word"] == 3], ["a"])
 
     def test_only_listed_glyphs(self):
         self.assertFalse([x for x in self.found([]) if x["g"] in (".", "H")])

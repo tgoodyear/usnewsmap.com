@@ -247,15 +247,19 @@ def body_lines(tess: list, band: tuple) -> set:
     return {k for k, h in heights.items() if band[0] * med <= h <= band[1] * med}
 
 
-def tied_letters(chars: list, ligatures) -> set:
+def tied_letters(chars: list, ligatures, equivalents=None) -> set:
     """Indexes of letters cast as one piece with a neighbour (a ligature: Fraktur ch, ck, tz, ſt; English fi, fl): the
-    reader splits such a piece into letters at a guess, so neither half's box is the letter alone."""
-    text = [unicodedata.normalize("NFC", c["text"]) for c in chars]
+    reader splits such a piece into letters at a guess, so neither half's box is the letter alone. Runs are matched with
+    the language's one-letter `equivalents` applied to both sides, as agreement is, so a reader's "st" for a printed ſt
+    is caught too."""
+    eq = {k: v for k, v in (equivalents or {}).items() if len(k) == 1 and len(v) == 1}
+    text = [eq.get(t, t) for t in (unicodedata.normalize("NFC", c["text"]) for c in chars)]
     out = set()
     for lig in ligatures or ():
-        n = len(lig)
+        run = [eq.get(ch, ch) for ch in lig]
+        n = len(run)
         for k in range(len(text) - n + 1):
-            if "".join(text[k:k + n]) == lig:
+            if text[k:k + n] == run:
                 out.update(range(k, k + n))
     return out
 
@@ -273,7 +277,7 @@ def instances(page_id: str, loc: list, tess: list, task_words: list, glyphs: set
         a, b = normalise(lw["text"], equivalents), normalise(tw["text"], equivalents)
         if not a or a != b:
             continue
-        tied = tied_letters(tw["chars"], ligatures)
+        tied = tied_letters(tw["chars"], ligatures, equivalents)
         for c, ch in enumerate(tw["chars"]):
             if c in tied:
                 continue
