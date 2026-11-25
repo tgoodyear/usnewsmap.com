@@ -314,15 +314,26 @@ def title_of(page: str) -> str:
     return page.split("/", 1)[0]
 
 
-def levels_for(page: str, pool: dict, pages: dict, g: str, seed: str, caps: tuple) -> list:
+def levels_for(page: str, pool: dict, pages: dict, g: str, seed: str, caps) -> list:
     """[(level, candidates)] for glyph g of the task page `page`: its own page, the other pages of its issue, the other
-    issues of its title, each in sha256 order and capped (caps: page, issue, title)."""
-    same_issue = [p for p in pages if p != page and issue_of(p) == issue_of(page)]
-    same_title = [p for p in pages if p != page and issue_of(p) != issue_of(page) and title_of(p) == title_of(page)]
+    issues of its title, each in sha256 order. With caps (page, issue, title), the page gives at most caps[0], each
+    other page of the issue caps[1] and each other issue of the title caps[2]; caps None takes them all."""
+    order = lambda xs: sorted(xs, key=lambda x: rank(seed, x))
+    groups = {"page": {page: [page]} if page in pages else {}, "issue": {}, "title": {}}
+    for p in pages:
+        if p == page or title_of(p) != title_of(page):
+            continue
+        if issue_of(p) == issue_of(page):
+            groups["issue"].setdefault(p, []).append(p)
+        else:
+            groups["title"].setdefault(issue_of(p), []).append(p)
     out = []
-    for (level, srcs), cap in zip((("page", [page] if page in pages else []), ("issue", same_issue), ("title", same_title)), caps):
-        cand = sorted((x for p in srcs for x in pool.get(p, {}).get(g, [])), key=lambda x: rank(seed, x))[:cap]
-        out.append((level, cand))
+    for k, level in enumerate(("page", "issue", "title")):
+        cand = []
+        for _, srcs in sorted(groups[level].items()):
+            got = order(x for p in srcs for x in pool.get(p, {}).get(g, []))
+            cand += got if caps is None else got[:caps[k]]
+        out.append((level, order(cand)))
     return out
 
 
@@ -343,7 +354,7 @@ def choose(page: str, pool: dict, pages: dict, glyphs: list, per_glyph: int, see
     none at all, and it is drawn in the typeface."""
     out = []
     for g in glyphs:
-        lv = levels_for(page, pool, pages, g, seed, caps)
+        lv = levels_for(page, pool, pages, g, seed, caps if snaps is not None else None)
         entry = None
         if snaps is None:
             for level, cand in lv:

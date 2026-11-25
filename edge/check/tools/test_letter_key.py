@@ -211,6 +211,20 @@ class Consensus(unittest.TestCase):
         self.assertEqual(got["b"]["level"], "font", "no b passed anywhere")
 
 
+class Caps(unittest.TestCase):
+    def test_caps_apply_per_source_page_and_issue_and_only_with_checks(self):
+        inst = lambda page, w: {"g": "a", "page": page, "word": w, "char": 0}
+        pages = ["t/d1/ed-1/seq-1", "t/d1/ed-1/seq-2", "t/d1/ed-1/seq-3", "t/d2/ed-1/seq-1", "t/d2/ed-1/seq-2", "t/d3/ed-1/seq-1"]
+        pool = {p: {"a": [inst(p, w) for w in range(5)]} for p in pages}
+        lv = dict(lk.levels_for(pages[0], pool, dict.fromkeys(pages), "a", "s", (4, 2, 3)))
+        self.assertEqual(len(lv["page"]), 4)
+        self.assertEqual(len(lv["issue"]), 4, "2 from each of the issue's two other pages")
+        self.assertEqual(len(lv["title"]), 6, "3 from each of the two other issues")
+        self.assertEqual(len(dict(lk.levels_for(pages[0], pool, dict.fromkeys(pages), "a", "s", None))["page"]), 5)
+        got = lk.choose(pages[0], pool, dict.fromkeys(pages), ["a"], 5, "s", None, caps=(1, 1, 1))
+        self.assertEqual(len(got[0]["picks"]), 5, "without checks, the caps don't apply")
+
+
 class Reading(unittest.TestCase):
     def test_parse_hocr(self):
         words = lk.parse_hocr(HOCR)
