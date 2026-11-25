@@ -588,8 +588,8 @@ pub async fn renew(
         Err(e) => return Err(e),
     };
     claim.pop_receipt = held.pop_receipt;
-    claim.lease_until = (now + chrono::Duration::from_std(lease)?)
-        .to_rfc3339_opts(SecondsFormat::Micros, true);
+    claim.lease_until =
+        (now + chrono::Duration::from_std(lease)?).to_rfc3339_opts(SecondsFormat::Micros, true);
     // The new receipt exists nowhere else: try the write a few times before giving up.
     let mut tries = 0;
     loop {

@@ -646,7 +646,11 @@ impl Queue for LocalQueue {
     async fn extend(&self, msg: &Received, visibility: Duration) -> anyhow::Result<Received> {
         let from = self.leased_path(msg)?;
         let receipt = random_token();
-        let to = from.with_file_name(format!("{}.{receipt}.{}", msg.id, visible_at_ms(visibility)));
+        let to = from.with_file_name(format!(
+            "{}.{receipt}.{}",
+            msg.id,
+            visible_at_ms(visibility)
+        ));
         // Gone since it was found (deleted, or back in `ready`): lost.
         std::fs::rename(&from, &to).map_err(|e| lost_if_missing(e, msg))?;
         Ok(Received {
