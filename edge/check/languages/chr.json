@@ -93,7 +93,7 @@
   "name": "Cherokee",
   "notes": {
     "Ꭺ": "has a crossbar",
-    "Ꮎ": "at the start of a word this paper prints it as a plain G (the first two pictures); inside a word it looks like θ (the last)",
+    "Ꮎ": "This paper prints Ꮎ θ-shaped inside words and G-shaped at the start of words; both are Ꮎ.",
     "Ꮩ": "this paper prints it as Λ, an A with no crossbar"
   },
   "title": "Cherokee Phoenix"
