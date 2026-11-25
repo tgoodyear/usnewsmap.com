@@ -82,7 +82,10 @@ jobs:
     name: rust (fmt, clippy, test)
     needs: changes
     if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-latest
+    # The on-prem runners (home-infra#206: one per R640, on an isolated CI VLAN, labelled
+    # usnm-rust) take this job for pushes, manual runs and pull requests from branches of this
+    # repository. A fork's pull request never runs on them: it stays on GitHub's runners.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "usnm-rust"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
