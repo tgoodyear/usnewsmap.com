@@ -551,6 +551,27 @@ class OnpremStep(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("takes only", done.stderr)
 
+    def test_handoff_renew_takes_its_own_inputs_and_the_runners_scope(self):
+        # #2146: the controller renews its plan's held claims; the summary goes under the plan's
+        # reports, by the runner's BATCH_SCOPE, never the caller's.
+        self.write_handoff_env()
+        renew = ("usnm-boinc-step --env prod --target handoff --step renew --var HANDOFF_RENEW=a_b:" + "d" * 64 +
+                 " --var CLAIM_LEASE_HOURS=36 --var RENEW_NONCE=abcdefgh12 --wait-mins 30")
+        done = self.run_step(ssh=renew + " --var PLAN_SCOPE=queue-feed-13 --what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        lines = [line.strip() for line in done.stdout.splitlines()]
+        self.assertIn("HANDOFF_STEP=renew", lines)
+        self.assertIn("BATCH_SCOPE=queue-feed-13", lines)
+        self.assertFalse([line for line in lines if line.startswith("PLAN_SCOPE")])
+        done = self.run_step(ssh=renew + " --what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("BATCH_SCOPE", done.stdout)
+        for extra in (" --var BATCH_SCOPE=other", " --var HANDOFF_DOCS=a_b", " --var CLAIM_MAX=5",
+                      " --var LOCK_HOLDER=x"):
+            with self.subTest(extra=extra):
+                done = self.run_step(ssh=renew + extra + " --what-if")
+                self.assertNotEqual(done.returncode, 0)
+
     def test_handoff_superseding_dead_letter_is_the_operators_only(self):
         # #1417: root on the host may settle a page claimed again after its dead letter; the
         # controller's key may not.
@@ -847,9 +868,21 @@ class OnpremStep(unittest.TestCase):
                                      "--var", "BATCH_NONCE=" + "b" * 32, "--var", f"PLAN_SCOPE={plan}",
                                      flock_script=script)
 
+        def renew(plan):
+            Path(self.conf.name, "envfile").unlink(missing_ok=True)
+            return self.run_for_real("--env", "prod", "--target", "handoff", "--step", "renew", "--wait-mins", "1",
+                                     "--var", "HANDOFF_RENEW=a_b:" + "d" * 64, "--var", "CLAIM_LEASE_HOURS=36",
+                                     "--var", "RENEW_NONCE=abcdefgh12", "--var", f"PLAN_SCOPE={plan}",
+                                     flock_script=script)
+
         with (directory / "usnm-boinc-handoff.lock").open("w") as other:
             # Another plan's scoped step holds the hand-off lock shared.
             fcntl.flock(other, fcntl.LOCK_SH)
+            # renew (#2146) rewrites claim files another plan's collect may rewrite: it waits
+            # for the hand-off lock alone, even with a scope.
+            done, captured = renew("native-feed-9")
+            self.assertIn("another bridge step is running", done.stderr)
+            self.assertIsNone(captured)
             done, captured = collect("native-feed-9")
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertIn("HANDOFF_STEP=collect", captured)
@@ -862,6 +895,10 @@ class OnpremStep(unittest.TestCase):
             done, captured = collect()
             self.assertIn("another bridge step is running", done.stderr)
             self.assertIsNone(captured)
+        # With nothing else holding the hand-off lock it runs, its report under the plan's scope.
+        done, captured = renew("native-feed-9")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("BATCH_SCOPE=native-feed-9", captured.splitlines())
         with (directory / "usnm-boinc-handoff.plan-native-feed-9.lock").open("w") as same:
             fcntl.flock(same, fcntl.LOCK_EX)
             for run in (lambda: collect("native-feed-9"), lambda: inventory("native-feed-9")):

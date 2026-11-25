@@ -134,6 +134,33 @@ pub enum ClaimCommands {
         #[arg(long)]
         confirm_message_sha256: Option<String>,
     },
+    /// Hand-off job: extend held claims' leases to --lease-hours from now and save each claim
+    /// with its new receipt (#2146), so a page a plan still holds doesn't come back to the queue
+    /// for another plan. Writes a summary of the claims renewed and those no longer held.
+    Renew {
+        #[arg(long)]
+        handoff_url: String,
+        #[arg(long)]
+        queue_url: String,
+        /// A held claim, as `<doc id>:<message sha256>[:<claimed_at>]`: the sha256 of the message
+        /// claimed and, when known, the claim's `claimed_at`, as `claim pull`'s summary gives
+        /// them. A claim file that is another claim is left alone. Repeat for more, up to 100.
+        #[arg(
+            long = "claim",
+            value_name = "DOC_ID:MESSAGE_SHA256[:CLAIMED_AT]",
+            required = true
+        )]
+        claims: Vec<String>,
+        /// Hours each message stays hidden from now.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=168))]
+        lease_hours: u64,
+        /// Where the summary goes.
+        #[arg(long)]
+        summary: PathBuf,
+        /// Echoed in the summary, so a reader can tell this run's from an older one.
+        #[arg(long)]
+        nonce: String,
+    },
     /// Hand-off job: give claimed pages back to the queue, for the nodes.
     Release {
         #[arg(long)]
@@ -240,6 +267,7 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
                     "queue": claim.queue,
                     "scan": format!("keep/{}/{}/{}/{}/{}", m.batch, key.lccn, key.date, key.edition, key.seq),
                     "message_sha256": usnm_ocr_contract::boinc::sha256(claim.text.as_bytes()),
+                    "claimed_at": claim.claimed_at,
                     "lease_until": claim.lease_until,
                 }));
             }
@@ -449,6 +477,42 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
                 ),
             }
         }
+        ClaimCommands::Renew {
+            handoff_url,
+            queue_url,
+            claims,
+            lease_hours,
+            summary,
+            nonce,
+        } => {
+            anyhow::ensure!(
+                (1..=64).contains(&nonce.len()) && nonce.bytes().all(|b| b.is_ascii_alphanumeric()),
+                "--nonce is 1 to 64 letters or digits"
+            );
+            anyhow::ensure!(claims.len() <= 100, "renew at most 100 claims a run");
+            // All checked before any lease moves.
+            let claims = claims
+                .iter()
+                .map(|c| parse_renew_claim(c))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let handoff = usnm_store::open(&handoff_url)?;
+            let queue = usnm_store::queue::open(&queue_url)?;
+            let body = x::renew_all(
+                handoff.as_ref(),
+                queue.as_ref(),
+                &claims,
+                std::time::Duration::from_secs(lease_hours * 3600),
+            )
+            .await;
+            let failed = body.failed.len();
+            let body = body.json(&nonce, lease_hours);
+            crate::atomic(&summary, &serde_json::to_vec_pretty(&body)?)?;
+            println!("{}", body["counts"]);
+            anyhow::ensure!(
+                failed == 0,
+                "{failed} of the claims could not be renewed; the summary names them"
+            );
+        }
         ClaimCommands::Release {
             handoff_url,
             queue_url,
@@ -476,6 +540,21 @@ pub async fn run(command: ClaimCommands) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `<doc id>:<message sha256>[:<claimed_at>]`, as `claim renew --claim` takes it.
+pub(crate) fn parse_renew_claim(entry: &str) -> anyhow::Result<(&str, &str, Option<&str>)> {
+    let mut parts = entry.splitn(3, ':');
+    let (Some(doc_id), Some(sha), claimed_at) = (parts.next(), parts.next(), parts.next()) else {
+        anyhow::bail!("--claim is <doc id>:<message sha256>[:<claimed_at>]");
+    };
+    anyhow::ensure!(
+        usnm_core::ids::PageKey::from_doc_id(doc_id).is_ok()
+            && usnm_ocr_contract::boinc::is_sha256(sha)
+            && claimed_at.is_none_or(|at| chrono::DateTime::parse_from_rfc3339(at).is_ok()),
+        "--claim is <doc id>:<message sha256>[:<claimed_at>], claimed_at as RFC 3339"
+    );
+    Ok((doc_id, sha, claimed_at))
+}
+
 /// A failed job's journal from the hand-off container's dispatch/.
 async fn failed_record(
     handoff: &dyn usnm_store::ObjectStore,
@@ -498,4 +577,34 @@ async fn failed_record(
         "job {job} has not failed; nothing to dead-letter"
     );
     Ok(record)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_renew_claim;
+
+    #[test]
+    fn a_renewed_claim_is_a_doc_id_a_message_sha256_and_maybe_claimed_at() {
+        let doc = "sn83045462_1890-05-03_ed-1_seq-7";
+        let sha = "a".repeat(64);
+        assert_eq!(
+            parse_renew_claim(&format!("{doc}:{sha}")).unwrap(),
+            (doc, sha.as_str(), None)
+        );
+        let at = "2026-11-25T01:02:03.456789Z";
+        let entry = format!("{doc}:{sha}:{at}");
+        assert_eq!(
+            parse_renew_claim(&entry).unwrap(),
+            (doc, sha.as_str(), Some(at))
+        );
+        for bad in [
+            doc.to_string(),
+            format!("{doc}:{}", "A".repeat(64)),
+            format!("../x:{sha}"),
+            format!("{doc}:{sha}:yesterday"),
+            format!("{doc}:{sha}:"),
+        ] {
+            assert!(parse_renew_claim(&bad).is_err(), "{bad}");
+        }
+    }
 }

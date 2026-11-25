@@ -1516,6 +1516,57 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
         self.assertEqual(len(calls), 2, calls)
         self.assertIn("--prefix claims", calls[1])
 
+    RENEW_STUB = (
+        'if [ "$1 $2" = "claim renew" ]; then\n'
+        '  for ((i = 1; i <= $#; i++)); do [ "${!i}" = --summary ] && j=$((i + 1)) && echo "{}" > "${!j}"; done\n'
+        '  [ -z "${RENEW_FAIL:-}" ] || exit 5\n'
+        'fi'
+    )
+
+    def test_handoff_renew_extends_the_named_claims_and_puts_the_summary_back(self):
+        # #2146: the plan's held claims, then the summary under the plan's own reports.
+        self.stub(self.RENEW_STUB)
+        sha = "a" * 64
+        r = self.handoff("renew", QUEUE_URL="https://usnmst.queue.core.windows.net", RENEW_NONCE="abcdefgh12",
+                         CLAIM_LEASE_HOURS="36", BATCH_SCOPE="queue-feed-13",
+                         HANDOFF_RENEW=f"sn1_1900-01-01_ed-1_seq-1:{sha}:2026-11-25T01:02:03.456789Z,"
+                                       f"sn1_1900-01-01_ed-1_seq-2:{sha}")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        calls = self.calls()
+        self.assertEqual(len(calls), 2, calls)
+        self.assertTrue(calls[0].startswith("claim renew --handoff-url https://usnmst.blob.core.windows.net/"
+                                            "boinc-handoff --queue-url https://usnmst.queue.core.windows.net "
+                                            "--lease-hours 36 "), calls[0])
+        self.assertIn("--nonce abcdefgh12 "
+                      f"--claim sn1_1900-01-01_ed-1_seq-1:{sha}:2026-11-25T01:02:03.456789Z "
+                      f"--claim sn1_1900-01-01_ed-1_seq-2:{sha}", calls[0])
+        self.assertIn("handoff put", calls[1])
+        self.assertIn("--prefix scheduler/plans/queue-feed-13", calls[1])
+        # Unscoped, and after a failure: the summary still goes back, to scheduler/.
+        os.remove(self.log)
+        r = self.handoff("renew", QUEUE_URL="https://usnmst.queue.core.windows.net", RENEW_NONCE="abcdefgh12",
+                         CLAIM_LEASE_HOURS="36", HANDOFF_RENEW=f"sn1_1900-01-01_ed-1_seq-1:{sha}", RENEW_FAIL="1")
+        self.assertEqual(r.returncode, 5, r.stderr)
+        calls = self.calls()
+        self.assertEqual(len(calls), 2, calls)
+        self.assertTrue(calls[1].endswith("--prefix scheduler"), calls[1])
+
+    def test_handoff_renew_refuses_bad_settings(self):
+        sha = "a" * 64
+        base = dict(QUEUE_URL="https://usnmst.queue.core.windows.net", RENEW_NONCE="abcdefgh12",
+                    CLAIM_LEASE_HOURS="36", HANDOFF_RENEW=f"sn1_1900-01-01_ed-1_seq-1:{sha}")
+        for bad in (dict(QUEUE_URL=""), dict(RENEW_NONCE="short"), dict(CLAIM_LEASE_HOURS="0"),
+                    dict(CLAIM_LEASE_HOURS="169"), dict(CLAIM_LEASE_HOURS=""), dict(HANDOFF_RENEW=""),
+                    dict(HANDOFF_RENEW="sn1_1900-01-01_ed-1_seq-1"),
+                    dict(HANDOFF_RENEW=f"sn1_1900-01-01_ed-1_seq-1:{'A' * 64}"),
+                    dict(HANDOFF_RENEW=f"../x:{sha}"),
+                    dict(HANDOFF_RENEW=f"sn1_1900-01-01_ed-1_seq-1:{sha}:$(id)"),
+                    dict(HANDOFF_RENEW=",".join([f"sn1_1900-01-01_ed-1_seq-1:{sha}"] * 101)),
+                    dict(BATCH_SCOPE="Bad_Scope")):
+            r = self.handoff("renew", **{**base, **bad})
+            self.assertNotEqual(r.returncode, 0, bad)
+        self.assertEqual(self.calls(), [])
+
     def test_handoff_collect_deletes_the_queue_message_after_the_journal_is_written_back(self):
         job = "a" * 64
         self.stub(

@@ -228,6 +228,58 @@ mod claim_cli_tests {
 }
 
 #[cfg(test)]
+mod claim_renew_cli_tests {
+    use super::*;
+    use usnm_boinc::claim::cli::ClaimCommands;
+
+    #[test]
+    fn claim_renew_takes_named_flags_and_a_lease_of_1_to_168_hours() {
+        let base = [
+            "usnm-boinc",
+            "claim",
+            "renew",
+            "--handoff-url",
+            "h",
+            "--queue-url",
+            "q",
+            "--summary",
+            "s.json",
+            "--nonce",
+            "n",
+            "--claim",
+            "a:b",
+            "--claim",
+            "c:d:e",
+        ];
+        let args = [&base[..], &["--lease-hours", "36"]].concat();
+        let cli = Cli::try_parse_from(args).unwrap();
+        let Commands::Claim(ClaimCommands::Renew {
+            claims,
+            lease_hours,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected claim renew");
+        };
+        assert_eq!(
+            (claims, lease_hours),
+            (vec!["a:b".into(), "c:d:e".into()], 36)
+        );
+        for bad in [
+            &["--lease-hours", "0"][..],
+            &["--lease-hours", "169"],
+            &[],
+            &["--lease-hours", "36", "extra"],
+        ] {
+            assert!(
+                Cli::try_parse_from([&base[..], bad].concat()).is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod qwen_runtime_tests {
     use super::*;
     use usnm_boinc::qwen::cli::QwenCommands;

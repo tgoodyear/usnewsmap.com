@@ -3321,6 +3321,253 @@ class QueueModeTests(unittest.TestCase):
             directory.rmdir()
 
 
+def iso(seconds):
+    """Unix seconds as claim pull writes a time."""
+    import datetime
+    return datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def leased(number, claimed, until):
+    """A claim summary entry whose lease ran from `claimed` to `until` (Unix seconds)."""
+    return {**message(number), "claimed_at": iso(claimed), "lease_until": iso(until)}
+
+
+class RenewFake(QueueFake):
+    """The renew step (#2146): what it was asked, and its summary. `lost` names doc ids whose
+    lease is gone; `fail` makes the step raise."""
+
+    def __init__(self, waiting):
+        super().__init__(waiting)
+        self.renewals = []
+        self.lost = {}
+        self.fail = None
+        # What the step reports as claimed_at for a claim sent without one (a claim recorded
+        # before claimed_at existed): the claim file's own.
+        self.file_claimed_at = "2026-11-24T10:00:00.000000Z"
+
+    def renew(self, claims):
+        self.actions.append(("renew", len(claims)))
+        self.renewals.append(list(claims))
+        if self.fail:
+            raise self.fail
+        return {"schema_version": 1, "nonce": "n",
+                "renewed": [{"doc_id": doc, "message_sha256": sha, "claimed_at": at or self.file_claimed_at,
+                             "lease_until": iso(NOW + 36 * 3600)}
+                            for doc, sha, at in claims if doc not in self.lost],
+                "lost": [{"doc_id": doc, "message_sha256": sha, "why": self.lost[doc]}
+                         for doc, sha, _ in claims if doc in self.lost],
+                "failed": []}
+
+
+class ClaimLeaseRenewalTests(unittest.TestCase):
+    """#2146: a plan renews, each tick, the leases of the claims it still holds, so a held
+    page never comes back to the queue for another plan to claim."""
+
+    HOUR = 3600
+
+    def setUp(self):
+        self.config = queue_config()
+        self.config["lease_hours"] = 36
+        self.state = {}
+        self.fake = RenewFake([])
+        self.feed = batch.QueueFeed(self.config, self.state, self.fake, lambda: None)
+
+    def claim(self, items):
+        self.feed.record(items, len(items), now=NOW)
+
+    def doc(self, number):
+        return message(number)["doc_id"]
+
+    def page(self, number):
+        return message(number)["page"]
+
+    def test_a_held_unsettled_claim_past_half_its_lease_is_renewed_and_a_settled_one_is_not(self):
+        hour = self.HOUR
+        self.claim([
+            leased(1, NOW - 20 * hour, NOW + 16 * hour),  # past half, exported: renewed
+            leased(2, NOW - 20 * hour, NOW + 16 * hour),  # past half, published: settled
+            leased(3, NOW - 1 * hour, NOW + 35 * hour),   # held, but its lease is young
+            leased(4, NOW - 30 * hour, NOW + 6 * hour),   # past half, no journal yet (its scan)
+            leased(5, NOW - 20 * hour, NOW + 16 * hour),  # failed for good: settled
+        ])
+        claim = self.state["claims"][self.page(1)]
+        self.assertEqual((claim["lease_from"], claim["lease_until"]), (NOW - 20 * hour, NOW + 16 * hour))
+        self.assertEqual(claim["claimed_at"], iso(NOW - 20 * hour))
+        journals = {self.page(1): record(self.page(1), 1, "submitted"),
+                    self.page(2): record(self.page(2), 2, "published"),
+                    self.page(3): record(self.page(3), 3, "reserved"),
+                    self.page(5): record(self.page(5), 5, "failed")}
+        self.feed.renew_held(journals, NOW)
+        # The one whose lease ends first goes first; each names its claim by message and claimed_at.
+        self.assertEqual(self.fake.renewals, [[
+            (self.doc(4), message(4)["message_sha256"], iso(NOW - 30 * hour)),
+            (self.doc(1), message(1)["message_sha256"], iso(NOW - 20 * hour)),
+        ]])
+        for number in (1, 4):
+            claim = self.state["claims"][self.page(number)]
+            self.assertEqual((claim["lease_from"], claim["lease_until"]), (NOW, NOW + 36 * hour))
+        # Renewed, not due again until half the new lease has gone.
+        self.feed.renew_held(journals, NOW + 16 * hour)
+        self.assertEqual(len(self.fake.renewals), 1)
+        self.feed.renew_held(journals, NOW + 19 * hour)
+        self.assertEqual([doc for doc, _, _ in self.fake.renewals[-1]], [self.doc(3), self.doc(1), self.doc(4)])
+
+    def test_a_claim_recorded_without_its_lease_is_due(self):
+        # Claimed before the summary gave claimed_at (an older image): renewed by its message alone.
+        self.claim([message(1)])
+        claim = self.state["claims"][self.page(1)]
+        self.assertNotIn("claimed_at", claim)
+        claim.pop("lease_from")
+        claim.pop("lease_until")
+        self.feed.renew_held({}, NOW)
+        self.assertEqual(self.fake.renewals, [[(self.doc(1), message(1)["message_sha256"], None)]])
+
+    def test_a_legacy_claim_learns_its_claimed_at_on_its_first_renewal(self):
+        # Renewed once by its message alone, then as this claim only (#2146 review): another
+        # plan's later claim of the same message can't be renewed in its place.
+        self.claim([message(1)])
+        claim = self.state["claims"][self.page(1)]
+        claim.pop("lease_from")
+        claim.pop("lease_until")
+        self.feed.renew_held({}, NOW)
+        self.assertEqual(claim["claimed_at"], self.fake.file_claimed_at)
+        self.feed.renew_held({}, NOW + 30 * self.HOUR)
+        self.assertEqual(self.fake.renewals[-1], [(self.doc(1), message(1)["message_sha256"], self.fake.file_claimed_at)])
+
+    def test_failed_renewals_back_off_so_other_claims_get_their_turn(self):
+        hour = self.HOUR
+        self.claim([leased(number, NOW - 20 * hour, NOW + (10 + number) * hour) for number in range(1, 5)])
+        with mock.patch.object(batch, "RENEW_BATCH", 2):
+            self.fake.fail = RuntimeError("handoff/renew failed")
+            with mock.patch("sys.stderr", io.StringIO()):
+                self.feed.renew_held({}, NOW)
+            self.assertEqual([doc for doc, _, _ in self.fake.renewals[-1]], [self.doc(1), self.doc(2)])
+            self.fake.fail = None
+            # The two that failed wait out the back-off; the next two are tried meanwhile.
+            with mock.patch("sys.stderr", io.StringIO()):
+                self.feed.renew_held({}, NOW + 60)
+            self.assertEqual([doc for doc, _, _ in self.fake.renewals[-1]], [self.doc(3), self.doc(4)])
+            with mock.patch("sys.stderr", io.StringIO()):
+                self.feed.renew_held({}, NOW + batch.RENEW_RETRY_SECS + 61)
+            self.assertEqual([doc for doc, _, _ in self.fake.renewals[-1]], [self.doc(1), self.doc(2)])
+        self.assertNotIn("renew_retry_at", self.state["claims"][self.page(1)])
+
+    def test_a_lost_lease_is_marked_and_logged_and_nothing_is_deleted(self):
+        hour = self.HOUR
+        self.claim([leased(1, NOW - 20 * hour, NOW + 16 * hour), leased(2, NOW - 20 * hour, NOW + 16 * hour)])
+        self.fake.lost = {self.doc(1): "lease_lost"}
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.feed.renew_held({}, NOW)
+        lost = self.state["claims"][self.page(1)]
+        self.assertEqual(lost["lease_lost"], {"at": NOW, "why": "lease_lost"})
+        self.assertEqual(lost["lease_until"], NOW + 16 * hour)
+        self.assertEqual(sorted(self.state["claims"]), [self.page(1), self.page(2)])
+        event = json.loads(stderr.getvalue().splitlines()[-1])
+        self.assertEqual((event["event"], event["renewed"], event["lost"]),
+                         ("boinc_batch_claim_renew", 1, [{"page": self.page(1), "why": "lease_lost"}]))
+        self.assertFalse([a for a in self.fake.actions if a[0] in ("release", "dead-letter")])
+        # Not asked again; the same message claimed again later is held again.
+        self.feed.renew_held({}, NOW + 30 * hour)
+        self.assertEqual([doc for doc, _, _ in self.fake.renewals[-1]], [self.doc(2)])
+        self.claim([leased(1, NOW + 30 * hour, NOW + 66 * hour)])
+        again = self.state["claims"][self.page(1)]
+        self.assertNotIn("lease_lost", again)
+        self.assertEqual((again["claimed_at"], again["lease_until"]), (iso(NOW + 30 * hour), NOW + 66 * hour))
+
+    def test_a_renew_failure_is_logged_and_does_not_fail_the_tick(self):
+        hour = self.HOUR
+        self.fake = RenewFake([leased(number, NOW - 20 * hour, NOW + 16 * hour) for number in range(1, 8)])
+        self.fake.fail = RuntimeError("handoff/renew failed; inspect the execution privately before retrying")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            batch.tick(self.config, self.state, self.fake, lambda: None, NOW)
+            # The second tick holds the first one's claims, past half their lease.
+            event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW)
+        self.assertIn("selected", event)
+        self.assertEqual([a for a in self.fake.actions if a[0] == "renew"], [("renew", 2)])
+        failures = [json.loads(line) for line in stderr.getvalue().splitlines()
+                    if "boinc_batch_claim_renew_failed" in line]
+        self.assertEqual(len(failures), 1)
+        self.assertIn("handoff/renew failed", failures[0]["error"])
+        # The claims are as they were; the two that failed wait out the back-off, so the next
+        # tick renews only the two the second tick claimed, and a later one tries the two again.
+        self.assertFalse([c for c in self.state["claims"].values() if "lease_lost" in c])
+        self.fake.fail = None
+        with contextlib.redirect_stderr(io.StringIO()):
+            batch.tick(self.config, self.state, self.fake, lambda: None, NOW + 60)
+        self.assertEqual([a for a in self.fake.actions if a[0] == "renew"], [("renew", 2), ("renew", 2)])
+        with contextlib.redirect_stderr(io.StringIO()):
+            batch.tick(self.config, self.state, self.fake, lambda: None, NOW + batch.RENEW_RETRY_SECS + 61)
+        self.assertEqual([a for a in self.fake.actions if a[0] == "renew"][-1], ("renew", 2))
+        self.assertTrue(all(self.state["claims"][self.page(number)]["lease_until"] >= NOW + 36 * hour
+                            for number in (1, 2, 3, 4)))
+
+    def test_a_tick_renews_at_most_one_step_of_claims(self):
+        hour = self.HOUR
+        self.claim([leased(number, NOW - 20 * hour, NOW + 16 * hour) for number in range(1, 101)])
+        self.feed.record([leased(number, NOW - 20 * hour, NOW + 15 * hour) for number in range(101, 151)], 50,
+                         now=NOW)
+        self.feed.renew_held({}, NOW)
+        (asked,) = self.fake.renewals
+        self.assertEqual(len(asked), batch.RENEW_BATCH)
+        # The fifty whose leases end first are among them.
+        self.assertEqual({doc for doc, _, _ in asked[:50]}, {self.doc(number) for number in range(101, 151)})
+
+    def test_rfc3339_seconds(self):
+        self.assertEqual(batch.rfc3339_seconds(iso(NOW)), NOW)
+        self.assertEqual(batch.rfc3339_seconds("2023-11-14T22:13:20Z"), NOW)
+        self.assertAlmostEqual(batch.rfc3339_seconds("2023-11-14T22:13:20.123456789+00:00"), NOW + 0.123456,
+                               places=5)
+        for bad in (None, 5, "", "yesterday", "2023-11-14 22:13:20Z", "2023-13-14T22:13:20Z"):
+            self.assertIsNone(batch.rfc3339_seconds(bad), bad)
+
+    def test_the_renew_step_names_each_claim_and_reads_its_plans_summary(self):
+        sent = {}
+
+        def step(target, name, **variables):
+            sent.update(target=target, name=name, **variables)
+
+        def blob(name):
+            sent["read"] = name
+            return {"schema_version": 1, "nonce": sent["RENEW_NONCE"], "renewed": [], "lost": []}
+
+        for transport, read in (
+                (batch.Transport(self.config, Path(".")), "scheduler/renew.json"),
+                (batch.Transport(scoped_config(), Path("."), onprem_handoff=("claim", "collect", "export"),
+                                 plan_scope=True),
+                 "scheduler/plans/native-feed-9/renew.json")):
+            with self.subTest(read=read), patch.object(transport, "step", side_effect=step), \
+                    patch.object(transport, "blob", side_effect=blob):
+                transport.renew([("a_b", "c" * 64, "2026-11-25T01:02:03.456789Z"), ("d_e", "f" * 64, None)])
+                self.assertEqual((sent["target"], sent["name"], sent["read"]), ("handoff", "renew", read))
+                self.assertEqual(sent["HANDOFF_RENEW"],
+                                 f"a_b:{'c' * 64}:2026-11-25T01:02:03.456789Z,d_e:{'f' * 64}")
+                self.assertEqual(sent["CLAIM_LEASE_HOURS"], transport.config["lease_hours"])
+        transport = batch.Transport(self.config, Path("."))
+
+        def failed_step(target, name, **variables):
+            sent.update(variables)
+            raise RuntimeError("handoff/renew failed")
+
+        # A failed step whose summary was written: what it renewed still comes back.
+        with patch.object(transport, "step", side_effect=failed_step), \
+                patch.object(transport, "blob", side_effect=blob):
+            summary = transport.renew([("a_b", "c" * 64, None)])
+        self.assertEqual(summary["step_failed"], "handoff/renew failed")
+        # One that got no further fails as the step did.
+        with patch.object(transport, "step", side_effect=failed_step), \
+                patch.object(transport, "blob", side_effect=RuntimeError("missing hand-off object")), \
+                self.assertRaisesRegex(RuntimeError, "handoff/renew failed"):
+            transport.renew([("a_b", "c" * 64, None)])
+        with patch.object(transport, "step"), \
+                patch.object(transport, "blob", return_value={"schema_version": 1, "nonce": "other"}), \
+                self.assertRaisesRegex(ValueError, "stale/concurrent"):
+            transport.renew([("a_b", "c" * 64, None)])
+        with self.assertRaises(ValueError):
+            transport.renew([("a_b", "c" * 64, None)] * (batch.STEP_IDS + 1))
+
+
 class BundleTests(unittest.TestCase):
     """#1059: several pages of one queue in one usnm_ocr workunit, when a plan asks for it."""
 
