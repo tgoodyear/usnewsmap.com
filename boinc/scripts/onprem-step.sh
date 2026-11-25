@@ -785,7 +785,10 @@ case $TARGET:$STEP in
   handoff:* | bridge:spool-out | bridge:batch-inventory)
     lock_file=usnm-boinc-handoff.lock
     # A scoped step (#1836): the hand-off lock shared, then its plan's own lock.
-    [ -z "$PLAN_SCOPE" ] || plan_lock=usnm-boinc-handoff.plan-$PLAN_SCOPE.lock ;;
+    [ -z "$PLAN_SCOPE" ] || plan_lock=usnm-boinc-handoff.plan-$PLAN_SCOPE.lock
+    # renew (#2146) rewrites claim files another plan's collect or release may also rewrite,
+    # so it takes the hand-off lock alone; its PLAN_SCOPE only names where its report goes.
+    [ "$TARGET:$STEP" != handoff:renew ] || plan_lock="" ;;
 esac
 lock_started=$SECONDS
 # Who holds a lock, for the failure text: the sidecar files handoff_lock.py note-holder writes.

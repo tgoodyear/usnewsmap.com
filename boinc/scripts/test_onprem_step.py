@@ -868,9 +868,21 @@ class OnpremStep(unittest.TestCase):
                                      "--var", "BATCH_NONCE=" + "b" * 32, "--var", f"PLAN_SCOPE={plan}",
                                      flock_script=script)
 
+        def renew(plan):
+            Path(self.conf.name, "envfile").unlink(missing_ok=True)
+            return self.run_for_real("--env", "prod", "--target", "handoff", "--step", "renew", "--wait-mins", "1",
+                                     "--var", "HANDOFF_RENEW=a_b:" + "d" * 64, "--var", "CLAIM_LEASE_HOURS=36",
+                                     "--var", "RENEW_NONCE=abcdefgh12", "--var", f"PLAN_SCOPE={plan}",
+                                     flock_script=script)
+
         with (directory / "usnm-boinc-handoff.lock").open("w") as other:
             # Another plan's scoped step holds the hand-off lock shared.
             fcntl.flock(other, fcntl.LOCK_SH)
+            # renew (#2146) rewrites claim files another plan's collect may rewrite: it waits
+            # for the hand-off lock alone, even with a scope.
+            done, captured = renew("native-feed-9")
+            self.assertIn("another bridge step is running", done.stderr)
+            self.assertIsNone(captured)
             done, captured = collect("native-feed-9")
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertIn("HANDOFF_STEP=collect", captured)
@@ -883,6 +895,10 @@ class OnpremStep(unittest.TestCase):
             done, captured = collect()
             self.assertIn("another bridge step is running", done.stderr)
             self.assertIsNone(captured)
+        # With nothing else holding the hand-off lock it runs, its report under the plan's scope.
+        done, captured = renew("native-feed-9")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("BATCH_SCOPE=native-feed-9", captured.splitlines())
         with (directory / "usnm-boinc-handoff.plan-native-feed-9.lock").open("w") as same:
             fcntl.flock(same, fcntl.LOCK_EX)
             for run in (lambda: collect("native-feed-9"), lambda: inventory("native-feed-9")):
