@@ -282,6 +282,10 @@ function fontState(t) {
 // in percentages of it, so it keeps its ends on the same print as the picture scales. A line without x1 is the vertical div.
 const isGutter = (t) => !!t && t.kind === "gutter";
 const GUTTER_ANSWERS = [["a", "Yes"], ["b", "No"]];
+// The help under the buttons for Bad crop (README.md, "Bad crop"). A gutter crop holds many printed lines by design, and a line that
+// crosses print is a No, so its task says what a broken gutter crop is instead.
+const BADCROP_HELP = "Pick Bad crop if the box shows more than one line, cuts off the word, or marks the wrong thing.";
+const GUTTER_BADCROP_HELP = "Pick Bad crop if the picture is broken or isn't part of a newspaper page, or the line is missing or runs off the picture. A line that crosses print is a No, not a bad crop.";
 
 function renderGutter(card, t, prev) {
   const q = document.createElement("p"); q.className = "question"; q.textContent = cfg.question || ""; card.appendChild(q);
@@ -436,6 +440,7 @@ function render(prev) {
   $("neither").disabled = $("unsure").disabled = $("notext").disabled = $("badcrop").disabled = $("skip").disabled = !live;
   // A column gutter task has only yes, no and can't tell, and Bad crop, which every task has.
   $("neither").hidden = $("notext").hidden = isGutter(task);
+  if (task) $("badcrop-help").textContent = isGutter(task) ? GUTTER_BADCROP_HELP : BADCROP_HELP;
   if (!task && !loaded) {
     const d = document.createElement("div"); d.className = "done";
     if (busy || !failed) { d.textContent = "Loading the next word…"; card.appendChild(d); return; }

@@ -1,7 +1,7 @@
 """Lists the tasks check.usnewsmap.com closed as `bad_crop`, for rebuilding (README.md, "Bad crop").
 
   curl -s 'https://check.usnewsmap.com/api/export?lang=chr-lines' > check-chr-lines.jsonl
-  python3 bad_crops.py check-chr-lines.jsonl [more exports ...] [--json]
+  python3 bad_crops.py --export check-chr-lines.jsonl [--export more.jsonl ...] [--json]
 
 A task settles as `bad_crop` when two thirds of its answers (at least 3) say Bad crop: the box shows more than one line, cuts
 off the word or marks the wrong thing. It is a build defect, not reader evidence, and is held with hold_reason `bad_crop`.
@@ -24,11 +24,11 @@ def bad_crops(rows: list) -> list:
 
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("exports", nargs="+", help="/api/export files (JSON lines)")
+    ap.add_argument("--export", action="append", required=True, help="an /api/export file (JSON lines); repeat for more")
     ap.add_argument("--json", action="store_true", help="one JSON object per task")
     a = ap.parse_args(argv)
     rows = []
-    for path in a.exports:
+    for path in a.export:
         with open(path, encoding="utf-8") as f:
             rows += [json.loads(line) for line in f if line.strip()]
     found = bad_crops(rows)

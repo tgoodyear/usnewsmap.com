@@ -1088,7 +1088,12 @@ test("the page offers Bad crop on every task kind, on key 6, with a line of help
   const app = readFileSync(new URL("./public/app.js", import.meta.url), "utf8");
   const html = readFileSync(new URL("./public/index.html", import.meta.url), "utf8");
   assert.match(html, /<button class="small" id="badcrop" type="button" disabled>Bad crop \(6\)<\/button>/);
-  assert.match(html, /Pick Bad crop if the box shows more than one line, cuts off the word, or marks the wrong thing\./);
+  const pickHelp = "Pick Bad crop if the box shows more than one line, cuts off the word, or marks the wrong thing.";
+  assert.ok(html.includes(`<p class="how hint" id="badcrop-help">${pickHelp}</p>`));
+  assert.ok(app.includes(`const BADCROP_HELP = "${pickHelp}";`), "the page's help and the script's agree");
+  // a gutter task gets its own help: its crop holds many lines, and a line across print is a No
+  assert.match(app, /if \(task\) \$\("badcrop-help"\)\.textContent = isGutter\(task\) \? GUTTER_BADCROP_HELP : BADCROP_HELP;/);
+  assert.match(app, /const GUTTER_BADCROP_HELP = "[^"]*A line that crosses print is a No, not a bad crop\.";/);
   assert.match(app, /\$\("badcrop"\)\.addEventListener\("click", \(\) => choose\("badcrop"\)\);/);
   assert.match(app, /else if \(e\.key === "6"\) choose\("badcrop"\);/);
   assert.match(app, /\$\("badcrop"\)\.disabled = /);

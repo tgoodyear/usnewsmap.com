@@ -30,10 +30,10 @@ class BadCrops(unittest.TestCase):
             path = os.path.join(d, "export.jsonl")
             with open(path, "w", encoding="utf-8") as f:
                 f.write("".join(json.dumps(r) + "\n" for r in ROWS))
-            text = subprocess.run([sys.executable, "-I", os.path.join(HERE, "bad_crops.py"), path], capture_output=True, text=True, check=True).stdout
+            text = subprocess.run([sys.executable, "-I", os.path.join(HERE, "bad_crops.py"), "--export", path], capture_output=True, text=True, check=True).stdout
             self.assertIn("chr-lines/s/p1~2\tset=s\tpage=p1\tline=chr-lines/s/l/p1.jpg word=chr-lines/s/w/p1~2.jpg\tbadcrop=2/3", text)
             self.assertTrue(text.endswith("2 bad_crop task(s)\n"))
-            js = subprocess.run([sys.executable, "-I", os.path.join(HERE, "bad_crops.py"), path, "--json"], capture_output=True, text=True, check=True).stdout
+            js = subprocess.run([sys.executable, "-I", os.path.join(HERE, "bad_crops.py"), "--export", path, "--json"], capture_output=True, text=True, check=True).stdout
             self.assertEqual([json.loads(l)["id"] for l in js.splitlines()], ["chr-lines/s/p1~2", "en-gutter/g/p~s1"])
 
 

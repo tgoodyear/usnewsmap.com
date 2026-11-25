@@ -73,6 +73,8 @@ def report(tasks: list, min_answers: int) -> dict:
     """Returns {lang: {subset: {names group: row}}}."""
     tallies = {}
     for t in tasks:
+        if t.get("outcome") == "bad_crop":
+            continue  # a build defect (README.md, "Bad crop"): its answers are about the box, not the letters
         lang = t["id"].split("/")[0]
         g = names_group(t)
         subs = ["all"] + (["lookalikes"] if t.get("lookalikes") else []) + (["mark_only"] if t.get("mark_only") else [])
