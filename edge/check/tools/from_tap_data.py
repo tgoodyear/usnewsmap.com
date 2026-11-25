@@ -5,15 +5,28 @@ for POST /admin/tasks, and OUT_DIR/language.json for PUT /admin/languages/<lang>
 (lookalike.py: a task's `lookalikes`, the letter pairs the site's Cherokee font draws almost alike); --no-lookalikes skips it.
 
   python3 from_tap_data.py --data data.json --lang chr --set phoenix-nt-v1 --language-config chr.json --out-dir OUT
+
+The tap page's word pictures are LoC's word box with 6 pixels around it, cut from the page scan, so a word box that reaches
+into the next printed line shows two lines. With --clip-band (#2122's rule, line_clip.py) such a word is cut again from the
+scan (--scans) to its printed line, taken from its TextLine's word boxes in LoC's ALTO (--loc-alto), when that makes the
+picture more than --clip-shrink shorter; those tasks get new word clip keys (--clip-suffix), since served clips are cached
+as immutable. Ids, readings and the other pictures are unchanged.
 """
 import argparse
 import base64
 import collections
 import datetime
 import json
+import math
 import os
+import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # `python3 -I` leaves the script directory off the path
+import line_clip  # noqa: E402
+
+SYL = re.compile("[\u13a0-\u13f5]")
+WORD_PAD = 6  # pixels around LoC's word box in the tap page's word pictures
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 
 
@@ -34,6 +47,37 @@ def label(page: str, title: str) -> str:
     return f"{title}, {d.day} {MONTHS[d.month - 1]} {d.year}, page {seq.split('-')[1]}"
 
 
+def clipped_word(d: dict, page: str, alto: dict, scans: str, shrink: float):
+    """The word picture of decision `d` cut to its printed line from the page scan (Pillow image), or None when the
+    rule leaves it as it is. The word is the decision's index among its TextLine's syllabary words, as the tap page counted.
+    `alto` caches the parsed ALTO and the open page scan; alto["dir"] is --loc-alto."""
+    import phoenix_lines
+    from PIL import Image
+    lccn, date, ed, seq = page.split("/")
+    path = os.path.join(alto["dir"], lccn, *date.split("-"), ed, seq, "ocr.xml")
+    if path not in alto:
+        alto[path] = phoenix_lines.alto_lines(path)
+    pw, ph, tls = alto[path]
+    line_id = d["id"].split("~")[0].split("_", 4)[4]
+    tl = next(t for t in tls if t["id"] == line_id)
+    words = [w["box"] for w in tl["words"] if SYL.search(w["text"])]
+    x, y, w, h = words[int(d["id"].rsplit("~", 1)[1])]
+    if alto.get("scan_page") != page:  # one page scan at a time: decisions come line by line, a page's lines together
+        if alto.get("scan") is not None:
+            alto["scan"].close()
+        alto["scan_page"], alto["scan"] = page, Image.open(os.path.join(scans, page.replace("/", "_") + ".jpg"))
+    scan = alto["scan"]
+    sx, sy = scan.size[0] / pw, scan.size[1] / ph
+    top, bottom = y * sy - WORD_PAD, (y + h) * sy + WORD_PAD
+    band = line_clip.printed_band(words, [x, y, w, h])
+    band = band and (band[0] * sy, band[1] * sy, band[2] * sy)
+    top, bottom, cut = line_clip.clip_span(top, bottom, band, shrink)
+    if not cut:
+        return None
+    x0, x1 = max(0, int(x * sx) - WORD_PAD), min(scan.size[0], int((x + w) * sx) + WORD_PAD)
+    return scan.convert("L").crop((x0, max(0, int(top)), x1, min(scan.size[1], math.ceil(bottom))))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
@@ -44,7 +88,17 @@ def main() -> None:
     ap.add_argument("--examples-set", help="where the example pictures go (default: --set); a new name keeps cached old pictures from being served")
     ap.add_argument("--no-lookalikes", action="store_true", help="don't check for look-alike letters (no Pillow needed)")
     ap.add_argument("--font", action="append", help="SCRIPT=PATH: reference font for the look-alike check (default: the site's Cherokee font)")
+    ap.add_argument("--clip-band", action="store_true", help="cut a word picture that reaches into another printed line to "
+                    "its line (needs --loc-alto and --scans); such tasks get new word clip keys")
+    ap.add_argument("--loc-alto", help="LoC's ALTO, unpacked: <lccn>/<yyyy>/<mm>/<dd>/ed-N/seq-N/ocr.xml")
+    ap.add_argument("--scans", help="the page scans the tap data was cut from: <lccn>_<yyyy-mm-dd>_ed-N_seq-N.jpg")
+    ap.add_argument("--clip-shrink", type=float, default=line_clip.SHRINK)
+    ap.add_argument("--clip-suffix", default="_b", help="added to the word clip key of a cut task")
     a = ap.parse_args()
+    if a.clip_band and not (a.loc_alto and a.scans):
+        ap.error("--clip-band needs --loc-alto and --scans")
+    alto = {"dir": a.loc_alto}
+    clipped = 0
 
     lookalike = fonts = None
     if not a.no_lookalikes:
@@ -65,7 +119,15 @@ def main() -> None:
             stem = line["crop"].rsplit(".", 1)[0]
             line_key = rel(save(line["line"], os.path.join(root, prefix, "lines", stem)))
             for d in line["decisions"]:
-                word_key = rel(save(d["word"], os.path.join(root, prefix, "words", d["id"].replace("~", "_w"))))
+                word_path = os.path.join(root, prefix, "words", d["id"].replace("~", "_w"))
+                cut = clipped_word(d, line["page"], alto, a.scans, a.clip_shrink) if a.clip_band else None
+                if cut is None:
+                    word_key = rel(save(d["word"], word_path))
+                else:
+                    os.makedirs(os.path.dirname(word_path), exist_ok=True)
+                    cut.save(f"{word_path}{a.clip_suffix}.jpg", quality=85)
+                    word_key = rel(f"{word_path}{a.clip_suffix}.jpg")
+                    clipped += 1
                 alike, marks = ([], []) if fonts is None else lookalike.analyse(d["a"], d["b"], {}, fonts)
                 flagged += bool(alike)
                 marked += bool(marks)
@@ -93,6 +155,8 @@ def main() -> None:
     language["examples"] = examples
     json.dump(language, open(os.path.join(a.out_dir, "language.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(f"{n} tasks, {len(examples)} letters with examples, {flagged} with look-alike letters, {marked} differing only in marks")
+    if a.clip_band:
+        print(f"{clipped} word pictures cut to their printed line (new keys ending {a.clip_suffix})")
     if fonts is not None and lookalike.unshaped_warning(fonts):
         print(lookalike.unshaped_warning(fonts), file=sys.stderr)
 
