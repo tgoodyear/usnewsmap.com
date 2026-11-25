@@ -1197,8 +1197,11 @@ mod tests {
             http: &http,
             base: &base,
         };
+        // The deadline, not the stall guard, has to end this wait, and setup on a loaded
+        // machine can take longer than a few hundred ms: give both room.
         let wait = MergeWait {
-            timeout: Duration::from_millis(300),
+            timeout: Duration::from_secs(3),
+            finalize_stall: Duration::from_secs(30),
             ..quick()
         };
         let err = seal(&node, "idx", 1000, T, Some(&events), &wait, None)
