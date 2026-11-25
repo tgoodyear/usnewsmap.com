@@ -372,8 +372,27 @@ class EligibilityTests(unittest.TestCase):
         db["versions"].append(alternate)
         h["versions"].append(alternate)
         db["units"].append(dict(db["units"][0], id=6))
-        with self.assertRaisesRegex(C.SupplyUnknown, "ambiguous_resource_profile"):
+        # Versions on one device with different CPU demands count at the larger one (a
+        # lower bound), not as unknown; one that wouldn't fit still refuses.
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 2, "eligible": 2})
+        h.update(cpus=3, idle_cpu=3)
+        with self.assertRaisesRegex(C.SupplyUnknown, "mixed_resource_packing"):
             C.supply(db, [h], "gpu")
+
+    def test_gpu_memory_differing_by_plan_counts_at_the_largest_demand(self):
+        # Two plan classes for one card with different GPU memory (as usnm_qwen's are): the card
+        # is counted at the larger demand, a lower bound, instead of reporting unknown.
+        db, h = database(), host(count=1)
+        db["plans"]["intel"]["gpu_ram_used_mb"] = "1000"
+        big = version(plan="big")
+        db["plans"]["big"] = {"avg_ncpus": "1", "gpu_type": "intel", "gpu_ram_used_mb": "3000"}
+        db["versions"].append(big)
+        h["versions"].append(big)
+        h.update(cpus=4, idle_cpu=4, gpu_devices={"intel_gpu": 1}, gpu_memory={"intel_gpu": 4e9})
+        self.assertEqual(C.supply(db, [h], "gpu"), {"idle": 1, "eligible": 1})
+        # 2 GB holds the smaller task but not the larger: counted as no slot, not as unknown.
+        h["gpu_memory"] = {"intel_gpu": 2e9}
+        self.assertEqual(C.supply(db, [h], "gpu")["idle"], 0)
 
     def test_cumulative_ram_caps_uniform_allocation_and_rejects_mixed_packing(self):
         db, h = database(), host()

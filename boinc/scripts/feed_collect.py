@@ -1976,9 +1976,10 @@ def supply(database, hosts, resource, resource_usage=None):
         for device, count in capacities.items():
             demands = {gpu_task_memory(database["plans"].get(v["plan_class"], {}))
                        for v in versions if v["gpu"] == device}
-            if len(demands) > 1:
-                raise SupplyUnknown("ambiguous_resource_profile")
-            if demands and (demand := next(iter(demands))):
+            # Versions on one device can differ in GPU memory (several plan classes for one
+            # card). Count slots at the largest demand: a lower bound on capacity, so the
+            # check can under-count idle slots but never claims ones the card can't hold.
+            if demands and (demand := max(demands)):
                 capacities[device] = min(count, math.floor(host["gpu_memory"][device] / demand))
         limit = sum(capacities.values())
         demands = {v["cpus"] for v in versions}
@@ -2014,12 +2015,12 @@ def supply(database, hosts, resource, resource_usage=None):
                             plan = database["plans"].get(v["plan_class"], {})
                             demands.append((v["cpus"], gpu_task_memory(plan) if v["gpu"] else 0))
                     if demands:
-                        if len(set(demands)) != 1:
-                            raise SupplyUnknown("ambiguous_resource_profile")
                         if edges >= MAX_MATCH_EDGES:
                             raise SupplyUnknown("candidate_edge_budget")
                         edges += 1
-                        candidates[slot][unit["id"]] = demands[0]
+                        # Several eligible versions with different demands: take the most
+                        # demanding of each (CPUs, GPU memory), as above.
+                        candidates[slot][unit["id"]] = (max(d[0] for d in demands), max(d[1] for d in demands))
     # Capacitated network flow, including host/unit nodes (one replica per host).
     graph, host_capacity = {}, {}
     units = {u["id"]: u for u in database["units"]}
