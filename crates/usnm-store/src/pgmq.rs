@@ -20,7 +20,8 @@
 //! reorder its keys, and consumers hash the text). A received message's pop
 //! receipt is its visibility timestamp: [`Queue::delete`] removes it only
 //! while that lease is still the current one, and otherwise fails with
-//! [`LeaseLost`], as a stale Azure pop receipt does. [`Queue::release`] keeps
+//! [`LeaseLost`], as a stale Azure pop receipt does; [`Queue::extend`] moves
+//! it on under the same guard and returns the new one. [`Queue::release`] keeps
 //! the trait's default, a copy sent and then the original deleted: pgmq reads
 //! visible messages in `msg_id` order, so a message given back in place would
 //! stay at the front and stop a scan there each time (the copy goes to the back,
@@ -379,6 +380,32 @@ impl Queue for PgmqQueue {
             .with_context(|| format!("peeking {name}"))?;
         Ok(rows.into_iter().map(|r| text_of(r.get(0))).collect())
     }
+
+    /// What `pgmq.set_vt` does, guarded by the receipt: one UPDATE that moves the visibility
+    /// time only while it is still the receipt's, as [`Queue::delete`] deletes only then
+    /// (`set_vt` itself takes no receipt). The new visibility time is the receipt from now on.
+    async fn extend(&self, msg: &Received, visibility: Duration) -> anyhow::Result<Received> {
+        let name = pg_name(&msg.queue)?;
+        let id: i64 = msg.id.parse().context("message id")?;
+        let vt = i32::try_from(visibility.as_secs()).context("visibility timeout")?;
+        ensure!(vt > 0, "a visibility timeout of at least a second");
+        let client = self.client().await?;
+        let sql = format!(
+            "UPDATE pgmq.q_{name} SET vt = clock_timestamp() + $3::integer * interval '1 second' \
+             WHERE msg_id = $1 AND vt = $2::text::timestamptz RETURNING vt::text"
+        );
+        let row = client
+            .query_opt(&sql, &[&id, &msg.pop_receipt, &vt])
+            .await
+            .with_context(|| format!("extending {} on {name}", msg.id))?;
+        let Some(row) = row else {
+            return Err(LeaseLost(msg.id.clone()).into());
+        };
+        Ok(Received {
+            pop_receipt: row.get(0),
+            ..msg.clone()
+        })
+    }
 }
 
 #[cfg(test)]
@@ -558,7 +585,32 @@ mod tests {
         let copy = again.expect("the released copy comes back");
         assert_ne!(copy.id, m.id);
         assert_eq!(copy.dequeue_count, 1);
-        let m = copy;
+        // Extended: a new receipt holds it, the message and its count stay, and the old
+        // receipt can neither extend nor delete it.
+        let m = q.extend(&copy, Duration::from_secs(60)).await.unwrap();
+        assert_ne!(m.pop_receipt, copy.pop_receipt);
+        assert_eq!(
+            (m.id.as_str(), m.text.as_str()),
+            (copy.id.as_str(), text.as_str())
+        );
+        let ancient = Received {
+            pop_receipt: "2000-01-01 00:00:00+00".into(),
+            ..copy.clone()
+        };
+        for old in [&copy, &ancient] {
+            assert!(q
+                .extend(old, Duration::from_secs(60))
+                .await
+                .unwrap_err()
+                .downcast_ref::<LeaseLost>()
+                .is_some());
+        }
+        assert!(q
+            .delete(&copy)
+            .await
+            .unwrap_err()
+            .downcast_ref::<LeaseLost>()
+            .is_some());
         let stale = Received {
             pop_receipt: "2000-01-01 00:00:00+00".into(),
             ..m.clone()

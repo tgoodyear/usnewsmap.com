@@ -7,6 +7,7 @@ import concurrent.futures
 import contextlib
 import collections
 import copy
+import datetime
 import fcntl
 import stat
 import functools
@@ -677,9 +678,10 @@ CONTAINER_SPOT_STEP = ("bridge", "container-spot")
 MAX_STEP_LOCK_WAIT_SECS = 1200
 # Plans that tick side by side (#1836, --plan-scope): the BOINC host's steps that take the plan's
 # scope (onprem-step.sh PLAN_SCOPE). Its hand-off steps, spool-out and batch-inventory then share
-# the host's hand-off lock with other plans' and take one of the plan's own; batch-inventory,
+# the host's hand-off lock with other plans' and take one of the plan's own; batch-inventory, renew,
 # native-spot and container-spot write their report under scheduler/plans/<plan>/.
-SCOPED_STEPS = frozenset({("handoff", step) for step in ("claim", "release", "dead-letter", "collect", "export")}
+SCOPED_STEPS = frozenset({("handoff", step) for step in ("claim", "renew", "release", "dead-letter", "collect",
+                                                         "export")}
                          | {("bridge", step) for step in ("spool-out", "batch-inventory", "submit-remote",
                                                           "native-spot", "container-spot")})
 PLAN_SCOPE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
@@ -718,6 +720,34 @@ class ClaimFailed(RuntimeError):
         self.claims = claims
 
 
+def log_event(event):
+    """One JSON event line on stderr; a closed or broken stream never stops the tick."""
+    try:
+        print(json.dumps(event, sort_keys=True), file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
+RFC3339 = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})")
+
+
+def rfc3339_seconds(value):
+    """Unix seconds of an RFC 3339 time as claim pull writes it (2026-11-25T01:02:03.456789Z),
+    or None for anything else."""
+    if not isinstance(value, str) or not RFC3339.fullmatch(value):
+        return None
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    head, _, rest = text.partition(".")
+    if rest:
+        # Python before 3.11 reads six fractional digits at most.
+        digits = re.match(r"\d+", rest).group()
+        text = f"{head}.{digits[:6].ljust(6, '0')}{rest[len(digits):]}"
+    try:
+        return datetime.datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None
+
+
 def chunks(items, size=None):
     """`items` in order, in lists of at most `size` (STEP_IDS by default)."""
     size = STEP_IDS if size is None else size
@@ -741,7 +771,7 @@ def unit_steps(units):
 
 
 # --onprem-handoff choices and the hand-off steps each one moves to the on-prem host. A claim's
-# release goes with it: both take pages off and back onto the work queues.
+# release and its lease renewal go with it: they take pages off, hold them and put them back.
 # Most base batches one batched export execution takes (--batch-export): each is about half a
 # minute of the hand-off job's 30-minute timeout.
 EXPORT_BATCHES = 20
@@ -753,6 +783,10 @@ STEP_IDS = 100
 # and unusable ones are read past, not claimed), but starts no new step after this many seconds
 # of claiming, so the tick stays well inside its 15 minutes.
 CLAIM_SECONDS = 300
+# Held claims whose lease a tick renews at most (#2146): one renew step, so a tick spends about
+# a step on it. A plan holds a few hundred claims at a time; with a lease of a day or more and a
+# tick every few minutes, every due claim is renewed long before its lease runs out.
+RENEW_BATCH = STEP_IDS
 # Each plan's list of pages whose held result is settled (archived_held, its own and the
 # --check-state-dir plans'), each with its job's message sha256, as <prefix><plan>.<NNNN>.json: the claim
 # step reads every plan's list and deletes such a message when it comes back instead of claiming
@@ -782,7 +816,7 @@ JOURNAL_LIST_DELIMITER = "t"
 # Every journal name must reach the listing as a blob, never inside a prefix.
 assert not set(JOURNAL_LIST_DELIMITER) & set("0123456789abcdef/record.json")
 
-ONPREM_HANDOFF = {"claim": ("claim", "release", "dead-letter"), "collect": ("collect",),
+ONPREM_HANDOFF = {"claim": ("claim", "renew", "release", "dead-letter"), "collect": ("collect",),
                   "export": ("export",)}
 # The local expiring lock (--local-lock, #1367): the BOINC host holds the record, the controller
 # renews it every LOCK_HEARTBEAT_SECS, and a record unrenewed for LOCK_TTL_SECS is free.
@@ -795,7 +829,8 @@ LOCK_DISPATCH_MARGIN_SECS = 150
 HOST_READ_STEPS = frozenset(("read-object", "read-journals", "write-held-pages"))
 # The hand-off steps that change state; with the local lock each carries the holder and
 # generation, and the host refuses it if the record has moved on.
-FENCED_HANDOFF_STEPS = frozenset(("claim", "release", "dead-letter", "collect", "export", "write-held-pages"))
+FENCED_HANDOFF_STEPS = frozenset(("claim", "renew", "release", "dead-letter", "collect", "export",
+                                  "write-held-pages"))
 # The bridge steps that write the hand-off root (spool-out, the inventory) or dispatch work.
 FENCED_BRIDGE_STEPS = frozenset(("spool-out", "submit-remote", "batch-inventory"))
 
@@ -1953,6 +1988,38 @@ class Transport:
         for group in chunks(doc_ids):
             self.step("handoff", "release", HANDOFF_DOCS=",".join(group))
 
+    @timed("renew")
+    def renew(self, claims):
+        """Extend the leases of held claims (#2146), at most STEP_IDS: `claims` are (doc id,
+        message sha256, claimed_at or None). One hand-off renew step; returns its summary, which
+        names the claims renewed (with their new lease_until) and those no longer held. A failed
+        step raises, once its summary is read if it got that far: the claims it renewed hold new
+        receipts already."""
+        require(len(claims) <= STEP_IDS, "renew takes at most STEP_IDS claims a step")
+        nonce = uuid.uuid4().hex
+        entries = [f"{doc_id}:{message}" + (f":{claimed_at}" if claimed_at else "")
+                   for doc_id, message, claimed_at in claims]
+        failure = None
+        try:
+            self.step("handoff", "renew", HANDOFF_RENEW=",".join(entries), RENEW_NONCE=nonce,
+                      CLAIM_LEASE_HOURS=self.config["lease_hours"])
+        except RuntimeError as error:
+            failure = error
+        # The step writes under the plan's own reports when the runner scopes it (PLAN_SCOPE).
+        scoped = bool(self.plan_scope and "renew" in self.onprem_steps and self.config.get("step_command"))
+        name = f"scheduler/plans/{self.config['plan']}/renew.json" if scoped else "scheduler/renew.json"
+        try:
+            summary = self.blob(name)
+            require(isinstance(summary, dict) and summary.get("schema_version") == 1
+                    and summary.get("nonce") == nonce, "stale/concurrent renew summary")
+        except (RuntimeError, ValueError, OSError) as error:
+            if failure:
+                raise_transport_errors([failure, error])
+            raise
+        if failure:
+            summary["step_failed"] = str(failure)
+        return summary
+
     @timed("dead-letter")
     def dead_letter(self, job_ids):
         """Pages whose workunit failed for good go to ocr-deadletter (#1154), each dead letter
@@ -2272,6 +2339,9 @@ def owned_records(config, records, deadline_retries=None, conflicts=None):
 
 
 BATCH = re.compile(r"[a-z]{2,10}_[A-Za-z0-9_]+")
+# A claim's lease as the controller keeps it (#2146): which claim it is, the lease's start and end,
+# and why the plan no longer holds it.
+LEASE_KEYS = ("claimed_at", "lease_from", "lease_until", "lease_lost")
 
 
 class QueueFeed:
@@ -2377,9 +2447,9 @@ class QueueFeed:
                 fresh = self.transport.claim(need)
             except ClaimFailed as error:
                 # Their messages are hidden now: keep the claims that were made, then stop.
-                self.record(error.claims, need, owned)
+                self.record(error.claims, need, owned, now)
                 raise
-            self.record(fresh, need, owned)
+            self.record(fresh, need, owned, now)
         unpushed = {page: claim for page, claim in self.claims.items()
                     if claim.get("scan") is None and not claim.get("release")
                     and "source_truncated" not in claim}
@@ -2400,7 +2470,8 @@ class QueueFeed:
         self.retry_truncated(now)
         self.restore()
 
-    def record(self, fresh, need, owned=None):
+    def record(self, fresh, need, owned=None, now=None):
+        now = time.time() if now is None else now
         require(isinstance(fresh, list) and len(fresh) <= need, "claimed more pages than asked")
         conflict = False
         errors = []
@@ -2419,6 +2490,7 @@ class QueueFeed:
                 # message is two attempts at once, as below.
                 conflict = conflict or claim["message"] is None or claim["message"] != archived.get("message")
                 continue
+            claim.update(self.leased(item, now))
             if page in self.claims:
                 # Its lease ran out while the job was pending and the same message came again,
                 # now hidden for a fresh lease: the existing claim, its scan and its job stand.
@@ -2434,6 +2506,12 @@ class QueueFeed:
                         # are kept.
                         errors.append(error)
                         continue
+                if claim["message"] is not None and claim["message"] == self.claims[page].get("message"):
+                    # The same message under a new claim: its lease is the one held now (#2146).
+                    held = self.claims[page]
+                    for key in LEASE_KEYS:
+                        held.pop(key, None)
+                    held.update({key: claim[key] for key in LEASE_KEYS if key in claim})
                 conflict = conflict or claim["message"] is None or claim["message"] != self.claims[page].get("message")
                 continue
             self.claims[page] = claim
@@ -2441,6 +2519,78 @@ class QueueFeed:
         if errors:
             raise_transport_errors(errors)
         require(not conflict, "claimed a page already in this plan with a different message")
+
+    def leased(self, item, now):
+        """The lease fields a claim keeps (#2146), from claim pull's summary entry: its
+        `claimed_at`, which names the claim when it is renewed, and the lease's start and end in
+        Unix seconds. An entry without them (an older hand-off image) gives what it has."""
+        fields = {}
+        claimed_at = item.get("claimed_at")
+        start = rfc3339_seconds(claimed_at)
+        if start is not None:
+            fields["claimed_at"] = claimed_at
+        until = rfc3339_seconds(item.get("lease_until"))
+        if until is not None:
+            if start is None or start > until:
+                start = min(now, until)
+            fields["lease_from"], fields["lease_until"] = int(start), int(until)
+        return fields
+
+    def renew_held(self, journals, now):
+        """Extend the leases of the claims this plan still holds (#2146), so a page held past
+        its lease (its scan is slow to come, the export waits) doesn't come back to the queue for
+        another plan to claim. A claim is renewed when its page's journal here (`journals`: page
+        -> this plan's current journal) isn't settled, or it has none yet, and more than half
+        of its lease has gone; a claim recorded without its lease is due. At most RENEW_BATCH a
+        tick, those whose lease ends first. A failed renewal is logged and the tick goes on; a
+        claim no longer held is marked `lease_lost` and logged, and nothing is deleted."""
+        renew = getattr(self.transport, "renew", None)
+        if renew is None:
+            return
+        due = []
+        for page, claim in self.claims.items():
+            if claim.get("release") or "lease_lost" in claim or not isinstance(claim.get("message"), str):
+                continue
+            journal = journals.get(page)
+            if journal is not None and settled(journal):
+                continue
+            start, until = claim.get("lease_from"), claim.get("lease_until")
+            if type(start) is int and type(until) is int and now < start + (until - start) / 2:
+                continue
+            due.append((until if type(until) is int else -1, page))
+        if not due:
+            return
+        pages = [page for _, page in sorted(due)[:RENEW_BATCH]]
+        try:
+            summary = renew([(self.claims[page]["doc_id"], self.claims[page]["message"],
+                              self.claims[page].get("claimed_at")) for page in pages])
+        except (RuntimeError, ValueError, OSError) as error:
+            log_event({"event": "boinc_batch_claim_renew_failed", "schema_version": 1,
+                       "plan": self.config["plan"], "claims": len(pages), "error": str(error)[:500]})
+            return
+        by_doc = {self.claims[page]["doc_id"]: page for page in pages}
+        renewed, lost = [], []
+        for entry in summary.get("renewed") or []:
+            page = by_doc.get(entry.get("doc_id")) if isinstance(entry, dict) else None
+            until = rfc3339_seconds(entry.get("lease_until")) if page else None
+            if until is None:
+                continue
+            claim = self.claims[page]
+            claim["lease_from"], claim["lease_until"] = int(min(now, until)), int(until)
+            renewed.append(page)
+        for entry in summary.get("lost") or []:
+            page = by_doc.get(entry.get("doc_id")) if isinstance(entry, dict) else None
+            if page is None:
+                continue
+            why = entry.get("why") if isinstance(entry.get("why"), str) else "unknown"
+            self.claims[page]["lease_lost"] = {"at": int(now), "why": why[:64]}
+            lost.append({"page": page, "why": why[:64]})
+        self.persist()
+        failed = summary.get("failed") or []
+        log_event({"event": "boinc_batch_claim_renew", "schema_version": 1, "plan": self.config["plan"],
+                   "asked": len(pages), "renewed": len(renewed), "lost": lost,
+                   "failed": len(failed) if isinstance(failed, list) else None,
+                   **({"error": summary["step_failed"][:500]} if summary.get("step_failed") else {})})
 
     def deadline_retry(self, page, claim, owned):
         """A newer message for a page whose job failed for good and was dead-lettered, which an
@@ -2468,8 +2618,10 @@ class QueueFeed:
                 f"invalid deadline retry record for job {job['id']} (page {page}, doc {claim['doc_id']}, "
                 f"message {claim['message']})")
         # The retry's scan is pushed and checked again: a cut-short mark of the old attempt goes.
+        # The newer message's lease is the one held now (#2146).
         self.claims[page] = {**{key: value for key, value in self.claims[page].items()
-                                if key != "export_truncated"},
+                                if key != "export_truncated" and key not in LEASE_KEYS},
+                             **{key: claim[key] for key in LEASE_KEYS if key in claim},
                              "message": claim["message"], "supersedes": job["id"]}
         self.state.setdefault("deadline_retries", {})[job["id"]] = {
             "page": page, "message": claim["message"], "queued_at": found["queued_at"],
@@ -4663,6 +4815,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     settle_failed(owned)
     if feed:
         feed.retry_truncated(now)
+        # This plan's own journal of each page, passed-over pages' included (#2146).
+        journals = {**{page: c["own"] for page, c in conflicts.items() if c["own"] is not None}, **owned}
+        feed.renew_held(journals, now)
     held_results(state, held_jobs, now)
     persist()
     # Before collection: a host admitted now has its held results published by this tick's

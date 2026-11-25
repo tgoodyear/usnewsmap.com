@@ -4410,6 +4410,127 @@ mod queue_feed {
             claim::Ended::NotQueueFed
         );
     }
+
+    fn held(c: &claim::Claim) -> usnm_store::queue::Received {
+        usnm_store::queue::Received {
+            queue: c.queue.clone(),
+            id: c.message_id.clone(),
+            pop_receipt: c.pop_receipt.clone(),
+            dequeue_count: c.dequeue_count,
+            text: c.text.clone(),
+        }
+    }
+
+    /// #2146: a plan that holds a claim past its lease renews it, so the message stays hidden
+    /// and no other plan claims the page; a claim no longer held is reported and left alone.
+    #[tokio::test]
+    async fn claim_renew_keeps_a_held_message_hidden_and_reports_lost_claims() {
+        let f = fed(true).await;
+        let dir = f.fx.tmp.path().join("renew");
+        // A one-second lease, as a plan would hold one past its half while its scan comes.
+        let report = pull(&f, &dir, Duration::from_secs(1)).await;
+        assert_eq!(report.claims.len(), 1);
+        publish_claim(&f, &dir).await;
+        let first = report.claims[0].clone();
+        let sha = usnm_ocr_contract::boinc::sha256(first.text.as_bytes());
+        let q = f.fx.stores.queue.as_ref();
+        let renewed = claim::renew_all(
+            f.handoff.as_ref(),
+            q,
+            &[(DOC, sha.as_str(), Some(first.claimed_at.as_str()))],
+            Duration::from_secs(3600),
+        )
+        .await;
+        assert_eq!(renewed.renewed.len(), 1);
+        assert!(renewed.lost.is_empty() && renewed.failed.is_empty());
+        let saved = handoff_claim(&f).await;
+        assert_ne!(saved.pop_receipt, first.pop_receipt);
+        assert_eq!(saved.claimed_at, first.claimed_at);
+        assert_eq!(saved.message_id, first.message_id);
+        assert_eq!(saved.ended, None);
+        assert!(saved.lease_until > first.lease_until);
+        assert_eq!(renewed.renewed[0]["lease_until"], *saved.lease_until);
+        // Past the first lease the message is still hidden: nobody else can take it.
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert_eq!(
+            q.receive(BULK, Duration::from_secs(60)).await.unwrap(),
+            None
+        );
+        // The old receipt holds nothing; the saved one does.
+        assert!(q
+            .extend(&held(&first), Duration::from_secs(60))
+            .await
+            .unwrap_err()
+            .downcast_ref::<usnm_store::queue::LeaseLost>()
+            .is_some());
+        // A renewal with no claimed_at, as for a claim recorded before the summary gave it.
+        let again = claim::renew_all(
+            f.handoff.as_ref(),
+            q,
+            &[(DOC, sha.as_str(), None)],
+            Duration::from_secs(3600),
+        )
+        .await;
+        assert_eq!(again.renewed.len(), 1);
+        let saved = handoff_claim(&f).await;
+
+        // Another claim of the page, another message, no claim at all: each left as it is.
+        let other_at = "2026-01-01T00:00:00.000000Z";
+        let other_sha = "0".repeat(64);
+        let other_doc = "sn00000001_1900-01-01_ed-1_seq-2";
+        let lost = claim::renew_all(
+            f.handoff.as_ref(),
+            q,
+            &[
+                (DOC, sha.as_str(), Some(other_at)),
+                (DOC, other_sha.as_str(), None),
+                (other_doc, sha.as_str(), None),
+            ],
+            Duration::from_secs(3600),
+        )
+        .await;
+        let whys: Vec<_> = lost.lost.iter().map(|l| l["why"].clone()).collect();
+        assert_eq!(whys, ["claimed_again", "claimed_again", "no_claim"]);
+        assert!(lost.renewed.is_empty() && lost.failed.is_empty());
+        assert_eq!(handoff_claim(&f).await, saved);
+
+        // The message deleted under the claim's receipt (as after a lapse and another plan's
+        // finish): the lease is lost, and the claim file stays as it was.
+        q.delete(&held(&saved)).await.unwrap();
+        let gone = claim::renew_all(
+            f.handoff.as_ref(),
+            q,
+            &[(DOC, sha.as_str(), Some(saved.claimed_at.as_str()))],
+            Duration::from_secs(3600),
+        )
+        .await;
+        assert_eq!(gone.lost[0]["why"], "lease_lost");
+        assert_eq!(handoff_claim(&f).await, saved);
+        let summary = gone.json("n0nce", 1);
+        assert_eq!(summary["nonce"], "n0nce");
+        assert_eq!(summary["counts"]["lost"], 1);
+
+        // An ended claim isn't renewed.
+        let mut ended = saved.clone();
+        ended.ended = Some("released".into());
+        f.handoff
+            .put(
+                &claim::path(DOC),
+                serde_json::to_vec(&ended).unwrap(),
+                "application/json",
+            )
+            .await
+            .unwrap();
+        let done = claim::renew_all(
+            f.handoff.as_ref(),
+            q,
+            &[(DOC, sha.as_str(), None)],
+            Duration::from_secs(3600),
+        )
+        .await;
+        assert_eq!(done.lost[0]["why"], "ended");
+        assert_eq!(done.lost[0]["ended"], "released");
+    }
 }
 
 /// LoC's ALTO for the fixture page (inch1200 at 300 dpi), an early NDNP namespace: a heading in

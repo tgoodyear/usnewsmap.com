@@ -31,7 +31,7 @@
 # keep submits and publishing waiting, and an hour's native publication, which holds the step lock
 # for 10 minutes, doesn't fail a tick after the lock wait.
 #
-# --target handoff --step claim|release|dead-letter|deadline-retry|collect|export|line-report runs the hand-off
+# --target handoff --step claim|renew|release|dead-letter|deadline-retry|collect|export|line-report runs the hand-off
 # job's command (#967 phase 3),
 # boinc/images/bridge/handoff-job.sh from the same bridge image, in place of the
 # Azure hand-off job (infra/modules/boinc-handoff-job.bicep). Its settings are the job's own,
@@ -105,9 +105,11 @@ SSH_NATIVE_SPOT_VARS=" BATCH_NONCE HANDOFF_URL NATIVE_SPOT_SUBMIT NATIVE_SPOT_CH
 # and the step's time budget.
 SSH_CONTAINER_SPOT_VARS=" BATCH_NONCE HANDOFF_URL CONTAINER_SPOT_SUBMIT CONTAINER_SPOT_CHECK CONTAINER_SPOT_ACTIVE CONTAINER_SPOT_BUDGET_SECS "
 # The hand-off steps take the inputs the controller gives them (batch_scheduler.py's claim,
-# release, collect and export), over ssh or not.
+# renew, release, collect and export), over ssh or not.
 HANDOFF_CLAIM_VARS=" HANDOFF_MANIFEST CLAIM_NONCE CLAIM_MAX CLAIM_QUEUES CLAIM_LEASE_HOURS CLAIM_LANGUAGES "
 HANDOFF_RELEASE_VARS=" HANDOFF_DOCS "
+# Renewing held claims' leases (#2146): the claims, the lease and the summary's nonce.
+HANDOFF_RENEW_VARS=" HANDOFF_RENEW CLAIM_LEASE_HOURS RENEW_NONCE "
 HANDOFF_DEAD_LETTER_VARS=" JOB_IDS SOURCE_TRUNCATED_DOCS "
 # An operator's settlement of a page claimed again after its dead letter (#1417), as root on the
 # host only: never the controller's key.
@@ -183,7 +185,7 @@ case $TARGET in
       die "--target publish needs --image <appver image>" ;;
   handoff)
     [ -z "$APPVER_IMAGE" ] || die "--image is for --target publish"
-    case $STEP in claim | release | dead-letter | deadline-retry | retry | collect | export | line-report | lock-acquire | lock-renew | lock-release | lock-status | read-object | read-journals | write-held-pages | archive-list | archive-read | archive-read-many | archive-delete | archive-write) ;; *) die "--target handoff runs claim, release, dead-letter, deadline-retry, retry, collect, export, line-report, lock-acquire|renew|release|status read-object|read-journals, write-held-pages or archive-list|read|read-many|delete|write on-prem; $STEP stays in Azure" ;; esac
+    case $STEP in claim | renew | release | dead-letter | deadline-retry | retry | collect | export | line-report | lock-acquire | lock-renew | lock-release | lock-status | read-object | read-journals | write-held-pages | archive-list | archive-read | archive-read-many | archive-delete | archive-write) ;; *) die "--target handoff runs claim, renew, release, dead-letter, deadline-retry, retry, collect, export, line-report, lock-acquire|renew|release|status read-object|read-journals, write-held-pages or archive-list|read|read-many|delete|write on-prem; $STEP stays in Azure" ;; esac
     [ "$STEP" != deadline-retry ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
       die "--step deadline-retry is an operator's, as root on the host; it isn't allowed over ssh"
     [ "$STEP" != retry ] || [ "${USNM_BOINC_STEP_FROM_SSH:-}" != 1 ] ||
@@ -199,8 +201,8 @@ esac
 # batch-inventory then share the hand-off lock with the other plans' steps and take a lock of
 # their own plan's: one step per plan at a time, any number of plans at once, and a caller
 # without a scope (the held-page archive's bridge step, an operator) still waits for them all and
-# keeps them all out. batch-inventory, native-spot and container-spot get it as BATCH_SCOPE and
-# write their report to scheduler/plans/<plan>/ (bridge-job.sh). Steps on the step lock
+# keeps them all out. batch-inventory, native-spot, container-spot and the hand-off's renew get it as BATCH_SCOPE and
+# write their report to scheduler/plans/<plan>/ (bridge-job.sh, handoff-job.sh). Steps on the step lock
 # (submit-remote, native-spot, container-spot, gold) keep it: they create workunits and change
 # the trust list, which every plan shares.
 PLAN_SCOPE=""
@@ -219,7 +221,7 @@ if [ "$TARGET" = handoff ] || [ "$TARGET" = bridge ]; then
   VARS=(${unscoped[@]+"${unscoped[@]}"})
   if [ -n "$PLAN_SCOPE" ]; then
     case $TARGET:$STEP in
-      handoff:claim | handoff:release | handoff:dead-letter | handoff:collect | handoff:export | \
+      handoff:claim | handoff:renew | handoff:release | handoff:dead-letter | handoff:collect | handoff:export | \
         handoff:archive-delete | handoff:archive-write | bridge:spool-out | bridge:batch-inventory | bridge:submit-remote | bridge:native-spot | \
         bridge:container-spot) ;;
       *) die "--step $STEP takes no PLAN_SCOPE" ;;
@@ -267,7 +269,7 @@ if [ "$TARGET" = handoff ] || [ "$TARGET" = bridge ]; then
       fi
       $WHAT_IF && { echo "would run $LOCK_TOOL ${STEP#lock-} on $HANDOFF_LOCK_ROOT"; exit 0; }
       exec python3 "$LOCK_TOOL" --root "$HANDOFF_LOCK_ROOT" ${fence_plan[@]+"${fence_plan[@]}"} "${STEP#lock-}" ${lock_args[@]+"${lock_args[@]}"} ;;
-    handoff/claim | handoff/release | handoff/dead-letter | handoff/collect | handoff/export | \
+    handoff/claim | handoff/renew | handoff/release | handoff/dead-letter | handoff/collect | handoff/export | \
       handoff/write-held-pages | handoff/archive-delete | handoff/archive-write | \
       bridge/spool-out | bridge/submit-remote | bridge/batch-inventory)
       if [ -n "$fence_holder$fence_generation" ]; then
@@ -668,6 +670,7 @@ esac
 if [ "$TARGET" = handoff ]; then
   case $STEP in
     claim) SSH_ALLOWED=$HANDOFF_CLAIM_VARS ;;
+    renew) SSH_ALLOWED=$HANDOFF_RENEW_VARS ;;
     release) SSH_ALLOWED=$HANDOFF_RELEASE_VARS ;;
     dead-letter)
       SSH_ALLOWED=$HANDOFF_DEAD_LETTER_VARS
@@ -712,7 +715,7 @@ fi
 
 # The report steps' scope (#1836), set by the runner after the inputs are checked.
 case $TARGET:$STEP in
-  bridge:batch-inventory | bridge:native-spot | bridge:container-spot)
+  bridge:batch-inventory | bridge:native-spot | bridge:container-spot | handoff:renew)
     [ -z "$PLAN_SCOPE" ] || VARS+=("BATCH_SCOPE=$PLAN_SCOPE") ;;
 esac
 

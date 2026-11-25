@@ -56,6 +56,13 @@
 #   HANDOFF_STEP=release  HANDOFF_DOCS=<doc_id>[,<doc_id>...]
 #                         gives claimed pages back to their queue, for the nodes (a scan that
 #                         wasn't on the scan server after all)
+#   HANDOFF_STEP=renew    HANDOFF_RENEW=<doc_id>:<message sha256>[:<claimed_at>][,...] (up to 100)
+#                         CLAIM_LEASE_HOURS=<1 to 168> RENEW_NONCE=<8 to 64 letters or digits>
+#                         extends held claims' leases to CLAIM_LEASE_HOURS from now and saves each
+#                         claim with its new receipt (usnm-boinc claim renew, #2146); writes
+#                         scheduler/renew.json, or scheduler/plans/<plan>/renew.json with the
+#                         runner's BATCH_SCOPE, naming the claims renewed and those no longer held
+#                         (left as they are), and echoing the nonce
 #   HANDOFF_STEP=dead-letter JOB_IDS=<id>[,<id>...]
 #                         puts claimed pages whose BOINC workunit failed for good on
 #                         ocr-deadletter and deletes their messages (#1154)
@@ -453,6 +460,37 @@ case "${HANDOFF_STEP:-}" in
     doc_args=()
     for d in "${docs[@]}"; do doc_args+=(--doc-id "$d"); done
     usnm-boinc claim release --handoff-url "$HANDOFF_URL" --queue-url "$QUEUE_URL" "${doc_args[@]}" ;;
+  renew)
+    # Held claims' leases extended, so a page the plan still holds doesn't come back for
+    # another plan (#2146). The summary goes back even after a failure: the claims renewed
+    # before it hold new receipts, saved in their claim files.
+    [ -n "${QUEUE_URL:-}" ] || fail "QUEUE_URL is not set (the job's own setting)"
+    [[ ${RENEW_NONCE:-} =~ ^[A-Za-z0-9]{8,64}$ ]] || fail "RENEW_NONCE is 8 to 64 letters or digits"
+    hours=${CLAIM_LEASE_HOURS:-}
+    [[ $hours =~ ^[0-9]+$ ]] && [ "$hours" -ge 1 ] && [ "$hours" -le 168 ] || fail "CLAIM_LEASE_HOURS is 1 to 168"
+    [ -n "${HANDOFF_RENEW:-}" ] || fail "HANDOFF_RENEW names the claims to renew"
+    IFS=, read -r -a renew_claims <<< "$HANDOFF_RENEW"
+    [ "${#renew_claims[@]}" -le 100 ] || fail "HANDOFF_RENEW is at most 100 claims"
+    renew_args=()
+    for c in "${renew_claims[@]}"; do
+      [[ $c =~ ^[A-Za-z0-9_-]+:[0-9a-f]{64}(:[0-9TZ:.+-]{10,40})?$ ]] ||
+        fail "HANDOFF_RENEW is <doc_id>:<message sha256>[:<claimed_at>][,...]"
+      renew_args+=(--claim "$c")
+    done
+    # BATCH_SCOPE is the runner's (onprem-step.sh), from the plan's PLAN_SCOPE (#1836).
+    renew_prefix=scheduler
+    if [ -n "${BATCH_SCOPE:-}" ]; then
+      [[ $BATCH_SCOPE =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || fail "BATCH_SCOPE is a plan name: lower-case letters, digits and dashes"
+      renew_prefix=scheduler/plans/$BATCH_SCOPE
+    fi
+    mkdir -p "$work/renew"
+    rc=0
+    usnm-boinc claim renew --handoff-url "$HANDOFF_URL" --queue-url "$QUEUE_URL" --lease-hours "$hours" \
+      --summary "$work/renew/renew.json" --nonce "$RENEW_NONCE" "${renew_args[@]}" || rc=$?
+    if [ -f "$work/renew/renew.json" ]; then
+      usnm-boinc handoff put --from "$work/renew" --to-url "$HANDOFF_URL" --prefix "$renew_prefix"
+    fi
+    exit "$rc" ;;
   dead-letter)
     # Pages whose BOINC workunit failed for good (#1154): to ocr-deadletter, and their messages
     # deleted, so they aren't taken again as the same job.
@@ -618,5 +656,5 @@ case "${HANDOFF_STEP:-}" in
     fi
     usnm-boinc quality texts-export --curated-url "$CURATED_URL" --out-dir "$work/texts" "${doc_args[@]}"
     usnm-boinc handoff put --from "$work/texts" --to-url "$HANDOFF_URL" --prefix texts ;;
-  *) fail "HANDOFF_STEP must be export, claim, release, dead-letter, deadline-retry, retry, collect, line-report or texts-export" ;;
+  *) fail "HANDOFF_STEP must be export, claim, renew, release, dead-letter, deadline-retry, retry, collect, line-report or texts-export" ;;
 esac

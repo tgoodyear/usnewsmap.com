@@ -6,17 +6,19 @@
 //! The OCR exchange has three queues: `ocr-priority` (pages someone was shown), `ocr-bulk` (the
 //! damage-ranked backlog) and `ocr-deadletter` (messages that failed too
 //! often or can't be done). A received message is hidden for a visibility
-//! timeout fixed when it is taken. The nodes can take, peek and delete
-//! messages but not update them (ADR-0015), so the hide isn't renewed; the
-//! worker deletes the message when the page is written, and a page not
-//! written reappears when the timeout runs out.
+//! timeout set when it is taken. The nodes can take, peek and delete
+//! messages but not update them (ADR-0015), so a node's hide isn't renewed;
+//! the worker deletes the message when the page is written, and a page not
+//! written reappears when the timeout runs out. The BOINC hand-off's claims
+//! hold messages for days and renew their hide with [`Queue::extend`]
+//! (`usnm-boinc claim renew`, #2146).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use crate::credential::Credential;
-use anyhow::{bail, Context};
+use anyhow::{bail, ensure, Context};
 use async_trait::async_trait;
 use reqwest::{Method, StatusCode, Url};
 
@@ -78,6 +80,15 @@ pub trait Queue: Send + Sync + std::fmt::Debug {
     async fn release(&self, msg: &Received) -> anyhow::Result<()> {
         self.send(&msg.queue, &msg.text).await?;
         self.delete(msg).await
+    }
+    /// Hide a held message for `visibility` from now, and return it with the
+    /// receipt that holds it from now on (the old one no longer does). Fails
+    /// with [`LeaseLost`] if `msg`'s receipt isn't the current one: the message
+    /// was deleted, or taken again after its lease ran out. By default a queue
+    /// can't extend a lease.
+    async fn extend(&self, msg: &Received, visibility: Duration) -> anyhow::Result<Received> {
+        let _ = (msg, visibility);
+        bail!("this queue can't extend a lease")
     }
 }
 
@@ -404,6 +415,41 @@ impl Queue for AzureQueue {
         }
         Ok(parse_peeked(&resp.text().await?))
     }
+
+    /// Update Message with no body: the text stays, the hide starts again, and
+    /// the response's `x-ms-popreceipt` is the receipt from now on.
+    async fn extend(&self, msg: &Received, visibility: Duration) -> anyhow::Result<Received> {
+        check_queue_name(&msg.queue)?;
+        check_id(&msg.id)?;
+        ensure!(
+            visibility <= Duration::from_secs(7 * 24 * 3600),
+            "a queue message can be hidden for seven days at most"
+        );
+        let resp = self
+            .request(Method::PUT, &format!("{}/messages/{}", msg.queue, msg.id))
+            .await?
+            .query(&[
+                ("popreceipt", msg.pop_receipt.clone()),
+                ("visibilitytimeout", secs(visibility)),
+            ])
+            .header(reqwest::header::CONTENT_LENGTH, "0")
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("update message: {}", e.without_url()))?;
+        if resp.status() != StatusCode::NO_CONTENT {
+            return Err(lease_error(resp.status(), msg, "update message"));
+        }
+        let receipt = resp
+            .headers()
+            .get("x-ms-popreceipt")
+            .and_then(|v| v.to_str().ok())
+            .filter(|v| !v.is_empty())
+            .with_context(|| format!("update message `{}`: no x-ms-popreceipt", msg.queue))?;
+        Ok(Received {
+            pop_receipt: receipt.to_owned(),
+            ..msg.clone()
+        })
+    }
 }
 
 // ------------------------------------------------------------------ local
@@ -595,6 +641,19 @@ impl Queue for LocalQueue {
         }
         Ok(out)
     }
+
+    /// The held file renamed with a new receipt and the new moment it becomes visible.
+    async fn extend(&self, msg: &Received, visibility: Duration) -> anyhow::Result<Received> {
+        let from = self.leased_path(msg)?;
+        let receipt = random_token();
+        let to = from.with_file_name(format!("{}.{receipt}.{}", msg.id, visible_at_ms(visibility)));
+        // Gone since it was found (deleted, or back in `ready`): lost.
+        std::fs::rename(&from, &to).map_err(|e| lost_if_missing(e, msg))?;
+        Ok(Received {
+            pop_receipt: receipt,
+            ..msg.clone()
+        })
+    }
 }
 
 #[cfg(test)]
@@ -694,6 +753,64 @@ mod tests {
             .is_some());
     }
 
+    #[tokio::test]
+    async fn a_local_lease_is_extended_under_a_new_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let q = LocalQueue::new(dir.path());
+        q.send(BULK, "held").await.unwrap();
+        // A lease that has run out but whose message no one took again yet.
+        let m = q.receive(BULK, Duration::ZERO).await.unwrap().unwrap();
+        let renewed = q.extend(&m, Duration::from_secs(600)).await.unwrap();
+        assert_ne!(renewed.pop_receipt, m.pop_receipt);
+        assert_eq!(renewed.id, m.id);
+        assert_eq!((renewed.text.as_str(), renewed.dequeue_count), ("held", 1));
+        // Hidden again for the new lease: nothing to take.
+        assert_eq!(
+            q.receive(BULK, Duration::from_secs(600)).await.unwrap(),
+            None
+        );
+        // The old receipt holds nothing now.
+        let forged = Received {
+            pop_receipt: "0123".into(),
+            ..m.clone()
+        };
+        for stale in [&m, &forged] {
+            assert!(q
+                .extend(stale, Duration::from_secs(600))
+                .await
+                .unwrap_err()
+                .downcast_ref::<LeaseLost>()
+                .is_some());
+        }
+        assert!(q
+            .delete(&m)
+            .await
+            .unwrap_err()
+            .downcast_ref::<LeaseLost>()
+            .is_some());
+        // Taken again by someone else after the lease ran out: the renewed receipt is stale.
+        let short = q.extend(&renewed, Duration::ZERO).await.unwrap();
+        let other = q
+            .receive(BULK, Duration::from_secs(600))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(other.id, m.id);
+        assert!(q
+            .extend(&short, Duration::from_secs(600))
+            .await
+            .unwrap_err()
+            .downcast_ref::<LeaseLost>()
+            .is_some());
+        q.delete(&other).await.unwrap();
+        assert!(q
+            .extend(&other, Duration::from_secs(600))
+            .await
+            .unwrap_err()
+            .downcast_ref::<LeaseLost>()
+            .is_some());
+    }
+
     #[test]
     fn parses_get_messages() {
         let xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?><QueueMessagesList><QueueMessage>\
@@ -760,6 +877,7 @@ mod tests {
     async fn fake_service() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
         use axum::extract::{Path, Query};
         use axum::http::{HeaderMap, StatusCode as S};
+        use axum::response::IntoResponse;
         use std::collections::HashMap;
         let log = Arc::new(std::sync::Mutex::new(Vec::new()));
         let check = |h: &HeaderMap| {
@@ -767,7 +885,7 @@ mod tests {
             assert_eq!(h["x-ms-version"], API_VERSION);
         };
         let (l1, l2, l4) = (log.clone(), log.clone(), log.clone());
-        let l3 = log.clone();
+        let (l3, l5) = (log.clone(), log.clone());
         let app = axum::Router::new()
             .route(
                 "/{queue}",
@@ -835,6 +953,29 @@ mod tests {
                             }
                         }
                     },
+                )
+                .put(
+                    move |h: HeaderMap,
+                          Path((q, id)): Path<(String, String)>,
+                          Query(p): Query<HashMap<String, String>>,
+                          body: String| {
+                        check(&h);
+                        let line = format!(
+                            "update {q} {id} {} {} {body:?}",
+                            p["popreceipt"], p["visibilitytimeout"]
+                        );
+                        l5.lock().unwrap().push(line);
+                        async move {
+                            let receipt = [("x-ms-popreceipt", "p/2+=")];
+                            if p["popreceipt"] == "stale" {
+                                S::NOT_FOUND.into_response()
+                            } else if p["popreceipt"] == "taken" {
+                                S::BAD_REQUEST.into_response()
+                            } else {
+                                (S::NO_CONTENT, receipt).into_response()
+                            }
+                        }
+                    },
                 ),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -874,6 +1015,25 @@ mod tests {
             .unwrap_err()
             .downcast_ref::<LeaseLost>()
             .is_some());
+        let r = q.extend(&m, Duration::from_secs(7200)).await.unwrap();
+        assert_eq!(
+            (r.id.as_str(), r.pop_receipt.as_str(), r.text.as_str()),
+            ("m1", "p/2+=", "a&b")
+        );
+        for receipt in ["stale", "taken"] {
+            let lost = Received {
+                pop_receipt: receipt.into(),
+                ..m.clone()
+            };
+            assert!(q
+                .extend(&lost, Duration::from_secs(7200))
+                .await
+                .unwrap_err()
+                .downcast_ref::<LeaseLost>()
+                .is_some());
+        }
+        let week_and_a_day = Duration::from_secs(8 * 24 * 3600);
+        assert!(q.extend(&m, week_and_a_day).await.is_err());
         q.delete(&m).await.unwrap();
         q.send(DEADLETTER, "x<y").await.unwrap();
         assert_eq!(q.approximate_count(BULK).await.unwrap(), 42);
@@ -883,6 +1043,9 @@ mod tests {
                 "get ocr-priority 600",
                 "get ocr-bulk 600",
                 "delete ocr-bulk m1 stale",
+                "update ocr-bulk m1 p/1+= 7200 \"\"",
+                "update ocr-bulk m1 stale 7200 \"\"",
+                "update ocr-bulk m1 taken 7200 \"\"",
                 "delete ocr-bulk m1 p/1+=",
                 "put ocr-deadletter -1 <QueueMessage><MessageText>x&lt;y</MessageText></QueueMessage>",
                 "metadata ocr-bulk metadata",

@@ -551,6 +551,27 @@ class OnpremStep(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0)
         self.assertIn("takes only", done.stderr)
 
+    def test_handoff_renew_takes_its_own_inputs_and_the_runners_scope(self):
+        # #2146: the controller renews its plan's held claims; the summary goes under the plan's
+        # reports, by the runner's BATCH_SCOPE, never the caller's.
+        self.write_handoff_env()
+        renew = ("usnm-boinc-step --env prod --target handoff --step renew --var HANDOFF_RENEW=a_b:" + "d" * 64 +
+                 " --var CLAIM_LEASE_HOURS=36 --var RENEW_NONCE=abcdefgh12 --wait-mins 30")
+        done = self.run_step(ssh=renew + " --var PLAN_SCOPE=queue-feed-13 --what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        lines = [line.strip() for line in done.stdout.splitlines()]
+        self.assertIn("HANDOFF_STEP=renew", lines)
+        self.assertIn("BATCH_SCOPE=queue-feed-13", lines)
+        self.assertFalse([line for line in lines if line.startswith("PLAN_SCOPE")])
+        done = self.run_step(ssh=renew + " --what-if")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("BATCH_SCOPE", done.stdout)
+        for extra in (" --var BATCH_SCOPE=other", " --var HANDOFF_DOCS=a_b", " --var CLAIM_MAX=5",
+                      " --var LOCK_HOLDER=x"):
+            with self.subTest(extra=extra):
+                done = self.run_step(ssh=renew + extra + " --what-if")
+                self.assertNotEqual(done.returncode, 0)
+
     def test_handoff_superseding_dead_letter_is_the_operators_only(self):
         # #1417: root on the host may settle a page claimed again after its dead letter; the
         # controller's key may not.

@@ -522,6 +522,164 @@ pub async fn release(
     Ok(true)
 }
 
+/// What [`renew`] did with one claim.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Renewed {
+    /// The message is hidden for the lease from now; the claim, saved, holds the new receipt.
+    Renewed(Box<Claim>),
+    /// The receipt no longer holds the message: it was deleted, or taken again after its
+    /// lease ran out. The claim is left as it is.
+    LeaseLost,
+    /// The claim file is another claim of the page's: another message, or the same message
+    /// claimed again (another `claimed_at`). It is left as it is.
+    ClaimedAgain,
+    /// The claim has ended (`finished`, `released`, ...): its message isn't held.
+    Ended(String),
+    NoClaim,
+}
+
+impl Renewed {
+    /// As `claim renew`'s summary names it.
+    pub fn word(&self) -> &'static str {
+        match self {
+            Renewed::Renewed(_) => "renewed",
+            Renewed::LeaseLost => "lease_lost",
+            Renewed::ClaimedAgain => "claimed_again",
+            Renewed::Ended(_) => "ended",
+            Renewed::NoClaim => "no_claim",
+        }
+    }
+}
+
+/// Extend a held claim's lease to `lease` from now (#2146): a plan that holds a page longer
+/// than its lease (its scan is slow to come) would otherwise let the message come back, and
+/// another plan would claim the same page. The claim must still be the one the plan holds:
+/// its message's sha256 is `message_sha256` and, when given, its `claimed_at` is `claimed_at`
+/// (a renewal keeps `claimed_at`, so it names the claim however often it is renewed). The
+/// queue moves the lease under the claim's receipt ([`Queue::extend`]); then the claim is saved
+/// with the new receipt and `lease_until`, since the old receipt holds nothing any more.
+pub async fn renew(
+    handoff: &dyn ObjectStore,
+    queue: &dyn Queue,
+    doc_id: &str,
+    message_sha256: &str,
+    claimed_at: Option<&str>,
+    lease: Duration,
+) -> anyhow::Result<Renewed> {
+    ensure!(
+        lease > Duration::ZERO && lease <= Duration::from_secs(7 * 24 * 3600),
+        "a queue message can be hidden for seven days at most"
+    );
+    let Some(mut claim) = load(handoff, doc_id).await? else {
+        return Ok(Renewed::NoClaim);
+    };
+    if usnm_ocr_contract::boinc::sha256(claim.text.as_bytes()) != message_sha256
+        || claimed_at.is_some_and(|at| at != claim.claimed_at)
+    {
+        return Ok(Renewed::ClaimedAgain);
+    }
+    if let Some(ended) = &claim.ended {
+        return Ok(Renewed::Ended(ended.clone()));
+    }
+    let now = Utc::now();
+    let held = match queue.extend(&claim.received(), lease).await {
+        Ok(held) => held,
+        Err(e) if e.downcast_ref::<LeaseLost>().is_some() => return Ok(Renewed::LeaseLost),
+        Err(e) => return Err(e),
+    };
+    claim.pop_receipt = held.pop_receipt;
+    claim.lease_until = (now + chrono::Duration::from_std(lease)?)
+        .to_rfc3339_opts(SecondsFormat::Micros, true);
+    // The new receipt exists nowhere else: try the write a few times before giving up.
+    let mut tries = 0;
+    loop {
+        match save(handoff, doc_id, &claim).await {
+            Ok(()) => return Ok(Renewed::Renewed(Box::new(claim))),
+            Err(e) if tries < 2 => {
+                tries += 1;
+                eprintln!("saving the renewed claim for {doc_id} failed ({e:#}); trying again");
+                tokio::time::sleep(Duration::from_secs(2 * tries)).await;
+            }
+            Err(e) => return Err(e.context(format!("{doc_id}'s renewed claim was not saved"))),
+        }
+    }
+}
+
+/// What `claim renew` did with each claim it was given.
+#[derive(Debug, Default)]
+pub struct RenewReport {
+    /// Doc id, message sha256, `claimed_at` and the new `lease_until` of each claim renewed.
+    pub renewed: Vec<serde_json::Value>,
+    /// Claims no longer held, with why ([`Renewed::word`]); each is left as it is.
+    pub lost: Vec<serde_json::Value>,
+    /// Claims whose renewal failed for another reason (the queue or the container): tried
+    /// again on a later run.
+    pub failed: Vec<serde_json::Value>,
+}
+
+impl RenewReport {
+    /// The summary `claim renew` writes.
+    pub fn json(&self, nonce: &str, lease_hours: u64) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 1,
+            "nonce": nonce,
+            "created_at": Utc::now().timestamp(),
+            "lease_hours": lease_hours,
+            "counts": {
+                "renewed": self.renewed.len(),
+                "lost": self.lost.len(),
+                "failed": self.failed.len(),
+            },
+            "renewed": self.renewed,
+            "lost": self.lost,
+            "failed": self.failed,
+        })
+    }
+}
+
+/// [`renew`] each of `claims` (doc id, message sha256, `claimed_at`), in order. A claim that
+/// fails doesn't stop the rest.
+pub async fn renew_all(
+    handoff: &dyn ObjectStore,
+    queue: &dyn Queue,
+    claims: &[(&str, &str, Option<&str>)],
+    lease: Duration,
+) -> RenewReport {
+    let mut report = RenewReport::default();
+    for &(doc_id, message_sha256, claimed_at) in claims {
+        match renew(handoff, queue, doc_id, message_sha256, claimed_at, lease).await {
+            Ok(Renewed::Renewed(claim)) => {
+                report.renewed.push(serde_json::json!({
+                    "doc_id": doc_id,
+                    "message_sha256": message_sha256,
+                    "claimed_at": claim.claimed_at,
+                    "lease_until": claim.lease_until,
+                }));
+            }
+            Ok(other) => {
+                let ended = match &other {
+                    Renewed::Ended(how) => Some(how.clone()),
+                    _ => None,
+                };
+                report.lost.push(serde_json::json!({
+                    "doc_id": doc_id,
+                    "message_sha256": message_sha256,
+                    "why": other.word(),
+                    "ended": ended,
+                }));
+            }
+            Err(e) => {
+                eprintln!("renewing the claim for {doc_id} failed: {e:#}");
+                report.failed.push(serde_json::json!({
+                    "doc_id": doc_id,
+                    "message_sha256": message_sha256,
+                }));
+            }
+        }
+    }
+    report
+}
+
 /// What `dead_letter` did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeadLettered {
