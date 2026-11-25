@@ -19,6 +19,11 @@ serbian_lines.py) already drop merged lines (merged_lines.py, #1978), so this on
 
 A line's own `a_is` and `b_is` replace --a-is and --b-is, for sets whose readings come from different sources.
 
+A word clip is the line image's full height. With --clip-band (the Cherokee sets, #2122's rule in line_clip.py) a clip whose
+line image reaches into the printed line above or below is cut to the word's own line, taken from the line's word boxes, when
+that makes it more than --clip-shrink shorter; those tasks get new word clip keys (--clip-suffix), since served clips are
+cached as immutable. Ids, readings and line clips are unchanged, and the summary counts the cut tasks.
+
 Look-alike letters (lookalike.py): for each pair of letters that differ at the same position, both are drawn in the font
 the page asks for first and the pair is recorded in the task's `lookalikes` when the pictures nearly coincide. Cherokee
 uses the font the site serves; for a script the site serves no font for, the installed reference font is used, or one given
@@ -32,16 +37,18 @@ Writes OUT_DIR/clips/<lang>/<set>/{lines,words}/..., OUT_DIR/tasks.jsonl and OUT
   python3 build_tasks.py --lines lines.jsonl --images DIR --lang yi --set loc-yidj2-v1 \
     --a-is loc --b-is yidj2 --language-config languages/yi.json --out-dir OUT \
     [--equivalent װ=וו ...] [--min-similarity 0.34] [--skip-punctuation-only] [--examples examples.json] \
-    [--font Hebrew=font.ttf ...] [--lookalike-threshold 0.82]
+    [--font Hebrew=font.ttf ...] [--lookalike-threshold 0.82] [--clip-band]
 """
 import argparse
 import difflib
 import json
+import math
 import os
 import sys
 import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # `python3 -I` leaves the script directory off the path
+import line_clip  # noqa: E402
 BUILD_ONLY = ("drop_examples", "glyph_font", "glyph_ligatures", "glyphs", "min_examples")
 BIDI_CONTROLS = dict.fromkeys(map(ord, "\u200e\u200f\u061c\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"))
 
@@ -197,6 +204,10 @@ def main() -> None:
                     "much (0-1; default: lookalike.THRESHOLD)")
     ap.add_argument("--skip-punctuation-only", action="store_true",
                     help="leave out pairs whose letters and digits are the same (they differ only in punctuation)")
+    ap.add_argument("--clip-band", action="store_true", help="cut a word clip that reaches into another printed line to its "
+                    "line (line_clip.py) when that makes it more than --clip-shrink shorter; such tasks get new word clip keys")
+    ap.add_argument("--clip-shrink", type=float, default=line_clip.SHRINK)
+    ap.add_argument("--clip-suffix", default="_b", help="added to the word clip key of a cut task")
     a = ap.parse_args()
 
     from PIL import Image  # only the clip cutting and the look-alike check need Pillow
@@ -213,7 +224,7 @@ def main() -> None:
     os.makedirs(os.path.join(root, prefix, "lines"), exist_ok=True)
     os.makedirs(os.path.join(root, prefix, "words"), exist_ok=True)
 
-    lines = tasks = unpaired = merged = 0
+    lines = tasks = unpaired = merged = clipped = 0
     with open(a.lines, encoding="utf-8") as src, open(os.path.join(a.out_dir, "tasks.jsonl"), "w", encoding="utf-8") as out:
         for raw in src:
             if not raw.strip():
@@ -251,8 +262,15 @@ def main() -> None:
                 x, y, w, h = wa["box"]
                 ta = a_words[k]
                 word_id = f"{ln['id']}~{k}"
-                word_key = f"{prefix}/words/{ln['id']}_w{k}.jpg"
-                img.crop(crop_box(wa["box"], max(4, h // 4), img.size)).save(os.path.join(root, word_key), quality=a.quality)
+                x0, y0, x1, y1 = crop_box(wa["box"], max(4, h // 4), img.size)
+                cut = False
+                if a.clip_band:
+                    band = line_clip.printed_band([w["box"] for w in ln["a_words"]], wa["box"])
+                    top, bottom, cut = line_clip.clip_span(y0, y1, band, a.clip_shrink)
+                    y0, y1 = (max(0, int(top)), min(H, math.ceil(bottom))) if cut else (y0, y1)
+                clipped += cut
+                word_key = f"{prefix}/words/{ln['id']}_w{k}{a.clip_suffix if cut else ''}.jpg"
+                img.crop((x0, y0, x1, y1)).save(os.path.join(root, word_key), quality=a.quality)
                 ad, bd = letter_diff(ta, wb, equivalents)
                 alike, marks = lookalike.analyse(ta, wb, equivalents, fonts, threshold)
                 flagged += bool(alike)
@@ -281,6 +299,8 @@ def main() -> None:
     print(f"{lines} lines, {tasks} tasks, {unpaired} words of reading a left out (no partner alike enough, or no letters)")
     if merged:
         print(f"{merged} lines marked merged_line left out")
+    if a.clip_band:
+        print(f"{clipped} word clips cut to their printed line (new keys ending {a.clip_suffix})")
     print(f"{flagged} tasks with look-alike letters (overlap at least {threshold}), {marked} differing only in marks; reference fonts: "
           + ", ".join(f"{s or 'other'}={os.path.basename(p) if p else 'none found'}" for s, p in sorted(fonts.paths.items())))
     if fonts.unmeasured:
