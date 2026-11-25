@@ -17,3 +17,14 @@ python3 -c "from fontTools.ttLib import TTFont; f = TTFont('NotoSansCherokee-Reg
 ```
 
 (fontTools 4.68.0 with brotli 1.2.1 made the served file; a different version may give different bytes for the same font.) `fonts.test.mjs` checks the served file against the hash above. The look-alike check (`tools/lookalike.py`) draws Cherokee letters with this same file.
+
+## Letter key typefaces
+
+A letter key (`edge/check/README.md`, "Letter key") shows printed pictures of each letter, cut from the task's own paper. A letter no page of the paper gives a clean picture of is drawn instead in a period typeface, named in the language's `glyph_font`: UnifrakturMaguntia for Fraktur German, IM Fell English for English. `style.css` declares both; the browser downloads one only when a key shows a letter in it. Both are served as released, unchanged TTF files (no re-wrapping or subsetting, so neither is a Modified Version under the licence), each with its own licence file. Both are under the SIL Open Font License 1.1.
+
+| Font                                                                       | Source                                                                                                                                     | Served file, sha256                                                                               | Licence file, sha256                                                                             |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| UnifrakturMaguntia, Book. Copyright 2010 j. 'mach' wust, 2009 Peter Wiegel | https://github.com/google/fonts, `ofl/unifrakturmaguntia/UnifrakturMaguntia-Book.ttf` at commit `26be2797742d47542bd5e8e9153cea3a792fba85` | `UnifrakturMaguntia-Book.ttf`, `d64afc0547059dd2e4a78da48bda0aba0a9901be58c7f8c201a8b2b6b4492cc8` | `OFL-UnifrakturMaguntia.txt`, `96199bf9ff12dd471a66911dee95440737b437e7f5a6fd30e9e950c16d66e8df` |
+| IM Fell English, Roman. Copyright 2010 Igino Marini                        | https://github.com/google/fonts, `ofl/imfellenglish/IMFeENrm28P.ttf` at commit `8d618a0e96499047423510abb2c5ee9f475b987a`                  | `IMFeENrm28P.ttf`, `fe9705bbde51af802719246d4608d08d37bde956ab99d9a590da996a5221a24c`             | `OFL-IMFellEnglish.txt`, `2a3ca501fc4d5efcad9798531e3e06962b1e20c60e464f6cbd6c17630112c773`      |
+
+Cherokee keys use Noto Sans Cherokee above. Yiddish and Serbian have no bundled typeface, so a key for them leaves out a letter with no printed picture.

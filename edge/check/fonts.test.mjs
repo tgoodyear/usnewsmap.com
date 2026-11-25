@@ -29,3 +29,16 @@ test("the licence is the SIL Open Font License 1.1 and the README names the sour
 test("the font file is a woff2", () => {
   assert.equal(readFileSync(join(fonts, "NotoSansCherokee-Regular.woff2")).subarray(0, 4).toString("latin1"), "wOF2");
 });
+
+test("the letter key typefaces and their licences match the hashes in the README, as released TTFs", () => {
+  for (const file of ["UnifrakturMaguntia-Book.ttf", "OFL-UnifrakturMaguntia.txt", "IMFeENrm28P.ttf", "OFL-IMFellEnglish.txt"]) {
+    const hash = sha(file);
+    assert.ok(readme.includes(hash), `${file} (sha256 ${hash}) is not the file public/fonts/README.md describes`);
+  }
+  for (const file of ["OFL-UnifrakturMaguntia.txt", "OFL-IMFellEnglish.txt"]) assert.match(readFileSync(join(fonts, file), "utf8"), /SIL Open Font License, Version 1\.1/);
+  for (const file of ["UnifrakturMaguntia-Book.ttf", "IMFeENrm28P.ttf"]) assert.equal(readFileSync(join(fonts, file)).readUInt32BE(0), 0x00010000, `${file} is a TrueType font`);
+  const css = readFileSync(join(fonts, "..", "style.css"), "utf8");
+  for (const [family, file] of [["UnifrakturMaguntia", "UnifrakturMaguntia-Book.ttf"], ["IM Fell English", "IMFeENrm28P.ttf"]]) {
+    assert.ok(css.includes(`font-family: "${family}"`) && css.includes(`fonts/${file}`), `style.css declares ${family}`);
+  }
+});

@@ -525,8 +525,9 @@ async function admin(request, env, url) {
   if ((m = p.match(/^\/admin\/clips\/(.+)$/)) && request.method === "PUT") {
     const key = decodeURIComponent(m[1]);
     if (!/^[A-Za-z0-9._\-/]{1,300}$/.test(key) || key.includes("..")) throw new HttpError(400, "bad key");
+    // Pictures, and a letter key's map (README.md, "Letter key"), a JSON clip the page reads; nothing else.
     const type = request.headers.get("content-type") || "image/jpeg";
-    if (!/^image\/(jpeg|png|webp)$/.test(type)) throw new HttpError(400, "images only");
+    if (!/^(image\/(jpeg|png|webp)|application\/json)$/.test(type)) throw new HttpError(400, "images and JSON maps only");
     await env.CLIPS.put(key, request.body, { httpMetadata: { contentType: type } });
     return json({ ok: true, key });
   }

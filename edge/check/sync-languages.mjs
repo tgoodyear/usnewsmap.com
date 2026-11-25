@@ -9,7 +9,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-const BUILD_ONLY = ["drop_examples", "min_examples"];
+const BUILD_ONLY = ["drop_examples", "glyph_font", "glyph_ligatures", "glyphs", "min_examples"];
 
 // What sync sends for a language: the repository's fields without the build-only options.
 export function sent(repo) {
