@@ -937,3 +937,14 @@ test("a leaning gutter line refuses answers from a page that draws it vertical; 
   assert.equal(db.prepare(ANSWER_SQL).run("en-gutter/g1/p~s2", "c2", "a", 0, 1, "unknown", "unknown").changes, 1);
   assert.equal(db.prepare(ANSWER_SQL).run("en-gutter/g1/p~s1", "c2", "a", 0, DISPLAY_REVISION, "unknown", "unknown").changes, 1);
 });
+
+test("/admin/clips stores pictures and a letter key's JSON map, and nothing else", async () => {
+  const put = [];
+  const e2 = { ...env, CLIPS: { put: async (k, _b, o) => put.push([k, o.httpMetadata.contentType]) } };
+  const send = (key, type) => worker.fetch(new Request("https://check.usnewsmap.com/admin/clips/" + key, { method: "PUT", body: "x", headers: { authorization: "Bearer secret-admin", "content-type": type } }), e2, {});
+  assert.equal((await send("de-read/s/key-v1/p.json", "application/json")).status, 200);
+  assert.equal((await send("de-read/s/key-v1/p.jpg", "image/jpeg")).status, 200);
+  assert.equal((await send("de-read/s/x.html", "text/html")).status, 400);
+  assert.equal((await send("de-read/s/x.svg", "image/svg+xml")).status, 400);
+  assert.deepEqual(put, [["de-read/s/key-v1/p.json", "application/json"], ["de-read/s/key-v1/p.jpg", "image/jpeg"]]);
+});

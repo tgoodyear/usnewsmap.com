@@ -2,6 +2,7 @@
 const $ = (id) => document.getElementById(id);
 const SESSION = "usnm-check-session";
 const NAMES = "usnm-check-names"; // "1" when the visitor turned letter names on in this browser
+const KEYOPEN = "usnm-check-key"; // "1" or "0": the visitor opened or closed the letter key in this browser
 let lineShown = true; // column gutter tasks: whether the line is drawn on the crop shown; each new crop starts with it drawn
 let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false, loaded = false, failed = false, fontFailed = false, showNames = false, shownPrev;
 // On a slow connection an answer is saved in the background and the next word, fetched while this one was shown, appears at once.
@@ -331,6 +332,92 @@ function renderGutter(card, t, prev) {
   card.appendChild(opts);
 }
 
+// The letter key (README.md, "Letter key"): the language's letters as printed in this paper, cut from words both readings
+// agree on, away from the line being judged. A task with `key` names a map (a JSON clip) of a sprite of those pictures. It only
+// helps the eye: it changes nothing about the readings or the answer, so the display revision stays. Closed by default on
+// narrow screens; a visitor's own choice is kept in this browser.
+const KEY_FONTS = ["UnifrakturMaguntia", "IM Fell English", "Noto Sans Cherokee"]; // the bundled faces a key may name
+const KEY_LEVELS = { page: "this page", issue: "another page of this issue", title: "another issue of this paper", font: "a period typeface; no clean print of it in this paper" };
+let keyOpen = null;
+const keyMaps = new Map(); // clip key -> Promise of the map, for the words of one page
+function keyShown() {
+  if (keyOpen === null) { const v = store(KEYOPEN); keyOpen = v === null ? !(window.matchMedia && window.matchMedia("(max-width: 600px)").matches) : v === "1"; }
+  return keyOpen;
+}
+function keyMap(k) {
+  if (!keyMaps.has(k)) {
+    if (keyMaps.size > 20) keyMaps.delete(keyMaps.keys().next().value);
+    const p = getJSON("/clips/" + k);
+    p.catch(() => keyMaps.delete(k));
+    keyMaps.set(k, p);
+  }
+  return keyMaps.get(k);
+}
+// The letters in question: those the highlights mark in either reading, and their equivalents (ſ for s, ꝛ for r).
+function disputed(t) {
+  const out = new Set();
+  for (const side of ["a", "b"]) { const ls = letters(t[side] || ""); for (const i of t[side + "_diff"] || []) if (ls[i] !== undefined) out.add(ls[i]); }
+  for (const [k, v] of Object.entries(cfg.equivalents || {})) { if (out.has(k)) out.add(v); if (out.has(v)) out.add(k); }
+  return out;
+}
+function renderKey(card, t) {
+  if (!t.key) return;
+  const bar = document.createElement("div"); bar.className = "keybar";
+  const tog = document.createElement("button"); tog.type = "button"; tog.className = "small"; tog.id = "toggle-key";
+  tog.textContent = "Letter key (K)"; tog.setAttribute("aria-controls", "letterkey"); tog.setAttribute("aria-expanded", String(keyShown()));
+  tog.addEventListener("click", toggleKey);
+  const hint = document.createElement("span"); hint.className = "muted";
+  hint.textContent = "This paper's letters, from words both readings agree on. Highlighted: the letters in question.";
+  bar.append(tog, hint); card.appendChild(bar);
+  const panel = document.createElement("div"); panel.className = "letterkey"; panel.id = "letterkey";
+  panel.setAttribute("role", "region"); panel.setAttribute("aria-label", "Letter key: letters as printed in this paper");
+  panel.hidden = !keyShown(); card.appendChild(panel);
+  if (keyShown()) fillKey(panel, t);
+}
+async function fillKey(panel, t) {
+  panel.dataset.filled = "1"; panel.textContent = "Loading the letter key…";
+  let map;
+  try { map = await keyMap(t.key); } catch { if (task === t) panel.textContent = "The letter key didn't load."; return; }
+  if (task !== t || !panel.isConnected) return;
+  panel.textContent = "";
+  if (!map || typeof map.sprite !== "string" || !/^[A-Za-z0-9._\-/]{1,300}$/.test(map.sprite) || map.sprite.includes("..")) { panel.textContent = "The letter key didn't load."; return; }
+  const hot = disputed(t), scale = 34 / (map.h || 34);
+  const glyphs = Array.isArray(map.glyphs) ? map.glyphs : [];
+  const first = glyphs.filter((g) => hot.has(g.g)), rest = glyphs.filter((g) => !hot.has(g.g));
+  const item = (g) => {
+    const level = KEY_LEVELS[g.level] || "";
+    const el = document.createElement("span"); el.className = "kg" + (hot.has(g.g) ? " disputed" : ""); el.title = `${g.g}: from ${level}`;
+    el.setAttribute("role", "group"); el.setAttribute("aria-label", `${g.g}${hot.has(g.g) ? ", a letter in question" : ""}, from ${level}`);
+    const l = document.createElement("span"); l.className = "kl"; l.lang = lang; l.textContent = g.g; l.setAttribute("aria-hidden", "true"); el.appendChild(l);
+    if (g.level === "font") {
+      const f = document.createElement("span"); f.className = "kf"; f.lang = lang; f.textContent = g.g; f.setAttribute("role", "img");
+      f.setAttribute("aria-label", `${g.g} drawn in a period typeface`);
+      if (KEY_FONTS.includes(map.font)) f.style.fontFamily = `"${map.font}", var(--font-script)`;
+      el.appendChild(f);
+    } else {
+      for (const c of (g.crops || []).slice(0, 3)) {
+        if (!Array.isArray(c) || c.length < 3) continue;
+        const [x, y, w] = c.map(Number);
+        const im = document.createElement("span"); im.className = "kc"; im.setAttribute("role", "img"); im.setAttribute("aria-label", `printed ${g.g}, from ${level}`);
+        Object.assign(im.style, { width: w * scale + "px", backgroundImage: `url("/clips/${map.sprite}")`, backgroundPosition: `${-x * scale}px ${-y * scale}px`, backgroundSize: `${(map.w || 0) * scale}px auto` });
+        el.appendChild(im);
+      }
+    }
+    return el;
+  };
+  for (const g of first) panel.appendChild(item(g));
+  if (first.length && rest.length) { const gap = document.createElement("span"); gap.className = "kgap"; gap.setAttribute("aria-hidden", "true"); panel.appendChild(gap); }
+  for (const g of rest) panel.appendChild(item(g));
+  if (!glyphs.length) panel.textContent = "No letters of this paper to show.";
+}
+function toggleKey() {
+  if (!task || !task.key) return;
+  keyOpen = !keyShown(); store(KEYOPEN, keyOpen ? "1" : "0");
+  const panel = $("letterkey"), tog = $("toggle-key");
+  if (tog) tog.setAttribute("aria-expanded", String(keyOpen));
+  if (panel) { panel.hidden = !keyOpen; if (keyOpen && !panel.dataset.filled) fillKey(panel, task); }
+}
+
 function toggleLine() {
   if (!isGutter(task)) return;
   lineShown = !lineShown;
@@ -407,6 +494,7 @@ function render(prev) {
     opts.appendChild(b);
   });
   card.appendChild(opts);
+  renderKey(card, t);
   if (t.source) {
     const src = document.createElement("a"); src.href = t.source; src.target = "_blank"; src.rel = "noopener"; src.className = "label"; src.textContent = "See the whole page";
     card.appendChild(src);
@@ -633,6 +721,7 @@ async function work(code) {
     else if (e.key === "5") choose("notext");
     else if (e.key === "s" || e.key === "S") skip();
     else if (e.key === "l" || e.key === "L") toggleLine();
+    else if (e.key === "k" || e.key === "K") toggleKey();
     else if (e.key === "ArrowLeft" || e.key === "Backspace") back();
   });
   await next();

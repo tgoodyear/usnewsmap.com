@@ -602,3 +602,20 @@ test("the first session waits for Turnstile's script even when window.turnstile 
   const { session } = new Function("fetch", "window", "document", `const $ = (id) => document.getElementById(id), SESSION = "usnm-check-session";\n${appJs.slice(start, end)}\nreturn { session };`)(fetch, window, document);
   assert.equal(await session(), "s1");
 });
+
+test("the letter key puts the letters in question first, with their equivalents, and leaves the answer alone", () => {
+  const start = appJs.indexOf("const KEY_FONTS"), end = appJs.indexOf("function renderKey(");
+  assert.ok(start > 0 && end > start, "app.js no longer has the markers this test slices between");
+  const make = (cfg) => new Function(`const cfg = ${JSON.stringify(cfg)};\n${scriptTextSource()}\n${appJs.slice(start, end)}\nreturn { disputed };`)().disputed;
+  const de = make({ equivalents: { "ſ": "s", "ꝛ": "r" } });
+  assert.deepEqual([...de({ a: "Haus", b: "Hanſ", a_diff: [2, 3], b_diff: [2, 3] })].sort(), ["n", "s", "u", "ſ"].sort());
+  assert.deepEqual([...make({})({ a: "cat", b: "cot", a_diff: [1], b_diff: [1] })].sort(), ["a", "o"]);
+  assert.equal(make({})({ a: "x", b: "y" }).size, 0, "a task built without diffs");
+  // K opens and closes it; the toggle is a button that says whether it is open; the answer sent is unchanged by it
+  assert.match(appJs, /e\.key === "k" \|\| e\.key === "K"\) toggleKey\(\)/);
+  assert.match(appJs, /setAttribute\("aria-expanded"/);
+  assert.match(appJs, /JSON\.stringify\(\{ task: task\.id, choice, display: DISPLAY, font: fontState\(task\), names_shown: namesState\(task\) \}\)/);
+  assert.match(appJs, /const DISPLAY = 2;/);
+  // a key may only name a bundled typeface
+  assert.match(appJs, /if \(KEY_FONTS\.includes\(map\.font\)\)/);
+});

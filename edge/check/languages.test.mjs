@@ -8,7 +8,9 @@ import { readFileSync, readdirSync } from "node:fs";
 
 const dir = new URL("./languages/", import.meta.url);
 const files = readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
-const KNOWN = new Set(["dir", "drop_examples", "equivalents", "guidance", "intro", "labels", "marks", "min_examples", "name", "notes", "question", "rules", "title"]);
+const KNOWN = new Set(["dir", "drop_examples", "equivalents", "glyph_font", "glyph_ligatures", "glyphs", "guidance", "intro", "labels", "marks", "min_examples", "name", "notes", "question", "rules", "title"]);
+// The period typefaces public/style.css bundles for letter keys, and public/app.js accepts in a key (KEY_FONTS there).
+const KEY_FONTS = ["UnifrakturMaguntia", "IM Fell English"];
 const strings = (obj) => obj && typeof obj === "object" && !Array.isArray(obj) && Object.values(obj).every((v) => typeof v === "string" && v);
 
 test("there are language configurations", () => assert.ok(files.length > 0));
@@ -41,6 +43,15 @@ for (const file of files) {
     for (const key of ["question", "rules"]) if (key in cfg) assert.ok(typeof cfg[key] === "string" && cfg[key].trim(), `${key} is text`);
     if ("guidance" in cfg) assert.ok(Array.isArray(cfg.guidance) && cfg.guidance.every((g) => typeof g === "string" && g.trim()), "guidance is a list of text");
     if ("drop_examples" in cfg) assert.equal(typeof cfg.drop_examples, "string");
+    // Build options for tools/letter_key.py: the letters of the language's letter key, and the bundled period typeface
+    // (public/style.css, @font-face) that draws a letter no page of the paper gave a clean picture of.
+    if ("glyphs" in cfg) {
+      assert.ok(Array.isArray(cfg.glyphs) && cfg.glyphs.length > 0, "glyphs is a list of letters");
+      for (const g of cfg.glyphs) assert.ok(typeof g === "string" && [...new Intl.Segmenter().segment(g)].length === 1, `glyph ${JSON.stringify(g)} is one letter`);
+      assert.equal(new Set(cfg.glyphs).size, cfg.glyphs.length, "glyphs has no repeats");
+    }
+    if ("glyph_ligatures" in cfg) assert.ok(Array.isArray(cfg.glyph_ligatures) && cfg.glyph_ligatures.every((l) => typeof l === "string" && [...l].length >= 2), "glyph_ligatures is a list of letter runs");
+    if ("glyph_font" in cfg) assert.ok(KEY_FONTS.includes(cfg.glyph_font), `glyph_font is one of the bundled ${KEY_FONTS.join(", ")}`);
     if ("min_examples" in cfg) assert.ok(Number.isInteger(cfg.min_examples) && cfg.min_examples > 0);
     // Keys in ascending order at every level, as written by json.dumps(sort_keys=True).
     const sorted = (v) => (v && typeof v === "object" && !Array.isArray(v)
@@ -60,6 +71,7 @@ test("a synced configuration keeps the site's examples and drops the build optio
   assert.equal(canonical(desired({ intro: "old", name: "Cherokee", title: "T" }, live)), canonical(live));
   // The Worker keeps the stored examples itself, so sync never sends a copy of them.
   assert.deepEqual(sent({ drop_examples: "Ꮛ", examples: {}, intro: "new", name: "Cherokee" }), { intro: "new", name: "Cherokee" });
+  assert.deepEqual(sent({ glyph_font: "UnifrakturMaguntia", glyph_ligatures: ["ch"], glyphs: ["a"], intro: "new", name: "German" }), { intro: "new", name: "German" });
 });
 
 test("Serbian labels give the Latin equivalent of every Cyrillic letter, both cases", () => {

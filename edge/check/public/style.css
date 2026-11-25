@@ -4,6 +4,10 @@
   src: url("fonts/NotoSansCherokee-Regular.woff2") format("woff2");
   unicode-range: U+13A0-13FF, U+AB70-ABBF;
 }
+/* Period typefaces for letter keys (fonts/README.md): a letter no page of the paper gave a clean picture of. Declared
+   faces download only when a key draws a letter in them. */
+@font-face { font-family: "UnifrakturMaguntia"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/UnifrakturMaguntia-Book.ttf") format("truetype"); }
+@font-face { font-family: "IM Fell English"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/IMFeENrm28P.ttf") format("truetype"); }
 /* One word per screen in a single centred column: the printed word is the hero, the two readings are the controls. */
 :root {
   --paper: #f3f1ea;
@@ -134,3 +138,15 @@ footer { color: var(--muted); font-size: .85rem; border-top: 1px solid var(--lin
 .gutteropts .yn { font-size: 1.4rem; font-weight: 600; }
 ul.guidance { padding-left: 1.2em; margin-top: 0; }
 ul.guidance[hidden] { display: none; }
+
+/* Letter key: the language's letters as printed in this paper (README.md, "Letter key"). */
+.keybar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.keybar .muted { font-size: .85rem; }
+.letterkey { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.letterkey .kg { display: inline-flex; align-items: center; gap: 3px; padding: 2px 4px; border-radius: 4px; border: 1px solid transparent; }
+.letterkey .kg.disputed { border-color: var(--mark); background: color-mix(in srgb, var(--mark) 25%, transparent); }
+.letterkey .kl { font-family: var(--font-script); font-size: .95rem; min-width: 1.1em; text-align: center; font-weight: 600; }
+.letterkey .kc { display: inline-block; height: 34px; background-repeat: no-repeat; border-radius: 2px; background-color: #fff; }
+.letterkey .kf { font-size: 1.6rem; line-height: 34px; height: 34px; padding: 0 3px; background: #fff; color: #1f2328; border-radius: 2px; }
+.letterkey .klevel { font-size: .7rem; color: var(--muted); }
+.letterkey .kgap { flex-basis: 100%; height: 0; }

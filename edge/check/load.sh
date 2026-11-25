@@ -40,7 +40,7 @@ cd "$DIR"
 n=0
 $CLIPS && while IFS= read -r -d '' f; do
   key=${f#clips/}
-  case "$f" in *.png) type=image/png ;; *) type=image/jpeg ;; esac
+  case "$f" in *.png) type=image/png ;; *.json) type=application/json ;; *) type=image/jpeg ;; esac
   curl -fsS -X PUT "${auth[@]}" -H "content-type: $type" --data-binary "@$f" "$BASE/admin/clips/$key" >/dev/null
   n=$((n + 1))
 done < <(find clips -type f -print0)

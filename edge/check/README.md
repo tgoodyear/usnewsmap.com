@@ -73,6 +73,7 @@ A task, as loaded: `id` (`<lang>/<set>/<word id>`), `lang`, `set`, then what the
 | `labels`                        | A short name per letter: the label under each reading of a flagged look-alike pair (`"п": "p"` in Serbian; a letter with no entry keeps the stored name), and the name under each letter when a visitor turns on "Show letter names" ([below](#letter-names)). See "A label" below. |
 | `marks`                         | A name per combining mark, for the label the page shows when two readings differ only in that mark (`"\u05b7": "pasekh"`, written as the character). A mark with no name shows as "another mark", never its Unicode name.                                                           |
 | `drop_examples`, `min_examples` | Build options for `from_tap_data.py`'s example letter pictures (not served).                                                                                                                                                                                                        |
+| `glyphs`, `glyph_font`, `glyph_ligatures` | Build options for `letter_key.py` (not served): the letters of the [letter key](#letter-key), in order; the bundled period typeface that draws a letter with no printed picture; letter runs cast as one piece, whose letters are never cut out. |
 | `equivalents`                   | Letters that print alike (`"װ": "וו"`): `build_tasks.py` compares them as equal, and the page sets the two-letter spelling with no space inside it.                                                                                                                                 |
 
 The page highlights letters as `a_diff` and `b_diff` count them: a base character with the marks that follow it (פּ, אַ) is one letter.
@@ -378,6 +379,32 @@ edge/check/load.sh --vault NAME --host USER@HOST --dir out-gutter --lang en-gutt
 ```
 
 **Analysis.** `tools/gutter_analysis.py --export check-en-gutter.jsonl [--out segments.jsonl] [--dump admin-dump.jsonl]` writes one row per settled segment (counts, outcome as yes, no, unsure or disputed, method, role, truth and the `line` as exported, `x1` included). Unsure and disputed segments are counted apart from the decided ones. With an admin dump it also gives each volunteer's accuracy on the calibration items. It computes no rates or per-method figures; the #2107 study does.
+
+## Letter key
+
+Under the readings of a pick-between-readings task, **Letter key (K)** opens the language's letters as they are printed in that paper: each letter's label and up to three small pictures of it, cut from words both readers agree on. A judge compares the disputed letters with known-good letters in the same type. The letters in question (those the highlights mark in either reading, with their `equivalents`, ſ for s) come first, outlined. The key is open by default on wide screens and closed on phones; the visitor's choice is kept in the browser. It only helps the eye: it changes nothing about the readings, how they are drawn or what an answer means, so `DISPLAY_REVISION` stays. A task without `key` shows no key.
+
+**Where the pictures come from**, recorded per letter as its `level`: the task's own page (`page`), another page of the same issue (`issue`), another issue of the same title (`title`), else the letter drawn in the language's period typeface (`font`: `glyph_font` in `languages/<lang>.json`, one of the fonts in `public/fonts/`, UnifrakturMaguntia for Fraktur German and IM Fell English for English). Yiddish and Serbian have no bundled typeface, so their keys leave such a letter out. A letter takes all its pictures from the first level that has any, and only pages in the build's inputs are sources: nothing is fetched.
+
+**Which printed letters qualify** (`tools/letter_key.py`):
+
+- the word is one both readers read the same: a Tesseract word (from hOCR with char boxes) paired with an ALTO word by mutual best box overlap, equal once normalised (NFKC, the language's `equivalents`, punctuation removed; case is kept, so a capital never shows under a small letter's label);
+- Tesseract's confidence in the letter is at least `--min-conf` (90);
+- it is not on a line that holds a task's word: the ALTO line of each task's word (`private.loc_word`) and every Tesseract line that overlaps it are left out whole, so a key never shows the disputed word or its neighbours. A page's key serves all its tasks, so all their lines are left out;
+- its line is set in the page's body type (no headlines), and it is not half of a ligature (`glyph_ligatures`: Fraktur ch, ck, tz, ſt; English fi, fl), which the reader splits into letters at a guess;
+- its label is in the language's `glyphs` (a build option, not sent to the site).
+
+Among those, the first three by sha256(seed:letter:page:word:char) are taken. A picture spans the Tesseract line's height, so capitals, x-height and descenders keep their proportions.
+
+**Storage.** One greyscale sprite JPEG and one JSON map per task page, at `clips/<lang>/<set>/<key-name>/<page_id>.{jpg,json}`; the task body gets `key`, the map's clip key, before `private`. The map is `{"v": 1, "sprite", "w", "h", "font", "glyphs": [{"g", "level", "crops": [[x, y, w], ...]}]}`. `/admin/clips` takes `application/json` for the maps (and `load.sh` sends `.json` clips so). Clips are cached as immutable, so a rebuilt key gets a new `--key-name`, never an old one.
+
+**Adding keys to a built set.** `letter_key.py --action hocr` runs Tesseract with `-c hocr_char_boxes=1` (the same model and `--psm 3 --dpi 300` as the set's reader) on the held scans of the set's pages; `--action build` reads the build dir and writes a new one beside it with the keys, the patched `tasks.jsonl` and `letter-key-report.json` (glyph counts by level, per key and per task). Loading that dir with `load.sh` replaces the stored bodies and keeps the answers ("Updating loaded tasks").
+
+```sh
+python3 -I edge/check/tools/letter_key.py --action hocr --pages PAGES.jsonl --hocr-dir HOCR --model eng --jobs 16
+python3 -I edge/check/tools/letter_key.py --action build --pages PAGES.jsonl --hocr-dir HOCR \
+  --build-dir SET --out-dir SET-key --language-config edge/check/languages/en.json
+```
 
 ## Loading a language
 
