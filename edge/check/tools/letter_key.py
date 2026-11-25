@@ -18,7 +18,7 @@ An instance (one printed letter) qualifies only when
     punctuation removed; case is kept, so a key never shows a capital under a small letter's label);
   * Tesseract's confidence in the letter (hOCR x_conf of its ocrx_cinfo) is at least --min-conf;
   * it is not on a line that holds a task's word: for every task on the page, the ALTO line of its word (`loc_word` in
-    its private part) and every Tesseract line that overlaps that line's box are left out whole, so no key shows the
+    its private part; a task without one, or one outside the page's ALTO, stops the build) and every Tesseract line that overlaps that line's box are left out whole, so no key shows the
     disputed word or its neighbours. A page's key serves all its tasks, so all their lines are left out;
   * its line is set in the page's body type: the line's type height (below) within --min-line-height..--max-line-height
     times the page's median (no headlines, no lines that ran into each other);
@@ -436,7 +436,11 @@ def build(args) -> None:
             pages.setdefault(p["page"], dict(p, _root=root))
     task_words = {}
     for t in tasks:
-        task_words.setdefault(t["page"], []).append((t.get("private") or {}).get("loc_word"))
+        i = (t.get("private") or {}).get("loc_word")
+        if not isinstance(i, int):
+            # Without the ALTO word the task's line can't be left out of its key: refuse rather than risk showing it.
+            raise SystemExit(f"{t['id']}: no private.loc_word, so its line can't be left out of the key")
+        task_words.setdefault(t["page"], []).append(i)
     stats = Counter()
     pool = {}
     gset = set(glyphs)
@@ -456,6 +460,9 @@ def build(args) -> None:
             loc = en_pick.parse_alto(f.read(), size)
         with open(hocr, encoding="utf-8") as f:
             tess = parse_hocr(f.read())
+        bad = [i for i in task_words.get(page, []) if not 0 <= i < len(loc)]
+        if bad:
+            raise SystemExit(f"{page}: task words {bad} are not in its ALTO ({len(loc)} words); is it the ALTO the set was built from?")
         found = instances(page, loc, tess, task_words.get(page, []), gset, equivalents, args.min_iou, args.min_conf,
                           (args.min_line_height, args.max_line_height), cfg.get("glyph_ligatures") or ())
         by = {}
@@ -510,10 +517,12 @@ def build(args) -> None:
             levels_tasks.update(lv)
             body = {}
             for k, v in t.items():
+                if k == "key":
+                    continue  # a key from an earlier build is replaced, never kept
                 if k == "private":
                     body["key"] = key
                 body[k] = v
-            body.setdefault("key", key)
+            body["key"] = key
             f.write(json.dumps(body, ensure_ascii=False) + "\n")
     report = {"tasks": len(tasks), "task_pages": len(needed), "glyphs": len(glyphs), "key_name": args.key_name,
               "min_conf": args.min_conf, "min_iou": args.min_iou, "per_glyph": args.per_glyph, "seed": args.seed,

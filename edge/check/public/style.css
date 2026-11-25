@@ -142,6 +142,7 @@ ul.guidance[hidden] { display: none; }
 /* Letter key: the language's letters as printed in this paper (README.md, "Letter key"). */
 .keybar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .keybar .muted { font-size: .85rem; }
+.letterkey[hidden] { display: none; }
 .letterkey { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
 .letterkey .kg { display: inline-flex; align-items: center; gap: 3px; padding: 2px 4px; border-radius: 4px; border: 1px solid transparent; }
 .letterkey .kg.disputed { border-color: var(--mark); background: color-mix(in srgb, var(--mark) 25%, transparent); }

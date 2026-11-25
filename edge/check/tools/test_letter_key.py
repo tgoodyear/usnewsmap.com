@@ -177,6 +177,17 @@ class Build(unittest.TestCase):
             self.assertEqual(rep["glyph_levels_per_task"], {"page": 1, "issue": 0, "title": 0, "font": 2, "none": 0})
             with self.assertRaises(SystemExit):
                 lk.main(["--pages", pages, "--hocr-dir", hocr, "--build-dir", bd, "--out-dir", out, "--language-config", cfg])
+            # a rebuild under a new name replaces the key, never keeps the old one
+            out2 = os.path.join(d, "set-key2")
+            lk.main(["--pages", pages, "--hocr-dir", hocr, "--build-dir", out, "--out-dir", out2, "--language-config", cfg, "--key-name", "key-v2"])
+            body2 = json.loads(open(os.path.join(out2, "tasks.jsonl")).read())
+            self.assertEqual(body2["key"], "en-read/s1/key-v2/t_d_ed-1_seq-1.json")
+            self.assertEqual(list(body2), list(body))
+            # a task without its ALTO word can't have its line left out: the build refuses
+            del task["private"]
+            open(os.path.join(bd, "tasks.jsonl"), "w").write(json.dumps(task) + "\n")
+            with self.assertRaises(SystemExit):
+                lk.main(["--pages", pages, "--hocr-dir", hocr, "--build-dir", bd, "--out-dir", os.path.join(d, "x"), "--language-config", cfg])
 
 
 if __name__ == "__main__":
