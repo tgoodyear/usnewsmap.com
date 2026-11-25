@@ -39,6 +39,12 @@ class Rule(unittest.TestCase):
         self.assertEqual(line_clip.clip_span(0, 101, band), (0, 101, False))
         self.assertEqual(line_clip.clip_span(0, 101, band, shrink=0.05), (0, 92, True))
 
+    def test_even_count_median(self):
+        """Two short and two tall boxes: the median height is the middle pair's mean, so the tall ones are left out."""
+        boxes = [[0, 10, 30, 20], [40, 10, 30, 20], [80, 10, 30, 100], [120, 10, 30, 100]]
+        self.assertEqual(line_clip.printed_band(boxes), (10, 30, 60))
+        self.assertEqual(line_clip.clip_span(0, 140, line_clip.printed_band(boxes)), (0, 36, True))
+
     def test_no_boxes(self):
         self.assertIsNone(line_clip.printed_band([]))
         self.assertEqual(line_clip.clip_span(0, 50, None), (0, 50, False))

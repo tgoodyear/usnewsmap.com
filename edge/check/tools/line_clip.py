@@ -16,8 +16,11 @@ SHRINK = 0.25  # the cut is kept only when it makes the crop more than this much
 
 
 def _median(v: list) -> float:
+    """The median; for an even count, the mean of the middle pair (so two short boxes and two tall ones give a height
+    between them, and the tall ones are left out of the band)."""
     s = sorted(v)
-    return s[len(s) // 2]
+    m = len(s) // 2
+    return s[m] if len(s) % 2 else (s[m - 1] + s[m]) / 2
 
 
 def printed_band(boxes: list, own: list = None):

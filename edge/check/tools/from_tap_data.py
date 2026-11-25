@@ -50,7 +50,7 @@ def label(page: str, title: str) -> str:
 def clipped_word(d: dict, page: str, alto: dict, scans: str, shrink: float):
     """The word picture of decision `d` cut to its printed line from the page scan (Pillow image), or None when the
     rule leaves it as it is. The word is the decision's index among its TextLine's syllabary words, as the tap page counted.
-    `alto` caches the parsed ALTO and the opened scans; alto["dir"] is --loc-alto."""
+    `alto` caches the parsed ALTO and the open page scan; alto["dir"] is --loc-alto."""
     import phoenix_lines
     from PIL import Image
     lccn, date, ed, seq = page.split("/")
@@ -62,9 +62,11 @@ def clipped_word(d: dict, page: str, alto: dict, scans: str, shrink: float):
     tl = next(t for t in tls if t["id"] == line_id)
     words = [w["box"] for w in tl["words"] if SYL.search(w["text"])]
     x, y, w, h = words[int(d["id"].rsplit("~", 1)[1])]
-    if page not in alto:
-        alto[page] = Image.open(os.path.join(scans, page.replace("/", "_") + ".jpg"))
-    scan = alto[page]
+    if alto.get("scan_page") != page:  # one page scan at a time: decisions come line by line, a page's lines together
+        if alto.get("scan") is not None:
+            alto["scan"].close()
+        alto["scan_page"], alto["scan"] = page, Image.open(os.path.join(scans, page.replace("/", "_") + ".jpg"))
+    scan = alto["scan"]
     sx, sy = scan.size[0] / pw, scan.size[1] / ph
     top, bottom = y * sy - WORD_PAD, (y + h) * sy + WORD_PAD
     band = line_clip.printed_band(words, [x, y, w, h])
