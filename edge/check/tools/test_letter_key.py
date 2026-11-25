@@ -124,6 +124,93 @@ HOCR = """<html><body><div class='ocr_page' title='bbox 0 0 200 100'>
 </span></div></body></html>"""
 
 
+def word_image(draw):
+    from PIL import Image, ImageDraw
+    im = Image.new("L", (60, 30), 255)
+    draw(ImageDraw.Draw(im))
+    return im
+
+
+class InkSnap(unittest.TestCase):
+    BAND = [5, 25]
+
+    def test_a_clean_letter_is_refitted_to_its_ink(self):
+        im = word_image(lambda d: (d.rectangle((10, 6, 17, 24), outline=0, width=2), d.rectangle((25, 6, 32, 24), outline=0, width=2)))
+        sn = lk.ink_snap(im, (100, 200), [108, 204, 121, 226], self.BAND)  # a loose LSTM box around the first letter
+        self.assertTrue(sn["ok"], sn)
+        self.assertEqual(sn["fit"], [110, 206, 118, 225])
+        self.assertEqual(len(sn["shape"]), lk.SHAPE * lk.SHAPE)
+
+    def test_a_broken_stroke_joins(self):
+        im = word_image(lambda d: (d.rectangle((10, 6, 17, 14), outline=0, width=2), d.rectangle((10, 16, 17, 25), outline=0, width=2)))  # a one-pixel gap
+        sn = lk.ink_snap(im, (0, 0), [9, 5, 16, 26], self.BAND)
+        self.assertTrue(sn["ok"], sn)
+        self.assertEqual(sn["fit"][1], 6)
+        self.assertEqual(sn["fit"][3], 26)
+        self.assertEqual(sn["fit"][2], 18)
+
+    def test_a_joined_neighbour_fails(self):
+        im = word_image(lambda d: d.rectangle((10, 6, 40, 24), outline=0, width=2))  # one piece across three letters' boxes
+        self.assertEqual(lk.ink_snap(im, (0, 0), [8, 5, 22, 26], self.BAND)["why"], "joined")
+
+    def test_ink_cut_at_the_edge_fails(self):
+        im = word_image(lambda d: d.rectangle((0, 6, 8, 24), outline=0, width=2))
+        self.assertEqual(lk.ink_snap(im, (0, 0), [0, 5, 9, 26], self.BAND)["why"], "cut")
+
+    def test_foreign_ink_fails(self):
+        # a C-shaped letter, and a rule from outside reaching into its open side without touching it
+        def draw(d):
+            d.rectangle((10, 6, 11, 24), fill=0)
+            d.rectangle((10, 6, 17, 7), fill=0)
+            d.rectangle((10, 23, 17, 24), fill=0)
+            d.rectangle((15, 14, 50, 15), fill=0)
+        im = word_image(draw)
+        self.assertTrue(lk.ink_snap(im, (0, 0), [9, 5, 19, 26], self.BAND)["ok"], "a little foreign ink is allowed")
+        self.assertEqual(lk.ink_snap(im, (0, 0), [9, 5, 19, 26], self.BAND, foreign=0.05)["why"], "foreign")
+
+    def test_small_and_dark_fail(self):
+        self.assertEqual(lk.ink_snap(word_image(lambda d: d.rectangle((10, 12, 13, 15), fill=0)), (0, 0), [9, 10, 15, 17], self.BAND)["why"], "small")
+        self.assertEqual(lk.ink_snap(word_image(lambda d: d.rectangle((10, 6, 17, 24), fill=0)), (0, 0), [9, 5, 18, 26], self.BAND)["why"], "dark")
+
+    def test_nothing_inside(self):
+        self.assertEqual(lk.ink_snap(word_image(lambda d: None), (0, 0), [9, 5, 18, 26], self.BAND)["why"], "no_ink")
+
+
+class Consensus(unittest.TestCase):
+    def snap(self, shape, rel=(0.4, 0.8)):
+        return {"ok": True, "shape": shape, "rel": list(rel)}
+
+    def test_the_odd_shape_out_is_dropped(self):
+        base = bytes([1] * 100 + [0] * 300)
+        near = [bytes([1] * (100 + k) + [0] * (300 - k)) for k in range(5)]
+        odd = bytes([0] * 300 + [1] * 100)
+        cands = [{"page": "p", "word": k, "char": 0} for k in range(6)]
+        snaps = {lk.ikey(c): self.snap(sh) for c, sh in zip(cands, near + [odd])}
+        kept = lk.shape_filter(cands, snaps, 1.5)
+        self.assertNotIn(("p", 5, 0), kept)
+        self.assertEqual(len(kept), 5)
+        self.assertIn(min(kept, key=kept.get), [lk.ikey(c) for c in cands[:5]], "the medoid is one of the alike shapes")
+        self.assertTrue(base)
+
+    def test_size_against_the_median(self):
+        pooled = [("page", {"page": "p", "word": k, "char": 0}) for k in range(4)]
+        snaps = {("p", k, 0): self.snap(b"", (0.4, 0.8)) for k in range(3)}
+        snaps[("p", 3, 0)] = self.snap(b"", (0.4, 2.0))
+        self.assertEqual([x["word"] for _, x in lk.size_filter(pooled, snaps, (0.6, 1.6))], [0, 1, 2])
+
+    def test_choose_takes_survivors_from_the_best_level_and_falls_back_to_the_font(self):
+        pages = {"t/d1/ed-1/seq-1": {}, "t/d2/ed-1/seq-1": {}}
+        inst = lambda page, g, w: {"g": g, "page": page, "word": w, "char": 0}
+        pool = {"t/d1/ed-1/seq-1": {"a": [inst("t/d1/ed-1/seq-1", "a", 1)], "b": [inst("t/d1/ed-1/seq-1", "b", 2)]},
+                "t/d2/ed-1/seq-1": {"a": [inst("t/d2/ed-1/seq-1", "a", 3)], "b": [inst("t/d2/ed-1/seq-1", "b", 4)]}}
+        sh = bytes(400)
+        snaps = {("t/d1/ed-1/seq-1", 1, 0): {"ok": False, "why": "joined"}, ("t/d2/ed-1/seq-1", 3, 0): self.snap(sh),
+                 ("t/d1/ed-1/seq-1", 2, 0): {"ok": False, "why": "dark"}, ("t/d2/ed-1/seq-1", 4, 0): {"ok": False, "why": "cut"}}
+        got = {e["g"]: e for e in lk.choose("t/d1/ed-1/seq-1", pool, pages, ["a", "b"], 3, "s", "F", snaps)}
+        self.assertEqual((got["a"]["level"], [x["word"] for x in got["a"]["picks"]]), ("title", [3]), "the page's own a failed its ink snap")
+        self.assertEqual(got["b"]["level"], "font", "no b passed anywhere")
+
+
 class Reading(unittest.TestCase):
     def test_parse_hocr(self):
         words = lk.parse_hocr(HOCR)
@@ -140,9 +227,13 @@ class Reading(unittest.TestCase):
 
 class Build(unittest.TestCase):
     def test_build_patches_bodies_and_writes_keys(self):
-        from PIL import Image
+        from PIL import Image, ImageDraw
         with tempfile.TemporaryDirectory() as d:
-            Image.new("RGB", (200, 100), "white").save(os.path.join(d, "p.png"))
+            im = Image.new("RGB", (200, 100), "white")
+            dr = ImageDraw.Draw(im)
+            for box in ((12, 12, 17, 27), (22, 16, 27, 27), (12, 62, 17, 77), (22, 66, 27, 77), (32, 66, 37, 77)):
+                dr.rectangle(box, outline="black", width=2)  # a letter's ink inside each char box
+            im.save(os.path.join(d, "p.png"))
             alto = ("<alto><Layout><Page WIDTH='200' HEIGHT='100'><PrintSpace><TextBlock>"
                     "<TextLine><String CONTENT='To' HPOS='10' VPOS='10' WIDTH='30' HEIGHT='20'/></TextLine>"
                     "<TextLine><String CONTENT='Tas' HPOS='10' VPOS='60' WIDTH='30' HEIGHT='20'/></TextLine>"
@@ -166,7 +257,7 @@ class Build(unittest.TestCase):
             cfg = os.path.join(d, "en.json")
             json.dump({"glyphs": ["T", "o", "a"], "glyph_font": "IM Fell English"}, open(cfg, "w"))
             out = os.path.join(d, "set-key")
-            lk.main(["--pages", pages, "--hocr-dir", hocr, "--build-dir", bd, "--out-dir", out, "--language-config", cfg, "--min-conf", "90"])
+            lk.main(["--pages", pages, "--hocr-dir", hocr, "--build-dir", bd, "--out-dir", out, "--language-config", cfg, "--min-conf", "90", "--jobs", "1"])
             body = json.loads(open(os.path.join(out, "tasks.jsonl")).read())
             self.assertEqual(list(body), ["id", "lang", "set", "page", "a", "b", "key", "private"])
             self.assertEqual(body["key"], "en-read/s1/key-v1/t_d_ed-1_seq-1.json")
@@ -184,7 +275,7 @@ class Build(unittest.TestCase):
                 lk.main(["--pages", pages, "--hocr-dir", hocr, "--build-dir", bd, "--out-dir", out, "--language-config", cfg])
             # a rebuild under a new name replaces the key, never keeps the old one
             out2 = os.path.join(d, "set-key2")
-            lk.main(["--pages", pages, "--hocr-dir", hocr, "--build-dir", out, "--out-dir", out2, "--language-config", cfg, "--key-name", "key-v2"])
+            lk.main(["--pages", pages, "--hocr-dir", hocr, "--build-dir", out, "--out-dir", out2, "--language-config", cfg, "--key-name", "key-v2", "--jobs", "1"])
             body2 = json.loads(open(os.path.join(out2, "tasks.jsonl")).read())
             self.assertEqual(body2["key"], "en-read/s1/key-v2/t_d_ed-1_seq-1.json")
             self.assertEqual(list(body2), list(body))
