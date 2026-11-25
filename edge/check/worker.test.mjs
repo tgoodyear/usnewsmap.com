@@ -17,6 +17,17 @@ test("not text settles like any answer, and ties go to the earlier choice", () =
   assert.deepEqual(settle({ a: 0, b: 0, neither: 0, unsure: 3, notext: 3 }), { n: 6, settled: 0, outcome: null });
 });
 
+test("bad crop settles as bad_crop like any answer, counts in n, and never makes a reading win", () => {
+  assert.deepEqual(settle({ a: 1, b: 0, neither: 0, unsure: 0, notext: 0, badcrop: 2 }), { n: 3, settled: 1, outcome: "bad_crop" });
+  assert.deepEqual(settle({ a: 0, b: 0, neither: 0, unsure: 0, notext: 0, badcrop: 3 }), { n: 3, settled: 1, outcome: "bad_crop" });
+  // two bad crops keep two readers from settling a word they would have settled without them
+  assert.deepEqual(settle({ a: 2, b: 0, neither: 0, unsure: 0, notext: 0, badcrop: 2 }), { n: 4, settled: 0, outcome: null });
+  assert.deepEqual(settle({ a: 2, b: 0, neither: 0, unsure: 0, notext: 0, badcrop: 1 }), { n: 3, settled: 1, outcome: "a" });
+  // a tie never goes to bad crop
+  assert.deepEqual(settle({ a: 0, b: 0, neither: 0, unsure: 0, notext: 3, badcrop: 3 }), { n: 6, settled: 0, outcome: null });
+  assert.deepEqual(settle({ a: 3, b: 0, neither: 0, unsure: 0, notext: 0, badcrop: 4 }), { n: 7, settled: 1, outcome: "disputed" });
+});
+
 test("a word that never agrees closes as disputed", () => {
   assert.deepEqual(settle({ a: 3, b: 3, neither: 1, unsure: 0 }), { n: 7, settled: 1, outcome: "disputed" });
 });
@@ -74,16 +85,21 @@ test("the SQL settling rule matches settle()", async () => {
   const add = db.prepare("INSERT INTO answers (task_id, contributor, choice, at) VALUES ('t', ?, ?, 0)");
   const upd = db.prepare(SETTLE_SQL);
   const get = db.prepare("SELECT n, settled, outcome FROM tasks WHERE id = 't'");
-  const kinds = ["a", "b", "neither", "unsure", "notext"];
-  for (let code = 0; code < 6 ** kinds.length; code++) {
+  const kinds = ["a", "b", "neither", "unsure", "notext", "badcrop"];
+  const most = 5; // 0 to 4 of each kind
+  for (let code = 0; code < most ** kinds.length; code++) {
     const counts = {};
     let rest = code;
-    for (const k of kinds) { counts[k] = rest % 6; rest = Math.floor(rest / 6); }
+    for (const k of kinds) { counts[k] = rest % most; rest = Math.floor(rest / most); }
     db.exec("DELETE FROM answers");
     let i = 0;
     for (const k of kinds) for (let j = 0; j < counts[k]; j++) add.run("c" + i++, k);
+    db.exec("UPDATE tasks SET held = 0, hold_reason = NULL");
     upd.run("t");
-    assert.deepEqual({ ...get.get() }, settle(counts), JSON.stringify(counts));
+    const want = settle(counts);
+    assert.deepEqual({ ...get.get() }, want, JSON.stringify(counts));
+    const bad = want.outcome === "bad_crop";
+    assert.deepEqual({ ...db.prepare("SELECT held, hold_reason FROM tasks WHERE id = 't'").get() }, { held: bad ? 1 : 0, hold_reason: bad ? "bad_crop" : null }, JSON.stringify(counts));
   }
 });
 
@@ -169,6 +185,35 @@ test("migration 0001 keeps every answer and allows notext", async () => {
   add.run("t9", "c9", "notext", 9);
   assert.throws(() => add.run("t9", "c9", "a", 9)); // the primary key survived
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'answers_by_contributor'").get().n, 1);
+});
+
+test("migration 0006 keeps every answer and set-aside answer, with their font and names, and allows badcrop", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(":memory:");
+  // the two answer tables as migrations 0001 to 0005 left them
+  const old = (t) => `CREATE TABLE ${t} (task_id TEXT NOT NULL, contributor TEXT NOT NULL, choice TEXT NOT NULL CHECK (choice IN ('a', 'b', 'neither', 'unsure', 'notext')), at INTEGER NOT NULL,
+    font TEXT NOT NULL DEFAULT 'unknown' CHECK (font IN ('loaded', 'not_loaded', 'none', 'unknown')), names_shown TEXT NOT NULL DEFAULT 'unknown' CHECK (names_shown IN ('shown', 'not_shown', 'unknown')), PRIMARY KEY (task_id, contributor));`;
+  db.exec(old("answers") + old("answers_excluded") + "CREATE INDEX answers_by_contributor ON answers (contributor);");
+  const add = (t) => db.prepare(`INSERT INTO ${t} (task_id, contributor, choice, at, font, names_shown) VALUES (?, ?, ?, ?, ?, ?)`);
+  for (const t of ["answers", "answers_excluded"]) {
+    assert.throws(() => add(t).run("t", "x", "badcrop", 0, "unknown", "unknown"));
+    ["a", "b", "neither", "unsure", "notext"].forEach((c, i) => add(t).run("t" + i, "c" + i, c, i, "loaded", "shown"));
+  }
+  const rows = (t) => db.prepare(`SELECT * FROM ${t} ORDER BY task_id, contributor`).all().map((r) => ({ ...r }));
+  const before = [rows("answers"), rows("answers_excluded")];
+  db.exec(readFileSync(new URL("./migrations/0006-answer-badcrop.sql", import.meta.url), "utf8"));
+  assert.deepEqual([rows("answers"), rows("answers_excluded")], before);
+  for (const t of ["answers", "answers_excluded"]) {
+    add(t).run("t9", "c9", "badcrop", 9, "none", "not_shown");
+    assert.throws(() => add(t).run("t9", "c9", "a", 9, "none", "not_shown")); // the primary key survived
+    assert.throws(() => add(t).run("t8", "c8", "other", 9, "none", "not_shown"));
+  }
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'answers_by_contributor'").get().n, 1);
+  // the migrated tables have the shape schema.sql gives a new database
+  const fresh = new DatabaseSync(":memory:");
+  fresh.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
+  const shape = (d) => ["answers", "answers_excluded"].map((t) => d.prepare(`SELECT name, type, "notnull", dflt_value, pk FROM pragma_table_info('${t}') ORDER BY cid`).all().map((r) => ({ ...r })));
+  assert.deepEqual(shape(db), shape(fresh));
 });
 
 test("an oversized body is refused while streaming, before it is buffered", async () => {
@@ -330,8 +375,8 @@ test("marking a task confusable_display sets its answers aside, keeps them, and 
   // the export marks it, counts nothing in `counts`, and keeps the set-aside answers apart
   const exported = async () => (await (await get("/api/export?lang=chr")).text()).trim().split("\n").map((l) => JSON.parse(l));
   const [x1, x2] = await exported();
-  assert.deepEqual(x1.counts, { a: 0, b: 0, neither: 0, unsure: 0, notext: 0 });
-  assert.deepEqual([x1.confusable_display, x1.held, x1.excluded_counts, x1.settled, x1.outcome], [true, true, { a: 2, b: 1, neither: 0, unsure: 0, notext: 0 }, false, null]);
+  assert.deepEqual(x1.counts, { a: 0, b: 0, neither: 0, unsure: 0, notext: 0, badcrop: 0 });
+  assert.deepEqual([x1.confusable_display, x1.held, x1.excluded_counts, x1.settled, x1.outcome], [true, true, { a: 2, b: 1, neither: 0, unsure: 0, notext: 0, badcrop: 0 }, false, null]);
   assert.deepEqual(x1.lookalikes, [{ a: 0, a_label: "sv", b: 0, b_label: "e" }]);
   assert.deepEqual(x1.mark_only, [{ a: 1, a_marks: "\u05b7", b: 1, b_marks: "", base: "\u05d0" }], "mark_only is exported as stored");
   assert.equal("confusable_display" in x2, false);
@@ -399,10 +444,30 @@ test("marking is atomic: a copy that misses a row fails the batch and leaves the
   assert.equal(db.prepare("SELECT confusable_display FROM tasks WHERE id = 'chr/s/1'").get().confusable_display, 0);
 });
 
+// SETTLE_SQL as the Worker ran it before bad crop: it reads only answers and writes n, settled and outcome, so it runs
+// on a database from before migration 0005, which the current statement (it also writes hold_reason) does not.
+const SETTLE_SQL_BEFORE_0005 = `
+WITH c AS (
+  SELECT COUNT(*) AS n,
+    COALESCE(SUM(choice = 'a'), 0) AS a, COALESCE(SUM(choice = 'b'), 0) AS b,
+    COALESCE(SUM(choice = 'neither'), 0) AS ne, COALESCE(SUM(choice = 'unsure'), 0) AS u,
+    COALESCE(SUM(choice = 'notext'), 0) AS nt
+  FROM answers WHERE task_id = ?1
+), t AS (
+  SELECT n, MAX(a, b, ne, u, nt) AS top,
+    CASE WHEN a >= b AND a >= ne AND a >= u AND a >= nt THEN 'a' WHEN b >= ne AND b >= u AND b >= nt THEN 'b'
+      WHEN ne >= u AND ne >= nt THEN 'neither' WHEN u >= nt THEN 'unsure' ELSE 'notext' END AS pick
+  FROM c
+)
+UPDATE tasks SET
+  n = (SELECT n FROM t),
+  settled = (SELECT CASE WHEN (n >= 3 AND top * 3 >= n * 2) OR n >= 7 THEN 1 ELSE 0 END FROM t),
+  outcome = (SELECT CASE WHEN n >= 3 AND top * 3 >= n * 2 THEN pick WHEN n >= 7 THEN 'disputed' END FROM t)
+WHERE id = ?1`;
+
 test("migration 0002 only adds, so the Worker from before it still runs on the migrated database", async () => {
   const { DatabaseSync } = await import("node:sqlite");
   const { readFileSync } = await import("node:fs");
-  const { SETTLE_SQL } = await import("./worker.mjs");
   const db = new DatabaseSync(":memory:");
   // the schema as it was before this change
   db.exec(`CREATE TABLE tasks (id TEXT PRIMARY KEY, lang TEXT NOT NULL, set_name TEXT NOT NULL, body TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, outcome TEXT, settled INTEGER NOT NULL DEFAULT 0);
@@ -412,9 +477,9 @@ test("migration 0002 only adds, so the Worker from before it still runs on the m
   db.exec(readFileSync(new URL("./migrations/0002-confusable-display.sql", import.meta.url), "utf8"));
   assert.deepEqual({ ...db.prepare("SELECT n, settled, confusable_display, held FROM tasks").get() }, { n: 0, settled: 0, confusable_display: 0, held: 0 });
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM answers").get().n, 1);
-  // the statements the old Worker ran
+  // the statements the old Worker ran (its settling statement, from before bad crop held a task through hold_reason)
   db.prepare("INSERT INTO answers (task_id, contributor, choice, at) VALUES ('t', 'c2', 'a', 0) ON CONFLICT (task_id, contributor) DO UPDATE SET choice = excluded.choice").run();
-  db.prepare(SETTLE_SQL).run("t");
+  db.prepare(SETTLE_SQL_BEFORE_0005).run("t");
   assert.equal(db.prepare("SELECT n FROM tasks").get().n, 2);
   db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('u', 'chr', 's', '{}') ON CONFLICT (id) DO UPDATE SET body = excluded.body").run();
   // and the schema.sql a new database gets has the same tables and columns as the migrated one
@@ -462,8 +527,8 @@ test("an answer stores the font state the page reported, and an old page's answe
   assert.deepEqual(marked.font_counts, { loaded: 0, not_loaded: 0, none: 0, unknown: 0 });
   assert.deepEqual(marked.excluded_font_counts, { loaded: 0, not_loaded: 1, none: 2, unknown: 4 });
   // and the keys the older readers use are unchanged
-  assert.deepEqual(Object.keys(marked.counts), ["a", "b", "neither", "unsure", "notext"]);
-  assert.deepEqual(Object.keys(marked.excluded_counts), ["a", "b", "neither", "unsure", "notext"]);
+  assert.deepEqual(Object.keys(marked.counts), ["a", "b", "neither", "unsure", "notext", "badcrop"]);
+  assert.deepEqual(Object.keys(marked.excluded_counts), ["a", "b", "neither", "unsure", "notext", "badcrop"]);
 });
 
 test("migration 0003 only adds, so the Worker from before it still runs on the migrated database", async () => {
@@ -528,7 +593,7 @@ test("an answer stores whether letter names were showing, and an old page's answ
   assert.equal(Object.values(lines[0].names_counts).reduce((x, y) => x + y, 0), Object.values(lines[0].counts).reduce((x, y) => x + y, 0));
   assert.deepEqual(lines[1].names_counts, { shown: 0, not_shown: 0, unknown: 1 });
   assert.equal("excluded_names_counts" in lines[0], false);
-  assert.deepEqual(Object.keys(lines[0].counts), ["a", "b", "neither", "unsure", "notext"]);
+  assert.deepEqual(Object.keys(lines[0].counts), ["a", "b", "neither", "unsure", "notext", "badcrop"]);
   assert.deepEqual(lines[0].font_counts, { loaded: 2, not_loaded: 0, none: 0, unknown: 6 });
   // an answer set aside later keeps its value, and the export counts it apart
   await adminCall(DB, "/admin/confusable", { action: "mark", tasks: ["chr/s/1"] });
@@ -537,7 +602,7 @@ test("an answer stores whether letter names were showing, and an old page's answ
   const [marked] = await read();
   assert.deepEqual(marked.names_counts, { shown: 0, not_shown: 0, unknown: 0 });
   assert.deepEqual(marked.excluded_names_counts, { shown: 1, not_shown: 2, unknown: 5 });
-  assert.deepEqual(Object.keys(marked.excluded_counts), ["a", "b", "neither", "unsure", "notext"]);
+  assert.deepEqual(Object.keys(marked.excluded_counts), ["a", "b", "neither", "unsure", "notext", "badcrop"]);
 });
 
 test("migration 0004 only adds, so the Worker from before it still runs on the migrated database", async () => {
@@ -645,7 +710,7 @@ test("marking a task merged_line sets its answers aside, withdraws a settled out
   const rows = (await (await get("/api/export?lang=chr")).text()).trim().split("\n").map((l) => JSON.parse(l));
   const x1 = rows.find((x) => x.id === "chr/s/1");
   assert.deepEqual([x1.settled, x1.outcome, x1.held, x1.mark_reason, x1.outcome_withdrawn, x1.withdrawn_reason, typeof x1.withdrawn_at], [false, null, true, "merged_line", "a", "merged_line", "number"]);
-  assert.deepEqual([x1.counts, x1.excluded_counts], [{ a: 0, b: 0, neither: 0, unsure: 0, notext: 0 }, { a: 2, b: 1, neither: 0, unsure: 0, notext: 0 }]);
+  assert.deepEqual([x1.counts, x1.excluded_counts], [{ a: 0, b: 0, neither: 0, unsure: 0, notext: 0, badcrop: 0 }, { a: 2, b: 1, neither: 0, unsure: 0, notext: 0, badcrop: 0 }]);
   assert.equal("confusable_display" in x1, false);
   const x2 = rows.find((x) => x.id === "chr/s/2");
   assert.equal("outcome_withdrawn" in x2, false);
@@ -883,7 +948,7 @@ test("a gutter task's private fields stay off /api/next and the export until it 
   let [open] = await exported();
   assert.deepEqual([open.kind, open.line, open.source, open.settled], ["gutter", { x: 0.5, y0: 0.1, y1: 0.9 }, "https://example.test/p", false]);
   for (const k of ["method", "role", "segment_id", "page_id", "truth", "private"]) assert.equal(k in open, false, `${k} is hidden while open`);
-  assert.deepEqual(open.counts, { a: 2, b: 0, neither: 0, unsure: 0, notext: 0 });
+  assert.deepEqual(open.counts, { a: 2, b: 0, neither: 0, unsure: 0, notext: 0, badcrop: 0 });
   await post("c3", "en-gutter/g1/p~s1", "unsure");
   const [done, other] = await exported();
   assert.deepEqual([done.settled, done.outcome], [true, "a"]);
@@ -947,4 +1012,87 @@ test("/admin/clips stores pictures and a letter key's JSON map, and nothing else
   assert.equal((await send("de-read/s/x.html", "text/html")).status, 400);
   assert.equal((await send("de-read/s/x.svg", "image/svg+xml")).status, 400);
   assert.deepEqual(put, [["de-read/s/key-v1/p.json", "application/json"], ["de-read/s/key-v1/p.jpg", "image/jpeg"]]);
+});
+
+// ---------- bad crop ----------
+
+test("every task kind takes bad crop; a word where it has two thirds settles as bad_crop, is held and keeps its answers", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('en-gutter/g1/p~s1', 'en-gutter', 'g1', ?), ('chr/s/1', 'chr', 's', ?), ('chr/s/2', 'chr', 's', ?), ('de/s/1', 'de', 's', ?)")
+    .run(JSON.stringify(gutterBody()), JSON.stringify({ page: "p1", a: "x", b: "y", line: "chr/s/lines/p1.jpg", word: "chr/s/words/p1~1.jpg" }), JSON.stringify({ page: "p1", a: "x", b: "y" }),
+      JSON.stringify({ page: "p2", a: "x", b: "y", private: { a_is: "loc", b_is: "xiaomi" } }));
+  const post = async (who, task, choice) => worker.fetch(new Request("https://check.usnewsmap.com/api/answers", { method: "POST", headers: { authorization: "Bearer " + (await signSession(env.SESSION_KEY, who)) }, body: JSON.stringify({ task, choice, display: DISPLAY_REVISION }) }), E, {});
+  const row = (id) => ({ ...db.prepare("SELECT n, settled, outcome, held, hold_reason FROM tasks WHERE id = ?").get(id) });
+  for (const id of ["en-gutter/g1/p~s1", "chr/s/1", "de/s/1"]) {
+    assert.equal((await post("c1", id, "badcrop")).status, 200, id);
+    assert.equal((await post("c2", id, "a")).status, 200, id);
+    assert.deepEqual(row(id), { n: 2, settled: 0, outcome: null, held: 0, hold_reason: null }, "one bad crop settles nothing");
+    assert.equal((await post("c3", id, "badcrop")).status, 200, id);
+    assert.deepEqual(row(id), { n: 3, settled: 1, outcome: "bad_crop", held: 1, hold_reason: "bad_crop" }, id);
+    assert.equal(db.prepare("SELECT COUNT(*) AS k FROM answers WHERE task_id = ?").get(id).k, 3, "the answers stay");
+    assert.equal((await post("c4", id, "a")).status, 409, "a bad crop takes no more answers");
+  }
+  // bad crop never makes a reading win: two readers and one bad crop settle on the reading, and the task is not held
+  for (const [who, choice] of [["c1", "a"], ["c2", "badcrop"], ["c3", "a"]]) assert.equal((await post(who, "chr/s/2", choice)).status, 200);
+  assert.deepEqual(row("chr/s/2"), { n: 3, settled: 1, outcome: "a", held: 0, hold_reason: null });
+  // a held bad crop is not served
+  const tok = await signSession(env.SESSION_KEY, "fresh");
+  const next = async (l) => (await (await worker.fetch(new Request(`https://check.usnewsmap.com/api/next?lang=${l}`, { headers: { authorization: "Bearer " + tok } }), E, {})).json()).task;
+  assert.equal(await next("en-gutter"), null);
+  assert.equal(await next("de"), null);
+  // an unknown choice is still refused
+  assert.equal((await post("c9", "chr/s/2", "bad_crop")).status, 400);
+});
+
+test("the export counts bad crop answers and names a bad_crop task's held reason and clips", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('chr/s/1', 'chr', 's', ?), ('chr/s/2', 'chr', 's', ?)")
+    .run(JSON.stringify({ page: "p1", a: "x", b: "y", line: "chr/s/lines/p1.jpg", word: "chr/s/words/p1~1.jpg" }), JSON.stringify({ page: "p1", a: "x", b: "y", line: "chr/s/lines/p1.jpg", word: "chr/s/words/p1~2.jpg" }));
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('en-gutter/g1/p~s1', 'en-gutter', 'g1', ?)").run(JSON.stringify(gutterBody()));
+  const post = async (who, task, choice) => worker.fetch(new Request("https://check.usnewsmap.com/api/answers", { method: "POST", headers: { authorization: "Bearer " + (await signSession(env.SESSION_KEY, who)) }, body: JSON.stringify({ task, choice }) }), E, {});
+  for (const [who, choice] of [["c1", "badcrop"], ["c2", "badcrop"], ["c3", "b"]]) { await post(who, "chr/s/1", choice); await post(who, "en-gutter/g1/p~s1", choice); }
+  for (const [who, choice] of [["c1", "a"], ["c2", "badcrop"]]) await post(who, "chr/s/2", choice);
+  const exported = async (l) => (await (await worker.fetch(new Request(`https://check.usnewsmap.com/api/export?lang=${l}`), E, {})).text()).trim().split("\n").map((x) => JSON.parse(x));
+  const [bad, open] = await exported("chr");
+  assert.deepEqual(bad.counts, { a: 0, b: 1, neither: 0, unsure: 0, notext: 0, badcrop: 2 });
+  assert.deepEqual([bad.settled, bad.outcome, bad.held, bad.hold_reason], [true, "bad_crop", true, "bad_crop"]);
+  assert.deepEqual(bad.clips, { line: "chr/s/lines/p1.jpg", word: "chr/s/words/p1~1.jpg" });
+  assert.equal(Object.values(bad.font_counts).reduce((x, y) => x + y, 0), 3, "font_counts add up to the counts' total");
+  assert.deepEqual([open.counts.badcrop, open.settled, "clips" in open, "held" in open], [1, false, false, false]);
+  const [g] = await exported("en-gutter");
+  assert.deepEqual([g.outcome, g.hold_reason, g.clips, g.counts.badcrop], ["bad_crop", "bad_crop", { crop: "en-gutter/g1/crops/p_s1.jpg" }, 2]);
+  assert.deepEqual(g.line, { x: 0.5, y0: 0.1, y1: 0.9 }, "a gutter task's line is still its geometry");
+  // a bad_crop hold is released like any hold; marking it sets its answers aside and withdraws the outcome as for any settled word
+  assert.deepEqual((await (await adminCall(DB, "/admin/confusable", { action: "mark", reason: "merged_line", tasks: ["chr/s/1"] })).json()).changed, ["chr/s/1"]);
+  const [marked] = await exported("chr");
+  assert.deepEqual([marked.outcome_withdrawn, marked.excluded_counts.badcrop, marked.counts.badcrop, "hold_reason" in marked], ["bad_crop", 2, 0, false]);
+  // the dump carries the badcrop answers as they are
+  const DBdump = { prepare: (sql) => DB.prepare(sql), batch: (st) => DB.batch(st) };
+  const dump = (await (await worker.fetch(new Request("https://check.usnewsmap.com/admin/dump", { headers: { authorization: "Bearer secret-admin" } }), { ...env, DB: DBdump }, {})).text()).trim().split("\n").map((x) => JSON.parse(x));
+  assert.equal(dump.filter((d) => d.row.choice === "badcrop").length, 5);
+  assert.equal(dump.find((d) => d.table === "tasks" && d.row.id === "en-gutter/g1/p~s1").row.outcome, "bad_crop");
+});
+
+test("a reopened confusable_display word that settles as bad_crop is held as a marked word, with no hold_reason", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body, confusable_display, held) VALUES ('chr/s/1', 'chr', 's', '{}', 1, 0)").run();
+  const post = async (who, choice) => worker.fetch(new Request("https://check.usnewsmap.com/api/answers", { method: "POST", headers: { authorization: "Bearer " + (await signSession(env.SESSION_KEY, who)) }, body: JSON.stringify({ task: "chr/s/1", choice, display: DISPLAY_REVISION }) }), E, {});
+  for (const c of ["c1", "c2", "c3"]) assert.equal((await post(c, "badcrop")).status, 200);
+  assert.deepEqual({ ...db.prepare("SELECT settled, outcome, held, hold_reason FROM tasks").get() }, { settled: 1, outcome: "bad_crop", held: 1, hold_reason: null });
+});
+
+test("the page offers Bad crop on every task kind, on key 6, with a line of help", () => {
+  const app = readFileSync(new URL("./public/app.js", import.meta.url), "utf8");
+  const html = readFileSync(new URL("./public/index.html", import.meta.url), "utf8");
+  assert.match(html, /<button class="small" id="badcrop" type="button" disabled>Bad crop \(6\)<\/button>/);
+  assert.match(html, /Pick Bad crop if the box shows more than one line, cuts off the word, or marks the wrong thing\./);
+  assert.match(app, /\$\("badcrop"\)\.addEventListener\("click", \(\) => choose\("badcrop"\)\);/);
+  assert.match(app, /else if \(e\.key === "6"\) choose\("badcrop"\);/);
+  assert.match(app, /\$\("badcrop"\)\.disabled = /);
+  // only neither and not text are hidden on a gutter task, and choose() refuses only those there
+  assert.match(app, /\$\("neither"\)\.hidden = \$\("notext"\)\.hidden = isGutter\(task\);/);
+  assert.match(app, /if \(isGutter\(task\) && \(choice === "neither" \|\| choice === "notext"\)\) return;/);
 });

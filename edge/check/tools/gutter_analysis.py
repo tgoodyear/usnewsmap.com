@@ -10,12 +10,15 @@ summary): segment_id, page_id, method, role, truth if it has one, the answer cou
 disputed. `method`, `role` and `truth` are in the export once a task has settled, never before; an unsettled task is counted and
 has no row.
 
+A task that settled as `bad_crop` (two thirds of its answers said Bad crop: the crop or line is a build defect) is never a
+segment row and never unsure: it is counted as `left_out_build_defect` and should be rebuilt (bad_crops.py lists them).
+
 Unsure and disputed segments are counted apart from yes and no: they are not in `decided`, and a later study should say how it
 treats them. This tool computes no rates and no per-method figures; those are the #2107 study's.
 
 --dump is an /admin/dump file (backup/README.md; needs the admin token). With it, a volunteer's accuracy on the calibration
 items is reported: of the tasks whose private body has a `truth`, how many of that volunteer's yes or no answers matched it,
-how many did not, and how many were can't tell. Contributor ids are cut to their first 8 characters. Answers are read from the dump's `answers` rows, and the
+how many did not, and how many were can't tell. A Bad crop answer is about the crop, not the line, and is in none of these. Contributor ids are cut to their first 8 characters. Answers are read from the dump's `answers` rows, and the
 truth from its `tasks` rows, so it covers tasks that have not settled.
 """
 import argparse
@@ -38,6 +41,9 @@ def segment_rows(export: list, set_name=None) -> tuple:
         if r.get("kind") != "gutter" or (set_name is not None and r.get("set") != set_name):
             continue
         c["tasks"] += 1
+        if r.get("outcome") == "bad_crop":
+            c["left_out_build_defect"] += 1
+            continue
         if r.get("held") or r.get("outcome_withdrawn"):
             c["held_or_withdrawn"] += 1
             continue
@@ -52,7 +58,8 @@ def segment_rows(export: list, set_name=None) -> tuple:
         c[out] += 1
         row = {"id": r["id"], "set": r.get("set"), "segment_id": r.get("segment_id"), "page_id": r.get("page_id"),
                "method": r.get("method"), "role": r.get("role"), "line": r.get("line"),
-               "counts": {"yes": r["counts"]["a"], "no": r["counts"]["b"], "unsure": r["counts"]["unsure"]}, "outcome": out}
+               "counts": {"yes": r["counts"]["a"], "no": r["counts"]["b"], "unsure": r["counts"]["unsure"],
+                          "badcrop": r["counts"].get("badcrop", 0)}, "outcome": out}
         if r.get("truth") is not None:
             row["truth"] = r["truth"]
         rows.append(row)
@@ -103,6 +110,7 @@ def main(argv=None) -> None:
             for r in sorted(rows, key=lambda r: r["id"]):
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
     summary = {"tasks": c["tasks"], "unsettled": c["unsettled"], "held_or_withdrawn": c["held_or_withdrawn"],
+               "left_out_build_defect": c["left_out_build_defect"],
                "settled": c["settled"], "decided": c["yes"] + c["no"], "yes": c["yes"], "no": c["no"],
                "unsure_or_disputed": {"unsure": c["unsure"], "disputed": c["disputed"], "total": c["unsure"] + c["disputed"]}}
     if a.dump:

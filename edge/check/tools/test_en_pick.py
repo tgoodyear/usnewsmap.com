@@ -143,6 +143,18 @@ class Analysis(unittest.TestCase):
         rows = self.rows()
         self.assertTrue(all(r.get("truth") for r in rows))  # the fixture rows are all calibration items
 
+    def test_a_bad_crop_task_is_left_out_as_a_build_defect(self):
+        rows = [{"id": f"t{i}", "set": "s", "page": f"p{i}", "settled": True, "outcome": "a", "a_is": "xiaomi", "b_is": "loc"} for i in range(3)]
+        rows.append({"id": "t9", "set": "s", "page": "p9", "settled": True, "outcome": "bad_crop", "a_is": "xiaomi", "b_is": "loc", "held": True, "hold_reason": "bad_crop"})
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "export.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("".join(json.dumps(r) + "\n" for r in rows))
+            p = subprocess.run([sys.executable, "-I", os.path.join(HERE, "en_pick_analysis.py"), "--export", path, "--reps", "20"], capture_output=True, text=True, check=True)
+        rep = json.loads(p.stdout)
+        self.assertEqual((rep["settled"], rep["left_out_build_defect"]), (3, 1))
+        self.assertEqual((rep["overall"]["tasks"], rep["overall"]["other"]), (3, {}))
+
     def test_rate_and_bootstrap(self):
         rows = self.rows()
         rate, x, l = an.win_rate(rows)

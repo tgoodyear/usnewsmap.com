@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   set_name TEXT NOT NULL,         -- e.g. "phoenix-nt-v1"
   body TEXT NOT NULL,             -- JSON shown to people: page, source, clips, box, a, b, diffs
   n INTEGER NOT NULL DEFAULT 0,   -- answers so far
-  outcome TEXT,                   -- a, b, neither, unsure or notext once settled; "disputed" if never agreed
+  outcome TEXT,                   -- a, b, neither, unsure or notext once settled; "disputed" if never agreed; "bad_crop" when badcrop won (then held, hold_reason bad_crop)
   settled INTEGER NOT NULL DEFAULT 0,
   confusable_display INTEGER NOT NULL DEFAULT 0,  -- 1: the readings looked alike in the visitor's font; answers given before are in answers_excluded
   held INTEGER NOT NULL DEFAULT 0,                -- 1: kept out of the queue and closed to answers until reopened (a merged_line task is never reopened)
@@ -20,14 +20,14 @@ CREATE TABLE IF NOT EXISTS tasks (
   outcome_withdrawn TEXT,         -- the outcome a settled task had when it was marked; outcome is NULL from then on
   withdrawn_reason TEXT,          -- the mark_reason it was withdrawn for
   withdrawn_at INTEGER,           -- unix milliseconds
-  hold_reason TEXT                -- why a task is held without a mark (action hold): a slug of lower-case letters, digits and hyphens; NULL otherwise
+  hold_reason TEXT                -- why a task is held without a mark: for action hold a slug of lower-case letters, digits and hyphens; `bad_crop` when it settled as bad_crop; NULL otherwise
 );
 CREATE INDEX IF NOT EXISTS tasks_open ON tasks (lang, settled, n);
 
 CREATE TABLE IF NOT EXISTS answers (
   task_id TEXT NOT NULL,
   contributor TEXT NOT NULL,      -- random id from a session, or "seed:<name>" for imported answers
-  choice TEXT NOT NULL CHECK (choice IN ('a', 'b', 'neither', 'unsure', 'notext')),
+  choice TEXT NOT NULL CHECK (choice IN ('a', 'b', 'neither', 'unsure', 'notext', 'badcrop')),
   at INTEGER NOT NULL,            -- unix milliseconds
   font TEXT NOT NULL DEFAULT 'unknown' CHECK (font IN ('loaded', 'not_loaded', 'none', 'unknown')),  -- the bundled font as the page reported it when the answer was given; unknown for answers from before (migrations/0003-answer-font.sql)
   names_shown TEXT NOT NULL DEFAULT 'unknown' CHECK (names_shown IN ('shown', 'not_shown', 'unknown')),  -- whether letter names were showing, as the page reported it; unknown for answers from before (migrations/0004-answer-names.sql)
@@ -39,7 +39,7 @@ CREATE INDEX IF NOT EXISTS answers_by_contributor ON answers (contributor);
 CREATE TABLE IF NOT EXISTS answers_excluded (
   task_id TEXT NOT NULL,
   contributor TEXT NOT NULL,
-  choice TEXT NOT NULL CHECK (choice IN ('a', 'b', 'neither', 'unsure', 'notext')),
+  choice TEXT NOT NULL CHECK (choice IN ('a', 'b', 'neither', 'unsure', 'notext', 'badcrop')),
   at INTEGER NOT NULL,
   font TEXT NOT NULL DEFAULT 'unknown' CHECK (font IN ('loaded', 'not_loaded', 'none', 'unknown')),
   names_shown TEXT NOT NULL DEFAULT 'unknown' CHECK (names_shown IN ('shown', 'not_shown', 'unknown')),

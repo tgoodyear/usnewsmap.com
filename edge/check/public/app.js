@@ -433,8 +433,8 @@ function render(prev) {
   showProgress();
   $("back").disabled = history.length === 0 || busy;
   const live = !!task && !busy && !fontFailed && !stale;
-  $("neither").disabled = $("unsure").disabled = $("notext").disabled = $("skip").disabled = !live;
-  // A column gutter task has only yes, no and can't tell.
+  $("neither").disabled = $("unsure").disabled = $("notext").disabled = $("badcrop").disabled = $("skip").disabled = !live;
+  // A column gutter task has only yes, no and can't tell, and Bad crop, which every task has.
   $("neither").hidden = $("notext").hidden = isGutter(task);
   if (!task && !loaded) {
     const d = document.createElement("div"); d.className = "done";
@@ -705,6 +705,7 @@ async function work(code) {
   $("neither").addEventListener("click", () => choose("neither"));
   $("unsure").addEventListener("click", () => choose("unsure"));
   $("notext").addEventListener("click", () => choose("notext"));
+  $("badcrop").addEventListener("click", () => choose("badcrop"));
   $("back").addEventListener("click", back);
   if (hasNames()) {
     // The option stays off unless this browser's stored choice says "1"; a browser without storage keeps it for the page's life.
@@ -720,6 +721,7 @@ async function work(code) {
     else if (e.key === "3") choose("neither");
     else if (e.key === "4") choose("unsure");
     else if (e.key === "5") choose("notext");
+    else if (e.key === "6") choose("badcrop");
     else if (e.key === "s" || e.key === "S") skip();
     else if (e.key === "l" || e.key === "L") toggleLine();
     else if (e.key === "k" || e.key === "K") toggleKey();

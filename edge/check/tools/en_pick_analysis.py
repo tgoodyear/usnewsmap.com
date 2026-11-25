@@ -5,6 +5,8 @@
 
 Reads /api/export rows (a_is, b_is and truth are there once a task settles). A settled task whose outcome is `a` or `b`
 is a win for the reading that side is; `neither`, `unsure`, `notext` and `disputed` are counted and left out of the win rate.
+A task settled as `bad_crop` (its box was a build defect) is no evidence about either reading: it is in no figure but
+`left_out_build_defect`, and should be rebuilt (bad_crops.py lists them).
 The win rate is Xiaomi wins / (Xiaomi wins + LoC wins), with a page-clustered bootstrap interval (pages are
 resampled with replacement, --reps times), overall and by decade and by damage band. With --calibration-set, the
 tasks of that set carry a human truth (`xiaomi`, `loc` or `neither`) and the report gives how often the verdict
@@ -74,10 +76,11 @@ def main() -> None:
     ap.add_argument("--seed", default="1")
     a = ap.parse_args()
     rows = [json.loads(l) for l in open(a.export, encoding="utf-8") if l.strip()]
-    settled = [r for r in rows if r.get("settled")]
+    defects = [r for r in rows if r.get("outcome") == "bad_crop"]
+    settled = [r for r in rows if r.get("settled") and r.get("outcome") != "bad_crop"]
     # A row with a truth is a calibration item (the export has `truth` for those only): never in the pilot figures.
     main_rows = [r for r in settled if (a.set is None or r["set"] == a.set) and r["set"] != a.calibration_set and not r.get("truth")]
-    report = {"exported": len(rows), "settled": len(settled), "overall": summary(main_rows, a.reps, a.seed)}
+    report = {"exported": len(rows), "settled": len(settled), "left_out_build_defect": len(defects), "overall": summary(main_rows, a.reps, a.seed)}
     for name, get in (("decade", lambda r: (r.get("strata") or {}).get("decade")),
                       ("damage_band", lambda r: (r.get("strata") or {}).get("damage_band"))):
         groups = defaultdict(list)

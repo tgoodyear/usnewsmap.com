@@ -194,6 +194,18 @@ class Analysis(unittest.TestCase):
         self.assertEqual((c["tasks"], c["settled"], c["yes"], c["no"], c["unsure"], c["disputed"], c["unsettled"], c["held_or_withdrawn"]), (6, 4, 1, 1, 1, 1, 1, 1))
         self.assertEqual(rows[0]["method"], "m")
 
+    def test_a_bad_crop_task_is_left_out_as_a_build_defect_not_unsure_or_held(self):
+        bad = export_row(2, "bad_crop", held=True, hold_reason="bad_crop", counts={"a": 0, "b": 0, "neither": 0, "unsure": 1, "notext": 0, "badcrop": 2})
+        rows, c = an.segment_rows([export_row(1, "a"), bad], "g1")
+        self.assertEqual([r["segment_id"] for r in rows], ["s1"])
+        self.assertEqual((c["tasks"], c["settled"], c["left_out_build_defect"], c["unsure"], c["held_or_withdrawn"], c["other_outcome"]), (2, 1, 1, 0, 0, 0))
+        self.assertEqual(rows[0]["counts"]["badcrop"], 0)
+
+    def test_a_bad_crop_answer_is_not_calibration_evidence(self):
+        dump = [{"table": "tasks", "row": {"id": "t1", "set_name": "g1", "body": json.dumps({"kind": "gutter", "private": {"truth": "yes"}})}},
+                {"table": "answers", "row": {"task_id": "t1", "contributor": "vol-one-abcdef", "choice": "badcrop"}}]
+        self.assertEqual(an.gold_accuracy(dump)["volunteers"], {})
+
     def test_gold_accuracy_reads_truth_from_the_dump_so_unsettled_tasks_count(self):
         def task(i, truth, kind="gutter"):
             return {"table": "tasks", "row": {"id": f"t{i}", "set_name": "g1", "body": json.dumps({"kind": kind, "private": {"truth": truth}})}}
