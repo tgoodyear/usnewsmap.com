@@ -50,7 +50,7 @@ for (const file of files) {
       for (const g of cfg.glyphs) assert.ok(typeof g === "string" && [...new Intl.Segmenter().segment(g)].length === 1, `glyph ${JSON.stringify(g)} is one letter`);
       assert.equal(new Set(cfg.glyphs).size, cfg.glyphs.length, "glyphs has no repeats");
     }
-    if ("glyph_ligatures" in cfg) assert.ok(Array.isArray(cfg.glyph_ligatures) && cfg.glyph_ligatures.every((l) => typeof l === "string" && [...l].length >= 2), "glyph_ligatures is a list of letter runs");
+    if ("glyph_ligatures" in cfg) assert.ok(Array.isArray(cfg.glyph_ligatures) && cfg.glyph_ligatures.every((l) => typeof l === "string" && [...l].length >= 1), "glyph_ligatures is a list of letter runs (one letter: never cut out)");
     if ("glyph_font" in cfg) assert.ok(KEY_FONTS.includes(cfg.glyph_font), `glyph_font is one of the bundled ${KEY_FONTS.join(", ")}`);
     if ("min_examples" in cfg) assert.ok(Number.isInteger(cfg.min_examples) && cfg.min_examples > 0);
     // Keys in ascending order at every level, as written by json.dumps(sort_keys=True).
