@@ -62,6 +62,58 @@ pub struct Options {
     /// the oldest has waited this long the bundle is published as it is.
     /// 0 publishes every bundle at once.
     pub max_hold_secs: u64,
+    /// Which lines are wide enough to crop. The default is the gold set's
+    /// 600 px rule; a root records any other in [`CROP_RULE_FILE`] and never
+    /// mixes two (Science, 26 Nov 2026: `block-share-60` for 7 to 8 column
+    /// papers).
+    pub crop_rule: crops::WidthRule,
+}
+
+/// A root's crop rule, when it isn't the default: written by its first
+/// `qwen stage` and checked by every later one.
+pub const CROP_RULE_FILE: &str = "crop-rule";
+
+/// Records or checks `root`'s crop rule: a root holds one rule. A root
+/// without the file is a default-rule root.
+fn check_crop_rule(root: &Path, rule: crops::WidthRule) -> anyhow::Result<()> {
+    let path = root.join(CROP_RULE_FILE);
+    let recorded = match std::fs::read_to_string(&path) {
+        Ok(s) => Some(
+            s.trim()
+                .parse::<crops::WidthRule>()
+                .map_err(anyhow::Error::msg)?,
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e).context("reading the root's crop rule"),
+    };
+    let staged = std::fs::read_dir(units(root))
+        .map(|mut d| d.next().is_some())
+        .unwrap_or(false)
+        || std::fs::read_dir(root.join("pages"))
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false);
+    match recorded {
+        Some(r) => ensure!(
+            r == rule,
+            "{} crops with {}, not {}: stage another rule into its own root",
+            root.display(),
+            r.name(),
+            rule.name()
+        ),
+        None if rule == crops::WidthRule::default() => {}
+        None => {
+            ensure!(
+                !staged,
+                "{} already holds pages cut with {}: stage {} into a new root",
+                root.display(),
+                crops::WidthRule::default().name(),
+                rule.name()
+            );
+            std::fs::create_dir_all(root)?;
+            atomic(&path, format!("{}\n", rule.name()).as_bytes())?;
+        }
+    }
+    Ok(())
 }
 
 /// The marker of a staged page held back from an under-filled bundle: the
@@ -258,6 +310,7 @@ pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Res
     super::check_digest(&opts.engine.llama, "--engine-llama")?;
     super::check_digest(&opts.engine.weights, "--engine-weights")?;
     check_no_hold(&opts.root)?;
+    check_crop_rule(&opts.root, opts.crop_rule)?;
     let units_dir = units(&opts.root);
     let bundled_root = opts.root.join("pages");
     ensure!(
@@ -369,8 +422,14 @@ pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Res
             quality.inputs.alto.matches(&alto),
             "{name}: staged ALTO changed"
         );
-        let crops = cut(&bytes, &alto, quality.crop_seed, quality.k_crops)
-            .with_context(|| format!("{name}: cutting crops"))?;
+        let crops = cut_with(
+            &bytes,
+            &alto,
+            quality.crop_seed,
+            quality.k_crops,
+            opts.crop_rule,
+        )
+        .with_context(|| format!("{name}: cutting crops"))?;
         std::fs::create_dir_all(&unit)?;
         check_retained_source(&opts.quality_root, &page, &unit)?;
         retain_source(&opts.quality_root, &unit, &quality, &quality_bytes)?;
@@ -781,17 +840,39 @@ fn retry_pages(
 /// The crops of a page: LoC's ALTO in the image's pixels, the recipe's
 /// selection, LoC's text in each box.
 pub fn cut(page: &[u8], alto: &[u8], seed: u64, k: u32) -> anyhow::Result<Vec<Crop>> {
+    cut_with(page, alto, seed, k, crops::WidthRule::default())
+}
+
+/// [`cut`] with the line-width rule `rule`.
+pub fn cut_with(
+    page: &[u8],
+    alto: &[u8],
+    seed: u64,
+    k: u32,
+    rule: crops::WidthRule,
+) -> anyhow::Result<Vec<Crop>> {
     let (w, h) = image::load_from_memory(page)
         .context("decoding page.jpg")?
         .dimensions();
-    cut_dims((w, h), alto, seed, k)
+    cut_dims_with((w, h), alto, seed, k, rule)
 }
 
 /// [`cut`] for a page of `(width, height)` pixels: the recipe needs only
 /// the size, so collect can cut from a bundle's `dims.json` (#1743).
-pub fn cut_dims((w, h): (u32, u32), alto: &[u8], seed: u64, k: u32) -> anyhow::Result<Vec<Crop>> {
+pub fn cut_dims(dims: (u32, u32), alto: &[u8], seed: u64, k: u32) -> anyhow::Result<Vec<Crop>> {
+    cut_dims_with(dims, alto, seed, k, crops::WidthRule::default())
+}
+
+/// [`cut_dims`] with the line-width rule `rule`.
+pub fn cut_dims_with(
+    (w, h): (u32, u32),
+    alto: &[u8],
+    seed: u64,
+    k: u32,
+    rule: crops::WidthRule,
+) -> anyhow::Result<Vec<Crop>> {
     let parsed = crate::quality::parse_alto(alto, f64::from(w), f64::from(h))?;
-    Ok(crops::select(&parsed, seed, k as usize)
+    Ok(crops::select_with(&parsed, seed, k as usize, rule)
         .into_iter()
         .map(|c| Crop {
             rect: c.rect,
@@ -1464,6 +1545,29 @@ pub fn synthetic_unit(
 pub(crate) mod tests {
     use super::*;
 
+    #[test]
+    fn a_root_holds_one_crop_rule() {
+        use crops::WidthRule::{BlockShare60, Fixed600};
+        let tmp = tempfile::tempdir().unwrap();
+        // The default rule writes nothing, so existing roots are unchanged.
+        let old = tmp.path().join("old");
+        check_crop_rule(&old, Fixed600).unwrap();
+        assert!(!old.join(CROP_RULE_FILE).exists());
+        // A new root records another rule and then refuses the default.
+        let new = tmp.path().join("new");
+        check_crop_rule(&new, BlockShare60).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(new.join(CROP_RULE_FILE)).unwrap(),
+            "block-share-60\n"
+        );
+        check_crop_rule(&new, BlockShare60).unwrap();
+        assert!(check_crop_rule(&new, Fixed600).is_err());
+        // A root that already holds default-rule pages can't switch.
+        std::fs::create_dir_all(units(&old).join("u1")).unwrap();
+        assert!(check_crop_rule(&old, BlockShare60).is_err());
+        assert!(!old.join(CROP_RULE_FILE).exists());
+    }
+
     pub(crate) fn engine() -> Engine {
         Engine {
             image: format!("sha256:{}", "a".repeat(64)),
@@ -1597,6 +1701,7 @@ pub(crate) mod tests {
             bundle_size: 1,
             page_records: None,
             max_hold_secs: 0,
+            crop_rule: Default::default(),
         };
         run(&opts).await.unwrap();
         let out = units(&opts.root).join("sn83045462_1890-05-03_ed-1_seq-1");
@@ -1627,6 +1732,7 @@ pub(crate) mod tests {
                 bundle_size: 1,
                 page_records: None,
                 max_hold_secs: 0,
+                crop_rule: Default::default(),
             }
         };
         let staged = |o: &Options| -> Job {
@@ -1690,6 +1796,7 @@ pub(crate) mod tests {
             bundle_size: 1,
             page_records: None,
             max_hold_secs: 0,
+            crop_rule: Default::default(),
         };
         let unit = units(&opts.root).join(source.file_name().unwrap());
         std::fs::create_dir_all(&unit).unwrap();
@@ -1755,6 +1862,7 @@ pub(crate) mod tests {
             bundle_size: 2,
             page_records: None,
             max_hold_secs: 0,
+            crop_rule: Default::default(),
         };
         let unit = units(&opts.root).join(source.file_name().unwrap());
         std::fs::create_dir_all(&unit).unwrap();
@@ -1823,6 +1931,7 @@ pub(crate) mod tests {
             bundle_size: 1,
             page_records: None,
             max_hold_secs: 0,
+            crop_rule: Default::default(),
         };
         let members = tmp.path().join("members.json");
         atomic(&members, &serde_json::to_vec(&[selected]).unwrap()).unwrap();
@@ -1866,6 +1975,7 @@ pub(crate) mod tests {
             bundle_size: 1,
             page_records: None,
             max_hold_secs: 0,
+            crop_rule: Default::default(),
         };
         let s = run(&opts).await.unwrap();
         assert_eq!((s.staged, s.no_crops, s.already), (1, 0, 0));
@@ -2013,6 +2123,7 @@ pub(crate) mod tests {
                 bundle_size,
                 page_records: None,
                 max_hold_secs: 0,
+                crop_rule: Default::default(),
             };
             for invalid in [
                 Options {
@@ -2134,6 +2245,7 @@ pub(crate) mod tests {
             bundle_size: 2,
             page_records: None,
             max_hold_secs: 0,
+            crop_rule: Default::default(),
         };
         let s = run(&opts).await.unwrap();
         assert_eq!(

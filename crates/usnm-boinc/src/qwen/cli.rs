@@ -108,6 +108,11 @@ pub enum QwenCommands {
         /// 0 publishes it at once (#1435).
         #[arg(long, default_value_t = 21_600)]
         max_hold_secs: u64,
+        /// Which lines are wide enough to crop: `fixed-600` (the gold set's recipe, the
+        /// default) or `block-share-60` (at least 60% of the line's text block, Science's rule
+        /// for 7 to 8 column papers). A root holds one rule; it records any but the default.
+        #[arg(long, default_value = "fixed-600")]
+        crop_rule: usnm_ocr_quality::crops::WidthRule,
         /// Xiaomi-OCR-0 page mode (#1998): one region per LoC text block (long blocks split at
         /// line boundaries), every region of the page read, small pages packed into bundles.
         /// Reads the page and ALTO from `--quality-root` and fetches nothing. Pins the model to
@@ -421,6 +426,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             bundle_size,
             page_records,
             max_hold_secs,
+            crop_rule,
             page_mode,
             campaign,
             strata,
@@ -486,6 +492,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
                     bundle_size,
                     page_records,
                     max_hold_secs,
+                    crop_rule,
                 },
                 members.as_deref(),
             )
