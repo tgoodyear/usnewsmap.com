@@ -659,6 +659,32 @@ class HeldArchive(unittest.TestCase):
         self.assertEqual(first, 100)
         self.assertTrue(25 <= second <= 50, second)
 
+    def test_max_pause_mins_ignores_the_pace_of_a_resumed_batch(self):
+        # Batch 0001 was planned (manifest) by a run that stopped before its dispatch receipt.
+        batch = self.root / "archive/batches/0001"
+        batch.mkdir(parents=True)
+        (batch / "manifest.json").write_text(json.dumps({"pages": []}))
+        (self.root / "archive/held-archive.pages").write_text("60\n")
+        fake = (self.root / "tool.py").read_text().replace(
+            'existing = sorted(p.name for p in (archive / "batches").iterdir())\nname = "%04d" % (int(existing[-1]) + 1 if existing else 1)',
+            'existing = sorted(p.name for p in (archive / "batches").iterdir())\n'
+            'unfinished = existing and not (archive / "batches" / existing[-1] / "receipts/dispatch.json").exists()\n'
+            'name = existing[-1] if unfinished else "%04d" % (int(existing[-1]) + 1 if existing else 1)')
+        fake = fake.replace('(batch / "receipts").mkdir(parents=True)', '(batch / "receipts").mkdir(parents=True, exist_ok=True)')
+        self.assertIn("unfinished", fake)
+        (self.root / "tool.py").write_text(fake)
+        (self.root / "left").write_text("2")
+        # The resumed batch reports its whole 60 pages after almost no time: no resize from it.
+        done = self.run_archive("--pages", "1000", "--max-batches", "2", "--gap-mins", "1", "--max-pause-mins", "1",
+                                USNM_HELD_ARCHIVE_MAX_PAUSE_SECS="20", FAKE_SECS_PER_PAGE="0.002",
+                                USNM_HELD_ARCHIVE_TICK_START_SECS="1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        sizes = [json.loads(line) for line in done.stdout.splitlines() if "boinc_held_archive_batch_size" in line]
+        self.assertEqual(sizes[0], {"event": "boinc_held_archive_batch_size", "pages": 60, "resumed": True,
+                                    "next_pages": 60})
+        self.assertEqual(self.asked_pages(), [60, 60])
+        self.assertNotIn("resumed", sizes[1])
+
     def test_max_pause_mins_starts_from_the_last_runs_size_within_pages(self):
         (self.root / "archive/held-archive.pages").write_text("700\n")
         (self.root / "left").write_text("1")

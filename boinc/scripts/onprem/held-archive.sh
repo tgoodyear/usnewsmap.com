@@ -543,6 +543,15 @@ for i in $(seq 1 "$MAX_BATCHES"); do
     fi
   fi
   batch_start=$SECONDS
+  # A dispatch that resumes the newest batch (planned, no dispatch receipt: archive_history.py's
+  # open_batch) reports the whole manifest's pages but times only what was left, so its pace would
+  # look too fast: it doesn't resize the next batch (#2156).
+  resumed=false
+  newest=""
+  for dir in "$ARCHIVE"/batches/[0-9][0-9][0-9][0-9]; do [ -d "$dir" ] && newest=$dir; done
+  if [ -n "$newest" ] && [ -f "$newest/manifest.json" ] && [ ! -f "$newest/receipts/dispatch.json" ]; then
+    resumed=true
+  fi
   # In the background, so a stop can reach it. A background job starts with SIGINT ignored,
   # so the wrapper turns SIGTERM into KeyboardInterrupt: the tool's finally blocks then run.
   python3 -c '
@@ -575,7 +584,11 @@ print(sum(1 for p in json.load(open(sys.argv[1]))["pages"] if p.get("held")))
   # The longest batch so far is what the next one is expected to take.
   if ! $MEASURED || [ $((SECONDS - batch_start)) -gt "$LONGEST" ]; then LONGEST=$((SECONDS - batch_start)); fi
   MEASURED=true
-  size_next_batch "$batch_pages" $((SECONDS - batch_start))
+  if $resumed; then
+    printf '{"event": "boinc_held_archive_batch_size", "pages": %s, "resumed": true, "next_pages": %s}\n' "$batch_pages" "$BATCH_PAGES"
+  else
+    size_next_batch "$batch_pages" $((SECONDS - batch_start))
+  fi
 done
 if $BUDGET_ENDED; then
   printf '{"event": "boinc_held_archive", "batches": %s, "pages": %s, "held": %s, "budget_ended": true, "closing_dry_run": "skipped"}\n' \
