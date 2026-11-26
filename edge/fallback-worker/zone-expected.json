@@ -1,7 +1,8 @@
 {
   "custom_domains": {
     "check.usnewsmap.com": "usnm-check",
-    "healthcheck.usnewsmap.com": "usnm-fallback"
+    "healthcheck.usnewsmap.com": "usnm-fallback",
+    "phoenix.usnewsmap.com": "cherokee-phoenix"
   },
   "foreign_route_hosts": [
     "boinc-dev.usnewsmap.com"
