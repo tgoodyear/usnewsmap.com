@@ -66,8 +66,27 @@ SCORE_COLS = [
     "completeness", "precision", "findable_content", "findable_places", "cer_vs_loc",
     "wer_vs_loc", "dice_vs_loc", "pairs", "est_cer_v1", "est_cer_raw_v1", "matched",
     "qe_version", "qe_resources", "qe_words", "qe_known3", "qe_no_words", "qe_oov", "qe_charlm_bpc",
-    "qe_lm_oov",
+    "qe_lm_oov", "crop_res",
 ]
+# The Parquet metadata key quality collect writes the VLM crops' resolution under (#968 A/B).
+CROP_RES_KEY = b"usnm.crop_res"
+
+
+def reader_kind(reader):
+    return ("ours" if reader.startswith("ours-") else "loc" if reader.startswith("loc") else
+            "american-stories" if reader == "as" else "vlm")
+
+
+def file_crop_res(fp):
+    """A collected table's VLM crop resolution: its `usnm.crop_res` metadata, `half` without it
+    (every table collected before the change)."""
+    import pyarrow.parquet as pq
+
+    meta = pq.read_metadata(fp).metadata or {}
+    res = meta.get(CROP_RES_KEY, b"half").decode()
+    if res not in ("half", "full"):
+        sys.exit(f"{fp}: unknown crop resolution {res!r}")
+    return res
 PAGE_COLS = ["doc_id", "batch", "batch_version", "lccn", "date", "edition", "seq", "lang"]
 DAMAGE_COLS = [
     "doc_id", "campaign", "text_status", "decision", "lang", "script", "damage_rate",
@@ -218,8 +237,9 @@ def jsonb(v):
     return json.dumps(json.loads(v), sort_keys=True)
 
 
-def result_rows(table, campaign):
-    """unit_pages and reader_scores rows from one file's (page, reader) rows."""
+def result_rows(table, campaign, crop_res="half"):
+    """unit_pages and reader_scores rows from one file's (page, reader) rows. `crop_res` is the
+    file's VLM crop resolution: the vlm readers' rows carry it, the others `half`."""
     by_doc = {}
     for x in table:
         by_doc.setdefault(x["doc_id"], []).append(x)
@@ -265,6 +285,7 @@ def result_rows(table, campaign):
                 r.get("qe_version"), r.get("qe_resources"), integer(r.get("qe_words")),
                 integer(r.get("qe_known3")), r.get("qe_no_words"), num(r.get("qe_oov")),
                 num(r.get("qe_charlm_bpc")), num(r.get("qe_lm_oov")),
+                crop_res if reader_kind(name) == "vlm" else "half",
             ))
     return units, scores
 
@@ -278,11 +299,10 @@ def cmd_results(a):
     units_n = scores_n = 0
     for fp in a.file:
         t = pq.read_table(fp).to_pylist()
-        units, scores = result_rows(t, a.campaign)
+        units, scores = result_rows(t, a.campaign, file_crop_res(fp))
         readers = sorted({s[2] for s in scores})
         psql(a.dsn, upsert_sql("readers", ["reader", "kind"], ["reader"],
-                               [(r, "ours" if r.startswith("ours-") else "loc" if r.startswith("loc") else
-                                 "american-stories" if r == "as" else "vlm") for r in readers], update=False)
+                               [(r, reader_kind(r)) for r in readers], update=False)
              + upsert_sql("unit_pages", UNIT_COLS, ["campaign", "doc_id"], units)
              + upsert_sql("reader_scores", SCORE_COLS, ["campaign", "doc_id", "reader"], scores))
         units_n += len(units)

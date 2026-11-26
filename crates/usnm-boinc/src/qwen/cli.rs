@@ -113,6 +113,11 @@ pub enum QwenCommands {
         /// for 7 to 8 column papers). A root holds one rule; it records any but the default.
         #[arg(long, default_value = "fixed-600")]
         crop_rule: usnm_ocr_quality::crops::WidthRule,
+        /// The resolution the feed staged the root's page images at: `half` (the default, a JP2
+        /// over 4,000 px decoded at half size) or `full` (the feed's `--full-res`). A root holds
+        /// one; collectors tag every reading `crop_res` from it.
+        #[arg(long, value_enum, default_value_t = super::stage::CropRes::Half)]
+        crop_res: super::stage::CropRes,
         /// Xiaomi-OCR-0 page mode (#1998): one region per LoC text block (long blocks split at
         /// line boundaries), every region of the page read, small pages packed into bundles.
         /// Reads the page and ALTO from `--quality-root` and fetches nothing. Pins the model to
@@ -427,6 +432,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             page_records,
             max_hold_secs,
             crop_rule,
+            crop_res,
             page_mode,
             campaign,
             strata,
@@ -440,6 +446,13 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             flush_short,
         } => {
             if page_mode {
+                // Page mode reads whole text blocks, not crops, and claims no root markers:
+                // refuse the crop options rather than drop them silently.
+                anyhow::ensure!(
+                    crop_rule == usnm_ocr_quality::crops::WidthRule::default()
+                        && crop_res == super::stage::CropRes::Half,
+                    "--crop-rule and --crop-res are for crop staging, not --page-mode"
+                );
                 let model = model.unwrap_or_else(|| x::XIAOMI_MODEL.to_owned());
                 let (models, _) = x::stage_reader(Some(&model), prompt_version)?;
                 let s = x::page_mode::run(
@@ -493,6 +506,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
                     page_records,
                     max_hold_secs,
                     crop_rule,
+                    crop_res,
                 },
                 members.as_deref(),
             )
@@ -700,4 +714,57 @@ fn reader_pair(s: &str) -> Result<(String, String), String> {
         return Err("expected A:B".into());
     }
     Ok((a.to_owned(), b.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: QwenCommands,
+    }
+
+    fn stage(extra: &[&str]) -> QwenCommands {
+        let tmp = std::env::temp_dir();
+        let root = tmp.join("usnm-qwen-cli-test-root");
+        let quality = tmp.join("usnm-qwen-cli-test-quality");
+        let mut args = vec![
+            "t".to_owned(),
+            "stage".into(),
+            "--quality-root".into(),
+            quality.display().to_string(),
+            "--root".into(),
+            root.display().to_string(),
+            "--engine-image".into(),
+            format!("sha256:{}", "a".repeat(64)),
+            "--engine-llama".into(),
+            format!("sha256:{}", "b".repeat(64)),
+            "--engine-weights".into(),
+            format!("sha256:{}", "c".repeat(64)),
+            "--page-mode".into(),
+            "--campaign".into(),
+            "x08-test".into(),
+        ];
+        args.extend(extra.iter().map(|s| (*s).to_owned()));
+        Cli::try_parse_from(args).unwrap().command
+    }
+
+    #[tokio::test]
+    async fn page_mode_refuses_the_crop_options() {
+        // Page mode reads whole text blocks and claims no root marker, so it refuses the crop
+        // options instead of dropping them.
+        for extra in [
+            &["--crop-res", "full"][..],
+            &["--crop-rule", "block-share-60"][..],
+        ] {
+            let err = run(stage(extra)).await.unwrap_err();
+            assert!(
+                err.to_string().contains("not --page-mode"),
+                "{extra:?}: {err}"
+            );
+        }
+    }
 }

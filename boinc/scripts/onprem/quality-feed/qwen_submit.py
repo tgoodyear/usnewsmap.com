@@ -54,14 +54,54 @@ def documents(job):
     return {p["doc_id"] for p in job.get("pages", [])} or {job["doc_id"]}
 
 
+def root_crop_res(root):
+    """The resolution a Qwen root's crops were cut at, from its `crop-res` (qwen stage
+    --crop-res); `half` without it, as every root staged before the change."""
+    try:
+        value = (root / "crop-res").read_text().strip()
+    except FileNotFoundError:
+        return "half"
+    if value not in ("half", "full"):
+        raise ValueError(f"{root}: unknown crop resolution {value!r}")
+    return value
+
+
+def root_of(qwen, path):
+    """The Qwen root a job or marker under `qwen` (<share>/qwen) belongs to."""
+    return qwen / path.relative_to(qwen).parts[0]
+
+
+def held_elsewhere(share, root, reread_half=False):
+    """The pages another Qwen root than `root` already holds, which a run never stages again.
+    With `reread_half` (a full-resolution re-read, #968 A/B), pages held only by roots that cut
+    their crops at half resolution don't count: those are the pages being read again. Pages in
+    any full-resolution root still do, so the ordinary duplicate protection stands."""
+    qwen = share / "qwen"
+    elsewhere = set()
+    for path, job in jobs(qwen):
+        if root in path.parents:
+            continue
+        if reread_half and root_crop_res(root_of(qwen, path)) == "half":
+            continue
+        elsewhere.update(documents(job))
+    return elsewhere
+
+
 def inventory(share, project, batch=8):
-    seen = set()
-    for _, job in jobs(share / "qwen"):
-        seen.update(documents(job))
-    for marker in (share / "qwen").glob("*/*/*/too_large"):
+    qwen = share / "qwen"
+    seen, full = set(), set()
+    for path, job in jobs(qwen):
+        docs = documents(job)
+        seen.update(docs)
+        if root_crop_res(root_of(qwen, path)) == "full":
+            full.update(docs)
+    for marker in qwen.glob("*/*/*/too_large"):
         evidence = marker.parent / "rejected-qwen.json"
         if evidence.exists():
-            seen.update(documents(json.loads(evidence.read_text())))
+            docs = documents(json.loads(evidence.read_text()))
+            seen.update(docs)
+            if root_crop_res(root_of(qwen, marker)) == "full":
+                full.update(docs)
     php = """
 chdir(%s);
 require_once("boinc_db.inc");
@@ -89,7 +129,8 @@ echo json_encode(["ready"=>count($ready), "dispatched"=>count($running),
     counts = json.loads(subprocess.check_output(["php", "-r", php], text=True))
     free = min(shutil.disk_usage(path).free
                for path in (share, share / "quality", project / "download"))
-    return {**counts, "documents": sorted(seen), "free_bytes": free}
+    # full_documents: the pages a full-resolution root holds, all a --reread-half feed skips.
+    return {**counts, "documents": sorted(seen), "full_documents": sorted(full), "free_bytes": free}
 
 
 def assert_submitted(root):
@@ -810,10 +851,7 @@ def run_transaction(a):
             receipt.update(shipment.publication_evidence(receipt),
                            phase="locked_storage", reason="reserved_input_free_space", reserve_pages=len(docs))
             raise SystemExit(75)
-        elsewhere = set()
-        for path, job in jobs(a.share / "qwen"):
-            if root not in path.parents:
-                elsewhere.update(documents(job))
+        elsewhere = held_elsewhere(a.share, root, getattr(a, "reread_half", False))
         for member in value["members"]:
             row = member["sample"]
             if (row["lang"] in ("", "und") or (row["lang"] == "eng" and not getattr(a, "allow_english", False))
@@ -829,7 +867,7 @@ def run_transaction(a):
             "--engine-weights", engine["weights"], "--max-pages", str(len(docs)),
             "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", "1",
             "--prompt-version", str(a.prompt_version), *model_args(a.prompt_version),
-            "--members", str(members_path)], check=True)
+            *crop_args(a), "--members", str(members_path)], check=True)
         states = transaction_native_sources(root, value)
         native = selected_jobs(root, "qwen.json", docs)
         quality_jobs = selected_jobs(quality, "quality.json", docs)
@@ -986,10 +1024,7 @@ def stage_root(a, root, quality, new_pages):
 
 
 def _stage_root(a, root, quality, new_pages):
-    elsewhere = set()
-    for path, job in jobs(a.share / "qwen"):
-        if root not in path.parents:
-            elsewhere.update(documents(job))
+    elsewhere = held_elsewhere(a.share, root, getattr(a, "reread_half", False))
     for path in [*quality.glob("pages/*/quality.json"), *quality.glob("units/*/quality.json")]:
         job = json.loads(path.read_text())
         if (job["language"] in ("", "und") or (job["language"] == "eng" and not getattr(a, "allow_english", False))
@@ -1001,10 +1036,21 @@ def _stage_root(a, root, quality, new_pages):
              "--engine-image", engine["image"], "--engine-llama", engine["llama"],
              "--engine-weights", engine["weights"], "--max-pages", str(new_pages),
              "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", str(a.bundle_size),
-             "--prompt-version", str(a.prompt_version), *model_args(a.prompt_version)]
+             "--prompt-version", str(a.prompt_version), *model_args(a.prompt_version), *crop_args(a)]
     if a.page_records is not None:
         stage += ["--page-records", str(a.page_records)]
     subprocess.run(stage, check=True)
+
+
+def crop_args(a):
+    """`qwen stage`'s --crop-rule and --crop-res, only when set: a stage binary from before
+    #2164 knows neither, and a root without them is a fixed-600, half-resolution root."""
+    args = []
+    if getattr(a, "crop_rule", None):
+        args += ["--crop-rule", a.crop_rule]
+    if getattr(a, "crop_res", None):
+        args += ["--crop-res", a.crop_res]
+    return args
 
 
 def main():
@@ -1039,6 +1085,17 @@ def main():
     ap.add_argument("--page-records", type=Path,
                     help="With --bundle-size above 1, the directory `qwen compare --pages` writes: stage "
                          "packs each page a page-v1 verdict settled as disagreed into one new bundle (#1435)")
+    ap.add_argument("--crop-rule", choices=("fixed-600", "block-share-60"),
+                    help="qwen stage's crop width rule (#2164); the root records it. Needs a stage "
+                         "binary from #2164 on")
+    ap.add_argument("--crop-res", choices=("half", "full"),
+                    help="the resolution the feed staged the page images at (its --full-res is "
+                         "full); the root records it and collectors tag every reading with it. "
+                         "Needs a stage binary from this change on")
+    ap.add_argument("--reread-half", action="store_true",
+                    help="with --crop-res full: a re-read root may stage pages that only "
+                         "half-resolution roots hold (#968 A/B); pages any full-resolution root "
+                         "holds stay refused")
     ap.add_argument("--held-only", action="store_true",
                     help="With --bundle-size above 1 and no chunk: stage and submit only the held pages "
                          "whose hold has run out (#1435); admission counts every held page")
@@ -1055,6 +1112,8 @@ def main():
                     help="Conservative incremental bytes per new page on every backing filesystem")
     ap.add_argument("--min-free-gb", type=int, default=50)
     a = ap.parse_args()
+    if a.reread_half and a.crop_res != "full":
+        ap.error("--reread-half is a full-resolution re-read: it needs --crop-res full")
     if a.recipe_inputs:
         if not a.campaign or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", a.campaign) or not a.engine_plan:
             ap.error("--recipe-inputs needs a campaign and engine plan")

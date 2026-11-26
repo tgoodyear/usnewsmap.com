@@ -247,6 +247,25 @@ class DecodeQuarantineTest(unittest.TestCase):
                 "--chunk-pages", "1", "--max-pending", "1", "--workers", "1",
                 "--once", "--quarantine-decode"]
 
+    def test_a_large_jp2_is_halved_unless_full_res(self):
+        # #968 A/B (26 Nov 2026): VLM campaigns read full-resolution crops; the default stays
+        # the half-size decode every earlier campaign staged.
+        from PIL import Image, features
+
+        if not features.check_codec("jpg_2000"):
+            self.skipTest("no JPEG 2000 codec")
+        buf = io.BytesIO()
+        Image.new("L", (4200, 40), 128).save(buf, "JPEG2000")
+        raw = buf.getvalue()
+        _, half = feed.page_jpeg(raw, True)
+        _, full = feed.page_jpeg(raw, True, full_res=True)
+        self.assertEqual(half, (2100, 20))
+        self.assertEqual(full, (4200, 40))
+        # A JP2 at or under 4,000 px is decoded at full size either way.
+        small = io.BytesIO()
+        Image.new("L", (300, 40), 128).save(small, "JPEG2000")
+        self.assertEqual(feed.page_jpeg(small.getvalue(), True)[1], (300, 40))
+
     def test_real_truncated_jpeg_and_jp2_fail_decode_including_jpeg_passthrough(self):
         from PIL import features
 
@@ -1376,6 +1395,19 @@ class LoadTest(unittest.TestCase):
         self.assertFalse(units[0][loader.UNIT_COLS.index("has_alto")])
         self.assertEqual([s[2] for s in scores], ["loc-hist", "as"])
         self.assertEqual(scores[0][loader.SCORE_COLS.index("est_cer")], 0.2)
+
+    def test_vlm_rows_carry_the_files_crop_resolution(self):
+        # #968 A/B: a full-resolution table tags its VLM readers' rows full; the others, and every
+        # table from before (no metadata), stay half.
+        doc = "sn1_1900-01-01_ed-1_seq-1"
+        rows = [{"doc_id": doc, "reader": r, "blocks": 0, "est_cer": "0.1", "pairs_json": None,
+                 "job_id": "j", "outcome": "ok"} for r in ("loc-hist", "ours-tesseract", "qwen", "vlm")]
+        res = loader.SCORE_COLS.index("crop_res")
+        _, scores = loader.result_rows(rows, "x08-eng", "full")
+        self.assertEqual({s[2]: s[res] for s in scores},
+                         {"loc-hist": "half", "ours-tesseract": "half", "qwen": "full", "vlm": "full"})
+        _, scores = loader.result_rows(rows, "old")
+        self.assertEqual({s[res] for s in scores}, {"half"})
 
     def test_agreement_rows_map_loc_and_as_to_a_and_b(self):
         x = {"doc_id": "sn1_1900-01-01_ed-1_seq-1", "batch": "b", "batch_version": 1, "metric_version": 1,

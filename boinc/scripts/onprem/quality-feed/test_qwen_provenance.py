@@ -243,7 +243,7 @@ class ProvenanceRecoveryTest(unittest.TestCase):
         result = subprocess.run([sys.executable, "-B", "-c", program, str(isolated)],
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), {"documents": [], "free_bytes": 100})
+        self.assertEqual(json.loads(result.stdout), {"documents": [], "full_documents": [], "free_bytes": 100})
 
 
 if __name__ == "__main__":

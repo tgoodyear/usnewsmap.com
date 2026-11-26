@@ -2359,49 +2359,74 @@ class SourceTest(unittest.TestCase):
                         driver.tick(a)
                         self.assertIn("storage_backpressure", out.getvalue())
 
-    def test_ready_sources_return_without_waiting_for_new_scan_manifest(self):
+    def test_the_half_resolution_pages_are_the_roots_pages_no_full_root_holds(self):
+        inv = {"documents": ["c", "a", "b"], "full_documents": ["b"]}
+        self.assertEqual(driver.half_res_pages(inv), ["a", "c"])
+        with self.assertRaises(SystemExit):
+            driver.half_res_pages({"documents": ["a"]})
         with tempfile.TemporaryDirectory() as folder:
-            a = types.SimpleNamespace(state=Path(folder), campaign="qwen-test",
-                                      server_host="boinc.example", server_ct=230, prep_ct=215,
-                                      archive_host="archive.example", archives="/archives",
-                                      alto_export="/cache", scan_server="http://scan.example",
-                                      outbox=Path(folder), min_free_gb=50, max_ready=1000,
-                                      max_pending=3, chunk_pages=100, max_archives=4, max_unresolved=2000, reserve_mib=64,
-                                      yiddish_budget=None, german_budget=None, german_pages=None,
-                    serbian_budget=None, serbian_pages=None)
-            page = {"doc_id": DOC, "damage_rate": 0.9}
-            inv = {"ready": 4000, "fresh_pairs": 0, "unresolved_native": 100,
-                   "documents": [], "free_bytes": 100 * 1024**3}
-            pool = {"report": [{"lv": [{"lv_size": str(200 * 1024**3), "data_percent": "50"}]}]}
-            receipt = {"cached": [DOC], "missing": [], "pending": []}
-            archive_inventory = {"available_archives": ["xx_test_ver01.tar.bz2"]}
+            out = Path(folder) / "half.txt"
+            a = types.SimpleNamespace(server_host="boinc.example", server_ct=230, prompt_version=5)
+            with mock.patch.object(driver, "remote", return_value=json.dumps(inv)) as remote, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                driver.write_half_res_pages(a, out)
+            self.assertEqual(out.read_text(), "a\nc\n")
+            self.assertIn("--inventory", remote.call_args.args[1])
 
-            def run(args, data=None):
-                if any("ocr_manifest.py" in arg for arg in args):
-                    raise TimeoutError("scan-manifest generation must not block ready work")
-                if args[-1].endswith("/selected.jsonl") and "cat" in args:
-                    return json.dumps(page).encode()
-                if "-c" in args:
-                    return b"[]"
-                return b""
+    def test_ready_sources_return_without_waiting_for_new_scan_manifest(self):
+        # #968 A/B: --full-res reaches the preparation only when set, and a --reread-half
+        # campaign skips only the pages full-resolution roots hold.
+        for full_res in (False, True):
+            with tempfile.TemporaryDirectory() as folder:
+                a = types.SimpleNamespace(state=Path(folder), campaign="qwen-test",
+                                          server_host="boinc.example", server_ct=230, prep_ct=215,
+                                          archive_host="archive.example", archives="/archives",
+                                          alto_export="/cache", scan_server="http://scan.example",
+                                          outbox=Path(folder), min_free_gb=50, max_ready=1000,
+                                          max_pending=3, chunk_pages=100, max_archives=4, max_unresolved=2000, reserve_mib=64,
+                                          yiddish_budget=None, german_budget=None, german_pages=None,
+                        serbian_budget=None, serbian_pages=None, full_res=full_res,
+                    reread_half=full_res)
+                page = {"doc_id": DOC, "damage_rate": 0.9}
+                inv = {"ready": 4000, "fresh_pairs": 0, "unresolved_native": 100,
+                       "documents": ["sn0_1900-01-01_ed-1_seq-1", "sn0_1900-01-01_ed-1_seq-2"],
+                       "full_documents": ["sn0_1900-01-01_ed-1_seq-2"], "free_bytes": 100 * 1024**3}
+                staged = []
+                pool = {"report": [{"lv": [{"lv_size": str(200 * 1024**3), "data_percent": "50"}]}]}
+                receipt = {"cached": [DOC], "missing": [], "pending": []}
+                archive_inventory = {"available_archives": ["xx_test_ver01.tar.bz2"]}
 
-            with mock.patch.object(driver, "remote", side_effect=[
-                    json.dumps(inv), json.dumps(pool), json.dumps(archive_inventory), json.dumps(receipt)]), \
-                    mock.patch.object(driver.shutil, "disk_usage",
-                                      return_value=types.SimpleNamespace(free=100 * 1024**3)), \
-                    mock.patch.object(driver, "command", side_effect=run) as command, \
-                    mock.patch.object(driver.urllib.request, "urlopen") as source, \
-                    contextlib.redirect_stdout(io.StringIO()) as output:
-                source.return_value.__enter__.return_value.__iter__.return_value = iter([
-                    b'{"doc_id":"candidate","batch":"xx_test","batch_version":1}\n'])
-                driver.tick(a)
-            prepared = [call for call in command.call_args_list
-                        if "run" in call.args[0] and any(
-                            arg.endswith("/quality_feed.py") for arg in call.args[0])]
-            self.assertEqual(len(prepared), 1)
-            result = next(json.loads(line) for line in output.getvalue().splitlines()
-                          if json.loads(line).get("status") == "prepared")
-            self.assertEqual((result["selected_for_preparation"], result["pages"]), (1, 0))
+                def run(args, data=None):
+                    if args[-1].endswith("/staged.txt"):
+                        staged.append(data.decode())
+                    if any("ocr_manifest.py" in arg for arg in args):
+                        raise TimeoutError("scan-manifest generation must not block ready work")
+                    if args[-1].endswith("/selected.jsonl") and "cat" in args:
+                        return json.dumps(page).encode()
+                    if "-c" in args:
+                        return b"[]"
+                    return b""
+
+                with mock.patch.object(driver, "remote", side_effect=[
+                        json.dumps(inv), json.dumps(pool), json.dumps(archive_inventory), json.dumps(receipt)]), \
+                        mock.patch.object(driver.shutil, "disk_usage",
+                                          return_value=types.SimpleNamespace(free=100 * 1024**3)), \
+                        mock.patch.object(driver, "command", side_effect=run) as command, \
+                        mock.patch.object(driver.urllib.request, "urlopen") as source, \
+                        contextlib.redirect_stdout(io.StringIO()) as output:
+                    source.return_value.__enter__.return_value.__iter__.return_value = iter([
+                        b'{"doc_id":"candidate","batch":"xx_test","batch_version":1}\n'])
+                    driver.tick(a)
+                prepared = [call for call in command.call_args_list
+                            if "run" in call.args[0] and any(
+                                arg.endswith("/quality_feed.py") for arg in call.args[0])]
+                self.assertEqual(len(prepared), 1)
+                self.assertEqual("--full-res" in prepared[0].args[0], full_res)
+                self.assertEqual(staged[0].split(), ["sn0_1900-01-01_ed-1_seq-2"] if full_res
+                                 else ["sn0_1900-01-01_ed-1_seq-1", "sn0_1900-01-01_ed-1_seq-2"])
+                result = next(json.loads(line) for line in output.getvalue().splitlines()
+                              if json.loads(line).get("status") == "prepared")
+                self.assertEqual((result["selected_for_preparation"], result["pages"]), (1, 0))
 
     def test_native_gate_uses_fresh_original_pairs_but_retains_capacity_and_unresolved_bounds(self):
         with tempfile.TemporaryDirectory() as folder:

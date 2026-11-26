@@ -174,7 +174,13 @@ elif "python3" in args and "-" in args:
                               (["--qwen-submit-binary", "usnm-boinc"], False),
                               (["--qwen-submit-binary", "-x"], True), (["--qwen-submit-binary", "a b"], True),
                               (["--qwen-stage-binary", "/usr/local/bin/usnm-boinc"], False),
-                              (["--qwen-stage-binary", "-x"], True), (["--qwen-stage-binary", "a b"], True)):
+                              (["--qwen-stage-binary", "-x"], True), (["--qwen-stage-binary", "a b"], True),
+                              (["--qwen-crop-rule", "block-share-60"], False),
+                              (["--qwen-crop-rule", "wide"], True),
+                              (["--qwen-crop-res", "full"], False),
+                              (["--qwen-crop-res", "quarter"], True),
+                              (["--qwen-reread-half"], True),
+                              (["--qwen-reread-half", "--qwen-crop-res", "half"], True)):
             with self.subTest(extra=extra):
                 result = self.run_ship(extra, native=native)
                 self.assertEqual(result.returncode, 1, result.stderr)
@@ -211,6 +217,34 @@ elif "python3" in args and "-" in args:
                     self.assertEqual(call.count("--stage-binary"), 1 if expected else 0)
                     if expected:
                         self.assertEqual(call[call.index("--stage-binary") + 1], expected)
+
+    def test_crop_rule_and_resolution_reach_every_native_call(self):
+        # Unset, no call names either, so a stage binary from before them keeps working and the
+        # root stays a fixed-600, half-resolution root. Set, every qwen_submit.py call gets them.
+        for extra, rule, res in (([], None, None),
+                                 (["--qwen-crop-rule", "block-share-60", "--qwen-crop-res", "full"],
+                                  "block-share-60", "full"),
+                                 (["--qwen-crop-res", "half"], None, "half")):
+            with self.subTest(extra=extra):
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                result = self.run_ship([*self.GUARDED, *extra], langs="srp\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = self.native_calls()
+                self.assertEqual(len(calls), 3)
+                for call in calls:
+                    for flag, value in (("--crop-rule", rule), ("--crop-res", res)):
+                        self.assertEqual(call.count(flag), 1 if value else 0)
+                        if value:
+                            self.assertEqual(call[call.index(flag) + 1], value)
+
+    def test_a_reread_reaches_every_native_call_with_full_resolution(self):
+        result = self.run_ship([*self.GUARDED, "--qwen-crop-res", "full", "--qwen-reread-half"], langs="srp\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.native_calls()
+        self.assertEqual(len(calls), 3)
+        for call in calls:
+            self.assertEqual(call.count("--reread-half"), 1)
+            self.assertEqual(call[call.index("--crop-res") + 1], "full")
 
     def test_a_bundle_size_reaches_both_native_calls_for_the_main_root_only(self):
         # #1435: unset, neither call names a bundle size, so qwen_submit.py stages one page a unit.

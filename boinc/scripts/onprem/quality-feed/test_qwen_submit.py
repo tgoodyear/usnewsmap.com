@@ -63,6 +63,68 @@ class PhaseTest(unittest.TestCase):
         self.assertNotIn("--models-prechecked", self.calls[1])
         self.assertNotIn("--models-only", self.calls[1])
 
+    def test_crop_rule_and_resolution_reach_qwen_stage_only_when_set(self):
+        # Unset, the stage call names neither, so an older stage binary keeps working.
+        self.run_main("--prompt-version", "3")
+        stage = self.calls[0]
+        self.assertNotIn("--crop-rule", stage)
+        self.assertNotIn("--crop-res", stage)
+        self.calls.clear()
+        self.run_main("--prompt-version", "5", "--crop-rule", "block-share-60", "--crop-res", "full")
+        stage, submit = self.calls
+        self.assertEqual(stage[stage.index("--crop-rule") + 1], "block-share-60")
+        self.assertEqual(stage[stage.index("--crop-res") + 1], "full")
+        self.assertNotIn("--crop-res", submit)
+
+    def test_crop_values_are_checked(self):
+        for extra in (["--crop-rule", "wide"], ["--crop-res", "quarter"]):
+            with self.subTest(extra=extra), self.assertRaises(SystemExit), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.run_main("--prompt-version", "3", *extra)
+
+    def put_job(self, root, unit, *docs, crop_res=None):
+        d = self.share / "qwen" / root
+        (d / "units" / unit).mkdir(parents=True, exist_ok=True)
+        if crop_res:
+            (d / "crop-res").write_text(crop_res + "\n")
+        job = {"pages": [{"doc_id": doc} for doc in docs]} if len(docs) > 1 else {"doc_id": docs[0]}
+        (d / "units" / unit / "qwen.json").write_text(json.dumps(job))
+        return d
+
+    def test_a_full_resolution_reread_may_take_only_half_resolution_roots_pages(self):
+        # #968 A/B: a --reread-half root reads again pages that half-resolution roots hold
+        # (a root without crop-res is half). Pages a full-resolution root holds, and the ordinary
+        # protection without the flag, stay as they were.
+        self.put_job("old-half", "u1", "doc_half")
+        self.put_job("marked-half", "u1", "doc_marked", crop_res="half")
+        self.put_job("other-full", "u1", "doc_full", "doc_full2", crop_res="full")
+        own = self.put_job("reread", "u1", "doc_own", crop_res="full")
+        everything = {"doc_half", "doc_marked", "doc_full", "doc_full2"}
+        self.assertEqual(qwen_submit.held_elsewhere(self.share, own), everything)
+        self.assertEqual(qwen_submit.held_elsewhere(self.share, own, reread_half=True), {"doc_full", "doc_full2"})
+        self.assertEqual(qwen_submit.root_crop_res(self.share / "qwen" / "old-half"), "half")
+        (self.share / "qwen" / "old-half" / "crop-res").write_text("quarter\n")
+        with self.assertRaises(ValueError):
+            qwen_submit.held_elsewhere(self.share, own, reread_half=True)
+
+    def test_the_inventory_names_the_pages_full_resolution_roots_hold(self):
+        self.put_job("old-half", "u1", "doc_half")
+        self.put_job("full", "u1", "doc_full", crop_res="full")
+        counts = json.dumps({"ready": 0, "dispatched": 0, "fresh_pairs": 0, "unresolved_native": 0,
+                             "app_versions": [], "min_version": 0})
+        (self.share / "quality").mkdir(exist_ok=True)
+        with mock.patch.object(qwen_submit.subprocess, "check_output", return_value=counts), \
+                mock.patch.object(qwen_submit.shutil, "disk_usage", return_value=mock.Mock(free=1)):
+            inv = qwen_submit.inventory(self.share, self.share / "usnmocr")
+        self.assertEqual(inv["documents"], ["doc_full", "doc_half"])
+        self.assertEqual(inv["full_documents"], ["doc_full"])
+
+    def test_reread_half_needs_full_resolution(self):
+        for extra in (["--reread-half"], ["--reread-half", "--crop-res", "half"]):
+            with self.subTest(extra=extra), self.assertRaises(SystemExit), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.run_main("--prompt-version", "3", *extra)
+
     def test_prepare_stages_and_verifies_the_models_but_submits_nothing(self):
         _, out = self.run_main("--phase", "prepare", "--prompt-version", "3")
         stage, models = self.calls
