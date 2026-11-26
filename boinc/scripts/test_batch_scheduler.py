@@ -2480,6 +2480,43 @@ class QueueModeTests(unittest.TestCase):
         self.assertNotIn("export", actions)
         self.assertGreaterEqual(actions.count("collect"), 1)
 
+    def test_a_tick_adds_no_more_journals_than_the_room_under_the_high_mark(self):
+        # #2131: claims and exports are bounded by high mark - journals, so a tick never crosses
+        # the mark, let alone MAX_JOBS, whatever its refill cap.
+        for high, low, room in ((4, 3, 2), (3, 2, 1)):
+            with self.subTest(high=high, room=room):
+                self.journal_soft_cap_setup()
+                self.config["batch_size"] = 5
+                before = len(self.fake.rows)
+                event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=5,
+                                   journal_high=high, journal_low=low)
+                claimed = sum(action[1] for action in self.fake.actions if action[0] == "claim")
+                self.assertFalse(event["journal_soft_cap"])
+                self.assertLessEqual(claimed, room)
+                self.assertEqual(len(self.fake.rows) - before, room)
+                self.assertLessEqual(len(self.fake.rows), high)
+
+    def test_at_9950_journals_under_a_10000_mark_a_tick_adds_at_most_50(self):
+        # A mark at 10,000 and one below it: the tick adds no more than the room under the mark
+        # (30 under 9,980 is the soft cap's own bound; 50 under 10,000 is the most it may add).
+        for high, room in ((10_000, 50), (9_980, 30)):
+            with self.subTest(high=high):
+                self.journal_soft_cap_setup()
+                self.config["batch_size"] = 500
+                for number in range(len(self.fake.rows), 9950):
+                    row = record(f"sibling-page-{number}", 10**9 + number)
+                    # Settled history another plan waits to archive: journals, no pending work.
+                    row["plan"], row["stage"] = "sibling-plan", "published"
+                    self.fake.rows.append(row)
+                self.fake.waiting = [message(number) for number in range(10, 400)]
+                before = len(self.fake.rows)
+                event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=500,
+                                   low_watermark=400, high_watermark=500, max_global_pending=1000,
+                                   journal_high=high, journal_low=9_000)
+                self.assertEqual(event["journals"], 9950)
+                self.assertEqual(len(self.fake.rows) - before, room)
+                self.assertLessEqual(len(self.fake.rows), high)
+
     def test_journal_soft_cap_has_hysteresis(self):
         # Between the marks the previous tick's answer holds; below the low mark it resumes.
         for capped_before, high, low, capped in ((True, 3, 2, True), (False, 3, 2, False),

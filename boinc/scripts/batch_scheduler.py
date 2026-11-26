@@ -4923,6 +4923,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         # At or above the high mark: capped; below the low mark: not; between: as before.
         return True if count >= journal_high else False if count < journal_low else before
 
+    def journal_room():
+        # The journals this tick may still add: none at the soft cap, else up to the high mark.
+        return 0 if journal_capped else max(0, journal_high - journal_count)
+
     journal_count = len(records)
     journal_capped = journal_soft_cap(journal_count, bool(state.get("journal_soft_cap", False)))
     state["journal_soft_cap"] = journal_capped
@@ -5355,12 +5359,12 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             if feed:
                 feed.settled_messages = settled_messages(
                     records, claimed_messages(state.get("claims"), sibling_claims))
-                feed.fill(min(refill, free), selected, owned, now)
+                feed.fill(min(refill, free, journal_room()), selected, owned, now)
                 # The fresh claims are allocated now: one another plan's journal is for is passed
                 # over and reported, even when nothing else is exported (#1685).
                 owned = own(records)
             fresh = [page for page in config["pages"] if page["page"] not in selected][
-                :min(refill, free)]
+                :min(refill, free, journal_room())]
             for page in fresh:
                 selected[page["page"]] = now
             persist()
@@ -5386,7 +5390,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             # No new journals at the soft cap: claimed pages wait for the next tick under it.
             export = []
         if export:
-            export = export[:refill]
+            # Never past the high mark (#2131): an exported page adds at most one journal (a
+            # retry adds its own, a bundle one for all its pages), so the pages a tick exports
+            # bound the journals it adds by the room left under the mark, counted under the lock.
+            export = export[:min(refill, journal_room())]
             for group in chunks(export):  # an export step takes STEP_IDS pages and journals
                 pages = {page["page"] for page in group}
                 journals = [record["job"]["id"] for record in records
