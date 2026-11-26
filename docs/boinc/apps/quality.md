@@ -774,6 +774,7 @@ qwen_feed.py <the campaign's usual feed args> --write-half-res-pages /etc/usnm/r
 This writes every page the inventory holds that no full-resolution root holds, held (`--hold`) roots included, because it reads the roots, not the loaded results. A listed campaign (`--pages` that file, `--language`) takes only its own language's pages and orders them by damage as it selects.
 
 **Priority is only partly enforced.** The feed's gate counts the fresh native pairs and unresolved units of its own BOINC batch (8 for request version 3, 108 for Xiaomi-OCR-0), against its `--max-ready` and `--max-unresolved`. So:
+
 - **Same batch:** a re-read with lower limits than the new-work feeds stops preparing while that batch holds more than its limits. It yields to new work there, but only down to its own limits, so the two can still interleave.
 - **Different batch:** a re-read isn't held back by new work in another batch at all.
 - **Strictly after:** nothing makes a re-read run strictly after new work. That would need a new admission check, which isn't built. To keep re-reads behind new work, give them small limits and a less frequent timer, and pause them when new-work queues are long.
