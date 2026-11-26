@@ -4918,13 +4918,13 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     journal_high, journal_low = journal_marks(journal_high, journal_low)
     require(type(journal_high) is int and type(journal_low) is int
             and 0 < journal_low < journal_high <= MAX_JOBS, "invalid journal soft cap marks")
+
+    def journal_soft_cap(count, before):
+        # At or above the high mark: capped; below the low mark: not; between: as before.
+        return True if count >= journal_high else False if count < journal_low else before
+
     journal_count = len(records)
-    if journal_count >= journal_high:
-        journal_capped = True
-    elif journal_count < journal_low:
-        journal_capped = False
-    else:
-        journal_capped = bool(state.get("journal_soft_cap", False))
+    journal_capped = journal_soft_cap(journal_count, bool(state.get("journal_soft_cap", False)))
     state["journal_soft_cap"] = journal_capped
     # A queue-fed plan passes over a claimed page another plan's journal is for (#1685): it
     # exports, submits and collects nothing for it, and logs it for `archive_history.py
@@ -5329,6 +5329,11 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         admitted = admission.acquire()
         if admitted:
             demand, room_in_flight, room_pending, records, fresh = fresh_room()
+            # Count again under the lock (#2131): plans admitted one after another each see what
+            # the ones before them exported, so none exports past the high mark on a stale count.
+            journal_count = len(records)
+            journal_capped = journal_soft_cap(journal_count, journal_capped)
+            state["journal_soft_cap"] = journal_capped
             room_inventory = fresh
             room_workunits = room_in_flight
             # The other apps' share as the fresh inventory has it, with the total it goes with.

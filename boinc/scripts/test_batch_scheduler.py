@@ -2429,6 +2429,57 @@ class QueueModeTests(unittest.TestCase):
         self.assertEqual((event["journal_high"], event["journal_low"]),
                          (batch.MAX_JOBS * 9 // 10, batch.MAX_JOBS * 85 // 100))
 
+    def test_journal_soft_cap_holds_back_an_unexported_claim_until_it_clears(self):
+        # A claimed page whose export added no journal is exported by a later tick: not while
+        # capped, and as soon as the cap clears.
+        self.journal_soft_cap_setup()
+        export = self.fake.export
+        self.fake.export = lambda pages, job_ids=(): self.fake.actions.append(("export-lost",))
+        batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=1)
+        self.fake.export = export
+        waiting = [page for page in self.fake.claimed
+                   if not any(row["job"]["message"]["page"] == page for row in self.fake.rows)]
+        self.assertEqual(len(waiting), 1)
+        self.fake.actions.clear()
+        event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=1,
+                           journal_high=2, journal_low=1)
+        self.assertTrue(event["journal_soft_cap"])
+        self.assertEqual([action for action in self.fake.actions if action[0] in ("claim", "export")], [])
+        self.fake.actions.clear()
+        event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=1,
+                           journal_high=4, journal_low=3)
+        self.assertFalse(event["journal_soft_cap"])
+        exported = [page for action in self.fake.actions if action[0] == "export" for page in action[2]]
+        self.assertIn(waiting[0], exported)
+
+    def test_journal_soft_cap_counts_again_under_the_admission_lock(self):
+        # Plans admitted one after another (#1836): one that waited for the lock while another
+        # exported up to the high mark counts again and claims and exports nothing.
+        self.journal_soft_cap_setup()
+        fake = self.fake
+
+        class SiblingExported:
+            waited = 0.0
+
+            def acquire(self):
+                for number in (101, 102):
+                    row = record(f"sibling-page-{number}", 1000 + number)
+                    row["plan"] = "sibling-plan"
+                    fake.rows.append(row)
+                return True
+
+            def release(self):
+                pass
+
+        event = batch.tick(self.config, self.state, fake, lambda: None, NOW, refill_cap=1,
+                           journal_high=4, journal_low=3, admission=SiblingExported())
+        actions = [action[0] for action in fake.actions]
+        self.assertTrue(event["journal_soft_cap"])
+        self.assertEqual(event["journals"], 4)
+        self.assertNotIn("claim", actions)
+        self.assertNotIn("export", actions)
+        self.assertGreaterEqual(actions.count("collect"), 1)
+
     def test_journal_soft_cap_has_hysteresis(self):
         # Between the marks the previous tick's answer holds; below the low mark it resumes.
         for capped_before, high, low, capped in ((True, 3, 2, True), (False, 3, 2, False),
