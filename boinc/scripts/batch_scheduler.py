@@ -37,6 +37,18 @@ REPO = Path(__file__).resolve().parents[2]
 ID = re.compile(r"[0-9a-f]{64}")
 STAGES = {"prepared", "reserved", "submitting", "submitted", "published", "failed"}
 MAX_JOBS = 10000
+# The journal soft cap (#2131): at JOURNAL_HIGH dispatch journals every plan stops claiming and
+# exporting new pages, and resumes below JOURNAL_LOW, so the count never reaches MAX_JOBS, where
+# read-journals fails and no plan can even collect. Collect, publish, renew, gold and submit go on.
+JOURNAL_HIGH_PERCENT = 90
+JOURNAL_LOW_PERCENT = 85
+
+
+def journal_marks(high=None, low=None):
+    """The soft cap's marks: the flags', or 90% and 85% of MAX_JOBS (read when called)."""
+    high = MAX_JOBS * JOURNAL_HIGH_PERCENT // 100 if high is None else high
+    low = min(MAX_JOBS * JOURNAL_LOW_PERCENT // 100, high - 1) if low is None else low
+    return high, low
 # Pages whose held result (#835) archive_history.py archived (state `archived_held`): one small
 # entry each, so a re-claim of the page's message keeps the archived job instead of starting
 # another. Kept until the page is restored for publishing, so the cap is generous.
@@ -4758,7 +4770,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
          refill_cap=None, other_app_budget=None, sibling_archived=None, sibling_claims=None,
          resume_native=False, release_spot_hold=None, release_container_hold=None, pair_log=None,
          resolution_log=None, loc_text=None, admission=None, refresh_sibling_claims=None,
-         gold_refill_when_empty=False, backlog_refill_when_empty=False, sibling_live=None):
+         gold_refill_when_empty=False, backlog_refill_when_empty=False, sibling_live=None,
+         journal_high=None, journal_low=None):
     """One tick. `admission` (an Admission, #1836) is the lock of a plan that ticks beside others:
     gold, and publishing held pages through claims, exports, submits and spot replays, run only
     while it is held, after reading every plan's journals, claims (`refresh_sibling_claims`) and
@@ -4900,6 +4913,19 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     records = read_records()
     # Here rather than in journal_inventory, which a tick runs several times.
     warn_near_cap("dispatch_journals", len(records), MAX_JOBS, now)
+    # The journal soft cap (#2131), with hysteresis: every plan counts the same journals, so all
+    # stop claiming and exporting at the high mark and resume together below the low mark.
+    journal_high, journal_low = journal_marks(journal_high, journal_low)
+    require(type(journal_high) is int and type(journal_low) is int
+            and 0 < journal_low < journal_high <= MAX_JOBS, "invalid journal soft cap marks")
+    journal_count = len(records)
+    if journal_count >= journal_high:
+        journal_capped = True
+    elif journal_count < journal_low:
+        journal_capped = False
+    else:
+        journal_capped = bool(state.get("journal_soft_cap", False))
+    state["journal_soft_cap"] = journal_capped
     # A queue-fed plan passes over a claimed page another plan's journal is for (#1685): it
     # exports, submits and collects nothing for it, and logs it for `archive_history.py
     # reconcile`, so one stranded page doesn't stop the plan. A fixed page list still refuses.
@@ -5320,7 +5346,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         feed.settled_messages = settled_messages(records, claimed_messages(state.get("claims"), sibling_claims))
         feed.publish_settled()
     if admitted and target and (not held or backlog_open) and not drain and not gold_holds and not native_paused:
-        if free > 0:
+        if free > 0 and not journal_capped:
             if feed:
                 feed.settled_messages = settled_messages(
                     records, claimed_messages(state.get("claims"), sibling_claims))
@@ -5351,6 +5377,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                   (page["page"] not in owned or retried(page) or
                    (owned[page["page"]]["stage"] == "prepared"
                     and not owned[page["page"]].get("retry")))]
+        if journal_capped:
+            # No new journals at the soft cap: claimed pages wait for the next tick under it.
+            export = []
         if export:
             export = export[:refill]
             for group in chunks(export):  # an export step takes STEP_IDS pages and journals
@@ -5611,6 +5640,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     if drain:
         backpressure = True
         backpressure_reason = "draining"
+    elif journal_capped:
+        backpressure = True
+        backpressure_reason = "journal_soft_cap"
     elif native_paused:
         backpressure = True
         backpressure_reason = "native_paused"
@@ -5723,6 +5755,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                                          default=0)),
         "backpressure": backpressure,
         "backpressure_reason": backpressure_reason,
+        "journals": journal_count,
+        "journal_high": journal_high,
+        "journal_low": journal_low,
+        "journal_soft_cap": journal_capped,
         "refill_cap": refill,
         "gold_refilled": bool(gold_ran and not gold_holds and submitted),
         "low_watermark": low_target,
@@ -5805,6 +5841,12 @@ def main(argv=None):
                         help="refill although results wait to be collected while BOINC has none of the "
                              "plan's app unsent (per-app server status needed); otherwise a tick with "
                              "uncollected results only collects")
+    parser.add_argument("--journal-high-mark", type=int, default=None, metavar="N",
+                        help=f"stop claiming and exporting new pages at N dispatch journals (default "
+                             f"{JOURNAL_HIGH_PERCENT}%% of {MAX_JOBS}, where read-journals fails); collect, "
+                             "publish, renew, gold and submit go on (#2131)")
+    parser.add_argument("--journal-low-mark", type=int, default=None, metavar="N",
+                        help=f"after the high mark, resume below N dispatch journals (default {JOURNAL_LOW_PERCENT}%% of {MAX_JOBS})")
     parser.add_argument("--other-app-budget", type=int, default=None,
                         help="count at most this many of other apps' unassimilated workunits toward "
                              "--max-global-pending (needed, and above it), and hold all apps' work to the "
@@ -5935,6 +5977,9 @@ def main(argv=None):
         require(not args.resume_native or config.get("app") == NATIVE_APP_NAME,
                 f"--resume-native is for {NATIVE_APP_NAME} plans")
         require(1 <= args.collect_parallel <= MAX_COLLECT_PARALLEL, "invalid --collect-parallel")
+        journal_high, journal_low = journal_marks(args.journal_high_mark, args.journal_low_mark)
+        require(0 < journal_low < journal_high <= MAX_JOBS,
+                f"--journal-low-mark and --journal-high-mark need 0 < low < high <= {MAX_JOBS}")
         require(args.collect_parallel == 1 or args.batch_collect, "--collect-parallel needs --batch-collect")
         surya = config.get("app") == SURYA_APP_NAME
         require(not args.local_lock or (config.get("step_command") and not surya
@@ -6056,6 +6101,10 @@ def main(argv=None):
                 tick_kwargs["gold_refill_when_empty"] = True
             if args.backlog_refill_when_empty:
                 tick_kwargs["backlog_refill_when_empty"] = True
+            if args.journal_high_mark is not None:
+                tick_kwargs["journal_high"] = args.journal_high_mark
+            if args.journal_low_mark is not None:
+                tick_kwargs["journal_low"] = args.journal_low_mark
             if args.other_app_budget is not None:
                 tick_kwargs["other_app_budget"] = args.other_app_budget
             admission = None

@@ -385,6 +385,9 @@ class SchedulerTests(unittest.TestCase):
         quiet_event, quiet_lines = run(quiet, quiet_state, 100)
         self.assertEqual(quiet_lines, [])
         warned_event, warned_lines = run(warned, warned_state, 12)
+        # The soft cap's marks scale with MAX_JOBS; nothing else may differ.
+        for event in (quiet_event, warned_event):
+            del event["journal_high"], event["journal_low"]
         self.assertEqual((warned_event, warned.actions, warned_state), (quiet_event, quiet.actions, quiet_state))
         self.assertEqual({(line["event"], line["at"]) for line in warned_lines},
                          {("boinc_batch_cap_warning", int(NOW))})
@@ -2391,6 +2394,59 @@ class QueueModeTests(unittest.TestCase):
         self.state, self.fake = {}, QueueFake([message(number) for number in range(1, 8)])
         event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=50)
         self.assertEqual((self.fake.actions[0], event["refill_cap"]), (("claim", 2), 2))
+
+    def journal_soft_cap_setup(self):
+        # Two pages out, each with a journal; then both results come in.
+        self.state, self.fake = {}, QueueFake([message(number) for number in range(1, 8)])
+        self.config["batch_size"] = 1
+        for _ in range(2):
+            batch.tick(self.config, self.state, self.fake, lambda: None, NOW)
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        # Both results collected in one tick, so an uncapped tick refills (one page).
+        self.config["batch_size"] = 2
+        self.fake.actions.clear()
+
+    def test_journal_soft_cap_stops_claims_and_exports_but_still_collects(self):
+        # #2131: at the high mark nothing new is claimed or exported, so no journal is added,
+        # but results are still collected and published, which the archive needs to drain.
+        self.journal_soft_cap_setup()
+        event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=1,
+                           journal_high=2, journal_low=1)
+        actions = [action[0] for action in self.fake.actions]
+        self.assertGreaterEqual(actions.count("collect"), 1)
+        self.assertNotIn("claim", actions)
+        self.assertNotIn("export", actions)
+        self.assertEqual(event["backpressure_reason"], "journal_soft_cap")
+        self.assertEqual((event["journals"], event["journal_high"], event["journal_low"],
+                          event["journal_soft_cap"]), (2, 2, 1, True))
+        self.assertTrue(self.state["journal_soft_cap"])
+        # Under the default marks (90% and 85% of MAX_JOBS) the same tick refills.
+        self.journal_soft_cap_setup()
+        event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=1)
+        self.assertIn("claim", [action[0] for action in self.fake.actions])
+        self.assertFalse(event["journal_soft_cap"])
+        self.assertEqual((event["journal_high"], event["journal_low"]),
+                         (batch.MAX_JOBS * 9 // 10, batch.MAX_JOBS * 85 // 100))
+
+    def test_journal_soft_cap_has_hysteresis(self):
+        # Between the marks the previous tick's answer holds; below the low mark it resumes.
+        for capped_before, high, low, capped in ((True, 3, 2, True), (False, 3, 2, False),
+                                                 (True, 4, 3, False)):
+            with self.subTest(capped_before=capped_before, high=high, low=low):
+                self.journal_soft_cap_setup()
+                self.state["journal_soft_cap"] = capped_before
+                event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=1,
+                                   journal_high=high, journal_low=low)
+                actions = [action[0] for action in self.fake.actions]
+                self.assertEqual(event["journal_soft_cap"], capped)
+                self.assertEqual(self.state["journal_soft_cap"], capped)
+                self.assertEqual("claim" in actions, not capped)
+                self.assertGreaterEqual(actions.count("collect"), 1)
+        for high, low in ((2, 2), (2, 0), (batch.MAX_JOBS + 1, 1), (True, 1)):
+            with self.subTest(high=high, low=low), self.assertRaisesRegex(ValueError, "soft cap"):
+                batch.tick(self.config, {}, QueueFake([]), lambda: None, NOW,
+                           journal_high=high, journal_low=low)
 
     def test_claims_only_what_it_can_start_then_pushes_exports_and_submits(self):
         first = self.tick()
@@ -5133,6 +5189,27 @@ class QueueTransportTests(unittest.TestCase):
                 self.assertEqual(batch.main(["--config", f.name, "--state-dir", state,
                                              "--refill-cap", "1"]), 1)
             self.assertIn("OCR plans", err.getvalue())
+
+    def test_journal_marks_are_checked_and_reach_the_tick(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as f, \
+                tempfile.TemporaryDirectory() as state:
+            json.dump(config(), f); f.flush()
+            for bad in (["--journal-high-mark", "9000", "--journal-low-mark", "9000"],
+                        ["--journal-high-mark", str(batch.MAX_JOBS + 1)],
+                        ["--journal-low-mark", "0"]):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(batch.main(["--config", f.name, "--state-dir", state, *bad]), 1)
+                self.assertIn("--journal-", err.getvalue())
+            seen = {}
+            fake = Fake()
+            fake.lock = contextlib.nullcontext
+            with patch.object(batch, "Transport", return_value=fake), \
+                    patch.object(batch, "tick", side_effect=lambda *a, **k: seen.update(k) or {}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(batch.main(["--config", f.name, "--state-dir", state, "--apply",
+                                             "--journal-high-mark", "9500", "--journal-low-mark", "9000"]), 0)
+            self.assertEqual((seen["journal_high"], seen["journal_low"]), (9500, 9000))
 
     def test_step_command_must_be_literal(self):
         for bad in ([], "ssh host", ["ssh", "host; rm -rf /"], ["ssh", "$(id)"]):
