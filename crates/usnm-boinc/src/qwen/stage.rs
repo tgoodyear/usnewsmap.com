@@ -69,12 +69,13 @@ pub struct Options {
     pub crop_rule: crops::WidthRule,
 }
 
-/// A root's crop rule, when it isn't the default: written by its first
-/// `qwen stage` and checked by every later one.
+/// A root's crop rule: claimed by the first `qwen stage` into a fresh root
+/// (the default rule included) and checked by every later one. A root staged
+/// before rules were recorded has no file and is a default-rule root.
 pub const CROP_RULE_FILE: &str = "crop-rule";
 
 /// Records or checks `root`'s crop rule: a root holds one rule. A root
-/// without the file is a default-rule root.
+/// without the file that already holds pages is a default-rule root.
 fn check_crop_rule(root: &Path, rule: crops::WidthRule) -> anyhow::Result<()> {
     let path = root.join(CROP_RULE_FILE);
     let recorded = match std::fs::read_to_string(&path) {
@@ -100,17 +101,34 @@ fn check_crop_rule(root: &Path, rule: crops::WidthRule) -> anyhow::Result<()> {
             r.name(),
             rule.name()
         ),
-        None if rule == crops::WidthRule::default() => {}
+        // A root staged before crop rules were recorded holds default-rule
+        // pages; it stays a default-rule root without a file.
+        None if staged => ensure!(
+            rule == crops::WidthRule::default(),
+            "{} already holds pages cut with {}: stage {} into a new root",
+            root.display(),
+            crops::WidthRule::default().name(),
+            rule.name()
+        ),
+        // A fresh root: the first run claims it for its rule, the default
+        // included, with an exclusive create, so two runs that start on the
+        // same fresh root at once can't each pass the check and cut pages
+        // with different rules. The run that loses reads the winner's rule.
         None => {
-            ensure!(
-                !staged,
-                "{} already holds pages cut with {}: stage {} into a new root",
-                root.display(),
-                crops::WidthRule::default().name(),
-                rule.name()
-            );
             std::fs::create_dir_all(root)?;
-            atomic(&path, format!("{}\n", rule.name()).as_bytes())?;
+            static CLAIMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = CLAIMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let tmp = root.join(format!(".{CROP_RULE_FILE}.{}.{n}", std::process::id()));
+            std::fs::write(&tmp, format!("{}\n", rule.name()))?;
+            let claimed = std::fs::hard_link(&tmp, &path);
+            let _ = std::fs::remove_file(&tmp);
+            match claimed {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return check_crop_rule(root, rule);
+                }
+                Err(e) => return Err(e).context("recording the root's crop rule"),
+            }
         }
     }
     Ok(())
@@ -1549,11 +1567,22 @@ pub(crate) mod tests {
     fn a_root_holds_one_crop_rule() {
         use crops::WidthRule::{BlockShare60, Fixed600};
         let tmp = tempfile::tempdir().unwrap();
-        // The default rule writes nothing, so existing roots are unchanged.
+        // A root staged before rules were recorded keeps no file and stays a
+        // default-rule root.
+        let legacy = tmp.path().join("legacy");
+        std::fs::create_dir_all(units(&legacy).join("u1")).unwrap();
+        check_crop_rule(&legacy, Fixed600).unwrap();
+        assert!(!legacy.join(CROP_RULE_FILE).exists());
+        assert!(check_crop_rule(&legacy, BlockShare60).is_err());
+        assert!(!legacy.join(CROP_RULE_FILE).exists());
+        // A fresh root records its first run's rule, the default included.
         let old = tmp.path().join("old");
         check_crop_rule(&old, Fixed600).unwrap();
-        assert!(!old.join(CROP_RULE_FILE).exists());
-        // A new root records another rule and then refuses the default.
+        assert_eq!(
+            std::fs::read_to_string(old.join(CROP_RULE_FILE)).unwrap(),
+            "fixed-600\n"
+        );
+        assert!(check_crop_rule(&old, BlockShare60).is_err());
         let new = tmp.path().join("new");
         check_crop_rule(&new, BlockShare60).unwrap();
         assert_eq!(
@@ -1562,10 +1591,41 @@ pub(crate) mod tests {
         );
         check_crop_rule(&new, BlockShare60).unwrap();
         assert!(check_crop_rule(&new, Fixed600).is_err());
-        // A root that already holds default-rule pages can't switch.
-        std::fs::create_dir_all(units(&old).join("u1")).unwrap();
-        assert!(check_crop_rule(&old, BlockShare60).is_err());
-        assert!(!old.join(CROP_RULE_FILE).exists());
+        // No temporary file is left behind.
+        assert!(std::fs::read_dir(&new).unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with('.')));
+    }
+
+    #[test]
+    fn two_runs_on_a_fresh_root_cannot_mix_crop_rules() {
+        use crops::WidthRule::{BlockShare60, Fixed600};
+        // Two runs start on one fresh root at once with different rules:
+        // exactly one claims it, and the other is refused.
+        for _ in 0..20 {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("root");
+            let a = {
+                let root = root.clone();
+                std::thread::spawn(move || check_crop_rule(&root, Fixed600).is_ok())
+            };
+            let b = {
+                let root = root.clone();
+                std::thread::spawn(move || check_crop_rule(&root, BlockShare60).is_ok())
+            };
+            let (a, b) = (a.join().unwrap(), b.join().unwrap());
+            assert!(
+                a ^ b,
+                "exactly one rule may claim a fresh root (fixed-600 {a}, block-share-60 {b})"
+            );
+            let recorded = std::fs::read_to_string(root.join(CROP_RULE_FILE)).unwrap();
+            assert_eq!(
+                recorded.trim(),
+                if a { "fixed-600" } else { "block-share-60" }
+            );
+        }
     }
 
     pub(crate) fn engine() -> Engine {
