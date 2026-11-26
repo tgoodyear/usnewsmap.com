@@ -2287,6 +2287,37 @@ class SourceTest(unittest.TestCase):
                     driver.tick(a)
                 self.assertEqual(remote.call_count, 2)
 
+    def test_the_producer_outbox_has_its_own_free_space_floor(self):
+        # CT 215's outbox is a 24 GB disk: under the server's 50 GB floor it never prepared (#2159).
+        class Started(Exception):
+            pass
+        for producer_floor, pool_pct, producer_gb, starts in [
+                (None, 0, 20, False),   # the default floor is --min-free-gb's
+                (10, 0, 20, True),      # its own floor lets a small outbox prepare
+                (10, 0, 9, False),      # and still holds a full one back
+                (10, 60, 20, False)]:   # the server's thin pool keeps --min-free-gb
+            with self.subTest(producer_floor=producer_floor, pool_pct=pool_pct, producer_gb=producer_gb), \
+                    tempfile.TemporaryDirectory() as folder:
+                a = types.SimpleNamespace(state=Path(folder), campaign="qwen-test",
+                                          server_host="boinc.example", server_ct=230, prep_ct=215,
+                                          outbox=Path(folder), min_free_gb=50, min_producer_free_gb=producer_floor,
+                                          max_ready=1000, max_pending=3, max_unresolved=2000, reserve_mib=64,
+                                          chunk_pages=100)
+                inv = {"ready": 0, "fresh_pairs": 0, "unresolved_native": 0,
+                       "documents": [], "free_bytes": 100 * 1024**3}
+                pool = {"report": [{"lv": [{"lv_size": str(100 * 1024**3), "data_percent": str(pool_pct)}]}]}
+                with mock.patch.object(driver, "remote", side_effect=[json.dumps(inv), json.dumps(pool)]), \
+                        mock.patch.object(driver.shutil, "disk_usage",
+                                          return_value=types.SimpleNamespace(free=producer_gb * 1024**3)), \
+                        mock.patch.object(driver, "command", side_effect=Started), \
+                        contextlib.redirect_stdout(io.StringIO()) as out:
+                    if starts:
+                        with self.assertRaises(Started):
+                            driver.tick(a)
+                    else:
+                        driver.tick(a)
+                        self.assertIn("storage_backpressure", out.getvalue())
+
     def test_ready_sources_return_without_waiting_for_new_scan_manifest(self):
         with tempfile.TemporaryDirectory() as folder:
             a = types.SimpleNamespace(state=Path(folder), campaign="qwen-test",
