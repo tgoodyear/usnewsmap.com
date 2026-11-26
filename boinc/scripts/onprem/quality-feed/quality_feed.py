@@ -663,9 +663,10 @@ def prepare_wave(a, texts, wave, loc, as_map, ours, state, prepared, skipped, tr
     how many failed in a way worth a retry."""
     retry = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=a.workers) as ex:
+        # --full-res only when set, so the half-size default calls prepare_page as before.
+        full = {"full_res": True} if getattr(a, "full_res", False) else {}
         futs = {ex.submit(prepare_page, a.scan_server, texts, p, loc[p["doc_id"]],
-                          as_map.get(p["doc_id"]), ours.get(p["doc_id"]),
-                          getattr(a, "full_res", False)): p for p in wave}
+                          as_map.get(p["doc_id"]), ours.get(p["doc_id"]), **full): p for p in wave}
         for fut in concurrent.futures.as_completed(futs):
             p = futs[fut]
             try:

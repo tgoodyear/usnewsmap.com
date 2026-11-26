@@ -561,6 +561,30 @@ def ship_main():
     return ship_subsets(a)
 
 
+def server_inventory(a, version):
+    return json.loads(remote(a.server_host, ["pct", "exec", str(a.server_ct), "--", "podman", "exec",
+                                             "usnm-boinc-server", "python3",
+                                             "/project/ops/qwen-feed/qwen_submit.py", "--inventory",
+                                             *(["--prompt-version", str(version)] if version == 5 else [])]))
+
+
+def half_res_pages(inv):
+    """The pages only half-resolution roots hold: what a full-resolution re-read reads again
+    (#968 A/B). Every Qwen root on the server counts, held (--hold) roots included, because the
+    inventory reads the roots themselves, not the loaded results."""
+    if "full_documents" not in inv:
+        raise SystemExit("the server's qwen_submit.py predates crop_res: no full_documents in its inventory")
+    return sorted(set(inv["documents"]) - set(inv["full_documents"]))
+
+
+def write_half_res_pages(a, out):
+    pages = half_res_pages(server_inventory(a, getattr(a, "prompt_version", 1)))
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    tmp.write_text("".join(page + "\n" for page in pages))
+    tmp.replace(out)
+    print(json.dumps({"status": "half_res_pages", "pages": len(pages), "out": str(out)}))
+
+
 def tick(a):
     state = a.state
     state.mkdir(parents=True, exist_ok=True)
@@ -584,10 +608,7 @@ def _tick(a):
     ct = ct_argv(a.prep_ct, [])
     python = ct + ["/opt/usnm-quality-feed/venv/bin/python"]
     helper = "/opt/usnm-quality-feed/"
-    inv = json.loads(remote(a.server_host, ["pct", "exec", str(a.server_ct), "--", "podman", "exec",
-                                          "usnm-boinc-server", "python3",
-                                          "/project/ops/qwen-feed/qwen_submit.py", "--inventory",
-                                          *(["--prompt-version", str(version)] if version == 5 else [])]))
+    inv = server_inventory(a, version)
     pool = json.loads(remote(a.server_host, ["lvs", "--reportformat", "json", "--units", "b", "--nosuffix",
                                             "-o", "lv_size,data_percent", "pve/data"]))["report"][0]["lv"][0]
     pool_free = float(pool["lv_size"]) * (1 - float(pool["data_percent"]) / 100)
@@ -628,7 +649,10 @@ def _tick(a):
     )])
     deferred_path = a.state / "deferred.json"
     deferred = json.loads(deferred_path.read_text()) if deferred_path.exists() else {}
-    seen = set(inv["documents"]) | set(json.loads(done)) | {
+    # A full-resolution re-read (--reread-half) takes pages only half-resolution roots hold, so
+    # only full-resolution roots' pages count as read; an inventory without them fails closed.
+    held = inv["full_documents"] if getattr(a, "reread_half", False) else inv["documents"]
+    seen = set(held) | set(json.loads(done)) | {
         d for d, retry_at in deferred.items() if retry_at > time.time()}
     command(ct + ["tee", work + "/staged.txt"], ("\n".join(sorted(seen)) + "\n").encode())
     archive_inventory = json.loads(remote(
@@ -831,6 +855,14 @@ def main():
     ap.add_argument("--serbian-pages", type=Path,
                     help="With --serbian-budget: a file of doc_ids, one a line; the Serbian budget "
                          "takes only these pages, worst damage first")
+    ap.add_argument("--write-half-res-pages", type=Path, metavar="FILE",
+                    help="write the pages only half-resolution Qwen roots hold, one doc_id a line, "
+                         "and exit: a --reread-half campaign's --pages list (narrow it to a "
+                         "language with --language on the campaign; the feed orders by damage)")
+    ap.add_argument("--reread-half", action="store_true",
+                    help="with --full-res: a re-read campaign, which selects pages that only "
+                         "half-resolution roots hold (#968 A/B); its ship args need "
+                         "--qwen-crop-res full --qwen-reread-half")
     ap.add_argument("--full-res", action="store_true",
                     help="prepare page images at full resolution (a JP2 isn't decoded at half "
                          "size): the campaign's ship args need --qwen-crop-res full, so its root "
@@ -850,8 +882,13 @@ def main():
             or (a.pages is not None and (not a.pages.is_file() or not re.fullmatch(r"[a-z]{3}", a.language)))
             or (a.language == "eng" and a.prompt_version != 5)):
         ap.error("invalid campaign or non-positive/out-of-range limits")
+    if a.reread_half and not a.full_res:
+        ap.error("--reread-half is a full-resolution re-read: it needs --full-res")
     if a.prep_ct is None:
         ap.error("set CTID or pass --prep-ct")
+    if a.write_half_res_pages:
+        write_half_res_pages(a, a.write_half_res_pages)
+        return
     tick(a)
 
 

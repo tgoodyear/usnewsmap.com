@@ -140,10 +140,9 @@ got=$(psql_admin -d usnm_quality -tA -c "SELECT qe_version, qe_known3, qe_no_wor
 got=$(psql_admin -d usnm_quality -tA -c "SELECT engine_family, engine_version, software->1->>'name', vendor FROM quality.pages p JOIN quality.loc_software USING (batch, batch_version)")
 [ "$got" = "abbyy|12.0|FineReader|CCS Content Conversion Specialists" ] || die "loc_software after the load: $got"
 { echo "SET ROLE quality_reader;"; cat "$here/rank.sql"; } | psql_admin -d usnm_quality -v limit=5 > /dev/null
-# crop_res (#968 A/B): existing rows read half; the re-read list runs as quality_reader.
+# crop_res (#968 A/B): existing rows read half.
 got=$(psql_admin -d usnm_quality -tA -c "SELECT DISTINCT crop_res FROM quality.reader_scores")
 [ "$got" = "half" ] || die "reader_scores' crop_res default: $got"
-{ echo "SET ROLE quality_reader;"; cat "$here/half_res_reread.sql"; } | psql_admin -d usnm_quality -v lang=eng -v limit=5 > /dev/null
 # Pages at the campaign builder's band edges, rate:occurrences, so that its own test of a row
 # is checked against the report's SQL.
 export QC_EDGES="0.1:60 0.25:60 0.25000001:60 0.2500001:60 0.0999999:60 0.5:49 0.5:50"

@@ -178,7 +178,9 @@ elif "python3" in args and "-" in args:
                               (["--qwen-crop-rule", "block-share-60"], False),
                               (["--qwen-crop-rule", "wide"], True),
                               (["--qwen-crop-res", "full"], False),
-                              (["--qwen-crop-res", "quarter"], True)):
+                              (["--qwen-crop-res", "quarter"], True),
+                              (["--qwen-reread-half"], True),
+                              (["--qwen-reread-half", "--qwen-crop-res", "half"], True)):
             with self.subTest(extra=extra):
                 result = self.run_ship(extra, native=native)
                 self.assertEqual(result.returncode, 1, result.stderr)
@@ -234,6 +236,15 @@ elif "python3" in args and "-" in args:
                         self.assertEqual(call.count(flag), 1 if value else 0)
                         if value:
                             self.assertEqual(call[call.index(flag) + 1], value)
+
+    def test_a_reread_reaches_every_native_call_with_full_resolution(self):
+        result = self.run_ship([*self.GUARDED, "--qwen-crop-res", "full", "--qwen-reread-half"], langs="srp\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.native_calls()
+        self.assertEqual(len(calls), 3)
+        for call in calls:
+            self.assertEqual(call.count("--reread-half"), 1)
+            self.assertEqual(call[call.index("--crop-res") + 1], "full")
 
     def test_a_bundle_size_reaches_both_native_calls_for_the_main_root_only(self):
         # #1435: unset, neither call names a bundle size, so qwen_submit.py stages one page a unit.
