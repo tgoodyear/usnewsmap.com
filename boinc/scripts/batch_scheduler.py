@@ -941,8 +941,8 @@ class Transport:
     def __init__(self, config, directory, *, status_url=None, status_file=None,
                  batch_submit=False, batch_spool_out=False, batch_collect=False, batch_export=False,
                  onprem_handoff=(), timings=None, rest_journals=False, collect_parallel=1,
-                 skip_truncated=False, extra_claim_languages=(), step_lock_wait_secs=0,
-                 local_lock=False, ssh_reads=False, plan_scope=False):
+                 skip_truncated=False, extra_claim_languages=(), skip_claim_languages=(),
+                 step_lock_wait_secs=0, local_lock=False, ssh_reads=False, plan_scope=False):
         self.config = config
         # --plan-scope (#1836): the plan's own controller lease and reports, and PLAN_SCOPE on
         # its BOINC host steps, so plans tick side by side. Only for a hand-off plan whose
@@ -992,6 +992,16 @@ class Transport:
             and all(isinstance(l, str) and re.fullmatch(r"[a-z]{3}", l) for l in extra)),
             "--claim-language adds new three-letter codes to the configuration's claim_languages")
         self.extra_claim_languages = extra
+        # Languages the claim no longer takes (--skip-claim-language): also a flag, so narrowing
+        # doesn't change the allocation digest either. It only stops new claims: pages already
+        # claimed in that language are exported, collected and published as before. It can only
+        # name languages the claim would take, and must leave at least one.
+        skip = list(skip_claim_languages)
+        require(not skip or (
+            listed and len(set(skip)) == len(skip) and set(skip) <= set(listed) | set(extra)
+            and (set(listed) | set(extra)) - set(skip)),
+            "--skip-claim-language names languages of claim_languages (or --claim-language), leaving at least one")
+        self.skip_claim_languages = skip
         self.directory = directory
         self.status_url = status_url
         self.status_file = status_file
@@ -1906,6 +1916,8 @@ class Transport:
         failure = None
         languages = self.config.get("claim_languages")
         languages = list(languages) + self.extra_claim_languages if languages else None
+        if languages:
+            languages = [language for language in languages if language not in self.skip_claim_languages]
         try:
             self.step("handoff", "claim", HANDOFF_MANIFEST=self.config["manifest"], CLAIM_NONCE=nonce,
                       CLAIM_MAX=count, CLAIM_QUEUES=",".join(self.config["claim_queues"]),
@@ -5831,6 +5843,10 @@ def main(argv=None):
                         help="claim pages in this source language too, beside the configuration's "
                              "claim_languages, without changing the allocation digest; repeat for more. "
                              "Use it for a language whose scope trust.json holds or trusts")
+    parser.add_argument("--skip-claim-language", action="append", default=[], metavar="LANG",
+                        help="stop claiming new pages in this language of the configuration's claim_languages "
+                             "(or --claim-language), without changing the allocation digest; repeat for more. "
+                             "Pages already claimed in it go on as before")
     parser.add_argument("--resume-native", action="store_true",
                         help=f"a {NATIVE_APP_NAME} plan paused on a native result it could not publish, or "
                              "a refused submission (#1780): clear the pause and go on; a result still held "
@@ -5909,6 +5925,13 @@ def main(argv=None):
                     and not set(args.claim_language) & set(config["claim_languages"])
                     and all(re.fullmatch(r"[a-z]{3}", l) for l in args.claim_language),
                     "--claim-language adds new three-letter codes to the configuration's claim_languages")
+        if args.skip_claim_language:
+            listed = set(config.get("claim_languages") or ()) | set(args.claim_language)
+            require(config.get("source") == "queue" and config.get("claim_languages")
+                    and config.get("app") != NATIVE_APP_NAME
+                    and len(set(args.skip_claim_language)) == len(args.skip_claim_language)
+                    and set(args.skip_claim_language) <= listed and listed - set(args.skip_claim_language),
+                    "--skip-claim-language names languages a queue plan (not a native one) claims, leaving at least one")
         require(not args.resume_native or config.get("app") == NATIVE_APP_NAME,
                 f"--resume-native is for {NATIVE_APP_NAME} plans")
         require(1 <= args.collect_parallel <= MAX_COLLECT_PARALLEL, "invalid --collect-parallel")
@@ -5968,7 +5991,10 @@ def main(argv=None):
             if args.other_app_budget is not None:
                 plan_event["other_app_budget"] = args.other_app_budget
             if config.get("claim_languages"):
-                plan_event["claim_languages"] = config["claim_languages"] + args.claim_language
+                plan_event["claim_languages"] = [language for language in config["claim_languages"] + args.claim_language
+                                                 if language not in args.skip_claim_language]
+                if args.skip_claim_language:
+                    plan_event["skip_claim_languages"] = args.skip_claim_language
             if config.get("app") == NATIVE_APP_NAME:
                 plan_event["app"] = NATIVE_APP_NAME
                 plan_event["native_hosts"] = config["native_hosts"]
@@ -6002,6 +6028,7 @@ def main(argv=None):
                 collect_parallel=args.collect_parallel, timings=timings,
                 skip_truncated=args.skip_truncated_scans,
                 extra_claim_languages=tuple(args.claim_language),
+                skip_claim_languages=tuple(args.skip_claim_language),
                 step_lock_wait_secs=args.step_lock_wait_secs, local_lock=args.local_lock,
                 ssh_reads=args.ssh_reads, plan_scope=args.plan_scope,
             )

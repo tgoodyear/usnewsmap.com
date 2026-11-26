@@ -65,6 +65,9 @@ Prod runs the queue-fed priority controller in the scan-fetch container (#866) a
 - `/opt/usnm`: main pinned to one commit ([Moving the controller checkout](#moving-the-controller-checkout-1412));
 - `/root/.config/usnewsmap/prod/.env`: non-secret outputs;
 - `/etc/usnm/boinc-priority-controller.json`: `claim_queues ["ocr-priority"]`, `claim_languages ["eng", "deu"]` (widened to `srp` by `--claim-language srp` since 7 November), `lease_hours` 36;
+
+`--skip-claim-language <lang>` (repeatable) is the other way: a queue plan stops claiming *new* pages in a language of its `claim_languages` (or `--claim-language`) without changing the allocation digest. Pages already claimed in it are exported, collected and published as before, and their messages left in the queue wait there. It must leave at least one language, and isn't for a native plan, whose trusted hosts are admitted per claimed language. Main skips `deu` since 26 November 2026: stock-engine German reads have no per-language evidence and would be discarded (#2127: 10.2% CER stock vs 4.6% for the fine-tuned Fraktur model B), so German CPU waits for Fraktur B.
+
 - `/var/lib/usnm-priority-controller`: state;
 - push command `/opt/usnm/scripts/ocr-node/push-boinc-scan.sh` (local).
 
