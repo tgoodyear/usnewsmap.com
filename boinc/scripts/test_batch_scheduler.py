@@ -2703,25 +2703,27 @@ class QueueModeTests(unittest.TestCase):
         self.assertFalse([a for a in self.fake.actions if a[0] == "submit" and a[1] == own["job"]["id"]])
         self.assertEqual(event["stood_down"], 1)
 
-    def test_inactive_reservations_take_no_room_under_the_global_cap(self):
-        # Three of native-feed-8's reservations whose claims it let go of, on pages this plan
-        # doesn't claim: kept for history, but a global cap of 3 still has room for this plan.
+    def test_stale_reservations_still_hold_room_under_the_global_cap(self):
+        # Three of native-feed-8's reservations whose claims it let go of (as superseded or
+        # stood-down ones are), on pages this plan doesn't claim: they still count against a
+        # global cap of 3 until reconcile gives them back, so nothing is submitted.
         self.fake.rows = [self.stale(number) for number in (5, 6, 7)]
         for row in self.fake.rows:
             row["job"]["message"]["page"] = f"sn99999999/1900-01-01/ed-1/seq-{row['job']['id'][-1]}"
         self.SHAS = {**self.SHAS, **{row["job"]["message"]["page"]: "d" * 64 for row in self.fake.rows}}
-        stale = copy.deepcopy(self.fake.rows)
         with contextlib.redirect_stderr(io.StringIO()):
-            event = self.tick_live({"native-feed-8": {}}, max_global_pending=3)
-        self.assertTrue([a for a in self.fake.actions if a[0] == "submit"])
-        self.assertTrue(all(row in self.fake.rows for row in stale))
-        # Still live in native-feed-8's state: they count, and fill the cap.
-        self.setUp()
-        self.fake.rows = copy.deepcopy(stale)
-        live = {row["job"]["message"]["page"]: {"d" * 64} for row in stale}
-        with contextlib.redirect_stderr(io.StringIO()):
-            self.tick_live({"native-feed-8": live}, max_global_pending=3)
+            self.tick_live({"native-feed-8": {}}, max_global_pending=3)
         self.assertFalse([a for a in self.fake.actions if a[0] == "submit"])
+        # A superseded one too: page 1 taken over, and its stale journal is one more in the
+        # global count than the same tick without it.
+        counts = []
+        for rows in ([self.stale(1)], []):
+            self.setUp()
+            self.fake.rows = rows
+            with contextlib.redirect_stderr(io.StringIO()):
+                event = self.tick_live({"native-feed-8": {}})
+            counts.append((event["superseded_reservations"], event["global_pending"]))
+        self.assertEqual(counts[0], (1, counts[1][1] + 1))
 
     def test_an_established_takeover_is_collected_after_its_claim_is_lost(self):
         # The winner took the page over and submitted its job; its claim is later marked

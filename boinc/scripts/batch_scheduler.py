@@ -2400,29 +2400,6 @@ def abandoned_reservation(state, server_jobs, sibling_live, image=None):
     return check
 
 
-def inactive_reservation(plan, state, server_jobs, sibling_live):
-    """Whether a journal is a reservation no plan will ever submit (#2146 part 2), the same for
-    every plan that reads the same states: a `reserved` root (no retry, not held, not kept by a
-    held scope) that never reached BOINC, whose own plan's claim of its message is no longer
-    live: this plan's, marked `lease_lost` (it stood down); another plan's,
-    absent from that plan's own state as read (--check-state-dir) as a live claim. Such a
-    journal stays for history, but takes no room under the global cap. An owner whose state
-    wasn't read is never presumed inactive."""
-    claims = state.get("claims", {})
-
-    def check(record):
-        if (record.get("stage") != "reserved" or record.get("retry") or record.get("held")
-                or kept_by_policy(record) or record["job"]["id"] in server_jobs):
-            return False
-        page = record["job"]["message"]["page"]
-        if record.get("plan") == plan:
-            claim = claims.get(page)
-            return isinstance(claim, dict) and "lease_lost" in claim
-        owner = (sibling_live or {}).get(str(record.get("plan")))
-        return owner is not None and queue_message_sha256(record["job"]["message"]) not in owner.get(page, ())
-    return check
-
-
 def stand_down(owned, conflicts, state, server_jobs):
     """The other side of abandoned_reservation (#2146 part 2): a page whose claim this plan's
     renewal marked `lease_lost` (another plan may hold its message now) and whose own journal
@@ -3333,7 +3310,7 @@ def retained_backlog(config, records, owned, selected, pending_jobs, passed=()):
     and selected pages with no journal yet. `passed` are pages passed over for another plan's
     journal (#1685): not missing work, though their unsettled journals still count."""
     uncollected = sum(
-        not settled(record) and not record.get("inactive") and record["job"]["id"] not in pending_jobs
+        not settled(record) and record["job"]["id"] not in pending_jobs
         for record in records
     )
     missing = [page for page in config["pages"] if page["page"] in selected and page["page"] not in owned
@@ -4899,8 +4876,6 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             for entry in sibling_archived.get(page, []))
     elsewhere_held = set()
 
-    inactive = inactive_reservation(config["plan"], state, server, sibling_live) if feed else None
-
     def read_records():
         found = transport.records()
         for record in found:
@@ -4908,10 +4883,6 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
                     and not record.get("held") and archived_elsewhere(record)):
                 record["held"] = "archived as held by another plan with the same worker"
                 elsewhere_held.add(record["job"]["id"])
-        # In memory only, like the held mark: out of the global cap's count (#2146).
-        for record in found:
-            if inactive is not None and inactive(record):
-                record["inactive"] = True
         return found
 
     records = read_records()
@@ -5403,8 +5374,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             cohort_backlog += sum(page not in owned and page not in conflicts for page in selected)
         cohort_submit_room = max(0, target - ocr_in_flight - cohort_backlog)
         # Every plan's unsettled journals not pending in the inventory the room is counted from.
-        global_backlog = (sum(not settled(record) and not record.get("inactive")
-                              and record["job"]["id"] not in room_pending | candidates
+        global_backlog = (sum(not settled(record) and record["job"]["id"] not in room_pending | candidates
                               for record in records)
                           + sum(page not in owned and page not in conflicts for page in selected))
         global_submit_room = max(0, global_room(cohort_info, room_in_flight + global_backlog, room_other)
