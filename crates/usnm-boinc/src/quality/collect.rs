@@ -886,12 +886,18 @@ enum Column {
 /// all integers as `Int64`, others as `Float64`. Field order is the
 /// struct's.
 pub fn to_parquet<T: serde::Serialize>(rows: &[T]) -> anyhow::Result<Vec<u8>> {
-    to_parquet_typed(rows, QE_TYPES, None)
+    to_parquet_typed(rows, QE_TYPES, &[])
 }
 
 /// The Parquet key-value metadata key naming the campaign's page
 /// selection (#2139), the same key the prefetch manifest carries.
 pub const SELECTION_KEY: &str = usnm_ocr_contract::prefetch::SELECTION_KEY;
+
+/// The Parquet key-value metadata key naming the resolution the campaign's
+/// VLM crops were cut at, `half` or `full` (#968 A/B, 26 Nov 2026), from the
+/// qwen root's `crop-res` (a root without one is `half`). Analyses never mix
+/// the two.
+pub const CROP_RES_KEY: &str = "usnm.crop_res";
 
 /// The quality-measure columns keep their types when every value is null
 /// (no `--qe-dir`, units staged without the file, readings with no words).
@@ -909,10 +915,10 @@ const QE_TYPES: &[(&str, DataType)] = &[
 
 #[cfg(test)]
 fn crop_parquet(rows: &[CropRow]) -> anyhow::Result<Vec<u8>> {
-    crop_parquet_with(rows, None)
+    crop_parquet_with(rows, &[])
 }
 
-fn crop_parquet_with(rows: &[CropRow], selection: Option<&str>) -> anyhow::Result<Vec<u8>> {
+fn crop_parquet_with(rows: &[CropRow], meta: &[(&str, &str)]) -> anyhow::Result<Vec<u8>> {
     let types: Vec<(&str, DataType)> = QE_TYPES
         .iter()
         .cloned()
@@ -922,13 +928,13 @@ fn crop_parquet_with(rows: &[CropRow], selection: Option<&str>) -> anyhow::Resul
             ("vlm_reading_present", DataType::Boolean),
         ])
         .collect();
-    to_parquet_typed(rows, &types, selection)
+    to_parquet_typed(rows, &types, meta)
 }
 
 fn to_parquet_typed<T: serde::Serialize>(
     rows: &[T],
     types: &[(&str, DataType)],
-    selection: Option<&str>,
+    meta: &[(&str, &str)],
 ) -> anyhow::Result<Vec<u8>> {
     let values: Vec<serde_json::Map<String, serde_json::Value>> = rows
         .iter()
@@ -1088,11 +1094,14 @@ fn to_parquet_typed<T: serde::Serialize>(
     let mut props = WriterProperties::builder().set_compression(Compression::ZSTD(
         ZstdLevel::try_new(6).expect("valid level"),
     ));
-    if let Some(sel) = selection {
-        props = props.set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new(
-            SELECTION_KEY.to_owned(),
-            sel.to_owned(),
-        )]));
+    if !meta.is_empty() {
+        props = props.set_key_value_metadata(Some(
+            meta.iter()
+                .map(|(k, v)| {
+                    parquet::file::metadata::KeyValue::new((*k).to_owned(), (*v).to_owned())
+                })
+                .collect(),
+        ));
     }
     let props = props.build();
     let mut w = ArrowWriter::try_new(Vec::new(), schema.clone(), Some(props))?;
@@ -1961,6 +1970,7 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
 pub fn files(
     campaign: &str,
     selection: Option<&str>,
+    crop_res: Option<&str>,
     c: &Collected,
 ) -> anyhow::Result<Vec<(String, Vec<u8>, &'static str)>> {
     if let Some(sel) = selection {
@@ -1973,15 +1983,33 @@ pub fn files(
     if let Some(sel) = selection {
         summary = summary.replacen("\n\n", &format!("\n\nSelection: `{sel}`.\n\n"), 1);
     }
+    if let Some(res) = crop_res {
+        anyhow::ensure!(
+            matches!(res, "half" | "full"),
+            "invalid crop resolution {res:?}"
+        );
+        summary = summary.replacen(
+            "\n\n",
+            &format!("\n\nVLM crop resolution: `{res}` (`{CROP_RES_KEY}`).\n\n"),
+            1,
+        );
+    }
+    let mut meta: Vec<(&str, &str)> = Vec::new();
+    if let Some(sel) = selection {
+        meta.push((SELECTION_KEY, sel));
+    }
+    if let Some(res) = crop_res {
+        meta.push((CROP_RES_KEY, res));
+    }
     Ok(vec![
         (
             "pages.parquet".into(),
-            to_parquet_typed(&c.pages, QE_TYPES, selection)?,
+            to_parquet_typed(&c.pages, QE_TYPES, &meta)?,
             "application/vnd.apache.parquet",
         ),
         (
             "crops.parquet".into(),
-            crop_parquet_with(&c.crops, selection)?,
+            crop_parquet_with(&c.crops, &meta)?,
             "application/vnd.apache.parquet",
         ),
         ("summary.md".into(), summary.into_bytes(), "text/markdown"),
@@ -2020,7 +2048,14 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         "collection cache warmed {} dirty units; at least 1 deferred; no incomplete snapshot published",
         progress.dirty
     );
-    let out = files(&opts.campaign, opts.selection.as_deref(), &c)?;
+    // The VLM readings' crop resolution, from the qwen root: a campaign with no
+    // qwen root has no VLM readings to tag.
+    let crop_res = if opts.qwen_root.is_dir() {
+        Some(crate::qwen::stage::root_crop_res(&opts.qwen_root)?.name())
+    } else {
+        None
+    };
+    let out = files(&opts.campaign, opts.selection.as_deref(), crop_res, &c)?;
     if let Some(dir) = &opts.out_dir {
         for (name, bytes, _) in &out {
             atomic(&dir.join(name), bytes)?;
@@ -2061,18 +2096,55 @@ pub(super) mod tests {
                 .and_then(|kv| kv.iter().find(|k| k.key == SELECTION_KEY))
                 .and_then(|k| k.value.clone())
         };
-        let held = files("held-only-v1", Some("held-only-v1"), &c).unwrap();
+        let held = files("held-only-v1", Some("held-only-v1"), None, &c).unwrap();
         assert_eq!(kv(&held[0].1).as_deref(), Some("held-only-v1"));
         assert_eq!(kv(&held[1].1).as_deref(), Some("held-only-v1"));
         let summary = String::from_utf8(held[2].1.clone()).unwrap();
         assert!(summary
             .starts_with("# Quality campaign held-only-v1\n\nSelection: `held-only-v1`.\n\n"));
-        let plain = files("t", None, &c).unwrap();
+        let plain = files("t", None, None, &c).unwrap();
         assert_eq!(kv(&plain[0].1), None);
         assert!(!String::from_utf8(plain[2].1.clone())
             .unwrap()
             .contains("Selection"));
-        assert!(files("t", Some("Bad Tag"), &c).is_err());
+        assert!(files("t", Some("Bad Tag"), None, &c).is_err());
+    }
+
+    #[test]
+    fn a_crop_resolution_is_recorded_beside_the_selection() {
+        let c = Collected {
+            summary: Summary::default(),
+            pages: Vec::new(),
+            crops: Vec::new(),
+        };
+        let meta = |bytes: &[u8]| -> Vec<(String, String)> {
+            use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder as Reader;
+            let b = Reader::try_new(bytes::Bytes::from(bytes.to_vec())).unwrap();
+            b.metadata()
+                .file_metadata()
+                .key_value_metadata()
+                .map(|kv| {
+                    kv.iter()
+                        .filter(|k| k.key.starts_with("usnm."))
+                        .map(|k| (k.key.clone(), k.value.clone().unwrap_or_default()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let out = files("x08-eng", Some("held-only-v1"), Some("full"), &c).unwrap();
+        for table in &out[..2] {
+            let kv = meta(&table.1);
+            assert!(kv.contains(&(SELECTION_KEY.to_owned(), "held-only-v1".to_owned())));
+            assert!(kv.contains(&(CROP_RES_KEY.to_owned(), "full".to_owned())));
+        }
+        let summary = String::from_utf8(out[2].1.clone()).unwrap();
+        assert!(summary.contains("VLM crop resolution: `full`"));
+        let half = files("q", None, Some("half"), &c).unwrap();
+        assert_eq!(
+            meta(&half[1].1),
+            vec![(CROP_RES_KEY.to_owned(), "half".to_owned())]
+        );
+        assert!(files("q", None, Some("quarter"), &c).is_err());
     }
 
     #[test]
@@ -3141,7 +3213,7 @@ pub(super) mod tests {
             cache: None,
             ..opts.clone()
         };
-        let tables = |c: &Collected| files(&opts.campaign, None, c).unwrap();
+        let tables = |c: &Collected| files(&opts.campaign, None, None, c).unwrap();
         let expected = collect(&uncached).unwrap();
         assert_eq!(expected.summary.with_readings, 1);
         let expected = tables(&expected);

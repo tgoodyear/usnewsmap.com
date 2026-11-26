@@ -113,6 +113,11 @@ pub enum QwenCommands {
         /// for 7 to 8 column papers). A root holds one rule; it records any but the default.
         #[arg(long, default_value = "fixed-600")]
         crop_rule: usnm_ocr_quality::crops::WidthRule,
+        /// The resolution the feed staged the root's page images at: `half` (the default, a JP2
+        /// over 4,000 px decoded at half size) or `full` (the feed's `--full-res`). A root holds
+        /// one; collectors tag every reading `crop_res` from it.
+        #[arg(long, value_enum, default_value_t = super::stage::CropRes::Half)]
+        crop_res: super::stage::CropRes,
         /// Xiaomi-OCR-0 page mode (#1998): one region per LoC text block (long blocks split at
         /// line boundaries), every region of the page read, small pages packed into bundles.
         /// Reads the page and ALTO from `--quality-root` and fetches nothing. Pins the model to
@@ -427,6 +432,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
             page_records,
             max_hold_secs,
             crop_rule,
+            crop_res,
             page_mode,
             campaign,
             strata,
@@ -493,6 +499,7 @@ pub async fn run(command: QwenCommands) -> anyhow::Result<()> {
                     page_records,
                     max_hold_secs,
                     crop_rule,
+                    crop_res,
                 },
                 members.as_deref(),
             )

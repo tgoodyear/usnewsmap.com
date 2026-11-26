@@ -829,7 +829,7 @@ def run_transaction(a):
             "--engine-weights", engine["weights"], "--max-pages", str(len(docs)),
             "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", "1",
             "--prompt-version", str(a.prompt_version), *model_args(a.prompt_version),
-            "--members", str(members_path)], check=True)
+            *crop_args(a), "--members", str(members_path)], check=True)
         states = transaction_native_sources(root, value)
         native = selected_jobs(root, "qwen.json", docs)
         quality_jobs = selected_jobs(quality, "quality.json", docs)
@@ -1001,10 +1001,21 @@ def _stage_root(a, root, quality, new_pages):
              "--engine-image", engine["image"], "--engine-llama", engine["llama"],
              "--engine-weights", engine["weights"], "--max-pages", str(new_pages),
              "--gpu-timeout-secs", "14400", "--cpu-timeout-secs", "7200", "--bundle-size", str(a.bundle_size),
-             "--prompt-version", str(a.prompt_version), *model_args(a.prompt_version)]
+             "--prompt-version", str(a.prompt_version), *model_args(a.prompt_version), *crop_args(a)]
     if a.page_records is not None:
         stage += ["--page-records", str(a.page_records)]
     subprocess.run(stage, check=True)
+
+
+def crop_args(a):
+    """`qwen stage`'s --crop-rule and --crop-res, only when set: a stage binary from before
+    #2164 knows neither, and a root without them is a fixed-600, half-resolution root."""
+    args = []
+    if getattr(a, "crop_rule", None):
+        args += ["--crop-rule", a.crop_rule]
+    if getattr(a, "crop_res", None):
+        args += ["--crop-res", a.crop_res]
+    return args
 
 
 def main():
@@ -1039,6 +1050,13 @@ def main():
     ap.add_argument("--page-records", type=Path,
                     help="With --bundle-size above 1, the directory `qwen compare --pages` writes: stage "
                          "packs each page a page-v1 verdict settled as disagreed into one new bundle (#1435)")
+    ap.add_argument("--crop-rule", choices=("fixed-600", "block-share-60"),
+                    help="qwen stage's crop width rule (#2164); the root records it. Needs a stage "
+                         "binary from #2164 on")
+    ap.add_argument("--crop-res", choices=("half", "full"),
+                    help="the resolution the feed staged the page images at (its --full-res is "
+                         "full); the root records it and collectors tag every reading with it. "
+                         "Needs a stage binary from this change on")
     ap.add_argument("--held-only", action="store_true",
                     help="With --bundle-size above 1 and no chunk: stage and submit only the held pages "
                          "whose hold has run out (#1435); admission counts every held page")

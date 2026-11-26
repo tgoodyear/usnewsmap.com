@@ -743,6 +743,39 @@ systemctl enable --now usnm-quality-held-build.timer
 #    --selection held-only-v1 ...` beside the other campaigns' collections.
 ```
 
+### Full-resolution crops (`crop_res`, #968 A/B, 26 Nov 2026)
+
+Every crop recipe cut its crops from the staged `page.jpg`, and `quality_feed.py page_jpeg` decodes a JP2 over 4,000 px at half size. The #968 A/B read all 1,259 crops of its nine Latin sets with Xiaomi-OCR-0 (request version 5) at both sizes through the BOINC app: pooled CER 7.11% at half resolution and 4.52% at full (−2.60 points, 95% CI −3.13 to −2.11), every set better. The app doesn't resize crops; its limit is about 4,096 image tokens (about 4.2 Mpx). Science's rule: a model's campaigns go full resolution when pooled CER improves by 0.5 points or more. Xiaomi-OCR-0 passed. Qwen 8B's result is on #968.
+
+- **Staging.** `qwen_feed.py --full-res` passes `--full-res` to `quality_feed.py run`, which decodes JP2s at full size (grey, quality 75, as before). The default is unchanged. A page is about 4× the bytes. `qwen stage` already caps a bundle by `MAX_SCAN` (128 MiB) and marks a page that won't fit alone `too_large`, so full-resolution bundles hold fewer pages. Keep `--reserve-mib` at least 64.
+- **The tag.** `quality-ship.sh --qwen-crop-res full` passes `--crop-res full` through `qwen_submit.py` to `qwen stage`, which records it in the root's `crop-res` file. The first run into a fresh root claims it, like `crop-rule`, and a root never mixes the two. A root without the file is a `half` root: every root staged before this change. Set both `--full-res` on the feed and `--qwen-crop-res full` on the ship, or neither.
+- **In the results.** `quality collect` writes the root's resolution into `pages.parquet` and `crops.parquet` as the Parquet metadata `usnm.crop_res` and into `summary.md` ("VLM crop resolution"). `load.py results` copies it onto the VLM readers' rows of `quality.reader_scores.crop_res`; other readers' rows read `half`, which means nothing for them. A table without the metadata is `half`. Analyses select on `crop_res` and never pool the two.
+- **The crop rule.** `quality-ship.sh --qwen-crop-rule block-share-60` passes `--crop-rule` to `qwen stage` the same way (#2164). Both flags need a stage binary from this change on, and pve's forced-command gate must allow `--crop-rule` and `--crop-res` on `qwen_submit.py` (home-infra `scripts/lab/usnm-boinc-gate`).
+- **Older stage binaries.** Unset, neither flag is passed, so a feed on an older stage binary is unchanged.
+
+#### Rollout
+
+Every step backs up the file it changes first.
+
+1. **Database (once).** As the schema owner, apply `setup.sql`, which adds `reader_scores.crop_res` with the constant default `half` (no table rewrite; every existing row reads `half`, which is the backfill). Then apply `excluded_qwen_readings.sql`, so `reader_scores_effective`, a `SELECT r.*` view, picks the column up:
+
+   ```sh
+   psql "$ADMIN_DSN" -v ON_ERROR_STOP=1 -f scripts/onprem/quality/setup.sql
+   psql "$ADMIN_DSN" -v ON_ERROR_STOP=1 -f scripts/onprem/quality/excluded_qwen_readings.sql
+   psql "$ADMIN_DSN" -tA -c "SELECT crop_res, count(*) FROM quality.reader_scores GROUP BY 1"   # half only
+   ```
+
+2. **Binaries.** The x08 ships stage with `--qwen-stage-binary usnm-boinc`, the server image's own binary. It needs `--crop-res` and `--crop-rule`, so roll CT 230's bridge image to a build from this change, as for #2148. Or install a reviewed build as `/project/ops/qwen-feed/collect-<id>/usnm-boinc`, which the gate's `EXE` type accepts, and name it in `--qwen-stage-binary`. The collector that writes `usnm.crop_res` needs the same build, as `/project/ops/quality-results/usnm-boinc` or a `collect-<id>` copy. Install the gate change (home-infra) and the feed scripts (`quality_feed.py`, `qwen_feed.py`, `qwen_submit.py`, `quality-ship.sh`) on the producer at an idle point.
+3. **English held campaign (`x08-eng-held-worst-first-v1`).** Its root already holds the half-resolution canary (WU 87729), and a root never mixes resolutions. So the full-resolution campaign gets a new root, `x08-eng-held-worst-first-v1-full`: a copy of its env with that root name, `--full-res` added to `QWEN_FEED_ARGS`, `--qwen-crop-res full` added to `QWEN_SHIP_ARGS`, and `--pages` at the full English list. Register the new root with the x08 collector (`X08_QWEN_ARGS`) before its first ship. The half-resolution canary root stays as the baseline.
+4. **French held campaign (`x08-fra-held-worst-first-v1`).** Its root holds no units (the canary produced only `no_crops` markers). Still, give it a new root, `x08-fra-held-worst-first-v1-full`, so the `crop-rule` and `crop-res` files are claimed fresh. Add `--full-res` to `QWEN_FEED_ARGS`, and `--qwen-crop-res full --qwen-crop-rule block-share-60` to `QWEN_SHIP_ARGS`. Register the root with the collector, run one 25-page canary tick by hand, and check that its pages give crops before enabling the timers.
+5. **Re-reading what was read at half resolution, behind new work.** `scripts/onprem/quality/half_res_reread.sql` lists a language's pages whose VLM readings are all `half`, worst damage first:
+
+   ```sh
+   psql "$READER_DSN" -v lang=fra -v limit=2000 -tA -f scripts/onprem/quality/half_res_reread.sql > /etc/usnm/reread-full-fra-pages.txt
+   ```
+
+   Run each list as a listed campaign with its own root (for example `x08-fra-reread-full`), with `--full-res`, `--qwen-crop-res full` and the language's crop rule. Give it a `--max-ready` well under the new-work feeds' (for example 200 against 1,000). The feed's `ready` count is every unsent `usnm_qwen` result on the server, so the re-read prepares only once new work has drained below that. Held roots aren't loaded into the database, so their pages come from their own list files.
+
 ### Request versions on the feed
 
 The outbox, `done.txt` and source requests stay under `CAMPAIGN`. The shipper routes each chunk from `QWEN_SHIP_ARGS` in `/etc/usnm/qwen-feed.env`:

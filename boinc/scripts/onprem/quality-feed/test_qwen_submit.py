@@ -63,6 +63,25 @@ class PhaseTest(unittest.TestCase):
         self.assertNotIn("--models-prechecked", self.calls[1])
         self.assertNotIn("--models-only", self.calls[1])
 
+    def test_crop_rule_and_resolution_reach_qwen_stage_only_when_set(self):
+        # Unset, the stage call names neither, so an older stage binary keeps working.
+        self.run_main("--prompt-version", "3")
+        stage = self.calls[0]
+        self.assertNotIn("--crop-rule", stage)
+        self.assertNotIn("--crop-res", stage)
+        self.calls.clear()
+        self.run_main("--prompt-version", "5", "--crop-rule", "block-share-60", "--crop-res", "full")
+        stage, submit = self.calls
+        self.assertEqual(stage[stage.index("--crop-rule") + 1], "block-share-60")
+        self.assertEqual(stage[stage.index("--crop-res") + 1], "full")
+        self.assertNotIn("--crop-res", submit)
+
+    def test_crop_values_are_checked(self):
+        for extra in (["--crop-rule", "wide"], ["--crop-res", "quarter"]):
+            with self.subTest(extra=extra), self.assertRaises(SystemExit), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.run_main("--prompt-version", "3", *extra)
+
     def test_prepare_stages_and_verifies_the_models_but_submits_nothing(self):
         _, out = self.run_main("--phase", "prepare", "--prompt-version", "3")
         stage, models = self.calls

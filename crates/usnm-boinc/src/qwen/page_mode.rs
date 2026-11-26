@@ -1721,6 +1721,7 @@ mod tests {
             page_records: None,
             max_hold_secs: 0,
             crop_rule: Default::default(),
+            crop_res: Default::default(),
         })
         .await
         .unwrap();

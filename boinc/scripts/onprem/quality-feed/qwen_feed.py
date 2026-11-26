@@ -772,7 +772,8 @@ def _tick(a):
                              "--scan-server", a.scan_server, "--outbox", str(a.outbox),
                              "--state", "/var/lib/usnm-quality-feed", "--chunk-pages", str(a.chunk_pages),
                              "--max-pending", str(a.max_pending), "--workers", "2", "--once",
-                             "--alto-cache", "/srv/locstats/qwen-alto", "--quarantine-decode"])
+                             "--alto-cache", "/srv/locstats/qwen-alto", "--quarantine-decode",
+                             *(["--full-res"] if getattr(a, "full_res", False) else [])])
         phase("prepare_ready", pages=written)
         print(json.dumps({"status": "prepared", "pages": written, "selected_for_preparation": len(usable),
                           "missing_original_alto": receipt["missing"],
@@ -830,6 +831,10 @@ def main():
     ap.add_argument("--serbian-pages", type=Path,
                     help="With --serbian-budget: a file of doc_ids, one a line; the Serbian budget "
                          "takes only these pages, worst damage first")
+    ap.add_argument("--full-res", action="store_true",
+                    help="prepare page images at full resolution (a JP2 isn't decoded at half "
+                         "size): the campaign's ship args need --qwen-crop-res full, so its root "
+                         "records the resolution every reading is tagged with (#968 A/B)")
     a = ap.parse_args()
     if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", a.campaign)
             or not 1 <= a.chunk_pages <= 490 or not 1 <= a.max_archives <= 32

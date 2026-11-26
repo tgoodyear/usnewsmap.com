@@ -463,9 +463,11 @@ def raise_decode_error(error, codec):
     raise error
 
 
-def page_jpeg(raw, is_jp2):
+def page_jpeg(raw, is_jp2, full_res=False):
     """The worker's page.jpg, as the quality runner makes it: grey, quality 75, a JP2 over
-    4000 px decoded at half size; a grey JPEG under 40 Mpx and 20 MB goes as it is."""
+    4000 px decoded at half size; a grey JPEG under 40 Mpx and 20 MB goes as it is. With
+    `full_res` (a VLM campaign's `--full-res`, #968 A/B on 26 Nov 2026: Xiaomi-OCR-0 reads
+    full-resolution crops 2.6 points of CER better) a JP2 is decoded at its full size."""
     from PIL import Image, features
 
     Image.MAX_IMAGE_PIXELS = None
@@ -480,7 +482,7 @@ def page_jpeg(raw, is_jp2):
         if im.format != ("JPEG2000" if is_jp2 else "JPEG"):
             raise ValueError("scan format differs from its indexed file extension")
         if is_jp2 or len(raw) > 20_000_000 or im.mode != "L" or im.size[0] * im.size[1] > 40_000_000:
-            if getattr(im, "format", "") == "JPEG2000" and max(im.size) > 4000:
+            if getattr(im, "format", "") == "JPEG2000" and max(im.size) > 4000 and not full_res:
                 im.reduce = 1
             try:
                 im.load()
@@ -544,9 +546,9 @@ def write_chunk(camp_dir, name, pages, prepared, alto_cache=None):
         f.write(f"{len(pages)}\n")
 
 
-def prepare_page(server, texts, p, loc_text, as_text, ours):
+def prepare_page(server, texts, p, loc_text, as_text, ours, full_res=False):
     raw = fetch_scan(server, p)
-    jpg, (w, h) = page_jpeg(raw, p["scan"].endswith(".jp2"))
+    jpg, (w, h) = page_jpeg(raw, p["scan"].endswith(".jp2"), full_res)
     readers = [{"alto": False, "name": "loc-hist", "regions": [], "source": "loc-hist",
                 "text": normalize_text(loc_text) or " "}]
     if as_text and normalize_text(as_text).strip():
@@ -662,7 +664,8 @@ def prepare_wave(a, texts, wave, loc, as_map, ours, state, prepared, skipped, tr
     retry = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=a.workers) as ex:
         futs = {ex.submit(prepare_page, a.scan_server, texts, p, loc[p["doc_id"]],
-                          as_map.get(p["doc_id"]), ours.get(p["doc_id"])): p for p in wave}
+                          as_map.get(p["doc_id"]), ours.get(p["doc_id"]),
+                          getattr(a, "full_res", False)): p for p in wave}
         for fut in concurrent.futures.as_completed(futs):
             p = futs[fut]
             try:
@@ -1063,6 +1066,9 @@ def main(argv=None):
     r.add_argument("--alto-cache", help="original bulk-archive ALTO with per-page SHA256 provenance receipts")
     r.add_argument("--quarantine-decode", action="store_true",
                    help="quarantine repeated known decoder failures of the same verified scan")
+    r.add_argument("--full-res", action="store_true",
+                   help="decode JP2s at full size, not half (VLM campaigns, #968 A/B): the "
+                        "campaign's ship must stage with --qwen-crop-res full")
     w = sub.add_parser("follow")
     w.add_argument("--campaign", required=True)
     w.add_argument("--curated", required=True)

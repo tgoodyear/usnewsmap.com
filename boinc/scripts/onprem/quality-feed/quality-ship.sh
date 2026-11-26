@@ -23,6 +23,12 @@
 #     binary that stages and checksums the models (--models-only). Without it, qwen_submit.py's
 #     sibling usnm-boinc-stage. A Xiaomi-OCR-0 campaign needs one whose weights.lock lists the
 #     Xiaomi files: the image's usnm-boinc from #1776 on)
+#     [--qwen-crop-rule fixed-600|block-share-60] (native only: qwen stage's crop width rule,
+#     #2164; the root records it. block-share-60 for 7 to 8 column papers. Needs a stage binary
+#     from #2164 on)
+#     [--qwen-crop-res half|full] (native only: the resolution the feed staged the page images
+#     at; full with the feed's --full-res. The root records it and collectors tag every reading
+#     crop_res. Needs a stage binary from the crop_res change on)
 #     [--qwen-bundle-size N] (native only, 2 to 32: pages per native unit in --qwen-root, which
 #     must be a root of its own, #1435. Never the Yiddish root. Without it, one page per unit)
 #     [--qwen-page-records /project/usnmocr/qwen/pages] (with --qwen-bundle-size: staging packs
@@ -73,7 +79,7 @@ READERS=loc-hist,as,ours-ndlocr,ours-paddle,ours-surya,ours-tesseract
 BUNDLE=500 MAX_UNSENT=300 MAX_CHUNKS=1 MIN_FREE=40 WHAT_IF=false
 SHARE=/srv/usnm-boinc/project STEP=/usr/local/sbin/usnm-boinc-step
 QWEN_PLAN="" QWEN_MODELS="" QWEN_MAX_READY=1000 STEP_WINDOW=0
-PROMPT=1 QWEN_ROOT="" YIDDISH_ROOT="" YIDDISH_PROMPT=4 SUBMIT_BINARY="" STAGE_BINARY="" QWEN_BUNDLE="" PAGE_RECORDS=""
+PROMPT=1 QWEN_ROOT="" YIDDISH_ROOT="" YIDDISH_PROMPT=4 SUBMIT_BINARY="" STAGE_BINARY="" CROP_RULE="" CROP_RES="" QWEN_BUNDLE="" PAGE_RECORDS=""
 ENGLISH=()
 STATUS_URL="https://boinc.usnewsmap.com/server_status.php?xml=1"
 while [ $# -gt 0 ]; do
@@ -101,6 +107,8 @@ while [ $# -gt 0 ]; do
     --yiddish-prompt-version) YIDDISH_PROMPT=${2:-}; shift 2 ;;
     --qwen-submit-binary) SUBMIT_BINARY=${2:-}; shift 2 ;;
     --qwen-stage-binary) STAGE_BINARY=${2:-}; shift 2 ;;
+    --qwen-crop-rule) CROP_RULE=${2:-}; shift 2 ;;
+    --qwen-crop-res) CROP_RES=${2:-}; shift 2 ;;
     --qwen-bundle-size) QWEN_BUNDLE=${2:-}; shift 2 ;;
     --qwen-page-records) PAGE_RECORDS=${2:-}; shift 2 ;;
     --qwen-allow-english) ENGLISH=(--allow-english); shift ;;
@@ -132,12 +140,15 @@ done
   die "--qwen-submit-binary: an absolute path or a command name"
 [[ -z $STAGE_BINARY || $STAGE_BINARY =~ ^(/[A-Za-z0-9._/-]+|[A-Za-z0-9][A-Za-z0-9._-]*)$ ]] ||
   die "--qwen-stage-binary: an absolute path or a command name"
+[[ -z $CROP_RULE || $CROP_RULE =~ ^(fixed-600|block-share-60)$ ]] || die "--qwen-crop-rule: fixed-600 or block-share-60"
+[[ -z $CROP_RES || $CROP_RES =~ ^(half|full)$ ]] || die "--qwen-crop-res: half or full"
 [[ -z $QWEN_BUNDLE || $QWEN_BUNDLE =~ ^([2-9]|[12][0-9]|3[0-2])$ ]] || die "--qwen-bundle-size: 2 to 32"
 [[ -z $PAGE_RECORDS || ( -n $QWEN_BUNDLE && $PAGE_RECORDS =~ ^/project/[a-zA-Z0-9_./-]+$ ) ]] ||
   die "--qwen-page-records: an absolute /project path, with --qwen-bundle-size"
 if [ -z "$QWEN_PLAN" ] && { [ "$PROMPT" != 1 ] || [ "$QWEN_ROOT" != "$CAMPAIGN" ] || [ -n "$YIDDISH_ROOT" ] ||
-  [ -n "$SUBMIT_BINARY" ] || [ -n "$STAGE_BINARY" ] || [ -n "$QWEN_BUNDLE" ]; }; then
-  die "--prompt-version, the root flags, --qwen-submit-binary, --qwen-stage-binary and --qwen-bundle-size need --qwen-engine-plan"
+  [ -n "$SUBMIT_BINARY" ] || [ -n "$STAGE_BINARY" ] || [ -n "$CROP_RULE" ] || [ -n "$CROP_RES" ] ||
+  [ -n "$QWEN_BUNDLE" ]; }; then
+  die "--prompt-version, the root flags, --qwen-submit-binary, --qwen-stage-binary, --qwen-crop-rule, --qwen-crop-res and --qwen-bundle-size need --qwen-engine-plan"
 fi
 if [ -n "$QWEN_PLAN" ]; then
   # Migration-safe: old inline and new independent ship units cannot copy/clean one chunk concurrently.
@@ -309,7 +320,7 @@ while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
     if in_ct podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
       --preflight --campaign "$target" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
       --max-pages "$pages" --max-ready "$QWEN_MAX_READY" --prompt-version "$version" \
-      ${bundle:+--bundle-size "$bundle"} ${STAGE_BINARY:+--stage-binary "$STAGE_BINARY"} ${eng[@]+"${eng[@]}"}; then
+      ${bundle:+--bundle-size "$bundle"} ${STAGE_BINARY:+--stage-binary "$STAGE_BINARY"} ${CROP_RULE:+--crop-rule "$CROP_RULE"} ${CROP_RES:+--crop-res "$CROP_RES"} ${eng[@]+"${eng[@]}"}; then
       :
     else
       rc=$?
@@ -358,7 +369,7 @@ while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
       --campaign "$target" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
       --sample "$sample" --max-pages "$n" --max-ready "$QWEN_MAX_READY" --prompt-version "$version" \
       ${bundle:+--bundle-size "$bundle"} ${bundle:+${PAGE_RECORDS:+--page-records "$PAGE_RECORDS"}} \
-      ${STAGE_BINARY:+--stage-binary "$STAGE_BINARY"} ${eng[@]+"${eng[@]}"} --phase prepare; then
+      ${STAGE_BINARY:+--stage-binary "$STAGE_BINARY"} ${CROP_RULE:+--crop-rule "$CROP_RULE"} ${CROP_RES:+--crop-res "$CROP_RES"} ${eng[@]+"${eng[@]}"} --phase prepare; then
       :
     else
       rc=$?
@@ -373,7 +384,7 @@ while [ "$shipped" -lt "$MAX_CHUNKS" ]; do
       --campaign "$target" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS" \
       --sample "$sample" --max-pages "$n" --max-ready "$QWEN_MAX_READY" --prompt-version "$version" \
       ${bundle:+--bundle-size "$bundle"} ${bundle:+${PAGE_RECORDS:+--page-records "$PAGE_RECORDS"}} \
-      ${SUBMIT_BINARY:+--submit-binary "$SUBMIT_BINARY"} ${STAGE_BINARY:+--stage-binary "$STAGE_BINARY"} \
+      ${SUBMIT_BINARY:+--submit-binary "$SUBMIT_BINARY"} ${STAGE_BINARY:+--stage-binary "$STAGE_BINARY"} ${CROP_RULE:+--crop-rule "$CROP_RULE"} ${CROP_RES:+--crop-res "$CROP_RES"} \
       ${eng[@]+"${eng[@]}"} --phase publish; then
       :
     else
@@ -421,7 +432,7 @@ if [ "$WHAT_IF" = false ] && [ -n "$QWEN_PLAN" ] && [ -n "$QWEN_BUNDLE" ] && [ "
   held_args=(--campaign "$QWEN_ROOT" --engine-plan "$QWEN_PLAN" --models "$QWEN_MODELS"
     --max-pages 1 --max-ready "$QWEN_MAX_READY" --prompt-version "$PROMPT"
     --bundle-size "$QWEN_BUNDLE" ${PAGE_RECORDS:+--page-records "$PAGE_RECORDS"}
-    ${SUBMIT_BINARY:+--submit-binary "$SUBMIT_BINARY"} ${STAGE_BINARY:+--stage-binary "$STAGE_BINARY"}
+    ${SUBMIT_BINARY:+--submit-binary "$SUBMIT_BINARY"} ${STAGE_BINARY:+--stage-binary "$STAGE_BINARY"} ${CROP_RULE:+--crop-rule "$CROP_RULE"} ${CROP_RES:+--crop-res "$CROP_RES"}
     ${ENGLISH[@]+"${ENGLISH[@]}"} --held-only)
   if in_ct podman exec usnm-boinc-server python3 /project/ops/qwen-feed/qwen_submit.py \
     "${held_args[@]}" --phase prepare; then

@@ -160,6 +160,13 @@ ALTER TABLE quality.reader_scores
   ADD COLUMN IF NOT EXISTS qe_oov         real,
   ADD COLUMN IF NOT EXISTS qe_charlm_bpc  real,
   ADD COLUMN IF NOT EXISTS qe_lm_oov      real;
+-- The resolution a VLM reading's crops were cut at (#968 A/B, 26 Nov 2026): `half`, a JP2 over
+-- 4,000 px decoded at half size (every reading before the change), or `full`. Set from the
+-- collected table's `usnm.crop_res` metadata for the vlm readers' rows; other readers' rows keep
+-- `half`, which means nothing for them. A constant default adds the column without rewriting the
+-- table, and every existing row reads `half`: that is the backfill. Analyses never mix the two.
+ALTER TABLE quality.reader_scores
+  ADD COLUMN IF NOT EXISTS crop_res text NOT NULL DEFAULT 'half' CHECK (crop_res IN ('half', 'full'));
 
 -- Rows loaded before these columns are version 1: their _v1 values are the unit's.
 UPDATE quality.unit_pages SET hat_determined_v1 = hat_determined, hat_residual_v1 = hat_residual,
