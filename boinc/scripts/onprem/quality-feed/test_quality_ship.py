@@ -172,7 +172,9 @@ elif "python3" in args and "-" in args:
                               (["--prompt-version", "6"], True), (["--qwen-root", "Bad_Name"], True),
                               (["--prompt-version", "3", "--qwen-allow-english"], True),
                               (["--qwen-submit-binary", "usnm-boinc"], False),
-                              (["--qwen-submit-binary", "-x"], True), (["--qwen-submit-binary", "a b"], True)):
+                              (["--qwen-submit-binary", "-x"], True), (["--qwen-submit-binary", "a b"], True),
+                              (["--qwen-stage-binary", "/usr/local/bin/usnm-boinc"], False),
+                              (["--qwen-stage-binary", "-x"], True), (["--qwen-stage-binary", "a b"], True)):
             with self.subTest(extra=extra):
                 result = self.run_ship(extra, native=native)
                 self.assertEqual(result.returncode, 1, result.stderr)
@@ -192,6 +194,23 @@ elif "python3" in args and "-" in args:
                 self.assertNotIn("--submit-binary", prepare)
                 self.assertEqual(publish[publish.index("--submit-binary") + 1] if expected else None, expected)
                 self.assertEqual(publish.count("--submit-binary"), 1 if expected else 0)
+
+    def test_a_stage_binary_reaches_every_native_call(self):
+        # Unset, no call names one, so qwen_submit.py keeps its sibling usnm-boinc-stage. Set (a
+        # Xiaomi-OCR-0 campaign needs a weights.lock with the Xiaomi files), preflight, prepare
+        # (staging and --models-only) and publish all use it.
+        for extra, expected in (([], None), (["--qwen-stage-binary", "/usr/local/bin/usnm-boinc"],
+                                              "/usr/local/bin/usnm-boinc")):
+            with self.subTest(extra=extra):
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                result = self.run_ship([*self.GUARDED, *extra], langs="srp\n")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = self.native_calls()
+                self.assertEqual(len(calls), 3)
+                for call in calls:
+                    self.assertEqual(call.count("--stage-binary"), 1 if expected else 0)
+                    if expected:
+                        self.assertEqual(call[call.index("--stage-binary") + 1], expected)
 
     def test_a_bundle_size_reaches_both_native_calls_for_the_main_root_only(self):
         # #1435: unset, neither call names a bundle size, so qwen_submit.py stages one page a unit.
@@ -289,6 +308,12 @@ elif "python3" in args and "-" in args:
             self.assertEqual(call[call.index("--campaign") + 1], "guard-v3")
             self.assertEqual(call[call.index("--bundle-size") + 1], "32")
             self.assertIn("--page-records", call)
+        for call in drain:
+            self.assertNotIn("--stage-binary", call)
+        # A stage binary reaches both held-page calls too.
+        staged = ship(["--qwen-bundle-size", "32", "--qwen-page-records", "/project/usnmocr/qwen/pages",
+                       "--qwen-stage-binary", "/usr/local/bin/usnm-boinc"], True)
+        self.assertEqual([c[c.index("--stage-binary") + 1] for c in staged], ["/usr/local/bin/usnm-boinc"] * 2)
         # Nothing held, or no bundles: no call.
         self.assertEqual(ship(["--qwen-bundle-size", "32"], False), [])
         self.assertEqual(ship([], True), [])
