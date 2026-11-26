@@ -702,6 +702,38 @@ Ramp from 200 fresh replicas to 1000 only after measured runs show new app-6/bat
 
 `waiting_for_crop_sources` is **not corpus completion**: deferred archives, inaccessible scans, failed validation and storage backpressure remain. Outputs still need the `quality-collect` join (`QWEN_SPOOL` = native batch-8 results) and archival before any input cleanup.
 
+### Held-only quality pass (#2139)
+
+The quality pass is fetch-bound: `build-quality` leaves out every page already in the scan server's index, so each page it queues needs a LoC fetch, and when LoC pushes back (#2131) `usnm_quality` runs dry while hundreds of thousands of scans sit on disk. `build-quality --held-only` takes the same ranking (`QUALITY_SQL`: pages with no image features and no staging record, worst first, whole issues, round-robin over title and decade) but only pages whose scans are already on the scan server: in its index and still in the keep or buffer set. The fetcher reports them `already_there`, so it makes no LoC request.
+
+- **Tag.** Held pages aren't a random slice of the corpus (earlier waves chose them), so the selection is recorded at every step as `held-only-v1`: the manifest is named `queue-quality-held-<stamp>` and carries the Parquet key `usnm.selection` (`usnm_ocr_contract::prefetch::SELECTION_KEY`; optional, the fetcher ignores it, the columns and `usnm.format` are unchanged); each page line in the pages file carries `"selection": "held-only-v1"`; the pages are staged under the campaign `held-only-v1`; and `quality collect --selection held-only-v1` writes the tag into `pages.parquet`'s and `crops.parquet`'s Parquet metadata and the campaign's `summary.md`. A corpus-level estimate must keep these pages apart or reweight them.
+- **Stored only.** The campaign's rows are measurements in `usnm_quality`. Nothing from it enters search until its test and #1915 pass.
+- **Pacing.** Its own state (`/var/lib/usnm-ocr-manifest/held-only`) and timer (`usnm-quality-held-build.timer`, hourly), so it never takes the fetch pass's or OCR's turn. It writes no new manifest while fewer than 90% of the last one's pages have a staging record in `usnm_quality` (for up to 2 days); the shipper still holds at 300 `usnm_quality` unsent (`--max-unsent`), which is the target. `HELD_STRATA` (1) and `HELD_MAX_PAGES` (500) in `/etc/usnm/quality-build.env` set its size.
+- **Overlap with the follower.** `quality_feed.py follow` stages every indexed page no campaign has staged, in fetch order. Pages it reaches are staged before this pass ranks them (the ranking leaves out staged pages), but `run` doesn't check `usnm_quality`, so don't run both on the same pages at once: run held-only where the follower is stopped, or check `held-only-pages.jsonl` against `quality.staging` before each `run`.
+
+On prod (CT215, the preparation container; the server steps as in [On-prem feeder](#on-prem-feeder-v1-wave10-on)):
+
+```sh
+# 1. The manifest builder and its units (from a checkout).
+install -m 644 boinc/scripts/onprem/ocr-feed/ocr_manifest.py /opt/usnm-quality-feed/
+install -m 644 boinc/scripts/onprem/ocr-feed/usnm-quality-held-build.{service,timer} /etc/systemd/system/
+systemctl daemon-reload
+# 2. A dry run, then the first manifest.
+/opt/usnm-quality-feed/venv/bin/python /opt/usnm-quality-feed/ocr_manifest.py build-quality --held-only \
+  --state /var/lib/usnm-ocr-manifest/held-only --dsn "$(cat /etc/usnm/quality-db/dsn)" \
+  --max-pages 500 --scan-server "$SCAN_SERVER" --what-if
+systemctl enable --now usnm-quality-held-build.timer
+# 3. Stage the tagged pages as the campaign held-only-v1 (repeat after each manifest; done.txt
+#    makes it resume).
+/opt/usnm-quality-feed/venv/bin/python /opt/usnm-quality-feed/quality_feed.py run --campaign held-only-v1 \
+  --pages /var/lib/usnm-ocr-manifest/held-only/held-only-pages.jsonl --curated /srv/curated \
+  --scan-server "$SCAN_SERVER" --outbox /var/lib/usnm-quality-feed/outbox \
+  --state /var/lib/usnm-quality-feed --max-pending 4 --once
+# 4. Ship with a second quality-ship instance whose CAMPAIGN is held-only-v1 (same ENGINE_IMAGE,
+#    --max-unsent 300), and collect with `quality collect --campaign held-only-v1
+#    --selection held-only-v1 ...` beside the other campaigns' collections.
+```
+
 ### Request versions on the feed
 
 The outbox, `done.txt` and source requests stay under `CAMPAIGN`. The shipper routes each chunk from `QWEN_SHIP_ARGS` in `/etc/usnm/qwen-feed.env`:

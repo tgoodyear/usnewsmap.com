@@ -39,6 +39,11 @@ import xml.etree.ElementTree as ET
 
 DOC_RE = re.compile(r"^(?P<lccn>[a-z0-9]+)_(?P<date>\d{4}-\d{2}-\d{2})_ed-(?P<ed>\d+)_seq-(?P<seq>\d+)$")
 FORMAT = "usnm-prefetch-manifest/1"
+# The manifest-level selection tag (usnm_ocr_contract::prefetch::SELECTION_KEY, #2139).
+SELECTION_KEY = "usnm.selection"
+HELD_ONLY = "held-only-v1"
+HELD_ONLY_PREFIX = "queue-quality-held-"
+SELECTION_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
 DEFAULT_QUARANTINE_ROOT = "/var/lib/usnm-quality-feed"
 USER_AGENT = "usnewsmap-ocr-manifest/1 (+https://usnewsmap.com)"
 # A page goes into at most this many manifests a week without its scan arriving.
@@ -231,9 +236,10 @@ def pending(queued, outcomes, reasons):
     return out
 
 
-def manifest_bytes(rows):
+def manifest_bytes(rows, selection=None):
     """The fetcher's manifest (usnm_ocr_contract::prefetch): its columns, types, issue order
-    and the usnm.format key."""
+    and the usnm.format key; with `selection`, the usnm.selection key too (#2139), which the
+    fetcher ignores."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -243,7 +249,9 @@ def manifest_bytes(rows):
         ("lccn", pa.string()), ("date", pa.date32()), ("edition", pa.int16()), ("seq", pa.int16()),
         ("lang", pa.string()), ("decision", pa.string()), ("damage_rate", pa.float64()),
         ("item_url", pa.string()),
-    ], metadata={"usnm.format": FORMAT})
+    ], metadata={"usnm.format": FORMAT, **({SELECTION_KEY: selection} if selection else {})})
+    if selection is not None and not SELECTION_RE.match(selection):
+        raise ValueError(f"invalid selection tag {selection!r}")
     t = pa.Table.from_pylist(rows, schema=schema)
     buf = io.BytesIO()
     pq.write_table(t, buf, compression="zstd")
@@ -489,7 +497,7 @@ QUALITY_SQL = """
 COPY (
   WITH p AS (
     SELECT s.doc_id, s.batch, s.batch_version, s.decision, s.damage_rate, s.lccn, s.decade, s.date,
-           substring(s.doc_id from '_ed-([0-9]+)_seq-') AS ed,
+           s.lang, substring(s.doc_id from '_ed-([0-9]+)_seq-') AS ed,
            (s.damage_rate + coalesce(1 - s.loc_wc_mean, s.damage_rate)) / 2 AS badness
     FROM quality.page_summary s
     WHERE NOT s.has_image_features
@@ -502,7 +510,7 @@ COPY (
     GROUP BY lccn, decade, date, ed
   )
   SELECT p.doc_id, p.batch, p.batch_version, coalesce(p.decision, 'detected'),
-         coalesce(p.damage_rate, 0), p.lccn, p.decade, i.issue_rank
+         coalesce(p.damage_rate, 0), p.lccn, p.decade, i.issue_rank, coalesce(p.lang, '')
   FROM p JOIN i USING (lccn, decade, date, ed)
   WHERE i.issue_rank <= {strata} + {slack}
   ORDER BY i.issue_rank, i.worst DESC NULLS LAST, p.lccn, p.date, p.ed, p.doc_id
@@ -594,6 +602,103 @@ def pick_issues(rows, queued, index, strata, max_pages):
         if len(out) >= max_pages:
             break
     return out
+
+
+def scan_set_of(scan_server, row):
+    """`keep` or `buffer`: the set the scan an index line names is in now (its sidecar, as
+    [`available`] reads it), or None when neither has it."""
+    for s in ("keep", "buffer"):
+        if available(scan_server, row, sets=(s,)):
+            return s
+    return None
+
+
+def pick_held_issues(rows, queued, index, scan_set, strata, max_pages):
+    """The held-only selection (#2139, `held-only-v1`): the same ranked rows, issues and
+    (title, decade) round-robin as [`pick_issues`], but only pages whose scans are already on
+    the scan server: in its index and still in a set (`scan_set(index line)`, keep or
+    buffer). So the fetcher reports every page `already_there` and makes no LoC request. A
+    page already queued is left out, and an issue with no such page gives way to its stratum's
+    next. Returns (rank row, set) pairs; scans are checked only for issues the walk reaches."""
+    issues, order = {}, []
+    for r in rows:
+        doc, batch = r[0], r[1]
+        key = issue_of(doc)
+        if key is None:
+            continue
+        if key not in issues:
+            issues[key] = {"stratum": (r[5], r[6]), "pages": []}
+            order.append(key)
+        if doc in queued or (batch, doc) not in index:
+            continue
+        issues[key]["pages"].append(r)
+    out, taken = [], {}
+    for key in order:
+        it = issues[key]
+        if not it["pages"] or taken.get(it["stratum"], 0) >= strata:
+            continue
+        if out and len(out) + len(it["pages"]) > max_pages:
+            continue
+        held = []
+        for r in it["pages"]:
+            st = scan_set(index[(r[1], r[0])])
+            if st:
+                held.append((r, st))
+        if not held:
+            continue
+        taken[it["stratum"]] = taken.get(it["stratum"], 0) + 1
+        out.extend(held)
+        if len(out) >= max_pages:
+            break
+    return out
+
+
+LANG_ALIASES = {"ger": "deu", "fre": "fra", "cze": "ces", "rum": "ron"}
+
+
+def held_page(r, st, row, selection):
+    """A `quality_feed.py run --pages` line (`select`'s fields) for a held-only page: its scan
+    in set `st`, its index line `row`, and the selection tag."""
+    doc, batch, bv, _decision, rate, *rest = r
+    m = DOC_RE.match(doc)
+    raw = (rest[3] if len(rest) > 3 else "") or "eng"
+    ext = "jp2" if row.get("format") == "jp2" else "jpg"
+    return {
+        "batch": batch,
+        "batch_version": int(bv),
+        "bytes": int(row["bytes"]),
+        "damage_rate": float(rate) if rate not in (None, "") else None,
+        "date": m["date"],
+        "doc_id": doc,
+        "edition": int(m["ed"]),
+        "fetched_at": row.get("fetched_at", ""),
+        "lang": LANG_ALIASES.get(raw, raw),
+        "lccn": m["lccn"],
+        "scan": f"{st}/{batch}/{m['lccn']}/{m['date']}/{int(m['ed'])}/{int(m['seq'])}.{ext}",
+        "selection": selection,
+        "seq": int(m["seq"]),
+        "sha256": row["sha256"],
+    }
+
+
+def staged_share(dsn, docs):
+    """How many of `docs` usnm_quality has a staging record for: the held-only pass's pacing,
+    since its pages are on disk and the fetch can't pace it."""
+    import subprocess
+
+    if not docs:
+        return 0
+    if any(not DOC_RE.fullmatch(doc) for doc in docs):
+        raise ValueError("invalid doc id in the last held-only manifest")
+    query = ("CREATE TEMP TABLE held_last(doc_id text PRIMARY KEY);\n"
+             "COPY held_last FROM STDIN;\n" + "".join(doc + "\n" for doc in sorted(set(docs)))
+             + "\\.\nSELECT count(*) FROM held_last h WHERE EXISTS "
+             "(SELECT FROM quality.staging g WHERE g.doc_id = h.doc_id);\n")
+    p = subprocess.run(["psql", dsn, "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1"], input=query,
+                       capture_output=True, text=True, timeout=600)
+    if p.returncode:
+        sys.exit(f"psql failed: {p.stderr.strip()[-500:]}")
+    return int(p.stdout.strip().splitlines()[-1])
 
 
 def load_scan_quarantine():
@@ -746,6 +851,85 @@ def cmd_build_quality(a):
     log("queued a quality manifest", manifest=name, pages=len(rows), issues=issues, batches=batches)
 
 
+def cmd_build_held(a):
+    """`build-quality --held-only` (#2139): the quality pass's ranking (QUALITY_SQL: worst
+    first, whole issues, round-robin over title and decade, pages with no unit or staging
+    record yet), taking only pages whose scans are already on the scan server, so it makes no
+    LoC request. Each run writes a `queue-quality-held-<stamp>` manifest tagged
+    `usnm.selection = held-only-v1` (the fetcher reports its pages `already_there`) and
+    appends the pages, tagged too, to <state>/held-only-pages.jsonl, which
+    `quality_feed.py run --campaign held-only-v1` stages. Its own pacing: no new manifest
+    while fewer than 90% of the last one's pages have a staging record in usnm_quality, for up
+    to 2 days, so it never runs ahead of the shipper (which holds at 300 unsent)."""
+    import csv
+    import subprocess
+
+    os.makedirs(a.state, exist_ok=True)
+    selection = HELD_ONLY
+    last_path = os.path.join(a.state, "last-held.json")
+    docs_path = os.path.join(a.state, "held-only-docs.txt")
+    pages_path = os.path.join(a.state, "held-only-pages.jsonl")
+    if os.path.exists(last_path):
+        with open(last_path) as f:
+            last = json.load(f)
+        age = dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(last["at"])
+        staged = staged_share(a.dsn, last["docs"])
+        if staged < 0.9 * len(last["docs"]) and age < dt.timedelta(days=2):
+            log("the last held-only manifest is still being staged; nothing new", manifest=last["name"],
+                staged=staged, pages=len(last["docs"]))
+            return
+    batch_filter = ""
+    if a.batches:
+        pairs = sorted(batch_pair(n) for n in read_batches(a.batches))
+        batch_filter = ("\n      AND (s.batch, s.batch_version) IN ("
+                        + ", ".join(f"('{b}', {v})" for b, v in pairs) + ")")
+    index = staged_pairs(a.scan_server)
+    queued = set()
+    for path in (docs_path, os.path.join(a.state, "quality-docs.txt"), os.path.join(a.state, "ocr-docs.txt")):
+        if os.path.exists(path):
+            with open(path) as f:
+                queued |= {line.strip() for line in f if line.strip()}
+    p = subprocess.run(["psql", a.dsn, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c",
+                        QUALITY_SQL.format(strata=int(a.strata), slack=int(a.slack), batch_filter=batch_filter)],
+                       capture_output=True, text=True, timeout=3600)
+    if p.returncode:
+        sys.exit(f"psql failed: {p.stderr.strip()[-500:]}")
+    candidates = list(csv.reader(io.StringIO(p.stdout)))
+    picked = pick_held_issues(candidates, queued, index, lambda row: scan_set_of(a.scan_server, row),
+                              a.strata, a.max_pages)
+    if not picked:
+        log("no held quality pages left in these strata", strata=a.strata, selection=selection)
+        return
+    rows, pages = [], []
+    for r, st in picked:
+        doc, batch, bv, decision, rate = r[:5]
+        rows.append(row_of({"doc_id": doc, "batch": batch, "batch_version": int(bv), "language": "eng"},
+                           {doc: {"lang": "eng", "decision": decision, "damage_rate": float(rate)}}))
+        pages.append(held_page(r, st, index[(batch, doc)], selection))
+    body = manifest_bytes(rows, selection=selection)
+    name = HELD_ONLY_PREFIX + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dt%H%M%S")
+    issues = len({issue_of(r["doc_id"]) for r in rows})
+    if a.what_if:
+        log("would queue a held-only quality manifest", manifest=name, pages=len(rows), issues=issues,
+            selection=selection, bytes=len(body))
+        return
+    url = f"{a.scan_server.rstrip('/')}/manifests/{name}/manifest.parquet"
+    req = urllib.request.Request(url, data=body, method="PUT",
+                                 headers={"User-Agent": USER_AGENT, "Content-Type": "application/octet-stream"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        if r.status not in (200, 201):
+            sys.exit(f"the scan server answered {r.status} for {url}")
+    with open(pages_path, "a") as f:
+        f.write("".join(json.dumps(pg, sort_keys=True) + "\n" for pg in pages))
+    with open(docs_path, "a") as f:
+        f.write("".join(f"{r['doc_id']}\n" for r in rows))
+    with open(last_path + ".tmp", "w") as f:
+        json.dump({"name": name, "at": dt.datetime.now(dt.timezone.utc).isoformat(), "selection": selection,
+                   "docs": [r["doc_id"] for r in rows]}, f)
+    os.replace(last_path + ".tmp", last_path)
+    log("queued a held-only quality manifest", manifest=name, pages=len(rows), issues=issues, selection=selection)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -772,15 +956,20 @@ def main(argv=None):
     q.add_argument("--what-if", action="store_true")
     q.add_argument("--non-english", action="store_true",
                    help="all non-English pages, descending page damage; keep their true language/scan retention")
+    q.add_argument("--held-only", action="store_true",
+                   help="only pages whose scans are already on the scan server (#2139): no LoC request; "
+                        "tagged held-only-v1, appended to <state>/held-only-pages.jsonl for quality_feed.py run")
     q.add_argument("--quarantine-root", default=DEFAULT_QUARANTINE_ROOT,
                    help="campaign root whose quarantined documents are excluded from non-English acquisition")
     a = ap.parse_args(argv)
     if a.cmd == "build-quality":
         if a.non_english and a.batches:
             sys.exit("--non-english covers the corpus; do not combine it with --batches")
+        if a.held_only and a.non_english:
+            sys.exit("--held-only is the English-ranked quality pass; do not combine it with --non-english")
         if not 1 <= a.max_pages <= 20000 or not 1 <= a.strata <= 1000:
             sys.exit("--max-pages 1 to 20000, --strata 1 to 1000")
-        cmd_build_quality(a)
+        cmd_build_held(a) if a.held_only else cmd_build_quality(a)
         return
     if not 1 <= a.max_pages <= 20000 or not 1 <= a.days <= 60:
         sys.exit("--max-pages 1 to 20000, --days 1 to 60")

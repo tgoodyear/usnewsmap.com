@@ -127,6 +127,9 @@ pub struct Options {
     /// with one is measured into `crops.parquet`'s `qe_*` columns. Pages carry
     /// the unit's own measure whatever this is.
     pub qe_dir: Option<PathBuf>,
+    /// How the campaign's pages were chosen (#2139, e.g. `held-only-v1`): written into both
+    /// tables' Parquet metadata and the summary. `None` for a campaign without one.
+    pub selection: Option<String>,
 }
 
 /// The exclusions in force in `quality.excluded_qwen_readings`, read with the DSN file given or
@@ -883,8 +886,12 @@ enum Column {
 /// all integers as `Int64`, others as `Float64`. Field order is the
 /// struct's.
 pub fn to_parquet<T: serde::Serialize>(rows: &[T]) -> anyhow::Result<Vec<u8>> {
-    to_parquet_typed(rows, QE_TYPES)
+    to_parquet_typed(rows, QE_TYPES, None)
 }
+
+/// The Parquet key-value metadata key naming the campaign's page
+/// selection (#2139), the same key the prefetch manifest carries.
+pub const SELECTION_KEY: &str = usnm_ocr_contract::prefetch::SELECTION_KEY;
 
 /// The quality-measure columns keep their types when every value is null
 /// (no `--qe-dir`, units staged without the file, readings with no words).
@@ -901,6 +908,10 @@ const QE_TYPES: &[(&str, DataType)] = &[
 ];
 
 fn crop_parquet(rows: &[CropRow]) -> anyhow::Result<Vec<u8>> {
+    crop_parquet_with(rows, None)
+}
+
+fn crop_parquet_with(rows: &[CropRow], selection: Option<&str>) -> anyhow::Result<Vec<u8>> {
     let types: Vec<(&str, DataType)> = QE_TYPES
         .iter()
         .cloned()
@@ -910,12 +921,13 @@ fn crop_parquet(rows: &[CropRow]) -> anyhow::Result<Vec<u8>> {
             ("vlm_reading_present", DataType::Boolean),
         ])
         .collect();
-    to_parquet_typed(rows, &types)
+    to_parquet_typed(rows, &types, selection)
 }
 
 fn to_parquet_typed<T: serde::Serialize>(
     rows: &[T],
     types: &[(&str, DataType)],
+    selection: Option<&str>,
 ) -> anyhow::Result<Vec<u8>> {
     let values: Vec<serde_json::Map<String, serde_json::Value>> = rows
         .iter()
@@ -1072,11 +1084,15 @@ fn to_parquet_typed<T: serde::Serialize>(
         })
         .collect();
     let schema = Arc::new(Schema::new(fields));
-    let props = WriterProperties::builder()
-        .set_compression(Compression::ZSTD(
-            ZstdLevel::try_new(6).expect("valid level"),
-        ))
-        .build();
+    let mut props = WriterProperties::builder().set_compression(Compression::ZSTD(
+        ZstdLevel::try_new(6).expect("valid level"),
+    ));
+    if let Some(sel) = selection {
+        props = props.set_key_value_metadata(Some(vec![
+            parquet::file::metadata::KeyValue::new(SELECTION_KEY.to_owned(), sel.to_owned()),
+        ]));
+    }
+    let props = props.build();
     let mut w = ArrowWriter::try_new(Vec::new(), schema.clone(), Some(props))?;
     if !arrays.is_empty() {
         w.write(&RecordBatch::try_new(schema, arrays)?)?;
@@ -1936,27 +1952,37 @@ pub fn collect_units(opts: &Options) -> anyhow::Result<(Collected, Progress)> {
     ))
 }
 
-/// The three files of a campaign, by name.
+/// The three files of a campaign, by name. With `selection` (#2139, e.g.
+/// `held-only-v1`), both tables carry it as [`SELECTION_KEY`] metadata and
+/// the summary names it, so a corpus estimate can tell the campaign's pages
+/// apart from a random slice.
 pub fn files(
     campaign: &str,
+    selection: Option<&str>,
     c: &Collected,
 ) -> anyhow::Result<Vec<(String, Vec<u8>, &'static str)>> {
+    if let Some(sel) = selection {
+        anyhow::ensure!(
+            usnm_ocr_contract::prefetch::is_selection(sel),
+            "invalid selection tag {sel:?}"
+        );
+    }
+    let mut summary = summary_md(campaign, &c.summary, &c.pages, &c.crops);
+    if let Some(sel) = selection {
+        summary = summary.replacen("\n\n", &format!("\n\nSelection: `{sel}`.\n\n"), 1);
+    }
     Ok(vec![
         (
             "pages.parquet".into(),
-            to_parquet(&c.pages)?,
+            to_parquet_typed(&c.pages, QE_TYPES, selection)?,
             "application/vnd.apache.parquet",
         ),
         (
             "crops.parquet".into(),
-            crop_parquet(&c.crops)?,
+            crop_parquet_with(&c.crops, selection)?,
             "application/vnd.apache.parquet",
         ),
-        (
-            "summary.md".into(),
-            summary_md(campaign, &c.summary, &c.pages, &c.crops).into_bytes(),
-            "text/markdown",
-        ),
+        ("summary.md".into(), summary.into_bytes(), "text/markdown"),
     ])
 }
 
@@ -1992,7 +2018,7 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
         "collection cache warmed {} dirty units; at least 1 deferred; no incomplete snapshot published",
         progress.dirty
     );
-    let out = files(&opts.campaign, &c)?;
+    let out = files(&opts.campaign, opts.selection.as_deref(), &c)?;
     if let Some(dir) = &opts.out_dir {
         for (name, bytes, _) in &out {
             atomic(&dir.join(name), bytes)?;
@@ -2016,6 +2042,35 @@ pub async fn run(opts: &Options) -> anyhow::Result<Summary> {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
+
+    #[test]
+    fn a_selection_is_recorded_in_both_tables_and_the_summary() {
+        let c = Collected {
+            summary: Summary::default(),
+            pages: Vec::new(),
+            crops: Vec::new(),
+        };
+        let kv = |bytes: &[u8]| {
+            use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder as Reader;
+            let b = Reader::try_new(bytes::Bytes::from(bytes.to_vec())).unwrap();
+            b.metadata()
+                .file_metadata()
+                .key_value_metadata()
+                .and_then(|kv| kv.iter().find(|k| k.key == SELECTION_KEY))
+                .and_then(|k| k.value.clone())
+        };
+        let held = files("held-only-v1", Some("held-only-v1"), &c).unwrap();
+        assert_eq!(kv(&held[0].1).as_deref(), Some("held-only-v1"));
+        assert_eq!(kv(&held[1].1).as_deref(), Some("held-only-v1"));
+        let summary = String::from_utf8(held[2].1.clone()).unwrap();
+        assert!(summary.starts_with(
+            "# Quality campaign held-only-v1\n\nSelection: `held-only-v1`.\n\n"
+        ));
+        let plain = files("t", None, &c).unwrap();
+        assert_eq!(kv(&plain[0].1), None);
+        assert!(!String::from_utf8(plain[2].1.clone()).unwrap().contains("Selection"));
+        assert!(files("t", Some("Bad Tag"), &c).is_err());
+    }
 
     #[test]
     fn parquet_from_rows_types_columns() {
@@ -2465,6 +2520,7 @@ pub(super) mod tests {
             warm_only: false,
             digest_cache: None,
             qe_dir: None,
+            selection: None,
         })
         .unwrap();
         assert_eq!(
@@ -2694,6 +2750,7 @@ pub(super) mod tests {
             warm_only: false,
             digest_cache: None,
             qe_dir: None,
+            selection: None,
         };
         canonical(&unit, &job, &opts.spool);
         (opts, unit, job)
@@ -3081,7 +3138,7 @@ pub(super) mod tests {
             cache: None,
             ..opts.clone()
         };
-        let tables = |c: &Collected| files(&opts.campaign, c).unwrap();
+        let tables = |c: &Collected| files(&opts.campaign, None, c).unwrap();
         let expected = collect(&uncached).unwrap();
         assert_eq!(expected.summary.with_readings, 1);
         let expected = tables(&expected);
@@ -4105,6 +4162,7 @@ pub(super) mod tests {
             warm_only: false,
             digest_cache: None,
             qe_dir: None,
+            selection: None,
         };
         let cached = Options {
             cache: Some(tmp.path().join("cache")),

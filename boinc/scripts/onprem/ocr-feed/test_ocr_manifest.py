@@ -311,6 +311,115 @@ class PickIssuesTest(unittest.TestCase):
             m.read_batches(f.name)
 
 
+class HeldOnlyTest(unittest.TestCase):
+    """build-quality --held-only (#2139): the same ranking, only pages already on disk."""
+    rows = [
+        ranked("a_1900-01-01_ed-1_seq-1", "x_a_ver01", "a", "1900", 1) + ["ger"],
+        ranked("a_1900-01-01_ed-1_seq-2", "x_a_ver01", "a", "1900", 1) + ["ger"],
+        ranked("b_1910-05-01_ed-1_seq-1", "x_b_ver01", "b", "1910", 1) + [""],
+        ranked("b_1911-05-01_ed-2_seq-1", "x_b_ver01", "b", "1910", 2) + ["eng"],
+    ]
+
+    @staticmethod
+    def line(doc, batch):
+        return {"doc_id": doc, "batch": batch, "bytes": 9, "sha256": "a" * 64, "fetched_at": "t"}
+
+    def index(self, *pairs):
+        return {(batch, doc): self.line(doc, batch) for doc, batch in pairs}
+
+    def test_only_pages_on_disk_are_taken_and_an_issue_with_none_gives_way(self):
+        index = self.index(("a_1900-01-01_ed-1_seq-2", "x_a_ver01"), ("b_1910-05-01_ed-1_seq-1", "x_b_ver01"),
+                           ("b_1911-05-01_ed-2_seq-1", "x_b_ver01"))
+        # b's first issue is indexed but its scan is gone: its stratum takes the next issue.
+        gone = {"b_1910-05-01_ed-1_seq-1"}
+        got = m.pick_held_issues(self.rows, set(), index, lambda row: None if row["doc_id"] in gone else "keep",
+                                 strata=1, max_pages=100)
+        self.assertEqual([(r[0], st) for r, st in got],
+                         [("a_1900-01-01_ed-1_seq-2", "keep"), ("b_1911-05-01_ed-2_seq-1", "keep")])
+        # Queued pages are left out, and nothing on disk means nothing taken.
+        got = m.pick_held_issues(self.rows, {"a_1900-01-01_ed-1_seq-2"}, index, lambda row: "buffer",
+                                 strata=1, max_pages=100)
+        self.assertEqual([r[0] for r, _ in got], ["b_1910-05-01_ed-1_seq-1"])
+        self.assertEqual(m.pick_held_issues(self.rows, set(), {}, lambda row: "keep", 1, 100), [])
+
+    def test_a_held_page_line_carries_its_set_language_and_tag(self):
+        r = self.rows[0]
+        page = m.held_page(r, "buffer", self.line(r[0], r[1]), m.HELD_ONLY)
+        self.assertEqual(page["scan"], "buffer/x_a_ver01/a/1900-01-01/1/1.jpg")
+        self.assertEqual((page["lang"], page["selection"], page["damage_rate"]), ("deu", "held-only-v1", 0.5))
+        self.assertEqual(m.held_page(self.rows[2], "keep", self.line(*self.rows[2][:2]), m.HELD_ONLY)["lang"], "eng")
+
+    def run_build(self, folder, staged=None, what_if=False):
+        a = types.SimpleNamespace(state=folder, batches=None, scan_server="http://scan", dsn="test", strata=1,
+                                  slack=20, max_pages=100, held_only=True, non_english=False, what_if=what_if)
+        csv_rows = "".join(",".join(r) + "\n" for r in self.rows)
+        index = self.index(*[(r[0], r[1]) for r in self.rows])
+        requests = []
+
+        def urlopen(request, timeout):
+            requests.append(request)
+            response = io.BytesIO()
+            response.status = 201
+            return response
+
+        with mock.patch.object(m, "staged_pairs", return_value=index), \
+                mock.patch.object(m, "scan_set_of", return_value="keep"), \
+                mock.patch.object(m, "staged_share", return_value=staged) as share, \
+                mock.patch.object(m.urllib.request, "urlopen", side_effect=urlopen), \
+                mock.patch.object(m, "manifest_bytes", return_value=b"parquet") as manifest, \
+                mock.patch("subprocess.run", return_value=types.SimpleNamespace(
+                    returncode=0, stdout=csv_rows, stderr="")) as psql, \
+                contextlib.redirect_stdout(io.StringIO()):
+            m.cmd_build_held(a)
+        return requests, manifest, psql, share
+
+    def test_a_tagged_manifest_and_tagged_pages_then_it_waits_for_staging(self):
+        with tempfile.TemporaryDirectory() as folder:
+            requests, manifest, psql, _ = self.run_build(folder)
+            self.assertIn("NOT EXISTS (SELECT FROM quality.staging g", psql.call_args.args[0][-1])
+            self.assertEqual(manifest.call_args.kwargs["selection"], "held-only-v1")
+            self.assertEqual(len(requests), 1)
+            self.assertIn("/manifests/queue-quality-held-", requests[0].full_url)
+            pages = [json.loads(line) for line in Path(folder, "held-only-pages.jsonl").read_text().splitlines()]
+            self.assertEqual({p["selection"] for p in pages}, {"held-only-v1"})
+            self.assertEqual(len(pages), 3)  # strata 1: both of a's first issue, b's first
+            last = json.loads(Path(folder, "last-held.json").read_text())
+            self.assertEqual(len(last["docs"]), 3)
+            # Next run: the last manifest's pages aren't staged yet, so nothing new.
+            requests, _, psql, share = self.run_build(folder, staged=1)
+            self.assertEqual(requests, [])
+            psql.assert_not_called()
+            self.assertEqual(sorted(share.call_args.args[1]), sorted(last["docs"]))
+            # Once 90% are staged it goes on; the pages it queued are left out.
+            requests, manifest, _, _ = self.run_build(folder, staged=3)
+            self.assertEqual([r["doc_id"] for r in manifest.call_args.args[0]], ["b_1911-05-01_ed-2_seq-1"])
+
+    def test_what_if_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            requests, _, _, _ = self.run_build(folder, what_if=True)
+            self.assertEqual(requests, [])
+            self.assertFalse(Path(folder, "held-only-pages.jsonl").exists())
+
+    def test_held_only_and_non_english_are_refused_together(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            m.main(["build-quality", "--state", "/tmp/x", "--dsn", "d", "--held-only", "--non-english"])
+
+    @unittest.skipUnless(importlib.util.find_spec("pyarrow"), "PyArrow required for manifest compatibility")
+    def test_the_selection_tag_is_manifest_metadata(self):
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        r = self.rows[0]
+        row = m.row_of({"doc_id": r[0], "batch": r[1], "batch_version": 1, "language": "eng"},
+                       {r[0]: {"lang": "eng", "decision": "detected", "damage_rate": 0.5}})
+        meta = pq.read_table(pa.BufferReader(m.manifest_bytes([row], selection=m.HELD_ONLY))).schema.metadata
+        self.assertEqual(meta[b"usnm.format"], b"usnm-prefetch-manifest/1")
+        self.assertEqual(meta[b"usnm.selection"], b"held-only-v1")
+        self.assertNotIn(b"usnm.selection", pq.read_table(pa.BufferReader(m.manifest_bytes([row]))).schema.metadata)
+        with self.assertRaises(ValueError):
+            m.manifest_bytes([row], selection="Bad Tag")
+
+
 class NonEnglishTest(unittest.TestCase):
     def test_scored_nonenglish_pages_keep_language_and_page_damage_order(self):
         with tempfile.TemporaryDirectory() as folder:

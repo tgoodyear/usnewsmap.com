@@ -223,6 +223,11 @@ pub enum QualityCommands {
         /// columns. Pages carry the unit's own measure without it.
         #[arg(long)]
         qe_dir: Option<PathBuf>,
+        /// How the campaign's pages were chosen (#2139, e.g. `held-only-v1`): recorded in both
+        /// tables' Parquet metadata (`usnm.selection`) and the summary. A tag of 1 to 40 of
+        /// `[a-z0-9-]`.
+        #[arg(long)]
+        selection: Option<String>,
         /// Recheck just this unit's dependency key after a scoped collection.
         #[arg(long, requires = "inventory_only")]
         inventory_unit: Option<String>,
@@ -620,6 +625,7 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
             warm_only,
             inventory_only,
             qe_dir,
+            selection,
             inventory_unit,
             surya_root,
             surya_spool,
@@ -644,6 +650,7 @@ pub async fn run(command: QualityCommands) -> anyhow::Result<()> {
                 max_compute: max_compute_secs.map(std::time::Duration::from_secs),
                 warm_only,
                 qe_dir,
+                selection,
                 surya_root,
                 surya_spool,
                 out_dir,
