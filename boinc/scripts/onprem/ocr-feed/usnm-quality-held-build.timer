@@ -1,0 +1,10 @@
+[Unit]
+Description=usnewsmap held-only quality manifests, hourly (#2139)
+
+[Timer]
+OnBootSec=40min
+OnUnitInactiveSec=1h
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

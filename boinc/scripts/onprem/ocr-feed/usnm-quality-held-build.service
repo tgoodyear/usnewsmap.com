@@ -1,0 +1,26 @@
+# The held-only quality pass's next manifest (#2139), in the batch container CT215:
+# ocr_manifest.py build-quality --held-only takes the quality pass's ranking (worst first,
+# round-robin over title and decade, whole issues) but only pages whose scans are already on the
+# scan server, so the fetcher makes no LoC request. It queues them as queue-quality-held-<stamp>,
+# tagged usnm.selection=held-only-v1, and appends them to
+# /var/lib/usnm-ocr-manifest/held-only/held-only-pages.jsonl for
+# `quality_feed.py run --campaign held-only-v1`. It waits while fewer than 90% of the last
+# manifest's pages are staged. Settings in /etc/usnm/quality-build.env (HELD_STRATA,
+# HELD_MAX_PAGES; SCAN_SERVER).
+[Unit]
+Description=usnewsmap held-only quality manifests (#2139)
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/usnm/quality-db/dsn
+
+[Service]
+Type=oneshot
+Environment=LC_ALL=C.UTF-8
+Environment=HELD_STRATA=1
+Environment=HELD_MAX_PAGES=500
+EnvironmentFile=/etc/usnm/quality-build.env
+ExecStart=/usr/bin/flock -n /run/usnm-quality-held-build.lock /bin/sh -c 'exec /opt/usnm-quality-feed/venv/bin/python /opt/usnm-quality-feed/ocr_manifest.py build-quality \
+  --held-only --state /var/lib/usnm-ocr-manifest/held-only --dsn "$(cat /etc/usnm/quality-db/dsn)" \
+  --strata "$HELD_STRATA" --max-pages "$HELD_MAX_PAGES" --scan-server "$SCAN_SERVER"'
+Nice=10
+TimeoutStartSec=2h

@@ -32,6 +32,31 @@ use usnm_core::ids::PageKey;
 pub const FORMAT: &str = "usnm-prefetch-manifest/1";
 const FORMAT_KEY: &str = "usnm.format";
 
+/// The Parquet key-value metadata key naming how a manifest's pages were
+/// chosen (#2139), e.g. [`HELD_ONLY_V1`]. Optional: a manifest without it
+/// is read as before, and the fetcher ignores it, so adding it changes
+/// neither the columns nor [`FORMAT`].
+pub const SELECTION_KEY: &str = "usnm.selection";
+
+/// The quality pass's held-only selection (#2139): the same worst-first,
+/// whole-issue ranking, but only pages whose scans are already on the scan
+/// server, so the fetcher makes no LoC request for them. Its manifests are
+/// named `queue-quality-held-<stamp>` ([`HELD_ONLY_PREFIX`]).
+pub const HELD_ONLY_V1: &str = "held-only-v1";
+
+/// The manifest directory-name prefix of held-only quality manifests.
+pub const HELD_ONLY_PREFIX: &str = "queue-quality-held-";
+
+/// Whether `s` is a valid selection tag: 1 to 40 of `[a-z0-9-]`, starting
+/// with a letter or digit.
+pub fn is_selection(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 40
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !s.starts_with('-')
+}
+
 /// One page to fetch.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ManifestRow {
@@ -143,14 +168,27 @@ pub fn sort(rows: &mut [ManifestRow]) {
 
 /// The manifest as Parquet (zstd), rows in the order given.
 pub fn encode(rows: &[ManifestRow]) -> anyhow::Result<Vec<u8>> {
+    encode_with_selection(rows, None)
+}
+
+/// [`encode`], naming how the pages were chosen ([`SELECTION_KEY`]).
+pub fn encode_with_selection(
+    rows: &[ManifestRow],
+    selection: Option<&str>,
+) -> anyhow::Result<Vec<u8>> {
+    use parquet::file::metadata::KeyValue;
+    let mut kv = vec![KeyValue::new(FORMAT_KEY.to_owned(), FORMAT.to_owned())];
+    if let Some(sel) = selection {
+        if !is_selection(sel) {
+            bail!("invalid selection tag {sel:?}");
+        }
+        kv.push(KeyValue::new(SELECTION_KEY.to_owned(), sel.to_owned()));
+    }
     let props = WriterProperties::builder()
         .set_compression(Compression::ZSTD(
             ZstdLevel::try_new(6).expect("valid level"),
         ))
-        .set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new(
-            FORMAT_KEY.to_owned(),
-            FORMAT.to_owned(),
-        )]))
+        .set_key_value_metadata(Some(kv))
         .build();
     let mut w = ArrowWriter::try_new(Vec::new(), schema(), Some(props))?;
     let small = |v: u16| i16::try_from(v).context("edition, seq or version above 32767");
@@ -195,6 +233,27 @@ pub fn encode(rows: &[ManifestRow]) -> anyhow::Result<Vec<u8>> {
         w.write(&RecordBatch::try_new(schema(), cols)?)?;
     }
     Ok(w.into_inner()?)
+}
+
+/// How a manifest's pages were chosen ([`SELECTION_KEY`]): `None` for a
+/// manifest without the key. Its format is checked as [`decode`] does, and
+/// a key that isn't a valid tag is an error.
+pub fn selection(bytes: Bytes) -> anyhow::Result<Option<String>> {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(bytes)?;
+    let kv = builder.metadata().file_metadata().key_value_metadata();
+    let get = |key: &str| {
+        kv.and_then(|kv| kv.iter().find(|k| k.key == key))
+            .and_then(|k| k.value.clone())
+    };
+    let format = get(FORMAT_KEY);
+    if format.as_deref() != Some(FORMAT) {
+        bail!("not a prefetch manifest ({FORMAT_KEY} is {format:?}, not {FORMAT:?})");
+    }
+    match get(SELECTION_KEY) {
+        None => Ok(None),
+        Some(sel) if is_selection(&sel) => Ok(Some(sel)),
+        Some(sel) => bail!("invalid {SELECTION_KEY} {sel:?}"),
+    }
 }
 
 /// Read a manifest, checking its format, its columns and every row: the
@@ -386,6 +445,49 @@ mod tests {
     fn row(doc: &str, batch: &str, rate: f64) -> ManifestRow {
         let key = PageKey::from_doc_id(doc).unwrap();
         ManifestRow::new(&key, batch, 1, Some("deu".into()), "detected", rate)
+    }
+
+    #[test]
+    fn a_selection_tag_round_trips_and_leaves_the_rows_as_they_were() {
+        let rows = vec![row("sn1_1890-05-03_ed-1_seq-1", "nbu_gage", 0.3)];
+        let plain = Bytes::from(encode(&rows).unwrap());
+        assert_eq!(selection(plain.clone()).unwrap(), None);
+        let held = Bytes::from(encode_with_selection(&rows, Some(HELD_ONLY_V1)).unwrap());
+        assert_eq!(
+            selection(held.clone()).unwrap().as_deref(),
+            Some(HELD_ONLY_V1)
+        );
+        // The fetcher's reader is unchanged: same rows, same format.
+        assert_eq!(decode(held).unwrap(), decode(plain).unwrap());
+        for bad in ["", "Held", "-x", "a b", &"x".repeat(41)] {
+            assert!(encode_with_selection(&rows, Some(bad)).is_err(), "{bad:?}");
+        }
+        assert!(is_selection("held-only-v1"));
+        assert!(HELD_ONLY_PREFIX.starts_with("queue-quality-"));
+    }
+
+    #[test]
+    fn a_python_written_selection_is_read_and_a_bad_one_refused() {
+        // ocr_manifest.py writes the key with pyarrow; a value that isn't a tag is refused.
+        use parquet::file::metadata::KeyValue;
+        let rows = vec![row("sn1_1890-05-03_ed-1_seq-1", "nbu_gage", 0.3)];
+        let batch = ParquetRecordBatchReaderBuilder::try_new(Bytes::from(encode(&rows).unwrap()))
+            .unwrap()
+            .build()
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        let props = WriterProperties::builder()
+            .set_key_value_metadata(Some(vec![
+                KeyValue::new(FORMAT_KEY.to_owned(), FORMAT.to_owned()),
+                KeyValue::new(SELECTION_KEY.to_owned(), "Not A Tag".to_owned()),
+            ]))
+            .build();
+        let mut w = ArrowWriter::try_new(Vec::new(), schema(), Some(props)).unwrap();
+        w.write(&batch).unwrap();
+        let bytes = w.into_inner().unwrap();
+        assert!(selection(Bytes::from(bytes)).is_err());
     }
 
     #[test]
