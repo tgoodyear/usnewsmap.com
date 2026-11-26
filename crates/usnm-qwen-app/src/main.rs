@@ -6,7 +6,7 @@
 //!    or `USNM_QWEN_MODEL_DIR` / `/opt/qwen/models`).
 //! 2. Locates `llama-server` (`USNM_LLAMA_SERVER`, slot directory, `./llama-server[.exe]`,
 //!    or `/usr/local/bin/llama-server`) and spawns it on `127.0.0.1:<free_port>`
-//!    with `-m`, `--mmproj`, `--ctx-size 4096`, `--temp 0`, `--seed 42`,
+//!    with `-m`, `--mmproj`, `--ctx-size 8192` (16,384 for Xiaomi-OCR-0), `--temp 0`, `--seed 42`,
 //!    `--parallel 1` (page mode: one slot per concurrent region, see `pagemode`), `--no-webui`, and `-ngl 99` (GPU) or `0` (CPU).
 //! 3. Waits for `/health`, posts each crop PNG to `/v1/chat/completions`,
 //!    updates `fraction_done`, writes `readings.json`, `result.json`, and
@@ -433,6 +433,23 @@ pub fn run_slot_with(
     Ok(())
 }
 
+/// Whether a chat completion failed because the live `llama-server` refused the request with a
+/// 4xx status (such as a prompt past the context): the crop's own fault, not the server's.
+fn refused_by_server(err: &anyhow::Error) -> bool {
+    err.chain().any(|c| {
+        c.downcast_ref::<server::HttpStatus>()
+            .is_some_and(|s| s.0.starts_with("llama-server status 4"))
+    })
+}
+
+/// Records a crop that failed alone (no reading), saves the checkpoint and moves the progress on.
+fn crop_failed_alone(work: &Path, cp: &mut QwenCheckpoint, idx: usize, total: usize, id: &str) {
+    cp.crop_errors.push(id.to_owned());
+    let _ = cp.save(work);
+    let frac = (idx + 1) as f64 / total.max(1) as f64;
+    let _ = write_atomic(&work.join(FRACTION_FILE), format!("{frac:.4}\n").as_bytes());
+}
+
 /// A region or crop whose `llama-server` kept failing: asks the BOINC client to restart the task
 /// (it resumes from the checkpoint) while the budget lasts. True when it asked, and the task
 /// must exit without a result.
@@ -662,6 +679,7 @@ fn run_crops(
             gpu_ms: 0,
             run_ms: 0,
             restart_log: Vec::new(),
+            crop_errors: Vec::new(),
         },
     };
     let mut outcome = Outcome::Ok;
@@ -673,7 +691,11 @@ fn run_crops(
     } else {
         &l.job.crops
     };
-    for (idx, crop) in sequential.iter().enumerate().skip(cp.readings.len()) {
+    for (idx, crop) in sequential
+        .iter()
+        .enumerate()
+        .skip(cp.readings.len() + cp.crop_errors.len())
+    {
         if control.wait_if_suspended_or_should_exit().is_break() {
             outcome = Outcome::Failed;
             break;
@@ -699,9 +721,10 @@ fn run_crops(
         {
             Ok(b) => b,
             Err(e) => {
+                // A crop that can't be cut fails alone; the rest of the unit is still read.
                 diag.section("crop error", &format!("{}: {e:#}", crop.id), 1024);
-                outcome = Outcome::Failed;
-                break;
+                crop_failed_alone(work, &mut cp, idx, l.job.crops.len(), &crop.id);
+                continue;
             }
         };
         let t_crop = Instant::now();
@@ -779,6 +802,16 @@ fn run_crops(
                 outcome = Outcome::Failed;
                 break;
             }
+            CropEnd::Failed(e)
+                if control.should_exit().is_none()
+                    && started.elapsed() < deadline
+                    && refused_by_server(&e) =>
+            {
+                // The live server refused this one request (a 4xx, such as a crop past the
+                // context): the crop fails alone, and the unit goes on with the next.
+                diag.section("crop refused", &format!("{}: {e:#}", crop.id), 1024);
+                crop_failed_alone(work, &mut cp, idx, l.job.crops.len(), &crop.id);
+            }
             CropEnd::Failed(e) | CropEnd::GiveUp(e) => {
                 if control.should_exit().is_some() {
                     outcome = Outcome::Failed;
@@ -843,7 +876,8 @@ fn run_crops(
         }
     }
 
-    if outcome == Outcome::Ok && cp.readings.len() == l.job.crops.len() {
+    let crop_errors = cp.crop_errors.clone();
+    if outcome == Outcome::Ok && cp.readings.len() + cp.crop_errors.len() == l.job.crops.len() {
         let _ = std::fs::remove_file(work.join(CHECKPOINT_FILE));
     }
     let gpu_ms_total = cp.gpu_ms;
@@ -920,6 +954,20 @@ fn run_crops(
 
     let mut r_diag = BTreeMap::new();
     r_diag.insert("ctx_size".into(), launch.ctx_size.to_string());
+    if !crop_errors.is_empty() {
+        // The crops that failed alone and have no reading (bounded, like every diag value).
+        let mut ids = crop_errors.join(",");
+        if ids.len() > 512 {
+            let mut end = 512;
+            while !ids.is_char_boundary(end) {
+                end -= 1;
+            }
+            ids.truncate(end);
+            ids.push_str(",...");
+        }
+        r_diag.insert("crop_errors".into(), crop_errors.len().to_string());
+        r_diag.insert("crop_error_ids".into(), ids);
+    }
     r_diag.insert(
         "image_min_tokens".into(),
         image_min_tokens(l.job.prompt_version).map_or("default".into(), |n| n.to_string()),
@@ -1813,6 +1861,7 @@ mod tests {
             gpu_ms: 0,
             run_ms: 0,
             restart_log: Vec::new(),
+            crop_errors: Vec::new(),
         };
         let mut legacy = serde_json::to_value(&cp).unwrap();
         legacy
@@ -2163,6 +2212,7 @@ mod tests {
             gpu_ms: 0,
             run_ms: 0,
             restart_log: Vec::new(),
+            crop_errors: Vec::new(),
         };
         cp.save(&slot).unwrap();
         let (port, _) = spawn_scripted_llama_server(vec![]);

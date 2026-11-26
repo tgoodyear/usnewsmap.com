@@ -69,8 +69,10 @@ pub const SUPPORTED_PROMPT_VERSIONS: [u32; 5] = [
     PROMPT_VERSION_IMAGE_MIN_TOKENS_LOOP_GUARD,
     PROMPT_VERSION_XIAOMI,
 ];
-/// llama-server's context for request versions 1 to 4.
-pub const CTX_SIZE: u32 = 4096;
+/// llama-server's context for request versions 1 to 4. 8,192 since #968's half/full A/B (26 Nov
+/// 2026): a crop at Xiaomi's 4.2 Mpx cap takes about 4,100 image tokens, so 4,096 refused it.
+/// Context size changes no reading that fit before; it only lets a larger crop in.
+pub const CTX_SIZE: u32 = 8192;
 /// Xiaomi-OCR-0's region prompt, as upstream's region stage sends it.
 pub const XIAOMI_PROMPT: &str = "Extract the text in the image.";
 pub const XIAOMI_CTX_SIZE: u32 = 16_384;
@@ -1076,7 +1078,8 @@ pub(crate) mod tests {
             assert_eq!(prompt(version), PROMPT);
             assert!(!prompt_before_image(version));
             assert!(!thinking_off(version));
-            assert_eq!(context_size(version), 4096);
+            assert_eq!(context_size(version), CTX_SIZE);
+            assert_eq!(CTX_SIZE, 8192);
             assert_eq!(max_output_tokens(version), None);
         }
     }

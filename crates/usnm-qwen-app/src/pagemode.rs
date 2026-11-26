@@ -1092,6 +1092,7 @@ mod tests {
             gpu_ms: 0,
             run_ms: 0,
             restart_log: vec![],
+            crop_errors: vec![],
         };
         assert!(!server_was_lost(&cp));
         cp.llama_restarts = 1;

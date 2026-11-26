@@ -81,6 +81,103 @@ fn staged(restarted: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
     (tmp, slot, state)
 }
 
+/// A stand-in that refuses the first crop with `__STATUS__` (llama-server's reply to a request
+/// past its context is a 400 `exceed_context_size_error`) and reads the second normally.
+const REFUSE_STUB: &str = r#"#!/usr/bin/env python3
+import http.server, json, os, sys
+state, status = "__STATE__", int("__STATUS__")
+port = int(sys.argv[sys.argv.index("--port") + 1])
+launch_file = os.path.join(state, "launches")
+n = int(open(launch_file).read()) + 1 if os.path.exists(launch_file) else 1
+open(launch_file, "w").write(str(n))
+served = 0
+
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+    def do_GET(self):
+        self.send_response(200); self.send_header("Content-Length", "2"); self.end_headers()
+        self.wfile.write(b"ok")
+    def do_POST(self):
+        global served
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        served += 1
+        if served == 1:
+            out = json.dumps({"error": {"code": status, "message": "request (4099 tokens) exceeds the available context size (4096 tokens)", "type": "exceed_context_size_error"}}).encode()
+            self.send_response(status); self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out))); self.send_header("Connection", "close"); self.end_headers()
+            self.wfile.write(out)
+            return
+        text, tokens = "second reading", 3
+        if b'"stream":true' in body:
+            ev = {"choices": [{"delta": {"content": text}, "finish_reason": "stop"}], "usage": {"completion_tokens": tokens}}
+            out = ("data: %s\n\ndata: [DONE]\n\n" % json.dumps(ev)).encode()
+            ctype = "text/event-stream"
+        else:
+            out = json.dumps({"choices": [{"message": {"content": text}, "finish_reason": "stop"}], "usage": {"completion_tokens": tokens}}).encode()
+            ctype = "application/json"
+        self.send_response(200); self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(out))); self.send_header("Connection", "close"); self.end_headers()
+        self.wfile.write(out)
+
+http.server.ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+"#;
+
+/// [`staged`], with [`REFUSE_STUB`] answering `status` to the first crop.
+fn staged_refusing(status: u16) -> (tempfile::TempDir, PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let (tmp, slot, state) = staged("text");
+    let script = REFUSE_STUB
+        .replace("__STATE__", &state.to_string_lossy())
+        .replace("__STATUS__", &status.to_string());
+    let bin = slot.join("llama-server");
+    std::fs::write(&bin, script).unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (tmp, slot, state)
+}
+
+#[test]
+fn a_crop_the_server_refuses_fails_alone_and_the_unit_goes_on() {
+    if !python_available() {
+        eprintln!("skipped: no python3");
+        return;
+    }
+    let (_tmp, slot, state) = staged_refusing(400);
+    run_slot_with(&slot, None, Some(Duration::from_secs(120))).unwrap();
+    let result: ResultManifest =
+        serde_json::from_slice(&std::fs::read(slot.join(RESULT_FILE)).unwrap()).unwrap();
+    assert_eq!(result.outcome, Outcome::Ok);
+    let readings: Readings =
+        serde_json::from_slice(&std::fs::read(slot.join(READINGS_FILE)).unwrap()).unwrap();
+    // The refused crop has no reading (so it can't count as read, let alone agree); the
+    // next crop is read, on the same server, and the refusal is in the diagnostics.
+    let texts: Vec<_> = readings.readings.iter().map(|r| r.text.as_str()).collect();
+    assert_eq!(texts, ["second reading"]);
+    assert_eq!(readings.diag["crop_errors"], "1");
+    assert!(!readings.diag["crop_error_ids"].is_empty());
+    assert!(!readings
+        .readings
+        .iter()
+        .any(|r| readings.diag["crop_error_ids"]
+            .split(',')
+            .any(|id| id == r.id)));
+    assert_eq!(launches(&state), 1);
+    assert!(!slot.join(CHECKPOINT_FILE).exists());
+}
+
+#[test]
+fn a_server_error_still_fails_the_unit() {
+    if !python_available() {
+        eprintln!("skipped: no python3");
+        return;
+    }
+    let (_tmp, slot, _state) = staged_refusing(500);
+    run_slot_with(&slot, None, Some(Duration::from_secs(120))).unwrap();
+    let result: ResultManifest =
+        serde_json::from_slice(&std::fs::read(slot.join(RESULT_FILE)).unwrap()).unwrap();
+    assert_eq!(result.outcome, Outcome::Failed);
+}
+
 fn launches(state: &Path) -> u32 {
     std::fs::read_to_string(state.join("launches"))
         .unwrap()

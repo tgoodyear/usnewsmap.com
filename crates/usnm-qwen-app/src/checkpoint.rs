@@ -36,6 +36,11 @@ pub struct QwenCheckpoint {
     /// Notes on those restarts, newest last, for the diagnostics.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub restart_log: Vec<String>,
+    /// Crops the server refused (a 4xx reply, such as a request past the context) or that could
+    /// not be cut, in order: each fails alone and is left out of the readings, so the rest of
+    /// the unit is still read. Counted with the readings for where a resumed task goes on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crop_errors: Vec<String>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -59,7 +64,7 @@ impl QwenCheckpoint {
             || cp.engine != job.engine
             || cp.model != model
             || cp.device != device
-            || cp.readings.len() > job.crops.len()
+            || cp.readings.len() + cp.crop_errors.len() > job.crops.len()
         {
             return None;
         }
@@ -75,8 +80,19 @@ impl QwenCheckpoint {
             }
             return Some(cp);
         }
-        for (got, want) in cp.readings.iter().zip(&job.crops) {
-            if got.id != want.id {
+        // Read in order: the readings and the crop errors together are exactly the job's
+        // first crops, each once.
+        let done = cp.readings.len() + cp.crop_errors.len();
+        let want: std::collections::BTreeSet<&str> =
+            job.crops[..done].iter().map(|c| c.id.as_str()).collect();
+        let mut got = std::collections::BTreeSet::new();
+        for id in cp
+            .readings
+            .iter()
+            .map(|r| r.id.as_str())
+            .chain(cp.crop_errors.iter().map(String::as_str))
+        {
+            if !want.contains(id) || !got.insert(id) {
                 return None;
             }
         }
@@ -106,5 +122,62 @@ impl QwenCheckpoint {
             &work.join(CHECKPOINT_FILE),
             &serde_json::to_vec_pretty(self)?,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use usnm_ocr_contract::qwen::Reading;
+
+    fn reading(id: &str) -> Reading {
+        Reading {
+            id: id.into(),
+            ms: 1,
+            text: "t".into(),
+            tokens: 1,
+        }
+    }
+
+    #[test]
+    fn a_checkpoint_counts_crops_that_failed_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job = crate::test_support::write_qwen_unit(tmp.path());
+        assert!(job.crops.len() >= 2);
+        let ids: Vec<String> = job.crops.iter().map(|c| c.id.clone()).collect();
+        let cp = |readings: Vec<Reading>, errors: Vec<String>| QwenCheckpoint {
+            v: VERSION,
+            job_id: job.id.clone(),
+            engine: job.engine.clone(),
+            model: "m".into(),
+            device: "cpu".into(),
+            readings,
+            generation_metadata: Default::default(),
+            temporary_exits: 0,
+            llama_restarts: 0,
+            gpu_ms: 0,
+            run_ms: 0,
+            restart_log: vec![],
+            crop_errors: errors,
+        };
+        let check = |c: QwenCheckpoint| {
+            c.save(tmp.path()).unwrap();
+            QwenCheckpoint::load_valid(tmp.path(), &job, "m", "cpu")
+        };
+        // The first crop failed alone and the second was read: both are the first two crops.
+        let ok = check(cp(vec![reading(&ids[1])], vec![ids[0].clone()])).unwrap();
+        assert_eq!(ok.readings.len() + ok.crop_errors.len(), 2);
+        // A crop error that isn't among the first crops done, or a crop twice, is refused.
+        assert!(check(cp(vec![reading(&ids[0])], vec![ids[0].clone()])).is_none());
+        assert!(check(cp(vec![], vec!["nope".into()])).is_none());
+        // An old checkpoint without the field still loads.
+        let mut v = serde_json::to_value(cp(vec![reading(&ids[0])], vec![])).unwrap();
+        v.as_object_mut().unwrap().remove("crop_errors");
+        std::fs::write(
+            tmp.path().join(CHECKPOINT_FILE),
+            serde_json::to_vec(&v).unwrap(),
+        )
+        .unwrap();
+        assert!(QwenCheckpoint::load_valid(tmp.path(), &job, "m", "cpu").is_some());
     }
 }
