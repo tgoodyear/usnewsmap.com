@@ -870,6 +870,47 @@ class SubsetShipmentTest(unittest.TestCase):
         self.assertTrue(list((self.share / "qwen/test/units").glob("*/submitting")))
         self.assertTrue((self.chunk / "READY").exists())
 
+    def outbox_free(self, gib, pages=0):
+        free = gib * 1024**3 + pages * 64 * 1024**2
+        return mock.patch.object(driver.shutil, "disk_usage",
+                                 return_value=types.SimpleNamespace(free=free))
+
+    def test_shipping_without_a_producer_floor_is_as_before(self):
+        # Unset: the outbox shares --min-free-gb and the 64 MiB a page reservation, as on main.
+        with self.outbox_free(50, 10):
+            code, _ = self.ship()
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.transfers[0]["members"]), 10)
+
+    def test_a_producer_floor_caps_new_subsets_by_its_headroom(self):
+        self.args.min_producer_free_gb = 8
+        with self.outbox_free(8, 20):  # a small outbox, far under the server's 50 GB
+            code, _ = self.ship()
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.transfers[0]["members"]), 20)
+
+    def test_a_producer_floor_without_headroom_ships_nothing(self):
+        self.args.min_producer_free_gb = 8
+        with self.outbox_free(8, 0):
+            code, output = self.ship()
+        self.assertEqual(code, 75)
+        self.assertFalse(self.transfers)
+        self.assertEqual(json.loads(output)["reserve_pages"], 0)
+
+    def test_an_active_subset_keeps_its_reservation_against_the_producer_floor(self):
+        self.args.min_producer_free_gb = 8
+        self.lose_response = True
+        with self.outbox_free(100), self.assertRaises(subprocess.TimeoutExpired):
+            self.ship()
+        self.lose_response = False
+        with self.outbox_free(8, 53):  # one page short of the active subset's 54
+            code, output = self.ship()
+        self.assertEqual((code, json.loads(output)["reserve_pages"]), (75, 54))
+        self.assertEqual(len(self.transfers), 1)
+        with self.outbox_free(8, 54):
+            self.assertEqual(self.ship()[0], 0)
+        self.assertEqual(len(self.db["usnm_qwen"]), 54)
+
     def test_reservation_and_transfer_membership_reject_boundaries(self):
         self.assertEqual(shipment.capacity(self.state, 100 * 1024**3), 54)
         self.assertEqual(shipment.capacity(self.state, 50 * 1024**3 + 53 * 64 * 1024**2), 53)
@@ -2286,6 +2327,37 @@ class SourceTest(unittest.TestCase):
                         mock.patch.object(driver, "command", side_effect=AssertionError("preparation started")):
                     driver.tick(a)
                 self.assertEqual(remote.call_count, 2)
+
+    def test_the_producer_outbox_has_its_own_free_space_floor(self):
+        # CT 215's outbox is a 24 GB disk: under the server's 50 GB floor it never prepared (#2159).
+        class Started(Exception):
+            pass
+        for producer_floor, pool_pct, producer_gb, starts in [
+                (None, 0, 20, False),   # the default floor is --min-free-gb's
+                (10, 0, 20, True),      # its own floor lets a small outbox prepare
+                (10, 0, 9, False),      # and still holds a full one back
+                (10, 60, 20, False)]:   # the server's thin pool keeps --min-free-gb
+            with self.subTest(producer_floor=producer_floor, pool_pct=pool_pct, producer_gb=producer_gb), \
+                    tempfile.TemporaryDirectory() as folder:
+                a = types.SimpleNamespace(state=Path(folder), campaign="qwen-test",
+                                          server_host="boinc.example", server_ct=230, prep_ct=215,
+                                          outbox=Path(folder), min_free_gb=50, min_producer_free_gb=producer_floor,
+                                          max_ready=1000, max_pending=3, max_unresolved=2000, reserve_mib=64,
+                                          chunk_pages=100)
+                inv = {"ready": 0, "fresh_pairs": 0, "unresolved_native": 0,
+                       "documents": [], "free_bytes": 100 * 1024**3}
+                pool = {"report": [{"lv": [{"lv_size": str(100 * 1024**3), "data_percent": str(pool_pct)}]}]}
+                with mock.patch.object(driver, "remote", side_effect=[json.dumps(inv), json.dumps(pool)]), \
+                        mock.patch.object(driver.shutil, "disk_usage",
+                                          return_value=types.SimpleNamespace(free=producer_gb * 1024**3)), \
+                        mock.patch.object(driver, "command", side_effect=Started), \
+                        contextlib.redirect_stdout(io.StringIO()) as out:
+                    if starts:
+                        with self.assertRaises(Started):
+                            driver.tick(a)
+                    else:
+                        driver.tick(a)
+                        self.assertIn("storage_backpressure", out.getvalue())
 
     def test_ready_sources_return_without_waiting_for_new_scan_manifest(self):
         with tempfile.TemporaryDirectory() as folder:

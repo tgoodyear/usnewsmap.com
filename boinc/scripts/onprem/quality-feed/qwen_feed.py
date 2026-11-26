@@ -388,13 +388,27 @@ def _ship_subsets(a):
             pool = json.loads(remote(a.server_host, ["lvs", "--reportformat", "json", "--units", "b",
                                                     "--nosuffix", "-o", "lv_size,data_percent",
                                                     "pve/data"]))["report"][0]["lv"][0]
-            free = min(shutil.disk_usage(a.outbox).free,
-                       int(float(pool["lv_size"]) * (1 - float(pool["data_percent"]) / 100)))
+            pool_free = int(float(pool["lv_size"]) * (1 - float(pool["data_percent"]) / 100))
+            producer_free = shutil.disk_usage(a.outbox).free
+            reserve = 64 * 1024**2
+            producer_floor = getattr(a, "min_producer_free_gb", None)
+            if producer_floor is None:
+                # As before: the outbox shares the server's floor.
+                free = min(producer_free, pool_free)
+                producer_room = None
+            else:
+                # Its own floor (#2159): the server keeps --min-free-gb, and each page's 64 MiB
+                # reservation is also held against the outbox's floor.
+                free = pool_free
+                producer_room = max(0, (producer_free - producer_floor * 1024**3) // reserve)
             limit = shipment.capacity(state, free, max_ready=a.qwen_max_ready,
                                       max_unresolved=a.max_unresolved, min_free_gb=a.min_free_gb)
+            if producer_room is not None:
+                limit = min(limit, producer_room)
             value = active[0] if active else shipment.manifest(parent, left[:limit], recipe) if limit else None
             count = len(value["members"]) if value else 0
-            if value is None or min(state["free_bytes"], free) - count * 64 * 1024**2 < a.min_free_gb * 1024**3:
+            if (value is None or min(state["free_bytes"], free) - count * reserve < a.min_free_gb * 1024**3
+                    or producer_room is not None and count > producer_room):
                 evidence = (retained_publication(journal / active[0]["id"], active[0]) if active
                             else shipment.publication_evidence())
                 print(json.dumps({**evidence,
@@ -525,6 +539,8 @@ def ship_main():
     ap.add_argument("--max-unresolved", type=int, default=2000)
     ap.add_argument("--max-chunks", type=int, default=1)
     ap.add_argument("--min-free-gb", type=int, default=50)
+    ap.add_argument("--min-producer-free-gb", type=int,
+                    help="GiB this producer's outbox must keep free (default: --min-free-gb)")
     ap.add_argument("--max-unsent", type=int, default=300)  # Legacy CLI compatibility; never gates native.
     ap.add_argument("--step-window-minutes", type=int, default=0)
     ap.add_argument("--what-if", action="store_true")
@@ -538,7 +554,8 @@ def ship_main():
             or not re.fullmatch(r"[a-z0-9_,-]+", a.readers)
             or not 1 <= a.bundle_size <= 500 or a.max_chunks < 1 or a.server_ct < 1
             or not 2 <= a.qwen_max_ready <= 1000 or not 1 <= a.max_unresolved <= 2000
-            or a.min_free_gb < 50 or not 0 <= a.step_window_minutes < 60
+            or a.min_free_gb < 50 or (a.min_producer_free_gb is not None and a.min_producer_free_gb < 1)
+            or not 0 <= a.step_window_minutes < 60
             or (a.allow_english and a.prompt_version != 5)):
         ap.error("invalid subset shipment route or bounded limits")
     return ship_subsets(a)
@@ -575,9 +592,13 @@ def _tick(a):
                                             "-o", "lv_size,data_percent", "pve/data"]))["report"][0]["lv"][0]
     pool_free = float(pool["lv_size"]) * (1 - float(pool["data_percent"]) / 100)
     producer_free = shutil.disk_usage(a.outbox).free
-    free = min(pool_free, producer_free)
+    # The server's thin pool and share keep --min-free-gb; the producer's outbox has its own floor
+    # (--min-producer-free-gb, the same by default). The outbox only holds chunks in transit, and
+    # on a small disk (CT 215's is 24 GB) the server's 50 GB floor held every tick back (#2159).
+    producer_floor = getattr(a, "min_producer_free_gb", None) or a.min_free_gb
+    server_free = min(pool_free, inv["free_bytes"])
     phase("inventory", fresh_pairs=inv["fresh_pairs"], unresolved_native=inv["unresolved_native"])
-    if min(free, inv["free_bytes"]) < a.min_free_gb * 1024**3:
+    if server_free < a.min_free_gb * 1024**3 or producer_free < producer_floor * 1024**3:
         print(json.dumps({"status": "storage_backpressure", "pool_free_bytes": int(pool_free),
                           "producer_free_bytes": producer_free}))
         return
@@ -592,8 +613,8 @@ def _tick(a):
     # Each new source page creates two independent native GPU replicas.
     count = min(a.chunk_pages, a.max_ready // 2 - inv["fresh_pairs"],
                 a.max_unresolved - inv["unresolved_native"],
-                max(0, int((min(free, inv["free_bytes"]) - a.min_free_gb * 1024**3)
-                           // (a.reserve_mib * 1024**2))))
+                max(0, int((server_free - a.min_free_gb * 1024**3) // (a.reserve_mib * 1024**2))),
+                max(0, int((producer_free - producer_floor * 1024**3) // (a.reserve_mib * 1024**2))))
     if count < 1:
         return
     work = "/var/lib/usnm-quality-feed/work/" + a.campaign
@@ -774,7 +795,10 @@ def main():
     ap.add_argument("--archives", default="/tank/locbulk/ocr")
     ap.add_argument("--alto-export", default="/tank/locstats/qwen-alto")
     ap.add_argument("--scan-server", required=True)
-    ap.add_argument("--min-free-gb", type=int, default=50)
+    ap.add_argument("--min-free-gb", type=int, default=50,
+                    help="GiB the BOINC server's thin pool and share must keep free")
+    ap.add_argument("--min-producer-free-gb", type=int,
+                    help="GiB this producer's outbox must keep free (default: --min-free-gb)")
     ap.add_argument("--max-ready", type=int, default=1000)
     ap.add_argument("--max-unresolved", type=int, default=2000)
     ap.add_argument("--reserve-mib", type=int, default=64)
@@ -809,7 +833,8 @@ def main():
     a = ap.parse_args()
     if (not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,40}", a.campaign)
             or not 1 <= a.chunk_pages <= 490 or not 1 <= a.max_archives <= 32
-            or a.min_free_gb < 1 or a.max_ready < 2 or a.max_pending < 1
+            or a.min_free_gb < 1 or (a.min_producer_free_gb is not None and a.min_producer_free_gb < 1)
+            or a.max_ready < 2 or a.max_pending < 1
             or not 1 <= a.max_unresolved <= 10000 or a.reserve_mib < 64
             or (a.yiddish_budget is not None and a.yiddish_budget < 0)
             or (a.german_budget is not None and a.german_budget < 0)
