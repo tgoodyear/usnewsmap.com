@@ -641,6 +641,14 @@ The pinned preparation venv suffices; no new packages or LoC clients. SSH destin
 
 Each tick skips documents already in Qwen roots and completed source chunks, picks non-English **available** scans by descending page damage from `quality.page_summary` (`select --damage-dsn-file`), and prepares at most 100 pages. Original ALTO is extracted from the retained bulk archives into `/tank/locstats/qwen-alto` (read-only `/srv/locstats` in the preparation container), each XML with a SHA256 receipt naming archive, member and signature, carried in the checksummed source chunks; cached XML and provenance are re-verified on later ticks. Missing ALTO is deferred a day, never synthesised. Extraction yields after 30 minutes per tick (finishing at least one archive); unvisited pages return as `pending` and stay eligible.
 
+#### Held-page GPU campaigns (`held-worst-first-v1`, 26 Nov 2026)
+
+Two listed Xiaomi-OCR-0 campaigns read held pages: `x08-eng-held-worst-first-v1` (English, `--qwen-allow-english`) and `x08-fra-held-worst-first-v1` (French), each its own root, collected by `usnm-qwen-results-x08` (`--hold`; stored only, never in search until its test and #1915 pass).
+
+- **Selection.** Every page in any controller plan's `archived_held` on the controller host (a held scope's settled, archived result), in the language by `quality.page_summary.lang` (MARC `fre` is French), ranked by `damage_rate` descending. Pages held but not yet archived (`held_since`) are left out. The lists are `/etc/usnm/held-worst-first-v1-<lang>-pages.txt` on the producer, each with a `.definition.json` beside it (source, filter, score, date, the controller commit and the list's sha256), and a 25-page canary list (`...-canary25.txt`, the list's first 25) the campaigns start with.
+- **Tag.** The campaign name carries the tag, and the collector writes it on every result row, so a result can be traced to the exact list. When #2139 lands, new units switch to `held-only-v1`; units already done keep `held-worst-first-v1`.
+- **No LoC requests.** Listed held pages are already on disk: the feed reads scans from the scan server and ALTO from the retained archives, never from LoC. Only the scan fetcher fetches from LoC, through the #962 global pacer.
+
 #### Undecodable source scans
 
 A scan must match its indexed bytes and SHA256 before decoding (batch JP2s are also MD5-checked against LoC's bag manifest). That proves the scan server returned what was fetched, not that LoC's file is whole, so a re-fetch can return the same broken bytes. Preparation logs the feeder's stdout even on failure; READY counts are pages written.
