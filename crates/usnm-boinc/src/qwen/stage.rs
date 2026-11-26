@@ -77,6 +77,16 @@ pub const CROP_RULE_FILE: &str = "crop-rule";
 /// Records or checks `root`'s crop rule: a root holds one rule. A root
 /// without the file that already holds pages is a default-rule root.
 fn check_crop_rule(root: &Path, rule: crops::WidthRule) -> anyhow::Result<()> {
+    // Pages first, the rule second: a run that claims a fresh root writes the
+    // rule before it stages any page, so a root seen with pages here already
+    // shows its claimed rule below, and a populated root without the file is
+    // a legacy (default-rule) root, not one another run is claiming.
+    let staged = std::fs::read_dir(units(root))
+        .map(|mut d| d.next().is_some())
+        .unwrap_or(false)
+        || std::fs::read_dir(root.join("pages"))
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false);
     let path = root.join(CROP_RULE_FILE);
     let recorded = match std::fs::read_to_string(&path) {
         Ok(s) => Some(
@@ -87,12 +97,6 @@ fn check_crop_rule(root: &Path, rule: crops::WidthRule) -> anyhow::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e).context("reading the root's crop rule"),
     };
-    let staged = std::fs::read_dir(units(root))
-        .map(|mut d| d.next().is_some())
-        .unwrap_or(false)
-        || std::fs::read_dir(root.join("pages"))
-            .map(|mut d| d.next().is_some())
-            .unwrap_or(false);
     match recorded {
         Some(r) => ensure!(
             r == rule,
@@ -1591,6 +1595,12 @@ pub(crate) mod tests {
         );
         check_crop_rule(&new, BlockShare60).unwrap();
         assert!(check_crop_rule(&new, Fixed600).is_err());
+        // A run that saw no file but finds pages a claiming run already staged
+        // reads that run's rule, so it can't take the root for a legacy one.
+        let claimed = tmp.path().join("claimed");
+        check_crop_rule(&claimed, BlockShare60).unwrap();
+        std::fs::create_dir_all(units(&claimed).join("u1")).unwrap();
+        assert!(check_crop_rule(&claimed, Fixed600).is_err());
         // No temporary file is left behind.
         assert!(std::fs::read_dir(&new).unwrap().all(|e| !e
             .unwrap()
