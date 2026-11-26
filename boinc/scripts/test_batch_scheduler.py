@@ -1665,7 +1665,9 @@ class QueueFake(Fake):
             self.actions.append(("export", name, [page["page"] for page in group]))
             for page in group:
                 self.assertions.append(page["scan"])
-                if not any(row["job"]["message"]["page"] == page["page"] for row in self.rows):
+                # This plan's own journal of the page; another plan's (#2146) is not its own.
+                if not any(row["job"]["message"]["page"] == page["page"] and row["plan"] == "batch-test"
+                           for row in self.rows):
                     row = record(page["page"], len(self.rows) + 1)
                     row["job"]["message"]["batch"] = name
                     self.rows.append(row)
@@ -2529,12 +2531,12 @@ class QueueModeTests(unittest.TestCase):
     # #2146 part 2: another plan's lapsed reservation of a page this plan holds the message of.
     SHAS = {message(number)["page"]: f"{number:064x}" for number in range(1, 8)}
 
-    def tick_live(self, sibling_live):
+    def tick_live(self, sibling_live, **kwargs):
         # The fake's claims record f"{n:064x}" as page n's message sha: hash journals the same way.
         with patch.object(batch, "queue_message_sha256", lambda found: self.SHAS[found["page"]]):
             return batch.tick(self.config, self.state, self.fake,
                               lambda: self.saved.append(copy.deepcopy(self.state)), NOW,
-                              sibling_live=sibling_live)
+                              sibling_live=sibling_live, **kwargs)
 
     def stale(self, number, stage="reserved"):
         # native-feed-8's journal, with its own engine image: another job id than this plan's.
@@ -2700,6 +2702,54 @@ class QueueModeTests(unittest.TestCase):
         self.assertIn("lease_lost", self.state["claims"][page])
         self.assertFalse([a for a in self.fake.actions if a[0] == "submit" and a[1] == own["job"]["id"]])
         self.assertEqual(event["stood_down"], 1)
+
+    def test_inactive_reservations_take_no_room_under_the_global_cap(self):
+        # Three of native-feed-8's reservations whose claims it let go of, on pages this plan
+        # doesn't claim: kept for history, but a global cap of 3 still has room for this plan.
+        self.fake.rows = [self.stale(number) for number in (5, 6, 7)]
+        for row in self.fake.rows:
+            row["job"]["message"]["page"] = f"sn99999999/1900-01-01/ed-1/seq-{row['job']['id'][-1]}"
+        self.SHAS = {**self.SHAS, **{row["job"]["message"]["page"]: "d" * 64 for row in self.fake.rows}}
+        stale = copy.deepcopy(self.fake.rows)
+        with contextlib.redirect_stderr(io.StringIO()):
+            event = self.tick_live({"native-feed-8": {}}, max_global_pending=3)
+        self.assertTrue([a for a in self.fake.actions if a[0] == "submit"])
+        self.assertTrue(all(row in self.fake.rows for row in stale))
+        # Still live in native-feed-8's state: they count, and fill the cap.
+        self.setUp()
+        self.fake.rows = copy.deepcopy(stale)
+        live = {row["job"]["message"]["page"]: {"d" * 64} for row in stale}
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.tick_live({"native-feed-8": live}, max_global_pending=3)
+        self.assertFalse([a for a in self.fake.actions if a[0] == "submit"])
+
+    def test_an_established_takeover_is_collected_after_its_claim_is_lost(self):
+        # The winner took the page over and submitted its job; its claim is later marked
+        # lease_lost. The supersession stands: its job is still its own, and collected.
+        self.fake.rows = [self.stale(1)]
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.tick_live({"native-feed-8": {}})
+        page = message(1)["page"]
+        own = next(row for row in self.fake.rows
+                   if row["job"]["message"]["page"] == page and row["plan"] == self.config["plan"])
+        self.assertIn(own["job"]["id"], self.fake.jobs)
+        self.state["claims"][page]["lease_lost"] = {"at": int(NOW), "why": "lease_lost"}
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        self.fake.actions.clear()
+        with contextlib.redirect_stderr(io.StringIO()):
+            event = self.tick_live({"native-feed-8": {}})
+        self.assertTrue([a for a in self.fake.actions if a[0] == "collect" and a[1] == own["job"]["id"]])
+        self.assertEqual(event["ownership_conflicts"], 0)
+
+    def test_two_check_state_dirs_naming_one_plan_are_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name, claims in (("old", {}), ("live", {"p": {"message": "e" * 64}}), ("own", {})):
+                (root / name).mkdir()
+                (root / name / "state.json").write_text(json.dumps({"plan": "native-feed-8", "claims": claims}))
+            with self.assertRaisesRegex(ValueError, "two --check-state-dir states name plan native-feed-8"):
+                batch.sibling_live_claims(root / "own", [root / "old", root / "live"])
 
     def test_fresh_claims_that_all_collide_are_reported(self):
         # Nothing can be exported this tick, but the conflicts are still logged and alerted.
