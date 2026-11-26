@@ -870,6 +870,47 @@ class SubsetShipmentTest(unittest.TestCase):
         self.assertTrue(list((self.share / "qwen/test/units").glob("*/submitting")))
         self.assertTrue((self.chunk / "READY").exists())
 
+    def outbox_free(self, gib, pages=0):
+        free = gib * 1024**3 + pages * 64 * 1024**2
+        return mock.patch.object(driver.shutil, "disk_usage",
+                                 return_value=types.SimpleNamespace(free=free))
+
+    def test_shipping_without_a_producer_floor_is_as_before(self):
+        # Unset: the outbox shares --min-free-gb and the 64 MiB a page reservation, as on main.
+        with self.outbox_free(50, 10):
+            code, _ = self.ship()
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.transfers[0]["members"]), 10)
+
+    def test_a_producer_floor_caps_new_subsets_by_its_headroom(self):
+        self.args.min_producer_free_gb = 8
+        with self.outbox_free(8, 20):  # a small outbox, far under the server's 50 GB
+            code, _ = self.ship()
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.transfers[0]["members"]), 20)
+
+    def test_a_producer_floor_without_headroom_ships_nothing(self):
+        self.args.min_producer_free_gb = 8
+        with self.outbox_free(8, 0):
+            code, output = self.ship()
+        self.assertEqual(code, 75)
+        self.assertFalse(self.transfers)
+        self.assertEqual(json.loads(output)["reserve_pages"], 0)
+
+    def test_an_active_subset_keeps_its_reservation_against_the_producer_floor(self):
+        self.args.min_producer_free_gb = 8
+        self.lose_response = True
+        with self.outbox_free(100), self.assertRaises(subprocess.TimeoutExpired):
+            self.ship()
+        self.lose_response = False
+        with self.outbox_free(8, 53):  # one page short of the active subset's 54
+            code, output = self.ship()
+        self.assertEqual((code, json.loads(output)["reserve_pages"]), (75, 54))
+        self.assertEqual(len(self.transfers), 1)
+        with self.outbox_free(8, 54):
+            self.assertEqual(self.ship()[0], 0)
+        self.assertEqual(len(self.db["usnm_qwen"]), 54)
+
     def test_reservation_and_transfer_membership_reject_boundaries(self):
         self.assertEqual(shipment.capacity(self.state, 100 * 1024**3), 54)
         self.assertEqual(shipment.capacity(self.state, 50 * 1024**3 + 53 * 64 * 1024**2), 53)

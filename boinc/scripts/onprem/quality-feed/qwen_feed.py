@@ -388,16 +388,27 @@ def _ship_subsets(a):
             pool = json.loads(remote(a.server_host, ["lvs", "--reportformat", "json", "--units", "b",
                                                     "--nosuffix", "-o", "lv_size,data_percent",
                                                     "pve/data"]))["report"][0]["lv"][0]
-            # The server keeps --min-free-gb; the outbox only its own floor (#2159).
-            free = int(float(pool["lv_size"]) * (1 - float(pool["data_percent"]) / 100))
-            producer_floor = getattr(a, "min_producer_free_gb", None) or a.min_free_gb
-            if shutil.disk_usage(a.outbox).free < producer_floor * 1024**3:
-                free = 0
+            pool_free = int(float(pool["lv_size"]) * (1 - float(pool["data_percent"]) / 100))
+            producer_free = shutil.disk_usage(a.outbox).free
+            reserve = 64 * 1024**2
+            producer_floor = getattr(a, "min_producer_free_gb", None)
+            if producer_floor is None:
+                # As before: the outbox shares the server's floor.
+                free = min(producer_free, pool_free)
+                producer_room = None
+            else:
+                # Its own floor (#2159): the server keeps --min-free-gb, and each page's 64 MiB
+                # reservation is also held against the outbox's floor.
+                free = pool_free
+                producer_room = max(0, (producer_free - producer_floor * 1024**3) // reserve)
             limit = shipment.capacity(state, free, max_ready=a.qwen_max_ready,
                                       max_unresolved=a.max_unresolved, min_free_gb=a.min_free_gb)
+            if producer_room is not None:
+                limit = min(limit, producer_room)
             value = active[0] if active else shipment.manifest(parent, left[:limit], recipe) if limit else None
             count = len(value["members"]) if value else 0
-            if value is None or min(state["free_bytes"], free) - count * 64 * 1024**2 < a.min_free_gb * 1024**3:
+            if (value is None or min(state["free_bytes"], free) - count * reserve < a.min_free_gb * 1024**3
+                    or producer_room is not None and count > producer_room):
                 evidence = (retained_publication(journal / active[0]["id"], active[0]) if active
                             else shipment.publication_evidence())
                 print(json.dumps({**evidence,
