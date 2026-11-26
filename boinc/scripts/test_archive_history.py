@@ -508,6 +508,48 @@ class DispatchTests(DispatchFixture):
         self.assertEqual(before[0], self.snapshot()[0])
 
 
+    def put_journal(self, record, modified):
+        job = record["job"]["id"]
+        self.container.put(f"dispatch/jobs/{job}/record.json", json.dumps(record).encode(), modified)
+
+    def test_a_page_in_an_ownership_conflict_is_passed_over_and_the_rest_archived(self):
+        # #1685, #2146: page 1 is claimed here and another plan's journal is for it too (that plan
+        # claimed the message after this plan's lease lapsed). A tick passes over the page; the
+        # archive used to refuse the whole run, and the journals then passed the cap (#2131).
+        self.put_journal(journal(40, page_key(1), "reserved", plan="native-feed-9"), time.time() - 10 * DAY)
+        code, summary, _ = run(self.argv())
+        self.assertEqual(code, 0)
+        self.assertEqual(summary["ownership_conflicts"],
+                         {"pages": 1, "first": [page_key(1)], "settled_elsewhere": 0})
+        # This plan's published journal of page 1 would qualify; it stays for the conflict. The other
+        # plan's reserved one isn't published, so it's skipped for that first.
+        self.assertEqual(summary["pages"]["skipped"]["ownership_conflict"], 1)
+        self.assertEqual(summary["pages"]["skipped"]["current_journal_reserved"], 2)
+        self.assertTrue(summary["outstanding_pages"]["unchanged"])
+        code, receipt, errors = self.apply()
+        self.assertEqual(code, 0, receipt)
+        self.assertEqual((receipt["pages"], receipt["jobs"]), (3, 4))
+        # Page 1's journals, this plan's and the other plan's, and its claim are left as they are.
+        self.assertIn(job_id(1), self.jobs_in_container())
+        self.assertIn(job_id(40), self.jobs_in_container())
+        self.assertFalse(self.jobs_in_container() & {job_id(n) for n in (2, 3, 30, 20)})
+        self.assertIn(page_key(1), self.state_now()["claims"])
+        self.assertTrue(any("passed over 1 claimed pages" in str(line.get("message", "")) for line in errors))
+
+    def test_an_own_journal_with_another_image_still_refuses_beside_a_conflict(self):
+        # Passing over a conflict doesn't pass over the plan's own corruption, as a tick doesn't.
+        self.put_journal(journal(40, page_key(1), "reserved", plan="native-feed-9"), time.time() - 10 * DAY)
+        record = journal(7, page_key(7), "reserved")
+        record["job"]["engine"]["image"] = "sha256:" + "e" * 64
+        self.put_journal(record, time.time() - 10 * DAY)
+        before = self.snapshot()
+        code, _, errors = self.apply()
+        self.assertEqual(code, 1)
+        self.assertIn("the journals and state don't agree already", errors[-1]["error"])
+        self.assertIn("different allocation/image", errors[-1]["error"])
+        self.assertEqual(before, self.snapshot())
+
+
 HELD = "scope deu/frak2021 is held from publication: not calibrated (#835)"
 
 

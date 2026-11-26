@@ -517,18 +517,32 @@ def claimed_pages(state):
             for page, claim in sorted(state.get("claims", {}).items()) if claim.get("scan")]
 
 
-def outstanding(scheduler, config, state, records):
+def outstanding(scheduler, config, state, records, conflicts=None):
     """The pages a tick would export or submit: allocated pages without a journal of their own,
     or whose journal is only prepared, or still the dead-lettered one a deadline retry
     supersedes (#1417). A queue-fed tick allocates its claimed pages, a fixed plan its
-    configured ones. owned_records' refusals are raised as they are."""
-    if config.get("source") == "queue":
+    configured ones. owned_records' refusals are raised as they are.
+
+    Given a dict as `conflicts`, a queue-fed plan passes over a claimed page another plan's
+    journal is for, as its tick does (#1685): owned_records leaves the page out and fills in
+    `conflicts`, and the page isn't outstanding, since the tick exports nothing for it. A fixed
+    page list still refuses, as its tick does."""
+    queue = config.get("source") == "queue"
+    if queue:
         config = {**config, "pages": claimed_pages(state)}
-    owned = scheduler.owned_records(config, records, state.get("deadline_retries"))
+    found = conflicts if queue else None
+    owned = scheduler.owned_records(config, records, state.get("deadline_retries"), found)
+    passed = set(found or ())
     return {page["page"] for page in config["pages"]
-            if page["page"] not in owned or owned[page["page"]]["stage"] == "prepared"
-            or (owned[page["page"]]["stage"] == "failed"
-                and page.get("supersedes") == owned[page["page"]]["job"]["id"])}
+            if page["page"] not in passed
+            and (page["page"] not in owned or owned[page["page"]]["stage"] == "prepared"
+                 or (owned[page["page"]]["stage"] == "failed"
+                     and page.get("supersedes") == owned[page["page"]]["job"]["id"]))}
+
+
+def disputed(conflicts):
+    """The conflicted pages a tick reports (#1685): those not settled in another plan."""
+    return sorted(page for page, entry in conflicts.items() if not entry["settled_elsewhere"])
 
 
 def modified_at(blob):
@@ -550,7 +564,7 @@ def kept_result(blobs):
 
 
 def choose(config, state, records, blobs, now, *, pages, min_age_hours, include_held=False,
-           others=frozenset()):
+           others=frozenset(), passed=frozenset()):
     """The oldest fully published pages, up to `pages`, as (chosen, summary). A page qualifies
     when every journal it has forms one retry chain that ends `published`, the last write of
     that journal is at least min_age_hours old, and the controller's state agrees: a page of
@@ -560,7 +574,9 @@ def choose(config, state, records, blobs, now, *, pages, min_age_hours, include_
     kept result is in the container. A page that a checked plan has claimed or selected
     (`others`, from --check-state-dir) stays, whichever plan's journals it has: once they are
     gone, that plan would export it again under the same deterministic job id, whose workunit
-    row still exists, and every tick would refuse with an SQL/journal mismatch (#1713)."""
+    row still exists, and every tick would refuse with an SQL/journal mismatch (#1713). A page
+    in `passed`, an ownership conflict this plan's tick passes over (#1685), stays too, every
+    plan's journals of it, for reconcile."""
     queue = config.get("source") == "queue"
     kept = kept_result(blobs) if include_held else set()
     claims, selected = state.get("claims", {}), state.get("selected", {})
@@ -601,6 +617,10 @@ def choose(config, state, records, blobs, now, *, pages, min_age_hours, include_
         published_at = modified_at(blob)
         if published_at is None or now - published_at < min_age_hours * 3600:
             skip("held_too_recently" if held else "published_too_recently")
+            continue
+        if page in passed:
+            # In an ownership conflict this plan's tick passes over (#1685): left for reconcile.
+            skip("ownership_conflict")
             continue
         if page in others:
             skip("claimed_by_another_plan")
@@ -734,9 +754,19 @@ def plan_batch(scheduler, config, state, container, now, args):
     for record in records:
         stages[record["stage"]] = stages.get(record["stage"], 0) + 1
     include_held = getattr(args, "include_held", False)
+    # A claimed page another plan's journal is for is passed over as a tick passes over it
+    # (#1685, #2146): it stays out of the batch, with its journals and claim as they are. One
+    # such page used to stop the whole archive, and the journals then passed the cap (#2131,
+    # 25 Nov 2026).
+    check = {"before": None, "after": None, "error": None}
+    conflicts_before, conflicts_after = {}, {}
+    try:
+        check["before"] = sorted(outstanding(scheduler, config, state, records, conflicts_before))
+    except ValueError as error:
+        check["error"] = str(error)
     chosen, pages = choose(config, state, records, blobs, now, pages=args.pages,
                            min_age_hours=args.min_age_hours, include_held=include_held,
-                           others=other_plans_pages(args))
+                           others=other_plans_pages(args), passed=frozenset(conflicts_before))
     jobs = sorted(job for page in chosen for job in page["jobs"])
     require(len(set(jobs)) == len(jobs), "a job belongs to two pages; reconcile the journals first")
     entries = state_entries(config, state, chosen, now)
@@ -751,14 +781,16 @@ def plan_batch(scheduler, config, state, container, now, args):
             "the controller's archived_held cap would be passed (or its batch_scheduler.py predates "
             "--include-held); restore or publish held pages first")
     remaining = [record for record in records if record["job"]["id"] not in chosen_jobs]
-    check = {"before": None, "after": None, "error": None}
-    try:
-        # The archive must not make a page look like it still needs exporting or submitting:
-        # the same pages are outstanding before and after, and owned_records accepts both.
-        check["before"] = sorted(outstanding(scheduler, config, state, records))
-        check["after"] = sorted(outstanding(scheduler, config, after_state, remaining))
-    except ValueError as error:
-        check["error"] = str(error)
+    if check["error"] is None:
+        try:
+            # The archive must not make a page look like it still needs exporting or submitting:
+            # the same pages are outstanding before and after, and owned_records accepts both.
+            check["after"] = sorted(outstanding(scheduler, config, after_state, remaining, conflicts_after))
+            if sorted(conflicts_before) != sorted(conflicts_after):
+                check["error"] = "archiving this batch would change which pages are in an ownership conflict"
+        except ValueError as error:
+            check["error"] = str(error)
+    passed_over = disputed(conflicts_before)
     journals = sum(1 for name in blobs if RECORD_BLOB.fullmatch(name))
     manifest = {
         "schema_version": SCHEMA_VERSION, "kind": "usnm-boinc-archive-batch",
@@ -787,6 +819,8 @@ def plan_batch(scheduler, config, state, container, now, args):
                               "after": None if check["after"] is None else len(check["after"]),
                               "unchanged": check["error"] is None and check["before"] == check["after"],
                               "error": check["error"]},
+        "ownership_conflicts": {"pages": len(passed_over), "first": passed_over[:5],
+                                "settled_elsewhere": len(conflicts_before) - len(passed_over)},
     }
     return manifest, summary
 
@@ -961,6 +995,11 @@ def dispatch(args):
             require(outstanding_pages["error"] is None,
                     f"the journals and state don't agree already: {outstanding_pages['error']}")
             require(outstanding_pages["unchanged"], "archiving this batch would leave pages needing work again")
+            passed_over = summary["ownership_conflicts"]
+            if passed_over["pages"]:
+                progress(f"warning: passed over {passed_over['pages']} claimed pages in an ownership conflict "
+                         f"(first: {passed_over['first'][0]}); their journals stay, reconcile them "
+                         "(archive_history.py reconcile, #1685)")
             if not manifest["pages"]:
                 emit({"event": "boinc_archive_dispatch", "schema_version": SCHEMA_VERSION, **summary,
                       "apply": True, "batch": None, "message": "no page is drained and old enough to archive"})
