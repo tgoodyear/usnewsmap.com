@@ -2,9 +2,11 @@
 // matches (#1620). The page is static (public/); this Worker answers /api/*, /clips/* and
 // /admin/*. README.md describes the data, the settling rule and how tasks are loaded.
 
-const CHOICES = new Set(["a", "b", "neither", "unsure", "notext"]);
-// A column gutter task (kind "gutter", README.md "Column gutter judgments") asks yes / no / can't tell: a = yes, b = no, unsure.
-// Neither and notext have no meaning for it and are refused.
+// `badcrop` (README.md, "Bad crop") says the box itself is wrong: it shows more than one line, cuts off the word or marks the wrong
+// thing. Every task kind takes it. It never makes a reading win: a task where it wins settles as `bad_crop` and is held.
+export const CHOICES = new Set(["a", "b", "neither", "unsure", "notext", "badcrop"]);
+// A column gutter task (kind "gutter", README.md "Column gutter judgments") asks yes / no / can't tell: a = yes, b = no, unsure,
+// and takes badcrop like every task. Neither and notext have no meaning for it and are refused.
 export const GUTTER_REVEALED = ["method", "role", "segment_id", "page_id"];
 export const GUTTER_REFUSED = new Set(["neither", "notext"]);
 // A gutter task's `line` as fractions of the crop: x at y0, y0..y1 down the crop, and optionally x1, its x at y1, for a line
@@ -74,13 +76,15 @@ export function json(body, status = 200, headers = {}) {
 
 // ---------- the settling rule ----------
 
-// counts: {a, b, neither, unsure, notext}, in that order: a tie goes to the first. A word settles once at least SETTLE_MIN people answered and
-// one answer has two thirds of them. After DISPUTE_AT answers without that, it closes as disputed.
+// counts: {a, b, neither, unsure, notext, badcrop}, in that order: a tie goes to the first. A word settles once at least SETTLE_MIN people
+// answered and one answer has two thirds of them. After DISPUTE_AT answers without that, it closes as disputed. Bad crop answers
+// count in n like any other; when badcrop is the answer with two thirds, the outcome is `bad_crop` (SETTLE_SQL also holds the task).
+export const BAD_CROP = "bad_crop";
 export function settle(counts) {
   const n = Object.values(counts).reduce((s, v) => s + v, 0);
   let top = null;
   for (const [k, v] of Object.entries(counts)) if (top === null || v > counts[top]) top = k;
-  if (n >= SETTLE_MIN && top !== null && counts[top] * 3 >= n * 2) return { n, settled: 1, outcome: top };
+  if (n >= SETTLE_MIN && top !== null && counts[top] * 3 >= n * 2) return { n, settled: 1, outcome: top === "badcrop" ? BAD_CROP : top };
   if (n >= DISPUTE_AT) return { n, settled: 1, outcome: "disputed" };
   return { n, settled: 0, outcome: null };
 }
@@ -251,7 +255,7 @@ async function api(request, env, url) {
     if (typeof b.task !== "string" || b.task.length > 300 || !CHOICES.has(b.choice)) throw new HttpError(400, "task and choice required");
     const t = await env.DB.prepare(`SELECT id, settled, held, confusable_display, json_type(body, '$.private') AS blind, json_extract(body, '$.kind') AS kind, ${NEEDS_CURRENT_PAGE} AS current_page FROM tasks WHERE id = ?`).bind(b.task).first();
     if (!t) throw new HttpError(404, "no such task");
-    if (t.kind === "gutter" && GUTTER_REFUSED.has(b.choice)) throw new HttpError(400, "this question takes yes, no or can't tell");
+    if (t.kind === "gutter" && GUTTER_REFUSED.has(b.choice)) throw new HttpError(400, "this question takes yes, no or can't tell (or bad crop)");
     if (t.settled && t.blind) throw new HttpError(409, "this word is already checked");
     if (t.held) throw new HttpError(409, "this word is not open for answers");
     if (t.current_page && !(Number(b.display) >= DISPLAY_REVISION)) throw new HttpError(426, "this page is out of date: reload it, then answer again");
@@ -277,7 +281,7 @@ async function api(request, env, url) {
     const rows = await env.DB.prepare(
       `SELECT t.id, t.set_name, t.body, t.outcome, t.settled, t.confusable_display, t.held, t.mark_reason, t.outcome_withdrawn, t.withdrawn_reason, t.withdrawn_at, t.hold_reason,
          SUM(a.choice = 'a') AS a, SUM(a.choice = 'b') AS b, SUM(a.choice = 'neither') AS neither, SUM(a.choice = 'unsure') AS unsure,
-         SUM(a.choice = 'notext') AS notext,
+         SUM(a.choice = 'notext') AS notext, SUM(a.choice = 'badcrop') AS badcrop,
          SUM(a.font = 'loaded') AS f_loaded, SUM(a.font = 'not_loaded') AS f_not_loaded, SUM(a.font = 'none') AS f_none, SUM(a.font = 'unknown') AS f_unknown,
          SUM(a.names_shown = 'shown') AS n_shown, SUM(a.names_shown = 'not_shown') AS n_not_shown, SUM(a.names_shown = 'unknown') AS n_unknown
        FROM tasks t LEFT JOIN answers a ON a.task_id = t.id WHERE t.lang = ? GROUP BY t.id ORDER BY t.id`,
@@ -287,7 +291,7 @@ async function api(request, env, url) {
     // Answers set aside for a task marked confusable_display (README.md, "Words whose readings look alike"): counted apart.
     const set = await env.DB.prepare(
       `SELECT e.task_id, COUNT(*) AS n, SUM(e.choice = 'a') AS a, SUM(e.choice = 'b') AS b, SUM(e.choice = 'neither') AS neither,
-         SUM(e.choice = 'unsure') AS unsure, SUM(e.choice = 'notext') AS notext,
+         SUM(e.choice = 'unsure') AS unsure, SUM(e.choice = 'notext') AS notext, SUM(e.choice = 'badcrop') AS badcrop,
          SUM(e.font = 'loaded') AS f_loaded, SUM(e.font = 'not_loaded') AS f_not_loaded, SUM(e.font = 'none') AS f_none, SUM(e.font = 'unknown') AS f_unknown,
          SUM(e.names_shown = 'shown') AS n_shown, SUM(e.names_shown = 'not_shown') AS n_not_shown, SUM(e.names_shown = 'unknown') AS n_unknown
        FROM answers_excluded e JOIN tasks t ON t.id = e.task_id WHERE t.lang = ? GROUP BY e.task_id`,
@@ -296,7 +300,8 @@ async function api(request, env, url) {
       .all();
     const fontCounts = (r) => ({ loaded: r.f_loaded || 0, not_loaded: r.f_not_loaded || 0, none: r.f_none || 0, unknown: r.f_unknown || 0 });
     const namesCounts = (r) => ({ shown: r.n_shown || 0, not_shown: r.n_not_shown || 0, unknown: r.n_unknown || 0 });
-    const excluded = new Map(set.results.map((e) => [e.task_id, { a: e.a || 0, b: e.b || 0, neither: e.neither || 0, unsure: e.unsure || 0, notext: e.notext || 0 }]));
+    const choiceCounts = (r) => ({ a: r.a || 0, b: r.b || 0, neither: r.neither || 0, unsure: r.unsure || 0, notext: r.notext || 0, badcrop: r.badcrop || 0 });
+    const excluded = new Map(set.results.map((e) => [e.task_id, choiceCounts(e)]));
     const excludedFonts = new Map(set.results.map((e) => [e.task_id, fontCounts(e)]));
     const excludedNames = new Map(set.results.map((e) => [e.task_id, namesCounts(e)]));
     const lines = rows.results.map((r) => {
@@ -314,7 +319,7 @@ async function api(request, env, url) {
         ...(t.kind === "gutter" ? { kind: "gutter", line: t.line, ...Object.fromEntries(GUTTER_REVEALED.filter((k) => reveal[k] !== undefined).map((k) => [k, reveal[k]])) } : {}),
         // Pairs of one base letter that differ only in combining marks (lookalike.py): {a, a_marks, b, b_marks, base}.
         ...(t.mark_only ? { mark_only: t.mark_only } : {}),
-        counts: { a: r.a || 0, b: r.b || 0, neither: r.neither || 0, unsure: r.unsure || 0, notext: r.notext || 0 },
+        counts: choiceCounts(r),
         // The same answers by what the visitor's page reported about the bundled font (FONT_STATES). Answers given before
         // the page reported it are `unknown`. The values add up to the counts' total.
         font_counts: fontCounts(r),
@@ -325,12 +330,15 @@ async function api(request, env, url) {
         // are in excluded_counts, never in counts, and they don't settle the word or count in any score. `mark_reason` says why
         // (a task marked before reasons existed is confusable_display). `held` is true until the word is reopened for new answers,
         // which only a confusable_display word can be.
-        ...(reasonOf(r) ? { mark_reason: reasonOf(r), ...(reasonOf(r) === "confusable_display" ? { confusable_display: true } : {}), held: !!r.held, excluded_counts: excluded.get(r.id) || { a: 0, b: 0, neither: 0, unsure: 0, notext: 0 }, excluded_font_counts: excludedFonts.get(r.id) || fontCounts({}), excluded_names_counts: excludedNames.get(r.id) || namesCounts({}) } : {}),
+        ...(reasonOf(r) ? { mark_reason: reasonOf(r), ...(reasonOf(r) === "confusable_display" ? { confusable_display: true } : {}), held: !!r.held, excluded_counts: excluded.get(r.id) || choiceCounts({}), excluded_font_counts: excludedFonts.get(r.id) || fontCounts({}), excluded_names_counts: excludedNames.get(r.id) || namesCounts({}) } : {}),
         // A word held without a mark (README.md, "Taking words out of the queue without a mark"): its answers, counts and outcome
         // are as before, in `counts` and `settled`; it only takes no new answers. `hold_reason` is the slug.
         ...(!reasonOf(r) && holdOf(r) ? { held: true, hold_reason: holdOf(r) } : {}),
         // The outcome a settled word had when it was marked: it no longer counts as checked text, and `settled` above is false.
         ...(r.outcome_withdrawn ? { outcome_withdrawn: r.outcome_withdrawn, withdrawn_reason: r.withdrawn_reason, withdrawn_at: r.withdrawn_at } : {}),
+        // A word that settled as bad_crop (README.md, "Bad crop"): the box is a build defect, to be rebuilt, not reader evidence.
+        // `clips` names its pictures (a pick task's line and word, a gutter task's crop) so the rebuild can find them.
+        ...(r.outcome === BAD_CROP ? { clips: t.kind === "gutter" ? { crop: t.crop } : { line: t.line, word: t.word } } : {}),
         settled: !!r.settled, outcome: r.outcome,
       });
     });
@@ -346,9 +354,6 @@ async function api(request, env, url) {
   throw new HttpError(404, "not found");
 }
 
-// Recounts a word's answers and applies settle()'s rule in SQL, so the upsert and the recount run
-// in one D1 batch (one transaction) and a slower request can't write back stale counts.
-// worker.test.mjs checks it against settle() on SQLite.
 // The language's new configuration (?1) with the stored examples, if it has any, put back in.
 export const KEEP_EXAMPLES_SQL = `
 UPDATE languages SET config = CASE
@@ -357,23 +362,35 @@ UPDATE languages SET config = CASE
 END
 WHERE code = ?2`;
 
+// Recounts a word's answers and applies settle()'s rule in SQL, so the upsert and the recount run
+// in one D1 batch (one transaction) and a slower request can't write back stale counts.
+// worker.test.mjs checks it against settle() on SQLite. A word that settles as bad_crop is also held, in the same statement, so it
+// leaves the queue and takes no more answers; its answers stay. An unmarked word is held with hold_reason `bad_crop` (as action
+// "hold" would, and "release" undoes it); a reopened confusable_display word is held as a marked one is, with no hold_reason.
 export const SETTLE_SQL = `
 WITH c AS (
   SELECT COUNT(*) AS n,
     COALESCE(SUM(choice = 'a'), 0) AS a, COALESCE(SUM(choice = 'b'), 0) AS b,
     COALESCE(SUM(choice = 'neither'), 0) AS ne, COALESCE(SUM(choice = 'unsure'), 0) AS u,
-    COALESCE(SUM(choice = 'notext'), 0) AS nt
+    COALESCE(SUM(choice = 'notext'), 0) AS nt, COALESCE(SUM(choice = 'badcrop'), 0) AS bc
   FROM answers WHERE task_id = ?1
 ), t AS (
-  SELECT n, MAX(a, b, ne, u, nt) AS top,
-    CASE WHEN a >= b AND a >= ne AND a >= u AND a >= nt THEN 'a' WHEN b >= ne AND b >= u AND b >= nt THEN 'b'
-      WHEN ne >= u AND ne >= nt THEN 'neither' WHEN u >= nt THEN 'unsure' ELSE 'notext' END AS pick
+  SELECT n, MAX(a, b, ne, u, nt, bc) AS top,
+    CASE WHEN a >= b AND a >= ne AND a >= u AND a >= nt AND a >= bc THEN 'a' WHEN b >= ne AND b >= u AND b >= nt AND b >= bc THEN 'b'
+      WHEN ne >= u AND ne >= nt AND ne >= bc THEN 'neither' WHEN u >= nt AND u >= bc THEN 'unsure' WHEN nt >= bc THEN 'notext'
+      ELSE '${BAD_CROP}' END AS pick
   FROM c
+), o AS (
+  SELECT n, CASE WHEN (n >= ${SETTLE_MIN} AND top * 3 >= n * 2) OR n >= ${DISPUTE_AT} THEN 1 ELSE 0 END AS settled,
+    CASE WHEN n >= ${SETTLE_MIN} AND top * 3 >= n * 2 THEN pick WHEN n >= ${DISPUTE_AT} THEN 'disputed' END AS outcome
+  FROM t
 )
 UPDATE tasks SET
-  n = (SELECT n FROM t),
-  settled = (SELECT CASE WHEN (n >= ${SETTLE_MIN} AND top * 3 >= n * 2) OR n >= ${DISPUTE_AT} THEN 1 ELSE 0 END FROM t),
-  outcome = (SELECT CASE WHEN n >= ${SETTLE_MIN} AND top * 3 >= n * 2 THEN pick WHEN n >= ${DISPUTE_AT} THEN 'disputed' END FROM t)
+  n = (SELECT n FROM o),
+  settled = (SELECT settled FROM o),
+  outcome = (SELECT outcome FROM o),
+  held = CASE WHEN (SELECT outcome FROM o) = '${BAD_CROP}' THEN 1 ELSE held END,
+  hold_reason = CASE WHEN (SELECT outcome FROM o) = '${BAD_CROP}' AND confusable_display = 0 AND mark_reason IS NULL THEN '${BAD_CROP}' ELSE hold_reason END
 WHERE id = ?1`;
 
 // A settled blind task (its body has `private`) takes no more answers, so a revision can't reopen it after its

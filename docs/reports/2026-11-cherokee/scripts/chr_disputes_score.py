@@ -23,7 +23,8 @@ Answers set aside on the site are never counted. A word marked `confusable_displ
 font, #1939) has its earlier answers in the export's `excluded_counts`, apart from `counts`; this script reads only `counts`, and
 a marked word that is still `held` (not yet reopened) counts as waiting, whatever else its row says. A word marked `merged_line`
 (the line clip covers two printed lines, #1978) is never scored: its line is `excluded`, counted in neither the resolved nor the waiting
-lines. Its old outcome, if it had settled, is in `outcome_withdrawn`, which this script does not read.
+lines. Its old outcome, if it had settled, is in `outcome_withdrawn`, which this script does not read. A word that settled as
+`bad_crop` (its box was a build defect) is left out the same way: its line is `excluded`, never open or scored.
 
 Only lines where the readings differ are loaded. Each reading can differ from the checked text only in the disputed word, and
 errors the readings share elsewhere on the page are not seen. The figures are not each reading's error on the page.
@@ -68,7 +69,7 @@ def usable(row: dict) -> dict:
     never has usable answers: it is `excluded`, and its line leaves the scoring. The answers they had are in `excluded_counts`,
     and a settled word's old outcome is in `outcome_withdrawn`; nothing here reads either."""
     empty = {**row, "counts": dict.fromkeys(row["counts"], 0), "settled": False, "outcome": None}
-    if row.get("mark_reason") == "merged_line":
+    if row.get("mark_reason") == "merged_line" or row.get("outcome") == "bad_crop":
         return {**empty, "excluded": True}
     if row.get("confusable_display") and row.get("held"):
         return empty

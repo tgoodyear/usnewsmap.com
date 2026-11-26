@@ -54,6 +54,10 @@ class Report(unittest.TestCase):
         base = rep["baseline"]["all"]
         self.assertEqual((base["words"], base["answers"], base["unsure"], base["agreement"]), (10, 40, 0, 1.0))
 
+    def test_a_bad_crop_word_is_left_out(self):
+        bad = {**task("yi/t/bad", AL + PATAH, AL + QAMATS, {"a": 1, "unsure": 1, "badcrop": 4}, {"none": 6}), "outcome": "bad_crop", "settled": True}
+        self.assertEqual(self.run_report(self.tasks() + [bad]), self.run_report(self.tasks()))
+
     def test_fewer_than_twenty_answers_print_too_few(self):
         rep = self.run_report(self.tasks())["yi"]
         self.assertEqual(rep["marks"]["U+05BC dagesh or mapiq"]["all"], {"words": 2, "answers": 6, "note": "too few answers"})

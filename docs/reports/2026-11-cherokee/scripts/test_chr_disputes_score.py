@@ -70,6 +70,14 @@ class Score(unittest.TestCase):
         self.assertEqual(rep["score"]["resolved"]["lines"], 1)
         self.assertEqual(sum(v["excluded"] for v in rep["by_kind"].values()), 2)
 
+    def test_a_bad_crop_word_is_excluded_as_a_build_defect_not_open(self):
+        """A word that settled as bad_crop (its box was wrong): its line leaves the scoring, never as a word without a winner."""
+        bad = {**row("l4", "bad_crop", counts={"badcrop": 3}), "held": True, "hold_reason": "bad_crop"}
+        export = self.export[:3] + [bad] + self.export[4:]
+        recs = {r["id"]: r for r in cds.line_states(self.manifest, export)}
+        self.assertEqual(recs["l4"]["state"], "excluded")
+        self.assertNotIn("why", recs["l4"])
+
     def test_a_held_only_word_is_scored_as_before(self):
         """A word held without a mark (action hold): the export adds held and hold_reason, and its counts and outcome are read as usual."""
         held = {**self.export[2], "held": True, "hold_reason": "reference-mismatch-v1"}

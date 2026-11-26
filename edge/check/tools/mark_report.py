@@ -82,6 +82,8 @@ def report(tasks: list, fonts, languages_dir: str, threshold: float, min_answers
     """tasks: export lines. Returns {lang: {"marks": {mark: {font group or "all": row}}, "baseline": {...}}}."""
     cache, tallies = {}, {}
     for t in tasks:
+        if t.get("outcome") == "bad_crop":
+            continue  # a build defect (README.md, "Bad crop"): its answers are about the box, not the letters
         lang = t["id"].split("/")[0]
         eq = cache.setdefault(lang, la.language_equivalents(lang, languages_dir))
         alike, marked = la.analyse(t["a"], t["b"], eq, fonts, threshold)

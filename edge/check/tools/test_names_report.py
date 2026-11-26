@@ -40,6 +40,10 @@ class Report(unittest.TestCase):
         out.append(task("chr/s/few", {"a": 3}, {"shown": 3}))
         return out
 
+    def test_a_bad_crop_word_is_left_out(self):
+        bad = task("chr/s/bad", {"a": 1, "unsure": 1, "badcrop": 4}, {"shown": 6}, outcome="bad_crop", settled=True)
+        self.assertEqual(nr.report(self.tasks() + [bad], 20), nr.report(self.tasks(), 20))
+
     def test_words_are_grouped_by_what_all_their_answers_carry(self):
         g = nr.names_group
         self.assertEqual(g({"names_counts": {"shown": 5, "not_shown": 0, "unknown": 0}}), "shown")

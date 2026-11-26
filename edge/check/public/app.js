@@ -282,6 +282,10 @@ function fontState(t) {
 // in percentages of it, so it keeps its ends on the same print as the picture scales. A line without x1 is the vertical div.
 const isGutter = (t) => !!t && t.kind === "gutter";
 const GUTTER_ANSWERS = [["a", "Yes"], ["b", "No"]];
+// The help under the buttons for Bad crop (README.md, "Bad crop"). A gutter crop holds many printed lines by design, and a line that
+// crosses print is a No, so its task says what a broken gutter crop is instead.
+const BADCROP_HELP = "Pick Bad crop if the box shows more than one line, cuts off the word, or marks the wrong thing.";
+const GUTTER_BADCROP_HELP = "Pick Bad crop if the picture is broken or isn't part of a newspaper page, or the line is missing or runs off the picture. A line that crosses print is a No, not a bad crop.";
 
 function renderGutter(card, t, prev) {
   const q = document.createElement("p"); q.className = "question"; q.textContent = cfg.question || ""; card.appendChild(q);
@@ -433,9 +437,10 @@ function render(prev) {
   showProgress();
   $("back").disabled = history.length === 0 || busy;
   const live = !!task && !busy && !fontFailed && !stale;
-  $("neither").disabled = $("unsure").disabled = $("notext").disabled = $("skip").disabled = !live;
-  // A column gutter task has only yes, no and can't tell.
+  $("neither").disabled = $("unsure").disabled = $("notext").disabled = $("badcrop").disabled = $("skip").disabled = !live;
+  // A column gutter task has only yes, no and can't tell, and Bad crop, which every task has.
   $("neither").hidden = $("notext").hidden = isGutter(task);
+  if (task) $("badcrop-help").textContent = isGutter(task) ? GUTTER_BADCROP_HELP : BADCROP_HELP;
   if (!task && !loaded) {
     const d = document.createElement("div"); d.className = "done";
     if (busy || !failed) { d.textContent = "Loading the next word…"; card.appendChild(d); return; }
@@ -705,6 +710,7 @@ async function work(code) {
   $("neither").addEventListener("click", () => choose("neither"));
   $("unsure").addEventListener("click", () => choose("unsure"));
   $("notext").addEventListener("click", () => choose("notext"));
+  $("badcrop").addEventListener("click", () => choose("badcrop"));
   $("back").addEventListener("click", back);
   if (hasNames()) {
     // The option stays off unless this browser's stored choice says "1"; a browser without storage keeps it for the page's life.
@@ -720,6 +726,7 @@ async function work(code) {
     else if (e.key === "3") choose("neither");
     else if (e.key === "4") choose("unsure");
     else if (e.key === "5") choose("notext");
+    else if (e.key === "6") choose("badcrop");
     else if (e.key === "s" || e.key === "S") skip();
     else if (e.key === "l" || e.key === "L") toggleLine();
     else if (e.key === "k" || e.key === "K") toggleKey();
