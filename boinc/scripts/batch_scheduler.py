@@ -2265,7 +2265,7 @@ def deadline_retried(page, roots, deadline_retries):
     return [chain[-1]]
 
 
-def owned_records(config, records, deadline_retries=None, conflicts=None):
+def owned_records(config, records, deadline_retries=None, conflicts=None, abandoned=None, superseded=None):
     """Each allocated page's current journal: its one root, or its last reviewed retry
     (#1328). `deadline_retries` (the controller's state of that name, #1417) lets a page's
     dead-lettered root give way to the root an operator's deadline retry exported.
@@ -2277,12 +2277,16 @@ def owned_records(config, records, deadline_retries=None, conflicts=None):
     journal of the page, and every other plan's journal of it is published or kept by a held
     scope. That page's work is done and owned there: a held page's queue message comes back
     after its lease and a live plan claims it again, which is no fault (10 Nov). The plan's own
-    journals of that page are checked all the same."""
+    journals of that page are checked all the same.
+
+    `abandoned` (#2146 part 2, with `conflicts`) is a test of another plan's journal: one it
+    passes is an abandoned reservation this plan supersedes (`abandoned_reservation`), so a page
+    whose every other journal passes it is no conflict and stays this plan's. `superseded`, a
+    dict, gets page -> [{"plan", "job"}] of the journals superseded."""
     # Each allocated page's base batch: one for the whole cohort, or the claimed page's own.
     wanted = {page["page"]: page.get("batch") or config["batch"] for page in config["pages"]}
     by_page = {}
-    foreign = {}
-    foreign_done = {}
+    foreign_records = {}
     for record in records:
         require(record["stage"] in STAGES and ID.fullmatch(record["job"]["id"]),
                 "invalid dispatch journal")
@@ -2293,9 +2297,7 @@ def owned_records(config, records, deadline_retries=None, conflicts=None):
                 require(conflicts is not None,
                         f"page {page} is already allocated to another plan ({str(record['plan'])[:64]}); "
                         "reconcile the allocation before export (archive_history.py reconcile, #1685)")
-                foreign.setdefault(page, set()).add(str(record["plan"])[:64])
-                done = record["stage"] == "published" or kept_by_policy(record)
-                foreign_done[page] = foreign_done.get(page, True) and done
+                foreign_records.setdefault(page, []).append(record)
             continue
         require(wanted.get(page) == job["message"]["batch"],
                 "plan already exists with a different allocation/image; operator migration required")
@@ -2334,11 +2336,76 @@ def owned_records(config, records, deadline_retries=None, conflicts=None):
             remaining.remove(child)
             current = child
         owned[page] = current
-    for page, plans in foreign.items():
+    for page, others in foreign_records.items():
+        # Superseded only when every other plan's journal of the page is an abandoned
+        # reservation: one live, submitted or published journal elsewhere keeps the conflict.
+        if abandoned is not None and all(abandoned(record) for record in others):
+            if superseded is not None:
+                superseded[page] = sorted(({"plan": str(record["plan"])[:64], "job": record["job"]["id"]}
+                                           for record in others), key=lambda item: (item["plan"], item["job"]))
+            continue
         own = owned.pop(page, None)
-        conflicts[page] = {"plans": sorted(plans), "own": own,
-                           "settled_elsewhere": own is None and foreign_done[page]}
+        done = all(record["stage"] == "published" or kept_by_policy(record) for record in others)
+        conflicts[page] = {"plans": sorted({str(record["plan"])[:64] for record in others}), "own": own,
+                           "settled_elsewhere": own is None and done}
     return owned
+
+
+def abandoned_reservation(state, server_jobs, sibling_live):
+    """The test owned_records' `abandoned` takes (#2146 part 2): another plan's journal is an
+    abandoned reservation this plan supersedes when it is a `reserved` root (no retry, not held,
+    not kept by a held scope) that never reached BOINC (no bridge journal: `server_jobs`, the
+    bridge's job ids), and its queue message is the very message this plan holds a claim of now.
+
+    The queue hides a claimed message from every other plan until its lease runs out, and a live
+    plan renews its leases (#2146 part 1), so this plan holding the same message means the other
+    plan's lease lapsed: the plan that holds the message now wins, deterministically. A journal
+    that reached BOINC is never superseded (its workunit may still report), nor one of another
+    message of the page, nor anything settled: those stay conflicts, or settled elsewhere.
+
+    The other plan must also have let go: `sibling_live` (`sibling_live_claims`, from
+    --check-state-dir) must not list that message for the page, i.e. the other plan's claim of it
+    is gone or marked `lease_lost` by its renewal, after which that plan stands down
+    (`stand_down`) and never submits the reservation. Without --check-state-dir (None) nothing
+    is superseded."""
+    claims = state.get("claims", {})
+
+    def check(record):
+        if sibling_live is None:
+            return False
+        if (record.get("stage") != "reserved" or record.get("retry") or record.get("held")
+                or kept_by_policy(record) or record["job"]["id"] in server_jobs):
+            return False
+        page = record["job"]["message"]["page"]
+        claim = claims.get(page)
+        if not isinstance(claim, dict) or claim.get("release") or "lease_lost" in claim:
+            return False
+        held = claim.get("message")
+        return isinstance(held, str) and ID.fullmatch(held) is not None \
+            and queue_message_sha256(record["job"]["message"]) == held \
+            and held not in sibling_live.get(page, ())
+    return check
+
+
+def stand_down(owned, conflicts, state, server_jobs):
+    """The other side of abandoned_reservation (#2146 part 2): a page whose claim this plan's
+    renewal marked `lease_lost` (another plan may hold its message now) and whose own journal
+    is still an unsubmitted reservation (a reserved root, no bridge journal) is passed over
+    for good, like a page settled elsewhere: never submitted, exported again or alerted on. A
+    journal that reached BOINC goes on as before, and is collected. Returns the pages."""
+    pages = []
+    if conflicts is None:
+        return pages
+    for page, claim in state.get("claims", {}).items():
+        record = owned.get(page)
+        if (not isinstance(claim, dict) or "lease_lost" not in claim or record is None
+                or record["stage"] != "reserved" or record.get("retry") or record.get("held")
+                or kept_by_policy(record) or record["job"]["id"] in server_jobs):
+            continue
+        del owned[page]
+        conflicts[page] = {"plans": [], "own": record, "settled_elsewhere": True, "stood_down": True}
+        pages.append(page)
+    return sorted(pages)
 
 
 BATCH = re.compile(r"[a-z]{2,10}_[A-Za-z0-9_]+")
@@ -3108,6 +3175,26 @@ def sibling_claim_messages(own_dir, dirs):
                 f"{directory}/state.json has no valid claims")
         for page, claim in claims.items():
             message = claim.get("message") if isinstance(claim, dict) else None
+            if isinstance(message, str) and ID.fullmatch(message):
+                merged.setdefault(page, set()).add(message)
+    return merged
+
+
+def sibling_live_claims(own_dir, dirs):
+    """Like sibling_claim_messages, without the claims a plan let go of: one marked `lease_lost`
+    by its renewal (#2146) or being released. What abandoned_reservation checks."""
+    own = Path(own_dir).resolve()
+    merged = {}
+    for directory in dirs:
+        directory = Path(directory).resolve()
+        require(directory != own, "--check-state-dir names this plan's own state directory")
+        claims = json.loads((directory / "state.json").read_text()).get("claims", {})
+        require(isinstance(claims, dict) and len(claims) <= MAX_JOBS,
+                f"{directory}/state.json has no valid claims")
+        for page, claim in claims.items():
+            if not isinstance(claim, dict) or "lease_lost" in claim or claim.get("release"):
+                continue
+            message = claim.get("message")
             if isinstance(message, str) and ID.fullmatch(message):
                 merged.setdefault(page, set()).add(message)
     return merged
@@ -4623,7 +4710,7 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
          refill_cap=None, other_app_budget=None, sibling_archived=None, sibling_claims=None,
          resume_native=False, release_spot_hold=None, release_container_hold=None, pair_log=None,
          resolution_log=None, loc_text=None, admission=None, refresh_sibling_claims=None,
-         gold_refill_when_empty=False, backlog_refill_when_empty=False):
+         gold_refill_when_empty=False, backlog_refill_when_empty=False, sibling_live=None):
     """One tick. `admission` (an Admission, #1836) is the lock of a plan that ticks beside others:
     gold, and publishing held pages through claims, exports, submits and spot replays, run only
     while it is held, after reading every plan's journals, claims (`refresh_sibling_claims`) and
@@ -4684,7 +4771,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         fresh_pending = set(fresh["pending_jobs"])
         fresh_records = read_records()
         passed = {} if feed else None
-        fresh_owned = owned_records(config, fresh_records, state.get("deadline_retries"), passed)
+        fresh_jobs = fresh.get("jobs") if isinstance(fresh.get("jobs"), dict) else server
+        fresh_owned = owned_records(config, fresh_records, state.get("deadline_retries"), passed,
+                                    abandoned_reservation(state, fresh_jobs, sibling_live) if feed else None)
+        stand_down(fresh_owned, passed, state, fresh_jobs)
         in_flight = max(fresh["pending_workunits"], ocr_workunit_counts(fresh, fresh_pending)[0])
         uncollected, missing = retained_backlog(config, fresh_records, fresh_owned, selected, fresh_pending,
                                                 passed or {})
@@ -4767,12 +4857,46 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
     # reconcile`, so one stranded page doesn't stop the plan. A fixed page list still refuses.
     conflicts = {}
     reported = set()
+    # Another plan's abandoned reservation of a page this plan holds the message of now (#2146
+    # part 2): superseded, so this plan exports it; that journal stays as it is.
+    superseded = {}
+    superseded_reported = set()
+    stood_down_reported = set()
 
     def own(records):
         found = {} if feed else None
-        owned = owned_records(config, records, state.get("deadline_retries"), found)
+        taken = {}
+        owned = owned_records(config, records, state.get("deadline_retries"), found,
+                              abandoned_reservation(state, server, sibling_live) if feed else None, taken)
+        down = stand_down(owned, found, state, server)
         conflicts.clear()
         conflicts.update(found or {})
+        fresh_down = sorted(set(down) - stood_down_reported)
+        if fresh_down:
+            stood_down_reported.update(fresh_down)
+            try:
+                print(json.dumps({
+                    "event": "boinc_batch_stood_down", "schema_version": 1, "plan": config["plan"],
+                    "pages": fresh_down[:50], "count": len(fresh_down),
+                    "message": "these claims' leases were lost before their reservations reached BOINC: "
+                               "the plan stands down and never submits them (#2146)"},
+                    sort_keys=True), file=sys.stderr, flush=True)
+            except (OSError, ValueError):
+                pass
+        superseded.clear()
+        superseded.update(taken)
+        new = sorted(set(superseded) - superseded_reported)
+        if new:
+            superseded_reported.update(new)
+            try:
+                print(json.dumps({
+                    "event": "boinc_batch_superseded_reservation", "schema_version": 1, "plan": config["plan"],
+                    "pages": [{"page": page, "superseded": superseded[page]} for page in new],
+                    "message": "another plan's reservation of these pages lapsed before it reached BOINC, and "
+                               "this plan holds their queue messages now: it exports them (#2146)"},
+                    sort_keys=True), file=sys.stderr, flush=True)
+            except (OSError, ValueError):
+                pass
         fresh = sorted(page for page in set(conflicts) - reported
                        if not conflicts[page]["settled_elsewhere"])
         if fresh:
@@ -4938,7 +5062,9 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             # `published` is the tick summary's cumulative count as of now, so a reader can tell
             # what a later summary adds beyond the pages collect already reported.
             conflicting = {} if feed else None
-            mine = owned_records(config, found, state.get("deadline_retries"), conflicting)
+            mine = owned_records(config, found, state.get("deadline_retries"), conflicting,
+                                 abandoned_reservation(state, server, sibling_live) if feed else None)
+            stand_down(mine, conflicting, state, server)
             total = sum(record["stage"] == "published" for record in mine.values()) + sum(
                 bool(conflict["own"]) and conflict["own"]["stage"] == "published"
                 for conflict in (conflicting or {}).values())
@@ -5165,8 +5291,10 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
             return bool(record and record["stage"] == "failed"
                         and page.get("supersedes") == record["job"]["id"])
 
-        # Never a page any other plan's journal is for, a page claimed this tick included (#1685).
-        foreign = {record["job"]["message"]["page"] for record in records if record["plan"] != config["plan"]}
+        # Never a page any other plan's journal is for, a page claimed this tick included (#1685),
+        # unless that journal is an abandoned reservation this plan supersedes (#2146 part 2).
+        foreign = {record["job"]["message"]["page"] for record in records
+                   if record["plan"] != config["plan"]} - set(superseded)
         export = [page for page in config["pages"] if page["page"] in selected and
                   not page.get("cut_short") and
                   page["page"] not in foreign and
@@ -5535,6 +5663,8 @@ def tick(config, state, transport, persist, now=None, *, drain=False, dead_lette
         "scope_held_elsewhere": len(elsewhere_held),
         "ownership_conflicts": len(disputed),
         "settled_elsewhere": len(conflicts) - len(disputed),
+        "superseded_reservations": len(superseded),
+        "stood_down": sum(1 for entry in conflicts.values() if entry.get("stood_down")),
         "gold_onboarding": gold_runs,
         "newly_published": max(0, published - previous),
         "pages_per_hour": round(published * 3600 / max(1, now - started), 3),
@@ -5877,6 +6007,7 @@ def main(argv=None):
                     if args.check_state_dir:
                         tick_kwargs["sibling_archived"] = sibling_archived_held(args.state_dir, args.check_state_dir)
                         tick_kwargs["sibling_claims"] = sibling_claim_messages(args.state_dir, args.check_state_dir)
+                        tick_kwargs["sibling_live"] = sibling_live_claims(args.state_dir, args.check_state_dir)
                     event = tick(config, state, transport, lambda: save(path, state), **tick_kwargs)
             finally:
                 if admission is not None:
