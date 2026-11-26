@@ -4730,6 +4730,63 @@ class QueueTransportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "--claim-language"):
             batch.Transport(self.config, Path("."), extra_claim_languages=("srp",))
 
+    def test_skip_claim_language_narrows_the_claim_step(self):
+        sent = {}
+        self.config["claim_languages"] = ["eng", "deu"]
+        transport = batch.Transport(self.config, Path("."), extra_claim_languages=("srp",),
+                                    skip_claim_languages=("deu",))
+
+        def step(target, name, **variables):
+            sent.update(variables)
+
+        def blob(name):
+            return {"schema_version": 1, "nonce": sent["CLAIM_NONCE"], "claims": []}
+
+        with patch.object(transport, "step", side_effect=step), \
+                patch.object(transport, "blob", side_effect=blob):
+            self.assertEqual(transport.claim(2), [])
+        self.assertEqual(sent["CLAIM_LANGUAGES"], "eng,srp")
+        self.assertEqual(self.config["claim_languages"], ["eng", "deu"])
+        # Only languages the claim takes, at most once, and never all of them.
+        for bad in (("fra",), ("deu", "deu"), ("eng", "deu", "srp")):
+            with self.assertRaisesRegex(ValueError, "--skip-claim-language"):
+                batch.Transport(self.config, Path("."), extra_claim_languages=("srp",), skip_claim_languages=bad)
+        del self.config["claim_languages"]
+        with self.assertRaisesRegex(ValueError, "--skip-claim-language"):
+            batch.Transport(self.config, Path("."), skip_claim_languages=("deu",))
+
+    def test_skip_claim_language_flag_keeps_the_digest(self):
+        cfg = queue_config()
+        del cfg["pages"]
+        cfg["claim_languages"] = ["eng", "deu"]
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as f, \
+                tempfile.TemporaryDirectory() as state:
+            json.dump(cfg, f); f.flush()
+            shown = []
+            for flags in ([], ["--skip-claim-language", "deu"]):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(batch.main(["--config", f.name, "--state-dir", state, *flags]), 0)
+                shown.append(json.loads(out.getvalue()))
+            self.assertEqual(shown[1]["claim_languages"], ["eng"])
+            self.assertEqual(shown[1]["skip_claim_languages"], ["deu"])
+            self.assertEqual(shown[0]["config_sha256"], shown[1]["config_sha256"])
+            for bad in (["--skip-claim-language", "fra"],
+                        ["--skip-claim-language", "eng", "--skip-claim-language", "deu"],
+                        ["--skip-claim-language", "deu", "--skip-claim-language", "deu"]):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(batch.main(["--config", f.name, "--state-dir", state, *bad]), 1)
+                self.assertIn("--skip-claim-language", err.getvalue())
+            fake = Fake()
+            fake.lock = contextlib.nullcontext
+            with patch.object(batch, "Transport", return_value=fake) as transport, \
+                    patch.object(batch, "tick", side_effect=lambda *a, **k: {}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(batch.main(["--config", f.name, "--state-dir", state, "--apply",
+                                             "--skip-claim-language", "deu"]), 0)
+            self.assertEqual(transport.call_args.kwargs["skip_claim_languages"], ("deu",))
+
     def test_a_failed_claim_step_still_returns_the_claims_it_made(self):
         def step(*args, **kwargs):
             raise RuntimeError("handoff/claim failed")
