@@ -2536,12 +2536,18 @@ class QueueModeTests(unittest.TestCase):
                               lambda: self.saved.append(copy.deepcopy(self.state)), NOW,
                               sibling_live=sibling_live)
 
+    def stale(self, number, stage="reserved"):
+        # native-feed-8's journal, with its own engine image: another job id than this plan's.
+        row = self.foreign(number, stage, plan="native-feed-8")
+        row["job"]["engine"]["image"] = "sha256:" + "c" * 64
+        return row
+
     def test_a_lapsed_reservation_that_never_reached_boinc_is_superseded(self):
-        stale = self.foreign(1, plan="native-feed-8")
+        stale = self.stale(1)
         self.fake.rows = [copy.deepcopy(stale)]
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            event = self.tick_live({})  # the other plan's claim of it is gone or lease_lost
+            event = self.tick_live({"native-feed-8": {}})  # its claim of it is gone or lease_lost
         page = message(1)["page"]
         self.assertTrue([a for a in self.fake.actions if a[0] == "export" and page in a[2]])
         self.assertEqual((event["ownership_conflicts"], event["superseded_reservations"]), (0, 1))
@@ -2553,15 +2559,17 @@ class QueueModeTests(unittest.TestCase):
             {"plan": "native-feed-8", "job": stale["job"]["id"]}]}])
         # Next tick its own journal is the page's, and the stale one is still superseded.
         with contextlib.redirect_stderr(io.StringIO()):
-            event = self.tick_live({})
+            event = self.tick_live({"native-feed-8": {}})
         self.assertEqual(event["ownership_conflicts"], 0)
 
-    def test_a_reservation_whose_owner_still_holds_its_claim_is_left_alone(self):
+    def test_a_reservation_whose_owner_still_holds_or_wasnt_checked_is_left_alone(self):
         page = message(1)["page"]
-        for live in ({page: {self.SHAS[page]}}, None):  # still live there, or no --check-state-dir
+        # Still live in its owner's state; only an unrelated plan's state read (the owner's
+        # wasn't, so there is no evidence it let go); or no --check-state-dir at all.
+        for live in ({"native-feed-8": {page: {self.SHAS[page]}}}, {"queue-feed-11": {}}, None):
             with self.subTest(live=live):
                 self.setUp()
-                self.fake.rows = [self.foreign(1, plan="native-feed-8")]
+                self.fake.rows = [self.stale(1)]
                 with contextlib.redirect_stderr(io.StringIO()):
                     event = self.tick_live(live)
                 self.assertEqual((event["ownership_conflicts"], event["superseded_reservations"]), (1, 0))
@@ -2574,7 +2582,7 @@ class QueueModeTests(unittest.TestCase):
         for case in ("bridge", "message"):
             with self.subTest(case=case):
                 self.setUp()
-                stale = self.foreign(1, plan="native-feed-8")
+                stale = self.stale(1)
                 if case == "bridge":
                     self.fake.jobs[stale["job"]["id"]] = {"stage": "submitted", "spool": None}
                 else:
@@ -2588,17 +2596,17 @@ class QueueModeTests(unittest.TestCase):
                     with contextlib.redirect_stderr(io.StringIO()):
                         event = batch.tick(self.config, self.state, self.fake,
                                            lambda: self.saved.append(copy.deepcopy(self.state)), NOW,
-                                           sibling_live={})
+                                           sibling_live={"native-feed-8": {}})
                 self.assertEqual((event["ownership_conflicts"], event["superseded_reservations"]), (1, 0))
                 self.assertIn("ownership_conflict", [alert["code"] for alert in event["alerts"]])
                 self.assertFalse([a for a in self.fake.actions if a[0] == "export" and page in a[2]])
 
     def test_a_published_journal_elsewhere_is_never_discarded(self):
         page = message(1)["page"]
-        done = self.foreign(1, "published", plan="native-feed-8")
+        done = self.stale(1, "published")
         self.fake.rows = [copy.deepcopy(done)]
         with contextlib.redirect_stderr(io.StringIO()):
-            event = self.tick_live({})
+            event = self.tick_live({"native-feed-8": {}})
         self.assertEqual((event["ownership_conflicts"], event["settled_elsewhere"],
                           event["superseded_reservations"]), (0, 1, 0))
         self.assertFalse([a for a in self.fake.actions if a[0] == "export" and page in a[2]])
@@ -2623,6 +2631,75 @@ class QueueModeTests(unittest.TestCase):
         self.assertTrue([a for a in self.fake.actions if a[0] == "submit"])
         self.assertEqual((event["ownership_conflicts"], event["stood_down"]), (0, 1))
         self.assertIn('"boinc_batch_stood_down"', err.getvalue())
+
+    def test_a_reservation_with_this_plans_job_id_stays_a_conflict(self):
+        # Same image, same message: this plan's export would build the same job id, which the
+        # hand-off refuses as another plan's. Left conflicted for reconcile.
+        page = message(1)["page"]
+        self.fake.rows = [self.foreign(1, plan="native-feed-8")]  # this plan's image
+        with contextlib.redirect_stderr(io.StringIO()):
+            event = self.tick_live({"native-feed-8": {}})
+        self.assertEqual((event["ownership_conflicts"], event["superseded_reservations"]), (1, 0))
+        self.assertFalse([a for a in self.fake.actions if a[0] == "export" and page in a[2]])
+
+    def test_a_stood_down_page_is_never_exported_again(self):
+        # Its claim's lease was lost before it had any journal left of its own: nothing to
+        # submit, and the page is not exported again either.
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.tick()
+        page = message(1)["page"]
+        own = next(row for row in self.fake.rows if row["job"]["message"]["page"] == page)
+        own["stage"] = "prepared"
+        self.fake.jobs.pop(own["job"]["id"], None)
+        self.state["claims"][page]["lease_lost"] = {"at": int(NOW), "why": "lease_lost"}
+        own["stage"] = "reserved"
+        self.fake.hosts, self.config["max_pending"] = 4, 8
+        self.fake.actions.clear()
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.tick()
+            self.tick()
+        self.assertFalse([a for a in self.fake.actions if a[0] == "export" and page in a[2]])
+        self.assertFalse([a for a in self.fake.actions if a[0] == "submit" and a[1] == own["job"]["id"]])
+
+    def test_the_loser_stands_down_once_the_winners_journal_shows_up(self):
+        # After the winner exported the page, the loser's reservation is kept in its conflicts,
+        # not owned: it still stands down there, without an alert.
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.tick()
+        page = message(1)["page"]
+        own = next(row for row in self.fake.rows if row["job"]["message"]["page"] == page)
+        own["stage"] = "reserved"
+        self.fake.jobs.pop(own["job"]["id"], None)
+        self.state["claims"][page]["lease_lost"] = {"at": int(NOW), "why": "lease_lost"}
+        self.fake.rows.append(self.foreign(1, plan="native-feed-9"))  # the winner's export
+        self.fake.hosts, self.config["max_pending"] = 4, 8
+        self.fake.actions.clear()
+        with contextlib.redirect_stderr(io.StringIO()):
+            event = self.tick()
+        self.assertEqual((event["ownership_conflicts"], event["stood_down"]), (0, 1))
+        self.assertNotIn("ownership_conflict", [alert["code"] for alert in event["alerts"]])
+        self.assertFalse([a for a in self.fake.actions if a[0] == "submit" and a[1] == own["job"]["id"]])
+
+    def test_a_lease_lost_at_this_ticks_renewal_stands_down_before_submitting(self):
+        self.fake = RenewFake([message(number) for number in range(1, 8)])
+        self.fake.assertions = []
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.tick()
+        page = message(1)["page"]
+        own = next(row for row in self.fake.rows if row["job"]["message"]["page"] == page)
+        own["stage"] = "reserved"
+        self.fake.jobs.pop(own["job"]["id"], None)
+        claim = self.state["claims"][page]
+        claim.update(lease_from=int(NOW) - 80 * 3600, lease_until=int(NOW) + 16 * 3600)  # past half
+        self.fake.lost = {message(1)["doc_id"]: "lease_lost"}
+        # No refill room and nothing to collect: no later ownership pass before the submit.
+        self.config["max_pending"] = 2
+        self.fake.actions.clear()
+        with contextlib.redirect_stderr(io.StringIO()):
+            event = self.tick()
+        self.assertIn("lease_lost", self.state["claims"][page])
+        self.assertFalse([a for a in self.fake.actions if a[0] == "submit" and a[1] == own["job"]["id"]])
+        self.assertEqual(event["stood_down"], 1)
 
     def test_fresh_claims_that_all_collide_are_reported(self):
         # Nothing can be exported this tick, but the conflicts are still logged and alerted.
