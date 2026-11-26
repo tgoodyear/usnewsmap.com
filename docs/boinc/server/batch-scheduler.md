@@ -729,6 +729,18 @@ State and journals are durable recovery state. After a crash the lease stays hel
 
 The inventory fails closed above 10,000 journals, 100,000 spool entries (see [Spool lookup](#spool-lookup-2008)) or the workunit cap (default 50,000, `USNM_MAX_EXISTING_WORKUNITS` in the BOINC host's `bridge.env`, 1 to 200,000, reported as `existing_jobs_limit`; older server images: 10,000). BOINC keeps workunits `delete_delay_hours` (168) after they finish (#1483). The cap covers rows (`existing_workunits`) and pages (`existing_jobs`); the 80% warning uses the larger.
 
+### The journal soft cap (#2131)
+
+`read-journals` fails closed above 10,000 dispatch journals (`MAX_JOBS`, here and in `handoff_read.py`), and every plan's tick reads them before it collects, so a count past the cap stops collection, publishing and refills for every plan at once, and nothing settles journals for the archive to take. On 25 and 26 November 2026 that happened twice in a day.
+
+So each tick counts every plan's dispatch journals (the `dispatch_journals` it already warns on) against two marks. At the high mark (`--journal-high-mark`, default 90% of `MAX_JOBS`, 9,000) the plan claims and exports no new pages: claimed pages wait, and no export adds a journal. Collect, publish, lease renewal, gold, submit and spool-out go on, so journals keep settling and the held archive can drain them. It resumes below the low mark (`--journal-low-mark`, default 85%, 8,500). Between the marks the previous tick's answer holds (`journal_soft_cap` in the state), so it doesn't flap. Every plan reads the same journals, so all stop and resume together. The tick line carries `journals`, `journal_high`, `journal_low` and `journal_soft_cap`, and `backpressure_reason` is `journal_soft_cap` while it holds (after `draining`). The marks are flags so they change without the allocation digest; both need `0 < low < high <= MAX_JOBS`.
+
+A tick can still overshoot the high mark by what plans export in the same minute (at most each plan's refill cap), which is why it sits 1,000 journals under the cap. Only above `MAX_JOBS` does `read-journals` fail.
+
+The feed evaluator's `controller_cap` check fires at 85% of the worst lifetime cap (`CAP_FIRE_PERCENT` in `feed_status.py`), before the soft cap: the feed-condition alert splits on its `Check` dimension, so it arrives as its own `controller_cap` alert, separate from the other checks.
+
+Follow-up: a tick that finds journals past `MAX_JOBS` still can't collect, since collecting needs the journals of the jobs it collects. Reading only the plan's own unsettled journals would let it, but that changes the hand-off read step and its cache; until then, the soft cap and the archive keep the count away from it.
+
 ### Archive drained history (#1483)
 
 `boinc/scripts/archive_history.py` moves the oldest fully published pages' history out of every capped store into a retained archive, a batch at a time, deleting nothing it hasn't copied and checked. Without `--apply` each step is a dry run with no lock and no writes. Run in order per batch:

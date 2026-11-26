@@ -385,6 +385,9 @@ class SchedulerTests(unittest.TestCase):
         quiet_event, quiet_lines = run(quiet, quiet_state, 100)
         self.assertEqual(quiet_lines, [])
         warned_event, warned_lines = run(warned, warned_state, 12)
+        # The soft cap's marks scale with MAX_JOBS; nothing else may differ.
+        for event in (quiet_event, warned_event):
+            del event["journal_high"], event["journal_low"]
         self.assertEqual((warned_event, warned.actions, warned_state), (quiet_event, quiet.actions, quiet_state))
         self.assertEqual({(line["event"], line["at"]) for line in warned_lines},
                          {("boinc_batch_cap_warning", int(NOW))})
@@ -2391,6 +2394,147 @@ class QueueModeTests(unittest.TestCase):
         self.state, self.fake = {}, QueueFake([message(number) for number in range(1, 8)])
         event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=50)
         self.assertEqual((self.fake.actions[0], event["refill_cap"]), (("claim", 2), 2))
+
+    def journal_soft_cap_setup(self):
+        # Two pages out, each with a journal; then both results come in.
+        self.state, self.fake = {}, QueueFake([message(number) for number in range(1, 8)])
+        self.config["batch_size"] = 1
+        for _ in range(2):
+            batch.tick(self.config, self.state, self.fake, lambda: None, NOW)
+        for job in self.fake.jobs.values():
+            job["spool"] = "/project/usnmocr/results/batch1"
+        # Both results collected in one tick, so an uncapped tick refills (one page).
+        self.config["batch_size"] = 2
+        self.fake.actions.clear()
+
+    def test_journal_soft_cap_stops_claims_and_exports_but_still_collects(self):
+        # #2131: at the high mark nothing new is claimed or exported, so no journal is added,
+        # but results are still collected and published, which the archive needs to drain.
+        self.journal_soft_cap_setup()
+        event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=1,
+                           journal_high=2, journal_low=1)
+        actions = [action[0] for action in self.fake.actions]
+        self.assertGreaterEqual(actions.count("collect"), 1)
+        self.assertNotIn("claim", actions)
+        self.assertNotIn("export", actions)
+        self.assertEqual(event["backpressure_reason"], "journal_soft_cap")
+        self.assertEqual((event["journals"], event["journal_high"], event["journal_low"],
+                          event["journal_soft_cap"]), (2, 2, 1, True))
+        self.assertTrue(self.state["journal_soft_cap"])
+        # Under the default marks (90% and 85% of MAX_JOBS) the same tick refills.
+        self.journal_soft_cap_setup()
+        event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=1)
+        self.assertIn("claim", [action[0] for action in self.fake.actions])
+        self.assertFalse(event["journal_soft_cap"])
+        self.assertEqual((event["journal_high"], event["journal_low"]),
+                         (batch.MAX_JOBS * 9 // 10, batch.MAX_JOBS * 85 // 100))
+
+    def test_journal_soft_cap_holds_back_an_unexported_claim_until_it_clears(self):
+        # A claimed page whose export added no journal is exported by a later tick: not while
+        # capped, and as soon as the cap clears.
+        self.journal_soft_cap_setup()
+        export = self.fake.export
+        self.fake.export = lambda pages, job_ids=(): self.fake.actions.append(("export-lost",))
+        batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=1)
+        self.fake.export = export
+        waiting = [page for page in self.fake.claimed
+                   if not any(row["job"]["message"]["page"] == page for row in self.fake.rows)]
+        self.assertEqual(len(waiting), 1)
+        self.fake.actions.clear()
+        event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=1,
+                           journal_high=2, journal_low=1)
+        self.assertTrue(event["journal_soft_cap"])
+        self.assertEqual([action for action in self.fake.actions if action[0] in ("claim", "export")], [])
+        self.fake.actions.clear()
+        event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=1,
+                           journal_high=4, journal_low=3)
+        self.assertFalse(event["journal_soft_cap"])
+        exported = [page for action in self.fake.actions if action[0] == "export" for page in action[2]]
+        self.assertIn(waiting[0], exported)
+
+    def test_journal_soft_cap_counts_again_under_the_admission_lock(self):
+        # Plans admitted one after another (#1836): one that waited for the lock while another
+        # exported up to the high mark counts again and claims and exports nothing.
+        self.journal_soft_cap_setup()
+        fake = self.fake
+
+        class SiblingExported:
+            waited = 0.0
+
+            def acquire(self):
+                for number in (101, 102):
+                    row = record(f"sibling-page-{number}", 1000 + number)
+                    row["plan"] = "sibling-plan"
+                    fake.rows.append(row)
+                return True
+
+            def release(self):
+                pass
+
+        event = batch.tick(self.config, self.state, fake, lambda: None, NOW, refill_cap=1,
+                           journal_high=4, journal_low=3, admission=SiblingExported())
+        actions = [action[0] for action in fake.actions]
+        self.assertTrue(event["journal_soft_cap"])
+        self.assertEqual(event["journals"], 4)
+        self.assertNotIn("claim", actions)
+        self.assertNotIn("export", actions)
+        self.assertGreaterEqual(actions.count("collect"), 1)
+
+    def test_a_tick_adds_no_more_journals_than_the_room_under_the_high_mark(self):
+        # #2131: claims and exports are bounded by high mark - journals, so a tick never crosses
+        # the mark, let alone MAX_JOBS, whatever its refill cap.
+        for high, low, room in ((4, 3, 2), (3, 2, 1)):
+            with self.subTest(high=high, room=room):
+                self.journal_soft_cap_setup()
+                self.config["batch_size"] = 5
+                before = len(self.fake.rows)
+                event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=5,
+                                   journal_high=high, journal_low=low)
+                claimed = sum(action[1] for action in self.fake.actions if action[0] == "claim")
+                self.assertFalse(event["journal_soft_cap"])
+                self.assertLessEqual(claimed, room)
+                self.assertEqual(len(self.fake.rows) - before, room)
+                self.assertLessEqual(len(self.fake.rows), high)
+
+    def test_at_9950_journals_under_a_10000_mark_a_tick_adds_at_most_50(self):
+        # A mark at 10,000 and one below it: the tick adds no more than the room under the mark
+        # (30 under 9,980 is the soft cap's own bound; 50 under 10,000 is the most it may add).
+        for high, room in ((10_000, 50), (9_980, 30)):
+            with self.subTest(high=high):
+                self.journal_soft_cap_setup()
+                self.config["batch_size"] = 500
+                for number in range(len(self.fake.rows), 9950):
+                    row = record(f"sibling-page-{number}", 10**9 + number)
+                    # Settled history another plan waits to archive: journals, no pending work.
+                    row["plan"], row["stage"] = "sibling-plan", "published"
+                    self.fake.rows.append(row)
+                self.fake.waiting = [message(number) for number in range(10, 400)]
+                before = len(self.fake.rows)
+                event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=500,
+                                   low_watermark=400, high_watermark=500, max_global_pending=1000,
+                                   journal_high=high, journal_low=9_000)
+                self.assertEqual(event["journals"], 9950)
+                self.assertEqual(len(self.fake.rows) - before, room)
+                self.assertLessEqual(len(self.fake.rows), high)
+
+    def test_journal_soft_cap_has_hysteresis(self):
+        # Between the marks the previous tick's answer holds; below the low mark it resumes.
+        for capped_before, high, low, capped in ((True, 3, 2, True), (False, 3, 2, False),
+                                                 (True, 4, 3, False)):
+            with self.subTest(capped_before=capped_before, high=high, low=low):
+                self.journal_soft_cap_setup()
+                self.state["journal_soft_cap"] = capped_before
+                event = batch.tick(self.config, self.state, self.fake, lambda: None, NOW, refill_cap=1,
+                                   journal_high=high, journal_low=low)
+                actions = [action[0] for action in self.fake.actions]
+                self.assertEqual(event["journal_soft_cap"], capped)
+                self.assertEqual(self.state["journal_soft_cap"], capped)
+                self.assertEqual("claim" in actions, not capped)
+                self.assertGreaterEqual(actions.count("collect"), 1)
+        for high, low in ((2, 2), (2, 0), (batch.MAX_JOBS + 1, 1), (True, 1)):
+            with self.subTest(high=high, low=low), self.assertRaisesRegex(ValueError, "soft cap"):
+                batch.tick(self.config, {}, QueueFake([]), lambda: None, NOW,
+                           journal_high=high, journal_low=low)
 
     def test_claims_only_what_it_can_start_then_pushes_exports_and_submits(self):
         first = self.tick()
@@ -5133,6 +5277,27 @@ class QueueTransportTests(unittest.TestCase):
                 self.assertEqual(batch.main(["--config", f.name, "--state-dir", state,
                                              "--refill-cap", "1"]), 1)
             self.assertIn("OCR plans", err.getvalue())
+
+    def test_journal_marks_are_checked_and_reach_the_tick(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as f, \
+                tempfile.TemporaryDirectory() as state:
+            json.dump(config(), f); f.flush()
+            for bad in (["--journal-high-mark", "9000", "--journal-low-mark", "9000"],
+                        ["--journal-high-mark", str(batch.MAX_JOBS + 1)],
+                        ["--journal-low-mark", "0"]):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(batch.main(["--config", f.name, "--state-dir", state, *bad]), 1)
+                self.assertIn("--journal-", err.getvalue())
+            seen = {}
+            fake = Fake()
+            fake.lock = contextlib.nullcontext
+            with patch.object(batch, "Transport", return_value=fake), \
+                    patch.object(batch, "tick", side_effect=lambda *a, **k: seen.update(k) or {}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(batch.main(["--config", f.name, "--state-dir", state, "--apply",
+                                             "--journal-high-mark", "9500", "--journal-low-mark", "9000"]), 0)
+            self.assertEqual((seen["journal_high"], seen["journal_low"]), (9500, 9000))
 
     def test_step_command_must_be_literal(self):
         for bad in ([], "ssh host", ["ssh", "host; rm -rf /"], ["ssh", "$(id)"]):
