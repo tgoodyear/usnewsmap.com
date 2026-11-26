@@ -33,6 +33,7 @@
 #                   [--min-age-hours N] [--max-batches N] [--wait-mins N] [--tool FILE]
 #                   [--check-state-dir DIR]... [--tick-lock FILE] [--gap-mins N]
 #                   [--max-minutes N] [--batch-mins N] [--pre-batch-tick] [--lock-wait-mins N]
+#                   [--max-pause-mins N]
 #                   [--skip-if-busy]
 #
 # --lock-wait-mins N (#2052; default 30, 0 = fail at once) is how long the run waits for another
@@ -62,6 +63,17 @@
 # plan's tick sees /run/usnm-boinc-held-archive.lock.gap meanwhile and no longer skips for the
 # archive's unit being active. Pair it with a small --pages, so a batch is short (a batch of
 # 1,000 pages was 35 minutes on native-feed-4, 15 Nov 2026).
+#
+# --max-pause-mins N (#2156; default 0, off; needs --gap-mins) bounds how long the controller stays
+# paused for one batch. The gap ticks the controller only between batches, and a batch runs in the
+# full pause: a 1,000-page batch is 30-40 minutes, so on 26 Nov 2026 the main plan (whose timer
+# the run stops) collected and refilled nothing for most of each hour and BOINC ran dry. With N
+# set, each batch asks for the pages it can archive in N minutes at the pace measured so far:
+# the last batch's pages times N minutes over the seconds it took (dispatch and bridge), at most
+# --pages, at least MIN_BATCH_PAGES, and at most twice the last batch's. The first batch of a run
+# takes the size the previous run settled on (<archive dir>/held-archive.pages), or
+# FIRST_BATCH_PAGES when there is none. A batch that takes longer than N is never cut short; the
+# next one is only smaller. The pages per hour stay about the same: more, shorter batches.
 #
 # --max-minutes N (default 0, no limit) is a budget for the whole run. No further batch starts
 # once the run is N minutes old, or when what is left cannot cover a typical batch: the longest
@@ -111,7 +123,8 @@ CONFIG=/etc/usnm/boinc-priority-controller.json
 STATE_DIR=/var/lib/usnm-priority-controller
 ARCHIVE=/srv/usnm-archive
 PAGES=1000 MIN_AGE=1 MAX_BATCHES=10 WAIT_MINS=60 GAP_MINS=0 MAX_MINUTES=0
-PRE_TICK=false BATCH_MINS=10 LOCK_WAIT_MINS=30 SKIP_IF_BUSY=false
+PRE_TICK=false BATCH_MINS=10 LOCK_WAIT_MINS=30 SKIP_IF_BUSY=false MAX_PAUSE_MINS=0
+MIN_BATCH_PAGES=25 FIRST_BATCH_PAGES=100
 UNIT=${USNM_CONTROLLER_UNIT:-usnm-boinc-priority-controller@main}
 # The shared unit every plan ticked in before #1690.
 LEGACY_UNIT=usnm-boinc-priority-controller
@@ -136,6 +149,7 @@ while [ $# -gt 0 ]; do
     --batch-mins) [ $# -ge 2 ] || usage; BATCH_MINS=$2; shift 2 ;;
     --skip-if-busy) SKIP_IF_BUSY=true; shift ;;
     --lock-wait-mins) [ $# -ge 2 ] || usage; LOCK_WAIT_MINS=$2; shift 2 ;;
+    --max-pause-mins) [ $# -ge 2 ] || usage; MAX_PAUSE_MINS=$2; shift 2 ;;
     -h | --help) usage ;;
     *) echo "error: unknown argument: $1" >&2; usage ;;
   esac
@@ -149,9 +163,11 @@ if [ ${#CHECK_DIRS[@]} -eq 0 ]; then
 fi
 CHECKS=()
 for dir in ${CHECK_DIRS[@]+"${CHECK_DIRS[@]}"}; do CHECKS+=(--check-state-dir "$dir"); done
-for n in "$PAGES" "$MIN_AGE" "$MAX_BATCHES" "$WAIT_MINS" "$GAP_MINS" "$MAX_MINUTES" "$BATCH_MINS" "$LOCK_WAIT_MINS"; do
-  [[ $n =~ ^[0-9]{1,5}$ ]] || die "--pages, --min-age-hours, --max-batches, --wait-mins, --gap-mins, --max-minutes, --batch-mins and --lock-wait-mins are numbers"
+for n in "$PAGES" "$MIN_AGE" "$MAX_BATCHES" "$WAIT_MINS" "$GAP_MINS" "$MAX_MINUTES" "$BATCH_MINS" "$LOCK_WAIT_MINS" "$MAX_PAUSE_MINS"; do
+  [[ $n =~ ^[0-9]{1,5}$ ]] || die "--pages, --min-age-hours, --max-batches, --wait-mins, --gap-mins, --max-minutes, --batch-mins, --lock-wait-mins and --max-pause-mins are numbers"
 done
+# Without a gap the controller stays paused from one batch to the next, so a shorter batch frees nothing.
+[ "$MAX_PAUSE_MINS" -eq 0 ] || [ "$GAP_MINS" -ge 1 ] || die "--max-pause-mins needs --gap-mins"
 [ "$MAX_BATCHES" -ge 1 ] && [ "$WAIT_MINS" -ge 1 ] || die "--max-batches and --wait-mins are at least 1"
 [ -f "$TOOL" ] || die "no $TOOL"
 [ -d "$ARCHIVE/batches" ] || die "no $ARCHIVE/batches: the archive's own dataset isn't mounted"
@@ -468,6 +484,39 @@ over_budget() {
   [ $((SECONDS + LONGEST)) -gt $((MAX_MINUTES * 60)) ]
 }
 
+# --max-pause-mins: the pages the next batch asks for. Without it, always --pages.
+PAGES_FILE=$ARCHIVE/held-archive.pages
+# Seconds, for tests: USNM_HELD_ARCHIVE_MAX_PAUSE_SECS replaces --max-pause-mins' minutes.
+MAX_PAUSE_SECS=${USNM_HELD_ARCHIVE_MAX_PAUSE_SECS:-$((MAX_PAUSE_MINS * 60))}
+BATCH_PAGES=$PAGES
+if [ "$MAX_PAUSE_MINS" -ne 0 ]; then
+  BATCH_PAGES=$FIRST_BATCH_PAGES
+  if [ -f "$PAGES_FILE" ]; then
+    stored=$(cat "$PAGES_FILE" 2> /dev/null || true)
+    [[ $stored =~ ^[0-9]{1,6}$ ]] && [ "$stored" -ge 1 ] && BATCH_PAGES=$stored
+  fi
+  [ "$BATCH_PAGES" -le "$PAGES" ] || BATCH_PAGES=$PAGES
+  [ "$BATCH_PAGES" -ge "$MIN_BATCH_PAGES" ] || BATCH_PAGES=$MIN_BATCH_PAGES
+  [ "$BATCH_PAGES" -le "$PAGES" ] || BATCH_PAGES=$PAGES
+fi
+# After a batch of $1 pages that took $2 seconds: the next batch's pages, kept for the next run too.
+size_next_batch() {
+  [ "$MAX_PAUSE_MINS" -ne 0 ] || return 0
+  local done_pages=$1 secs=$2 next
+  [ "$done_pages" -ge 1 ] || return 0
+  [ "$secs" -ge 1 ] || secs=1
+  next=$((done_pages * MAX_PAUSE_SECS / secs))
+  [ "$next" -le $((done_pages * 2)) ] || next=$((done_pages * 2))
+  [ "$next" -le "$PAGES" ] || next=$PAGES
+  [ "$next" -ge "$MIN_BATCH_PAGES" ] || next=$MIN_BATCH_PAGES
+  [ "$next" -le "$PAGES" ] || next=$PAGES
+  BATCH_PAGES=$next
+  printf '%s\n' "$next" > "$PAGES_FILE.tmp" && mv -f "$PAGES_FILE.tmp" "$PAGES_FILE" ||
+    echo "warning: could not keep the batch size in $PAGES_FILE" >&2
+  printf '{"event": "boinc_held_archive_batch_size", "pages": %s, "seconds": %s, "next_pages": %s, "max_pause_mins": %s}\n' \
+    "$done_pages" "$secs" "$next" "$MAX_PAUSE_MINS"
+}
+
 batches=() pages=0 held=0
 out=$(mktemp)
 # shellcheck disable=SC2154 # st is set in the trap itself
@@ -494,6 +543,15 @@ for i in $(seq 1 "$MAX_BATCHES"); do
     fi
   fi
   batch_start=$SECONDS
+  # A dispatch that resumes the newest batch (planned, no dispatch receipt: archive_history.py's
+  # open_batch) reports the whole manifest's pages but times only what was left, so its pace would
+  # look too fast: it doesn't resize the next batch (#2156).
+  resumed=false
+  newest=""
+  for dir in "$ARCHIVE"/batches/[0-9][0-9][0-9][0-9]; do [ -d "$dir" ] && newest=$dir; done
+  if [ -n "$newest" ] && [ -f "$newest/manifest.json" ] && [ ! -f "$newest/receipts/dispatch.json" ]; then
+    resumed=true
+  fi
   # In the background, so a stop can reach it. A background job starts with SIGINT ignored,
   # so the wrapper turns SIGTERM into KeyboardInterrupt: the tool's finally blocks then run.
   python3 -c '
@@ -503,7 +561,7 @@ def stop(*_):
 signal.signal(signal.SIGTERM, stop)
 sys.argv = sys.argv[1:]
 runpy.run_path(sys.argv[0], run_name="__main__")
-' "$TOOL" dispatch --include-held --min-age-hours "$MIN_AGE" --pages "$PAGES" \
+' "$TOOL" dispatch --include-held --min-age-hours "$MIN_AGE" --pages "$BATCH_PAGES" \
     --config "$CONFIG" --state-dir "$STATE_DIR" --archive-dir "$ARCHIVE" --controller-unit "$UNIT" \
     ${CHECKS[@]+"${CHECKS[@]}"} --apply --confirm-controller-paused > "$out" &
   child=$!
@@ -515,7 +573,8 @@ runpy.run_path(sys.argv[0], run_name="__main__")
   n=$(field "$out" batch)
   [ "$n" != null ] || break
   [[ $n =~ ^[0-9]{4}$ ]] && [ "$(field "$out" complete)" = true ] || die "the dispatch step gave no complete receipt"
-  pages=$((pages + $(field "$out" pages)))
+  batch_pages=$(field "$out" pages)
+  pages=$((pages + batch_pages))
   held=$((held + $(python3 -c '
 import json, sys
 print(sum(1 for p in json.load(open(sys.argv[1]))["pages"] if p.get("held")))
@@ -525,6 +584,11 @@ print(sum(1 for p in json.load(open(sys.argv[1]))["pages"] if p.get("held")))
   # The longest batch so far is what the next one is expected to take.
   if ! $MEASURED || [ $((SECONDS - batch_start)) -gt "$LONGEST" ]; then LONGEST=$((SECONDS - batch_start)); fi
   MEASURED=true
+  if $resumed; then
+    printf '{"event": "boinc_held_archive_batch_size", "pages": %s, "resumed": true, "next_pages": %s}\n' "$batch_pages" "$BATCH_PAGES"
+  else
+    size_next_batch "$batch_pages" $((SECONDS - batch_start))
+  fi
 done
 if $BUDGET_ENDED; then
   printf '{"event": "boinc_held_archive", "batches": %s, "pages": %s, "held": %s, "budget_ended": true, "closing_dry_run": "skipped"}\n' \

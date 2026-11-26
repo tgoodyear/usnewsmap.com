@@ -49,7 +49,13 @@ batch = archive / "batches" / name
 (batch / "receipts").mkdir(parents=True)
 manifest = json.dumps({"pages": [{"page": "p%d" % i, "held": i < 3} for i in range(5)]}).encode()
 (batch / "manifest.json").write_bytes(manifest)
-receipt = {"step": "dispatch", "batch": name, "complete": True, "pages": 5,
+pages = 5
+if os.environ.get("FAKE_SECS_PER_PAGE"):
+    # Honours --pages, taking this long per page, like a real batch.
+    import time
+    pages = int(args[args.index("--pages") + 1])
+    time.sleep(pages * float(os.environ["FAKE_SECS_PER_PAGE"]))
+receipt = {"step": "dispatch", "batch": name, "complete": True, "pages": pages,
            "manifest_sha256": hashlib.sha256(manifest).hexdigest()}
 (batch / "receipts/dispatch.json").write_text(json.dumps(receipt))
 print(json.dumps({"event": "boinc_archive_dispatch", "apply": True, **receipt}))
@@ -621,6 +627,82 @@ class HeldArchive(unittest.TestCase):
         self.assertNotEqual(done.returncode, 0)
         self.assertFalse(Path(f"{self.root / 'lock'}.gap").exists())
         self.assertEqual((self.root / "timer").read_text().strip(), "active")
+
+    def asked_pages(self):
+        return [int(line.split("--pages ")[1].split()[0]) for line in self.log()
+                if line.startswith("tool dispatch") and "--apply" in line]
+
+    def test_max_pause_mins_grows_batches_to_fill_the_pause_and_ticks_between_them(self):
+        (self.root / "left").write_text("3")
+        # 0.002 s a page and a 20 s pause: each batch takes a second or two, so the next may double.
+        done = self.run_archive("--pages", "1000", "--max-batches", "3", "--gap-mins", "1", "--max-pause-mins", "1",
+                                USNM_HELD_ARCHIVE_MAX_PAUSE_SECS="20", FAKE_SECS_PER_PAGE="0.002",
+                                USNM_HELD_ARCHIVE_TICK_START_SECS="1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.asked_pages(), [100, 200, 400])
+        self.assertEqual(int((self.root / "archive/held-archive.pages").read_text()), 800)
+        # The controller is started in each of the two gaps, then once more at the end.
+        log = self.log()
+        self.assertEqual(log.count("systemctl start --no-block usnm-boinc-priority-controller@main.service"), 3)
+        sizes = [json.loads(line) for line in done.stdout.splitlines() if "boinc_held_archive_batch_size" in line]
+        self.assertEqual([size["next_pages"] for size in sizes], [200, 400, 800])
+        self.assertEqual((self.root / "timer").read_text().strip(), "active")
+
+    def test_max_pause_mins_shrinks_a_batch_that_overran_the_pause(self):
+        (self.root / "left").write_text("2")
+        # 100 pages at 0.03 s are about 3 s against a 1 s pause: the next asks for about a third.
+        done = self.run_archive("--pages", "1000", "--max-batches", "2", "--gap-mins", "1", "--max-pause-mins", "1",
+                                USNM_HELD_ARCHIVE_MAX_PAUSE_SECS="1", FAKE_SECS_PER_PAGE="0.03",
+                                USNM_HELD_ARCHIVE_TICK_START_SECS="1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        first, second = self.asked_pages()
+        self.assertEqual(first, 100)
+        self.assertTrue(25 <= second <= 50, second)
+
+    def test_max_pause_mins_ignores_the_pace_of_a_resumed_batch(self):
+        # Batch 0001 was planned (manifest) by a run that stopped before its dispatch receipt.
+        batch = self.root / "archive/batches/0001"
+        batch.mkdir(parents=True)
+        (batch / "manifest.json").write_text(json.dumps({"pages": []}))
+        (self.root / "archive/held-archive.pages").write_text("60\n")
+        fake = (self.root / "tool.py").read_text().replace(
+            'existing = sorted(p.name for p in (archive / "batches").iterdir())\nname = "%04d" % (int(existing[-1]) + 1 if existing else 1)',
+            'existing = sorted(p.name for p in (archive / "batches").iterdir())\n'
+            'unfinished = existing and not (archive / "batches" / existing[-1] / "receipts/dispatch.json").exists()\n'
+            'name = existing[-1] if unfinished else "%04d" % (int(existing[-1]) + 1 if existing else 1)')
+        fake = fake.replace('(batch / "receipts").mkdir(parents=True)', '(batch / "receipts").mkdir(parents=True, exist_ok=True)')
+        self.assertIn("unfinished", fake)
+        (self.root / "tool.py").write_text(fake)
+        (self.root / "left").write_text("2")
+        # The resumed batch reports its whole 60 pages after almost no time: no resize from it.
+        done = self.run_archive("--pages", "1000", "--max-batches", "2", "--gap-mins", "1", "--max-pause-mins", "1",
+                                USNM_HELD_ARCHIVE_MAX_PAUSE_SECS="20", FAKE_SECS_PER_PAGE="0.002",
+                                USNM_HELD_ARCHIVE_TICK_START_SECS="1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        sizes = [json.loads(line) for line in done.stdout.splitlines() if "boinc_held_archive_batch_size" in line]
+        self.assertEqual(sizes[0], {"event": "boinc_held_archive_batch_size", "pages": 60, "resumed": True,
+                                    "next_pages": 60})
+        self.assertEqual(self.asked_pages(), [60, 60])
+        self.assertNotIn("resumed", sizes[1])
+
+    def test_max_pause_mins_starts_from_the_last_runs_size_within_pages(self):
+        (self.root / "archive/held-archive.pages").write_text("700\n")
+        (self.root / "left").write_text("1")
+        done = self.run_archive("--pages", "300", "--max-batches", "1", "--gap-mins", "1", "--max-pause-mins", "10")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.asked_pages(), [300])
+
+    def test_without_max_pause_mins_every_batch_asks_for_pages(self):
+        (self.root / "archive/held-archive.pages").write_text("40\n")
+        done = self.run_archive("--pages", "300", "--max-batches", "2")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.asked_pages(), [300, 300])
+
+    def test_max_pause_mins_needs_a_gap(self):
+        done = self.run_archive("--max-pause-mins", "10")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("--max-pause-mins needs --gap-mins", done.stderr)
+        self.assertFalse((self.root / "log").exists() and any(l.startswith("systemctl stop") for l in self.log()))
 
     def test_two_archives_never_overlap_even_in_a_gap(self):
         lock = self.root / "lock"
