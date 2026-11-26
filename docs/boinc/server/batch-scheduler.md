@@ -65,7 +65,6 @@ Prod runs the queue-fed priority controller in the scan-fetch container (#866) a
 - `/opt/usnm`: main pinned to one commit ([Moving the controller checkout](#moving-the-controller-checkout-1412));
 - `/root/.config/usnewsmap/prod/.env`: non-secret outputs;
 - `/etc/usnm/boinc-priority-controller.json`: `claim_queues ["ocr-priority"]`, `claim_languages ["eng", "deu"]` (widened to `srp` by `--claim-language srp` since 7 November), `lease_hours` 36;
-
 - `/var/lib/usnm-priority-controller`: state;
 - push command `/opt/usnm/scripts/ocr-node/push-boinc-scan.sh` (local).
 
