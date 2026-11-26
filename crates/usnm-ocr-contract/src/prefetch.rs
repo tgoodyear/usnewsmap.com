@@ -52,7 +52,8 @@ pub const HELD_ONLY_PREFIX: &str = "queue-quality-held-";
 pub fn is_selection(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 40
-        && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         && !s.starts_with('-')
 }
 
@@ -452,7 +453,10 @@ mod tests {
         let plain = Bytes::from(encode(&rows).unwrap());
         assert_eq!(selection(plain.clone()).unwrap(), None);
         let held = Bytes::from(encode_with_selection(&rows, Some(HELD_ONLY_V1)).unwrap());
-        assert_eq!(selection(held.clone()).unwrap().as_deref(), Some(HELD_ONLY_V1));
+        assert_eq!(
+            selection(held.clone()).unwrap().as_deref(),
+            Some(HELD_ONLY_V1)
+        );
         // The fetcher's reader is unchanged: same rows, same format.
         assert_eq!(decode(held).unwrap(), decode(plain).unwrap());
         for bad in ["", "Held", "-x", "a b", &"x".repeat(41)] {

@@ -907,6 +907,7 @@ const QE_TYPES: &[(&str, DataType)] = &[
     ("qe_lm_oov", DataType::Float64),
 ];
 
+#[cfg(test)]
 fn crop_parquet(rows: &[CropRow]) -> anyhow::Result<Vec<u8>> {
     crop_parquet_with(rows, None)
 }
@@ -1088,9 +1089,10 @@ fn to_parquet_typed<T: serde::Serialize>(
         ZstdLevel::try_new(6).expect("valid level"),
     ));
     if let Some(sel) = selection {
-        props = props.set_key_value_metadata(Some(vec![
-            parquet::file::metadata::KeyValue::new(SELECTION_KEY.to_owned(), sel.to_owned()),
-        ]));
+        props = props.set_key_value_metadata(Some(vec![parquet::file::metadata::KeyValue::new(
+            SELECTION_KEY.to_owned(),
+            sel.to_owned(),
+        )]));
     }
     let props = props.build();
     let mut w = ArrowWriter::try_new(Vec::new(), schema.clone(), Some(props))?;
@@ -2063,12 +2065,13 @@ pub(super) mod tests {
         assert_eq!(kv(&held[0].1).as_deref(), Some("held-only-v1"));
         assert_eq!(kv(&held[1].1).as_deref(), Some("held-only-v1"));
         let summary = String::from_utf8(held[2].1.clone()).unwrap();
-        assert!(summary.starts_with(
-            "# Quality campaign held-only-v1\n\nSelection: `held-only-v1`.\n\n"
-        ));
+        assert!(summary
+            .starts_with("# Quality campaign held-only-v1\n\nSelection: `held-only-v1`.\n\n"));
         let plain = files("t", None, &c).unwrap();
         assert_eq!(kv(&plain[0].1), None);
-        assert!(!String::from_utf8(plain[2].1.clone()).unwrap().contains("Selection"));
+        assert!(!String::from_utf8(plain[2].1.clone())
+            .unwrap()
+            .contains("Selection"));
         assert!(files("t", Some("Bad Tag"), &c).is_err());
     }
 

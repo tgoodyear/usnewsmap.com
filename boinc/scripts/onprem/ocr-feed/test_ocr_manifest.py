@@ -349,6 +349,39 @@ class HeldOnlyTest(unittest.TestCase):
         self.assertEqual((page["lang"], page["selection"], page["damage_rate"]), ("deu", "held-only-v1", 0.5))
         self.assertEqual(m.held_page(self.rows[2], "keep", self.line(*self.rows[2][:2]), m.HELD_ONLY)["lang"], "eng")
 
+    def test_a_language_the_feed_does_not_know_reads_as_english(self):
+        r = list(self.rows[0])
+        for raw, want in (("und", "eng"), ("", "eng"), ("zzz", "eng"), ("fre", "fra"), ("srp", "srp")):
+            r[-1] = raw
+            self.assertEqual(m.held_page(r, "keep", self.line(r[0], r[1]), m.HELD_ONLY)["lang"], want, raw)
+        # The same normalisation as quality_feed.py, which stages the page.
+        path = Path(__file__).resolve().parent.parent / "quality-feed"
+        feed_spec = importlib.util.spec_from_file_location("quality_feed_for_test", path / "quality_feed.py")
+        feed = importlib.util.module_from_spec(feed_spec)
+        import sys
+        sys.path.insert(0, str(path))
+        try:
+            feed_spec.loader.exec_module(feed)
+        finally:
+            sys.path.remove(str(path))
+        self.assertEqual((m.ALL_LANGS, m.LANG_ALIASES), (feed.ALL_LANGS, feed.LANG_ALIASES))
+        for raw in ("und", None, "", "ger", "fre", "cze", "rum", "yid", "xyz"):
+            self.assertEqual(m.lang_of(raw), feed.lang_of(raw), raw)
+
+    def test_the_cap_counts_only_pages_left_after_the_scan_checks(self):
+        rows = [
+            ranked("a_1900-01-01_ed-1_seq-1", "x_a_ver01", "a", "1900", 1),
+            ranked("b_1910-05-01_ed-1_seq-1", "x_b_ver01", "b", "1910", 1),
+            ranked("b_1910-05-01_ed-1_seq-2", "x_b_ver01", "b", "1910", 1),
+            ranked("b_1910-05-01_ed-1_seq-3", "x_b_ver01", "b", "1910", 1),
+        ]
+        index = self.index(*[(r[0], r[1]) for r in rows])
+        # b's issue has three indexed pages but only one on disk: it fits a cap of 2.
+        gone = {"b_1910-05-01_ed-1_seq-2", "b_1910-05-01_ed-1_seq-3"}
+        got = m.pick_held_issues(rows, set(), index, lambda row: None if row["doc_id"] in gone else "keep",
+                                 strata=1, max_pages=2)
+        self.assertEqual([r[0] for r, _ in got], ["a_1900-01-01_ed-1_seq-1", "b_1910-05-01_ed-1_seq-1"])
+
     def run_build(self, folder, staged=None, what_if=False):
         a = types.SimpleNamespace(state=folder, batches=None, scan_server="http://scan", dsn="test", strata=1,
                                   slack=20, max_pages=100, held_only=True, non_english=False, what_if=what_if)

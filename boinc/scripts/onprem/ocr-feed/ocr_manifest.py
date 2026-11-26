@@ -637,14 +637,13 @@ def pick_held_issues(rows, queued, index, scan_set, strata, max_pages):
         it = issues[key]
         if not it["pages"] or taken.get(it["stratum"], 0) >= strata:
             continue
-        if out and len(out) + len(it["pages"]) > max_pages:
-            continue
         held = []
         for r in it["pages"]:
             st = scan_set(index[(r[1], r[0])])
             if st:
                 held.append((r, st))
-        if not held:
+        # The cap counts the pages the issue gives after the checks, not every indexed one.
+        if not held or (out and len(out) + len(held) > max_pages):
             continue
         taken[it["stratum"]] = taken.get(it["stratum"], 0) + 1
         out.extend(held)
@@ -653,7 +652,19 @@ def pick_held_issues(rows, queued, index, scan_set, strata, max_pages):
     return out
 
 
+# quality_feed.py's language normalisation (lang_of, ALL_LANGS, LANG_ALIASES): a page whose
+# language the feed doesn't know (`und`, none) reads as English, as `select` gives it, so no
+# page can stop a chunk at `quality function-words`. test_ocr_manifest checks they agree.
+ALL_LANGS = {
+    "ces", "dan", "deu", "eng", "fin", "fra", "haw", "hrv", "hun", "ita",
+    "lav", "lit", "nor", "pol", "ron", "rus", "slv", "spa", "srp", "swe", "yid",
+}
 LANG_ALIASES = {"ger": "deu", "fre": "fra", "cze": "ces", "rum": "ron"}
+
+
+def lang_of(raw):
+    lang = LANG_ALIASES.get(raw or "eng", raw or "eng")
+    return lang if lang in ALL_LANGS else "eng"
 
 
 def held_page(r, st, row, selection):
@@ -661,7 +672,7 @@ def held_page(r, st, row, selection):
     in set `st`, its index line `row`, and the selection tag."""
     doc, batch, bv, _decision, rate, *rest = r
     m = DOC_RE.match(doc)
-    raw = (rest[3] if len(rest) > 3 else "") or "eng"
+    raw = rest[3] if len(rest) > 3 else ""
     ext = "jp2" if row.get("format") == "jp2" else "jpg"
     return {
         "batch": batch,
@@ -672,7 +683,7 @@ def held_page(r, st, row, selection):
         "doc_id": doc,
         "edition": int(m["ed"]),
         "fetched_at": row.get("fetched_at", ""),
-        "lang": LANG_ALIASES.get(raw, raw),
+        "lang": lang_of(raw),
         "lccn": m["lccn"],
         "scan": f"{st}/{batch}/{m['lccn']}/{m['date']}/{int(m['ed'])}/{int(m['seq'])}.{ext}",
         "selection": selection,
