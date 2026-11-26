@@ -1720,6 +1720,7 @@ mod tests {
             bundle_size: 1,
             page_records: None,
             max_hold_secs: 0,
+            crop_rule: Default::default(),
         })
         .await
         .unwrap();

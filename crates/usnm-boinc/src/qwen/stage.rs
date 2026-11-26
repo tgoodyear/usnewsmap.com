@@ -62,6 +62,80 @@ pub struct Options {
     /// the oldest has waited this long the bundle is published as it is.
     /// 0 publishes every bundle at once.
     pub max_hold_secs: u64,
+    /// Which lines are wide enough to crop. The default is the gold set's
+    /// 600 px rule; a root records any other in [`CROP_RULE_FILE`] and never
+    /// mixes two (Science, 26 Nov 2026: `block-share-60` for 7 to 8 column
+    /// papers).
+    pub crop_rule: crops::WidthRule,
+}
+
+/// A root's crop rule: claimed by the first `qwen stage` into a fresh root
+/// (the default rule included) and checked by every later one. A root staged
+/// before rules were recorded has no file and is a default-rule root.
+pub const CROP_RULE_FILE: &str = "crop-rule";
+
+/// Records or checks `root`'s crop rule: a root holds one rule. A root
+/// without the file that already holds pages is a default-rule root.
+fn check_crop_rule(root: &Path, rule: crops::WidthRule) -> anyhow::Result<()> {
+    // Pages first, the rule second: a run that claims a fresh root writes the
+    // rule before it stages any page, so a root seen with pages here already
+    // shows its claimed rule below, and a populated root without the file is
+    // a legacy (default-rule) root, not one another run is claiming.
+    let staged = std::fs::read_dir(units(root))
+        .map(|mut d| d.next().is_some())
+        .unwrap_or(false)
+        || std::fs::read_dir(root.join("pages"))
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false);
+    let path = root.join(CROP_RULE_FILE);
+    let recorded = match std::fs::read_to_string(&path) {
+        Ok(s) => Some(
+            s.trim()
+                .parse::<crops::WidthRule>()
+                .map_err(anyhow::Error::msg)?,
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e).context("reading the root's crop rule"),
+    };
+    match recorded {
+        Some(r) => ensure!(
+            r == rule,
+            "{} crops with {}, not {}: stage another rule into its own root",
+            root.display(),
+            r.name(),
+            rule.name()
+        ),
+        // A root staged before crop rules were recorded holds default-rule
+        // pages; it stays a default-rule root without a file.
+        None if staged => ensure!(
+            rule == crops::WidthRule::default(),
+            "{} already holds pages cut with {}: stage {} into a new root",
+            root.display(),
+            crops::WidthRule::default().name(),
+            rule.name()
+        ),
+        // A fresh root: the first run claims it for its rule, the default
+        // included, with an exclusive create, so two runs that start on the
+        // same fresh root at once can't each pass the check and cut pages
+        // with different rules. The run that loses reads the winner's rule.
+        None => {
+            std::fs::create_dir_all(root)?;
+            static CLAIMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = CLAIMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let tmp = root.join(format!(".{CROP_RULE_FILE}.{}.{n}", std::process::id()));
+            std::fs::write(&tmp, format!("{}\n", rule.name()))?;
+            let claimed = std::fs::hard_link(&tmp, &path);
+            let _ = std::fs::remove_file(&tmp);
+            match claimed {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return check_crop_rule(root, rule);
+                }
+                Err(e) => return Err(e).context("recording the root's crop rule"),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The marker of a staged page held back from an under-filled bundle: the
@@ -258,6 +332,7 @@ pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Res
     super::check_digest(&opts.engine.llama, "--engine-llama")?;
     super::check_digest(&opts.engine.weights, "--engine-weights")?;
     check_no_hold(&opts.root)?;
+    check_crop_rule(&opts.root, opts.crop_rule)?;
     let units_dir = units(&opts.root);
     let bundled_root = opts.root.join("pages");
     ensure!(
@@ -369,8 +444,14 @@ pub async fn run_selected(opts: &Options, members: Option<&Path>) -> anyhow::Res
             quality.inputs.alto.matches(&alto),
             "{name}: staged ALTO changed"
         );
-        let crops = cut(&bytes, &alto, quality.crop_seed, quality.k_crops)
-            .with_context(|| format!("{name}: cutting crops"))?;
+        let crops = cut_with(
+            &bytes,
+            &alto,
+            quality.crop_seed,
+            quality.k_crops,
+            opts.crop_rule,
+        )
+        .with_context(|| format!("{name}: cutting crops"))?;
         std::fs::create_dir_all(&unit)?;
         check_retained_source(&opts.quality_root, &page, &unit)?;
         retain_source(&opts.quality_root, &unit, &quality, &quality_bytes)?;
@@ -781,17 +862,39 @@ fn retry_pages(
 /// The crops of a page: LoC's ALTO in the image's pixels, the recipe's
 /// selection, LoC's text in each box.
 pub fn cut(page: &[u8], alto: &[u8], seed: u64, k: u32) -> anyhow::Result<Vec<Crop>> {
+    cut_with(page, alto, seed, k, crops::WidthRule::default())
+}
+
+/// [`cut`] with the line-width rule `rule`.
+pub fn cut_with(
+    page: &[u8],
+    alto: &[u8],
+    seed: u64,
+    k: u32,
+    rule: crops::WidthRule,
+) -> anyhow::Result<Vec<Crop>> {
     let (w, h) = image::load_from_memory(page)
         .context("decoding page.jpg")?
         .dimensions();
-    cut_dims((w, h), alto, seed, k)
+    cut_dims_with((w, h), alto, seed, k, rule)
 }
 
 /// [`cut`] for a page of `(width, height)` pixels: the recipe needs only
 /// the size, so collect can cut from a bundle's `dims.json` (#1743).
-pub fn cut_dims((w, h): (u32, u32), alto: &[u8], seed: u64, k: u32) -> anyhow::Result<Vec<Crop>> {
+pub fn cut_dims(dims: (u32, u32), alto: &[u8], seed: u64, k: u32) -> anyhow::Result<Vec<Crop>> {
+    cut_dims_with(dims, alto, seed, k, crops::WidthRule::default())
+}
+
+/// [`cut_dims`] with the line-width rule `rule`.
+pub fn cut_dims_with(
+    (w, h): (u32, u32),
+    alto: &[u8],
+    seed: u64,
+    k: u32,
+    rule: crops::WidthRule,
+) -> anyhow::Result<Vec<Crop>> {
     let parsed = crate::quality::parse_alto(alto, f64::from(w), f64::from(h))?;
-    Ok(crops::select(&parsed, seed, k as usize)
+    Ok(crops::select_with(&parsed, seed, k as usize, rule)
         .into_iter()
         .map(|c| Crop {
             rect: c.rect,
@@ -1464,6 +1567,77 @@ pub fn synthetic_unit(
 pub(crate) mod tests {
     use super::*;
 
+    #[test]
+    fn a_root_holds_one_crop_rule() {
+        use crops::WidthRule::{BlockShare60, Fixed600};
+        let tmp = tempfile::tempdir().unwrap();
+        // A root staged before rules were recorded keeps no file and stays a
+        // default-rule root.
+        let legacy = tmp.path().join("legacy");
+        std::fs::create_dir_all(units(&legacy).join("u1")).unwrap();
+        check_crop_rule(&legacy, Fixed600).unwrap();
+        assert!(!legacy.join(CROP_RULE_FILE).exists());
+        assert!(check_crop_rule(&legacy, BlockShare60).is_err());
+        assert!(!legacy.join(CROP_RULE_FILE).exists());
+        // A fresh root records its first run's rule, the default included.
+        let old = tmp.path().join("old");
+        check_crop_rule(&old, Fixed600).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(old.join(CROP_RULE_FILE)).unwrap(),
+            "fixed-600\n"
+        );
+        assert!(check_crop_rule(&old, BlockShare60).is_err());
+        let new = tmp.path().join("new");
+        check_crop_rule(&new, BlockShare60).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(new.join(CROP_RULE_FILE)).unwrap(),
+            "block-share-60\n"
+        );
+        check_crop_rule(&new, BlockShare60).unwrap();
+        assert!(check_crop_rule(&new, Fixed600).is_err());
+        // A run that saw no file but finds pages a claiming run already staged
+        // reads that run's rule, so it can't take the root for a legacy one.
+        let claimed = tmp.path().join("claimed");
+        check_crop_rule(&claimed, BlockShare60).unwrap();
+        std::fs::create_dir_all(units(&claimed).join("u1")).unwrap();
+        assert!(check_crop_rule(&claimed, Fixed600).is_err());
+        // No temporary file is left behind.
+        assert!(std::fs::read_dir(&new).unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with('.')));
+    }
+
+    #[test]
+    fn two_runs_on_a_fresh_root_cannot_mix_crop_rules() {
+        use crops::WidthRule::{BlockShare60, Fixed600};
+        // Two runs start on one fresh root at once with different rules:
+        // exactly one claims it, and the other is refused.
+        for _ in 0..20 {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().join("root");
+            let a = {
+                let root = root.clone();
+                std::thread::spawn(move || check_crop_rule(&root, Fixed600).is_ok())
+            };
+            let b = {
+                let root = root.clone();
+                std::thread::spawn(move || check_crop_rule(&root, BlockShare60).is_ok())
+            };
+            let (a, b) = (a.join().unwrap(), b.join().unwrap());
+            assert!(
+                a ^ b,
+                "exactly one rule may claim a fresh root (fixed-600 {a}, block-share-60 {b})"
+            );
+            let recorded = std::fs::read_to_string(root.join(CROP_RULE_FILE)).unwrap();
+            assert_eq!(
+                recorded.trim(),
+                if a { "fixed-600" } else { "block-share-60" }
+            );
+        }
+    }
+
     pub(crate) fn engine() -> Engine {
         Engine {
             image: format!("sha256:{}", "a".repeat(64)),
@@ -1597,6 +1771,7 @@ pub(crate) mod tests {
             bundle_size: 1,
             page_records: None,
             max_hold_secs: 0,
+            crop_rule: Default::default(),
         };
         run(&opts).await.unwrap();
         let out = units(&opts.root).join("sn83045462_1890-05-03_ed-1_seq-1");
@@ -1627,6 +1802,7 @@ pub(crate) mod tests {
                 bundle_size: 1,
                 page_records: None,
                 max_hold_secs: 0,
+                crop_rule: Default::default(),
             }
         };
         let staged = |o: &Options| -> Job {
@@ -1690,6 +1866,7 @@ pub(crate) mod tests {
             bundle_size: 1,
             page_records: None,
             max_hold_secs: 0,
+            crop_rule: Default::default(),
         };
         let unit = units(&opts.root).join(source.file_name().unwrap());
         std::fs::create_dir_all(&unit).unwrap();
@@ -1755,6 +1932,7 @@ pub(crate) mod tests {
             bundle_size: 2,
             page_records: None,
             max_hold_secs: 0,
+            crop_rule: Default::default(),
         };
         let unit = units(&opts.root).join(source.file_name().unwrap());
         std::fs::create_dir_all(&unit).unwrap();
@@ -1823,6 +2001,7 @@ pub(crate) mod tests {
             bundle_size: 1,
             page_records: None,
             max_hold_secs: 0,
+            crop_rule: Default::default(),
         };
         let members = tmp.path().join("members.json");
         atomic(&members, &serde_json::to_vec(&[selected]).unwrap()).unwrap();
@@ -1866,6 +2045,7 @@ pub(crate) mod tests {
             bundle_size: 1,
             page_records: None,
             max_hold_secs: 0,
+            crop_rule: Default::default(),
         };
         let s = run(&opts).await.unwrap();
         assert_eq!((s.staged, s.no_crops, s.already), (1, 0, 0));
@@ -2013,6 +2193,7 @@ pub(crate) mod tests {
                 bundle_size,
                 page_records: None,
                 max_hold_secs: 0,
+                crop_rule: Default::default(),
             };
             for invalid in [
                 Options {
@@ -2134,6 +2315,7 @@ pub(crate) mod tests {
             bundle_size: 2,
             page_records: None,
             max_hold_secs: 0,
+            crop_rule: Default::default(),
         };
         let s = run(&opts).await.unwrap();
         assert_eq!(

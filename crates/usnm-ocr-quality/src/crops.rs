@@ -16,6 +16,55 @@ use usnm_alto::{Page, Rect};
 pub const DEFAULT_K: usize = 12;
 pub const MIN_WORDS: usize = 4;
 pub const MIN_WIDTH: f64 = 600.0;
+/// With [`WidthRule::BlockShare60`]: the share of its text block's width a
+/// line's word boxes must span.
+pub const BLOCK_SHARE: f64 = 0.6;
+
+/// Which lines are wide enough to crop.
+///
+/// `Fixed600` is the gold set's recipe ([`MIN_WIDTH`] px) and every
+/// existing campaign's; collect recuts Surya pages with it, so it stays the
+/// default. `BlockShare60` keeps a line whose word boxes span at least
+/// [`BLOCK_SHARE`] of its `TextBlock`'s width: Science's rule (26 Nov 2026)
+/// for 7 to 8 column papers, whose column lines are narrower than 600 px
+/// even on a full-size scan. Both still need [`MIN_WORDS`] words.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WidthRule {
+    #[default]
+    Fixed600,
+    BlockShare60,
+}
+
+impl WidthRule {
+    pub fn name(self) -> &'static str {
+        match self {
+            WidthRule::Fixed600 => "fixed-600",
+            WidthRule::BlockShare60 => "block-share-60",
+        }
+    }
+
+    fn keeps(self, extent: &Rect, block: &Rect) -> bool {
+        match self {
+            WidthRule::Fixed600 => extent.width() >= MIN_WIDTH,
+            WidthRule::BlockShare60 => {
+                block.width() > 0.0 && extent.width() >= BLOCK_SHARE * block.width()
+            }
+        }
+    }
+}
+
+impl std::str::FromStr for WidthRule {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "fixed-600" => Ok(WidthRule::Fixed600),
+            "block-share-60" => Ok(WidthRule::BlockShare60),
+            _ => Err(format!(
+                "unknown crop rule {s:?}: fixed-600 or block-share-60"
+            )),
+        }
+    }
+}
 pub const MAX_WIDTH: f64 = 1600.0;
 pub const HEIGHT_SHARE: f64 = 0.06;
 pub const MARGIN: f64 = 15.0;
@@ -88,8 +137,14 @@ pub fn crop_rect(extent: &Rect, w: f64, h: f64) -> [u32; 4] {
     [x0 as u32, y0 as u32, x1 as u32, y1 as u32]
 }
 
-/// Selects up to `k` crops from `page` (in image pixels) with `seed`.
+/// Selects up to `k` crops from `page` (in image pixels) with `seed`, by the
+/// gold set's recipe ([`WidthRule::Fixed600`]).
 pub fn select(page: &Page, seed: u64, k: usize) -> Vec<Crop> {
+    select_with(page, seed, k, WidthRule::Fixed600)
+}
+
+/// [`select`] with the line-width rule `rule`.
+pub fn select_with(page: &Page, seed: u64, k: usize, rule: WidthRule) -> Vec<Crop> {
     let mut cands = Vec::new();
     for (bi, b) in page.blocks.iter().enumerate() {
         if !b.kind.is_text() {
@@ -111,7 +166,7 @@ pub fn select(page: &Page, seed: u64, k: usize) -> Vec<Crop> {
                 continue;
             }
             let extent = line_extent(l);
-            if extent.width() < MIN_WIDTH {
+            if !rule.keeps(&extent, &b.rect) {
                 continue;
             }
             cands.push(Candidate {
@@ -279,6 +334,72 @@ mod tests {
             }
         }
         assert!(select(&page, 1, 4).is_empty());
+    }
+
+    /// Eight columns: blocks 420 px wide, each line's four words spanning
+    /// `span` px from the block's left edge.
+    fn narrow_columns(span: f64, words: usize) -> Page {
+        let mut page = page_with_columns(8, 20);
+        for b in &mut page.blocks {
+            let x0 = b.rect.x0;
+            for l in &mut b.lines {
+                l.words.truncate(words);
+                let n = l.words.len() as f64;
+                let w = span / n;
+                for (i, word) in l.words.iter_mut().enumerate() {
+                    let left = x0 + i as f64 * w;
+                    word.rect = Rect::new(
+                        left,
+                        word.rect.y0,
+                        left + w * 0.9 + if i + 1 == n as usize { w * 0.1 } else { 0.0 },
+                        word.rect.y1,
+                    );
+                }
+            }
+        }
+        page
+    }
+
+    #[test]
+    fn block_share_keeps_column_lines_the_fixed_rule_drops() {
+        // 300 px of a 420 px block: 71%, under 600 px.
+        let page = narrow_columns(300.0, 4);
+        assert!(select(&page, 7, DEFAULT_K).is_empty());
+        assert_eq!(
+            select_with(&page, 7, DEFAULT_K, WidthRule::Fixed600),
+            select(&page, 7, DEFAULT_K)
+        );
+        let kept = select_with(&page, 7, DEFAULT_K, WidthRule::BlockShare60);
+        assert_eq!(kept.len(), DEFAULT_K);
+        assert_eq!(
+            kept,
+            select_with(&page, 7, DEFAULT_K, WidthRule::BlockShare60)
+        );
+        // 200 px is 48% of the block: dropped by both.
+        assert!(select_with(
+            &narrow_columns(200.0, 4),
+            7,
+            DEFAULT_K,
+            WidthRule::BlockShare60
+        )
+        .is_empty());
+        // Three words are too few under either rule.
+        assert!(select_with(
+            &narrow_columns(300.0, 3),
+            7,
+            DEFAULT_K,
+            WidthRule::BlockShare60
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn width_rules_parse_by_name() {
+        for rule in [WidthRule::Fixed600, WidthRule::BlockShare60] {
+            assert_eq!(rule.name().parse::<WidthRule>(), Ok(rule));
+        }
+        assert_eq!(WidthRule::default(), WidthRule::Fixed600);
+        assert!("block-share-50".parse::<WidthRule>().is_err());
     }
 
     #[test]
