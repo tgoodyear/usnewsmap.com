@@ -95,6 +95,18 @@
     "8",
     "9"
   ],
+  "insert_chars": [
+    "ä",
+    "ö",
+    "ü",
+    "Ä",
+    "Ö",
+    "Ü",
+    "ß",
+    "ſ",
+    "ꝛ",
+    "⸗"
+  ],
   "intro": "These words come from German-language newspapers printed in the United States in the 1800s and early 1900s, held by the Library of Congress. They are printed in Fraktur, a blackletter type. The long ſ looks like an f without the crossbar, and r, x, k, t, B and V can look alike. The long ſ and the round s count as the same letter, so they are never highlighted.",
   "name": "German",
   "title": "German newspapers"

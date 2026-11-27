@@ -9,6 +9,10 @@ let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = 
 // word it is open on; suggestDraft keeps what was typed through a re-render. Worker: POST /api/suggestions, max SUGGEST_MAX.
 // suggestOpening is the object made each time the box opens: a save belongs to the opening it started from, so a save that
 // finishes after the box was closed and reopened (Send, Skip, Back, Neither) neither closes the new box nor blocks its Enter key.
+// The characters offered under the box by default (suggestBox): the single-character fractions newspapers print in prices and
+// addresses. The tools compare them with 1/2 typed out as equal (tools/build_tasks.py, fold_fractions).
+const INSERT_CHARS = ["½", "¼", "¾", "⅓", "⅔", "⅛", "⅜", "⅝", "⅞"];
+const CHARSOPEN = "usnm-check-chars"; // "1" when the visitor opened the character buttons under the suggestion box
 let suggestFor = null, suggestDraft = "", suggestOpening = null, suggestSending = null;
 // On a slow connection an answer is saved in the background and the next word, fetched while this one was shown, appears at once.
 // `pending` holds answers not yet saved, oldest first; `ahead` holds the next words fetched for the word now shown; `stale` is set
@@ -495,6 +499,11 @@ function render(prev) {
   const wd = document.createElement("div"); wd.className = "word";
   const wi = new Image(); wi.src = "/clips/" + t.word; wi.alt = "the printed word, enlarged"; wd.appendChild(wi);
   card.appendChild(wd);
+  // The enlarged word is never drawn smaller than the same word in the line above it (a short line is stretched to the card's
+  // width, so its word can outgrow the word clip at its own size).
+  const fit = () => fitWord(li, wi, wd, w, h);
+  li.addEventListener("load", fit); wi.addEventListener("load", fit);
+  if (typeof ResizeObserver === "function") new ResizeObserver(fit).observe(lv);
   const opts = document.createElement("div"); opts.className = "options";
   (flip(t.id) ? ["b", "a"] : ["a", "b"]).forEach((side, k) => {
     const b = document.createElement("button"); b.type = "button"; b.className = "opt"; b.id = "opt" + (k + 1); b.disabled = busy || stale;
@@ -514,6 +523,21 @@ function render(prev) {
   }
 }
 
+// Sizes the word clip so the word is never smaller than in the line as drawn. The clip carries padding around the word, so its
+// width or its height is held to WORD_OVER_LINE times the word's box in the line on that side, whichever needs the larger clip:
+// a clip padded less than that much on either side then shows the word larger than the line does (a short, narrow word padded
+// more on both is the rare exception). A clip already larger keeps its own size (at most WORD_MAX_HEIGHT tall); none grows past
+// the word strip.
+const WORD_OVER_LINE = 1.5, WORD_MAX_HEIGHT = 120;
+function fitWord(li, wi, wd, w, h) {
+  if (!li.naturalWidth || !wi.naturalWidth || !li.clientWidth) return;
+  const own = wi.naturalWidth * Math.min(1, WORD_MAX_HEIGHT / wi.naturalHeight);
+  const scale = WORD_OVER_LINE * Math.max(w * li.clientWidth / wi.naturalWidth, h * li.clientHeight / wi.naturalHeight);
+  const room = wd.clientWidth - 12; // .word's padding, 6px a side
+  const width = Math.min(Math.max(own, wi.naturalWidth * scale), room);
+  if (width > 0) Object.assign(wi.style, { width: Math.floor(width) + "px", maxHeight: "none" });
+}
+
 // The optional "What does it say?" box after Neither matches. Sending saves the text as extra evidence and then moves on; Skip,
 // and any other control, moves on without saving. It never blocks moving on, and it takes no part in the answer.
 function suggestBox(t) {
@@ -523,15 +547,55 @@ function suggestBox(t) {
   // No maxLength: it counts UTF-16 units, not the code points the Worker counts after NFC, so it would refuse valid text.
   Object.assign(input, { type: "text", id: "suggest-text", dir: "auto", lang, autocomplete: "off", spellcheck: false });
   input.value = suggestDraft;
+  // a box drawn again while its text is being saved stays locked, so nothing typed after the send is silently dropped
+  if (suggestSending && suggestSending === suggestOpening) input.readOnly = true;
   input.addEventListener("input", () => { suggestDraft = input.value; });
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); sendSuggestion(t.id); } });
+  // Characters a US keyboard can't type (½ and the other single-character fractions; a language's own letters): each button puts
+  // its text in the box at the cursor. A language's `insert_chars` replaces the list (an empty list shows none); an entry may be
+  // several code points (a letter with its points), and one that starts with a combining mark is drawn on a dotted circle and
+  // named from `marks`. The buttons stay hidden behind a keyboard button until asked for, and this browser remembers the choice.
+  // pointerdown is cancelled on every one, so the box keeps focus and a phone keeps its keyboard up.
+  const chars = Array.isArray(cfg.insert_chars) ? cfg.insert_chars : INSERT_CHARS;
+  let pad = null, toggle = null;
+  if (chars.length) {
+    pad = document.createElement("div"); pad.className = "suggest-chars"; pad.id = "suggest-chars"; pad.setAttribute("role", "group"); pad.setAttribute("aria-label", "Insert a character");
+    if (cfg.dir) pad.dir = cfg.dir;
+    for (const ch of chars) {
+      const mark = /^\p{M}/u.test(ch);
+      const b = document.createElement("button"); b.type = "button"; b.className = "small char"; b.lang = lang; b.textContent = mark ? "\u25CC" + ch : ch;
+      b.setAttribute("aria-label", "Insert " + (mark && cfg.marks && cfg.marks[ch] ? cfg.marks[ch] : ch));
+      b.addEventListener("pointerdown", (e) => e.preventDefault());
+      b.addEventListener("click", () => {
+        // the opening's save state, not only the input's: a re-render during a save makes a new, writable input
+        if (input.readOnly || suggestSending === suggestOpening) return;
+        const at = input.selectionStart ?? input.value.length, to = input.selectionEnd ?? at;
+        input.setRangeText(ch, at, to, "end");
+        suggestDraft = input.value;
+        input.focus();
+      });
+      pad.appendChild(b);
+    }
+    const open = store(CHARSOPEN) === "1";
+    pad.hidden = !open;
+    toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "small chars-toggle"; toggle.id = "suggest-chars-toggle";
+    toggle.textContent = "\u2328\uFE0E"; toggle.title = "Special characters";
+    toggle.setAttribute("aria-label", "Special characters"); toggle.setAttribute("aria-controls", "suggest-chars"); toggle.setAttribute("aria-expanded", String(open));
+    toggle.addEventListener("pointerdown", (e) => e.preventDefault());
+    toggle.addEventListener("click", () => {
+      const show = pad.hidden;
+      pad.hidden = !show; toggle.setAttribute("aria-expanded", String(show)); store(CHARSOPEN, show ? "1" : "0");
+      input.focus();
+    });
+  }
   const row = document.createElement("div"); row.className = "suggest-buttons";
   const send = document.createElement("button"); send.type = "button"; send.className = "small"; send.id = "suggest-send"; send.textContent = "Send";
+  if (input.readOnly) send.disabled = true; // locked with the box during a save
   send.addEventListener("click", () => sendSuggestion(t.id));
   const skipBox = document.createElement("button"); skipBox.type = "button"; skipBox.className = "small"; skipBox.id = "suggest-skip"; skipBox.textContent = "Skip";
   skipBox.addEventListener("click", () => moveOnFromSuggestion(t.id));
-  row.append(send, skipBox);
-  box.append(label, input, row);
+  row.append(send, skipBox, ...(toggle ? [toggle] : []));
+  box.append(label, input, row, ...(pad ? [pad] : []));
   return box;
 }
 
@@ -550,7 +614,10 @@ async function sendSuggestion(id) {
     await authed("/api/suggestions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: id, text }) });
   } catch (e) {
     if (suggestOpening === opening) {
-      if (send) send.disabled = false; if (input) input.readOnly = false;
+      // the box drawn now, which a re-render during the save (letter names toggled) may have replaced
+      suggestSending = null;
+      const nowSend = $("suggest-send"), nowInput = $("suggest-text");
+      if (nowSend) nowSend.disabled = false; if (nowInput) nowInput.readOnly = false;
       status("Your suggestion wasn't saved: " + e.message, true);
     }
     return;

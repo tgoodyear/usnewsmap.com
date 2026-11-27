@@ -628,3 +628,33 @@ test("Neither matches puts the cursor in the suggestion box, and key 3 doesn't t
   // leaving the word from the box (Enter, Send or Skip) gives the next word's first reading focus, as a focused button would
   assert.match(appJs, /function controlFocused\(\) \{ const a = document\.activeElement; return !!a && \(a\.tagName === "BUTTON" \|\| a\.id === "suggest-text"\); \}/);
 });
+
+test("the suggestion box offers fraction buttons that insert at the cursor and keep the box focused", () => {
+  assert.match(appJs, /const INSERT_CHARS = \["½", "¼", "¾", "⅓", "⅔", "⅛", "⅜", "⅝", "⅞"\];/);
+  assert.match(appJs, /const chars = Array\.isArray\(cfg\.insert_chars\) \? cfg\.insert_chars : INSERT_CHARS;/);
+  assert.match(appJs, /b\.addEventListener\("pointerdown", \(e\) => e\.preventDefault\(\)\);/, "the box keeps focus (and a phone its keyboard)");
+  assert.match(appJs, /input\.setRangeText\(ch, at, to, "end"\);\s*suggestDraft = input\.value;/, "inserted at the cursor and kept through a re-render");
+  // a save in flight locks the box, even one drawn again during it (letter names toggled)
+  assert.match(appJs, /if \(input\.readOnly \|\| suggestSending === suggestOpening\) return;/);
+  assert.match(appJs, /if \(suggestSending && suggestSending === suggestOpening\) input\.readOnly = true;/);
+  // a failed save unlocks the box on screen, not only the one it started from
+  assert.match(appJs, /const nowSend = \$\("suggest-send"\), nowInput = \$\("suggest-text"\);\s*if \(nowSend\) nowSend\.disabled = false; if \(nowInput\) nowInput\.readOnly = false;/);
+});
+
+test("the character buttons stay hidden behind a keyboard button, which this browser remembers", () => {
+  assert.match(appJs, /const open = store\(CHARSOPEN\) === "1";\s*pad\.hidden = !open;/, "hidden until asked for");
+  assert.match(appJs, /toggle\.setAttribute\("aria-controls", "suggest-chars"\); toggle\.setAttribute\("aria-expanded", String\(open\)\);/);
+  assert.match(appJs, /toggle\.addEventListener\("pointerdown", \(e\) => e\.preventDefault\(\)\);/, "opening it keeps the box focused");
+  assert.match(appJs, /pad\.hidden = !show; toggle\.setAttribute\("aria-expanded", String\(show\)\); store\(CHARSOPEN, show \? "1" : "0"\);/);
+  assert.match(css, /\.suggest-chars\[hidden\] \{ display: none; \}/, "the flex rule doesn't override hidden");
+  // a combining mark (a Yiddish point) is drawn on a dotted circle and named from the language's marks
+  assert.match(appJs, /b\.textContent = mark \? "\\u25CC" \+ ch : ch;/);
+});
+
+test("the enlarged word is never drawn smaller than the same word in the line above it", () => {
+  assert.match(appJs, /const WORD_OVER_LINE = 1\.5, WORD_MAX_HEIGHT = 120;/);
+  assert.match(appJs, /const scale = WORD_OVER_LINE \* Math\.max\(w \* li\.clientWidth \/ wi\.naturalWidth, h \* li\.clientHeight \/ wi\.naturalHeight\);/, "held to the word's box in the line on the side that needs more");
+  assert.match(appJs, /const width = Math\.min\(Math\.max\(own, wi\.naturalWidth \* scale\), room\);/, "never past the strip");
+  assert.match(appJs, /li\.addEventListener\("load", fit\); wi\.addEventListener\("load", fit\);/, "sized once both images are in");
+  assert.match(appJs, /new ResizeObserver\(fit\)\.observe\(lv\);/, "and again when the line is drawn at another width");
+});

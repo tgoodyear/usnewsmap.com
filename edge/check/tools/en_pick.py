@@ -13,12 +13,15 @@ Paths are relative to --root (default: the folder of --pages).
 
 For each crop it takes LoC's words whose box centre is in the crop (ALTO reading order, a line's hyphen kept on its
 last word, as `usnm-ocr-survey alto-crop` does), aligns them with Xiaomi's whitespace-separated words and keeps the
-words where the two differ. A pair is made only when it is certain:
+words where the two differ, comparing them with single-character fractions folded (bt.fold_fractions: 103½ and 1031/2
+agree; report.json counts them as same_once_fractions_folded). A pair is made only when it is certain:
 
   * the two readings agree on most of the crop (--min-agree): if not, they cover different stretches of print;
   * the differing stretch is bracketed by words both readings agree on (a word at the very start or end of a
     crop is cut by the crop's edge), and has as many words on each side, at most --max-block, paired by position;
   * each pair is at least --min-similarity alike (a word one reading split, joined or dropped is not a pair; the whole stretch is left out if any word in it fails);
+  * neither word has an @ touching a letter (bt.stray_at: "@ourse" is plainly wrong, so the other reading wins
+    outright; report.json counts left_out_stray_at_loc, _xiaomi and _both by the side that had it);
   * neither word is without letters or digits; with --skip-punctuation-only, a pair whose letters and digits agree is
     left out too (on by default; --keep-punctuation-only to keep them).
 
@@ -32,7 +35,7 @@ Writes OUT_DIR/clips/en/<set>/{lines,words}/..., OUT_DIR/tasks.jsonl, OUT_DIR/la
 
 A task's `private` holds what must not reach a volunteer before the task settles: `a_is` and `b_is` (`xiaomi` or
 `loc`), the strata (`decade`, `damage_band`, `crop`), and with truth `truth` (`xiaomi`, `loc` or `neither`: which
-reading matches the truth word exactly) with `truth_word`. The Worker keeps `private` off /api/next and out of
+reading matches the truth word exactly, with fractions folded: ½ and 1/2 match) with `truth_word`. The Worker keeps `private` off /api/next and out of
 /api/export until the task settles (edge/check/README.md, "Blind tasks").
 
   python3 en_pick.py --pages pages.jsonl --lang en --set xiaomi-loc-v1 --language-config languages/en.json \
@@ -153,12 +156,14 @@ def aligned_words(a: list, b: list, min_similarity: float, max_block: int) -> tu
 def truth_for(loc: list, truth: list, min_similarity: float = 0.5) -> dict:
     """{index in loc: the truth word at that place}, for words LoC read the same as the truth and for 1:1 replacements."""
     out = {}
-    for op, i1, i2, j1, j2 in SequenceMatcher(None, loc, truth, autojunk=False).get_opcodes():
+    # compared with fractions folded (bt.fold_fractions), so 103½ and 1031/2 are the same word; the truth word is kept as written
+    floc, ftruth = [bt.fold_fractions(w) for w in loc], [bt.fold_fractions(w) for w in truth]
+    for op, i1, i2, j1, j2 in SequenceMatcher(None, floc, ftruth, autojunk=False).get_opcodes():
         if op == "equal":
             out.update((i1 + k, truth[j1 + k]) for k in range(i2 - i1))
         elif op == "replace" and i2 - i1 == j2 - j1:
             # as in aligned_words: the whole block or none, so an offsetting split and join leaves it unmapped
-            fa, fb = loc[i1:i2], truth[j1:j2]
+            fa, fb = floc[i1:i2], ftruth[j1:j2]
             block = range(i2 - i1)
             if (all(SequenceMatcher(None, fa[k], fb[k], autojunk=False).ratio() >= min_similarity for k in block)
                     and not any(bt.split_or_joined(fa, fb, k, k) for k in block)):
@@ -167,6 +172,8 @@ def truth_for(loc: list, truth: list, min_similarity: float = 0.5) -> dict:
 
 
 def who_is_right(loc: str, xiaomi: str, truth: str) -> str:
+    """Which reading matches the truth word, with fractions folded (bt.fold_fractions: ½ and 1/2 are the same)."""
+    loc, xiaomi, truth = bt.fold_fractions(loc), bt.fold_fractions(xiaomi), bt.fold_fractions(truth)
     if xiaomi == truth and loc != truth:
         return "xiaomi"
     if loc == truth and xiaomi != truth:
@@ -207,6 +214,9 @@ def candidates(page: dict, args, root: str, stats: Counter) -> list:
         loc_words = in_crop(words, crop["box"])
         loc = [bt.clean(w["text"]) for w in loc_words]
         xi = bt.clean(crop["xiaomi"]).split()
+        # agreement and alignment use the words with fractions folded (bt.fold_fractions), so 103½ against 1031/2 agrees
+        # and doesn't break the alignment around a real difference next to it; tasks show the words as each OCR wrote them
+        floc, fxi = [bt.fold_fractions(w) for w in loc], [bt.fold_fractions(w) for w in xi]
         stats["loc_words"] += len(loc)
         stats["xiaomi_words"] += len(xi)
         if not loc or not xi:
@@ -215,21 +225,30 @@ def candidates(page: dict, args, root: str, stats: Counter) -> list:
             stats["differing_loc_words"] += len(loc)
             stats["left_out_crop_readings_disagree"] += len(loc)
             continue
-        if SequenceMatcher(None, loc, xi, autojunk=False).ratio() < args.min_agree:
+        if SequenceMatcher(None, floc, fxi, autojunk=False).ratio() < args.min_agree:
             # its differing words count as left out, so the skip rate includes what this rule drops
             stats["crops_left_out_readings_disagree_too_much"] += 1
-            matched = sum(blk.size for blk in SequenceMatcher(None, loc, xi, autojunk=False).get_matching_blocks())
+            matched = sum(blk.size for blk in SequenceMatcher(None, floc, fxi, autojunk=False).get_matching_blocks())
             stats["differing_loc_words"] += len(loc) - matched
             stats["left_out_crop_readings_disagree"] += len(loc) - matched
             continue
         stats["crops_used"] += 1
-        pairs, c = aligned_words(loc, xi, args.min_similarity, args.max_block)
+        pairs, c = aligned_words(floc, fxi, args.min_similarity, args.max_block)
         stats.update(c)
+        # words the two OCRs wrote differently that are the same once folded: agreed, so never a task
+        stats["same_once_fractions_folded"] += sum(
+            loc[i1 + k] != xi[j1 + k]
+            for op, i1, i2, j1, _ in SequenceMatcher(None, floc, fxi, autojunk=False).get_opcodes() if op == "equal"
+            for k in range(i2 - i1))
         tw = truth_for(loc, bt.clean(crop["truth"]).split(), args.min_similarity) if crop.get("truth") else None
         for i, j in pairs:
             wl, wx = loc[i], xi[j]
             if not bt.has_letter(wl) or not bt.has_letter(wx):
                 stats["left_out_no_letters"] += 1
+                continue
+            if bt.stray_at(wl) or bt.stray_at(wx):
+                # plainly wrong (bt.STRAY_AT): never offered; the reading without one wins outright
+                stats["left_out_stray_at_" + ("both" if bt.stray_at(wl) and bt.stray_at(wx) else "loc" if bt.stray_at(wl) else "xiaomi")] += 1
                 continue
             if args.skip_punctuation_only and bt.letters_only(wl, {}) == bt.letters_only(wx, {}):
                 stats["left_out_punctuation_only"] += 1
