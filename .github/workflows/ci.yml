@@ -239,6 +239,9 @@ jobs:
       - name: The host-eligibility step's tests pass
         working-directory: .
         run: python3 -m unittest -v boinc/images/server/test_host_eligibility.py
+      - name: The release window and app-version-outcomes tests pass
+        working-directory: .
+        run: python3 -m unittest -v boinc/scripts/onprem/test_release_window.py
       - name: Held app versions are held and released, native Qwen included (#1672)
         working-directory: .
         run: python3 -m unittest -v boinc/scripts/test_app_version_hold.py
