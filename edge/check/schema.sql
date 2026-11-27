@@ -45,3 +45,13 @@ CREATE TABLE IF NOT EXISTS answers_excluded (
   names_shown TEXT NOT NULL DEFAULT 'unknown' CHECK (names_shown IN ('shown', 'not_shown', 'unknown')),
   PRIMARY KEY (task_id, contributor)
 );
+
+-- What volunteers typed for a word they judged neither reading right (README.md, "Suggestions"). Extra evidence only: nothing
+-- reads it to settle a word or count an answer. migrations/0007-suggestions.sql has the same table.
+CREATE TABLE IF NOT EXISTS suggestions (
+  task_id TEXT NOT NULL,
+  contributor TEXT NOT NULL,
+  text TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (task_id, contributor)
+);
