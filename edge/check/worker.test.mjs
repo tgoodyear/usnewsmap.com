@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import worker, { DISPLAY_REVISION, settle, signSession, verifySession } from "./worker.mjs";
+import worker, { DISPLAY_REVISION, SUGGEST_MAX, cleanSuggestion, settle, signSession, verifySession } from "./worker.mjs";
 
 test("a word settles at three answers with two thirds agreeing", () => {
   assert.deepEqual(settle({ a: 2, b: 0, neither: 0, unsure: 0 }), { n: 2, settled: 0, outcome: null });
@@ -157,7 +157,7 @@ test("/admin/tasks with if_body replaces a body only while it is still the one t
 
 test("the dump has every table's rows", async () => {
   const data = { languages: [{ code: "chr", config: "{}" }], tasks: [{ id: "t1" }, { id: "t2" }], answers: [{ task_id: "t1", contributor: "c", choice: "a", at: 1 }],
-    answers_excluded: [{ task_id: "t2", contributor: "d", choice: "b", at: 2 }] };
+    answers_excluded: [{ task_id: "t2", contributor: "d", choice: "b", at: 2 }], suggestions: [{ task_id: "t1", contributor: "c", text: "x", at: 3 }] };
   let batches = 0;
   const DB = {
     prepare: (sql) => ({ sql }),
@@ -166,7 +166,7 @@ test("the dump has every table's rows", async () => {
   const r = await worker.fetch(new Request("https://check.usnewsmap.com/admin/dump", { headers: { authorization: "Bearer secret-admin" } }), { ...env, DB }, {});
   assert.equal(r.status, 200);
   const lines = (await r.text()).trim().split("\n").map((l) => JSON.parse(l));
-  assert.deepEqual(lines.map((l) => l.table), ["languages", "tasks", "tasks", "answers", "answers_excluded"]);
+  assert.deepEqual(lines.map((l) => l.table), ["languages", "tasks", "tasks", "answers", "answers_excluded", "suggestions"]);
   assert.equal(lines[3].row.choice, "a");
   assert.equal(lines[4].row.choice, "b");
   assert.equal(batches, 1, "one batch, so one snapshot");
@@ -1100,4 +1100,139 @@ test("the page offers Bad crop on every task kind, on key 6, with a line of help
   // only neither and not text are hidden on a gutter task, and choose() refuses only those there
   assert.match(app, /\$\("neither"\)\.hidden = \$\("notext"\)\.hidden = isGutter\(task\);/);
   assert.match(app, /if \(isGutter\(task\) && \(choice === "neither" \|\| choice === "notext"\)\) return;/);
+});
+
+// ---------- suggestions (README.md, "Suggestions") ----------
+
+test("a suggestion is trimmed and NFC-normalised, and refused when empty, too long, or with a control character or line break", () => {
+  assert.equal(cleanSuggestion("  ש\u05B8\u05C1  "), "ש\u05B8\u05C1");
+  assert.equal(cleanSuggestion("e\u0301"), "\u00e9", "decomposed input is composed");
+  assert.equal(cleanSuggestion("x".repeat(SUGGEST_MAX)).length, SUGGEST_MAX);
+  assert.equal(cleanSuggestion("x".repeat(SUGGEST_MAX + 1)), null);
+  // code points, not UTF-16 units: 200 astral letters are allowed, 201 are not
+  assert.equal(cleanSuggestion("\u{1F600}".repeat(SUGGEST_MAX)).length, SUGGEST_MAX * 2);
+  assert.equal(cleanSuggestion("\u{1F600}".repeat(SUGGEST_MAX + 1)), null);
+  for (const bad of ["", "   ", "a\nb", "a\tb", "a\u0000", "a\u2028b", "a\u2029b", 5, null, undefined]) assert.equal(cleanSuggestion(bad), null, JSON.stringify(bad));
+  // a right-to-left mark is a format character, not a control: Yiddish and Hebrew keep it
+  assert.equal(cleanSuggestion("\u200Fשלום"), "\u200Fשלום");
+});
+
+test("POST /api/suggestions needs a session, a task that exists and a valid text, and an upsert keeps one row per volunteer", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('yi/s/1', 'yi', 's', ?)").run(JSON.stringify({ page: "p", a: "x", b: "y" }));
+  const post = async (who, body, auth) => worker.fetch(new Request("https://check.usnewsmap.com/api/suggestions", {
+    method: "POST", headers: { authorization: auth ?? "Bearer " + (await signSession(env.SESSION_KEY, who)) }, body: typeof body === "string" ? body : JSON.stringify(body),
+  }), E, {});
+  assert.equal((await post(null, { task: "yi/s/1", text: "שלום" }, "")).status, 401, "no session");
+  assert.equal((await post("v1", { task: "yi/s/1", text: "שלום" }, "Bearer forged")).status, 401, "a bad session");
+  assert.equal((await post("v1", "not json")).status, 400);
+  assert.equal((await post("v1", { task: "yi/s/1" })).status, 400, "no text");
+  assert.equal((await post("v1", { task: "yi/s/1", text: "a\nb" })).status, 400, "a line break");
+  assert.equal((await post("v1", { task: "yi/s/1", text: "x".repeat(SUGGEST_MAX + 1) })).status, 400, "too long");
+  assert.equal((await post("v1", { task: "yi/s/9", text: "שלום" })).status, 404, "no such task");
+  assert.equal((await post("v1", { task: 7, text: "שלום" })).status, 400);
+  assert.equal(db.prepare("SELECT COUNT(*) AS k FROM suggestions").get().k, 0, "refused texts store nothing");
+  assert.equal((await post("v1", { task: "yi/s/1", text: " שלום " })).status, 200);
+  assert.equal((await post("v1", { task: "yi/s/1", text: "שלום עליכם" })).status, 200, "a second one replaces the first");
+  assert.equal((await post("v2", { task: "yi/s/1", text: "שלום" })).status, 200, "another volunteer adds a row");
+  const rows = db.prepare("SELECT task_id, contributor, text FROM suggestions ORDER BY contributor").all().map((r) => ({ ...r }));
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].text, "שלום עליכם");
+  assert.equal(rows[1].text, "שלום");
+});
+
+test("suggestions are rate limited like answers", async () => {
+  const { DB } = await sqliteD1();
+  const E = { ...env, DB, ANSWER_LIMIT: { limit: async () => ({ success: false }) } };
+  const r = await worker.fetch(new Request("https://check.usnewsmap.com/api/suggestions", {
+    method: "POST", headers: { authorization: "Bearer " + (await signSession(env.SESSION_KEY, "v1")) }, body: JSON.stringify({ task: "yi/s/1", text: "שלום" }),
+  }), E, {});
+  assert.equal(r.status, 429);
+});
+
+test("suggestions never settle a word, change its counts or answers, and never make it held or marked", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('yi/s/1', 'yi', 's', ?)").run(JSON.stringify({ page: "p", a: "x", b: "y" }));
+  const post = async (path, who, body) => worker.fetch(new Request("https://check.usnewsmap.com" + path, { method: "POST", headers: { authorization: "Bearer " + (await signSession(env.SESSION_KEY, who)) }, body: JSON.stringify(body) }), E, {});
+  const row = () => ({ ...db.prepare("SELECT n, settled, outcome, held, hold_reason, confusable_display, mark_reason FROM tasks WHERE id = 'yi/s/1'").get() });
+  for (let i = 0; i < 9; i++) assert.equal((await post("/api/suggestions", "s" + i, { task: "yi/s/1", text: "שלום" })).status, 200);
+  assert.deepEqual(row(), { n: 0, settled: 0, outcome: null, held: 0, hold_reason: null, confusable_display: 0, mark_reason: null }, "nine suggestions and no answer");
+  // two answers and nine suggestions: still two answers, so no settle
+  assert.equal((await post("/api/answers", "c1", { task: "yi/s/1", choice: "neither", display: DISPLAY_REVISION })).status, 200);
+  assert.equal((await post("/api/answers", "c2", { task: "yi/s/1", choice: "neither", display: DISPLAY_REVISION })).status, 200);
+  assert.deepEqual(row(), { n: 2, settled: 0, outcome: null, held: 0, hold_reason: null, confusable_display: 0, mark_reason: null });
+  // the third answer settles it on the answers alone (neither: three of three), however many suggestions there are
+  assert.equal((await post("/api/answers", "c3", { task: "yi/s/1", choice: "neither", display: DISPLAY_REVISION })).status, 200);
+  assert.deepEqual(row(), { n: 3, settled: 1, outcome: "neither", held: 0, hold_reason: null, confusable_display: 0, mark_reason: null });
+  assert.equal(db.prepare("SELECT COUNT(*) AS k FROM answers WHERE task_id = 'yi/s/1'").get().k, 3, "the suggestions are not answers");
+  // a suggestion on a settled word is kept too, and changes nothing
+  assert.equal((await post("/api/suggestions", "s0", { task: "yi/s/1", text: "שלום עליכם" })).status, 200);
+  assert.deepEqual(row(), { n: 3, settled: 1, outcome: "neither", held: 0, hold_reason: null, confusable_display: 0, mark_reason: null });
+  // and a suggestion never takes an answer's place for the three-of-three rule: a word with two neither answers and suggestions
+  // from everyone else is not settled
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('yi/s/2', 'yi', 's', ?)").run(JSON.stringify({ page: "p", a: "x", b: "y" }));
+  for (let i = 0; i < 5; i++) await post("/api/suggestions", "t" + i, { task: "yi/s/2", text: "שלום" });
+  await post("/api/answers", "c1", { task: "yi/s/2", choice: "a", display: DISPLAY_REVISION });
+  await post("/api/answers", "c2", { task: "yi/s/2", choice: "a", display: DISPLAY_REVISION });
+  assert.deepEqual({ ...db.prepare("SELECT n, settled FROM tasks WHERE id = 'yi/s/2'").get() }, { n: 2, settled: 0 });
+});
+
+test("the export lists each word's suggestions as text only, and the admin dump keeps the table", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('yi/s/1', 'yi', 's', ?), ('yi/s/2', 'yi', 's', ?), ('chr/s/1', 'chr', 's', ?)").run(
+    JSON.stringify({ page: "p", a: "x", b: "y" }), JSON.stringify({ page: "p", a: "x", b: "y" }), JSON.stringify({ page: "p", a: "x", b: "y" }));
+  const put = async (who, task, text) => worker.fetch(new Request("https://check.usnewsmap.com/api/suggestions", { method: "POST", headers: { authorization: "Bearer " + (await signSession(env.SESSION_KEY, who)) }, body: JSON.stringify({ task, text }) }), E, {});
+  await put("v1", "yi/s/1", "שלום");
+  await put("v2", "yi/s/1", "שלום עליכם");
+  await put("v1", "yi/s/1", "שלום עליכם!");
+  await put("v3", "chr/s/1", "ᏣᎳ");
+  const exp = (await (await worker.fetch(new Request("https://check.usnewsmap.com/api/export?lang=yi"), E, {})).text());
+  const lines = exp.trim().split("\n").map((l) => JSON.parse(l));
+  const byId = Object.fromEntries(lines.map((r) => [r.id, r]));
+  assert.equal(byId["yi/s/1"].suggestions.length, 2);
+  assert.ok(byId["yi/s/1"].suggestions.includes("שלום עליכם!"));
+  assert.ok(byId["yi/s/1"].suggestions.includes("שלום עליכם"));
+  assert.deepEqual(byId["yi/s/2"].suggestions, [], "a word with none has an empty list");
+  assert.ok(!exp.includes("v1") && !exp.includes("v2"), "no contributor ids in the export");
+  assert.equal(byId["yi/s/1"].counts.a + byId["yi/s/1"].counts.neither, 0, "suggestions are not counted");
+  assert.equal(byId["yi/s/1"].settled, false);
+  // the chr export never shows yi's suggestions
+  const chr = (await (await worker.fetch(new Request("https://check.usnewsmap.com/api/export?lang=chr"), E, {})).text()).trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(chr[0].suggestions, ["ᏣᎳ"]);
+  // the admin dump has every suggestion row, with its contributor, like the answers tables
+  const dump = (await (await worker.fetch(new Request("https://check.usnewsmap.com/admin/dump", { headers: { authorization: "Bearer secret-admin" } }), E, {})).text()).trim().split("\n").map((x) => JSON.parse(x));
+  assert.equal(dump.filter((d) => d.table === "suggestions").length, 3, "two rows for yi/s/1 (one replaced) and one for chr");
+  assert.equal(dump.filter((d) => d.table === "suggestions" && d.row.contributor === "v1").length, 1);
+});
+
+test("migration 0007 only adds a table: the answers and set-aside answers it finds are untouched", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(":memory:");
+  // the schema as it was before this migration: schema.sql without its suggestions block (the last thing in the file)
+  const before = readFileSync(new URL("./schema.sql", import.meta.url), "utf8");
+  db.exec(before.slice(0, before.indexOf("-- What volunteers")));
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('t', 'yi', 's', '{}')").run();
+  db.prepare("INSERT INTO answers (task_id, contributor, choice, at) VALUES ('t', 'c', 'a', 1)").run();
+  db.exec(readFileSync(new URL("./migrations/0007-suggestions.sql", import.meta.url), "utf8"));
+  db.exec(readFileSync(new URL("./migrations/0007-suggestions.sql", import.meta.url), "utf8"));
+  assert.deepEqual({ ...db.prepare("SELECT task_id, contributor, choice, at FROM answers").get() }, { task_id: "t", contributor: "c", choice: "a", at: 1 });
+  db.prepare("INSERT INTO suggestions (task_id, contributor, text, at) VALUES ('t', 'c', 'שלום', 1)").run();
+  assert.throws(() => db.prepare("INSERT INTO suggestions (task_id, contributor, text, at) VALUES ('t', 'c', 'b', 2)").run(), /UNIQUE|constraint/i, "one row per volunteer and word");
+});
+
+test("the page sends a suggestion only after Neither, in a box that keeps the answer line, and its keys don't fire in the box", () => {
+  const app = readFileSync(new URL("./public/app.js", import.meta.url), "utf8");
+  assert.equal(Number(app.match(/const SUGGEST_MAX = (\d+);/)[1]), SUGGEST_MAX);
+  assert.match(app, /"What does it say\? \(optional\)"/);
+  assert.match(app, /input\.dir|dir: "auto"/);
+  assert.match(app, /lang, autocomplete: "off"/, "the box takes the language's code");
+  assert.match(app, /if \(e\.target && e\.target\.id === "suggest-text"\) return;/);
+  assert.match(app, /authed\("\/api\/suggestions"/);
+  assert.match(app, /if \(choice === "neither" && !isGutter\(task\)\) \{ suggestFor = id; suggestDraft = ""; render\(\); return; \}/);
+  assert.match(app, /if \(e\.key === "Enter" && !e\.isComposing\)/);
+  // the answer body is unchanged (see the test above)
+  assert.match(app, /JSON\.stringify\(\{ task: task\.id, choice, display: DISPLAY, font: fontState\(task\), names_shown: namesState\(task\) \}\)/);
 });

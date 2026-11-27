@@ -31,6 +31,21 @@ const fontOf = (v) => (FONT_STATES.includes(v) ? v : "unknown");
 // existed. Anything else a request sends is stored as `unknown`. migrations/0004-answer-names.sql has the same list.
 export const NAMES_STATES = ["shown", "not_shown", "unknown"];
 const namesOf = (v) => (NAMES_STATES.includes(v) ? v : "unknown");
+// A suggestion (README.md, "Suggestions"): what a volunteer types for a word whose two readings are both wrong. It is extra
+// evidence only. Nothing about it reads or writes answers, counts, settled or outcome. Trimmed and NFC-normalised, 1 to
+// SUGGEST_MAX characters (code points), with no control characters and no line or paragraph separators; null when refused.
+export const SUGGEST_MAX = 200;
+export function cleanSuggestion(v) {
+  if (typeof v !== "string") return null;
+  const text = v.normalize("NFC").trim();
+  const n = Array.from(text).length;
+  if (n < 1 || n > SUGGEST_MAX) return null;
+  if (/[\p{Cc}\p{Zl}\p{Zp}]/u.test(text)) return null;
+  return text;
+}
+// One suggestion per volunteer per word; a second one replaces the first.
+export const SUGGEST_SQL = `INSERT INTO suggestions (task_id, contributor, text, at) VALUES (?1, ?2, ?3, ?4)
+ON CONFLICT (task_id, contributor) DO UPDATE SET text = excluded.text, at = excluded.at`;
 const SESSION_DAYS = 30;
 const SETTLE_MIN = 3; // answers before a word can settle
 const DISPUTE_AT = 7; // answers after which a word that never agreed is closed as disputed
@@ -262,6 +277,17 @@ async function api(request, env, url) {
     await record(env, b.task, c, b.choice, Date.now(), Number(b.display) || 0, fontOf(b.font), namesOf(b.names_shown));
     return json({ ok: true });
   }
+  if (p === "/api/suggestions" && request.method === "POST") {
+    const c = await contributorOf(request, env, { limited: true });
+    const b = await body(request, 2048);
+    if (typeof b.task !== "string" || b.task.length > 300) throw new HttpError(400, "task and text required");
+    const text = cleanSuggestion(b.text);
+    if (text === null) throw new HttpError(400, `text must be 1 to ${SUGGEST_MAX} characters, with no line breaks or control characters`);
+    const t = await env.DB.prepare("SELECT id FROM tasks WHERE id = ?").bind(b.task).first();
+    if (!t) throw new HttpError(404, "no such task");
+    await env.DB.prepare(SUGGEST_SQL).bind(b.task, c, text, Date.now()).run();
+    return json({ ok: true });
+  }
   if (p === "/api/stats" && request.method === "GET") {
     const l = lang(url);
     const r = await env.DB.prepare(
@@ -298,6 +324,12 @@ async function api(request, env, url) {
     )
       .bind(l)
       .all();
+    // What volunteers typed for each word (text only, in the order given): extra evidence, never part of counts or outcomes.
+    const sug = await env.DB.prepare("SELECT s.task_id, s.text FROM suggestions s JOIN tasks t ON t.id = s.task_id WHERE t.lang = ? ORDER BY s.at, s.contributor")
+      .bind(l)
+      .all();
+    const suggestions = new Map();
+    for (const s of sug.results) suggestions.set(s.task_id, [...(suggestions.get(s.task_id) || []), s.text]);
     const fontCounts = (r) => ({ loaded: r.f_loaded || 0, not_loaded: r.f_not_loaded || 0, none: r.f_none || 0, unknown: r.f_unknown || 0 });
     const namesCounts = (r) => ({ shown: r.n_shown || 0, not_shown: r.n_not_shown || 0, unknown: r.n_unknown || 0 });
     const choiceCounts = (r) => ({ a: r.a || 0, b: r.b || 0, neither: r.neither || 0, unsure: r.unsure || 0, notext: r.notext || 0, badcrop: r.badcrop || 0 });
@@ -339,6 +371,8 @@ async function api(request, env, url) {
         // A word that settled as bad_crop (README.md, "Bad crop"): the box is a build defect, to be rebuilt, not reader evidence.
         // `clips` names its pictures (a pick task's line and word, a gutter task's crop) so the rebuild can find them.
         ...(r.outcome === BAD_CROP ? { clips: t.kind === "gutter" ? { crop: t.crop } : { line: t.line, word: t.word } } : {}),
+        // What volunteers typed for a word they judged neither reading right (README.md, "Suggestions"): text only, no contributor.
+        suggestions: suggestions.get(r.id) || [],
         settled: !!r.settled, outcome: r.outcome,
       });
     });
@@ -615,7 +649,7 @@ async function admin(request, env, url) {
     // Everything in D1 as JSON lines, one {"table", "row"} per line, for the nightly backup
     // (backup/README.md). The four reads run as one batch, which D1 runs as one transaction,
     // so tasks' counts and the answers come from the same moment and no row is read twice.
-    const tables = [["languages", "code"], ["tasks", "id"], ["answers", "task_id, contributor"], ["answers_excluded", "task_id, contributor"]];
+    const tables = [["languages", "code"], ["tasks", "id"], ["answers", "task_id, contributor"], ["answers_excluded", "task_id, contributor"], ["suggestions", "task_id, contributor"]];
     const results = await env.DB.batch(tables.map(([table, order]) => env.DB.prepare(`SELECT * FROM ${table} ORDER BY ${order}`)));
     const out = [];
     tables.forEach(([table], k) => { for (const row of results[k].results) out.push(JSON.stringify({ table, row })); });
