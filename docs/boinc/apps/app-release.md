@@ -762,8 +762,12 @@ of its Valid results (the log ties a Valid result to its app version, an Invalid
 the version again at once on the first client error, validate error or invalid result, or if fewer
 than `--validated` results have validated after `--max-hours`. With `--validated` valid results it
 ends, leaving the version released. Every action and poll goes to
-`/root/release-window/release-window-av<ID>-<time>.jsonl`. Exit status: 0 qualified, 2 held on a
-failure, 3 held on expiry, 1 tool error (read the journal: a failed hold leaves the version released).
+`/root/release-window/release-window-av<ID>-<time>.jsonl`. A read after the deadline can't qualify:
+expiry is checked first. Any other exit after the release (Ctrl-C, SIGTERM, SIGHUP, a failed command
+or a journal write failure) holds the version again before the tool exits, and that hold doesn't
+depend on the journal; the print-only run returns at once. Exit status: 0 qualified, 2 held on a
+failure, 3 held on expiry, 1 stopped or a tool error (held again; if even that hold fails, stderr
+says so and the version must be held by hand).
 
 `nvidia_vulkan_6gb_8b` on `windows_x86_64` is built and published the same way, with
 `--plan-class nvidia_vulkan_6gb_8b`. The Windows build was checked on the Windows 11 test VM's

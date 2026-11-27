@@ -19,6 +19,7 @@ Exit status: 0 qualified, 2 held on a failure, 3 held when the window expired, 1
 import argparse
 import json
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -57,19 +58,27 @@ def valid_in_log(lines, app_version):
 
 
 def decide(outcomes, validated, now, deadline):
-    """'fail', 'qualified', 'expired' or None (keep watching) from an app-version-outcomes document."""
+    """'fail', 'expired', 'qualified' or None (keep watching) from an app-version-outcomes document.
+    Expiry comes before qualification: a read that lands after the deadline can't qualify."""
     if outcomes["client_errors"] or outcomes["validate_errors"] or outcomes["invalid"]:
         return "fail"
-    if outcomes["valid"] >= validated:
-        return "qualified"
     if now >= deadline:
         return "expired"
+    if outcomes["valid"] >= validated:
+        return "qualified"
     return None
+
+
+class Stop(Exception):
+    """A signal ended the window; the cleanup holds the version again."""
 
 
 class Window:
     def __init__(self, args, run=subprocess.run, clock=time.time, sleep=time.sleep, log=VALIDATOR_LOG):
         self.args, self.run, self.clock, self.sleep, self.log = args, run, clock, sleep, log
+        # Set once a release may have changed the database; cleared by a confirmed hold or by
+        # qualification. While set, every exit holds the version again.
+        self.exposed = False
         self.journal = Path(args.journal_dir) / f"release-window-av{args.app_version}-{int(clock())}.jsonl"
 
     def note(self, event, **fields):
@@ -85,10 +94,33 @@ class Window:
         if not self.args.apply:
             self.note(f"would_{action}", reason=reason, command=cmd)
             return
+        if action == "release":
+            self.exposed = True
         done = self.run(cmd, capture_output=True, text=True)
+        if action == "hold" and done.returncode == 0:
+            self.exposed = False
         self.note(action, reason=reason, returncode=done.returncode, stderr=(done.stderr or "")[-400:])
         if done.returncode != 0:
             raise RuntimeError(f"app-version-hold.php --action {action} failed")
+
+    def cleanup(self, reason):
+        """Hold again after any exit that didn't qualify, without depending on the journal."""
+        if not self.exposed:
+            return
+        try:
+            done = self.run(hold_cmd(self.args.app_version, "hold"), capture_output=True, text=True)
+            ok = done.returncode == 0
+        except Exception as error:  # the hold itself couldn't start
+            ok, done = False, None
+            print(f"release-window: cleanup hold failed to start: {error}", file=sys.stderr)
+        if ok:
+            self.exposed = False
+        try:
+            self.note("cleanup_hold", reason=reason, ok=ok,
+                      returncode=None if done is None else done.returncode)
+        except Exception:
+            print(f"release-window: cleanup hold {'done' if ok else 'FAILED'} ({reason}); "
+                  "the journal could not be written", file=sys.stderr)
 
     def outcomes(self, since):
         done = self.run([*STEP, "--var", f"APP_VERSION_ID={self.args.app_version}", "--var", f"SINCE_UNIX={since}"],
@@ -110,17 +142,38 @@ class Window:
         return valid_in_log(data.decode("utf-8", "replace").splitlines(), self.args.app_version), offset + len(data)
 
     def run_window(self):
+        """Run the window; every exit that doesn't qualify after a release holds the version again."""
+        previous = {}
+
+        def stop(signum, _frame):
+            raise Stop(signal.Signals(signum).name)
+        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            previous[sig] = signal.signal(sig, stop)
+        reason = "window ended"
+        try:
+            return self.watch()
+        except BaseException as error:  # KeyboardInterrupt, Stop, OSError, RuntimeError...
+            reason = f"{type(error).__name__}: {error}"
+            if not isinstance(error, (Exception, Stop, KeyboardInterrupt)):
+                raise
+            return 1
+        finally:
+            self.cleanup(reason)
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+
+    def watch(self):
         start = int(self.clock())
         deadline = start + self.args.max_hours * 3600
         offset = self.log.stat().st_size if self.log.exists() else 0
         self.note("window_open", validated=self.args.validated, max_hours=self.args.max_hours)
         self.act("release", "window opened")
+        if not self.args.apply:
+            self.note("dry_run_stops_here")
+            return 0
         seen = set()
         while True:
             self.sleep(self.args.poll_secs)
-            if not self.args.apply:
-                self.note("dry_run_stops_here")
-                return 0
             new, offset = self.log_valid(offset)
             seen |= new
             try:
@@ -139,6 +192,7 @@ class Window:
                 self.act("hold", f"fewer than {self.args.validated} valid results in {self.args.max_hours} h")
                 return 3
             if verdict == "qualified":
+                self.exposed = False
                 self.note("window_qualified", valid=outcomes["valid"])
                 return 0
 
@@ -160,12 +214,7 @@ def arguments(argv=None):
 
 def main(argv=None):
     args = arguments(argv)
-    window = Window(args)
-    try:
-        return window.run_window()
-    except RuntimeError as error:
-        window.note("tool_error", error=str(error))
-        return 1
+    return Window(args).run_window()
 
 
 if __name__ == "__main__":
