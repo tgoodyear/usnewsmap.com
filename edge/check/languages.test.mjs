@@ -8,7 +8,7 @@ import { readFileSync, readdirSync } from "node:fs";
 
 const dir = new URL("./languages/", import.meta.url);
 const files = readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
-const KNOWN = new Set(["dir", "drop_examples", "equivalents", "glyph_font", "glyph_ligatures", "glyphs", "guidance", "insert_chars", "intro", "labels", "marks", "min_examples", "name", "notes", "question", "rules", "title"]);
+const KNOWN = new Set(["by_paper", "confusions", "dir", "drop_examples", "equivalents", "glyph_font", "glyph_ligatures", "glyphs", "guidance", "insert_chars", "intro", "labels", "links", "marks", "min_examples", "name", "notes", "question", "rules", "title"]);
 // The period typefaces public/style.css bundles for letter keys, and public/app.js accepts in a key (KEY_FONTS there).
 const KEY_FONTS = ["UnifrakturMaguntia", "IM Fell English"];
 const strings = (obj) => obj && typeof obj === "object" && !Array.isArray(obj) && Object.values(obj).every((v) => typeof v === "string" && v);
@@ -42,6 +42,24 @@ for (const file of files) {
     }
     for (const key of ["question", "rules"]) if (key in cfg) assert.ok(typeof cfg[key] === "string" && cfg[key].trim(), `${key} is text`);
     if ("guidance" in cfg) assert.ok(Array.isArray(cfg.guidance) && cfg.guidance.every((g) => typeof g === "string" && g.trim()), "guidance is a list of text");
+    // Further reading shown under the intro: https links with plain text.
+    if ("links" in cfg) {
+      assert.ok(Array.isArray(cfg.links) && cfg.links.length > 0, "links is a list");
+      for (const l of cfg.links) {
+        assert.deepEqual(Object.keys(l).sort(), ["href", "text"], "a link has href and text");
+        assert.match(l.href, /^https:\/\/[^\s"<>]+$/, `${l.href} is an https address`);
+        assert.ok(typeof l.text === "string" && l.text.trim(), "a link has text");
+      }
+    }
+    // One newspaper at a time (README.md): a flag, and the letter pairs the paper's letter guide shows side by side.
+    if ("by_paper" in cfg) assert.equal(cfg.by_paper, true, "by_paper is true or absent");
+    if ("confusions" in cfg) {
+      assert.ok(Array.isArray(cfg.confusions) && cfg.confusions.length > 0, "confusions is a list of pairs");
+      for (const pair of cfg.confusions) {
+        assert.ok(Array.isArray(pair) && pair.length === 2 && pair[0] !== pair[1], `${JSON.stringify(pair)} is a pair of two letters`);
+        for (const g of pair) assert.ok(typeof g === "string" && [...new Intl.Segmenter().segment(g)].length === 1, `${JSON.stringify(g)} is one letter`);
+      }
+    }
     if ("drop_examples" in cfg) assert.equal(typeof cfg.drop_examples, "string");
     // Build options for tools/letter_key.py: the letters of the language's letter key, and the bundled period typeface
     // (public/style.css, @font-face) that draws a letter no page of the paper gave a clean picture of.

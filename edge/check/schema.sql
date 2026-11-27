@@ -55,3 +55,13 @@ CREATE TABLE IF NOT EXISTS suggestions (
   at INTEGER NOT NULL,
   PRIMARY KEY (task_id, contributor)
 );
+
+-- What volunteers write about a word, apart from their answer and any suggestion (README.md, "Notes"). Evidence only: nothing
+-- reads it to settle a word or count an answer. migrations/0008-notes.sql has the same table; the Worker also creates it if missing.
+CREATE TABLE IF NOT EXISTS notes (
+  task_id TEXT NOT NULL,
+  contributor TEXT NOT NULL,
+  text TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (task_id, contributor)
+);

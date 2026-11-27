@@ -1,4 +1,75 @@
 {
+  "by_paper": true,
+  "confusions": [
+    [
+      "n",
+      "u"
+    ],
+    [
+      "f",
+      "ſ"
+    ],
+    [
+      "e",
+      "r"
+    ],
+    [
+      "k",
+      "t"
+    ],
+    [
+      "b",
+      "h"
+    ],
+    [
+      "B",
+      "V"
+    ],
+    [
+      "D",
+      "T"
+    ],
+    [
+      "I",
+      "J"
+    ],
+    [
+      "c",
+      "e"
+    ],
+    [
+      "l",
+      "t"
+    ],
+    [
+      "i",
+      "t"
+    ],
+    [
+      "b",
+      "d"
+    ],
+    [
+      "r",
+      "x"
+    ],
+    [
+      "x",
+      "z"
+    ],
+    [
+      "E",
+      "S"
+    ],
+    [
+      "N",
+      "R"
+    ],
+    [
+      "a",
+      "ä"
+    ]
+  ],
   "equivalents": {
     "ſ": "s",
     "⸗": "-",
@@ -107,7 +178,21 @@
     "ꝛ",
     "⸗"
   ],
-  "intro": "These words come from German-language newspapers printed in the United States in the 1800s and early 1900s, held by the Library of Congress. They are printed in Fraktur, a blackletter type. The long ſ looks like an f without the crossbar, and r, x, k, t, B and V can look alike. The long ſ and the round s count as the same letter, so they are never highlighted.",
+  "intro": "These words come from German-language newspapers printed in the United States in the 1800s and early 1900s, held by the Library of Congress. They are printed in Fraktur, a blackletter type. Each paper's type differs a little, so the words come one newspaper at a time, with a guide to how that paper prints each letter. The machines most often mix up n and u, f and the long ſ (the long ſ has a nub only on the left of its stem, where f has a crossbar right through it), e and r, k and t, b and h, B and V, and D and T. The long ſ and the round s count as the same letter, so they are never highlighted. Capital I and J have one shape in most Fraktur type (they were long one letter), so if the readings differ only in I against J, pick Can't tell.",
+  "links": [
+    {
+      "href": "https://script.byu.edu/german-handwriting/alphabet/gothic-typefaces/lowercase",
+      "text": "Fraktur small letters, printed in many typefaces (BYU Script Tutorial)"
+    },
+    {
+      "href": "https://script.byu.edu/german-handwriting/alphabet/gothic-typefaces/uppercase",
+      "text": "Fraktur capitals, printed in many typefaces (BYU Script Tutorial)"
+    },
+    {
+      "href": "https://en.wikipedia.org/wiki/Fraktur",
+      "text": "Fraktur on Wikipedia"
+    }
+  ],
   "name": "German",
   "title": "German newspapers"
 }

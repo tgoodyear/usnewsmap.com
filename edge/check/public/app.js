@@ -14,6 +14,14 @@ let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = 
 const INSERT_CHARS = ["½", "¼", "¾", "⅓", "⅔", "⅛", "⅜", "⅝", "⅞"];
 const CHARSOPEN = "usnm-check-chars"; // "1" when the visitor opened the character buttons under the suggestion box
 let suggestFor = null, suggestDraft = "", suggestOpening = null, suggestSending = null;
+// A note on a word (noteBox): free text, apart from the answer and from a suggestion, for anything a volunteer wants to tell us
+// about this word (why they chose, what they're unsure of, what more they'd need to see). Any task kind has it, and saving it
+// neither answers nor moves on. Worker: POST /api/notes, max NOTE_MAX. noteFor is the word the box is open on; noteDraft keeps
+// what was typed through a re-render and is dropped when the word changes. noteOpening is the object made each time the box
+// opens, as suggestOpening is: a save that finishes after the word changed or the box was closed doesn't touch what is on
+// screen then. noteDone holds the words that got a note on this page, so the button says "Edit note" when Back returns to one.
+let noteFor = null, noteDraft = "", noteOpening = null, noteSending = null;
+const noteDone = new Set();
 // On a slow connection an answer is saved in the background and the next word, fetched while this one was shown, appears at once.
 // `pending` holds answers not yet saved, oldest first; `ahead` holds the next words fetched for the word now shown; `stale` is set
 // when the Worker says this page is out of date, and stops answering until a reload.
@@ -24,6 +32,7 @@ const counted = new Set(); // words answered on this page, so a changed answer i
 // Revision 2 draws a gutter task's leaning line (line.x1); the Worker refuses answers to such a task from an older page.
 const DISPLAY = 2;
 const SUGGEST_MAX = 200;
+const NOTE_MAX = 1000;
 
 let memory = {};
 function store(k, v) {
@@ -470,6 +479,157 @@ function toggleKey() {
   if (panel) { panel.hidden = !keyOpen; if (keyOpen && !panel.dataset.filled) fillKey(panel, task); }
 }
 
+// ---------- one newspaper at a time (README.md, "One newspaper at a time") ----------
+
+// A language with `by_paper` serves its words one newspaper at a time, so a volunteer gets used to one paper's type, starting
+// with the paper that has the most open words. The visitor can pick another paper, or any. Above the word is the paper's
+// letter guide: its letters as printed in that paper, cut from words both readings agree on, merged from the letter keys of
+// the paper's pages (README.md, "Letter key"), with the letter pairs the machines confuse (`confusions`) side by side first.
+// Like the letter key, it only helps the eye and changes nothing about the readings or the answers.
+const PAPERSEL = "usnm-check-paper-"; // + language code: the paper the visitor picked in this browser ("*" for any)
+const GUIDEOPEN = "usnm-check-guide"; // "1" or "0": the visitor opened or closed the letter guide in this browser
+let papers = [], paper = "", guideOpen = null, guideFor = null;
+const done = new Set(); // papers that had no word left for this visitor on this page
+const paperOfTask = (t) => (t && typeof t.page === "string" ? t.page.split("/")[0] : "");
+const paperInfo = (p = paper) => papers.find((x) => x.paper === p) || null;
+const nextPaper = () => papers.find((x) => x.paper !== paper && x.open > 0 && !done.has(x.paper)) || null;
+function guideShown() {
+  if (guideOpen === null) { const v = store(GUIDEOPEN); guideOpen = v === null ? !(window.matchMedia && window.matchMedia("(max-width: 600px)").matches) : v === "1"; }
+  return guideOpen;
+}
+
+async function loadPapers() {
+  try { papers = await getJSON("/api/papers?lang=" + encodeURIComponent(lang)); } catch { papers = []; }
+  if (!Array.isArray(papers)) papers = [];
+  papers = papers.filter((x) => x && typeof x.paper === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(x.paper));
+  if (!papers.length) return;
+  const kept = store(PAPERSEL + lang);
+  paper = kept === "*" ? "" : kept && papers.some((x) => x.paper === kept && x.open > 0) ? kept : (papers.find((x) => x.open > 0) || papers[0]).paper;
+  renderPaperBar();
+}
+
+function renderPaperBar() {
+  const bar = $("paperbar"); bar.textContent = "";
+  const label = document.createElement("label"); label.htmlFor = "paper"; label.textContent = "Newspaper ";
+  const sel = document.createElement("select"); sel.id = "paper";
+  for (const x of papers) {
+    const o = document.createElement("option"); o.value = x.paper;
+    o.textContent = `${x.name} (${x.open.toLocaleString()} open)`; o.selected = x.paper === paper; sel.appendChild(o);
+  }
+  const any = document.createElement("option"); any.value = "*"; any.textContent = "Any newspaper, mixed"; any.selected = !paper; sel.appendChild(any);
+  sel.addEventListener("change", () => setPaper(sel.value === "*" ? "" : sel.value));
+  label.appendChild(sel);
+  const tog = document.createElement("button"); tog.type = "button"; tog.className = "small"; tog.id = "toggle-guide";
+  tog.textContent = "Letter guide (G)"; tog.setAttribute("aria-controls", "guide"); tog.setAttribute("aria-expanded", String(guideShown()));
+  tog.hidden = !paper; tog.addEventListener("click", toggleGuide);
+  const hint = document.createElement("span"); hint.className = "muted"; hint.id = "paper-hint";
+  hint.textContent = paper ? "Words come from this paper only, so you can get used to its type." : "Words come from every paper.";
+  const row = document.createElement("div"); row.className = "paperrow"; row.append(label, tog, hint);
+  const panel = document.createElement("div"); panel.className = "letterkey guide"; panel.id = "guide";
+  panel.setAttribute("role", "region"); panel.setAttribute("aria-label", "Letter guide: letters as printed in this newspaper");
+  panel.hidden = !paper || !guideShown();
+  bar.append(row, panel); bar.hidden = false;
+  guideFor = null;
+  if (!panel.hidden) fillGuide(panel);
+}
+
+// Leaving the word shown for another paper's: it isn't answered (a word answered Neither joins the history, as Skip does).
+// If the new paper's first word doesn't load, the word shown stays, so the picker and guide go back to its paper.
+async function setPaper(p) {
+  if (busy || stale) { const sel = $("paper"); if (sel) sel.value = paper || "*"; return; }
+  const was = paper;
+  paper = p; store(PAPERSEL + lang, p || "*"); done.delete(p);
+  if (task && suggestFor === task.id) { history.push({ task, choice: "neither" }); if (history.length > 50) history.shift(); }
+  renderPaperBar();
+  await next(controlFocused(), null, undefined, false);
+  if (failed && task && paperOfTask(task) !== paper) { paper = was; store(PAPERSEL + lang, was || "*"); renderPaperBar(); markGuide(task); }
+}
+
+function toggleGuide() {
+  if (!paper) return;
+  guideOpen = !guideShown(); store(GUIDEOPEN, guideOpen ? "1" : "0");
+  const panel = $("guide"), tog = $("toggle-guide");
+  if (tog) tog.setAttribute("aria-expanded", String(guideOpen));
+  if (panel) { panel.hidden = !guideOpen; if (guideOpen && guideFor !== paper) fillGuide(panel); }
+}
+
+// The paper's letters, from the maps of its pages' letter keys: for each letter up to three pictures, taken in turn from
+// different pages, from a page's own print (level "page") first, else what a key took from the paper's other pages, else the
+// letter in the period typeface. A letter no map has is left out, except the confusion pairs, drawn in the typeface.
+async function fillGuide(panel) {
+  const p = paper, info = paperInfo(p);
+  guideFor = p; panel.textContent = "Loading the letter guide…";
+  const maps = [];
+  for (const k of (info ? info.keys : []).slice(0, 12)) {
+    try {
+      const m = await keyMap(k);
+      if (m && typeof m.sprite === "string" && /^[A-Za-z0-9._\-/]{1,300}$/.test(m.sprite) && !m.sprite.includes("..") && Array.isArray(m.glyphs)) maps.push(m);
+    } catch { /* a page whose map didn't load gives no pictures */ }
+  }
+  if (paper !== p || !panel.isConnected) return;
+  const order = [], pics = new Map(); // glyph -> {page: [[...from map 0], [...map 1]], other: same}
+  let font = null;
+  maps.forEach((m, mi) => {
+    if (!font && KEY_FONTS.includes(m.font)) font = m.font;
+    const scale = 34 / (m.h || 34);
+    for (const g of m.glyphs) {
+      if (!g || typeof g.g !== "string") continue;
+      if (!pics.has(g.g)) { pics.set(g.g, { page: [], other: [] }); order.push(g.g); }
+      const crops = (Array.isArray(g.crops) ? g.crops : []).filter((c) => Array.isArray(c) && c.length >= 3).map((c) => ({ m, scale, c: c.map(Number) }));
+      if (!crops.length) continue;
+      const side = pics.get(g.g)[g.level === "page" ? "page" : "other"];
+      side[mi] = (side[mi] || []).concat(crops);
+    }
+  });
+  // In turn from each page: the first picture of every page, then the second, so three pictures show three pages where they can.
+  const pick = (lists) => { const out = [], ls = lists.filter(Boolean); for (let i = 0; out.length < 3 && ls.some((l) => i < l.length); i++) for (const l of ls) if (i < l.length && out.length < 3) out.push(l[i]); return out; };
+  const cell = (g) => {
+    const got = pics.get(g), crops = got ? (pick(got.page).length ? pick(got.page) : pick(got.other)) : [];
+    const el = document.createElement("span"); el.className = "kg"; el.dataset.g = g;
+    el.setAttribute("role", "group"); el.setAttribute("aria-label", crops.length ? `${g}, as printed in this paper` : `${g}, drawn in a period typeface; no clean print of it in this paper yet`);
+    const l = document.createElement("span"); l.className = "kl"; l.lang = lang; l.textContent = g; l.setAttribute("aria-hidden", "true"); el.appendChild(l);
+    if (!crops.length) {
+      const f = document.createElement("span"); f.className = "kf"; f.lang = lang; f.textContent = g; f.setAttribute("aria-hidden", "true");
+      f.style.fontFamily = `"${font || "UnifrakturMaguntia"}", var(--font-script)`; el.appendChild(f);
+      el.title = `${g}: a period typeface (no clean print of it in this paper yet)`;
+      return el;
+    }
+    for (const { m, scale, c: [x, y, w] } of crops) {
+      const im = document.createElement("span"); im.className = "kc"; im.setAttribute("aria-hidden", "true");
+      Object.assign(im.style, { width: w * scale + "px", backgroundImage: `url("/clips/${m.sprite}")`, backgroundPosition: `${-x * scale}px ${-y * scale}px`, backgroundSize: `${(m.w || 0) * scale}px auto` });
+      el.appendChild(im);
+    }
+    el.title = `${g}: printed in this paper`;
+    return el;
+  };
+  panel.textContent = "";
+  const pairs = (Array.isArray(cfg.confusions) ? cfg.confusions : []).filter((x) => Array.isArray(x) && x.length === 2);
+  if (pairs.length) {
+    const h = document.createElement("p"); h.className = "guide-h"; h.textContent = "Letters the machines mix up, as this paper prints them:"; panel.appendChild(h);
+    const box = document.createElement("div"); box.className = "guide-pairs";
+    for (const [x, y] of pairs) { const pr = document.createElement("span"); pr.className = "guide-pair"; pr.append(cell(x), cell(y)); box.appendChild(pr); }
+    panel.appendChild(box);
+  }
+  if (order.length) {
+    const all = document.createElement("details"); all.className = "guide-all";
+    const sum = document.createElement("summary"); sum.textContent = "Every letter in this paper"; all.appendChild(sum);
+    const box = document.createElement("div"); box.className = "guide-letters";
+    for (const g of order) box.appendChild(cell(g));
+    all.appendChild(box); panel.appendChild(all);
+  } else {
+    const n = document.createElement("p"); n.className = "muted"; n.textContent = "No pictures from this paper yet: the letters above are drawn in a period typeface."; panel.appendChild(n);
+  }
+  if (task) markGuide(task);
+}
+
+// Outlines, in the guide, the letters in question in the word shown.
+function markGuide(t) {
+  const panel = $("guide");
+  if (!panel) return;
+  const hot = t && !isGutter(t) && !isCover(t) ? disputed(t) : new Set();
+  for (const el of panel.querySelectorAll(".kg")) el.classList.toggle("disputed", hot.has(el.dataset.g));
+}
+
 function toggleLine() {
   if (!isGutter(task)) return;
   lineShown = !lineShown;
@@ -487,6 +647,7 @@ function render(prev) {
   $("neither").disabled = $("unsure").disabled = $("notext").disabled = $("badcrop").disabled = $("skip").disabled = !live;
   // A column gutter task has only yes, no and can't tell, and Bad crop, which every task has.
   // A cover task has yes, no, can't tell, not text and Bad crop.
+  noteButton(live);
   $("neither").hidden = isGutter(task) || isCover(task);
   $("notext").hidden = isGutter(task);
   if (task) $("badcrop-help").textContent = isGutter(task) ? GUTTER_BADCROP_HELP : isCover(task) ? COVER_BADCROP_HELP : BADCROP_HELP;
@@ -503,7 +664,23 @@ function render(prev) {
     const s = document.createElement("strong"); s.textContent = "No words left for you";
     d.append(s, document.createTextNode("You've answered every open word, or the rest have enough answers. Thank you. Check back later for more."));
     // Skipped words are left out for the page's life; they may still be open, so offer them again rather than say none are left.
-    if (skipped.length) {
+    if (paper) {
+      // One newspaper at a time: this paper has nothing left for this visitor; offer the next one with open words.
+      const info = paperInfo(), after = nextPaper();
+      d.lastChild.textContent = `You've answered every open word from ${info ? info.name : "this newspaper"} that you were given. Thank you. `;
+      if (after) {
+        const go = document.createElement("button"); go.type = "button"; go.className = "small"; go.id = "next-paper";
+        go.textContent = `Go on to ${after.name}`; go.addEventListener("click", () => setPaper(after.paper));
+        d.appendChild(go);
+      }
+      if (skipped.length) d.appendChild(document.createTextNode(" "));
+    }
+    if (skipped.length && paper) {
+      const again = document.createElement("button"); again.type = "button"; again.className = "small"; again.id = "retry";
+      again.textContent = `Show ${skipped.length === 1 ? "1 skipped word" : skipped.length + " skipped words"}`;
+      again.addEventListener("click", async () => { const keep = skipped; skipped = []; await next(true); if (failed && !task) { skipped = keep.concat(skipped); render(); } });
+      d.appendChild(again);
+    } else if (skipped.length) {
       d.lastChild.textContent = `You've answered or skipped every open word you were given. Thank you. ${skipped.length === 1 ? "1 skipped word" : skipped.length + " skipped words"} may still need answers. `;
       const again = document.createElement("button"); again.type = "button"; again.className = "small"; again.id = "retry";
       again.textContent = "Show skipped words"; // A failed fetch puts the skipped words back, so the button stays offered next to the error.
@@ -522,6 +699,7 @@ function render(prev) {
   const t = task;
   if (isGutter(t) || isCover(t)) {
     (isGutter(t) ? renderGutter : renderCover)(card, t, prev);
+    if (noteFor === t.id) card.appendChild(noteBox(t));
     if (t.source) {
       const src = document.createElement("a"); src.href = t.source; src.target = "_blank"; src.rel = "noopener"; src.className = "label"; src.textContent = "See the whole page";
       card.appendChild(src);
@@ -555,7 +733,9 @@ function render(prev) {
   });
   card.appendChild(opts);
   renderKey(card, t);
+  markGuide(t);
   if (suggestFor === t.id) card.appendChild(suggestBox(t));
+  if (noteFor === t.id) card.appendChild(noteBox(t));
   if (t.source) {
     const src = document.createElement("a"); src.href = t.source; src.target = "_blank"; src.rel = "noopener"; src.className = "label"; src.textContent = "See the whole page";
     card.appendChild(src);
@@ -647,6 +827,84 @@ function suggestBox(t) {
   return box;
 }
 
+// The note box (any task kind). Saving keeps the word on screen: the box closes and the button reads "Edit note". Enter is a
+// newline; Ctrl or Cmd+Enter saves. A failed save keeps the box and the text. The text is not prefilled when a word that already
+// has a note is shown again, since the page doesn't ask the Worker for it; a second note replaces the first.
+function noteBox(t) {
+  const box = document.createElement("div"); box.className = "note"; box.id = "note-box";
+  const label = document.createElement("label"); label.htmlFor = "note-text"; label.textContent = "Your note on this word (optional)";
+  const hint = document.createElement("p"); hint.className = "how hint"; hint.id = "note-hint";
+  hint.textContent = "Anything that helps: why you chose, what you're unsure of (I or J?), or what more you'd need to see. Notes are published with the answers, so leave out names and contact details.";
+  const input = document.createElement("textarea");
+  // No maxLength, as in suggestBox: it counts UTF-16 units, not the code points the Worker counts.
+  Object.assign(input, { id: "note-text", dir: "auto", lang, rows: 4, autocomplete: "off", spellcheck: false });
+  input.setAttribute("aria-describedby", "note-hint");
+  input.value = noteDraft;
+  if (noteSending && noteSending === noteOpening) input.readOnly = true;
+  input.addEventListener("input", () => { noteDraft = input.value; });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); sendNote(t.id); } });
+  const row = document.createElement("div"); row.className = "note-buttons";
+  const save = document.createElement("button"); save.type = "button"; save.className = "small"; save.id = "note-save"; save.textContent = "Save note";
+  if (input.readOnly) save.disabled = true;
+  save.addEventListener("click", () => sendNote(t.id));
+  const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "small"; cancel.id = "note-cancel"; cancel.textContent = "Cancel";
+  cancel.addEventListener("click", () => closeNote(true));
+  row.append(save, cancel);
+  box.append(label, hint, input, row);
+  return box;
+}
+
+// The button's wording and state, set on every render and after a save. "Edit note" once this page has saved one for the word.
+function noteButton(live = !!task && !busy && !fontFailed && !stale) {
+  const b = $("note"); if (!b) return;
+  b.disabled = !live;
+  b.textContent = (task && noteDone.has(task.id) ? "Edit note" : "Add a note") + " (N)";
+  b.setAttribute("aria-expanded", String(!!task && noteFor === task.id));
+}
+
+function closeNote(drop) {
+  if (noteSending && noteSending === noteOpening) return; // a save is in flight: it closes the box when it has answered
+  noteFor = null; noteOpening = null; if (drop) noteDraft = "";
+  render(shownPrev);
+  const b = $("note"); if (b && !b.disabled) b.focus({ preventScroll: true });
+}
+
+// The button and key N: open the box on the word shown, or close it again (the text typed stays until the word changes).
+function toggleNote() {
+  if (!task || busy || fontFailed || stale) return;
+  if (noteFor === task.id) { closeNote(false); return; }
+  noteFor = task.id; noteOpening = {}; render(shownPrev); // a draft hidden with N comes back; a new word or Cancel cleared it
+  const box = $("note-text"); if (box) box.focus();
+}
+
+async function sendNote(id) {
+  const opening = noteOpening;
+  if (busy || !opening || noteFor !== id || noteSending === opening) return;
+  const input = $("note-text");
+  // the same normalising as the Worker's cleanNote, so the length checked here is the length it counts
+  const text = input ? input.value.normalize("NFC").replace(/\r\n?/g, "\n").replace(/\n{3,}/g, "\n\n").trim() : "";
+  if (!text) { status("Write a note first, or Cancel.", true); return; }
+  if (Array.from(text).length > NOTE_MAX) { status(`A note is at most ${NOTE_MAX} characters.`, true); return; }
+  const save = $("note-save");
+  noteSending = opening; if (save) save.disabled = true; if (input) input.readOnly = true;
+  try {
+    await authed("/api/notes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: id, text }) });
+  } catch (e) {
+    if (noteOpening === opening) {
+      // the box drawn now, which a re-render during the save may have replaced
+      noteSending = null;
+      const nowSave = $("note-save"), nowInput = $("note-text");
+      if (nowSave) nowSave.disabled = false; if (nowInput) nowInput.readOnly = false;
+      status("Your note wasn't saved: " + e.message, true);
+    }
+    return;
+  } finally { if (noteSending === opening) noteSending = null; }
+  noteDone.add(id);
+  // Only if the box is still the one this save came from: a word that changed meanwhile keeps its own screen.
+  if (noteOpening === opening && noteFor === id) { noteFor = null; noteOpening = null; noteDraft = ""; render(shownPrev); status("Note saved."); const b = $("note"); if (b && !b.disabled) b.focus({ preventScroll: true }); }
+  else noteButton();
+}
+
 // An empty box just moves on. A failed save keeps the word and the text, so it can be sent again or skipped. One save at a time:
 // Enter or Send during a save does nothing, and the box is locked until the save has answered.
 async function sendSuggestion(id) {
@@ -728,6 +986,7 @@ async function fetchNext(also = []) {
     await new Promise((ok) => drained.push(ok));
   }
   const q = new URLSearchParams({ lang });
+  if (paper) q.set("paper", paper);
   const skip = [...new Set([...also, ...pending.map((p) => p.id), ...skipped.slice().reverse()])].slice(0, SKIP_MAX);
   if (skip.length) q.set("skip", skip.join(","));
   return authed("/api/next?" + q);
@@ -766,6 +1025,7 @@ function navStatus(text, error) { if (!stale && !(checking && !error)) status(te
 // `after` is the word being left: the first word fetched ahead for it is shown; with `keepRest`, the others stay ahead.
 async function next(had = controlFocused(), after = null, pressed, keepRest = true) {
   suggestFor = null; suggestDraft = ""; suggestOpening = null;
+  noteFor = null; noteDraft = ""; noteOpening = null; noteSending = null;
   const list = after && ahead && ahead.forId === after ? ahead.list : [];
   const first = list[0], rest = keepRest ? list.slice(1) : [];
   dropAhead(first ? [first, ...rest] : []);
@@ -777,6 +1037,7 @@ async function next(had = controlFocused(), after = null, pressed, keepRest = tr
     const r = first ? await first.p.then((x) => { used = true; return x; }, () => fetchNext()) : await fetchNext();
     // A new word or crop starts with its line drawn: "Hide the line" applies to one crop only.
     task = r.task; lineShown = true; answered = Math.max(answered, r.answered); loaded = true; failed = false; navStatus("");
+    if (!task && paper) done.add(paper);
     fontFailed = !(await fontReady(task));
     // The loading message may have appeared while the font loaded; the word is ready now, so it goes.
     navStatus(fontFailed ? "The font for this word didn't load." : "", fontFailed);
@@ -863,8 +1124,13 @@ async function choose(choice) {
 function back() {
   if (!history.length || busy || stale) return;
   suggestFor = null; suggestDraft = ""; suggestOpening = null;
+  noteFor = null; noteDraft = ""; noteOpening = null; noteSending = null;
   const had = controlFocused();
-  const h = history.pop(); task = h.task; lineShown = true; render(h.choice); keepFocus(had); prefetch();
+  const h = history.pop(); task = h.task; lineShown = true;
+  // A word answered before the paper was changed comes back under its own paper, picker and letter guide.
+  const from = paperOfTask(h.task);
+  if (paper && from && from !== paper && paperInfo(from)) { paper = from; store(PAPERSEL + lang, from); renderPaperBar(); }
+  render(h.choice); keepFocus(had); prefetch();
   status("Change your answer, or pick the same one to keep it.");
 }
 
@@ -886,6 +1152,16 @@ async function work(code) {
   catch { $("card").textContent = "We don't have this language. "; const a = document.createElement("a"); a.href = "/"; a.textContent = "See the list"; $("card").appendChild(a); return; }
   document.title = `${cfg.name}: USNewsMap letter check`;
   $("intro").textContent = cfg.intro || "";
+  // Further reading under the intro (`links`): https addresses only, each opening in a new tab.
+  const links = (Array.isArray(cfg.links) ? cfg.links : []).filter((l) => l && typeof l.text === "string" && /^https:\/\/[^\s"<>]+$/.test(l.href || ""));
+  if (links.length) {
+    const p = $("intro-links"); p.textContent = "Further reading: ";
+    links.forEach((l, i) => {
+      if (i) p.appendChild(document.createTextNode(" · "));
+      const a = document.createElement("a"); a.href = l.href; a.target = "_blank"; a.rel = "noopener"; a.textContent = l.text; p.appendChild(a);
+    });
+    p.hidden = false;
+  }
   // A language may carry its own rules text and a list of notes for edge cases (the column gutter language does); the others use the page's.
   if (typeof cfg.rules === "string" && cfg.rules) $("rules").textContent = cfg.rules;
   if (Array.isArray(cfg.guidance) && cfg.guidance.length) {
@@ -907,20 +1183,26 @@ async function work(code) {
     $("names-wrap").hidden = false;
   }
   $("skip").addEventListener("click", skip);
+  $("note").addEventListener("click", toggleNote);
   document.addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.target && e.target.id === "suggest-text") return;
+    if (e.target && e.target.tagName === "SELECT") return; // the newspaper picker: its own keys pick a paper
+    if (e.target && e.target.id === "note-text") return; // Enter is a newline there, and N, S and the digits are typed
     if (e.key === "1" || e.key === "2") { const b = $("opt" + e.key); if (b) b.click(); }
     // Key 3 moves the cursor into the box it opens: preventDefault keeps the key from typing a "3" there.
     else if (e.key === "3") { e.preventDefault(); choose("neither"); }
     else if (e.key === "4") choose("unsure");
     else if (e.key === "5") choose("notext");
     else if (e.key === "6") choose("badcrop");
+    else if (e.key === "n" || e.key === "N") { e.preventDefault(); toggleNote(); }
     else if (e.key === "s" || e.key === "S") skip();
     else if (e.key === "l" || e.key === "L") toggleLine();
     else if (e.key === "k" || e.key === "K") toggleKey();
+    else if (e.key === "g" || e.key === "G") toggleGuide();
     else if (e.key === "ArrowLeft" || e.key === "Backspace") back();
   });
+  if (cfg.by_paper) await loadPapers();
   await next();
 }
 
