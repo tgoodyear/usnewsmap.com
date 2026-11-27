@@ -526,6 +526,8 @@ function suggestBox(t) {
   // No maxLength: it counts UTF-16 units, not the code points the Worker counts after NFC, so it would refuse valid text.
   Object.assign(input, { type: "text", id: "suggest-text", dir: "auto", lang, autocomplete: "off", spellcheck: false });
   input.value = suggestDraft;
+  // a box drawn again while its text is being saved stays locked, so nothing typed after the send is silently dropped
+  if (suggestSending && suggestSending === suggestOpening) input.readOnly = true;
   input.addEventListener("input", () => { suggestDraft = input.value; });
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); sendSuggestion(t.id); } });
   // Characters a US keyboard can't type (½ and the other single-character fractions): each button puts its character in the box
@@ -539,7 +541,8 @@ function suggestBox(t) {
       const b = document.createElement("button"); b.type = "button"; b.className = "small char"; b.textContent = ch; b.setAttribute("aria-label", "Insert " + ch);
       b.addEventListener("pointerdown", (e) => e.preventDefault());
       b.addEventListener("click", () => {
-        if (input.readOnly) return;
+        // the opening's save state, not only the input's: a re-render during a save makes a new, writable input
+        if (input.readOnly || suggestSending === suggestOpening) return;
         const at = input.selectionStart ?? input.value.length, to = input.selectionEnd ?? at;
         input.setRangeText(ch, at, to, "end");
         suggestDraft = input.value;

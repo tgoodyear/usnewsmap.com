@@ -634,4 +634,7 @@ test("the suggestion box offers fraction buttons that insert at the cursor and k
   assert.match(appJs, /const chars = Array\.isArray\(cfg\.insert_chars\) \? cfg\.insert_chars : INSERT_CHARS;/);
   assert.match(appJs, /b\.addEventListener\("pointerdown", \(e\) => e\.preventDefault\(\)\);/, "the box keeps focus (and a phone its keyboard)");
   assert.match(appJs, /input\.setRangeText\(ch, at, to, "end"\);\s*suggestDraft = input\.value;/, "inserted at the cursor and kept through a re-render");
+  // a save in flight locks the box, even one drawn again during it (letter names toggled)
+  assert.match(appJs, /if \(input\.readOnly \|\| suggestSending === suggestOpening\) return;/);
+  assert.match(appJs, /if \(suggestSending && suggestSending === suggestOpening\) input\.readOnly = true;/);
 });

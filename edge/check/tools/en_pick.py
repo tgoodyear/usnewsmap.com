@@ -13,13 +13,13 @@ Paths are relative to --root (default: the folder of --pages).
 
 For each crop it takes LoC's words whose box centre is in the crop (ALTO reading order, a line's hyphen kept on its
 last word, as `usnm-ocr-survey alto-crop` does), aligns them with Xiaomi's whitespace-separated words and keeps the
-words where the two differ. A pair is made only when it is certain:
+words where the two differ, comparing them with single-character fractions folded (bt.fold_fractions: 103½ and 1031/2
+agree; report.json counts them as same_once_fractions_folded). A pair is made only when it is certain:
 
   * the two readings agree on most of the crop (--min-agree): if not, they cover different stretches of print;
   * the differing stretch is bracketed by words both readings agree on (a word at the very start or end of a
     crop is cut by the crop's edge), and has as many words on each side, at most --max-block, paired by position;
   * each pair is at least --min-similarity alike (a word one reading split, joined or dropped is not a pair; the whole stretch is left out if any word in it fails);
-  * the two words are not the same once single-character fractions are folded (103½ and 1031/2; bt.fold_fractions);
   * neither word is without letters or digits; with --skip-punctuation-only, a pair whose letters and digits agree is
     left out too (on by default; --keep-punctuation-only to keep them).
 
@@ -212,6 +212,9 @@ def candidates(page: dict, args, root: str, stats: Counter) -> list:
         loc_words = in_crop(words, crop["box"])
         loc = [bt.clean(w["text"]) for w in loc_words]
         xi = bt.clean(crop["xiaomi"]).split()
+        # agreement and alignment use the words with fractions folded (bt.fold_fractions), so 103½ against 1031/2 agrees
+        # and doesn't break the alignment around a real difference next to it; tasks show the words as each OCR wrote them
+        floc, fxi = [bt.fold_fractions(w) for w in loc], [bt.fold_fractions(w) for w in xi]
         stats["loc_words"] += len(loc)
         stats["xiaomi_words"] += len(xi)
         if not loc or not xi:
@@ -220,25 +223,26 @@ def candidates(page: dict, args, root: str, stats: Counter) -> list:
             stats["differing_loc_words"] += len(loc)
             stats["left_out_crop_readings_disagree"] += len(loc)
             continue
-        if SequenceMatcher(None, loc, xi, autojunk=False).ratio() < args.min_agree:
+        if SequenceMatcher(None, floc, fxi, autojunk=False).ratio() < args.min_agree:
             # its differing words count as left out, so the skip rate includes what this rule drops
             stats["crops_left_out_readings_disagree_too_much"] += 1
-            matched = sum(blk.size for blk in SequenceMatcher(None, loc, xi, autojunk=False).get_matching_blocks())
+            matched = sum(blk.size for blk in SequenceMatcher(None, floc, fxi, autojunk=False).get_matching_blocks())
             stats["differing_loc_words"] += len(loc) - matched
             stats["left_out_crop_readings_disagree"] += len(loc) - matched
             continue
         stats["crops_used"] += 1
-        pairs, c = aligned_words(loc, xi, args.min_similarity, args.max_block)
+        pairs, c = aligned_words(floc, fxi, args.min_similarity, args.max_block)
         stats.update(c)
+        # words the two OCRs wrote differently that are the same once folded: agreed, so never a task
+        stats["same_once_fractions_folded"] += sum(
+            loc[i1 + k] != xi[j1 + k]
+            for op, i1, i2, j1, _ in SequenceMatcher(None, floc, fxi, autojunk=False).get_opcodes() if op == "equal"
+            for k in range(i2 - i1))
         tw = truth_for(loc, bt.clean(crop["truth"]).split(), args.min_similarity) if crop.get("truth") else None
         for i, j in pairs:
             wl, wx = loc[i], xi[j]
             if not bt.has_letter(wl) or not bt.has_letter(wx):
                 stats["left_out_no_letters"] += 1
-                continue
-            if bt.fold_fractions(wl) == bt.fold_fractions(wx):
-                # 103½ against 1031/2: the same text, written two ways; nothing for a volunteer to pick
-                stats["left_out_same_fraction"] += 1
                 continue
             if args.skip_punctuation_only and bt.letters_only(wl, {}) == bt.letters_only(wx, {}):
                 stats["left_out_punctuation_only"] += 1

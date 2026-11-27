@@ -128,6 +128,25 @@ class Build(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(d, "out", "clips", task["line"])))
             self.assertFalse(any(k in json.load(open(os.path.join(d, "out", "language.json"))) for k in ("a_is", "private")))
 
+    def test_a_fraction_written_two_ways_neither_is_a_task_nor_hides_the_difference_beside_it(self):
+        # Copilot review on #2181: "at ½ tbe price" against "at 1/2 the price" must still give the tbe/the task
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            Image.new("L", (1000, 500), 255).save(os.path.join(d, "p.jpg"))
+            words = "we paid at ½ tbe price today".split()
+            line = "".join(s(w, 60 * i + 10, 10) for i, w in enumerate(words))
+            open(os.path.join(d, "p.xml"), "w").write(ALTO.format(line1=line, line2=""))
+            page = {"page": "sn1/1900-01-01/ed-1/seq-1", "source": "u", "date": "1900-01-01", "label": "L", "alto": "p.xml",
+                    "image": "p.jpg", "damage_rate": 0.3, "crops": [
+                        {"id": "c1", "box": [0, 0, 1000, 40], "xiaomi": "we paid at 1/2 the price today"}]}
+            open(os.path.join(d, "pages.jsonl"), "w").write(json.dumps(page) + "\n")
+            cfg = os.path.join(HERE, "..", "languages", "en.json")
+            subprocess.run([sys.executable, os.path.join(HERE, "en_pick.py"), "--pages", os.path.join(d, "pages.jsonl"), "--set", "t",
+                            "--language-config", cfg, "--out-dir", os.path.join(d, "out")], check=True, capture_output=True)
+            tasks = [json.loads(l) for l in open(os.path.join(d, "out", "tasks.jsonl"))]
+            self.assertEqual([sorted([t["a"], t["b"]]) for t in tasks], [["tbe", "the"]])
+            self.assertEqual(json.load(open(os.path.join(d, "out", "report.json")))["same_once_fractions_folded"], 1)
+
 
 class Analysis(unittest.TestCase):
     def rows(self):
