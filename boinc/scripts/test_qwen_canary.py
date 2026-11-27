@@ -303,8 +303,8 @@ class PlanPolicyRefresh(unittest.TestCase):
                                       if f[0] not in ("min_wu_id", "max_wu_id")])
         self.assertEqual(amd.findtext("gpu_type"), "ati")
         self.assertIsNotNone(amd.find("opencl"))
-        # Batches 8 and 9: half- and capped full-resolution 8B work (#2168).
-        self.assertEqual((amd.findtext("min_batch"), amd.findtext("max_batch")), ("8", "9"))
+        # Batch 8 only until AMD's usnm_qwen 1.21 qualifies (#2168).
+        self.assertEqual((amd.findtext("min_batch"), amd.findtext("max_batch")), ("8", "8"))
         self.assertEqual(amd.findtext("min_gpu_ram_mb"), "7000")
         self.assertEqual(amd.findtext("ngpus"), "1")
         self.assertNotIn("project_prefs_tag", [f[0] for f in fields(amd)])

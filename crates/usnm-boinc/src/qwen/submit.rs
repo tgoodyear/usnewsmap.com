@@ -771,14 +771,13 @@ mod tests {
             block[tag..tag + block[tag..].find('<').unwrap()].to_owned()
         };
         assert_eq!(max_batch(SIX_GB_8B_PLAN), "8");
-        for class in [
-            "apple_gpu_8b",
-            "nvidia_cuda_8b",
-            "nvidia_vulkan_8b",
-            "intel_vulkan_8b",
-            "amd_vulkan_8b",
-        ] {
+        // The NVIDIA classes take batch 9; Apple, Intel and AMD stay on 8 until each one's
+        // usnm_qwen 1.21 qualifies.
+        for class in ["nvidia_cuda_8b", "nvidia_vulkan_8b"] {
             assert_eq!(max_batch(class), "9", "{class}");
+        }
+        for class in ["apple_gpu_8b", "intel_vulkan_8b", "amd_vulkan_8b"] {
+            assert_eq!(max_batch(class), "8", "{class}");
         }
     }
 
