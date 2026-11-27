@@ -13,7 +13,8 @@ Input (--pages) is JSON lines, one page each:
    "seed": "<why the page is in the set, e.g. known-miss, v3-held, random>"}
 
 Paths are relative to --root (default: the folder of --pages). Each ALTO's page extent is mapped onto the image by
-proportion, as en_pick.parse_alto does.
+proportion, as en_pick.parse_alto does. Our ALTO must have a box per word: a page whose ALTO declares line, block or
+page granularity (processingStepSettings) is left out and counted, since its words carry their block's box.
 
 Blocks come from LoC's ALTO: each TextBlock, cut into chunks of at most --max-lines lines, is one candidate. A chunk
 with fewer than --min-words LoC words is left out, and so is one that mostly overlaps a chunk already taken (LoC
@@ -90,9 +91,28 @@ def blocks(xml: bytes, image_size: tuple) -> list:
     return out
 
 
+class NotWordGeometry(ValueError):
+    """Our ALTO gives its words the box of their line, block or page, so a word's centre says nothing about where it is."""
+
+
+def granularity(root) -> str:
+    """The geometry level stored ALTO declares (`granularity=` in processingStepSettings, as usnm-alto writes it), or
+    "word" when none is declared (Tesseract's ALTO has a box per word)."""
+    for el in root.iter():
+        if _local(el.tag) == "processingStepSettings" and el.text:
+            for line in el.text.splitlines():
+                if line.strip().startswith("granularity="):
+                    return line.strip().split("=", 1)[1].strip()
+    return "word"
+
+
 def words(xml: bytes, image_size: tuple) -> list:
-    """Our words in reading order: {text, box, line}."""
+    """Our words in reading order: {text, box, line}. Raises NotWordGeometry for ALTO whose word boxes are inherited
+    from a line, block or page (crates/usnm-alto/src/boxes.rs): placing those words by centre would empty whole chunks."""
     root = ET.fromstring(xml)
+    g = granularity(root)
+    if g != "word":
+        raise NotWordGeometry(f"granularity={g}")
     sx, sy = _scale(root, image_size)
     out, n = [], -1
     for line in root.iter():
@@ -237,7 +257,12 @@ def main() -> None:
             stats["pages"] += 1
             img = Image.open(os.path.join(root, page["image"])).convert("L")
             loc = blocks(open(os.path.join(root, page["loc_alto"]), "rb").read(), img.size)
-            ours = words(open(os.path.join(root, page["ours_alto"]), "rb").read(), img.size)
+            try:
+                ours = words(open(os.path.join(root, page["ours_alto"]), "rb").read(), img.size)
+            except NotWordGeometry as e:
+                stats["left_out_pages_not_word_geometry"] += 1
+                per_page[page["page"]] = {"seed": page.get("seed"), "left_out": str(e)}
+                continue
             cands = chunks(page, loc, ours, args, stats)
             chosen = pick(cands, args)
             stats["tasks"] += len(chosen)

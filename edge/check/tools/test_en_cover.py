@@ -74,6 +74,16 @@ class Chunks(unittest.TestCase):
         self.assertEqual([c["id"].split("~")[1] for c in cands], ["b0c0", "b0c1"])
         self.assertEqual((stats["left_out_overlap"], stats["left_out_few_words"]), (1, 1))
 
+    def test_our_alto_with_block_geometry_is_refused(self):
+        _, ours = two_columns()
+        for g, refused in (("block", True), ("line", True), ("page", True), ("word", False)):
+            xml = ours.replace(b"<Layout>", f"<Description><Processing><processingStep><processingStepSettings>ocr_engine=x\ngranularity={g}</processingStepSettings></processingStep></Processing></Description><Layout>".encode())
+            if refused:
+                with self.assertRaises(en_cover.NotWordGeometry):
+                    en_cover.words(xml, (2000, 2000))
+            else:
+                self.assertEqual(len(en_cover.words(xml, (2000, 2000))), 36)
+
     def test_pick_keeps_every_low_chunk_and_fills_with_others(self):
         cands = [{"id": f"x~b{i}c0", "ratio": 0.1 if i < 3 else 1.0} for i in range(10)]
 
