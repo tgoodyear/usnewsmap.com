@@ -629,7 +629,7 @@ esac
 if [ "$step" != assess-submit ] && [ "$step" != gold-submit ] && [ "$step" != surya-submit ] &&
   [ "$step" != quality-submit ] && [ "$step" != qwen-submit ] && [ "$step" != train-submit ] &&
   [ "$step" != register-apps ] && [ "$step" != work-volume ] && [ "$step" != batch-inventory ] &&
-  [ "$step" != wu-terminal ] && [ "$step" != host-eligibility ] &&
+  [ "$step" != wu-terminal ] && [ "$step" != host-eligibility ] && [ "$step" != app-version-outcomes ] &&
   [ "$step" != gold-onboard ] && [ "$step" != gold-promote ] && [ "$step" != gold-collect ] && [ "$step" != iris-bundle-submit ] && [ "$step" != iris-bundle-cancel ] &&
   [ "$step" != native-spot ] && [ "$step" != container-spot ]; then
   : "${JOB_ID:?set JOB_ID}" "${HANDOFF_DIR:?}"
@@ -703,7 +703,7 @@ PY
   )
 }
 if [ "$step" = work-volume ] || [ "$step" = batch-inventory ] || [ "$step" = wu-terminal ] ||
-  [ "$step" = host-eligibility ]; then
+  [ "$step" = host-eligibility ] || [ "$step" = app-version-outcomes ]; then
   write_mycnf
   if [ "$step" = wu-terminal ]; then
     validate_handoff_location
@@ -763,6 +763,13 @@ PY
     python3 "$TEMPLATES/host-eligibility.py" --mysql-defaults-file "$mycnf" --database "$DB_NAME" \
       --plan-class-spec "$PROJ/plan_class_spec.xml" --app "${ELIGIBILITY_APP:-usnm_qwen}" \
       --days "${ELIGIBILITY_DAYS:-7}"
+  elif [ "$step" = app-version-outcomes ]; then
+    # Read-only: APP_VERSION_ID's reported results since SINCE_UNIX, by outcome and validate state,
+    # for the release window (boinc/scripts/onprem/release-window.py).
+    [[ "${APP_VERSION_ID:-}" =~ ^[1-9][0-9]{0,9}$ ]] || fail "APP_VERSION_ID is an app_version id"
+    [[ "${SINCE_UNIX:-}" =~ ^[0-9]{1,12}$ ]] || fail "SINCE_UNIX is a Unix time"
+    python3 "$TEMPLATES/app-version-outcomes.py" --mysql-defaults-file "$mycnf" --database "$DB_NAME" \
+      --app-version-id "$APP_VERSION_ID" --since "$SINCE_UNIX"
   else
     python3 "$TEMPLATES/work-volume.py" --mysql-defaults-file "$mycnf" --database "$DB_NAME"
   fi
@@ -1105,5 +1112,5 @@ case "$step" in
   reconcile)
     case "${BRIDGE_FOUND:-}" in present|absent) ;; *) fail "BRIDGE_FOUND must be present or absent" ;; esac
     exec usnm-boinc reconcile --root "$HANDOFF_DIR" --job "$JOB_ID" --found "$BRIDGE_FOUND" ;;
-  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, work-volume, host-eligibility, assess-stage, assess-submit, assess-collect, surya-stage, surya-stage-crops, surya-stage-gold, surya-submit, surya-collect, surya-gold-hyp, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-onboard, gold-promote, gold-collect, gold-trust, gold-bundle, gold-mirror-loc, native-spot, iris-bundle-stage, iris-bundle-submit, iris-bundle-cancel or iris-bundle-collect" ;;
+  *) fail "BRIDGE_STEP must be submit, submit-remote, spool-out, reconcile, register-apps, work-volume, host-eligibility, app-version-outcomes, assess-stage, assess-submit, assess-collect, surya-stage, surya-stage-crops, surya-stage-gold, surya-submit, surya-collect, surya-gold-hyp, surya-summary, quality-stage, quality-submit, quality-collect, quality-summary, qwen-stage, qwen-submit, qwen-summary, qwen-benchmark-prepare, qwen-benchmark-stage, qwen-benchmark-collect, train-prepare, train-submit, train-collect, gold-prepare, gold-submit, gold-onboard, gold-promote, gold-collect, gold-trust, gold-bundle, gold-mirror-loc, native-spot, iris-bundle-stage, iris-bundle-submit, iris-bundle-cancel or iris-bundle-collect" ;;
 esac
