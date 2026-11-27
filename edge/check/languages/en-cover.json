@@ -7,8 +7,8 @@
   ],
   "intro": "These come from English-language newspaper pages in Chronicling America, the Library of Congress's collection of historic American newspapers. A program read each page, and we want to know whether it missed any of the print.",
   "name": "English: missing text",
-  "question": "Does the machine reading include all the words printed in the box? Ignore spelling mistakes: answer No only if words or lines are missing.",
-  "rules": "The box marks a block of print on the page, shown enlarged below it. Under that is the machine reading of the same place. This is not a spelling check: we want to know whether the machine skipped any of the print. Answer No if any words, lines or passages in the box are missing from the reading, even if the rest is perfect. Use Add a note to tell us anything else about a block, such as why you chose or what you're unsure of.",
+  "question": "Does the machine reading include all the words printed in the box? Ignore spelling mistakes and a word or two cut off at the edge of the box: answer No only if a line or more is missing.",
+  "rules": "The box marks a block of print on the page, shown enlarged below it. Under that is the machine reading of the same place. This is not a spelling check: we want to know whether the machine skipped any of the print. Answer No if a line or more of the print in the box (a line, a passage, a column) is missing from the reading, even if the rest is perfect. Use Add a note to tell us anything else about a block, such as why you chose or what you're unsure of.",
   "title": "English newspapers: missing text",
   "unit": "blocks"
 }
