@@ -9,6 +9,9 @@ let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = 
 // word it is open on; suggestDraft keeps what was typed through a re-render. Worker: POST /api/suggestions, max SUGGEST_MAX.
 // suggestOpening is the object made each time the box opens: a save belongs to the opening it started from, so a save that
 // finishes after the box was closed and reopened (Send, Skip, Back, Neither) neither closes the new box nor blocks its Enter key.
+// The characters offered under the box by default (suggestBox): the single-character fractions newspapers print in prices and
+// addresses. The tools compare them with 1/2 typed out as equal (tools/build_tasks.py, fold_fractions).
+const INSERT_CHARS = ["½", "¼", "¾", "⅓", "⅔", "⅛", "⅜", "⅝", "⅞"];
 let suggestFor = null, suggestDraft = "", suggestOpening = null, suggestSending = null;
 // On a slow connection an answer is saved in the background and the next word, fetched while this one was shown, appears at once.
 // `pending` holds answers not yet saved, oldest first; `ahead` holds the next words fetched for the word now shown; `stale` is set
@@ -525,13 +528,33 @@ function suggestBox(t) {
   input.value = suggestDraft;
   input.addEventListener("input", () => { suggestDraft = input.value; });
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); sendSuggestion(t.id); } });
+  // Characters a US keyboard can't type (½ and the other single-character fractions): each button puts its character in the box
+  // at the cursor. A language's `insert_chars` replaces the list (an empty list shows none). pointerdown is cancelled so the box
+  // keeps focus, and a phone keeps its keyboard up.
+  const chars = Array.isArray(cfg.insert_chars) ? cfg.insert_chars : INSERT_CHARS;
+  let pad = null;
+  if (chars.length) {
+    pad = document.createElement("div"); pad.className = "suggest-chars"; pad.setAttribute("role", "group"); pad.setAttribute("aria-label", "Insert a character");
+    for (const ch of chars) {
+      const b = document.createElement("button"); b.type = "button"; b.className = "small char"; b.textContent = ch; b.setAttribute("aria-label", "Insert " + ch);
+      b.addEventListener("pointerdown", (e) => e.preventDefault());
+      b.addEventListener("click", () => {
+        if (input.readOnly) return;
+        const at = input.selectionStart ?? input.value.length, to = input.selectionEnd ?? at;
+        input.setRangeText(ch, at, to, "end");
+        suggestDraft = input.value;
+        input.focus();
+      });
+      pad.appendChild(b);
+    }
+  }
   const row = document.createElement("div"); row.className = "suggest-buttons";
   const send = document.createElement("button"); send.type = "button"; send.className = "small"; send.id = "suggest-send"; send.textContent = "Send";
   send.addEventListener("click", () => sendSuggestion(t.id));
   const skipBox = document.createElement("button"); skipBox.type = "button"; skipBox.className = "small"; skipBox.id = "suggest-skip"; skipBox.textContent = "Skip";
   skipBox.addEventListener("click", () => moveOnFromSuggestion(t.id));
   row.append(send, skipBox);
-  box.append(label, input, row);
+  box.append(label, input, ...(pad ? [pad] : []), row);
   return box;
 }
 

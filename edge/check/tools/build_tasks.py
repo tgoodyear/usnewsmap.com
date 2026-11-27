@@ -53,6 +53,19 @@ BUILD_ONLY = ("drop_examples", "glyph_font", "glyph_ligatures", "glyphs", "min_e
 BIDI_CONTROLS = dict.fromkeys(map(ord, "\u200e\u200f\u061c\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"))
 
 
+# Single-character fractions (½, ¼, ⅞ and the rest of Unicode's vulgar fractions) and the fraction slash, as the same
+# text typed with digits and "/": a volunteer on a US keyboard types 1/2 where the print has ½, and OCR writes either.
+# Only these characters are folded (not NFKC on the whole word, which would also fold ſ, ligatures and superscripts).
+FRACTION_FOLD = {ch: unicodedata.normalize("NFKC", ch).replace("\u2044", "/")
+                 for ch in map(chr, [*range(0xBC, 0xBF), *range(0x2150, 0x2160), 0x2189])}
+FRACTION_FOLD["\u2044"] = "/"
+
+
+def fold_fractions(text: str) -> str:
+    """The text with each single-character fraction written as digits and "/" (½ is 1/2, 103½ is 1031/2)."""
+    return "".join(FRACTION_FOLD.get(ch, ch) for ch in text)
+
+
 def clean(text: str) -> str:
     """NFC, without bidi control characters (some OCR puts a right-to-left mark after a word)."""
     return unicodedata.normalize("NFC", text.translate(BIDI_CONTROLS)).strip()

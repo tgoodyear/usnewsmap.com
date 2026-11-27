@@ -628,3 +628,10 @@ test("Neither matches puts the cursor in the suggestion box, and key 3 doesn't t
   // leaving the word from the box (Enter, Send or Skip) gives the next word's first reading focus, as a focused button would
   assert.match(appJs, /function controlFocused\(\) \{ const a = document\.activeElement; return !!a && \(a\.tagName === "BUTTON" \|\| a\.id === "suggest-text"\); \}/);
 });
+
+test("the suggestion box offers fraction buttons that insert at the cursor and keep the box focused", () => {
+  assert.match(appJs, /const INSERT_CHARS = \["½", "¼", "¾", "⅓", "⅔", "⅛", "⅜", "⅝", "⅞"\];/);
+  assert.match(appJs, /const chars = Array\.isArray\(cfg\.insert_chars\) \? cfg\.insert_chars : INSERT_CHARS;/);
+  assert.match(appJs, /b\.addEventListener\("pointerdown", \(e\) => e\.preventDefault\(\)\);/, "the box keeps focus (and a phone its keyboard)");
+  assert.match(appJs, /input\.setRangeText\(ch, at, to, "end"\);\s*suggestDraft = input\.value;/, "inserted at the cursor and kept through a re-render");
+});

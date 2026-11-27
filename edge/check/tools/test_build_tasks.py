@@ -20,6 +20,17 @@ class Punctuation(unittest.TestCase):
         self.assertNotEqual(bt.letters_only("себс", eq), bt.letters_only("себе.", eq))
 
 
+class Fractions(unittest.TestCase):
+    def test_single_character_fractions_fold_to_digits_and_slash(self):
+        self.assertEqual(bt.fold_fractions("103½"), "1031/2")
+        self.assertEqual(bt.fold_fractions("¼ ¾ ⅞ ⅓"), "1/4 3/4 7/8 1/3")
+        self.assertEqual(bt.fold_fractions("1\u20442"), "1/2")  # the fraction slash
+
+    def test_nothing_else_is_folded(self):
+        for text in ("ſtate", "ﬁne", "x²", "Straße", "1/2"):
+            self.assertEqual(bt.fold_fractions(text), text)
+
+
 class Letters(unittest.TestCase):
     def test_marks_stay_with_their_letter(self):
         self.assertEqual(bt.graphemes("פּאַ"), ["פּ", "אַ"])

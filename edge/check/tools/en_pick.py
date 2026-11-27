@@ -19,6 +19,7 @@ words where the two differ. A pair is made only when it is certain:
   * the differing stretch is bracketed by words both readings agree on (a word at the very start or end of a
     crop is cut by the crop's edge), and has as many words on each side, at most --max-block, paired by position;
   * each pair is at least --min-similarity alike (a word one reading split, joined or dropped is not a pair; the whole stretch is left out if any word in it fails);
+  * the two words are not the same once single-character fractions are folded (103½ and 1031/2; bt.fold_fractions);
   * neither word is without letters or digits; with --skip-punctuation-only, a pair whose letters and digits agree is
     left out too (on by default; --keep-punctuation-only to keep them).
 
@@ -32,7 +33,7 @@ Writes OUT_DIR/clips/en/<set>/{lines,words}/..., OUT_DIR/tasks.jsonl, OUT_DIR/la
 
 A task's `private` holds what must not reach a volunteer before the task settles: `a_is` and `b_is` (`xiaomi` or
 `loc`), the strata (`decade`, `damage_band`, `crop`), and with truth `truth` (`xiaomi`, `loc` or `neither`: which
-reading matches the truth word exactly) with `truth_word`. The Worker keeps `private` off /api/next and out of
+reading matches the truth word exactly, with fractions folded: ½ and 1/2 match) with `truth_word`. The Worker keeps `private` off /api/next and out of
 /api/export until the task settles (edge/check/README.md, "Blind tasks").
 
   python3 en_pick.py --pages pages.jsonl --lang en --set xiaomi-loc-v1 --language-config languages/en.json \
@@ -153,12 +154,14 @@ def aligned_words(a: list, b: list, min_similarity: float, max_block: int) -> tu
 def truth_for(loc: list, truth: list, min_similarity: float = 0.5) -> dict:
     """{index in loc: the truth word at that place}, for words LoC read the same as the truth and for 1:1 replacements."""
     out = {}
-    for op, i1, i2, j1, j2 in SequenceMatcher(None, loc, truth, autojunk=False).get_opcodes():
+    # compared with fractions folded (bt.fold_fractions), so 103½ and 1031/2 are the same word; the truth word is kept as written
+    floc, ftruth = [bt.fold_fractions(w) for w in loc], [bt.fold_fractions(w) for w in truth]
+    for op, i1, i2, j1, j2 in SequenceMatcher(None, floc, ftruth, autojunk=False).get_opcodes():
         if op == "equal":
             out.update((i1 + k, truth[j1 + k]) for k in range(i2 - i1))
         elif op == "replace" and i2 - i1 == j2 - j1:
             # as in aligned_words: the whole block or none, so an offsetting split and join leaves it unmapped
-            fa, fb = loc[i1:i2], truth[j1:j2]
+            fa, fb = floc[i1:i2], ftruth[j1:j2]
             block = range(i2 - i1)
             if (all(SequenceMatcher(None, fa[k], fb[k], autojunk=False).ratio() >= min_similarity for k in block)
                     and not any(bt.split_or_joined(fa, fb, k, k) for k in block)):
@@ -167,6 +170,8 @@ def truth_for(loc: list, truth: list, min_similarity: float = 0.5) -> dict:
 
 
 def who_is_right(loc: str, xiaomi: str, truth: str) -> str:
+    """Which reading matches the truth word, with fractions folded (bt.fold_fractions: ½ and 1/2 are the same)."""
+    loc, xiaomi, truth = bt.fold_fractions(loc), bt.fold_fractions(xiaomi), bt.fold_fractions(truth)
     if xiaomi == truth and loc != truth:
         return "xiaomi"
     if loc == truth and xiaomi != truth:
@@ -230,6 +235,10 @@ def candidates(page: dict, args, root: str, stats: Counter) -> list:
             wl, wx = loc[i], xi[j]
             if not bt.has_letter(wl) or not bt.has_letter(wx):
                 stats["left_out_no_letters"] += 1
+                continue
+            if bt.fold_fractions(wl) == bt.fold_fractions(wx):
+                # 103½ against 1031/2: the same text, written two ways; nothing for a volunteer to pick
+                stats["left_out_same_fraction"] += 1
                 continue
             if args.skip_punctuation_only and bt.letters_only(wl, {}) == bt.letters_only(wx, {}):
                 stats["left_out_punctuation_only"] += 1

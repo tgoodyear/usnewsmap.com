@@ -74,6 +74,9 @@
     "8",
     "9"
   ],
+  "guidance": [
+    "A printed fraction such as ½: if neither reading has it, pick Neither, then type the word in the box. The ½ ¼ ¾ buttons under the box put a fraction in, and 1/2 typed out counts the same."
+  ],
   "intro": "These words come from English-language newspaper pages in Chronicling America, the Library of Congress's collection of historic American newspapers. Two machine readings (OCR) disagree on each word.",
   "name": "English",
   "title": "English newspapers"

@@ -61,6 +61,13 @@ class Align(unittest.TestCase):
         self.assertEqual(en_pick.who_is_right("the", "tbe", "the"), "loc")
         self.assertEqual(en_pick.who_is_right("tbe", "thc", "the"), "neither")
 
+    def test_fractions_match_however_they_are_written(self):
+        # a human writes 103½, an OCR 1031/2: the same text
+        self.assertEqual(en_pick.who_is_right("103V2", "1031/2", "103½"), "xiaomi")
+        self.assertEqual(en_pick.who_is_right("103\u00bd", "10314", "1031/2"), "loc")
+        self.assertEqual(en_pick.who_is_right("103V2", "10314", "103½"), "neither")
+        self.assertEqual(en_pick.truth_for("at 1031/2 E.".split(), "at 103½ E.".split()), {0: "at", 1: "103½", 2: "E."})
+
     def test_truth_for_maps_replacements(self):
         self.assertEqual(en_pick.truth_for("a tbe c".split(), "a the c".split()), {0: "a", 1: "the", 2: "c"})
 

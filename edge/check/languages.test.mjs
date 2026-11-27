@@ -8,7 +8,7 @@ import { readFileSync, readdirSync } from "node:fs";
 
 const dir = new URL("./languages/", import.meta.url);
 const files = readdirSync(dir).filter((f) => f.endsWith(".json")).sort();
-const KNOWN = new Set(["dir", "drop_examples", "equivalents", "glyph_font", "glyph_ligatures", "glyphs", "guidance", "intro", "labels", "marks", "min_examples", "name", "notes", "question", "rules", "title"]);
+const KNOWN = new Set(["dir", "drop_examples", "equivalents", "glyph_font", "glyph_ligatures", "glyphs", "guidance", "insert_chars", "intro", "labels", "marks", "min_examples", "name", "notes", "question", "rules", "title"]);
 // The period typefaces public/style.css bundles for letter keys, and public/app.js accepts in a key (KEY_FONTS there).
 const KEY_FONTS = ["UnifrakturMaguntia", "IM Fell English"];
 const strings = (obj) => obj && typeof obj === "object" && !Array.isArray(obj) && Object.values(obj).every((v) => typeof v === "string" && v);
