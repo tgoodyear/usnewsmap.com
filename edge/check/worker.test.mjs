@@ -233,6 +233,26 @@ test("a blind task's private fields stay off /api/next, and off /api/export unti
   assert.equal("strata" in lines[2], false);
 });
 
+test("a cover task exports its kind, its one reading and its block, and keeps its strata private until it settles", async () => {
+  const cover = { kind: "cover", page: "p", text: "the fox", block: "en/c/blocks/b.jpg", pageview: "en/c/pages/p.jpg", box: [0, 0, 1, 1], block_box: [1, 2, 3, 4], private: { strata: { decade: 1870 }, measure: { ratio: 0.2, seed: "v3-held" } } };
+  const rows = [
+    { id: "en/c/1", set_name: "c", body: JSON.stringify(cover), outcome: null, settled: 0, a: 1, b: 0 },
+    { id: "en/c/2", set_name: "c", body: JSON.stringify(cover), outcome: "b", settled: 1, a: 0, b: 3 },
+  ];
+  const DB = { prepare: (sql) => ({ bind: () => ({ first: async () => ({ id: "en/c/1", body: rows[0].body, n: 1 }), all: async () => ({ results: sql.includes("answers_excluded") ? [] : rows }) }), all: async () => ({ results: rows }) }) };
+  const token = await signSession(env.SESSION_KEY, "c1");
+  const task = (await (await worker.fetch(new Request("https://check.usnewsmap.com/api/next?lang=en", { headers: { authorization: "Bearer " + token } }), { ...env, DB }, {})).json()).task;
+  assert.equal(task.kind, "cover");
+  assert.equal(task.text, "the fox");
+  assert.equal("private" in task, false);
+  const lines = (await (await worker.fetch(new Request("https://check.usnewsmap.com/api/export?lang=en"), { ...env, DB }, {})).text()).trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual([lines[0].kind, lines[0].text, lines[0].block_box], ["cover", "the fox", [1, 2, 3, 4]]);
+  assert.deepEqual(lines[0].strata, { decade: 1870 });
+  // what the build measured (a hint at the answer) is never exported, settled or not
+  assert.equal(JSON.stringify(lines).includes("v3-held"), false);
+  assert.equal(lines[1].counts.b, 3);
+});
+
 test("a settled blind task takes no more answers, and other tasks still take revisions", async () => {
   const { DatabaseSync } = await import("node:sqlite");
   const { ANSWER_SQL, SETTLE_SQL } = await import("./worker.mjs");

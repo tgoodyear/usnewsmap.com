@@ -354,6 +354,18 @@ python3 tools/en_pick.py --pages pages-pilot.jsonl --set xiaomi-loc-v1 --languag
 
 **Analysis.** `tools/en_pick_analysis.py --export check-en.jsonl --set xiaomi-loc-v1 --calibration-set cal-v1` gives Xiaomi's win rate (Xiaomi picks over Xiaomi plus LoC picks) with a page-clustered bootstrap interval, overall and by decade and damage band, the shares of neither, can't tell, not text and disputed, and for the calibration set how often the settled pick matches the truth. Rows with a `truth` are never in the pilot figures.
 
+## Cover tasks: is any of a block missing from our reading? (English)
+
+The completeness rule holds a page's LoC text when our OCR is much shorter than LoC's or shares too few of its words, since a short reading may have missed a column. LoC's own noise makes its text long, so the rule holds many English pages that lost nothing, and neither a word-bag test nor a box-area test told the two apart. A cover task asks people instead, one block of print at a time.
+
+**What the page shows.** A task with `kind: "cover"` shows the page (`pageview`) with the block marked (`box`, fractions of the page), the block enlarged (`block`), and one reading of that place (`text`, our words whose box centre falls in the block). It asks whether all of the block's text is in the reading; wrong letters don't count. The answers are the usual choices: `a` is Yes, `b` is No (some is missing), `notext` is no text in the box (a picture, a rule, a blank, often where LoC's layout found a block that isn't text) and `unsure` is Can't tell. Neither is hidden. Word picks and cover tasks share the `/en` queue, and the rules above a task follow its kind.
+
+**Making tasks.** `tools/en_cover.py` takes one JSON line per page (the image, LoC's ALTO, our ALTO and why the page is in the set; its docstring has the format). It cuts LoC's text blocks into chunks of at most `--max-lines` lines, leaves out chunks with few words or that mostly overlap one already taken, and measures our letters over LoC's in each. It keeps every chunk below `--low` (up to `--max-low`) and fills each page to `--per-page` with a seeded draw of the others, so most pages also carry chunks that should be answered Yes. The measure and the reason a page is in the set go in `private.measure`, which the Worker never serves or exports; join it from the build's `tasks.jsonl` for the analysis.
+
+```sh
+python3 tools/en_cover.py --pages pages-cover.jsonl --set cover-v1 --language-config languages/en.json --out-dir out-cover --per-page 16
+```
+
 ## Loading a language
 
 On the build host (pve-big for Cherokee and Yiddish), make the files. For Cherokee:

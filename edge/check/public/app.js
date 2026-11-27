@@ -226,12 +226,14 @@ function examples(text, diff, labels = new Map(), marks = new Map(), named = fal
 const CHEROKEE = /[\u13A0-\u13FF\uAB70-\uABBF]/;
 // The fonts the page serves, by the letters they cover (style.css, @font-face). The family is the one the page declares.
 const BUNDLED = [[CHEROKEE, "Noto Sans Cherokee"]];
-const bundledFamily = (t) => { const hit = t && BUNDLED.find(([re]) => re.test(t.a + t.b)); return hit ? hit[1] : null; };
+// The text a task draws: both readings of a word, or the one reading of a cover task.
+const drawn = (t) => (t.kind === "cover" ? t.text || "" : (t.a || "") + (t.b || ""));
+const bundledFamily = (t) => { const hit = t && BUNDLED.find(([re]) => re.test(drawn(t))); return hit ? hit[1] : null; };
 async function fontReady(t) {
   const family = bundledFamily(t);
   if (!family || !document.fonts || !document.fonts.load) return true;
   try {
-    const faces = await document.fonts.load(`32px "${family}"`, t.a + t.b);
+    const faces = await document.fonts.load(`32px "${family}"`, drawn(t));
     return faces.length > 0 && faces.every((f) => f.status === "loaded");
   } catch { return false; }
 }
@@ -254,11 +256,54 @@ function fontState(t) {
   const family = bundledFamily(t);
   if (!family) return "none";
   if (!document.fonts || !document.fonts.check) return "unknown";
-  try { return document.fonts.check(`32px "${family}"`, t.a + t.b) ? "loaded" : "not_loaded"; } catch { return "unknown"; }
+  try { return document.fonts.check(`32px "${family}"`, drawn(t)) ? "loaded" : "not_loaded"; } catch { return "unknown"; }
+}
+
+// What the page says above a task, and what the Neither and Not text buttons are, by the kind of task. A cover task
+// (en_cover.py) asks whether one reading has all of a printed block's text: 1 is "a" (yes), 2 is "b" (no).
+const COVER_RULES = "The box marks a block of print on the page, shown enlarged below it. Under that is one machine reading of the same place. Is all of the block's text in the reading? Wrong letters don't matter here: answer No only if lines, passages or a whole column are missing from the reading. If the block holds no text (a picture, a rule, a blank or a smudge), pick No text. If you can't tell, pick Can't tell.";
+function setKind(t) {
+  const cover = !!t && t.kind === "cover", rules = $("rules");
+  if (rules.dataset.word === undefined) rules.dataset.word = rules.textContent; // the word rules, as index.html has them
+  rules.textContent = cover ? COVER_RULES : rules.dataset.word;
+  $("neither").hidden = cover;
+  $("notext").textContent = cover ? "No text in the box (5)" : "Not text (5)";
+}
+
+function renderCover(card, t, prev) {
+  if (t.label) { const top = document.createElement("div"); top.className = "label"; top.textContent = t.label; card.appendChild(top); }
+  const pv = document.createElement("div"); pv.className = "lineview pageview";
+  const pi = new Image(); pi.src = "/clips/" + t.pageview; pi.alt = "the page, with the block marked"; pv.appendChild(pi);
+  const hl = document.createElement("div"); hl.className = "hl";
+  const [x, y, w, h] = t.box;
+  Object.assign(hl.style, { left: 100 * x + "%", top: 100 * y + "%", width: 100 * w + "%", height: 100 * h + "%" });
+  pv.appendChild(hl); card.appendChild(pv);
+  const bk = document.createElement("div"); bk.className = "word block";
+  const bi = new Image(); bi.src = "/clips/" + t.block; bi.alt = "the printed block, enlarged"; bk.appendChild(bi);
+  card.appendChild(bk);
+  const rd = document.createElement("div"); rd.className = "reading"; rd.lang = lang;
+  const rk = document.createElement("div"); rk.className = "key"; rk.textContent = "The machine reading of this place";
+  const body = document.createElement("div"); body.className = "reading-text";
+  if (t.text) body.textContent = t.text; else { body.classList.add("empty"); body.textContent = "(this reading has no text here)"; }
+  rd.append(rk, body); card.appendChild(rd);
+  const opts = document.createElement("div"); opts.className = "options";
+  [["a", "Yes, it's all there"], ["b", "No, some is missing"]].forEach(([side, text], k) => {
+    const b = document.createElement("button"); b.type = "button"; b.className = "opt"; b.id = "opt" + (k + 1); b.disabled = busy;
+    if (prev === side) b.classList.add("chosen");
+    const key = document.createElement("span"); key.className = "key"; key.textContent = `(${k + 1})`;
+    const l = document.createElement("strong"); l.textContent = text;
+    b.append(key, l); b.addEventListener("click", () => choose(side)); opts.appendChild(b);
+  });
+  card.appendChild(opts);
+  if (t.source) {
+    const src = document.createElement("a"); src.href = t.source; src.target = "_blank"; src.rel = "noopener"; src.className = "label"; src.textContent = "See the whole page";
+    card.appendChild(src);
+  }
 }
 
 function render(prev) {
   shownPrev = prev;
+  setKind(task);
   const card = $("card"); card.textContent = "";
   $("progress").textContent = answered ? `${answered} answered` : "";
   $("back").disabled = history.length === 0 || busy;
@@ -286,6 +331,7 @@ function render(prev) {
     d.appendChild(again); card.appendChild(d); return;
   }
   const t = task;
+  if (t.kind === "cover") { renderCover(card, t, prev); return; }
   if (t.label) { const top = document.createElement("div"); top.className = "label"; top.textContent = t.label; card.appendChild(top); }
   const lv = document.createElement("div"); lv.className = "lineview";
   const li = new Image(); li.src = "/clips/" + t.line; li.alt = "the printed line"; lv.appendChild(li);
@@ -391,7 +437,7 @@ async function work(code) {
   document.addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === "1" || e.key === "2") { const b = $("opt" + e.key); if (b) b.click(); }
-    else if (e.key === "3") choose("neither");
+    else if (e.key === "3") { if (!$("neither").hidden) choose("neither"); }
     else if (e.key === "4") choose("unsure");
     else if (e.key === "5") choose("notext");
     else if (e.key === "s" || e.key === "S") skip();

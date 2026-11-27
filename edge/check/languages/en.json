@@ -1,5 +1,5 @@
 {
-  "intro": "These words come from English-language newspaper pages in Chronicling America, the Library of Congress's collection of historic American newspapers. Two machine readings (OCR) disagree on each word.",
+  "intro": "These come from English-language newspaper pages in Chronicling America, the Library of Congress's collection of historic American newspapers. Some ask which of two machine readings (OCR) matches a printed word. Others show a block of print and one machine reading of it, and ask whether any of the print is missing from the reading.",
   "name": "English",
   "title": "English newspapers"
 }

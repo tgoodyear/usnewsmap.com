@@ -288,6 +288,9 @@ async function api(request, env, url) {
         id: r.id, set: r.set_name, page: t.page, source: t.source, a: t.a, b: t.b,
         a_is: t.private ? reveal.a_is : t.a_is, b_is: t.private ? reveal.b_is : t.b_is,
         ...(t.private ? { strata: t.private.strata, truth: reveal.truth } : {}),
+        // A cover task (tools/en_cover.py) has one reading, `text`, and asks whether it holds all of a block's print:
+        // `a` counts "yes", `b` "no", `notext` "no text in the box".
+        ...(t.kind === "cover" ? { kind: t.kind, text: t.text, block_box: t.block_box } : {}),
         ...(t.lookalikes ? { lookalikes: t.lookalikes } : {}),
         // Pairs of one base letter that differ only in combining marks (lookalike.py): {a, a_marks, b, b_marks, base}.
         ...(t.mark_only ? { mark_only: t.mark_only } : {}),
