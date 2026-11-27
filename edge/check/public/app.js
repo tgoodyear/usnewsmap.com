@@ -297,6 +297,43 @@ const GUTTER_ANSWERS = [["a", "Yes"], ["b", "No"]];
 const BADCROP_HELP = "Pick Bad crop if the box shows more than one line, cuts off the word, or marks the wrong thing.";
 const GUTTER_BADCROP_HELP = "Pick Bad crop if the picture is broken or isn't part of a newspaper page, or the line is missing or runs off the picture. A line that crosses print is a No, not a bad crop.";
 
+// Cover tasks (README.md, "Cover tasks"): a block of print, where it is on the page, and one machine reading of that place, and
+// the question whether all of the block's text is in the reading. Yes is `a`, No (some is missing) is `b`, Not text is `notext`
+// (the block holds no text); Neither doesn't apply. Wrong letters don't count, only missing lines or passages.
+const isCover = (t) => !!t && t.kind === "cover";
+const COVER_ANSWERS = [["a", "Yes, it's all there"], ["b", "No, some is missing"]];
+const COVER_BADCROP_HELP = "Pick Bad crop if the picture is broken, or the box cuts through the middle of lines so you can't say what is in it.";
+
+function renderCover(card, t, prev) {
+  const q = document.createElement("p"); q.className = "question"; q.textContent = cfg.question || ""; card.appendChild(q);
+  if (t.label) { const top = document.createElement("div"); top.className = "label"; top.textContent = t.label; card.appendChild(top); }
+  const pv = document.createElement("div"); pv.className = "lineview pageview";
+  const pi = new Image(); pi.src = "/clips/" + t.pageview; pi.alt = "the whole page, with the block marked"; pv.appendChild(pi);
+  const hl = document.createElement("div"); hl.className = "hl";
+  const [x, y, w, h] = t.box;
+  Object.assign(hl.style, { left: 100 * x + "%", top: 100 * y + "%", width: 100 * w + "%", height: 100 * h + "%" });
+  pv.appendChild(hl); card.appendChild(pv);
+  const bk = document.createElement("div"); bk.className = "word block";
+  const bi = new Image(); bi.src = "/clips/" + t.block; bi.alt = "the printed block, enlarged"; bk.appendChild(bi);
+  card.appendChild(bk);
+  const rd = document.createElement("div"); rd.className = "reading";
+  const rk = document.createElement("div"); rk.className = "key"; rk.textContent = "The machine reading of this place";
+  const body = document.createElement("div"); body.className = "reading-text"; body.lang = "en";
+  if (t.text) body.textContent = t.text; else { body.classList.add("empty"); body.textContent = "(this reading has no text here)"; }
+  rd.append(rk, body); card.appendChild(rd);
+  const opts = document.createElement("div"); opts.className = "options gutteropts";
+  COVER_ANSWERS.forEach(([choice, text], k) => {
+    const b = document.createElement("button"); b.type = "button"; b.className = "opt"; b.id = "opt" + (k + 1); b.disabled = busy || stale;
+    if (prev === choice) b.classList.add("chosen");
+    const kk = document.createElement("span"); kk.className = "key"; kk.textContent = `${k + 1}`;
+    const big = document.createElement("span"); big.className = "yn"; big.textContent = text;
+    b.append(kk, big);
+    b.addEventListener("click", () => choose(choice));
+    opts.appendChild(b);
+  });
+  card.appendChild(opts);
+}
+
 function renderGutter(card, t, prev) {
   const q = document.createElement("p"); q.className = "question"; q.textContent = cfg.question || ""; card.appendChild(q);
   const view = document.createElement("div"); view.className = "gutterview";
@@ -449,8 +486,10 @@ function render(prev) {
   const live = !!task && !busy && !fontFailed && !stale;
   $("neither").disabled = $("unsure").disabled = $("notext").disabled = $("badcrop").disabled = $("skip").disabled = !live;
   // A column gutter task has only yes, no and can't tell, and Bad crop, which every task has.
-  $("neither").hidden = $("notext").hidden = isGutter(task);
-  if (task) $("badcrop-help").textContent = isGutter(task) ? GUTTER_BADCROP_HELP : BADCROP_HELP;
+  // A cover task has yes, no, can't tell, not text and Bad crop.
+  $("neither").hidden = isGutter(task) || isCover(task);
+  $("notext").hidden = isGutter(task);
+  if (task) $("badcrop-help").textContent = isGutter(task) ? GUTTER_BADCROP_HELP : isCover(task) ? COVER_BADCROP_HELP : BADCROP_HELP;
   if (!task && !loaded) {
     const d = document.createElement("div"); d.className = "done";
     if (busy || !failed) { d.textContent = "Loading the next word…"; card.appendChild(d); return; }
@@ -481,8 +520,8 @@ function render(prev) {
     d.appendChild(again); card.appendChild(d); return;
   }
   const t = task;
-  if (isGutter(t)) {
-    renderGutter(card, t, prev);
+  if (isGutter(t) || isCover(t)) {
+    (isGutter(t) ? renderGutter : renderCover)(card, t, prev);
     if (t.source) {
       const src = document.createElement("a"); src.href = t.source; src.target = "_blank"; src.rel = "noopener"; src.className = "label"; src.textContent = "See the whole page";
       card.appendChild(src);
@@ -661,7 +700,7 @@ function showProgress() {
 }
 
 // The clips a word shows, fetched ahead so the next word appears with its pictures.
-function clipKeys(t) { return !t ? [] : isGutter(t) ? [t.crop] : [t.line, t.word].filter(Boolean); }
+function clipKeys(t) { return !t ? [] : isGutter(t) ? [t.crop] : isCover(t) ? [t.pageview, t.block].filter(Boolean) : [t.line, t.word].filter(Boolean); }
 // Pictures fetched ahead are held until they load: some mobile browsers cancel the download of an Image that is collected.
 const held = new Map();
 function preload(t) {
@@ -801,12 +840,13 @@ addEventListener("online", () => { if (wake) wake(); else sendAnswers(); });
 async function choose(choice) {
   if (!task || busy || fontFailed || stale) return;
   if (isGutter(task) && (choice === "neither" || choice === "notext")) return;
+  if (isCover(task) && choice === "neither") return;
   if (choice === "neither" && suggestFor === task.id) return;
   const had = controlFocused();
   const body = JSON.stringify({ task: task.id, choice, display: DISPLAY, font: fontState(task), names_shown: namesState(task) });
   const id = task.id;
   // Neither keeps the word on screen for the optional box; it joins the history when the box is sent or skipped.
-  const holds = choice === "neither" && !isGutter(task);
+  const holds = choice === "neither" && !isGutter(task) && !isCover(task);
   if (!holds) { history.push({ task, choice }); if (history.length > 50) history.shift(); }
   // A changed answer (Back, then another choice) replaces the one still waiting to be saved, unless it is being sent now.
   const queued = pending.findIndex((p) => p.id === id && p !== inflight);

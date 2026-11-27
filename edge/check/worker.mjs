@@ -9,6 +9,10 @@ export const CHOICES = new Set(["a", "b", "neither", "unsure", "notext", "badcro
 // and takes badcrop like every task. Neither and notext have no meaning for it and are refused.
 export const GUTTER_REVEALED = ["method", "role", "segment_id", "page_id"];
 export const GUTTER_REFUSED = new Set(["neither", "notext"]);
+// A cover task (kind "cover", README.md "Cover tasks") asks whether one reading holds all of a block's print: a = yes, b = no,
+// notext = the block holds no text, unsure, and badcrop. Neither has no meaning for it and is refused. What the build measured
+// (`private.measure`) would hint at the answer, so it is never served or exported.
+export const COVER_REFUSED = new Set(["neither"]);
 // A gutter task's `line` as fractions of the crop: x at y0, y0..y1 down the crop, and optionally x1, its x at y1, for a line
 // that leans to follow a tilted page (absent: a vertical line, x1 = x), with y0 < y1. /admin/tasks refuses a gutter task with
 // any other line.
@@ -271,6 +275,7 @@ async function api(request, env, url) {
     const t = await env.DB.prepare(`SELECT id, settled, held, confusable_display, json_type(body, '$.private') AS blind, json_extract(body, '$.kind') AS kind, ${NEEDS_CURRENT_PAGE} AS current_page FROM tasks WHERE id = ?`).bind(b.task).first();
     if (!t) throw new HttpError(404, "no such task");
     if (t.kind === "gutter" && GUTTER_REFUSED.has(b.choice)) throw new HttpError(400, "this question takes yes, no or can't tell (or bad crop)");
+    if (t.kind === "cover" && COVER_REFUSED.has(b.choice)) throw new HttpError(400, "this question takes yes, no, not text or can't tell (or bad crop)");
     if (t.settled && t.blind) throw new HttpError(409, "this word is already checked");
     if (t.held) throw new HttpError(409, "this word is not open for answers");
     if (t.current_page && !(Number(b.display) >= DISPLAY_REVISION)) throw new HttpError(426, "this page is out of date: reload it, then answer again");
@@ -350,6 +355,8 @@ async function api(request, env, url) {
         // A column gutter task: the line as drawn and, once settled, what `private` held (which method drew it, its role, the
         // segment and page it is from, and the truth for a calibration item). Unsettled, none of the private fields are here.
         ...(t.kind === "gutter" ? { kind: "gutter", line: t.line, ...Object.fromEntries(GUTTER_REVEALED.filter((k) => reveal[k] !== undefined).map((k) => [k, reveal[k]])) } : {}),
+        // A cover task: its one reading and the block in page pixels. `private.measure` is never exported.
+        ...(t.kind === "cover" ? { kind: "cover", text: t.text, block_box: t.block_box } : {}),
         // Pairs of one base letter that differ only in combining marks (lookalike.py): {a, a_marks, b, b_marks, base}.
         ...(t.mark_only ? { mark_only: t.mark_only } : {}),
         counts: choiceCounts(r),
@@ -371,7 +378,7 @@ async function api(request, env, url) {
         ...(r.outcome_withdrawn ? { outcome_withdrawn: r.outcome_withdrawn, withdrawn_reason: r.withdrawn_reason, withdrawn_at: r.withdrawn_at } : {}),
         // A word that settled as bad_crop (README.md, "Bad crop"): the box is a build defect, to be rebuilt, not reader evidence.
         // `clips` names its pictures (a pick task's line and word, a gutter task's crop) so the rebuild can find them.
-        ...(r.outcome === BAD_CROP ? { clips: t.kind === "gutter" ? { crop: t.crop } : { line: t.line, word: t.word } } : {}),
+        ...(r.outcome === BAD_CROP ? { clips: t.kind === "gutter" ? { crop: t.crop } : t.kind === "cover" ? { pageview: t.pageview, block: t.block } : { line: t.line, word: t.word } } : {}),
         // What volunteers typed for a word they judged neither reading right (README.md, "Suggestions"): text only, no contributor.
         suggestions: suggestions.get(r.id) || [],
         settled: !!r.settled, outcome: r.outcome,

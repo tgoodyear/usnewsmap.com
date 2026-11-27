@@ -411,6 +411,19 @@ edge/check/load.sh --vault NAME --host USER@HOST --dir out-gutter --lang en-gutt
 
 **Analysis.** `tools/gutter_analysis.py --export check-en-gutter.jsonl [--out segments.jsonl] [--dump admin-dump.jsonl]` writes one row per settled segment (counts, outcome as yes, no, unsure or disputed, method, role, truth and the `line` as exported, `x1` included). Unsure and disputed segments are counted apart from the decided ones. With an admin dump it also gives each volunteer's accuracy on the calibration items. It computes no rates or per-method figures; the #2107 study does.
 
+## Cover tasks: is any of a block missing from our reading?
+
+`en-cover` is a separate language (`/en-cover`) like `en-gutter`. The completeness rule keeps LoC's text for a page when our OCR is much shorter than LoC's or shares too few of its words, since a short reading may have missed a column. LoC's own noise makes its text long, so the rule holds many English pages that lost nothing, and neither a word-bag test nor a box-area test could tell the two apart. A cover task asks people instead, one block of print at a time.
+
+**Answers.** The page shows the language's `question`, the page (`pageview`) with the block marked (`box`, fractions of the page), the block enlarged (`block`) and one reading of that place (`text`: our words whose box centre falls in the block). Yes (all of the block's text is in the reading; wrong letters don't count) is stored as `a`, No (some is missing) as `b`, Not text (the box holds no text: a picture, a rule, blank paper, often where LoC's layout found a block that isn't text) as `notext`, Can't tell as `unsure`, and Bad crop as on every task. The Worker answers 400 to `neither` for a task whose body has `kind: "cover"`. The export adds `kind`, `text` and `block_box` (the block in page pixels).
+
+**Making tasks.** `tools/en_cover.py` takes one JSON line per page (the image, LoC's ALTO, our ALTO and why the page is in the set; its docstring has the format). It cuts LoC's text blocks into chunks of at most `--max-lines` lines, leaves out chunks with few words or that mostly overlap one already taken, and measures our letters over LoC's in each. Our ALTO must have a box per word: a page whose ALTO declares line, block or page `granularity` is left out and counted, since its words carry their block's box. It keeps every chunk below `--low` (up to `--max-low`) and fills each page to `--per-page` with a seeded draw of the others, so most pages also carry chunks that should be answered Yes. `private.strata` is the decade only; what the build measured and why the page is in the set go in `private.measure`, which the Worker never serves or exports, so the analysis joins it from the build's `tasks.jsonl`.
+
+```sh
+python3 tools/en_cover.py --pages pages-cover.jsonl --set cover-v1 --language-config languages/en-cover.json --out-dir out-cover --per-page 16
+edge/check/load.sh --vault NAME --host USER@HOST --dir out-cover --lang en-cover
+```
+
 ## Letter key
 
 Under the readings of a pick-between-readings task, **Letter key (K)** opens the language's letters as they are printed in that paper: each letter's label and up to three small pictures of it, cut from words both readers agree on. A judge compares the disputed letters with known-good letters in the same type. The letters in question (those the highlights mark in either reading, with their `equivalents`, ſ for s) come first, outlined. The key is open by default on wide screens and closed on phones; the visitor's choice is kept in the browser. It only helps the eye: it changes nothing about the readings, how they are drawn or what an answer means, so `DISPLAY_REVISION` stays. A task without `key` shows no key.

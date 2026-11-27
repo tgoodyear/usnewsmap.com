@@ -164,3 +164,11 @@ ul.guidance[hidden] { display: none; }
 .suggest-chars.rows .char { min-width: 0; min-height: 44px; padding: 2px 0; font-family: var(--font-script); font-size: 1.25rem; line-height: 1.1; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .suggest-chars.rows .char small { font-family: var(--font-ui); font-size: .7rem; color: var(--muted); line-height: 1.1; }
 .suggest-buttons .chars-toggle { margin-inline-start: auto; min-width: 44px; font-size: 1.2rem; }
+
+/* Cover tasks: the page with the block marked, the block, and one reading's text. */
+.pageview { max-width: 420px; align-self: center; }
+.word.block img { max-height: 520px; }
+.reading { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--paper); }
+.reading .key { font-size: .8rem; color: var(--muted); margin-bottom: 4px; }
+.reading-text { white-space: pre-wrap; overflow-wrap: anywhere; font-family: Georgia, "Times New Roman", serif; font-size: 1.05rem; line-height: 1.45; max-height: 22em; overflow-y: auto; }
+.reading-text.empty { color: var(--muted); font-style: italic; }

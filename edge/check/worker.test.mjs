@@ -1092,13 +1092,13 @@ test("the page offers Bad crop on every task kind, on key 6, with a line of help
   assert.ok(html.includes(`<p class="how hint" id="badcrop-help">${pickHelp}</p>`));
   assert.ok(app.includes(`const BADCROP_HELP = "${pickHelp}";`), "the page's help and the script's agree");
   // a gutter task gets its own help: its crop holds many lines, and a line across print is a No
-  assert.match(app, /if \(task\) \$\("badcrop-help"\)\.textContent = isGutter\(task\) \? GUTTER_BADCROP_HELP : BADCROP_HELP;/);
+  assert.match(app, /if \(task\) \$\("badcrop-help"\)\.textContent = isGutter\(task\) \? GUTTER_BADCROP_HELP : isCover\(task\) \? COVER_BADCROP_HELP : BADCROP_HELP;/);
   assert.match(app, /const GUTTER_BADCROP_HELP = "[^"]*A line that crosses print is a No, not a bad crop\.";/);
   assert.match(app, /\$\("badcrop"\)\.addEventListener\("click", \(\) => choose\("badcrop"\)\);/);
   assert.match(app, /else if \(e\.key === "6"\) choose\("badcrop"\);/);
   assert.match(app, /\$\("badcrop"\)\.disabled = /);
   // only neither and not text are hidden on a gutter task, and choose() refuses only those there
-  assert.match(app, /\$\("neither"\)\.hidden = \$\("notext"\)\.hidden = isGutter\(task\);/);
+  assert.match(app, /\$\("neither"\)\.hidden = isGutter\(task\) \|\| isCover\(task\);\n  \$\("notext"\)\.hidden = isGutter\(task\);/);
   assert.match(app, /if \(isGutter\(task\) && \(choice === "neither" \|\| choice === "notext"\)\) return;/);
 });
 
@@ -1236,7 +1236,7 @@ test("the page sends a suggestion only after Neither, in a box that keeps the an
   assert.match(app, /lang, autocomplete: "off"/, "the box takes the language's code");
   assert.match(app, /if \(e\.target && e\.target\.id === "suggest-text"\) return;/);
   assert.match(app, /authed\("\/api\/suggestions"/);
-  assert.match(app, /const holds = choice === "neither" && !isGutter\(task\);/);
+  assert.match(app, /const holds = choice === "neither" && !isGutter\(task\) && !isCover\(task\);/);
   assert.match(app, /if \(holds\) \{ suggestFor = id; suggestOpening = \{\}; suggestDraft = ""; render\(\); const box = \$\("suggest-text"\); if \(box\) box\.focus\(\); return; \}/);
   assert.match(app, /if \(suggestOpening === opening\) moveOnFromSuggestion\(id\);/, "a save finishing after its box closed moves on nothing");
   assert.match(app, /if \(!holds\) \{ history\.push\(\{ task, choice \}\);/, "history gets the word once, not while the box is open");
@@ -1244,4 +1244,36 @@ test("the page sends a suggestion only after Neither, in a box that keeps the an
   assert.match(app, /if \(e\.key === "Enter" && !e\.isComposing\)/);
   // the answer body is unchanged (see the test above)
   assert.match(app, /JSON\.stringify\(\{ task: task\.id, choice, display: DISPLAY, font: fontState\(task\), names_shown: namesState\(task\) \}\)/);
+});
+
+// ---------- cover tasks: is any of a block missing from our reading? ----------
+
+const coverBody = (extra = {}) => ({ kind: "cover", page: "sn1/1876-10-08/ed-1/seq-7", source: "https://example.test/p", pageview: "en-cover/c1/pages/p.jpg",
+  block: "en-cover/c1/blocks/p_b1c0.jpg", box: [0.2, 0.3, 0.2, 0.2], block_box: [1000, 2000, 2000, 3500], text: "the quick\nbrown fox",
+  private: { strata: { decade: 1870 }, measure: { ratio: 0.12, ratio_band: "low", seed: "known-miss", loc_words: 40, ours_words: 4 }, ...extra } });
+
+test("a cover task takes yes, no, not text and can't tell, refuses neither, and never serves or exports what the build measured", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  const load = await adminCall(DB, "/admin/tasks", null, [{ id: "en-cover/c1/p~b1c0", lang: "en-cover", set: "c1", ...coverBody() }].map((t) => JSON.stringify(t)).join("\n"));
+  assert.equal(load.status, 200);
+  const token = await signSession(env.SESSION_KEY, "viewer");
+  const next = (await (await worker.fetch(new Request("https://check.usnewsmap.com/api/next?lang=en-cover", { headers: { authorization: "Bearer " + token } }), E, {})).json()).task;
+  assert.deepEqual([next.kind, next.text, next.block, next.pageview], ["cover", "the quick\nbrown fox", "en-cover/c1/blocks/p_b1c0.jpg", "en-cover/c1/pages/p.jpg"]);
+  for (const secret of ["private", "measure", "known-miss", "ratio"]) assert.equal(JSON.stringify(next).includes(secret), false, secret);
+  const post = async (who, choice) => worker.fetch(new Request("https://check.usnewsmap.com/api/answers", { method: "POST", headers: { authorization: "Bearer " + (await signSession(env.SESSION_KEY, who)) }, body: JSON.stringify({ task: "en-cover/c1/p~b1c0", choice }) }), E, {});
+  const r = await post("c0", "neither");
+  assert.equal(r.status, 400);
+  assert.match((await r.json()).error, /yes, no, not text or can't tell/);
+  assert.equal(db.prepare("SELECT COUNT(*) AS k FROM answers").get().k, 0, "a refused answer is not stored");
+  const exported = async () => (await (await worker.fetch(new Request("https://check.usnewsmap.com/api/export?lang=en-cover"), E, {})).text()).trim().split("\n").map((l) => JSON.parse(l));
+  for (const [who, choice] of [["c1", "b"], ["c2", "notext"]]) assert.equal((await post(who, choice)).status, 200, choice);
+  let [row] = await exported();
+  assert.deepEqual([row.kind, row.text, row.block_box, row.strata, row.settled], ["cover", "the quick\nbrown fox", [1000, 2000, 2000, 3500], { decade: 1870 }, false]);
+  assert.equal((await post("c3", "b")).status, 200);
+  [row] = await exported();
+  assert.deepEqual([row.settled, row.outcome], [true, "b"]);
+  assert.equal(JSON.stringify(row).includes("known-miss"), false, "the build's measure stays out once settled too");
+  assert.equal(JSON.stringify(row).includes("ratio"), false);
+  assert.equal((await post("c4", "a")).status, 409, "a settled blind task takes no more answers");
 });
