@@ -1,5 +1,9 @@
 {
   "drop_examples": "Ꮛ",
+  "includes": [
+    "chr-lines",
+    "chr-rare"
+  ],
   "insert_chars": [
     [
       "Ꭰ",

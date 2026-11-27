@@ -107,7 +107,9 @@ async function home() {
   try {
     const langs = await getJSON("/api/languages");
     const ul = $("langs"); ul.textContent = "";
+    // A language another one includes is reached through that one's page (README.md, "One entry per language").
     for (const l of langs) {
+      if (l.part_of) continue;
       const li = document.createElement("li"), a = document.createElement("a");
       a.href = "/" + l.code;
       const name = document.createElement("strong"); name.textContent = l.name;
@@ -479,6 +481,20 @@ function toggleKey() {
   if (panel) { panel.hidden = !keyOpen; if (keyOpen && !panel.dataset.filled) fillKey(panel, task); }
 }
 
+// ---------- one entry per language (README.md, "One entry per language") ----------
+
+// A page's queue may serve words of the languages its configuration `includes` (the other German or Cherokee sets). Each word is
+// drawn with its own language's configuration (letter notes, names, look-alike labels, example pictures, characters), fetched
+// once; the page's own (`pageCfg`) keeps the intro, rules, newspapers and letter guide.
+let pageCfg = null;
+const configs = new Map(); // language code -> its configuration
+const taskLang = (t) => (t && typeof t.lang === "string" && /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(t.lang) ? t.lang : lang);
+async function configFor(t) {
+  const l = taskLang(t);
+  if (!t || configs.has(l)) return configs.get(l) || pageCfg;
+  try { const c = await getJSON("/api/languages/" + l); configs.set(l, c); return c; } catch { return pageCfg; }
+}
+
 // ---------- one newspaper at a time (README.md, "One newspaper at a time") ----------
 
 // A language with `by_paper` serves its words one newspaper at a time, so a volunteer gets used to one paper's type, starting
@@ -603,7 +619,9 @@ async function fillGuide(panel) {
     return el;
   };
   panel.textContent = "";
-  const pairs = (Array.isArray(cfg.confusions) ? cfg.confusions : []).filter((x) => Array.isArray(x) && x.length === 2);
+  const off = document.createElement("p"); off.className = "guide-off muted";
+  off.textContent = "The letter guide is off for this word: it comes from a blind test, where the guide could lean toward one reading."; panel.appendChild(off);
+  const pairs = (Array.isArray(pageCfg.confusions) ? pageCfg.confusions : []).filter((x) => Array.isArray(x) && x.length === 2);
   if (pairs.length) {
     const h = document.createElement("p"); h.className = "guide-h"; h.textContent = "Letters the machines mix up, as this paper prints them:"; panel.appendChild(h);
     const box = document.createElement("div"); box.className = "guide-pairs";
@@ -623,9 +641,12 @@ async function fillGuide(panel) {
 }
 
 // Outlines, in the guide, the letters in question in the word shown.
+// A word of a language in the page's `guide_skip` (a blind test whose readers the guide's labels could favour) hides the guide's
+// letters while it is shown.
 function markGuide(t) {
   const panel = $("guide");
   if (!panel) return;
+  panel.dataset.off = t && Array.isArray(pageCfg.guide_skip) && pageCfg.guide_skip.includes(taskLang(t)) ? "1" : "";
   const hot = t && !isGutter(t) && !isCover(t) ? disputed(t) : new Set();
   for (const el of panel.querySelectorAll(".kg")) el.classList.toggle("disputed", hot.has(el.dataset.g));
 }
@@ -1036,7 +1057,8 @@ async function next(had = controlFocused(), after = null, pressed, keepRest = tr
   try {
     const r = first ? await first.p.then((x) => { used = true; return x; }, () => fetchNext()) : await fetchNext();
     // A new word or crop starts with its line drawn: "Hide the line" applies to one crop only.
-    task = r.task; lineShown = true; answered = Math.max(answered, r.answered); loaded = true; failed = false; navStatus("");
+    const c = await configFor(r.task);
+    task = r.task; cfg = c; lineShown = true; answered = Math.max(answered, r.answered); loaded = true; failed = false; navStatus("");
     if (!task && paper) done.add(paper);
     fontFailed = !(await fontReady(task));
     // The loading message may have appeared while the font loaded; the word is ready now, so it goes.
@@ -1126,7 +1148,7 @@ function back() {
   suggestFor = null; suggestDraft = ""; suggestOpening = null;
   noteFor = null; noteDraft = ""; noteOpening = null; noteSending = null;
   const had = controlFocused();
-  const h = history.pop(); task = h.task; lineShown = true;
+  const h = history.pop(); task = h.task; cfg = configs.get(taskLang(h.task)) || pageCfg; lineShown = true;
   // A word answered before the paper was changed comes back under its own paper, picker and letter guide.
   const from = paperOfTask(h.task);
   if (paper && from && from !== paper && paperInfo(from)) { paper = from; store(PAPERSEL + lang, from); renderPaperBar(); }
@@ -1148,7 +1170,7 @@ async function work(code) {
   // configuration, instead of after it. next() waits on the same check (session() shares one attempt); a failure here is
   // reported, and retried, when next() asks again.
   session().catch(() => {});
-  try { cfg = await getJSON("/api/languages/" + code); }
+  try { cfg = pageCfg = await getJSON("/api/languages/" + code); configs.set(code, cfg); }
   catch { $("card").textContent = "We don't have this language. "; const a = document.createElement("a"); a.href = "/"; a.textContent = "See the list"; $("card").appendChild(a); return; }
   document.title = `${cfg.name}: USNewsMap letter check`;
   $("intro").textContent = cfg.intro || "";

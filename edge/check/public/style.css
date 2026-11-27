@@ -192,3 +192,6 @@ ul.guidance[hidden] { display: none; }
 .guide .guide-pair { display: inline-flex; gap: 2px; padding: 2px; border: 1px dashed var(--line); border-radius: 6px; }
 .guide .guide-all { margin-top: 8px; }
 .guide .guide-all summary { cursor: pointer; font-size: .85rem; color: var(--muted); margin-bottom: 6px; }
+.guide .guide-off { display: none; margin: 0; font-size: .85rem; }
+.guide[data-off="1"] > :not(.guide-off) { display: none; }
+.guide[data-off="1"] > .guide-off { display: block; }
