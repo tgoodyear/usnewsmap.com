@@ -338,8 +338,11 @@ def build_windows(archive, artifact, source_commit, out, plan_class, lock_path=L
     return release
 
 
-def build_macos(archive, artifact, source_commit, out, plan_class, lock_path=LOCK):
-    """The arm64-apple-darwin bundle from the pinned tarball and the macOS native CI artifact."""
+def build_macos(archive, artifact, source_commit, out, plan_class, lock_path=None):
+    """The arm64-apple-darwin bundle from the pinned tarball and the macOS native CI artifact.
+
+    The locks are the artifact's, the ones its usnm_qwen was built against and checks at run time,
+    each verified against the artifact's SHA256SUMS; `lock_path` overrides llama.lock (tests)."""
     if plan_class not in MAC_PLAN_CLASSES:
         raise ValueError(f"not an Apple GPU usnm_qwen plan class: {plan_class}")
     if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
@@ -347,9 +350,12 @@ def build_macos(archive, artifact, source_commit, out, plan_class, lock_path=LOC
     artifact = Path(artifact)
     if (artifact / "GIT_COMMIT").read_text().strip() != source_commit:
         raise ValueError("the artifact's GIT_COMMIT is not --source-commit")
-    if read_sums(artifact / "SHA256SUMS").get(MAC_BINARY) != sha256(artifact / MAC_BINARY):
-        raise ValueError(f"{MAC_BINARY} does not match the artifact's SHA256SUMS")
-    lock = json.loads(Path(lock_path).read_text())
+    sums = read_sums(artifact / "SHA256SUMS")
+    for name in (MAC_BINARY, "llama.lock", "weights.lock"):
+        if not (artifact / name).is_file() or sums.get(name) != sha256(artifact / name):
+            raise ValueError(f"{name} is missing from the artifact or does not match its SHA256SUMS")
+    lock_path = artifact / "llama.lock" if lock_path is None else Path(lock_path)
+    lock = json.loads(lock_path.read_text())
     asset = lock["assets"][MAC_ASSET]
     if lock["tag"] not in LLAMA_SOURCE or asset["file"] != f"llama-{lock['tag']}-bin-{MAC_ASSET}.tar.gz":
         raise ValueError("llama.lock pins a runtime this script has not reviewed")
@@ -367,7 +373,7 @@ def build_macos(archive, artifact, source_commit, out, plan_class, lock_path=LOC
                 shutil.copyfileobj(source, target)
             (extra / logical).chmod(0o755 if logical == "llama-server" else 0o644)
     shutil.copyfile(lock_path, extra / "llama.lock")
-    shutil.copyfile(WEIGHTS, extra / "weights.lock")
+    shutil.copyfile(artifact / "weights.lock", extra / "weights.lock")
     shutil.copyfile(artifact / MAC_BINARY, out / MAC_BINARY)
     (out / MAC_BINARY).chmod(0o755)
     names = sorted(p.name for p in extra.iterdir())

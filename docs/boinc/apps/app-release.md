@@ -353,9 +353,11 @@ boinc/scripts/boinc-app-release.sh --env prod --app usnm_qwen --version VERSION 
 
 For `arm64-apple-darwin` (`apple_gpu_8b`, `apple_gpu_x08`), `build-macos` takes the
 `llama.lock`-pinned `macos-arm64` tarball's `llama-server` and the ten dylibs the reviewed 1.20
-release ships (links copied as files; nothing else from the tarball), the locks, and the merged
-commit's `boinc-native-arm64-apple-darwin` artifact's `usnm_qwen_arm64-apple-darwin`, checked
-against its `SHA256SUMS` and `GIT_COMMIT`. Check the runtime against the last reviewed Apple
+release ships (links copied as files; nothing else from the tarball), and from the merged
+commit's `boinc-native-arm64-apple-darwin` artifact its `usnm_qwen_arm64-apple-darwin` and the
+`llama.lock` and `weights.lock` that binary was built against (and checks at run time), each
+checked against the artifact's `SHA256SUMS`, with `GIT_COMMIT`. The artifact's `llama.lock` also
+pins the tarball. Check the runtime against the last reviewed Apple
 release before signing, and publish it held like any other first build:
 
 ```sh

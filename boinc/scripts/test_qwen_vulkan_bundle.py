@@ -312,11 +312,16 @@ class MacBundle(unittest.TestCase):
         self.dir = Path(self.folder.name)
         self.artifact = self.dir / "artifact"
         self.artifact.mkdir()
-        binary = b"\xcf\xfa\xed\xfe qwen"
-        (self.artifact / bundle.MAC_BINARY).write_bytes(binary)
+        (self.artifact / bundle.MAC_BINARY).write_bytes(b"\xcf\xfa\xed\xfe qwen")
         (self.artifact / "GIT_COMMIT").write_text(COMMIT + "\n")
-        digest = hashlib.sha256(binary).hexdigest()
-        (self.artifact / "SHA256SUMS").write_text(f"{digest}  {bundle.MAC_BINARY}\n")
+        # The build-time weights.lock, deliberately unlike the repo's, so the test sees which is used.
+        (self.artifact / "weights.lock").write_text('{"build": "time"}\n')
+        self.sums()
+
+    def sums(self):
+        names = [n for n in (bundle.MAC_BINARY, "llama.lock", "weights.lock") if (self.artifact / n).exists()]
+        (self.artifact / "SHA256SUMS").write_text("".join(
+            f"{hashlib.sha256((self.artifact / n).read_bytes()).hexdigest()}  {n}\n" for n in names))
 
     def tearDown(self):
         self.folder.cleanup()
@@ -331,13 +336,15 @@ class MacBundle(unittest.TestCase):
                 versioned = name.replace(".0.dylib", ".0.0.1.dylib")
                 if versioned not in skip:
                     add(packed, f"llama-b12084/{name}", link=versioned)
-        lock = self.dir / "llama.lock"
+        lock = self.artifact / "llama.lock"
         lock.write_text(json.dumps({"repository": "ggml-org/llama.cpp", "tag": "b12084", "assets": {
             "macos-arm64": {"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}}}))
+        self.sums()
         return path, lock
 
     def build(self, archive, lock, out="out", plan_class="apple_gpu_8b"):
-        return bundle.build_macos(archive, self.artifact, COMMIT, self.dir / out, plan_class, lock)
+        # No lock override: the bundle takes the artifact's build-time locks.
+        return bundle.build_macos(archive, self.artifact, COMMIT, self.dir / out, plan_class)
 
     def test_build_takes_exactly_the_reviewed_runtime_links_as_files(self):
         archive, lock = self.archive()
@@ -356,6 +363,17 @@ class MacBundle(unittest.TestCase):
         reviewed = self.dir / "reviewed.json"
         reviewed.write_text(json.dumps({"worker": release["worker"]}))
         bundle.verify(out, same_runtime_as=reviewed)
+
+    def test_the_bundle_carries_the_artifacts_build_time_locks(self):
+        # Copilot on #2179: the repo's locks could differ from the ones the binary checks.
+        archive, lock = self.archive()
+        self.build(archive, lock)
+        out = self.dir / "out"
+        self.assertEqual((out / "extra/weights.lock").read_bytes(), (self.artifact / "weights.lock").read_bytes())
+        self.assertEqual((out / "extra/llama.lock").read_bytes(), lock.read_bytes())
+        (self.artifact / "weights.lock").write_text('{"changed": true}\n')
+        with self.assertRaisesRegex(ValueError, "weights.lock"):
+            self.build(archive, lock, out="again")
 
     def test_refuses_a_missing_runtime_file_a_wrong_class_and_a_wrong_artifact(self):
         archive, lock = self.archive(skip=("libggml-metal.0.0.1.dylib",))

@@ -122,14 +122,16 @@ jobs:
             codesign --force --sign - "$out_dir/usnm_qwen_${{ matrix.boinc_platform }}"
           fi
           git rev-parse HEAD > "$out_dir/GIT_COMMIT"
+          # The locks this build's usnm_qwen checks at run time, so a bundle carries exactly these.
+          cp boinc/apps/qwen/llama.lock boinc/apps/qwen/weights.lock "$out_dir/"
           (
             cd "$out_dir"
             if command -v sha256sum >/dev/null 2>&1; then
               sha256sum "usnm_quality_${{ matrix.boinc_platform }}${{ matrix.ext }}" \
-                "usnm_qwen_${{ matrix.boinc_platform }}${{ matrix.ext }}" > SHA256SUMS
+                "usnm_qwen_${{ matrix.boinc_platform }}${{ matrix.ext }}" llama.lock weights.lock > SHA256SUMS
             else
               shasum -a 256 "usnm_quality_${{ matrix.boinc_platform }}${{ matrix.ext }}" \
-                "usnm_qwen_${{ matrix.boinc_platform }}${{ matrix.ext }}" > SHA256SUMS
+                "usnm_qwen_${{ matrix.boinc_platform }}${{ matrix.ext }}" llama.lock weights.lock > SHA256SUMS
             fi
           )
       - name: Build AMD PCI identity helper (Linux x86-64)
