@@ -172,3 +172,18 @@ ul.guidance[hidden] { display: none; }
 .reading .key { font-size: .8rem; color: var(--muted); margin-bottom: 4px; }
 .reading-text { white-space: pre-wrap; overflow-wrap: anywhere; font-family: Georgia, "Times New Roman", serif; font-size: 1.05rem; line-height: 1.45; max-height: 22em; overflow-y: auto; }
 .reading-text.empty { color: var(--muted); font-style: italic; }
+
+/* One newspaper at a time (README.md, "One newspaper at a time"): the paper picker and its letter guide, above the word. */
+.paperbar[hidden], .links[hidden] { display: none; }
+.paperbar { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.paperrow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.paperrow .muted { font-size: .85rem; }
+.paperrow select { max-width: 100%; font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--paper); color: inherit; }
+.paperrow label { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; max-width: 100%; }
+.letterkey.guide { display: block; }
+.letterkey.guide[hidden] { display: none; }
+.guide .guide-h { margin: 0 0 6px; font-size: .85rem; color: var(--muted); }
+.guide .guide-pairs, .guide .guide-letters { display: flex; flex-wrap: wrap; gap: 6px; }
+.guide .guide-pair { display: inline-flex; gap: 2px; padding: 2px; border: 1px dashed var(--line); border-radius: 6px; }
+.guide .guide-all { margin-top: 8px; }
+.guide .guide-all summary { cursor: pointer; font-size: .85rem; color: var(--muted); margin-bottom: 6px; }

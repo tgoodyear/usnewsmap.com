@@ -1277,3 +1277,58 @@ test("a cover task takes yes, no, not text and can't tell, refuses neither, and 
   assert.equal(JSON.stringify(row).includes("ratio"), false);
   assert.equal((await post("c4", "a")).status, 409, "a settled blind task takes no more answers");
 });
+
+// A D1 stand-in over node:sqlite, for routes that only read and write with prepare().bind().first() / all() / run().
+function d1(db) {
+  const st = (sql, args = []) => ({
+    bind: (...a) => st(sql, a),
+    first: async () => db.prepare(sql).get(...args) ?? null,
+    all: async () => ({ results: db.prepare(sql).all(...args) }),
+    run: async () => ({ meta: { changes: Number(db.prepare(sql).run(...args).changes) } }),
+  });
+  return { prepare: (sql) => st(sql) };
+}
+
+test("/api/papers lists a language's newspapers, most open words first, named from a label, with their letter-key maps", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
+  const add = (id, page, label, extra = {}, cols = "") => db.prepare(`INSERT INTO tasks (id, lang, set_name, body${cols ? ", " + cols : ""}) VALUES (?, 'de', 's', ?${cols ? ", 1" : ""})`).run(id, JSON.stringify({ page, label, ...extra }));
+  add("de/s/1", "sn84027101/1881-01-25/ed-1/seq-7", "Luxemburger Gazette, 25 January 1881, page 7", { key: "de/s/k/a.json" });
+  add("de/s/2", "sn84027101/1894-03-06/ed-1/seq-8", "Luxemburger Gazette, 6 March 1894, page 8", { key: "de/s/k/b.json" });
+  add("de/s/3", "sn84027101/1894-03-06/ed-1/seq-8", "Luxemburger Gazette, 6 March 1894, page 8", { key: "de/s/k/b.json" });
+  add("de/s/4", "sn86064439/1914-02-06/ed-1/seq-1", "Süd California Deutsche Zeitung, 6 February 1914, page 1");
+  add("de/s/5", "sn86064439/1914-02-06/ed-1/seq-1", "Süd California Deutsche Zeitung, 6 February 1914, page 1", {}, "settled");
+  add("de/s/6", "reichsanzeiger", "Deutscher Reichsanzeiger");
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('en/s/1', 'en', 's', ?)").run(JSON.stringify({ page: "sn1/2/ed-1/seq-1", label: "X, 1 May 1900, page 1" }));
+  const res = await worker.fetch(new Request("https://check.usnewsmap.com/api/papers?lang=de"), { ...env, DB: d1(db) }, {});
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), [
+    { paper: "sn84027101", name: "Luxemburger Gazette", open: 3, tasks: 3, keys: ["de/s/k/a.json", "de/s/k/b.json"] },
+    { paper: "reichsanzeiger", name: "Deutscher Reichsanzeiger", open: 1, tasks: 1, keys: [] },
+    { paper: "sn86064439", name: "Süd California Deutsche Zeitung", open: 1, tasks: 2, keys: [] },
+  ]);
+});
+
+test("/api/next with paper serves only that newspaper's words, and refuses a paper that isn't a title id", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
+  for (const [id, page] of [["de/s/1", "sn1/1900-01-01/ed-1/seq-1"], ["de/s/2", "sn2/1900-01-01/ed-1/seq-1"], ["de/s/3", "sn22/1900-01-01/ed-1/seq-1"]]) {
+    db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES (?, 'de', 's', ?)").run(id, JSON.stringify({ page }));
+  }
+  const token = await signSession(env.SESSION_KEY, "c1");
+  const next = async (q) => worker.fetch(new Request("https://check.usnewsmap.com/api/next?lang=de" + q, { headers: { authorization: "Bearer " + token } }), { ...env, DB: d1(db) }, {});
+  for (let i = 0; i < 5; i++) assert.equal((await (await next("&paper=sn2")).json()).task.id, "de/s/2", "sn2 is not sn22");
+  assert.equal((await (await next("&paper=sn2&skip=de/s/2")).json()).task, null);
+  assert.ok(["de/s/1", "de/s/2", "de/s/3"].includes((await (await next("")).json()).task.id));
+  assert.equal((await next("&paper=sn2'--")).status, 400);
+});
+
+test("a paper's name is its label without the date and page", async () => {
+  const { paperName } = await import("./worker.mjs");
+  assert.equal(paperName("Süd California Deutsche Zeitung, 23 October 1908, page 3", "sn86064439"), "Süd California Deutsche Zeitung");
+  assert.equal(paperName("Der Morgen Zshurnal, 1 May 1920, page 12", "x"), "Der Morgen Zshurnal");
+  assert.equal(paperName(null, "sn1"), "sn1");
+  assert.equal(paperName("Plain name", "sn1"), "Plain name");
+});

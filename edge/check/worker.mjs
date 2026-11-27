@@ -252,18 +252,29 @@ async function api(request, env, url) {
     const c = b64url(crypto.getRandomValues(new Uint8Array(16)));
     return json({ session: await signSession(env.SESSION_KEY, c) });
   }
+  if (p === "/api/papers" && request.method === "GET") {
+    // The newspapers a language's words come from (README.md, "One newspaper at a time"), most open words first.
+    const l = lang(url);
+    const rows = await env.DB.prepare(PAPERS_SQL).bind(l).all();
+    const keys = await env.DB.prepare(PAPER_KEYS_SQL).bind(l).all();
+    return json(papersOf(rows.results, keys.results), 200, { "cache-control": "public, max-age=60" });
+  }
   if (p === "/api/next" && request.method === "GET") {
     const c = await contributorOf(request, env);
     const l = lang(url);
     const skip = (url.searchParams.get("skip") || "").split(",").filter(Boolean).slice(0, 50);
     const holes = skip.map(() => "?").join(",");
+    // ?paper=<lccn>: only words from that newspaper's pages (README.md, "One newspaper at a time").
+    const paper = url.searchParams.get("paper") || "";
+    if (paper && !PAPER.test(paper)) throw new HttpError(400, "paper must be a title id such as sn84027101");
     const row = await env.DB.prepare(
       `SELECT id, body, n FROM tasks t WHERE lang = ? AND settled = 0 AND held = 0
          AND NOT EXISTS (SELECT 1 FROM answers a WHERE a.task_id = t.id AND a.contributor = ?)
+         ${paper ? `AND ${PAPER_OF} = ?` : ""}
          ${skip.length ? `AND id NOT IN (${holes})` : ""}
        ORDER BY n DESC, random() LIMIT 1`,
     )
-      .bind(l, c, ...skip)
+      .bind(l, c, ...(paper ? [paper] : []), ...skip)
       .first();
     const mine = await env.DB.prepare("SELECT COUNT(*) AS k FROM answers WHERE contributor = ?").bind(c).first();
     return json({ task: row ? { id: row.id, ...shownBody(row.body) } : null, answered: mine.k });
@@ -394,6 +405,30 @@ async function api(request, env, url) {
     });
   }
   throw new HttpError(404, "not found");
+}
+
+// ---------- one newspaper at a time (README.md, "One newspaper at a time") ----------
+
+// A newspaper is the title id a task's page starts with: `sn84027101` in "sn84027101/1881-01-25/ed-1/seq-7" (a LoC LCCN, or a
+// set's own name for a page from elsewhere). PAPER_OF is that, in SQL, on a row of `tasks`.
+export const PAPER = /^[A-Za-z0-9_-]{1,40}$/;
+export const PAPER_OF = `CASE WHEN instr(json_extract(body, '$.page'), '/') > 0
+  THEN substr(json_extract(body, '$.page'), 1, instr(json_extract(body, '$.page'), '/') - 1) ELSE json_extract(body, '$.page') END`;
+// Per newspaper: its words still open to anyone (not settled, not held), all its words, and one of its labels, which name the
+// paper ("Luxemburger Gazette, 25 January 1881, page 7"). Ordered most open words first, so the page starts with that paper.
+export const PAPERS_SQL = `SELECT ${PAPER_OF} AS paper, SUM(settled = 0 AND held = 0) AS open, COUNT(*) AS tasks, MIN(json_extract(body, '$.label')) AS label
+  FROM tasks WHERE lang = ?1 AND json_extract(body, '$.page') IS NOT NULL GROUP BY paper ORDER BY open DESC, paper`;
+// The letter-key maps (README.md, "Letter key") of each newspaper's pages, from which the page draws the paper's letter guide.
+export const PAPER_KEYS_SQL = `SELECT DISTINCT ${PAPER_OF} AS paper, json_extract(body, '$.key') AS key
+  FROM tasks WHERE lang = ?1 AND json_extract(body, '$.key') IS NOT NULL ORDER BY paper, key`;
+// The paper's name is its label without the date and page.
+export const paperName = (label, paper) => (typeof label === "string" && label ? label.replace(/,\s*\d{1,2} \p{L}+ \d{4}, page \d+$/u, "").trim() || paper : paper);
+export function papersOf(rows, keyRows = []) {
+  const keys = new Map();
+  for (const r of keyRows) if (r.paper && typeof r.key === "string") keys.set(r.paper, [...(keys.get(r.paper) || []), r.key]);
+  return rows.filter((r) => r.paper && PAPER.test(r.paper)).map((r) => ({
+    paper: r.paper, name: paperName(r.label, r.paper), open: r.open || 0, tasks: r.tasks || 0, keys: (keys.get(r.paper) || []).slice(0, 12),
+  }));
 }
 
 // The language's new configuration (?1) with the stored examples, if it has any, put back in.

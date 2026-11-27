@@ -470,6 +470,153 @@ function toggleKey() {
   if (panel) { panel.hidden = !keyOpen; if (keyOpen && !panel.dataset.filled) fillKey(panel, task); }
 }
 
+// ---------- one newspaper at a time (README.md, "One newspaper at a time") ----------
+
+// A language with `by_paper` serves its words one newspaper at a time, so a volunteer gets used to one paper's type, starting
+// with the paper that has the most open words. The visitor can pick another paper, or any. Above the word is the paper's
+// letter guide: its letters as printed in that paper, cut from words both readings agree on, merged from the letter keys of
+// the paper's pages (README.md, "Letter key"), with the letter pairs the machines confuse (`confusions`) side by side first.
+// Like the letter key, it only helps the eye and changes nothing about the readings or the answers.
+const PAPERSEL = "usnm-check-paper-"; // + language code: the paper the visitor picked in this browser ("*" for any)
+const GUIDEOPEN = "usnm-check-guide"; // "1" or "0": the visitor opened or closed the letter guide in this browser
+let papers = [], paper = "", guideOpen = null, guideFor = null;
+const done = new Set(); // papers that had no word left for this visitor on this page
+const paperInfo = (p = paper) => papers.find((x) => x.paper === p) || null;
+const nextPaper = () => papers.find((x) => x.paper !== paper && x.open > 0 && !done.has(x.paper)) || null;
+function guideShown() {
+  if (guideOpen === null) { const v = store(GUIDEOPEN); guideOpen = v === null ? !(window.matchMedia && window.matchMedia("(max-width: 600px)").matches) : v === "1"; }
+  return guideOpen;
+}
+
+async function loadPapers() {
+  try { papers = await getJSON("/api/papers?lang=" + encodeURIComponent(lang)); } catch { papers = []; }
+  if (!Array.isArray(papers)) papers = [];
+  papers = papers.filter((x) => x && typeof x.paper === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(x.paper));
+  if (!papers.length) return;
+  const kept = store(PAPERSEL + lang);
+  paper = kept === "*" ? "" : kept && papers.some((x) => x.paper === kept && x.open > 0) ? kept : (papers.find((x) => x.open > 0) || papers[0]).paper;
+  renderPaperBar();
+}
+
+function renderPaperBar() {
+  const bar = $("paperbar"); bar.textContent = "";
+  const label = document.createElement("label"); label.htmlFor = "paper"; label.textContent = "Newspaper ";
+  const sel = document.createElement("select"); sel.id = "paper";
+  for (const x of papers) {
+    const o = document.createElement("option"); o.value = x.paper;
+    o.textContent = `${x.name} (${x.open.toLocaleString()} open)`; o.selected = x.paper === paper; sel.appendChild(o);
+  }
+  const any = document.createElement("option"); any.value = "*"; any.textContent = "Any newspaper, mixed"; any.selected = !paper; sel.appendChild(any);
+  sel.addEventListener("change", () => setPaper(sel.value === "*" ? "" : sel.value));
+  label.appendChild(sel);
+  const tog = document.createElement("button"); tog.type = "button"; tog.className = "small"; tog.id = "toggle-guide";
+  tog.textContent = "Letter guide (G)"; tog.setAttribute("aria-controls", "guide"); tog.setAttribute("aria-expanded", String(guideShown()));
+  tog.hidden = !paper; tog.addEventListener("click", toggleGuide);
+  const hint = document.createElement("span"); hint.className = "muted"; hint.id = "paper-hint";
+  hint.textContent = paper ? "Words come from this paper only, so you can get used to its type." : "Words come from every paper.";
+  const row = document.createElement("div"); row.className = "paperrow"; row.append(label, tog, hint);
+  const panel = document.createElement("div"); panel.className = "letterkey guide"; panel.id = "guide";
+  panel.setAttribute("role", "region"); panel.setAttribute("aria-label", "Letter guide: letters as printed in this newspaper");
+  panel.hidden = !paper || !guideShown();
+  bar.append(row, panel); bar.hidden = false;
+  guideFor = null;
+  if (!panel.hidden) fillGuide(panel);
+}
+
+// Leaving the word shown for another paper's: it isn't answered (a word answered Neither joins the history, as Skip does).
+function setPaper(p) {
+  if (busy || stale) { const sel = $("paper"); if (sel) sel.value = paper || "*"; return; }
+  paper = p; store(PAPERSEL + lang, p || "*"); done.delete(p);
+  if (task && suggestFor === task.id) { history.push({ task, choice: "neither" }); if (history.length > 50) history.shift(); }
+  renderPaperBar();
+  next(controlFocused(), null, undefined, false);
+}
+
+function toggleGuide() {
+  if (!paper) return;
+  guideOpen = !guideShown(); store(GUIDEOPEN, guideOpen ? "1" : "0");
+  const panel = $("guide"), tog = $("toggle-guide");
+  if (tog) tog.setAttribute("aria-expanded", String(guideOpen));
+  if (panel) { panel.hidden = !guideOpen; if (guideOpen && guideFor !== paper) fillGuide(panel); }
+}
+
+// The paper's letters, from the maps of its pages' letter keys: for each letter up to three pictures, taken in turn from
+// different pages, from a page's own print (level "page") first, else what a key took from the paper's other pages, else the
+// letter in the period typeface. A letter no map has is left out, except the confusion pairs, drawn in the typeface.
+async function fillGuide(panel) {
+  const p = paper, info = paperInfo(p);
+  guideFor = p; panel.textContent = "Loading the letter guide…";
+  const maps = [];
+  for (const k of (info ? info.keys : []).slice(0, 12)) {
+    try {
+      const m = await keyMap(k);
+      if (m && typeof m.sprite === "string" && /^[A-Za-z0-9._\-/]{1,300}$/.test(m.sprite) && !m.sprite.includes("..") && Array.isArray(m.glyphs)) maps.push(m);
+    } catch { /* a page whose map didn't load gives no pictures */ }
+  }
+  if (paper !== p || !panel.isConnected) return;
+  const order = [], pics = new Map(); // glyph -> {page: [[...from map 0], [...map 1]], other: same}
+  let font = null;
+  maps.forEach((m, mi) => {
+    if (!font && KEY_FONTS.includes(m.font)) font = m.font;
+    const scale = 34 / (m.h || 34);
+    for (const g of m.glyphs) {
+      if (!g || typeof g.g !== "string") continue;
+      if (!pics.has(g.g)) { pics.set(g.g, { page: [], other: [] }); order.push(g.g); }
+      const crops = (Array.isArray(g.crops) ? g.crops : []).filter((c) => Array.isArray(c) && c.length >= 3).map((c) => ({ m, scale, c: c.map(Number) }));
+      if (!crops.length) continue;
+      const side = pics.get(g.g)[g.level === "page" ? "page" : "other"];
+      side[mi] = (side[mi] || []).concat(crops);
+    }
+  });
+  // In turn from each page: the first picture of every page, then the second, so three pictures show three pages where they can.
+  const pick = (lists) => { const out = [], ls = lists.filter(Boolean); for (let i = 0; out.length < 3 && ls.some((l) => i < l.length); i++) for (const l of ls) if (i < l.length && out.length < 3) out.push(l[i]); return out; };
+  const cell = (g) => {
+    const got = pics.get(g), crops = got ? (pick(got.page).length ? pick(got.page) : pick(got.other)) : [];
+    const el = document.createElement("span"); el.className = "kg"; el.dataset.g = g;
+    el.setAttribute("role", "group"); el.setAttribute("aria-label", crops.length ? `${g}, as printed in this paper` : `${g}, drawn in a period typeface; no clean print of it in this paper yet`);
+    const l = document.createElement("span"); l.className = "kl"; l.lang = lang; l.textContent = g; l.setAttribute("aria-hidden", "true"); el.appendChild(l);
+    if (!crops.length) {
+      const f = document.createElement("span"); f.className = "kf"; f.lang = lang; f.textContent = g; f.setAttribute("aria-hidden", "true");
+      f.style.fontFamily = `"${font || "UnifrakturMaguntia"}", var(--font-script)`; el.appendChild(f);
+      el.title = `${g}: a period typeface (no clean print of it in this paper yet)`;
+      return el;
+    }
+    for (const { m, scale, c: [x, y, w] } of crops) {
+      const im = document.createElement("span"); im.className = "kc"; im.setAttribute("aria-hidden", "true");
+      Object.assign(im.style, { width: w * scale + "px", backgroundImage: `url("/clips/${m.sprite}")`, backgroundPosition: `${-x * scale}px ${-y * scale}px`, backgroundSize: `${(m.w || 0) * scale}px auto` });
+      el.appendChild(im);
+    }
+    el.title = `${g}: printed in this paper`;
+    return el;
+  };
+  panel.textContent = "";
+  const pairs = (Array.isArray(cfg.confusions) ? cfg.confusions : []).filter((x) => Array.isArray(x) && x.length === 2);
+  if (pairs.length) {
+    const h = document.createElement("p"); h.className = "guide-h"; h.textContent = "Letters the machines mix up, as this paper prints them:"; panel.appendChild(h);
+    const box = document.createElement("div"); box.className = "guide-pairs";
+    for (const [x, y] of pairs) { const pr = document.createElement("span"); pr.className = "guide-pair"; pr.append(cell(x), cell(y)); box.appendChild(pr); }
+    panel.appendChild(box);
+  }
+  if (order.length) {
+    const all = document.createElement("details"); all.className = "guide-all";
+    const sum = document.createElement("summary"); sum.textContent = "Every letter in this paper"; all.appendChild(sum);
+    const box = document.createElement("div"); box.className = "guide-letters";
+    for (const g of order) box.appendChild(cell(g));
+    all.appendChild(box); panel.appendChild(all);
+  } else {
+    const n = document.createElement("p"); n.className = "muted"; n.textContent = "No pictures from this paper yet: the letters above are drawn in a period typeface."; panel.appendChild(n);
+  }
+  if (task) markGuide(task);
+}
+
+// Outlines, in the guide, the letters in question in the word shown.
+function markGuide(t) {
+  const panel = $("guide");
+  if (!panel) return;
+  const hot = t && !isGutter(t) && !isCover(t) ? disputed(t) : new Set();
+  for (const el of panel.querySelectorAll(".kg")) el.classList.toggle("disputed", hot.has(el.dataset.g));
+}
+
 function toggleLine() {
   if (!isGutter(task)) return;
   lineShown = !lineShown;
@@ -503,7 +650,23 @@ function render(prev) {
     const s = document.createElement("strong"); s.textContent = "No words left for you";
     d.append(s, document.createTextNode("You've answered every open word, or the rest have enough answers. Thank you. Check back later for more."));
     // Skipped words are left out for the page's life; they may still be open, so offer them again rather than say none are left.
-    if (skipped.length) {
+    if (paper) {
+      // One newspaper at a time: this paper has nothing left for this visitor; offer the next one with open words.
+      const info = paperInfo(), after = nextPaper();
+      d.lastChild.textContent = `You've answered every open word from ${info ? info.name : "this newspaper"} that you were given. Thank you. `;
+      if (after) {
+        const go = document.createElement("button"); go.type = "button"; go.className = "small"; go.id = "next-paper";
+        go.textContent = `Go on to ${after.name}`; go.addEventListener("click", () => setPaper(after.paper));
+        d.appendChild(go);
+      }
+      if (skipped.length) d.appendChild(document.createTextNode(" "));
+    }
+    if (skipped.length && paper) {
+      const again = document.createElement("button"); again.type = "button"; again.className = "small"; again.id = "retry";
+      again.textContent = `Show ${skipped.length === 1 ? "1 skipped word" : skipped.length + " skipped words"}`;
+      again.addEventListener("click", async () => { const keep = skipped; skipped = []; await next(true); if (failed && !task) { skipped = keep.concat(skipped); render(); } });
+      d.appendChild(again);
+    } else if (skipped.length) {
       d.lastChild.textContent = `You've answered or skipped every open word you were given. Thank you. ${skipped.length === 1 ? "1 skipped word" : skipped.length + " skipped words"} may still need answers. `;
       const again = document.createElement("button"); again.type = "button"; again.className = "small"; again.id = "retry";
       again.textContent = "Show skipped words"; // A failed fetch puts the skipped words back, so the button stays offered next to the error.
@@ -555,6 +718,7 @@ function render(prev) {
   });
   card.appendChild(opts);
   renderKey(card, t);
+  markGuide(t);
   if (suggestFor === t.id) card.appendChild(suggestBox(t));
   if (t.source) {
     const src = document.createElement("a"); src.href = t.source; src.target = "_blank"; src.rel = "noopener"; src.className = "label"; src.textContent = "See the whole page";
@@ -728,6 +892,7 @@ async function fetchNext(also = []) {
     await new Promise((ok) => drained.push(ok));
   }
   const q = new URLSearchParams({ lang });
+  if (paper) q.set("paper", paper);
   const skip = [...new Set([...also, ...pending.map((p) => p.id), ...skipped.slice().reverse()])].slice(0, SKIP_MAX);
   if (skip.length) q.set("skip", skip.join(","));
   return authed("/api/next?" + q);
@@ -777,6 +942,7 @@ async function next(had = controlFocused(), after = null, pressed, keepRest = tr
     const r = first ? await first.p.then((x) => { used = true; return x; }, () => fetchNext()) : await fetchNext();
     // A new word or crop starts with its line drawn: "Hide the line" applies to one crop only.
     task = r.task; lineShown = true; answered = Math.max(answered, r.answered); loaded = true; failed = false; navStatus("");
+    if (!task && paper) done.add(paper);
     fontFailed = !(await fontReady(task));
     // The loading message may have appeared while the font loaded; the word is ready now, so it goes.
     navStatus(fontFailed ? "The font for this word didn't load." : "", fontFailed);
@@ -886,6 +1052,16 @@ async function work(code) {
   catch { $("card").textContent = "We don't have this language. "; const a = document.createElement("a"); a.href = "/"; a.textContent = "See the list"; $("card").appendChild(a); return; }
   document.title = `${cfg.name}: USNewsMap letter check`;
   $("intro").textContent = cfg.intro || "";
+  // Further reading under the intro (`links`): https addresses only, each opening in a new tab.
+  const links = (Array.isArray(cfg.links) ? cfg.links : []).filter((l) => l && typeof l.text === "string" && /^https:\/\/[^\s"<>]+$/.test(l.href || ""));
+  if (links.length) {
+    const p = $("intro-links"); p.textContent = "Further reading: ";
+    links.forEach((l, i) => {
+      if (i) p.appendChild(document.createTextNode(" · "));
+      const a = document.createElement("a"); a.href = l.href; a.target = "_blank"; a.rel = "noopener"; a.textContent = l.text; p.appendChild(a);
+    });
+    p.hidden = false;
+  }
   // A language may carry its own rules text and a list of notes for edge cases (the column gutter language does); the others use the page's.
   if (typeof cfg.rules === "string" && cfg.rules) $("rules").textContent = cfg.rules;
   if (Array.isArray(cfg.guidance) && cfg.guidance.length) {
@@ -910,6 +1086,7 @@ async function work(code) {
   document.addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.target && e.target.id === "suggest-text") return;
+    if (e.target && e.target.tagName === "SELECT") return; // the newspaper picker: its own keys pick a paper
     if (e.key === "1" || e.key === "2") { const b = $("opt" + e.key); if (b) b.click(); }
     // Key 3 moves the cursor into the box it opens: preventDefault keeps the key from typing a "3" there.
     else if (e.key === "3") { e.preventDefault(); choose("neither"); }
@@ -919,8 +1096,10 @@ async function work(code) {
     else if (e.key === "s" || e.key === "S") skip();
     else if (e.key === "l" || e.key === "L") toggleLine();
     else if (e.key === "k" || e.key === "K") toggleKey();
+    else if (e.key === "g" || e.key === "G") toggleGuide();
     else if (e.key === "ArrowLeft" || e.key === "Backspace") back();
   });
+  if (cfg.by_paper) await loadPapers();
   await next();
 }
 
