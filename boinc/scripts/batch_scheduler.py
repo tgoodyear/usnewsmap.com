@@ -680,7 +680,11 @@ class StepLockTimeout(RuntimeError):
 # Steps that take the host's shared step lock (usnm-boinc-step.lock), where a Qwen ship or collect
 # holds it for 5 to 17 minutes. With --step-lock-wait-secs they ask for a longer wait than the
 # host's own default (300 s), per step, so the other steps keep the host's setting.
-LONG_LOCK_STEPS = {("bridge", "submit-remote"), ("bridge", "gold-onboard"), ("bridge", "gold-promote")}
+# write-held-pages waits for the hand-off lock exclusively, and another plan's collect holds it
+# shared for many minutes at --collect-parallel 4 (26-27 Nov 2026: native plans' ticks failed on
+# the host's 100 s default every time main collected), so it waits as long as these do.
+LONG_LOCK_STEPS = {("bridge", "submit-remote"), ("bridge", "gold-onboard"), ("bridge", "gold-promote"),
+                   ("handoff", "write-held-pages")}
 # The native spot-check step (#1919) is never one of them: it always asks for its plan's short
 # wait (native_spot_check.lock_wait_secs), and a busy lock skips it for the tick.
 NATIVE_SPOT_STEP = ("bridge", "native-spot")

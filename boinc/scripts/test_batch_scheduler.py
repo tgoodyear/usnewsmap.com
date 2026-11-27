@@ -4404,6 +4404,20 @@ class TimingsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             batch.Transport(cfg, directory, step_lock_wait_secs=1201)
 
+    def test_write_held_pages_waits_out_another_plans_collect(self):
+        # 26-27 Nov 2026: the host's 100 s default failed native ticks whenever main's collect held
+        # the hand-off lock shared, so write-held-pages waits as long as submit-remote does.
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        cfg = queue_config()
+        cfg["step_command"] = ["ssh", "boinc.example", "--"]
+        transport = batch.Transport(cfg, directory, step_lock_wait_secs=1200)
+        argv, timeout, _ = transport._step_argv("handoff", "write-held-pages", {"HELD_PLAN": "main"})
+        self.assertEqual(argv[argv.index("--lock-wait-secs") + 1], "1200")
+        # Its own 2 minutes, plus the 20 of the wait.
+        self.assertEqual(argv[argv.index("--wait-mins") + 1], "22")
+        argv, _, _ = transport._step_argv("handoff", "read-journals", {})
+        self.assertNotIn("--lock-wait-secs", argv)
+
     def test_scan_route_records_the_actual_queue_destination(self):
         for choices, route in (((), "azure/scans"), (("export",), "onprem/scans")):
             with self.subTest(choices=choices):
