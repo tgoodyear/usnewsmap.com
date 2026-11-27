@@ -499,6 +499,11 @@ function render(prev) {
   const wd = document.createElement("div"); wd.className = "word";
   const wi = new Image(); wi.src = "/clips/" + t.word; wi.alt = "the printed word, enlarged"; wd.appendChild(wi);
   card.appendChild(wd);
+  // The enlarged word is never drawn smaller than the same word in the line above it (a short line is stretched to the card's
+  // width, so its word can outgrow the word clip at its own size).
+  const fit = () => fitWord(li, wi, wd, w);
+  li.addEventListener("load", fit); wi.addEventListener("load", fit);
+  if (typeof ResizeObserver === "function") new ResizeObserver(fit).observe(lv);
   const opts = document.createElement("div"); opts.className = "options";
   (flip(t.id) ? ["b", "a"] : ["a", "b"]).forEach((side, k) => {
     const b = document.createElement("button"); b.type = "button"; b.className = "opt"; b.id = "opt" + (k + 1); b.disabled = busy || stale;
@@ -516,6 +521,18 @@ function render(prev) {
     const src = document.createElement("a"); src.href = t.source; src.target = "_blank"; src.rel = "noopener"; src.className = "label"; src.textContent = "See the whole page";
     card.appendChild(src);
   }
+}
+
+// Sizes the word clip at WORD_OVER_LINE times the width the word's box has in the line as drawn, the clip's padding included,
+// so the word itself is never smaller than in the line. A clip already larger keeps its own size (at most WORD_MAX_HEIGHT
+// tall); none grows past the word strip.
+const WORD_OVER_LINE = 1.5, WORD_MAX_HEIGHT = 120;
+function fitWord(li, wi, wd, w) {
+  if (!li.naturalWidth || !wi.naturalWidth || !li.clientWidth) return;
+  const own = wi.naturalWidth * Math.min(1, WORD_MAX_HEIGHT / wi.naturalHeight);
+  const room = wd.clientWidth - 12; // .word's padding, 6px a side
+  const width = Math.min(Math.max(own, WORD_OVER_LINE * w * li.clientWidth), room);
+  if (width > 0) Object.assign(wi.style, { width: Math.floor(width) + "px", maxHeight: "none" });
 }
 
 // The optional "What does it say?" box after Neither matches. Sending saves the text as extra evidence and then moves on; Skip,

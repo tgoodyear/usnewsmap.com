@@ -648,3 +648,10 @@ test("the character buttons stay hidden behind a keyboard button, which this bro
   // a combining mark (a Yiddish point) is drawn on a dotted circle and named from the language's marks
   assert.match(appJs, /b\.textContent = mark \? "\\u25CC" \+ ch : ch;/);
 });
+
+test("the enlarged word is never drawn smaller than the same word in the line above it", () => {
+  assert.match(appJs, /const WORD_OVER_LINE = 1\.5, WORD_MAX_HEIGHT = 120;/);
+  assert.match(appJs, /const width = Math\.min\(Math\.max\(own, WORD_OVER_LINE \* w \* li\.clientWidth\), room\);/, "at least the word's box in the line as drawn, never past the strip");
+  assert.match(appJs, /li\.addEventListener\("load", fit\); wi\.addEventListener\("load", fit\);/, "sized once both images are in");
+  assert.match(appJs, /new ResizeObserver\(fit\)\.observe\(lv\);/, "and again when the line is drawn at another width");
+});
