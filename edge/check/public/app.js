@@ -572,7 +572,8 @@ function keepFocus(had) {
   if (b && !b.disabled) b.focus({ preventScroll: true });
 }
 
-function controlFocused() { const a = document.activeElement; return !!a && a.tagName === "BUTTON"; }
+// The suggestion box counts too: it takes focus after Neither, so a word left from it with Enter hands focus to the next one.
+function controlFocused() { const a = document.activeElement; return !!a && (a.tagName === "BUTTON" || a.id === "suggest-text"); }
 
 function showProgress() {
   const n = pending.length;
