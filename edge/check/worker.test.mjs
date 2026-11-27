@@ -1237,7 +1237,7 @@ test("the page sends a suggestion only after Neither, in a box that keeps the an
   assert.match(app, /if \(e\.target && e\.target\.id === "suggest-text"\) return;/);
   assert.match(app, /authed\("\/api\/suggestions"/);
   assert.match(app, /const holds = choice === "neither" && !isGutter\(task\);/);
-  assert.match(app, /if \(holds\) \{ suggestFor = id; suggestOpening = \{\}; suggestDraft = ""; render\(\); return; \}/);
+  assert.match(app, /if \(holds\) \{ suggestFor = id; suggestOpening = \{\}; suggestDraft = ""; render\(\); const box = \$\("suggest-text"\); if \(box\) box\.focus\(\); return; \}/);
   assert.match(app, /if \(suggestOpening === opening\) moveOnFromSuggestion\(id\);/, "a save finishing after its box closed moves on nothing");
   assert.match(app, /if \(!holds\) \{ history\.push\(\{ task, choice \}\);/, "history gets the word once, not while the box is open");
   assert.doesNotMatch(app, /maxLength: SUGGEST_MAX/, "no native cap: it counts UTF-16 units");
