@@ -1,15 +1,6 @@
 {
   "glyph_font": "IM Fell English",
-  "glyph_ligatures": [
-    "ct",
-    "ff",
-    "ffi",
-    "ffl",
-    "fi",
-    "fl",
-    "ſt",
-    "ſſ"
-  ],
+  "glyph_ligatures": ["ct", "ff", "ffi", "ffl", "fi", "fl", "ſt", "ſſ"],
   "glyphs": [
     "a",
     "b",

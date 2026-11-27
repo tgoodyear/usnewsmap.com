@@ -77,7 +77,7 @@ A task, as loaded: `id` (`<lang>/<set>/<word id>`), `lang`, `set`, then what the
 | `drop_examples`, `min_examples`           | Build options for `from_tap_data.py`'s example letter pictures (not served).                                                                                                                                                                                                        |
 | `glyphs`, `glyph_font`, `glyph_ligatures` | Build options for `letter_key.py` (not served): the letters of the [letter key](#letter-key), in order; the bundled period typeface that draws a letter with no printed picture; letter runs cast as one piece, whose letters are never cut out.                                    |
 | `equivalents`                             | Letters that print alike (`"װ": "וו"`): `build_tasks.py` compares them as equal, and the page sets the two-letter spelling with no space inside it.                                                                                                                                 |
-| `insert_chars`                            | Characters offered as buttons under the "What does it say?" box, each inserted at the cursor ([Suggestions](#suggestions)). Absent: the single-character fractions ½ ¼ ¾ ⅓ ⅔ ⅛ ⅜ ⅝ ⅞; `[]` shows none. |
+| `insert_chars`                            | Characters offered as buttons under the "What does it say?" box, each inserted at the cursor ([Suggestions](#suggestions)). Absent: the single-character fractions ½ ¼ ¾ ⅓ ⅔ ⅛ ⅜ ⅝ ⅞; `[]` shows none.                                                                              |
 
 The page highlights letters as `a_diff` and `b_diff` count them: a base character with the marks that follow it (פּ, אַ) is one letter.
 
