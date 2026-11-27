@@ -641,6 +641,17 @@ test("the suggestion box offers fraction buttons that insert at the cursor and k
   assert.match(appJs, /const nowSend = \$\("suggest-send"\), nowInput = \$\("suggest-text"\);\s*if \(nowSend\) nowSend\.disabled = false; if \(nowInput\) nowInput\.readOnly = false;/);
 });
 
+test("the suggestion box can start from either reading, in the card's order, replacing the draft with the cursor at the end", () => {
+  // the buttons take the readings in the order the card draws them (flip), so a blind task shows nothing new
+  const order = '(flip(t.id) ? ["b", "a"] : ["a", "b"])';
+  assert.ok(appJs.includes(order + ".forEach((side, k) =>"), "the card's order");
+  assert.ok(appJs.includes("const sides = " + order + '.map((side, k) => [k + 1, t[side]])'), "the buttons' order is the card's");
+  assert.match(appJs, /b\.id = "suggest-from-" \+ k; b\.textContent = "Reading " \+ k;/);
+  // a save in flight ignores it; otherwise the reading replaces the draft and the box keeps focus with the cursor at the end
+  assert.match(appJs, /if \(input\.readOnly \|\| suggestSending === suggestOpening\) return;\s*input\.value = text; suggestDraft = text;\s*input\.focus\(\); input\.setSelectionRange\(text\.length, text\.length\);/);
+  assert.match(appJs, /box\.append\(label, \.\.\.\(sides\.length \? \[from\] : \[\]\), input, row/);
+});
+
 test("the character buttons stay hidden behind a keyboard button, which this browser remembers", () => {
   assert.match(appJs, /const open = store\(CHARSOPEN\) === "1";\s*pad\.hidden = !open;/, "hidden until asked for");
   assert.match(appJs, /toggle\.setAttribute\("aria-controls", "suggest-chars"\); toggle\.setAttribute\("aria-expanded", String\(open\)\);/);

@@ -160,6 +160,8 @@ ul.guidance[hidden] { display: none; }
 .note textarea { font: inherit; font-size: 1.05rem; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); width: 100%; box-sizing: border-box; resize: vertical; min-height: 5.5em; }
 .note-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 .suggest-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.suggest-from { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.suggest-from .how { margin: 0; }
 .suggest-chars { display: flex; gap: 6px; flex-wrap: wrap; }
 .suggest-chars .char { min-width: 44px; min-height: 44px; font-size: 1.2rem; padding: 4px 8px; }
 .suggest-chars[hidden] { display: none; }

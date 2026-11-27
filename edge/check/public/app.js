@@ -843,6 +843,25 @@ function suggestBox(t) {
       input.focus();
     });
   }
+  // Start from a reading: the right text is often a letter or two off one of them. Each button puts that reading in the box,
+  // replacing what is there, with the cursor at its end, ready to fix. The buttons follow the readings' order on screen
+  // (flip), so "Reading 1" is always the one drawn first and the button tells nothing the card doesn't already show.
+  const from = document.createElement("div"); from.className = "suggest-from";
+  const sides = (flip(t.id) ? ["b", "a"] : ["a", "b"]).map((side, k) => [k + 1, t[side]]).filter(([, text]) => typeof text === "string" && text);
+  if (sides.length) {
+    const lead = document.createElement("span"); lead.className = "how"; lead.textContent = "Start from:"; from.appendChild(lead);
+    for (const [k, text] of sides) {
+      const b = document.createElement("button"); b.type = "button"; b.className = "small"; b.id = "suggest-from-" + k; b.textContent = "Reading " + k;
+      b.setAttribute("aria-label", "Copy Reading " + k + " into the box");
+      b.addEventListener("pointerdown", (e) => e.preventDefault());
+      b.addEventListener("click", () => {
+        if (input.readOnly || suggestSending === suggestOpening) return;
+        input.value = text; suggestDraft = text;
+        input.focus(); input.setSelectionRange(text.length, text.length);
+      });
+      from.appendChild(b);
+    }
+  }
   const row = document.createElement("div"); row.className = "suggest-buttons";
   const send = document.createElement("button"); send.type = "button"; send.className = "small"; send.id = "suggest-send"; send.textContent = "Send";
   if (input.readOnly) send.disabled = true; // locked with the box during a save
@@ -850,7 +869,7 @@ function suggestBox(t) {
   const skipBox = document.createElement("button"); skipBox.type = "button"; skipBox.className = "small"; skipBox.id = "suggest-skip"; skipBox.textContent = "Skip";
   skipBox.addEventListener("click", () => moveOnFromSuggestion(t.id));
   row.append(send, skipBox, ...(toggle ? [toggle] : []));
-  box.append(label, input, row, ...(pad ? [pad] : []));
+  box.append(label, ...(sides.length ? [from] : []), input, row, ...(pad ? [pad] : []));
   return box;
 }
 
