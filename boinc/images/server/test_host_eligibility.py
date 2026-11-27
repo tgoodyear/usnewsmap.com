@@ -63,6 +63,23 @@ class EligibilityTests(unittest.TestCase):
         self.assertNotIn(16, self.ids(amd, "uncertain"))
         self.assertNotIn(16, self.ids(amd))
 
+    def test_an_unknown_or_non_string_vendor_is_uncertain_not_dropped(self):
+        # Copilot on #2178 (round 2): {"type": "GPU", "vendor": "nvidia"} left the host out of both lists.
+        cases = [{"type": "GPU", "vendor": "nvidia", "ram_mb": 8192}, {"type": 7, "ram_mb": 8192},
+                 {"vendor": ["nvidia"], "ram_mb": 8192}, {"type": "nvidia", "vendor": "amd", "ram_mb": 8192},
+                 {"type": "Quadro", "ram_mb": 8192}, {"ram_mb": 8192},
+                 {"type": "nvidia", "ram_mb": True}, {"type": "nvidia", "ram_mb": "8192"},
+                 {"type": "nvidia", "ram_mb": -1}]
+        for gpu in cases:
+            with self.subTest(gpu=gpu):
+                self.assertIsNone(he.gpus(json.dumps([gpu])))
+                hosts = [(20, "Microsoft Windows 11", json.dumps([gpu]), 100)]
+                (entry,) = he.eligibility([("windows_x86_64", "nvidia_vulkan_8b", 1, 0)], hosts,
+                                          he.plan_classes(SPEC), 7)["versions"]
+                self.assertEqual([h["host"] for h in entry["uncertain"]], [20])
+                self.assertEqual(entry["candidates"], [])
+        self.assertEqual(he.gpus('[{"type": "NVIDIA", "vendor": "nvidia", "ram_mb": 8192}]')[0]["vendor"], "nvidia")
+
     def test_unknown_plan_class_is_flagged(self):
         (entry,) = self.run_it([("windows_x86_64", "no_such_class", 1, 0)])
         self.assertIn("error", entry)

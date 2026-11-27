@@ -35,6 +35,7 @@ GPU_VENDORS = {
     "intel": {"intel", "intel_gpu"},
     "apple": {"apple", "apple_gpu"},
 }
+KNOWN_VENDORS = set().union(*GPU_VENDORS.values())
 
 
 def os_family(name):
@@ -83,14 +84,21 @@ def gpus(raw):
     for gpu in value:
         if not isinstance(gpu, dict):
             return None
-        vendor = str(gpu.get("type") or gpu.get("vendor") or "").strip().lower()
-        if not vendor:
+        # Both fields, when present, must be strings naming a known vendor, and must agree;
+        # anything else (an unknown name such as "GPU", a number, a missing vendor) makes the
+        # list unreadable, so the host goes to `uncertain` rather than out of both lists.
+        named = [gpu[key] for key in ("type", "vendor") if key in gpu]
+        if not named or not all(isinstance(v, str) for v in named):
             return None
+        vendors = {v.strip().lower() for v in named}
+        if len(vendors) != 1 or not vendors <= KNOWN_VENDORS:
+            return None
+        (vendor,) = vendors
         ram = gpu.get("ram_mb", gpu.get("ram"))
-        try:
-            ram_mb = None if ram is None else float(ram)
-        except (TypeError, ValueError):
+        # Only a non-negative number counts; a bool, a string or a negative value is unreadable.
+        if ram is not None and (isinstance(ram, bool) or not isinstance(ram, (int, float)) or ram < 0):
             return None
+        ram_mb = None if ram is None else float(ram)
         # Some clients report bytes: anything above 1 TB as MB is bytes.
         if ram_mb is not None and ram_mb > 1e6:
             ram_mb /= 1024 * 1024
