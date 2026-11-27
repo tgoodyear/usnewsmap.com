@@ -637,6 +637,8 @@ test("the suggestion box offers fraction buttons that insert at the cursor and k
   // a save in flight locks the box, even one drawn again during it (letter names toggled)
   assert.match(appJs, /if \(input\.readOnly \|\| suggestSending === suggestOpening\) return;/);
   assert.match(appJs, /if \(suggestSending && suggestSending === suggestOpening\) input\.readOnly = true;/);
+  // a failed save unlocks the box on screen, not only the one it started from
+  assert.match(appJs, /const nowSend = \$\("suggest-send"\), nowInput = \$\("suggest-text"\);\s*if \(nowSend\) nowSend\.disabled = false; if \(nowInput\) nowInput\.readOnly = false;/);
 });
 
 test("the character buttons stay hidden behind a keyboard button, which this browser remembers", () => {

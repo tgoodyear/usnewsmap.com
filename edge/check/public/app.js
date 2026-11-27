@@ -587,6 +587,7 @@ function suggestBox(t) {
   }
   const row = document.createElement("div"); row.className = "suggest-buttons";
   const send = document.createElement("button"); send.type = "button"; send.className = "small"; send.id = "suggest-send"; send.textContent = "Send";
+  if (input.readOnly) send.disabled = true; // locked with the box during a save
   send.addEventListener("click", () => sendSuggestion(t.id));
   const skipBox = document.createElement("button"); skipBox.type = "button"; skipBox.className = "small"; skipBox.id = "suggest-skip"; skipBox.textContent = "Skip";
   skipBox.addEventListener("click", () => moveOnFromSuggestion(t.id));
@@ -610,7 +611,10 @@ async function sendSuggestion(id) {
     await authed("/api/suggestions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: id, text }) });
   } catch (e) {
     if (suggestOpening === opening) {
-      if (send) send.disabled = false; if (input) input.readOnly = false;
+      // the box drawn now, which a re-render during the save (letter names toggled) may have replaced
+      suggestSending = null;
+      const nowSend = $("suggest-send"), nowInput = $("suggest-text");
+      if (nowSend) nowSend.disabled = false; if (nowInput) nowInput.readOnly = false;
       status("Your suggestion wasn't saved: " + e.message, true);
     }
     return;
