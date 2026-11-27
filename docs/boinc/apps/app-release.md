@@ -706,7 +706,14 @@ isolated by checking who could receive it:
 1. In the BOINC database, list the hosts that could take it: `os_name` Windows, an `nvidia`
    entry in the `gpus` list of `host.misc`, and an RPC within the last week. This server
    leaves `host.serialnum` empty, so it can't answer the question. Go on only if the test
-   host (the project's Windows 11 VM with the RTX 2060 SUPER) is the only one. On 10 Nov 2026
+   host (the project's Windows 11 VM with the RTX 2060 SUPER) is the only one. The read-only bridge
+   step `host-eligibility` answers it without anyone reading the database credentials: as root on
+   the BOINC host, `usnm-boinc-step --env prod --target bridge --step host-eligibility --wait-mins 10` (optional
+   `--var ELIGIBILITY_APP=usnm_qwen --var ELIGIBILITY_DAYS=7`) prints, for each of the app's
+   versions, the recently seen hosts of its OS family with a GPU of the plan class's type and
+   memory bounds (`candidates`), and those whose GPU list can't be read (`uncertain`). Isolation
+   holds only if `candidates` is the test host alone and `uncertain` is empty. It is a superset of
+   what the scheduler would send (drivers and core versions aren't checked), the safe direction. On 10 Nov 2026
    the one other Windows host reported an AMD Radeon RX 9070 XT, which takes `amd_vulkan_8b`.
 2. Release with `app-version-hold.php --action release --apply`, and confirm the test host gets
    `usnm_qwen` work on that version.
