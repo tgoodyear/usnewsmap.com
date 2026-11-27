@@ -77,6 +77,9 @@
   "guidance": [
     "A printed fraction such as ½: if neither reading has it, pick Neither, then type the word in the box. The ⌨ button beside Send shows buttons for ½ ¼ ¾ and other characters a keyboard lacks, and 1/2 typed out counts the same."
   ],
+  "includes": [
+    "en-read"
+  ],
   "insert_chars": [
     "½",
     "¼",
