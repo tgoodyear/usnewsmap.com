@@ -48,21 +48,24 @@ async function main(argv) {
   for (const file of readdirSync(dir).filter((f) => f.endsWith(".json")).sort()) {
     const code = file.replace(/\.json$/, "");
     const repo = JSON.parse(readFileSync(new URL(file, dir), "utf8"));
-    const res = await fetch(`${site}/api/languages/${code}?sync=${Date.now()}`, { signal: AbortSignal.timeout(20000) });
+    const get = () => fetch(`${site}/api/languages/${code}?sync=${Date.now()}`, { signal: AbortSignal.timeout(20000) });
+    let res = await get();
     if (res.status === 404 && !umbrella(repo)) { console.log(`${code}: not on the site yet (load it with load.sh), skipped`); continue; }
     if (res.status === 404) {
       // A language that includes others is their one entry (README.md, "One entry per language"), so it is created before any
       // tasks of its own are loaded: its page serves the included languages' words meanwhile.
       if (dryRun) { console.log(`${code}: would create (it includes ${repo.includes.join(", ")})`); continue; }
-      const put = await fetch(`${site}/admin/languages/${code}`, {
+      // create=only inserts only while the row is still absent; if load.sh made it meanwhile, it is updated below as any other,
+      // keeping its examples
+      const put = await fetch(`${site}/admin/languages/${code}?create=only`, {
         method: "PUT",
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
         body: JSON.stringify(sent(repo)),
         signal: AbortSignal.timeout(20000),
       });
       if (!put.ok) throw new Error(`${code}: PUT answered ${put.status}`);
-      console.log(`${code}: created (it includes ${repo.includes.join(", ")})`);
-      continue;
+      if ((await put.json()).created) { console.log(`${code}: created (it includes ${repo.includes.join(", ")})`); continue; }
+      res = await get();
     }
     if (!res.ok) throw new Error(`${code}: GET answered ${res.status}`);
     const live = await res.json();

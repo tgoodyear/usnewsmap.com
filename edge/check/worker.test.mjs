@@ -1519,6 +1519,17 @@ test("includes are read safely, and a language is folded into one other only", a
   assert.deepEqual(units.map((r) => [r.code, r.unit, r.tasks]), [["aa", "lines", 0], ["bb", undefined, 0]]);
 });
 
+test("PUT /admin/languages with create=only inserts a missing language and never replaces one that exists", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
+  const put = (cfg) => worker.fetch(new Request("https://check.usnewsmap.com/admin/languages/en?create=only", { method: "PUT", headers: { authorization: "Bearer secret-admin", "content-type": "application/json" }, body: JSON.stringify(cfg) }), { ...env, DB: d1(db) }, {});
+  assert.equal((await (await put({ name: "E", includes: ["en-read"] })).json()).created, true);
+  db.prepare("UPDATE languages SET config = ? WHERE code = 'en'").run(JSON.stringify({ name: "E", examples: { a: ["x"] } }));
+  assert.equal((await (await put({ name: "E2" })).json()).created, false);
+  assert.deepEqual(JSON.parse(db.prepare("SELECT config FROM languages WHERE code = 'en'").get().config), { name: "E", examples: { a: ["x"] } }, "load.sh's row and its examples are kept");
+});
+
 test("sync creates a language that includes others before it has tasks, and skips any other language the site lacks", async () => {
   const { umbrella } = await import("./sync-languages.mjs");
   assert.equal(umbrella({ name: "E", includes: ["en-read"] }), true);

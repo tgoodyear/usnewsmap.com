@@ -726,6 +726,12 @@ async function admin(request, env, url) {
       if (!r.meta?.changes) throw new HttpError(404, "no such language");
       return json({ ok: true });
     }
+    // ?create=only (sync-languages.mjs, a language that includes others): insert only if the row is still absent, so a row load.sh
+    // made meanwhile, with its examples, is never replaced; `created` says which happened.
+    if (url.searchParams.get("create") === "only") {
+      const r = await env.DB.prepare("INSERT INTO languages (code, config) VALUES (?, ?) ON CONFLICT (code) DO NOTHING").bind(m[1], JSON.stringify(cfg)).run();
+      return json({ ok: true, created: !!r.meta?.changes });
+    }
     await env.DB.prepare("INSERT INTO languages (code, config) VALUES (?, ?) ON CONFLICT (code) DO UPDATE SET config = excluded.config")
       .bind(m[1], JSON.stringify(cfg))
       .run();
