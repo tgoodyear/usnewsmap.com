@@ -5,8 +5,8 @@
   "images": {
     "base": "sha256:20678ccceffff94f8e8560739875bfb9b200f323958a3e783be1424d9af5fb83",
     "bin": "sha256:379cf74a21b4e782b58852d2c7c7feff2e7e26e5e6a39df77fbd581cb4f0b30e",
-    "bridge": "sha256:59b93d6797cd0a09f2b50d140a62d1807eec9b16ea790bb218a8e3ca7892ba85",
-    "server": "sha256:886f9b613f8c4f0283adfe272593b30d9ec28a5d81fdb39ac642ff4df05c7927",
+    "bridge": "sha256:6b36fb484e29e2faf2c8658a44a238972856eec003fdac0f5b51137d651095bf",
+    "server": "sha256:59b93d6797cd0a09f2b50d140a62d1807eec9b16ea790bb218a8e3ca7892ba85",
     "worker": null
   },
   "release": {
