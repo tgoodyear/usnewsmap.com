@@ -511,7 +511,9 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
             throw new RuntimeException("Policy changed since reviewed preview");
         }
         if ($publication_guard !== null) $unlock_database = $publication_guard();
-        if ($revalidate !== null) $revalidate();
+        // Under the policy lock, with the policy text this write changes (#2173); the x08 callback
+        // takes no argument and ignores it.
+        if ($revalidate !== null) $revalidate($original);
         if ($general && $plan_class === "nvidia_vulkan_6gb_8b") native_qwen_gpu_ram_cap_guard($project, $original);
         // Lock waits/DB revalidation can cross an automatic admission deadline; closing stays allowed.
         $admission_expired = function() use ($admit_until, $workunit_id) {
@@ -564,7 +566,7 @@ function native_qwen_cohort_write($project, $plan_class, $workunit_id, $apply, $
             if (!chmod($staged, fileperms($path) & 0777)) throw new RuntimeException("Cannot preserve plan permissions");
             if (hash_file("sha256", $path) !== $proof["before_sha256"]) throw new RuntimeException("Concurrent plan change");
             // Detect a lost DB session after filesystem I/O before exposing its policy.
-            if ($revalidate !== null) $revalidate();
+            if ($revalidate !== null) $revalidate($original);
             $admission_expired();
             if (!rename($staged, $path)) throw new RuntimeException("Cannot replace cohort policy");
             $staged = null;
@@ -704,9 +706,10 @@ function native_qwen_cohort_main() {
         }
         chdir("$db_project/html/inc");
         require_once("boinc_db.inc");
-        $revalidate = function() use ($id, $last_id, $plan_class, $ordinary_canary, $tiebreaker, $fresh_pair, $project) {
-          // Read again on every call: the write path runs this under the policy lock too.
-          $plan_xml = file_get_contents("$project/plan_class_spec.xml");
+        $revalidate = function($locked_xml = null) use ($id, $last_id, $plan_class, $ordinary_canary, $tiebreaker, $fresh_pair, $project) {
+          // Before the lock it reads the policy; under it, native_qwen_cohort_write passes the
+          // locked text, so the batch check is against the policy the window is written into.
+          $plan_xml = $locked_xml ?? file_get_contents("$project/plan_class_spec.xml");
           if ($plan_xml === false) throw new RuntimeException("Cannot read plan XML");
           for ($current = $id; $current <= $last_id; $current++) {
             $wu = BoincWorkunit::lookup_id($current);
@@ -731,7 +734,9 @@ function native_qwen_cohort_main() {
     }
     echo json_encode(native_qwen_cohort_write(
         $project, $plan_class, $id, $apply, $last_id, $general, $ordinary_canary,
-        $tiebreaker, $expected_sha256, $fresh_pair ? $revalidate : null,
+        // Every bounded window re-runs its checks, the live batch range among them, under the
+        // policy lock (#2173), not only --fresh-pair.
+        $tiebreaker, $expected_sha256, $revalidate,
         $admit_until === null ? null : intval($admit_until), $keep_general,
         $fresh_pair && $apply ? fn() => native_qwen_fresh_pair_lock(BoincDb::get()) : null
     ), JSON_PRETTY_PRINT)."\n";
