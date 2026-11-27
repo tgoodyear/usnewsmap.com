@@ -279,7 +279,8 @@ async function api(request, env, url) {
   }
   if (p === "/api/suggestions" && request.method === "POST") {
     const c = await contributorOf(request, env, { limited: true });
-    const b = await body(request, 2048);
+    // 4096 bytes: a text of 200 characters written with JSON escapes (a supplementary letter is 12 bytes) still fits.
+    const b = await body(request, 4096);
     if (!b || typeof b.task !== "string" || b.task.length > 300) throw new HttpError(400, "task and text required");
     const text = cleanSuggestion(b.text);
     if (text === null) throw new HttpError(400, `text must be 1 to ${SUGGEST_MAX} characters, with no line breaks or control characters`);

@@ -1141,6 +1141,10 @@ test("POST /api/suggestions needs a session, a task that exists and a valid text
   assert.equal(rows.length, 2);
   assert.equal(rows[0].text, "שלום עליכם");
   assert.equal(rows[1].text, "שלום");
+  // 200 supplementary letters written with JSON escapes (12 bytes each) are within the body limit
+  const escaped = JSON.stringify({ task: "yi/s/1", text: "\u{1F600}".repeat(SUGGEST_MAX) }).replace(/[\u{10000}-\u{10FFFF}]/gu, (c) => c.split("").map((u) => "\\u" + u.charCodeAt(0).toString(16)).join(""));
+  assert.ok(escaped.length > 2048);
+  assert.equal((await post("v1", escaped)).status, 200, "a 200-character text escaped as JSON is accepted");
 });
 
 test("suggestions are rate limited like answers", async () => {

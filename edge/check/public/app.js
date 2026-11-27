@@ -747,7 +747,12 @@ function back() {
   status("Change your answer, or pick the same one to keep it.");
 }
 
-function skip() { if (!task || busy || stale) return; skipped.push(task.id); next(controlFocused(), task.id, undefined, false); }
+function skip() {
+  if (!task || busy || stale) return;
+  // A word answered Neither joins the history as it is left, as it does when its box is sent or skipped.
+  if (suggestFor === task.id) { history.push({ task, choice: "neither" }); if (history.length > 50) history.shift(); }
+  skipped.push(task.id); next(controlFocused(), task.id, undefined, false);
+}
 
 async function work(code) {
   lang = code;
