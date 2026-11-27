@@ -61,6 +61,13 @@ class Align(unittest.TestCase):
         self.assertEqual(en_pick.who_is_right("the", "tbe", "the"), "loc")
         self.assertEqual(en_pick.who_is_right("tbe", "thc", "the"), "neither")
 
+    def test_fractions_match_however_they_are_written(self):
+        # a human writes 103½, an OCR 1031/2: the same text
+        self.assertEqual(en_pick.who_is_right("103V2", "1031/2", "103½"), "xiaomi")
+        self.assertEqual(en_pick.who_is_right("103\u00bd", "10314", "1031/2"), "loc")
+        self.assertEqual(en_pick.who_is_right("103V2", "10314", "103½"), "neither")
+        self.assertEqual(en_pick.truth_for("at 1031/2 E.".split(), "at 103½ E.".split()), {0: "at", 1: "103½", 2: "E."})
+
     def test_truth_for_maps_replacements(self):
         self.assertEqual(en_pick.truth_for("a tbe c".split(), "a the c".split()), {0: "a", 1: "the", 2: "c"})
 
@@ -121,6 +128,45 @@ class Build(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(d, "out", "clips", task["line"])))
             self.assertFalse(any(k in json.load(open(os.path.join(d, "out", "language.json"))) for k in ("a_is", "private")))
 
+    def test_a_fraction_written_two_ways_neither_is_a_task_nor_hides_the_difference_beside_it(self):
+        # Copilot review on #2181: "at ½ tbe price" against "at 1/2 the price" must still give the tbe/the task
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            Image.new("L", (1000, 500), 255).save(os.path.join(d, "p.jpg"))
+            words = "we paid at ½ tbe price today".split()
+            line = "".join(s(w, 60 * i + 10, 10) for i, w in enumerate(words))
+            open(os.path.join(d, "p.xml"), "w").write(ALTO.format(line1=line, line2=""))
+            page = {"page": "sn1/1900-01-01/ed-1/seq-1", "source": "u", "date": "1900-01-01", "label": "L", "alto": "p.xml",
+                    "image": "p.jpg", "damage_rate": 0.3, "crops": [
+                        {"id": "c1", "box": [0, 0, 1000, 40], "xiaomi": "we paid at 1/2 the price today"}]}
+            open(os.path.join(d, "pages.jsonl"), "w").write(json.dumps(page) + "\n")
+            cfg = os.path.join(HERE, "..", "languages", "en.json")
+            subprocess.run([sys.executable, os.path.join(HERE, "en_pick.py"), "--pages", os.path.join(d, "pages.jsonl"), "--set", "t",
+                            "--language-config", cfg, "--out-dir", os.path.join(d, "out")], check=True, capture_output=True)
+            tasks = [json.loads(l) for l in open(os.path.join(d, "out", "tasks.jsonl"))]
+            self.assertEqual([sorted([t["a"], t["b"]]) for t in tasks], [["tbe", "the"]])
+            self.assertEqual(json.load(open(os.path.join(d, "out", "report.json")))["same_once_fractions_folded"], 1)
+
+
+    def test_a_reading_with_an_at_inside_a_word_is_never_a_task(self):
+        # Trevor, 27 Nov 2026: "@ourse" against "course" (SN84020107, 1895-03-15) is plainly wrong, not a question
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            Image.new("L", (1000, 500), 255).save(os.path.join(d, "p.jpg"))
+            words = "of @ourse at 6@7c tbe price".split()
+            line = "".join(s(w, 60 * i + 10, 10) for i, w in enumerate(words))
+            open(os.path.join(d, "p.xml"), "w").write(ALTO.format(line1=line, line2=""))
+            page = {"page": "sn1/1900-01-01/ed-1/seq-1", "source": "u", "date": "1900-01-01", "label": "L", "alto": "p.xml",
+                    "image": "p.jpg", "damage_rate": 0.3, "crops": [
+                        {"id": "c1", "box": [0, 0, 1000, 40], "xiaomi": "of course at 6@7c the price"}]}
+            open(os.path.join(d, "pages.jsonl"), "w").write(json.dumps(page) + "\n")
+            cfg = os.path.join(HERE, "..", "languages", "en.json")
+            subprocess.run([sys.executable, os.path.join(HERE, "en_pick.py"), "--pages", os.path.join(d, "pages.jsonl"), "--set", "t",
+                            "--language-config", cfg, "--out-dir", os.path.join(d, "out")], check=True, capture_output=True)
+            tasks = [json.loads(l) for l in open(os.path.join(d, "out", "tasks.jsonl"))]
+            self.assertEqual([sorted([t["a"], t["b"]]) for t in tasks], [["tbe", "the"]])
+            self.assertEqual(json.load(open(os.path.join(d, "out", "report.json")))["left_out_stray_at_loc"], 1)
+
 
 class Analysis(unittest.TestCase):
     def rows(self):
@@ -138,6 +184,14 @@ class Analysis(unittest.TestCase):
         self.assertIsNone(an.verdict({"settled": False, "outcome": None}))
         # a marked task (merged_line, #1978) exports unsettled with its old outcome apart, so it has no verdict
         self.assertIsNone(an.verdict({"settled": False, "outcome": None, "mark_reason": "merged_line", "outcome_withdrawn": "a"}))
+
+    def test_a_reading_with_an_at_inside_a_word_loses_whatever_was_picked(self):
+        row = {"settled": True, "outcome": "a", "a": "@ourse", "b": "course", "a_is": "loc", "b_is": "xiaomi"}
+        self.assertEqual(an.verdict(row), "xiaomi")
+        self.assertEqual(an.verdict({**row, "outcome": "unsure"}), "xiaomi")
+        self.assertEqual(an.verdict({**row, "b": "c@urse"}), "neither")
+        self.assertEqual(an.verdict({**row, "a": "6@7c", "b": "6@7e"}), "loc")  # an @ by digits is not the rule
+        self.assertIsNone(an.verdict({**row, "settled": False}))
 
     def test_truth_rows_are_not_pilot_rows(self):
         rows = self.rows()

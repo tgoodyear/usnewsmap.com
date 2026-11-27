@@ -4,7 +4,7 @@
   python3 en_pick_analysis.py --export check-en.jsonl [--set xiaomi-loc-v1] [--calibration-set cal-v1] [--reps 2000] [--seed 1]
 
 Reads /api/export rows (a_is, b_is and truth are there once a task settles). A settled task whose outcome is `a` or `b`
-is a win for the reading that side is; `neither`, `unsure`, `notext` and `disputed` are counted and left out of the win rate.
+is a win for the reading that side is, unless a reading has an @ touching a letter (plainly wrong: the other wins); `neither`, `unsure`, `notext` and `disputed` are counted and left out of the win rate.
 A task settled as `bad_crop` (its box was a build defect) is no evidence about either reading: it is in no figure but
 `left_out_build_defect`, and should be rebuilt (bad_crops.py lists them).
 The win rate is Xiaomi wins / (Xiaomi wins + LoC wins), with a page-clustered bootstrap interval (pages are
@@ -13,15 +13,27 @@ tasks of that set carry a human truth (`xiaomi`, `loc` or `neither`) and the rep
 matches it, and the win rate the truth gives on the same tasks.
 """
 import argparse
+import importlib.util
 import json
+import os
 import random
 from collections import Counter, defaultdict
 
+_spec = importlib.util.spec_from_file_location("build_tasks", os.path.join(os.path.dirname(os.path.abspath(__file__)), "build_tasks.py"))
+bt = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(bt)
+
 
 def verdict(row: dict):
-    """'xiaomi', 'loc', or another outcome word, for a settled row; None for an unsettled one."""
+    """'xiaomi', 'loc', or another outcome word, for a settled row; None for an unsettled one.
+
+    A reading with an @ touching a letter (build_tasks.stray_at) is plainly wrong whatever was picked: the other
+    reading wins, and `neither` if both have one. New builds never offer such a word; this covers words already loaded."""
     if not row.get("settled"):
         return None
+    sa, sb = bt.stray_at(row.get("a") or ""), bt.stray_at(row.get("b") or "")
+    if sa or sb:
+        return "neither" if sa and sb else row.get("b_is") if sa else row.get("a_is")
     out = row.get("outcome")
     if out in ("a", "b"):
         return row.get("a_is") if out == "a" else row.get("b_is")
