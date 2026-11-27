@@ -2485,7 +2485,10 @@ class HandoffAndBridgeQualitySteps(unittest.TestCase):
     def test_bridge_wu_terminal_reads_the_database_and_writes_one_proof(self):
         # #1938: the step names its workunits and nonce, reads only, and puts one file.
         text = open(BRIDGE_JOB_SCRIPT).read()
-        self.assertIn('if [ "$step" = work-volume ] || [ "$step" = batch-inventory ] || [ "$step" = wu-terminal ]; then', text)
+        # The read-only steps that share the runtime defaults file (host-eligibility joined them, #2178).
+        condition = text.split('if [ "$step" = work-volume ]', 1)[1].split("; then", 1)[0]
+        for step in ("batch-inventory", "wu-terminal", "host-eligibility"):
+            self.assertIn(f'[ "$step" = {step} ]', condition)
         block = text.split('if [ "$step" = wu-terminal ]; then', 1)[1].split("  elif [ \"$step\" = batch-inventory ]", 1)[0]
         self.assertIn("SELECT name, id, error_mask, canonical_resultid, assimilate_state FROM workunit", block)
         for write in ("INSERT", "UPDATE", "DELETE"):

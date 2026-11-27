@@ -26,6 +26,7 @@ HOSTS = [
     (13, "Linux Ubuntu", gpu("NVIDIA", 12288), 100),
     (14, "Microsoft Windows 11", "bad", 100),                     # misc unreadable
     (15, "Darwin", "null", 100),
+    (16, "Microsoft Windows 11", json.dumps([{"type": "NVIDIA"}]), 100),  # vendor, no memory
 ]
 
 
@@ -39,7 +40,7 @@ class EligibilityTests(unittest.TestCase):
     def test_windows_nvidia_8b_isolation_shows_the_test_vm_and_uncertain_hosts(self):
         (entry,) = self.run_it([("windows_x86_64", "nvidia_vulkan_8b", 121, 1)])
         self.assertEqual(self.ids(entry), [10])
-        self.assertEqual(self.ids(entry, "uncertain"), [14])
+        self.assertEqual(self.ids(entry, "uncertain"), [14, 16])
         self.assertTrue(entry["held"])
 
     def test_memory_bounds_and_vendor(self):
@@ -53,6 +54,14 @@ class EligibilityTests(unittest.TestCase):
                                   ("x86_64-apple-darwin", "", 121, 0)])
         self.assertEqual(self.ids(linux), [13])
         self.assertEqual(self.ids(cpu), [15])
+
+    def test_a_gpu_of_the_class_vendor_without_memory_is_uncertain_not_dropped(self):
+        # Copilot on #2178: dropping it would falsely show isolation.
+        six, amd = self.run_it([("windows_x86_64", "nvidia_vulkan_6gb_8b", 1, 0),
+                                ("windows_x86_64", "amd_vulkan_8b", 1, 0)])
+        self.assertIn(16, self.ids(six, "uncertain"))
+        self.assertNotIn(16, self.ids(amd, "uncertain"))
+        self.assertNotIn(16, self.ids(amd))
 
     def test_unknown_plan_class_is_flagged(self):
         (entry,) = self.run_it([("windows_x86_64", "no_such_class", 1, 0)])

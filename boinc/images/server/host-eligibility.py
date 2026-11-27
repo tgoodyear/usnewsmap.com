@@ -98,11 +98,16 @@ def gpus(raw):
     return out
 
 
+def vendor_fits(gpu, spec):
+    return gpu["vendor"] in GPU_VENDORS.get(spec["gpu_type"], {spec["gpu_type"]})
+
+
 def fits(gpu, spec):
-    if gpu["vendor"] not in GPU_VENDORS.get(spec["gpu_type"], {spec["gpu_type"]}):
+    """True or False, or None when the class bounds memory and the GPU reports none."""
+    if not vendor_fits(gpu, spec):
         return False
     if gpu["ram_mb"] is None:
-        return spec["min_gpu_ram_mb"] is None and spec["max_gpu_ram_mb"] is None
+        return True if spec["min_gpu_ram_mb"] is None and spec["max_gpu_ram_mb"] is None else None
     if spec["min_gpu_ram_mb"] is not None and gpu["ram_mb"] < spec["min_gpu_ram_mb"]:
         return False
     if spec["max_gpu_ram_mb"] is not None and gpu["ram_mb"] > spec["max_gpu_ram_mb"]:
@@ -129,10 +134,13 @@ def eligibility(versions, hosts, classes, days):
                 entry["candidates"].append(row)
                 continue
             listed = gpus(raw)
-            if listed is None:
-                entry["uncertain"].append(row)
-            elif any(fits(gpu, spec) for gpu in listed):
+            verdicts = [] if listed is None else [fits(gpu, spec) for gpu in listed]
+            if any(v is True for v in verdicts):
                 entry["candidates"].append(dict(row, gpus=listed))
+            elif listed is None or any(v is None for v in verdicts):
+                # An unreadable list, or a GPU of the class's vendor that reports no memory: it
+                # might take the version, so it can't be left out of an isolation check.
+                entry["uncertain"].append(row if listed is None else dict(row, gpus=listed))
         out.append(entry)
     return {"event": "boinc_host_eligibility", "schema_version": 1, "days": days, "versions": out}
 

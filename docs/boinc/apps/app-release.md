@@ -708,7 +708,7 @@ isolated by checking who could receive it:
    leaves `host.serialnum` empty, so it can't answer the question. Go on only if the test
    host (the project's Windows 11 VM with the RTX 2060 SUPER) is the only one. The read-only bridge
    step `host-eligibility` answers it without anyone reading the database credentials: as root on
-   the BOINC host, `usnm-boinc-step --env prod --target bridge --step host-eligibility` (optional
+   the BOINC host, `usnm-boinc-step --env prod --target bridge --step host-eligibility --wait-mins 10` (optional
    `--var ELIGIBILITY_APP=usnm_qwen --var ELIGIBILITY_DAYS=7`) prints, for each of the app's
    versions, the recently seen hosts of its OS family with a GPU of the plan class's type and
    memory bounds (`candidates`), and those whose GPU list can't be read (`uncertain`). Isolation
