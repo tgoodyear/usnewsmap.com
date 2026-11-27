@@ -313,7 +313,7 @@ const GUTTER_BADCROP_HELP = "Pick Bad crop if the picture is broken or isn't par
 // the question whether all of the block's text is in the reading. Yes is `a`, No (some is missing) is `b`, Not text is `notext`
 // (the block holds no text); Neither doesn't apply. Wrong letters don't count, only missing lines or passages.
 const isCover = (t) => !!t && t.kind === "cover";
-const COVER_ANSWERS = [["a", "Yes, it's all there"], ["b", "No, some is missing"]];
+const COVER_ANSWERS = [["a", "Yes, no words missing"], ["b", "No, words are missing"]];
 const COVER_BADCROP_HELP = "Pick Bad crop if the picture is broken, or the box cuts through the middle of lines so you can't say what is in it.";
 
 // A task drawn with another language's configuration than the page's (README.md, "One entry per language") asks a question the

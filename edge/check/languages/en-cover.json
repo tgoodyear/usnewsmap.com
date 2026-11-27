@@ -1,14 +1,14 @@
 {
   "guidance": [
     "Wrong letters or misspelled words don't matter. Answer No only when lines, a passage or a column of the print are missing from the reading.",
-    "The reading may run its lines together differently from the print, or put a few words at the edge of the box in another order. That still counts as all there.",
+    "The reading may run its lines together differently from the print, or put a few words at the edge of the box in another order. That still counts as Yes.",
     "If the reading holds the block's text and more besides (words from the next column), answer Yes.",
     "If the box holds no text at all (a picture, an ornament, a rule or blank paper), pick Not text. A headline or an advertisement is text."
   ],
   "intro": "These come from English-language newspaper pages in Chronicling America, the Library of Congress's collection of historic American newspapers. A program read each page, and we want to know whether it missed any of the print.",
   "name": "English: missing text",
-  "question": "Is all of the printed text in the box also in the machine reading?",
-  "rules": "The box marks a block of print on the page, shown enlarged below it. Under that is the machine reading of the same place. Compare them and say whether any of the print is missing from the reading. You don't need to check every letter. Use Add a note to tell us anything else about a block, such as why you chose or what you're unsure of.",
+  "question": "Does the machine reading include all the words printed in the box? Ignore spelling mistakes: answer No only if words or lines are missing.",
+  "rules": "The box marks a block of print on the page, shown enlarged below it. Under that is the machine reading of the same place. This is not a spelling check: we want to know whether the machine skipped any of the print. Answer No if any words, lines or passages in the box are missing from the reading, even if the rest is perfect. Use Add a note to tell us anything else about a block, such as why you chose or what you're unsure of.",
   "title": "English newspapers: missing text",
   "unit": "blocks"
 }
