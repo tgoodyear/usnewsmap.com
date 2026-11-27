@@ -12,6 +12,7 @@ let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = 
 // The characters offered under the box by default (suggestBox): the single-character fractions newspapers print in prices and
 // addresses. The tools compare them with 1/2 typed out as equal (tools/build_tasks.py, fold_fractions).
 const INSERT_CHARS = ["½", "¼", "¾", "⅓", "⅔", "⅛", "⅜", "⅝", "⅞"];
+const CHARSOPEN = "usnm-check-chars"; // "1" when the visitor opened the character buttons under the suggestion box
 let suggestFor = null, suggestDraft = "", suggestOpening = null, suggestSending = null;
 // On a slow connection an answer is saved in the background and the next word, fetched while this one was shown, appears at once.
 // `pending` holds answers not yet saved, oldest first; `ahead` holds the next words fetched for the word now shown; `stale` is set
@@ -530,15 +531,20 @@ function suggestBox(t) {
   if (suggestSending && suggestSending === suggestOpening) input.readOnly = true;
   input.addEventListener("input", () => { suggestDraft = input.value; });
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); sendSuggestion(t.id); } });
-  // Characters a US keyboard can't type (½ and the other single-character fractions): each button puts its character in the box
-  // at the cursor. A language's `insert_chars` replaces the list (an empty list shows none). pointerdown is cancelled so the box
-  // keeps focus, and a phone keeps its keyboard up.
+  // Characters a US keyboard can't type (½ and the other single-character fractions; a language's own letters): each button puts
+  // its text in the box at the cursor. A language's `insert_chars` replaces the list (an empty list shows none); an entry may be
+  // several code points (a letter with its points), and one that starts with a combining mark is drawn on a dotted circle and
+  // named from `marks`. The buttons stay hidden behind a keyboard button until asked for, and this browser remembers the choice.
+  // pointerdown is cancelled on every one, so the box keeps focus and a phone keeps its keyboard up.
   const chars = Array.isArray(cfg.insert_chars) ? cfg.insert_chars : INSERT_CHARS;
-  let pad = null;
+  let pad = null, toggle = null;
   if (chars.length) {
-    pad = document.createElement("div"); pad.className = "suggest-chars"; pad.setAttribute("role", "group"); pad.setAttribute("aria-label", "Insert a character");
+    pad = document.createElement("div"); pad.className = "suggest-chars"; pad.id = "suggest-chars"; pad.setAttribute("role", "group"); pad.setAttribute("aria-label", "Insert a character");
+    if (cfg.dir) pad.dir = cfg.dir;
     for (const ch of chars) {
-      const b = document.createElement("button"); b.type = "button"; b.className = "small char"; b.textContent = ch; b.setAttribute("aria-label", "Insert " + ch);
+      const mark = /^\p{M}/u.test(ch);
+      const b = document.createElement("button"); b.type = "button"; b.className = "small char"; b.lang = lang; b.textContent = mark ? "\u25CC" + ch : ch;
+      b.setAttribute("aria-label", "Insert " + (mark && cfg.marks && cfg.marks[ch] ? cfg.marks[ch] : ch));
       b.addEventListener("pointerdown", (e) => e.preventDefault());
       b.addEventListener("click", () => {
         // the opening's save state, not only the input's: a re-render during a save makes a new, writable input
@@ -550,14 +556,25 @@ function suggestBox(t) {
       });
       pad.appendChild(b);
     }
+    const open = store(CHARSOPEN) === "1";
+    pad.hidden = !open;
+    toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "small chars-toggle"; toggle.id = "suggest-chars-toggle";
+    toggle.textContent = "\u2328\uFE0E"; toggle.title = "Special characters";
+    toggle.setAttribute("aria-label", "Special characters"); toggle.setAttribute("aria-controls", "suggest-chars"); toggle.setAttribute("aria-expanded", String(open));
+    toggle.addEventListener("pointerdown", (e) => e.preventDefault());
+    toggle.addEventListener("click", () => {
+      const show = pad.hidden;
+      pad.hidden = !show; toggle.setAttribute("aria-expanded", String(show)); store(CHARSOPEN, show ? "1" : "0");
+      input.focus();
+    });
   }
   const row = document.createElement("div"); row.className = "suggest-buttons";
   const send = document.createElement("button"); send.type = "button"; send.className = "small"; send.id = "suggest-send"; send.textContent = "Send";
   send.addEventListener("click", () => sendSuggestion(t.id));
   const skipBox = document.createElement("button"); skipBox.type = "button"; skipBox.className = "small"; skipBox.id = "suggest-skip"; skipBox.textContent = "Skip";
   skipBox.addEventListener("click", () => moveOnFromSuggestion(t.id));
-  row.append(send, skipBox);
-  box.append(label, input, ...(pad ? [pad] : []), row);
+  row.append(send, skipBox, ...(toggle ? [toggle] : []));
+  box.append(label, input, row, ...(pad ? [pad] : []));
   return box;
 }
 

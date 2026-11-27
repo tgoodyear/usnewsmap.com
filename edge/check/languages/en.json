@@ -1,6 +1,15 @@
 {
   "glyph_font": "IM Fell English",
-  "glyph_ligatures": ["ct", "ff", "ffi", "ffl", "fi", "fl", "ſt", "ſſ"],
+  "glyph_ligatures": [
+    "ct",
+    "ff",
+    "ffi",
+    "ffl",
+    "fi",
+    "fl",
+    "ſt",
+    "ſſ"
+  ],
   "glyphs": [
     "a",
     "b",
@@ -66,7 +75,26 @@
     "9"
   ],
   "guidance": [
-    "A printed fraction such as ½: if neither reading has it, pick Neither, then type the word in the box. The ½ ¼ ¾ buttons under the box put a fraction in, and 1/2 typed out counts the same."
+    "A printed fraction such as ½: if neither reading has it, pick Neither, then type the word in the box. The ⌨ button beside Send shows buttons for ½ ¼ ¾ and other characters a keyboard lacks, and 1/2 typed out counts the same."
+  ],
+  "insert_chars": [
+    "½",
+    "¼",
+    "¾",
+    "⅓",
+    "⅔",
+    "⅛",
+    "⅜",
+    "⅝",
+    "⅞",
+    "¢",
+    "£",
+    "§",
+    "¶",
+    "†",
+    "‡",
+    "°",
+    "—"
   ],
   "intro": "These words come from English-language newspaper pages in Chronicling America, the Library of Congress's collection of historic American newspapers. Two machine readings (OCR) disagree on each word.",
   "name": "English",

@@ -52,6 +52,14 @@ for (const file of files) {
     }
     if ("glyph_ligatures" in cfg) assert.ok(Array.isArray(cfg.glyph_ligatures) && cfg.glyph_ligatures.every((l) => typeof l === "string" && [...l].length >= 1), "glyph_ligatures is a list of letter runs (one letter: never cut out)");
     if ("glyph_font" in cfg) assert.ok(KEY_FONTS.includes(cfg.glyph_font), `glyph_font is one of the bundled ${KEY_FONTS.join(", ")}`);
+    if ("insert_chars" in cfg) {
+      assert.ok(Array.isArray(cfg.insert_chars), "insert_chars is a list");
+      for (const c of cfg.insert_chars) {
+        assert.ok(typeof c === "string" && [...new Intl.Segmenter().segment(c)].length === 1, `insert_chars entry ${JSON.stringify(c)} is one character as written`);
+        assert.equal(c, c.normalize("NFC"), `insert_chars entry ${JSON.stringify(c)} is NFC, as the Worker stores suggestions`);
+      }
+      assert.equal(new Set(cfg.insert_chars).size, cfg.insert_chars.length, "insert_chars has no repeats");
+    }
     if ("min_examples" in cfg) assert.ok(Number.isInteger(cfg.min_examples) && cfg.min_examples > 0);
     // Keys in ascending order at every level, as written by json.dumps(sort_keys=True).
     const sorted = (v) => (v && typeof v === "object" && !Array.isArray(v)

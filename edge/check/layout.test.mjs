@@ -638,3 +638,13 @@ test("the suggestion box offers fraction buttons that insert at the cursor and k
   assert.match(appJs, /if \(input\.readOnly \|\| suggestSending === suggestOpening\) return;/);
   assert.match(appJs, /if \(suggestSending && suggestSending === suggestOpening\) input\.readOnly = true;/);
 });
+
+test("the character buttons stay hidden behind a keyboard button, which this browser remembers", () => {
+  assert.match(appJs, /const open = store\(CHARSOPEN\) === "1";\s*pad\.hidden = !open;/, "hidden until asked for");
+  assert.match(appJs, /toggle\.setAttribute\("aria-controls", "suggest-chars"\); toggle\.setAttribute\("aria-expanded", String\(open\)\);/);
+  assert.match(appJs, /toggle\.addEventListener\("pointerdown", \(e\) => e\.preventDefault\(\)\);/, "opening it keeps the box focused");
+  assert.match(appJs, /pad\.hidden = !show; toggle\.setAttribute\("aria-expanded", String\(show\)\); store\(CHARSOPEN, show \? "1" : "0"\);/);
+  assert.match(css, /\.suggest-chars\[hidden\] \{ display: none; \}/, "the flex rule doesn't override hidden");
+  // a combining mark (a Yiddish point) is drawn on a dotted circle and named from the language's marks
+  assert.match(appJs, /b\.textContent = mark \? "\\u25CC" \+ ch : ch;/);
+});

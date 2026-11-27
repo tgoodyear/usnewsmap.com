@@ -157,3 +157,5 @@ ul.guidance[hidden] { display: none; }
 .suggest-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 .suggest-chars { display: flex; gap: 6px; flex-wrap: wrap; }
 .suggest-chars .char { min-width: 44px; min-height: 44px; font-size: 1.2rem; padding: 4px 8px; }
+.suggest-chars[hidden] { display: none; }
+.suggest-buttons .chars-toggle { margin-inline-start: auto; min-width: 44px; font-size: 1.2rem; }
