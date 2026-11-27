@@ -898,6 +898,7 @@ fn run_blocking(work: &Path) -> anyhow::Result<()> {
         }
     };
     let readings = Readings {
+        refused: Vec::new(),
         v: VERSION,
         job_id: job_id.clone(),
         device: done.device.clone(),

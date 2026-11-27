@@ -405,6 +405,7 @@ mod tests {
         )
         .unwrap();
         let readings = Readings {
+            refused: Vec::new(),
             v: usnm_ocr_contract::qwen::VERSION,
             job_id: qwen_job.id.clone(),
             device: "cpu".into(),

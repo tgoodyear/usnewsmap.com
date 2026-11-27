@@ -154,7 +154,8 @@
         <min_gpu_ram_mb>8192</min_gpu_ram_mb>
         <gpu_ram_used_mb>6500</gpu_ram_used_mb>
         <min_batch>8</min_batch>
-        <max_batch>8</max_batch>
+        <max_batch>9</max_batch>
+        <!-- 9: capped full-resolution 8B work (#2168); nvidia_vulkan_6gb_8b keeps 8. -->
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
     <plan_class>
@@ -171,7 +172,8 @@
         <min_gpu_ram_mb>7000</min_gpu_ram_mb>
         <gpu_ram_used_mb>6000</gpu_ram_used_mb>
         <min_batch>8</min_batch>
-        <max_batch>8</max_batch>
+        <max_batch>9</max_batch>
+        <!-- 9: capped full-resolution 8B work (#2168); nvidia_vulkan_6gb_8b keeps 8. -->
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
     <!-- Intel GPUs on llama.cpp Vulkan for usnm_qwen (#786): the same 8B Q4_K_M readings as the
@@ -196,7 +198,8 @@
         <min_gpu_ram_mb>7000</min_gpu_ram_mb>
         <gpu_ram_used_mb>6500</gpu_ram_used_mb>
         <min_batch>8</min_batch>
-        <max_batch>8</max_batch>
+        <max_batch>9</max_batch>
+        <!-- 9: capped full-resolution 8B work (#2168); nvidia_vulkan_6gb_8b keeps 8. -->
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
     <plan_class>
@@ -221,6 +224,7 @@
         <ngpus>1</ngpus>
         <min_batch>8</min_batch>
         <max_batch>8</max_batch>
+        <!-- Never 9 (#2168): capped full-resolution crops need the full offload's memory. -->
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
     <plan_class>
@@ -233,7 +237,8 @@
         <min_gpu_ram_mb>7000</min_gpu_ram_mb>
         <gpu_ram_used_mb>6500</gpu_ram_used_mb>
         <min_batch>8</min_batch>
-        <max_batch>8</max_batch>
+        <max_batch>9</max_batch>
+        <!-- 9: capped full-resolution 8B work (#2168); nvidia_vulkan_6gb_8b keeps 8. -->
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
     <!-- AMD/ATI is detected and assigned through OpenCL; inference uses native Vulkan.
@@ -255,7 +260,8 @@
         <gpu_ram_used_mb>6500</gpu_ram_used_mb>
         <ngpus>1</ngpus>
         <min_batch>8</min_batch>
-        <max_batch>8</max_batch>
+        <max_batch>9</max_batch>
+        <!-- 9: capped full-resolution 8B work (#2168); nvidia_vulkan_6gb_8b keeps 8. -->
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
     <plan_class>

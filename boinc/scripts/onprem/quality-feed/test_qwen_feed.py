@@ -3017,5 +3017,10 @@ class XiaomiCampaignTest(unittest.TestCase):
     def test_a_transaction_recipe_takes_version_5_and_nothing_past_it(self):
         self.assertEqual(submit.route(5), ("native-xiaomi", 108))
         self.assertEqual([submit.route(v) for v in (1, 2, 3, 4)], [("native-8b", 8)] * 4)
+        # A full-resolution 8B root goes as batch 9, which the 6 GB class never takes (#2168);
+        # Xiaomi's route doesn't depend on it.
+        self.assertEqual([submit.route(v, "full") for v in (1, 2, 3, 4)], [("native-8b-full", 9)] * 4)
+        self.assertEqual(submit.route(5, "full"), ("native-xiaomi", 108))
+        self.assertIn(9, submit.NATIVE_BATCHES)
         source = inspect.getsource(shipment.validate)
         self.assertIn('recipe["prompt_version"] not in (1, 2, 3, 4, 5)', source)

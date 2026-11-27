@@ -69,6 +69,8 @@ pub const SUPPORTED_PROMPT_VERSIONS: [u32; 5] = [
     PROMPT_VERSION_IMAGE_MIN_TOKENS_LOOP_GUARD,
     PROMPT_VERSION_XIAOMI,
 ];
+/// The longest crop id a result may list as refused.
+pub const MAX_REFUSED_ID: usize = 256;
 /// llama-server's context for request versions 1 to 4. 8,192 since #968's half/full A/B (26 Nov
 /// 2026): a crop at Xiaomi's 4.2 Mpx cap takes about 4,100 image tokens, so 4,096 refused it.
 /// Context size changes no reading that fit before; it only lets a larger crop in.
@@ -630,6 +632,13 @@ pub struct Readings {
     pub outcome: Outcome,
     pub prompt_version: u32,
     pub readings: Vec<Reading>,
+    /// Crops that failed alone (#2168): the live server refused the request (a 4xx, such as one
+    /// past the context) or the crop could not be cut. They have no reading; a finished
+    /// (`ok`) result lists every crop it did not read here, so its readings and these add up to
+    /// the job's crops. Absent (empty) in every result before this, and in every result whose
+    /// crops were all read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -729,10 +738,31 @@ impl ResultManifest {
                 "control characters in a reading"
             );
         }
+        // Refused crops (#2168): each once, never also read, and their ids bounded like a reading's.
+        let mut refused: Vec<&str> = r.refused.iter().map(String::as_str).collect();
+        refused.sort_unstable();
+        refused.dedup();
+        ensure!(refused.len() == r.refused.len(), "a crop is refused twice");
+        ensure!(
+            r.refused
+                .iter()
+                .all(|id| !id.is_empty() && id.len() <= MAX_REFUSED_ID),
+            "refused crop id empty or too long"
+        );
+        ensure!(
+            refused.iter().all(|id| ids.binary_search(id).is_err()),
+            "a crop is both read and refused"
+        );
+        let done = self.read as usize + r.refused.len();
         let consistent = match self.outcome {
-            Outcome::Ok => self.read == self.crops && self.model.is_some() && self.device != "none",
-            Outcome::NoGpu | Outcome::UnitError => self.read == 0 && self.model.is_none(),
-            Outcome::Timeout | Outcome::Failed => self.read < self.crops,
+            // Finished: every crop is read or listed as refused, and something was read.
+            Outcome::Ok => {
+                done == self.crops as usize && self.model.is_some() && self.device != "none"
+            }
+            Outcome::NoGpu | Outcome::UnitError => {
+                self.read == 0 && r.refused.is_empty() && self.model.is_none()
+            }
+            Outcome::Timeout | Outcome::Failed => done < self.crops as usize,
         };
         ensure!(consistent, "outcome does not match the readings");
         ensure!(
@@ -968,6 +998,7 @@ pub(crate) mod tests {
         let unit = outcome == Outcome::UnitError;
         let ran = !matches!(outcome, Outcome::UnitError | Outcome::NoGpu);
         let readings = Readings {
+            refused: Vec::new(),
             v: VERSION,
             job_id: job().id,
             device: if ran { "cuda".into() } else { "none".into() },
@@ -1377,6 +1408,48 @@ pub(crate) mod tests {
             None
         );
         assert_eq!(tail_repetition(""), None);
+    }
+
+    /// `result`, with `refused` listed (#2168): `crops` counts both.
+    fn refused_result(
+        outcome: Outcome,
+        texts: &[(&str, &str)],
+        refused: &[&str],
+    ) -> (ResultManifest, Vec<u8>) {
+        let (mut r, mut readings, _) = result(outcome, texts);
+        readings.refused = refused.iter().map(|s| s.to_string()).collect();
+        let bytes = serde_json::to_vec_pretty(&readings).unwrap();
+        r.crops = (texts.len() + refused.len()) as u32;
+        r.readings_bytes = bytes.len() as u64;
+        r.readings_sha256 = sha256(&bytes);
+        (r, bytes)
+    }
+
+    #[test]
+    fn a_result_lists_the_crops_that_failed_alone() {
+        // Read plus refused make the crops of a finished result.
+        let (r, b) = refused_result(Outcome::Ok, &[("c01", "one two")], &["c02"]);
+        assert_eq!(r.check(&b, b"").unwrap().refused, ["c02"]);
+        // Listing one fewer leaves a crop unaccounted for.
+        let (mut r, b) = refused_result(Outcome::Ok, &[("c01", "one two")], &["c02"]);
+        r.crops = 3;
+        assert!(r.check(&b, b"").is_err());
+        // A crop refused twice, or both read and refused, is refused.
+        let (r, b) = refused_result(Outcome::Ok, &[("c01", "x")], &["c02", "c02"]);
+        assert!(r.check(&b, b"").is_err());
+        let (mut r, b) = refused_result(Outcome::Ok, &[("c01", "x")], &["c01"]);
+        r.crops = 1;
+        assert!(r.check(&b, b"").is_err());
+        // A result that never ran refuses nothing; an unfinished one stays short of the crops.
+        let (r, b) = refused_result(Outcome::NoGpu, &[], &["c01"]);
+        assert!(r.check(&b, b"").is_err());
+        let (mut r, b) = refused_result(Outcome::Timeout, &[("c01", "x")], &["c02"]);
+        r.crops = 3;
+        r.check(&b, b"").unwrap();
+        // An empty list isn't written, so a result without refusals is as it always was.
+        let (_, readings, bytes) = result(Outcome::Ok, &[("c01", "a"), ("c02", "b")]);
+        assert!(readings.refused.is_empty());
+        assert!(!String::from_utf8(bytes).unwrap().contains("refused"));
     }
 
     #[test]

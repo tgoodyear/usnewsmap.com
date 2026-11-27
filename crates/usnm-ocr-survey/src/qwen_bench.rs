@@ -303,6 +303,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(root.join(job_id).join("qwen.json")).unwrap())
                 .unwrap();
         let readings = Readings {
+            refused: Vec::new(),
             v: VERSION,
             job_id: job_id.clone(),
             device: "vulkan".into(),

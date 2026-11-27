@@ -806,6 +806,7 @@ mod tests {
         slots: &str,
     ) -> Vec<PathBuf> {
         let readings = Readings {
+            refused: Vec::new(),
             v: VERSION,
             job_id: job.id.clone(),
             device: "vulkan".into(),

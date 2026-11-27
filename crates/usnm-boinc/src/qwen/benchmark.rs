@@ -743,6 +743,7 @@ mod tests {
     fn spool_result(spool: &Path, job: &Job, outcome: Outcome, texts: &[(String, String)]) {
         use usnm_ocr_contract::qwen::{Reading, Readings, ResultManifest};
         let readings = Readings {
+            refused: Vec::new(),
             v: VERSION,
             job_id: job.id.clone(),
             device: "vulkan".into(),
@@ -1182,6 +1183,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(opts.root.join(MANIFEST)).unwrap()).unwrap();
         let job = &manifest.entries[0].job;
         let readings = Readings {
+            refused: Vec::new(),
             v: VERSION,
             job_id: job.id.clone(),
             device: "cpu".into(),
@@ -1264,6 +1266,7 @@ mod tests {
         let out = tmp.path().join("out");
         for (version, accepted) in [(1, false), (job.prompt_version, true)] {
             let readings = Readings {
+                refused: Vec::new(),
                 v: VERSION,
                 job_id: job.id.clone(),
                 device: "cpu".into(),

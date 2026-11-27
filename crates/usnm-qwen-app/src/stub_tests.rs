@@ -154,13 +154,21 @@ fn a_crop_the_server_refuses_fails_alone_and_the_unit_goes_on() {
     let texts: Vec<_> = readings.readings.iter().map(|r| r.text.as_str()).collect();
     assert_eq!(texts, ["second reading"]);
     assert_eq!(readings.diag["crop_errors"], "1");
-    assert!(!readings.diag["crop_error_ids"].is_empty());
+    assert_eq!(readings.refused.len(), 1);
     assert!(!readings
         .readings
         .iter()
-        .any(|r| readings.diag["crop_error_ids"]
-            .split(',')
-            .any(|id| id == r.id)));
+        .any(|r| r.id == readings.refused[0]));
+    // The partial result passes the contract's own check, as the validator runs it.
+    let result: ResultManifest =
+        serde_json::from_slice(&std::fs::read(slot.join(RESULT_FILE)).unwrap()).unwrap();
+    let checked = result
+        .check(
+            &std::fs::read(slot.join(READINGS_FILE)).unwrap(),
+            &std::fs::read(slot.join(DIAG_FILE)).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(checked.refused, readings.refused);
     assert_eq!(launches(&state), 1);
     assert!(!slot.join(CHECKPOINT_FILE).exists());
 }

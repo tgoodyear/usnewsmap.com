@@ -164,6 +164,7 @@ fn empty_result(
     prompt_version: u32,
 ) -> (ResultManifest, Readings) {
     let readings = Readings {
+        refused: Vec::new(),
         v: VERSION,
         job_id: job_id.clone(),
         device: "none".into(),
@@ -889,22 +890,40 @@ fn run_crops(
     };
 
     let engine_ms = ms(started);
-    let mut loop_crops = Vec::new();
-    let mut loop_bits = vec![0u8; l.job.crops.len().div_ceil(8)];
-    for (i, crop) in l.job.crops.iter().enumerate() {
-        let Some(metadata) = cp.generation_metadata.get(&crop.id) else {
-            continue;
-        };
-        if serde_json::from_str::<serde_json::Value>(metadata)
-            .ok()
-            .and_then(|m| m.get("generation_flags")?.as_array().cloned())
-            .is_some_and(|f| {
-                f.iter().any(|f| {
-                    f == "repetition_loop_at_token_budget" || f == "repetition_loop_guard_cut"
+    // Bit `i` marks the result's `i`th reading, which is what the validator reads it by
+    // (`consensus::sides`). With every crop read that is the job's crop `i`; a crop that failed
+    // alone has no reading, so the bits follow the readings, not the job (#2168).
+    let looped_ids: std::collections::BTreeSet<&str> = l
+        .job
+        .crops
+        .iter()
+        .filter(|crop| {
+            cp.generation_metadata
+                .get(&crop.id)
+                .is_some_and(|metadata| {
+                    serde_json::from_str::<serde_json::Value>(metadata)
+                        .ok()
+                        .and_then(|m| m.get("generation_flags")?.as_array().cloned())
+                        .is_some_and(|f| {
+                            f.iter().any(|f| {
+                                f == "repetition_loop_at_token_budget"
+                                    || f == "repetition_loop_guard_cut"
+                            })
+                        })
                 })
-            })
-        {
-            loop_crops.push(crop.id.clone());
+        })
+        .map(|crop| crop.id.as_str())
+        .collect();
+    let loop_crops: Vec<String> = l
+        .job
+        .crops
+        .iter()
+        .filter(|c| looped_ids.contains(c.id.as_str()))
+        .map(|c| c.id.clone())
+        .collect();
+    let mut loop_bits = vec![0u8; l.job.crops.len().div_ceil(8)];
+    for (i, r) in out_readings.iter().enumerate() {
+        if looped_ids.contains(r.id.as_str()) {
             loop_bits[i / 8] |= 1 << (i % 8);
         }
     }
@@ -955,18 +974,8 @@ fn run_crops(
     let mut r_diag = BTreeMap::new();
     r_diag.insert("ctx_size".into(), launch.ctx_size.to_string());
     if !crop_errors.is_empty() {
-        // The crops that failed alone and have no reading (bounded, like every diag value).
-        let mut ids = crop_errors.join(",");
-        if ids.len() > 512 {
-            let mut end = 512;
-            while !ids.is_char_boundary(end) {
-                end -= 1;
-            }
-            ids.truncate(end);
-            ids.push_str(",...");
-        }
+        // How many crops failed alone; the ids are in the readings' `refused`.
         r_diag.insert("crop_errors".into(), crop_errors.len().to_string());
-        r_diag.insert("crop_error_ids".into(), ids);
     }
     r_diag.insert(
         "image_min_tokens".into(),
@@ -1029,6 +1038,9 @@ fn run_crops(
     }
     let device = gpu.device_label.clone();
     let readings = Readings {
+        // The crops that failed alone (#2168), in job order; `ResultManifest::check` reconciles
+        // them with the readings.
+        refused: crop_errors.clone(),
         v: VERSION,
         job_id: l.job.id.clone(),
         device: device.clone(),

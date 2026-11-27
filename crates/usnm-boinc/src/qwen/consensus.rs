@@ -262,7 +262,7 @@ fn judge_with(
     (verdicts, verdict)
 }
 
-/// Whether the result marks its crop `i` looped: bit `i % 8` of byte `i / 8`
+/// Whether the result marks its `i`th reading looped: bit `i % 8` of byte `i / 8`
 /// of the hex `repetition_loop_crop_bits`. Absent in older results.
 fn loop_bit(l: &Loaded, i: usize) -> bool {
     l.readings
@@ -273,8 +273,9 @@ fn loop_bit(l: &Loaded, i: usize) -> bool {
         .is_some_and(|byte| byte >> (i % 8) & 1 == 1)
 }
 
-/// One result's crops. A finished result's readings are in job order, so
-/// the position is the crop's bit.
+/// One result's crops. A reading's bit is its position in the readings,
+/// which are in job order; a crop that failed alone has no reading and no bit
+/// (#2168), so positions after it are not the job's crop indices.
 pub fn sides(l: &Loaded) -> BTreeMap<&str, Side<'_>> {
     l.readings
         .readings

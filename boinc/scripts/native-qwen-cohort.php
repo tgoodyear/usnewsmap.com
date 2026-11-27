@@ -214,7 +214,8 @@ function native_qwen_tiebreaker_validate($workunit, $results, $plan_class, $assi
             throw new RuntimeException("Tiebreaker requires every reported result to be a successful inconclusive");
         }
     }
-    if (intval($workunit->batch) !== 8 || intval($workunit->rsc_disk_bound) !== 19327352832
+    // Batch 9 is capped full-resolution 8B work (#2168), the same unit shape as batch 8.
+    if (!in_array(intval($workunit->batch), [8, 9], true) || intval($workunit->rsc_disk_bound) !== 19327352832
         || intval($workunit->min_quorum) !== 2 || intval($workunit->target_nresults) !== count($results)
         || intval($workunit->canonical_resultid) !== 0 || intval($workunit->error_mask) !== 0
         || intval($workunit->transitioner_flags ?? -1) !== 0 || intval($workunit->need_validate ?? -1) !== 0
@@ -271,10 +272,13 @@ function native_qwen_cohort_validate($workunit, $results, $plan_class, $ordinary
     }
     $xiaomi = in_array($plan_class, NATIVE_XIAOMI_CLASSES, true);
     $model = in_array($plan_class, NATIVE_QWEN_2B_CLASSES, true) ? "2b" : "8b";
-    $batch = $xiaomi ? 108 : ($model === "2b" ? 2 : 8);
+    // Batch 9 is capped full-resolution 8B work (#2168): every 8B class takes it but
+    // nvidia_vulkan_6gb_8b, whose plan class keeps max_batch 8, so a 6 GB card stays on half res.
+    $batches = $xiaomi ? [108] : ($model === "2b" ? [2]
+        : ($plan_class === "nvidia_vulkan_6gb_8b" ? [8] : [8, 9]));
     // The 0.8B model's units carry the same disk bound as the 2B's (Target::disk_bound in usnm-boinc).
     $disk = $xiaomi || $model === "2b" ? 12884901888 : 19327352832;
-    if (intval($workunit->batch) !== $batch || intval($workunit->rsc_disk_bound) !== $disk
+    if (!in_array(intval($workunit->batch), $batches, true) || intval($workunit->rsc_disk_bound) !== $disk
         || intval($workunit->min_quorum) !== 2 || intval($workunit->target_nresults) !== 2
         || intval($workunit->canonical_resultid) !== 0 || intval($workunit->error_mask) !== 0
         || ($ordinary_canary && (count($results) !== 2 || intval($assignments) !== 0

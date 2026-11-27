@@ -222,6 +222,7 @@ pub fn accepted_readings(
             .collect::<Option<Vec<_>>>()
             .with_context(|| format!("{}: a reading of another page", path.display()))?;
         let readings = Readings {
+            refused: Vec::new(),
             v: VERSION,
             job_id: job.id.clone(),
             device: side.device,
@@ -335,6 +336,7 @@ pub(crate) mod tests {
         text: impl Fn(&str, &str) -> String,
     ) -> Vec<PathBuf> {
         let readings = Readings {
+            refused: Vec::new(),
             v: VERSION,
             job_id: job.id.clone(),
             device: "vulkan".into(),
