@@ -59,10 +59,10 @@
 # without deploying or starting the publish job.
 set -euo pipefail
 usage() {
-  echo "usage: boinc/scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ndlocr|usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen|usnm_qwen_train|usnm_iris|usnm_ocr_native|usnm_gold_native> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...] | --build-dir DIR] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET] [--onprem-host HOST --onprem-ct ID] [--prepare-only] [--acceptance-config FILE --acceptance-evidence FILE [--coordination-claim URL]] [--hold | --outrank-pinned] [--what-if]" >&2
+  echo "usage: boinc/scripts/boinc-app-release.sh --env <prod|dev> --app <usnm_ndlocr|usnm_ocr|usnm_assess|usnm_gold|usnm_quality|usnm_surya|usnm_qwen|usnm_qwen_train|usnm_iris|usnm_ocr_native|usnm_gold_native> --version <N.M> --signing-host HOST [--kind container|native] [--binary FILE [--binary-sha256 HEX] [--extra-file LOGICAL=PATH ...] | --build-dir DIR] [--plan-class CLASS] [--worker-image ghcr.io/tgoodyear/usnm-boinc-worker@sha256:...] [--platform PLATFORM [--wrapper FILE --wrapper-sha256 HEX --wrapper-source-pin FILE]] [--signing-key-dir DIR] [--signing-dataset DATASET | --signing-key-file FILE] [--onprem-host HOST --onprem-ct ID] [--prepare-only] [--acceptance-config FILE --acceptance-evidence FILE [--coordination-claim URL]] [--hold | --outrank-pinned] [--what-if]" >&2
   exit 2
 }
-ENV_NAME="" APP="" VERSION="" SIGNING_HOST="" KIND=container PLAN_CLASS="" PLAN_CLASS_SET=false WORKER_OVERRIDE="" KEY_DIR=/usbbak/signing/boinc KEY_DATASET=usbbak/signing WHAT_IF=false PREPARE_ONLY=false
+ENV_NAME="" APP="" VERSION="" SIGNING_HOST="" KIND=container PLAN_CLASS="" PLAN_CLASS_SET=false WORKER_OVERRIDE="" KEY_DIR=/usbbak/signing/boinc KEY_DATASET=usbbak/signing KEY_FILE="" KEY_DIR_SET=false KEY_DATASET_SET=false WHAT_IF=false PREPARE_ONLY=false
 PLATFORM=x86_64-pc-linux-gnu WRAPPER="" WRAPPER_SHA="" WRAPPER_PIN="" BINARY="" BINARY_SHA="" BUILD_DIR=""
 ACCEPTANCE_CONFIG="" ACCEPTANCE_EVIDENCE="" COORDINATION_CLAIM="" ONPREM_HOST="" ONPREM_CT=""
 ONPREM_MANIFEST="" ARTIFACT_RECEIPT="" HOLD=false OUTRANK_PINNED=false
@@ -84,8 +84,9 @@ while [ $# -gt 0 ]; do
     --wrapper) [ $# -ge 2 ] || usage; WRAPPER=$2; shift 2 ;;
     --wrapper-sha256) [ $# -ge 2 ] || usage; WRAPPER_SHA=$2; shift 2 ;;
     --wrapper-source-pin) [ $# -ge 2 ] || usage; WRAPPER_PIN=$2; shift 2 ;;
-    --signing-key-dir) [ $# -ge 2 ] || usage; KEY_DIR=$2; shift 2 ;;
-    --signing-dataset) [ $# -ge 2 ] || usage; KEY_DATASET=$2; shift 2 ;;
+    --signing-key-dir) [ $# -ge 2 ] || usage; KEY_DIR=$2; KEY_DIR_SET=true; shift 2 ;;
+    --signing-dataset) [ $# -ge 2 ] || usage; KEY_DATASET=$2; KEY_DATASET_SET=true; shift 2 ;;
+    --signing-key-file) [ $# -ge 2 ] || usage; KEY_FILE=$2; shift 2 ;;
     --acceptance-config) [ $# -ge 2 ] || usage; ACCEPTANCE_CONFIG=$2; shift 2 ;;
     --acceptance-evidence) [ $# -ge 2 ] || usage; ACCEPTANCE_EVIDENCE=$2; shift 2 ;;
     --coordination-claim) [ $# -ge 2 ] || usage; COORDINATION_CLAIM=$2; shift 2 ;;
@@ -171,6 +172,15 @@ esac
 [ -z "$ONPREM_CT" ] || [[ $ONPREM_CT =~ ^[1-9][0-9]{2,8}$ ]] || die "--onprem-ct must be a container id"
 [[ $KEY_DIR =~ ^/[A-Za-z0-9/._-]+$ ]] || die "--signing-key-dir must be an absolute path"
 [[ $KEY_DATASET =~ ^[A-Za-z0-9/._-]+$ ]] || die "--signing-dataset must be a ZFS dataset name"
+# --signing-key-file: the operator-authorized fallback (docs/boinc/apps/app-release.md, "Operator-
+# authorized Key Vault signing"): the private key in a root-only tmpfs file on the signing host
+# instead of the unlocked usbbak/signing dataset. It replaces the dataset, never adds to it.
+if [ -n "$KEY_FILE" ]; then
+  ! $KEY_DIR_SET && ! $KEY_DATASET_SET ||
+    die "--signing-key-file replaces --signing-key-dir and --signing-dataset; give one or the other"
+  [[ $KEY_FILE =~ ^/(dev/shm|run)/[A-Za-z0-9._/-]+$ && $KEY_FILE != *..* ]] ||
+    die "--signing-key-file must be an absolute path under /dev/shm or /run"
+fi
 cd "$(dirname "$0")/../.."
 if [ "$KIND" = container ]; then
   case "$PLATFORM" in
@@ -336,6 +346,33 @@ else
   VERSION_SUBDIR="apps/$APP/$VERSION/${PLATFORM}"
 fi
 ssh_host() { ssh -o BatchMode=yes -o ConnectTimeout=15 "root@$SIGNING_HOST" "$@"; }
+# key_file_check FILE [UID]: the shell command the signing host runs to accept a
+# --signing-key-file: a regular file, not a symlink, on tmpfs or ramfs, owned by UID (root),
+# mode 0600, not empty. It prints only why it refuses, never the key.
+key_file_check() {
+  local file uid=${2:-0}
+  file=$(printf '%q' "$1")
+  cat <<CHECK
+f=$file
+[ -f "\$f" ] && [ ! -L "\$f" ] || { echo "not a regular file, or a symlink"; exit 1; }
+case "\$(stat -f -c %T "\$f")" in tmpfs | ramfs) ;; *) echo "not on tmpfs or ramfs"; exit 1 ;; esac
+[ "\$(stat -c %u "\$f")" = $uid ] || { echo "not owned by uid $uid"; exit 1; }
+[ "\$(stat -c %a "\$f")" = 600 ] || { echo "mode is not 0600"; exit 1; }
+[ -s "\$f" ] || { echo "empty"; exit 1; }
+CHECK
+}
+# KEY_MATCH: run in the server image with --network=none, the key at /key/code_sign_private
+# (read-only) and the project's codeSignPublicKey at /w/code_sign_public. It signs a fresh nonce
+# with the key and verifies the signature with the public key, as check_appver.py verifies a
+# release, so a key that isn't the published one fails here, before any release file is signed.
+# shellcheck disable=SC2016 # expanded in the container
+KEY_MATCH='SIGN=${SIGN:-/usr/local/boinc/tools/sign_executable}
+CRYPT=${CRYPT:-/usr/local/boinc/lib/crypt_prog}
+W=${W:-/w} KEY=${KEY:-/key/code_sign_private}
+head -c 32 /dev/urandom | od -An -tx1 | tr -d " \n" > "$W/nonce"
+"$SIGN" "$W/nonce" "$KEY" > "$W/nonce.sig"
+test -s "$W/nonce.sig"
+"$CRYPT" -verify "$W/nonce" "$W/nonce.sig" "$W/code_sign_public" > /dev/null'
 # onprem_ct CMD: CMD (one string, run by bash) in the on-prem BOINC container, as root, with
 # stdin passed through. XDG_RUNTIME_DIR is dropped: pct exec carries the caller's, and podman
 # and systemctl then look for a session that isn't there. PATH is set: pct exec's leaves out
@@ -426,17 +463,24 @@ fi
 
 # --- Signing host checks (read-only) ---------------------------------------------------------
 
-keystatus=$(ssh_host "zfs get -H -o value keystatus $KEY_DATASET") || die "can't read the key status of $KEY_DATASET on the signing host over SSH"
-if [ "$keystatus" != available ]; then
-  die "the signing key's dataset $KEY_DATASET is locked ($keystatus). On the signing host, run:
+if [ -n "$KEY_FILE" ]; then
+  why=$(ssh_host "$(key_file_check "$KEY_FILE")") ||
+    die "--signing-key-file $KEY_FILE on the signing host: ${why:-the check did not run}"
+  ssh_host "command -v podman > /dev/null" || die "podman is not installed on the signing host; stage and sign run in the server image there"
+  echo "signing host: OPERATOR-AUTHORIZED FALLBACK: signing with --signing-key-file $KEY_FILE (tmpfs, root, 0600), not $KEY_DATASET; podman available"
+else
+  keystatus=$(ssh_host "zfs get -H -o value keystatus $KEY_DATASET") || die "can't read the key status of $KEY_DATASET on the signing host over SSH"
+  if [ "$keystatus" != available ]; then
+    die "the signing key's dataset $KEY_DATASET is locked ($keystatus). On the signing host, run:
     zfs load-key $KEY_DATASET && zfs mount $KEY_DATASET
 then run this again. This script never unlocks it."
+  fi
+  [ "$(ssh_host "zfs get -H -o value mounted $KEY_DATASET")" = yes ] ||
+    die "$KEY_DATASET has its key loaded but is not mounted: on the signing host, run zfs mount $KEY_DATASET"
+  ssh_host "test -r $KEY_DIR/code_sign_private" || die "no readable $KEY_DIR/code_sign_private on the signing host"
+  ssh_host "command -v podman > /dev/null" || die "podman is not installed on the signing host; stage and sign run in the server image there"
+  echo "signing host: $KEY_DATASET unlocked, key present, podman available"
 fi
-[ "$(ssh_host "zfs get -H -o value mounted $KEY_DATASET")" = yes ] ||
-  die "$KEY_DATASET has its key loaded but is not mounted: on the signing host, run zfs mount $KEY_DATASET"
-ssh_host "test -r $KEY_DIR/code_sign_private" || die "no readable $KEY_DIR/code_sign_private on the signing host"
-ssh_host "command -v podman > /dev/null" || die "podman is not installed on the signing host; stage and sign run in the server image there"
-echo "signing host: $KEY_DATASET unlocked, key present, podman available"
 if [ "$SERVER_MODE" = onprem ]; then
   # shellcheck disable=SC2016 # expanded in the container
   onprem_ct '. /etc/usnm-boinc/server.env && [ -n "$SERVER_IMAGE" ] && podman image exists "$SERVER_IMAGE" && command -v usnm-boinc-step > /dev/null' ||
@@ -600,8 +644,21 @@ fi
 # --- 3. Sign ---------------------------------------------------------------------------------
 
 echo "3. signing on the signing host"
+if [ -n "$KEY_FILE" ]; then
+  key_mount="-v $KEY_FILE:/key/code_sign_private:ro"
+  # The fallback's key must be the published one: it signs a nonce and verifies it against
+  # codeSignPublicKey, in the same --network=none container, before any release file is signed.
+  ssh_host "mkdir -m 700 $remote/keycheck && cat > $remote/keycheck/code_sign_public" <<< "$PUBLIC_KEY" ||
+    die "can't stage the public key for the key check on the signing host"
+  ssh_host "podman run --rm --network=none $key_mount -v $remote/keycheck:/w --entrypoint /bin/sh $SERVER_IMAGE -ec $(printf '%q' "$KEY_MATCH")" ||
+    die "--signing-key-file is not the project's signing key: its signature does not verify against codeSignPublicKey"
+  ssh_host "rm -rf $remote/keycheck"
+  echo "   --signing-key-file matches codeSignPublicKey"
+else
+  key_mount="-v $KEY_DIR:/key:ro"
+fi
 # shellcheck disable=SC2016 # expanded in the container
-ssh_host "podman run --rm --network=none -v $KEY_DIR:/key:ro -v $remote/proj/$VERSION_SUBDIR:/v --entrypoint /bin/sh $SERVER_IMAGE -ec '
+ssh_host "podman run --rm --network=none $key_mount -v $remote/proj/$VERSION_SUBDIR:/v --entrypoint /bin/sh $SERVER_IMAGE -ec '
   cd /v
   for f in *; do
     case \$f in version.xml | *.sig) continue ;; esac
