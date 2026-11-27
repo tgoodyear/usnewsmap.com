@@ -303,8 +303,8 @@ class PlanPolicyRefresh(unittest.TestCase):
                                       if f[0] not in ("min_wu_id", "max_wu_id")])
         self.assertEqual(amd.findtext("gpu_type"), "ati")
         self.assertIsNotNone(amd.find("opencl"))
-        # Batches 8 and 9: half- and capped full-resolution 8B work (#2168).
-        self.assertEqual((amd.findtext("min_batch"), amd.findtext("max_batch")), ("8", "9"))
+        # Batch 8 only until AMD's usnm_qwen 1.21 qualifies (#2168).
+        self.assertEqual((amd.findtext("min_batch"), amd.findtext("max_batch")), ("8", "8"))
         self.assertEqual(amd.findtext("min_gpu_ram_mb"), "7000")
         self.assertEqual(amd.findtext("ngpus"), "1")
         self.assertNotIn("project_prefs_tag", [f[0] for f in fields(amd)])
@@ -1208,6 +1208,32 @@ foreach ($after->plan_class as $node) {
                     self.assertIn("usage:", result.stderr)
                     self.assertEqual(target.read_bytes(), before)
                     self.assertFalse((root / "ops-issue-559").exists())
+
+    @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
+    def test_a_window_admits_only_workunits_the_class_can_be_sent(self):
+        # #2173: Intel, AMD and Apple keep max_batch 8 until their 1.21 qualifies, so a batch-9
+        # (capped full-resolution) workunit is refused for them, and for shared_8b, which opens
+        # Intel too; NVIDIA takes both batches.
+        helper = ROOT / "boinc/scripts/native-qwen-cohort.php"
+        plans = ROOT / "boinc/project/plan_class_spec.xml"
+        result = subprocess.run(
+            ["php", "-d", "zend.assertions=1", "-d", "assert.exception=1", "-r", r"""
+require $argv[1];
+$xml = file_get_contents($argv[2]);
+function refused($call) { try { $call(); } catch (RuntimeException $e) { return true; } return false; }
+assert(native_qwen_class_batches($xml, "nvidia_vulkan_8b") === [8, 9]);
+assert(native_qwen_class_batches($xml, "intel_vulkan_8b") === [8, 8]);
+foreach ([8, 9] as $batch) native_qwen_live_batch_validate($xml, "nvidia_vulkan_8b", $batch);
+native_qwen_live_batch_validate($xml, "intel_vulkan_8b", 8);
+native_qwen_live_batch_validate($xml, "shared_8b", 8);
+foreach (["intel_vulkan_8b", "amd_vulkan_8b", "apple_gpu_8b", "shared_8b", "nvidia_vulkan_6gb_8b"] as $class) {
+    assert(refused(fn() => native_qwen_live_batch_validate($xml, $class, 9)));
+}
+assert(refused(fn() => native_qwen_class_batches($xml, "no_such_class")));
+assert(refused(fn() => native_qwen_class_batches("<not xml", "nvidia_vulkan_8b")));
+echo "ok";
+""", str(helper), str(plans)], capture_output=True, text=True)
+        self.assertEqual((result.returncode, result.stdout), (0, "ok"), result.stderr)
 
     @unittest.skipUnless(shutil.which("php"), "PHP unavailable")
     def test_tiebreaker_admits_only_the_unsent_replica_of_an_inconclusive_quorum(self):

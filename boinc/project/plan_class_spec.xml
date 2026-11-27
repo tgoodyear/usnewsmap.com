@@ -154,8 +154,9 @@
         <min_gpu_ram_mb>8192</min_gpu_ram_mb>
         <gpu_ram_used_mb>6500</gpu_ram_used_mb>
         <min_batch>8</min_batch>
-        <max_batch>9</max_batch>
-        <!-- 9: capped full-resolution 8B work (#2168); nvidia_vulkan_6gb_8b keeps 8. -->
+        <max_batch>8</max_batch>
+        <!-- 8 until this class's usnm_qwen 1.21 qualifies: 1.20's 4,096-token context fails a whole unit
+             on a capped full-resolution crop. Batch 9 (#2168) reopens here with its own 1.21 release. -->
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
     <plan_class>
@@ -237,8 +238,9 @@
         <min_gpu_ram_mb>7000</min_gpu_ram_mb>
         <gpu_ram_used_mb>6500</gpu_ram_used_mb>
         <min_batch>8</min_batch>
-        <max_batch>9</max_batch>
-        <!-- 9: capped full-resolution 8B work (#2168); nvidia_vulkan_6gb_8b keeps 8. -->
+        <max_batch>8</max_batch>
+        <!-- 8 until this class's usnm_qwen 1.21 qualifies: 1.20's 4,096-token context fails a whole unit
+             on a capped full-resolution crop. Batch 9 (#2168) reopens here with its own 1.21 release. -->
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
     <!-- AMD/ATI is detected and assigned through OpenCL; inference uses native Vulkan.
@@ -260,8 +262,9 @@
         <gpu_ram_used_mb>6500</gpu_ram_used_mb>
         <ngpus>1</ngpus>
         <min_batch>8</min_batch>
-        <max_batch>9</max_batch>
-        <!-- 9: capped full-resolution 8B work (#2168); nvidia_vulkan_6gb_8b keeps 8. -->
+        <max_batch>8</max_batch>
+        <!-- 8 until this class's usnm_qwen 1.21 qualifies: 1.20's 4,096-token context fails a whole unit
+             on a capped full-resolution crop. Batch 9 (#2168) reopens here with its own 1.21 release. -->
         <avg_ncpus>2</avg_ncpus>
     </plan_class>
     <plan_class>

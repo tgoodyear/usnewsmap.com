@@ -205,9 +205,9 @@ class DaemonConfig(unittest.TestCase):
                 self.assertEqual(plans[name].findtext("min_wu_id"), "2")
                 self.assertEqual(plans[name].findtext("max_wu_id"), "1")
         amd = plans["amd_vulkan_8b"]
-        # max_batch 9: capped full-resolution 8B work (#2168).
+        # max_batch 8: AMD takes batch 9 (#2168) only once its usnm_qwen 1.21 qualifies.
         for tag, value in (("gpu_type", "ati"), ("ngpus", "1"), ("min_batch", "8"),
-                           ("max_batch", "9"), ("min_gpu_ram_mb", "7000"),
+                           ("max_batch", "8"), ("min_gpu_ram_mb", "7000"),
                            ("gpu_ram_used_mb", "6500"), ("avg_ncpus", "2"),
                            # An iGPU's shared RAM passes the RAM floor; peak FLOPS keeps it out.
                            ("min_gpu_peak_flops", "1.5e12")):
