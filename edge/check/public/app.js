@@ -572,7 +572,8 @@ function keepFocus(had) {
   if (b && !b.disabled) b.focus({ preventScroll: true });
 }
 
-function controlFocused() { const a = document.activeElement; return !!a && a.tagName === "BUTTON"; }
+// The suggestion box counts too: it takes focus after Neither, so a word left from it with Enter hands focus to the next one.
+function controlFocused() { const a = document.activeElement; return !!a && (a.tagName === "BUTTON" || a.id === "suggest-text"); }
 
 function showProgress() {
   const n = pending.length;
@@ -738,7 +739,8 @@ async function choose(choice) {
   pending.push({ id, body, tries: 0 });
   sendAnswers();
   // Neither keeps the word on screen for the optional box; it moves on when the box is sent or skipped (or another control is used).
-  if (holds) { suggestFor = id; suggestOpening = {}; suggestDraft = ""; render(); return; }
+  // The cursor goes to the box, by click, tap or key 3, so what the print says can be typed straight away.
+  if (holds) { suggestFor = id; suggestOpening = {}; suggestDraft = ""; render(); const box = $("suggest-text"); if (box) box.focus(); return; }
   await next(had, id, choice);
 }
 
@@ -793,7 +795,8 @@ async function work(code) {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.target && e.target.id === "suggest-text") return;
     if (e.key === "1" || e.key === "2") { const b = $("opt" + e.key); if (b) b.click(); }
-    else if (e.key === "3") choose("neither");
+    // Key 3 moves the cursor into the box it opens: preventDefault keeps the key from typing a "3" there.
+    else if (e.key === "3") { e.preventDefault(); choose("neither"); }
     else if (e.key === "4") choose("unsure");
     else if (e.key === "5") choose("notext");
     else if (e.key === "6") choose("badcrop");
