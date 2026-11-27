@@ -93,6 +93,7 @@ class PartialTest(unittest.TestCase):
         qwen = project / "qwen" / self.campaign
         (qwen / "units").mkdir(parents=True)
         (qwen / "crop-res").write_text("full\n")
+        (qwen / "submit-batch").write_text("9\n")
         (project / "usnmocr/results/108").mkdir(parents=True)
         args = types.SimpleNamespace(qwen_campaign=self.campaign, campaign="test", collector="collector")
         with mock.patch.object(partial.subprocess, "run") as run:
@@ -105,9 +106,28 @@ class PartialTest(unittest.TestCase):
         self.assertEqual(command[command.index("--qwen-spool") + 1], str(project / "usnmocr/results/9"))
         scope = partial.scope_command(args, project, self.root / "base", self.root / "scope")
         self.assertEqual(scope[scope.index("--qwen-spool") + 1], str(project / "usnmocr/results/9"))
-        # A half root (no file) stays on batch 8.
-        (qwen / "crop-res").unlink()
+        # A root without the record stays on batch 8: a half root, a full root that went to
+        # batch 8 before, or a full-resolution Xiaomi-OCR-0 root (batch 108, read separately).
+        (qwen / "submit-batch").unlink()
         self.assertEqual(partial.qwen_spool(project, qwen), project / "usnmocr/results/8")
+
+    def test_a_full_resolution_xiaomi_root_needs_no_batch_9(self):
+        # Request version 5 submits to batch 108 whatever the resolution (#1776): spools 8 and
+        # 108 are enough, and collection reads Xiaomi results from 108.
+        project = self.root / "project"
+        qwen = project / "qwen" / self.campaign
+        (qwen / "units").mkdir(parents=True)
+        (qwen / "crop-res").write_text("full\n")
+        for batch in ("8", "108"):
+            (project / "usnmocr/results" / batch).mkdir(parents=True)
+        args = types.SimpleNamespace(qwen_campaign=self.campaign, campaign="test", collector="collector")
+        with mock.patch.object(partial.subprocess, "run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, stdout="{}", stderr="")
+            partial.completion_inventory(args, project, self.root / "base")
+            command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--qwen-spool") + 1], str(project / "usnmocr/results/8"))
+        self.assertEqual(command[command.index("--qwen-xiaomi-spool") + 1],
+                         str(project / "usnmocr/results/108"))
 
     def test_scoped_collection_rechecks_real_dependencies_and_never_uses_old_snapshot(self):
         root = self.root / "project"

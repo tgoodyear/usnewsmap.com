@@ -339,7 +339,12 @@ pub fn judge(a: &Loaded, b: &Loaded, params: Params, strict: Result<(), String>)
             page_blocks: false,
         };
     }
-    let (crops, verdict) = judge_crops(&sides(a), &sides(b), params);
+    let (crops, mut verdict) = judge_crops(&sides(a), &sides(b), params);
+    // A crop one host refused and the other answered, even blank, is no agreement (#2168):
+    // judge_crops reads an absent crop as blank, so the refusal is checked first.
+    if let Some(why) = usnm_ocr_contract::qwen::refusal_mismatch(&a.readings, &b.readings) {
+        verdict = Err(why);
+    }
     Judged {
         basis: Basis::CropConsensusV2,
         crops,

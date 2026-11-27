@@ -256,13 +256,16 @@ def digest_args(args, base):
 
 
 def qwen_spool(project, qwen_root):
-    """The batch spool a Qwen root's canonical results arrive in: batch 9 for a root staged with
-    `--crop-res full`, which submits as native-8b-full (#2168), and batch 8 otherwise."""
+    """The batch spool a Qwen root's canonical 8B results arrive in: batch 9 when qwen_submit
+    recorded that the root submits there (`submit-batch`, a full-resolution 8B root, #2168),
+    batch 8 otherwise. A root's crop-res alone doesn't say it: a full-resolution Xiaomi-OCR-0
+    root still submits to batch 108, read through --qwen-xiaomi-spool, and a root that went to
+    batch 8 before keeps its results there."""
     try:
-        full = (Path(qwen_root) / "crop-res").read_text().strip() == "full"
+        nine = (Path(qwen_root) / "submit-batch").read_text().strip() == "9"
     except FileNotFoundError:
-        full = False
-    return project / ("usnmocr/results/9" if full else "usnmocr/results/8")
+        nine = False
+    return project / ("usnmocr/results/9" if nine else "usnmocr/results/8")
 
 
 def completion_inventory(args, project, base, selected=None, deadline=None, limit=CALL_SECONDS,

@@ -920,7 +920,41 @@ pub(crate) mod tests {
         ))
         .unwrap();
         let (_, verdict) = qwen::agree(&a.result, &a.readings, &b.result, &b.readings, 0.9);
-        assert!(verdict.unwrap_err().contains("read by one host only"));
+        // The refusal is caught first: a refused crop is no blank reading (#2168).
+        assert_eq!(verdict.unwrap_err(), "c2: refused by one host only");
+    }
+
+    #[test]
+    fn crop_consensus_never_takes_a_blank_for_a_refusal() {
+        // Host a refused c2; host b answered it blank. crop-consensus-v2 reads an absent crop
+        // as blank, so without the refusal check the pair would agree on c1 and c3 (#2168).
+        let tmp = tempfile::tempdir().unwrap();
+        let a = load(&write_partial(
+            tmp.path(),
+            "a",
+            &[("c1", "erste Zeile hier"), ("c3", "dritte Zeile hier")],
+            &["c2"],
+            true,
+        ))
+        .unwrap();
+        let b = load(&write_crops(
+            tmp.path(),
+            "b",
+            &[
+                ("c1", "erste Zeile hier"),
+                ("c2", ""),
+                ("c3", "dritte Zeile hier"),
+            ],
+            Some(3),
+        ))
+        .unwrap();
+        let judged = super::super::consensus::judge(
+            &a,
+            &b,
+            super::super::consensus::Params::IN_RULE,
+            Ok(()),
+        );
+        assert_eq!(judged.verdict.unwrap_err(), "c2: refused by one host only");
     }
 
     #[test]
@@ -1769,6 +1803,7 @@ pub(crate) mod tests {
             crops: ids
                 .iter()
                 .map(|id| qwen::CropAgreement {
+                    refused: (false, false),
                     dice: Some(1.0),
                     id: format!("{doc}:{id}"),
                     read: (true, true),

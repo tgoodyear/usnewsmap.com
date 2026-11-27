@@ -3060,5 +3060,19 @@ class XiaomiCampaignTest(unittest.TestCase):
         self.assertEqual([submit.route(v, "full") for v in (1, 2, 3, 4)], [("native-8b-full", 9)] * 4)
         self.assertEqual(submit.route(5, "full"), ("native-xiaomi", 108))
         self.assertIn(9, submit.NATIVE_BATCHES)
+        # The batch-9 record: written once, refused for a root that already sent units to batch 8.
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "fresh"
+            (root / "units").mkdir(parents=True)
+            submit.claim_submit_batch(root, 8)
+            self.assertFalse((root / submit.SUBMIT_BATCH_FILE).exists())
+            submit.claim_submit_batch(root, 9)
+            submit.claim_submit_batch(root, 9)
+            self.assertEqual((root / submit.SUBMIT_BATCH_FILE).read_text(), "9\n")
+            old = Path(folder) / "old"
+            (old / "units/u1").mkdir(parents=True)
+            (old / "units/u1/submitted").touch()
+            with self.assertRaisesRegex(RuntimeError, "already went to batch 8"):
+                submit.claim_submit_batch(old, 9)
         source = inspect.getsource(shipment.validate)
         self.assertIn('recipe["prompt_version"] not in (1, 2, 3, 4, 5)', source)

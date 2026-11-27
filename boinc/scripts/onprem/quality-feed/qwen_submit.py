@@ -10,6 +10,7 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import os
 import logging
 from pathlib import Path
 import re
@@ -31,6 +32,36 @@ GUARDED_VERSIONS = (3, 4)
 XIAOMI_VERSION = 5
 XIAOMI_MODEL = "xiaomi-ocr-0-q8"
 NATIVE_BATCHES = (8, 9, 108)
+
+
+SUBMIT_BATCH_FILE = "submit-batch"
+
+
+def claim_submit_batch(root, batch):
+    """Records that a root's units go to `batch` 9 (#2168), so the collectors read its results
+    from results/9; a root without the record keeps batch 8 (or 108 for Xiaomi-OCR-0). A root
+    that already sent units to batch 8 can't move: its earlier results would be split from the
+    rest."""
+    if batch != 9:
+        return
+    path = root / SUBMIT_BATCH_FILE
+    if path.exists():
+        if path.read_text().strip() != "9":
+            raise RuntimeError(f"{root}: recorded submit batch {path.read_text().strip()!r}, not 9")
+        return
+    if any((root / "units").glob("*/submitted")):
+        raise RuntimeError(f"{root}: units already went to batch 8; stage full-resolution 8B work "
+                           "into a new root")
+    tmp = root / (SUBMIT_BATCH_FILE + ".tmp")
+    tmp.write_text("9\n")
+    try:
+        os.link(tmp, path)
+    except FileExistsError:
+        pass
+    finally:
+        tmp.unlink(missing_ok=True)
+    if path.read_text().strip() != "9":
+        raise RuntimeError(f"{root}: another run recorded a different submit batch")
 
 
 def route(prompt_version, crop_res="half"):
@@ -1164,6 +1195,8 @@ def main():
     if (root / "crop-res").exists() and route(a.prompt_version, root_crop_res(root)) != (target, batch):
         target, batch = route(a.prompt_version, root_crop_res(root))
         state = inventory(a.share, a.project, batch)
+    if root.exists() and not (a.inventory or a.preflight):
+        claim_submit_batch(root, batch)
     if a.transaction:
         if a.preflight:
             ap.error("transaction publication is not a read-only preflight")
