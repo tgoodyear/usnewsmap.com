@@ -263,7 +263,7 @@ async function api(request, env, url) {
               COUNT(CASE WHEN t.held = 1 THEN 1 END) AS held
        FROM languages l LEFT JOIN tasks t ON t.lang = l.code GROUP BY l.code ORDER BY l.code`,
     ).all();
-    return json(rows.results.map((r) => ({ code: r.code, name: JSON.parse(r.config).name, tasks: r.tasks, settled: r.settled || 0, held: r.held || 0 })), 200, {
+    return json(languageList(rows.results), 200, {
       "cache-control": "public, max-age=60",
     });
   }
@@ -281,9 +281,9 @@ async function api(request, env, url) {
   }
   if (p === "/api/papers" && request.method === "GET") {
     // The newspapers a language's words come from (README.md, "One newspaper at a time"), most open words first.
-    const l = lang(url);
-    const rows = await env.DB.prepare(PAPERS_SQL).bind(l).all();
-    const keys = await env.DB.prepare(PAPER_KEYS_SQL).bind(l).all();
+    const langs = JSON.stringify(await queueOf(env, lang(url), mixes(url)));
+    const rows = await env.DB.prepare(PAPERS_SQL).bind(langs).all();
+    const keys = await env.DB.prepare(PAPER_KEYS_SQL).bind(langs).all();
     return json(papersOf(rows.results, keys.results), 200, { "cache-control": "public, max-age=60" });
   }
   if (p === "/api/next" && request.method === "GET") {
@@ -294,17 +294,22 @@ async function api(request, env, url) {
     // ?paper=<lccn>: only words from that newspaper's pages (README.md, "One newspaper at a time").
     const paper = url.searchParams.get("paper") || "";
     if (paper && !PAPER.test(paper)) throw new HttpError(400, "paper must be a title id such as sn84027101");
+    // A language's queue also serves the languages its configuration `includes` (README.md, "One entry per language"), but only
+    // to a page that says it draws each word with its own language's configuration (?mix=1). A tab opened before that would
+    // show an included blind word with the page's own letter guide, so it keeps getting only its own language until reloaded.
+    const langs = await queueOf(env, l, mixes(url));
     const row = await env.DB.prepare(
-      `SELECT id, body, n FROM tasks t WHERE lang = ? AND settled = 0 AND held = 0
+      `SELECT id, lang, body, n FROM tasks t WHERE lang IN (SELECT value FROM json_each(?)) AND settled = 0 AND held = 0
          AND NOT EXISTS (SELECT 1 FROM answers a WHERE a.task_id = t.id AND a.contributor = ?)
          ${paper ? `AND ${PAPER_OF} = ?` : ""}
          ${skip.length ? `AND id NOT IN (${holes})` : ""}
        ORDER BY n DESC, random() LIMIT 1`,
     )
-      .bind(l, c, ...(paper ? [paper] : []), ...skip)
+      .bind(JSON.stringify(langs), c, ...(paper ? [paper] : []), ...skip)
       .first();
     const mine = await env.DB.prepare("SELECT COUNT(*) AS k FROM answers WHERE contributor = ?").bind(c).first();
-    return json({ task: row ? { id: row.id, ...shownBody(row.body) } : null, answered: mine.k });
+    // `lang` says which language's configuration draws the word: one of an including language's own sets may differ.
+    return json({ task: row ? { id: row.id, lang: row.lang, ...shownBody(row.body) } : null, answered: mine.k });
   }
   if (p === "/api/answers" && request.method === "POST") {
     const c = await contributorOf(request, env, { limited: true });
@@ -456,6 +461,40 @@ async function api(request, env, url) {
   throw new HttpError(404, "not found");
 }
 
+// ---------- one entry per language (README.md, "One entry per language") ----------
+
+// A language's configuration may name other languages in `includes`: its page then serves their open words too, mixed into its
+// own queue, while each word keeps its own language, set, answers, export and settling. The included languages keep their own
+// pages (old links work) and are left off the home list, whose row for the including language counts all of them.
+export const LANG = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/;
+export const includesOf = (config) => {
+  let cfg;
+  try { cfg = typeof config === "string" ? JSON.parse(config) : config; } catch { return []; }
+  return Array.isArray(cfg && cfg.includes) ? [...new Set(cfg.includes.filter((c) => typeof c === "string" && LANG.test(c)))].slice(0, 10) : [];
+};
+// The languages a page's queue draws from: the language itself, then those it includes when the page can draw them (`mix`).
+export const mixes = (url) => url.searchParams.get("mix") === "1";
+export async function queueOf(env, l, mix = true) {
+  if (!mix) return [l];
+  const row = await env.DB.prepare("SELECT config FROM languages WHERE code = ?").bind(l).first();
+  return [l, ...(row ? includesOf(row.config) : []).filter((c) => c !== l)];
+}
+// The home list: rows of {code, config, tasks, settled, held}. An included language is listed with `part_of`, and its figures are
+// added to the row of the language that includes it.
+export function languageList(rows) {
+  const parent = new Map();
+  for (const r of rows) for (const c of includesOf(r.config)) if (c !== r.code && !parent.has(c)) parent.set(c, r.code);
+  const out = rows.map((r) => ({ code: r.code, name: JSON.parse(r.config).name, tasks: r.tasks || 0, settled: r.settled || 0, held: r.held || 0 }));
+  const by = new Map(out.map((r) => [r.code, r]));
+  for (const r of out) {
+    const p = parent.get(r.code);
+    if (!p || !by.has(p) || parent.has(p)) continue;
+    r.part_of = p;
+    const q = by.get(p); q.tasks += r.tasks; q.settled += r.settled; q.held += r.held;
+  }
+  return out;
+}
+
 // ---------- one newspaper at a time (README.md, "One newspaper at a time") ----------
 
 // A newspaper is the title id a task's page starts with: `sn84027101` in "sn84027101/1881-01-25/ed-1/seq-7" (a LoC LCCN, or a
@@ -466,10 +505,10 @@ export const PAPER_OF = `CASE WHEN instr(json_extract(body, '$.page'), '/') > 0
 // Per newspaper: its words still open to anyone (not settled, not held), all its words, and one of its labels, which name the
 // paper ("Luxemburger Gazette, 25 January 1881, page 7"). Ordered most open words first, so the page starts with that paper.
 export const PAPERS_SQL = `SELECT ${PAPER_OF} AS paper, SUM(settled = 0 AND held = 0) AS open, COUNT(*) AS tasks, MIN(json_extract(body, '$.label')) AS label
-  FROM tasks WHERE lang = ?1 AND json_extract(body, '$.page') IS NOT NULL GROUP BY paper ORDER BY open DESC, paper`;
+  FROM tasks WHERE lang IN (SELECT value FROM json_each(?1)) AND json_extract(body, '$.page') IS NOT NULL GROUP BY paper ORDER BY open DESC, paper`;
 // The letter-key maps (README.md, "Letter key") of each newspaper's pages, from which the page draws the paper's letter guide.
 export const PAPER_KEYS_SQL = `SELECT DISTINCT ${PAPER_OF} AS paper, json_extract(body, '$.key') AS key
-  FROM tasks WHERE lang = ?1 AND json_extract(body, '$.key') IS NOT NULL ORDER BY paper, key`;
+  FROM tasks WHERE lang IN (SELECT value FROM json_each(?1)) AND json_extract(body, '$.key') IS NOT NULL ORDER BY paper, key`;
 // The paper's name is its label without the date and page.
 export const paperName = (label, paper) => (typeof label === "string" && label ? label.replace(/,\s*\d{1,2} \p{L}+ \d{4}, page \d+$/u, "").trim() || paper : paper);
 export function papersOf(rows, keyRows = []) {

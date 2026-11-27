@@ -166,6 +166,12 @@
     "8",
     "9"
   ],
+  "guide_skip": [
+    "de-read"
+  ],
+  "includes": [
+    "de-read"
+  ],
   "insert_chars": [
     "ä",
     "ö",

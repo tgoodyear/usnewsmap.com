@@ -1473,3 +1473,45 @@ test("the page's note box is for every task kind, keeps the answer, and its keys
   const send = app.slice(app.indexOf("async function sendNote"), app.indexOf("// An empty box just moves on."));
   assert.doesNotMatch(send, /pending\.push|next\(|choose\(/);
 });
+
+test("a language that includes others serves their words too, says each word's language, and the home list folds them in", async () => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(":memory:");
+  db.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
+  const lang = (code, cfg) => db.prepare("INSERT INTO languages (code, config) VALUES (?, ?)").run(code, JSON.stringify({ name: code, ...cfg }));
+  lang("de", { includes: ["de-read", "Bad code", "de"] });
+  lang("de-read", {});
+  lang("sr", {});
+  const task = (id, l, extra = "") => db.prepare(`INSERT INTO tasks (id, lang, set_name, body${extra ? ", settled" : ""}) VALUES (?, ?, 's', ?${extra ? ", 1" : ""})`).run(id, l, JSON.stringify({ page: "sn1/1900-01-01/ed-1/seq-1", label: "P, 1 May 1900, page 1", private: { a_is: "x" } }));
+  task("de-read/s/1", "de-read");
+  task("de/s/1", "de", "settled");
+  task("sr/s/1", "sr");
+  const token = await signSession(env.SESSION_KEY, "c1");
+  const get = (path, auth = true) => worker.fetch(new Request("https://check.usnewsmap.com" + path, auth ? { headers: { authorization: "Bearer " + token } } : {}), { ...env, DB: d1(db) }, {});
+  assert.equal((await (await get("/api/next?lang=de")).json()).task, null, "a page from before mix gets only its own language");
+  assert.deepEqual((await (await get("/api/papers?lang=de", false)).json()).map((p) => p.tasks), [1]);
+  const t = (await (await get("/api/next?mix=1&lang=de")).json()).task;
+  assert.equal(t.id, "de-read/s/1");
+  assert.equal(t.lang, "de-read");
+  assert.equal("private" in t, false, "an included blind task stays blind");
+  assert.equal((await (await get("/api/next?lang=de-read")).json()).task.id, "de-read/s/1", "the included language keeps its own page");
+  assert.equal((await (await get("/api/next?mix=1&lang=sr&skip=sr/s/1")).json()).task, null, "a language without includes serves only its own");
+  const papers = await (await get("/api/papers?mix=1&lang=de", false)).json();
+  assert.deepEqual(papers.map((p) => [p.paper, p.open, p.tasks]), [["sn1", 1, 2]]);
+  const list = await (await get("/api/languages", false)).json();
+  assert.deepEqual(list.map((r) => [r.code, r.tasks, r.settled, r.part_of]), [["de", 2, 1, undefined], ["de-read", 1, 0, "de"], ["sr", 1, 0, undefined]]);
+});
+
+test("includes are read safely, and a language is folded into one other only", async () => {
+  const { includesOf, languageList } = await import("./worker.mjs");
+  assert.deepEqual(includesOf('{"includes": ["ab-cd", "x y", 3, "ab-cd"]}'), ["ab-cd"]);
+  assert.deepEqual(includesOf("not json"), []);
+  assert.deepEqual(includesOf({}), []);
+  const rows = [
+    { code: "aa", config: '{"name":"A","includes":["bb"]}', tasks: 1, settled: 0, held: 0 },
+    { code: "bb", config: '{"name":"B","includes":["cc"]}', tasks: 2, settled: 1, held: 0 },
+    { code: "cc", config: '{"name":"C"}', tasks: 4, settled: 0, held: 1 },
+  ];
+  // bb is part of aa; cc's parent bb is itself included, so c stays on its own
+  assert.deepEqual(languageList(rows).map((r) => [r.code, r.tasks, r.part_of]), [["aa", 3, undefined], ["bb", 2, "aa"], ["cc", 4, undefined]]);
+});
