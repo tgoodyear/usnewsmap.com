@@ -9,5 +9,6 @@
   "name": "English: missing text",
   "question": "Is all of the printed text in the box also in the machine reading?",
   "rules": "The box marks a block of print on the page, shown enlarged below it. Under that is the machine reading of the same place. Compare them and say whether any of the print is missing from the reading. You don't need to check every letter. Use Add a note to tell us anything else about a block, such as why you chose or what you're unsure of.",
-  "title": "English newspapers: missing text"
+  "title": "English newspapers: missing text",
+  "unit": "blocks"
 }

@@ -78,7 +78,9 @@
     "A printed fraction such as ½: if neither reading has it, pick Neither, then type the word in the box. The ⌨ button beside Send shows buttons for ½ ¼ ¾ and other characters a keyboard lacks, and 1/2 typed out counts the same."
   ],
   "includes": [
-    "en-read"
+    "en-read",
+    "en-gutter",
+    "en-cover"
   ],
   "insert_chars": [
     "½",
@@ -99,7 +101,8 @@
     "°",
     "—"
   ],
-  "intro": "These words come from English-language newspaper pages in Chronicling America, the Library of Congress's collection of historic American newspapers. Two machine readings (OCR) disagree on each word.",
+  "intro": "These come from English-language newspaper pages in Chronicling America, the Library of Congress's collection of historic American newspapers. Most are words where two machine readings (OCR) disagree. Some ask instead whether a drawn line runs between two columns, or whether a machine reading missed any of a block of print: those cards say what to look for.",
   "name": "English",
-  "title": "English newspapers"
+  "title": "English newspapers",
+  "unit": "items"
 }

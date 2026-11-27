@@ -1,5 +1,6 @@
 // Sends languages/<code>.json to check.usnewsmap.com for every language the site already has, so a
-// merged change to a name, intro or letter note goes live with the deploy (deploy.sh runs this).
+// merged change to a name, intro or letter note goes live with the deploy (deploy.sh runs this). A language that `includes` others
+// and isn't on the site yet is created, since it is their entry.
 // The site's `examples` (letter pictures that from_tap_data.py builds from the clips) are kept: the
 // Worker puts the stored ones back in the same statement (?keep=examples), so pictures load.sh sends
 // meanwhile survive. The build-only options are left out, as from_tap_data.py does. A language the site doesn't have
@@ -15,6 +16,9 @@ const BUILD_ONLY = ["drop_examples", "glyph_font", "glyph_ligatures", "glyphs", 
 export function sent(repo) {
   return Object.fromEntries(Object.entries(repo).filter(([k]) => !BUILD_ONLY.includes(k) && k !== "examples"));
 }
+
+// A language whose configuration includes others is created by sync even before it has tasks of its own.
+export const umbrella = (repo) => Array.isArray(repo.includes) && repo.includes.length > 0;
 
 // What the site should then hold: those fields and the site's examples.
 export function desired(repo, live) {
@@ -45,7 +49,21 @@ async function main(argv) {
     const code = file.replace(/\.json$/, "");
     const repo = JSON.parse(readFileSync(new URL(file, dir), "utf8"));
     const res = await fetch(`${site}/api/languages/${code}?sync=${Date.now()}`, { signal: AbortSignal.timeout(20000) });
-    if (res.status === 404) { console.log(`${code}: not on the site yet (load it with load.sh), skipped`); continue; }
+    if (res.status === 404 && !umbrella(repo)) { console.log(`${code}: not on the site yet (load it with load.sh), skipped`); continue; }
+    if (res.status === 404) {
+      // A language that includes others is their one entry (README.md, "One entry per language"), so it is created before any
+      // tasks of its own are loaded: its page serves the included languages' words meanwhile.
+      if (dryRun) { console.log(`${code}: would create (it includes ${repo.includes.join(", ")})`); continue; }
+      const put = await fetch(`${site}/admin/languages/${code}`, {
+        method: "PUT",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify(sent(repo)),
+        signal: AbortSignal.timeout(20000),
+      });
+      if (!put.ok) throw new Error(`${code}: PUT answered ${put.status}`);
+      console.log(`${code}: created (it includes ${repo.includes.join(", ")})`);
+      continue;
+    }
     if (!res.ok) throw new Error(`${code}: GET answered ${res.status}`);
     const live = await res.json();
     const want = desired(repo, live);

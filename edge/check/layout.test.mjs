@@ -652,6 +652,13 @@ test("the suggestion box can start from either reading, in the card's order, rep
   assert.match(appJs, /box\.append\(label, \.\.\.\(sides\.length \? \[from\] : \[\]\), input, row/);
 });
 
+test("a card drawn with another language's configuration than the page's carries that language's rules and notes", () => {
+  assert.match(appJs, /function ownHelp\(card\) \{\s*if \(!cfg \|\| cfg === pageCfg\) return;/);
+  assert.match(appJs, /function renderCover\(card, t, prev\) \{\n[^\n]*\n  ownHelp\(card\);/);
+  assert.match(appJs, /function renderGutter\(card, t, prev\) \{\n[^\n]*\n  ownHelp\(card\);/);
+  assert.match(appJs, /\$\{l\.unit \|\| "words"\}/, "the home list names lines, blocks or items, not always words");
+});
+
 test("the character buttons stay hidden behind a keyboard button, which this browser remembers", () => {
   assert.match(appJs, /const open = store\(CHARSOPEN\) === "1";\s*pad\.hidden = !open;/, "hidden until asked for");
   assert.match(appJs, /toggle\.setAttribute\("aria-controls", "suggest-chars"\); toggle\.setAttribute\("aria-expanded", String\(open\)\);/);

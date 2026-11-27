@@ -1514,4 +1514,14 @@ test("includes are read safely, and a language is folded into one other only", a
   ];
   // bb is part of aa; cc's parent bb is itself included, so c stays on its own
   assert.deepEqual(languageList(rows).map((r) => [r.code, r.tasks, r.part_of]), [["aa", 3, undefined], ["bb", 2, "aa"], ["cc", 4, undefined]]);
+  // `unit` names what a language's tasks are on the home list; anything but a few lowercase words is left out
+  const units = languageList([{ code: "aa", config: '{"name":"A","unit":"lines"}' }, { code: "bb", config: '{"name":"B","unit":"<b>x</b>"}' }]);
+  assert.deepEqual(units.map((r) => [r.code, r.unit, r.tasks]), [["aa", "lines", 0], ["bb", undefined, 0]]);
+});
+
+test("sync creates a language that includes others before it has tasks, and skips any other language the site lacks", async () => {
+  const { umbrella } = await import("./sync-languages.mjs");
+  assert.equal(umbrella({ name: "E", includes: ["en-read"] }), true);
+  assert.equal(umbrella({ name: "E", includes: [] }), false);
+  assert.equal(umbrella({ name: "E" }), false);
 });

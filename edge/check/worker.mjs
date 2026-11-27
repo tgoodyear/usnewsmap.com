@@ -484,7 +484,10 @@ export async function queueOf(env, l, mix = true) {
 export function languageList(rows) {
   const parent = new Map();
   for (const r of rows) for (const c of includesOf(r.config)) if (c !== r.code && !parent.has(c)) parent.set(c, r.code);
-  const out = rows.map((r) => ({ code: r.code, name: JSON.parse(r.config).name, tasks: r.tasks || 0, settled: r.settled || 0, held: r.held || 0 }));
+  const out = rows.map((r) => {
+    const c = JSON.parse(r.config);
+    return { code: r.code, name: c.name, ...(typeof c.unit === "string" && /^[a-z ]{1,20}$/.test(c.unit) ? { unit: c.unit } : {}), tasks: r.tasks || 0, settled: r.settled || 0, held: r.held || 0 };
+  });
   const by = new Map(out.map((r) => [r.code, r]));
   for (const r of out) {
     const p = parent.get(r.code);
