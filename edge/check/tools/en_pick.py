@@ -20,6 +20,8 @@ agree; report.json counts them as same_once_fractions_folded). A pair is made on
   * the differing stretch is bracketed by words both readings agree on (a word at the very start or end of a
     crop is cut by the crop's edge), and has as many words on each side, at most --max-block, paired by position;
   * each pair is at least --min-similarity alike (a word one reading split, joined or dropped is not a pair; the whole stretch is left out if any word in it fails);
+  * neither word has an @ touching a letter (bt.stray_at: "@ourse" is plainly wrong, so the other reading wins
+    outright; report.json counts left_out_stray_at_loc, _xiaomi and _both by the side that had it);
   * neither word is without letters or digits; with --skip-punctuation-only, a pair whose letters and digits agree is
     left out too (on by default; --keep-punctuation-only to keep them).
 
@@ -243,6 +245,10 @@ def candidates(page: dict, args, root: str, stats: Counter) -> list:
             wl, wx = loc[i], xi[j]
             if not bt.has_letter(wl) or not bt.has_letter(wx):
                 stats["left_out_no_letters"] += 1
+                continue
+            if bt.stray_at(wl) or bt.stray_at(wx):
+                # plainly wrong (bt.STRAY_AT): never offered; the reading without one wins outright
+                stats["left_out_stray_at_" + ("both" if bt.stray_at(wl) and bt.stray_at(wx) else "loc" if bt.stray_at(wl) else "xiaomi")] += 1
                 continue
             if args.skip_punctuation_only and bt.letters_only(wl, {}) == bt.letters_only(wx, {}):
                 stats["left_out_punctuation_only"] += 1

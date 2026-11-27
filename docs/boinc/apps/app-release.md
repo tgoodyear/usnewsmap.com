@@ -351,6 +351,22 @@ boinc/scripts/boinc-app-release.sh --env prod --app usnm_qwen --version VERSION 
   --plan-class nvidia_vulkan_8b --platform windows_x86_64 "${inputs[@]}" --hold --signing-host HOST ... --what-if
 ```
 
+For `arm64-apple-darwin` (`apple_gpu_8b`, `apple_gpu_x08`), `build-macos` takes the
+`llama.lock`-pinned `macos-arm64` tarball's `llama-server` and the ten dylibs the reviewed 1.20
+release ships (links copied as files; nothing else from the tarball), and from the merged
+commit's `boinc-native-arm64-apple-darwin` artifact its `usnm_qwen_arm64-apple-darwin` and the
+`llama.lock` and `weights.lock` that binary was built against (and checks at run time), each
+checked against the artifact's `SHA256SUMS`, with `GIT_COMMIT`. The artifact's `llama.lock` also
+pins the tarball. Check the runtime against the last reviewed Apple
+release before signing, and publish it held like any other first build:
+
+```sh
+python3 boinc/scripts/qwen_vulkan_bundle.py build-macos --archive llama-b12084-bin-macos-arm64.tar.gz \
+  --artifact boinc-native-arm64-apple-darwin --source-commit COMMIT --plan-class apple_gpu_8b --out target/qwen-mac
+python3 boinc/scripts/qwen_vulkan_bundle.py verify --bundle target/qwen-mac \
+  --same-runtime-as boinc/infra/boinc/releases/prod-onprem-usnm_qwen-1.20-apple_gpu_8b-arm64-apple-darwin.json
+```
+
 These native-only classes admit stable BOINC 8.2.11+ (the 6 GB and 2B profiles 8.2.9) and
 do not require a container runtime. The ordinary OCR `docker` class also admits stable 8.2.11 when
 its platform runtime is available; do not require a development Mac client for it.
@@ -706,7 +722,14 @@ isolated by checking who could receive it:
 1. In the BOINC database, list the hosts that could take it: `os_name` Windows, an `nvidia`
    entry in the `gpus` list of `host.misc`, and an RPC within the last week. This server
    leaves `host.serialnum` empty, so it can't answer the question. Go on only if the test
-   host (the project's Windows 11 VM with the RTX 2060 SUPER) is the only one. On 10 Nov 2026
+   host (the project's Windows 11 VM with the RTX 2060 SUPER) is the only one. The read-only bridge
+   step `host-eligibility` answers it without anyone reading the database credentials: as root on
+   the BOINC host, `usnm-boinc-step --env prod --target bridge --step host-eligibility --wait-mins 10` (optional
+   `--var ELIGIBILITY_APP=usnm_qwen --var ELIGIBILITY_DAYS=7`) prints, for each of the app's
+   versions, the recently seen hosts of its OS family with a GPU of the plan class's type and
+   memory bounds (`candidates`), and those whose GPU list can't be read (`uncertain`). Isolation
+   holds only if `candidates` is the test host alone and `uncertain` is empty. It is a superset of
+   what the scheduler would send (drivers and core versions aren't checked), the safe direction. On 10 Nov 2026
    the one other Windows host reported an AMD Radeon RX 9070 XT, which takes `amd_vulkan_8b`.
 2. Release with `app-version-hold.php --action release --apply`, and confirm the test host gets
    `usnm_qwen` work on that version.
@@ -721,6 +744,35 @@ The first release went this way on 10 Nov 2026: app version 90 (`usnm_qwen` 1.18
 resumed mid-run. Both uploaded and validated against the AMD Windows host's results, and
 both became canonical. The release script in the running server image predated #1719, so
 the copy from `main` went in with `podman cp`, as described below.
+
+**A class with no host of the project's own** (Intel, AMD, Apple) can't be isolated to a test
+host, so its release window is open to volunteers and has to bound itself instead.
+`boinc/scripts/onprem/release-window.py` does that, as root on the BOINC host, with the operator's
+authorization recorded in the journal:
+
+```sh
+python3 boinc/scripts/onprem/release-window.py --app-version ID --validated 3 --max-hours 48   # print only
+python3 boinc/scripts/onprem/release-window.py --app-version ID --validated 3 --max-hours 48 --apply
+```
+
+Before opening it previews a hold: if holding would strand unfinished workunits pinned to a
+version (`stranded_workunits`), it refuses to open unless `--accept-stranded` is given, and then
+passes that flag to every hold, so a hold can't be refused later. Every hold that fails prints
+`HOLD FAILED` on stderr with `app-version-hold.php`'s own message and the exact command to hold the
+version by hand. It releases the held version with `app-version-hold.php`, then every `--poll-secs` (300) reads
+the version's results reported since the release with the read-only `app-version-outcomes` bridge
+step, so no database credentials leave the server container. The validator log adds an early count
+of its Valid results (the log ties a Valid result to its app version, an Invalid one not). It holds
+the version again at once on the first client error, validate error or invalid result, or if fewer
+than `--validated` results have validated after `--max-hours`. With `--validated` valid results it
+ends, leaving the version released, but only once that qualification is journaled; if the entry
+can't be written it holds again. Every action and poll goes to
+`/root/release-window/release-window-av<ID>-<time>.jsonl`. A read after the deadline can't qualify:
+expiry is checked first. Any other exit after the release (Ctrl-C, SIGTERM, SIGHUP, a failed command
+or a journal write failure) holds the version again before the tool exits, and that hold doesn't
+depend on the journal; the print-only run returns at once. Exit status: 0 qualified, 2 held on a
+failure, 3 held on expiry, 1 stopped or a tool error (held again; if even that hold fails, stderr
+says so and the version must be held by hand).
 
 `nvidia_vulkan_6gb_8b` on `windows_x86_64` is built and published the same way, with
 `--plan-class nvidia_vulkan_6gb_8b`. The Windows build was checked on the Windows 11 test VM's

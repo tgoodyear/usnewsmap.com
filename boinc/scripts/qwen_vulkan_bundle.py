@@ -10,6 +10,11 @@ and writes one directory a maintainer can hash, compare and sign from:
     release.json                    the on-prem manifest's `release` and `worker` entries
     SHA256SUMS                      every file above
 
+`build-macos` does the same for arm64-apple-darwin (Apple GPU, Metal): the llama.lock-pinned
+macos-arm64 tarball's llama-server and dylibs (links copied as files), the locks, and the macOS
+native CI artifact's usnm_qwen, checked against the artifact's SHA256SUMS. It reproduces the
+reviewed 1.20 runtime file for file; check that with `verify --same-runtime-as`.
+
 `build-windows` does the same for windows_x86_64 (#1672): the llama.lock-pinned win-vulkan-x64
 zip's llama-server.exe and DLLs, unchanged, plus the Windows native CI artifact's usnm_qwen .exe
 and its signed app-local Microsoft runtime DLLs, each checked against the artifact's SHA256SUMS:
@@ -66,6 +71,16 @@ WIN_REQUIRED = {"llama-server.exe", "llama-server-impl.dll", "llama-common.dll",
                 "ggml-vulkan.dll", "ggml-base.dll", "ggml.dll",
                 "llama.dll", "mtmd.dll", "ggml-cpu-x64.dll", "libomp.dll", "msvcp140.dll",
                 "vcruntime140.dll", "vcruntime140_1.dll"}
+# arm64-apple-darwin (Apple GPU, Metal): the runtime of the reviewed usnm_qwen 1.20 apple_gpu_8b
+# release, by name; the tarball's other files (other tools, versioned dylib aliases) stay out.
+MAC_ASSET = "macos-arm64"
+MAC_PLATFORM = "arm64-apple-darwin"
+MAC_PLAN_CLASSES = ("apple_gpu_8b", "apple_gpu_x08")
+MAC_BINARY = f"usnm_qwen_{MAC_PLATFORM}"
+MAC_RUNTIME = {"llama-server", "libggml-base.0.dylib", "libggml-blas.0.dylib", "libggml-cpu.0.dylib",
+               "libggml-metal.0.dylib", "libggml-rpc.0.dylib", "libggml.0.dylib", "libllama-common.0.dylib",
+               "libllama-server-impl.dylib", "libllama.0.dylib", "libmtmd.0.dylib"}
+MAC_REQUIRED = MAC_RUNTIME | {"llama.lock", "weights.lock"}
 LIBRARY = re.compile(r"lib[A-Za-z0-9_-]+\.so(\.[0-9]+)*")
 # What install.py requires of a Linux Vulkan bundle, and what llama-server links.
 REQUIRED = {"llama-server", "llama.LICENSE", "llama.lock", "weights.lock", "libggml.so", "libggml-base.so",
@@ -135,8 +150,11 @@ def libgomp_from_deb(deb, lock_path=LIBGOMP_LOCK):
     return library, notice, lock
 
 
-def runtime_members(packed, prefix):
-    """{logical name: regular-file member} for the archive's runtime, links resolved inside it."""
+def runtime_members(packed, prefix, logical_of=None, required=None):
+    """{logical name: regular-file member} for the archive's runtime, links resolved inside it.
+    `logical_of` maps a member name to the bundle's name or None (default: the Linux runtime), and
+    `required` is what must be found (default: the Linux bundle's archive part)."""
+    logical_of = logical_of or logical_name
     members = {}
     for member in packed.getmembers():
         path = PurePosixPath(member.name)
@@ -156,7 +174,7 @@ def runtime_members(packed, prefix):
         members[name] = member
     chosen = {}
     for name, member in members.items():
-        logical = logical_name(name)
+        logical = logical_of(name)
         if logical is None:
             continue
         for _ in range(8):
@@ -176,7 +194,9 @@ def runtime_members(packed, prefix):
             raise ValueError(f"{name} has too many links")
         chosen[logical] = member
     # The locks and libgomp come from outside the llama.cpp archive.
-    missing = sorted(REQUIRED - {"llama.lock", "weights.lock", "libgomp.so.1", "libgomp.LICENSE"} - set(chosen))
+    if required is None:
+        required = REQUIRED - {"llama.lock", "weights.lock", "libgomp.so.1", "libgomp.LICENSE"}
+    missing = sorted(required - set(chosen))
     if missing:
         raise ValueError("archive lacks " + ", ".join(missing))
     return chosen
@@ -318,10 +338,74 @@ def build_windows(archive, artifact, source_commit, out, plan_class, lock_path=L
     return release
 
 
+def build_macos(archive, artifact, source_commit, out, plan_class, lock_path=None):
+    """The arm64-apple-darwin bundle from the pinned tarball and the macOS native CI artifact.
+
+    The locks are the artifact's, the ones its usnm_qwen was built against and checks at run time,
+    each verified against the artifact's SHA256SUMS; `lock_path` overrides llama.lock (tests)."""
+    if plan_class not in MAC_PLAN_CLASSES:
+        raise ValueError(f"not an Apple GPU usnm_qwen plan class: {plan_class}")
+    if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
+        raise ValueError("--source-commit must be the 40-hex commit the binary was built from")
+    artifact = Path(artifact)
+    if (artifact / "GIT_COMMIT").read_text().strip() != source_commit:
+        raise ValueError("the artifact's GIT_COMMIT is not --source-commit")
+    sums = read_sums(artifact / "SHA256SUMS")
+    for name in (MAC_BINARY, "llama.lock", "weights.lock"):
+        if not (artifact / name).is_file() or sums.get(name) != sha256(artifact / name):
+            raise ValueError(f"{name} is missing from the artifact or does not match its SHA256SUMS")
+    lock_path = artifact / "llama.lock" if lock_path is None else Path(lock_path)
+    lock = json.loads(lock_path.read_text())
+    asset = lock["assets"][MAC_ASSET]
+    if lock["tag"] not in LLAMA_SOURCE or asset["file"] != f"llama-{lock['tag']}-bin-{MAC_ASSET}.tar.gz":
+        raise ValueError("llama.lock pins a runtime this script has not reviewed")
+    if Path(archive).name != asset["file"] or sha256(archive) != asset["sha256"]:
+        raise ValueError(f"{archive} is not the llama.lock-pinned {asset['file']}")
+    out = Path(out)
+    out.mkdir()
+    extra = out / "extra"
+    extra.mkdir()
+    with tarfile.open(archive, "r:gz") as packed:
+        members = runtime_members(packed, f"llama-{lock['tag']}/",
+                                  lambda name: name if name in MAC_RUNTIME else None, MAC_RUNTIME)
+        for logical, member in sorted(members.items()):
+            with packed.extractfile(member) as source, open(extra / logical, "wb") as target:
+                shutil.copyfileobj(source, target)
+            (extra / logical).chmod(0o755 if logical == "llama-server" else 0o644)
+    shutil.copyfile(lock_path, extra / "llama.lock")
+    shutil.copyfile(artifact / "weights.lock", extra / "weights.lock")
+    shutil.copyfile(artifact / MAC_BINARY, out / MAC_BINARY)
+    (out / MAC_BINARY).chmod(0o755)
+    names = sorted(p.name for p in extra.iterdir())
+    if set(names) != MAC_REQUIRED:
+        raise ValueError("bundle files differ from the reviewed Apple runtime")
+    bound = json.loads(DISK_POLICY.read_text())["native_bundle_bound_bytes"]
+    if sum(p.stat().st_size for p in [out / MAC_BINARY, *extra.iterdir()]) > bound:
+        raise ValueError("bundle exceeds the reviewed native Qwen disk envelope")
+    llama = LLAMA_SOURCE[lock["tag"]]
+    release = {
+        "release": {"app": "usnm_qwen", "kind": "native", "platform": MAC_PLATFORM, "plan_class": plan_class},
+        "worker": {
+            "sha256": sha256(out / MAC_BINARY),
+            "source_commit": source_commit,
+            "extra_files": {name: {"sha256": sha256(extra / name),
+                                   "source_commit": source_commit if name.endswith(".lock") else llama}
+                            for name in names},
+        },
+        "runtime": {"repository": lock["repository"], "tag": lock["tag"], "file": asset["file"],
+                    "sha256": asset["sha256"], "source_commit": llama},
+    }
+    (out / "release.json").write_text(json.dumps(release, indent=2, sort_keys=True) + "\n")
+    write_sums(out, [MAC_BINARY, "release.json", *(f"extra/{name}" for name in names)])
+    return release
+
+
 def layout(release):
     """(binary name, required extras) of a release.json's platform."""
     if release["release"]["platform"] == WIN_PLATFORM:
         return WIN_BINARY, WIN_REQUIRED
+    if release["release"]["platform"] == MAC_PLATFORM:
+        return MAC_BINARY, MAC_REQUIRED
     return BINARY, REQUIRED
 
 
@@ -381,6 +465,13 @@ def main(argv=None):
     win.add_argument("--source-commit", required=True)
     win.add_argument("--plan-class", required=True, choices=WIN_PLAN_CLASSES)
     win.add_argument("--out", type=Path, required=True)
+    mac = commands.add_parser("build-macos")
+    mac.add_argument("--archive", type=Path, required=True, help="the llama.lock-pinned macos-arm64 tarball")
+    mac.add_argument("--artifact", type=Path, required=True,
+                     help="the unpacked boinc-native-arm64-apple-darwin CI artifact of --source-commit")
+    mac.add_argument("--source-commit", required=True)
+    mac.add_argument("--plan-class", required=True, choices=MAC_PLAN_CLASSES)
+    mac.add_argument("--out", type=Path, required=True)
     check = commands.add_parser("verify")
     check.add_argument("--bundle", type=Path, required=True)
     check.add_argument("--same-runtime-as", type=Path)
@@ -396,6 +487,10 @@ def main(argv=None):
         elif args.command == "build-windows":
             release = build_windows(args.archive, args.artifact, args.source_commit, args.out, args.plan_class)
             print(f"{release['worker']['sha256']}  {args.out / WIN_BINARY}")
+            print(f"{len(release['worker']['extra_files'])} extra files; see {args.out / 'SHA256SUMS'}")
+        elif args.command == "build-macos":
+            release = build_macos(args.archive, args.artifact, args.source_commit, args.out, args.plan_class)
+            print(f"{release['worker']['sha256']}  {args.out / MAC_BINARY}")
             print(f"{len(release['worker']['extra_files'])} extra files; see {args.out / 'SHA256SUMS'}")
         elif args.command == "verify":
             verify(args.bundle, args.same_runtime_as)

@@ -384,6 +384,8 @@ python3 tools/en_pick.py --pages pages-pilot.jsonl --set xiaomi-loc-v1 --languag
 
 **Analysis.** `tools/en_pick_analysis.py --export check-en.jsonl --set xiaomi-loc-v1 --calibration-set cal-v1` gives Xiaomi's win rate (Xiaomi picks over Xiaomi plus LoC picks) with a page-clustered bootstrap interval, overall and by decade and damage band, the shares of neither, can't tell, not text and disputed, and for the calibration set how often the settled pick matches the truth. Rows with a `truth` are never in the pilot figures.
 
+**An @ inside a word.** A reading with an @ touching a letter (`@ourse` for `course`, SN84020107, 1895-03-15) is plainly wrong: print has @ only between quantities and prices (`10 bbls @ $4.50`, `6@7c`). `build_tasks.stray_at` is the rule, and a bare @ or one beside digits is left alone. `en_pick.py` and `build_tasks.py` never make a task of such a word; `report.json` counts them as `left_out_stray_at_loc`, `_xiaomi` and `_both` by the reading that had it, so the other reading wins outright. `en_pick_analysis.py` applies the same rule to words already loaded: a settled word whose reading has one is a win for the other reading whatever was picked, and `neither` when both have one.
+
 ## Column gutter judgments (#2107)
 
 `en-gutter` is a separate language with its own queue, page (`/en-gutter`) and export (`/api/export?lang=en-gutter`). Each task is one crop of a newspaper page with a vertical line drawn over it, and one question: does this line run down a gap between columns of text without crossing any printed text? It uses the pick page's answers, sessions and settling rule (two thirds of at least three answers); there is no schema change.

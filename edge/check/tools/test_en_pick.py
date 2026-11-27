@@ -148,6 +148,26 @@ class Build(unittest.TestCase):
             self.assertEqual(json.load(open(os.path.join(d, "out", "report.json")))["same_once_fractions_folded"], 1)
 
 
+    def test_a_reading_with_an_at_inside_a_word_is_never_a_task(self):
+        # Trevor, 27 Nov 2026: "@ourse" against "course" (SN84020107, 1895-03-15) is plainly wrong, not a question
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            Image.new("L", (1000, 500), 255).save(os.path.join(d, "p.jpg"))
+            words = "of @ourse at 6@7c tbe price".split()
+            line = "".join(s(w, 60 * i + 10, 10) for i, w in enumerate(words))
+            open(os.path.join(d, "p.xml"), "w").write(ALTO.format(line1=line, line2=""))
+            page = {"page": "sn1/1900-01-01/ed-1/seq-1", "source": "u", "date": "1900-01-01", "label": "L", "alto": "p.xml",
+                    "image": "p.jpg", "damage_rate": 0.3, "crops": [
+                        {"id": "c1", "box": [0, 0, 1000, 40], "xiaomi": "of course at 6@7c the price"}]}
+            open(os.path.join(d, "pages.jsonl"), "w").write(json.dumps(page) + "\n")
+            cfg = os.path.join(HERE, "..", "languages", "en.json")
+            subprocess.run([sys.executable, os.path.join(HERE, "en_pick.py"), "--pages", os.path.join(d, "pages.jsonl"), "--set", "t",
+                            "--language-config", cfg, "--out-dir", os.path.join(d, "out")], check=True, capture_output=True)
+            tasks = [json.loads(l) for l in open(os.path.join(d, "out", "tasks.jsonl"))]
+            self.assertEqual([sorted([t["a"], t["b"]]) for t in tasks], [["tbe", "the"]])
+            self.assertEqual(json.load(open(os.path.join(d, "out", "report.json")))["left_out_stray_at_loc"], 1)
+
+
 class Analysis(unittest.TestCase):
     def rows(self):
         out = []
@@ -164,6 +184,14 @@ class Analysis(unittest.TestCase):
         self.assertIsNone(an.verdict({"settled": False, "outcome": None}))
         # a marked task (merged_line, #1978) exports unsettled with its old outcome apart, so it has no verdict
         self.assertIsNone(an.verdict({"settled": False, "outcome": None, "mark_reason": "merged_line", "outcome_withdrawn": "a"}))
+
+    def test_a_reading_with_an_at_inside_a_word_loses_whatever_was_picked(self):
+        row = {"settled": True, "outcome": "a", "a": "@ourse", "b": "course", "a_is": "loc", "b_is": "xiaomi"}
+        self.assertEqual(an.verdict(row), "xiaomi")
+        self.assertEqual(an.verdict({**row, "outcome": "unsure"}), "xiaomi")
+        self.assertEqual(an.verdict({**row, "b": "c@urse"}), "neither")
+        self.assertEqual(an.verdict({**row, "a": "6@7c", "b": "6@7e"}), "loc")  # an @ by digits is not the rule
+        self.assertIsNone(an.verdict({**row, "settled": False}))
 
     def test_truth_rows_are_not_pilot_rows(self):
         rows = self.rows()

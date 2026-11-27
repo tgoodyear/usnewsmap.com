@@ -44,6 +44,7 @@ import difflib
 import json
 import math
 import os
+import re
 import sys
 import unicodedata
 
@@ -164,6 +165,16 @@ def split_or_joined(fa: list, fb: list, i: int, j: int) -> bool:
     return any(ratio(fa[i], x) > alone for x in joined_b) or any(ratio(x, fb[j]) > alone for x in joined_a)
 
 
+# An @ that touches a letter ("@ourse" for "course") is an OCR error: print has @ only between quantities and prices
+# ("10 bbls @ $4.50", "6@7c"), never inside a word. A reading with one is plainly wrong, so it is never offered as a
+# reading (build_tasks.py, en_pick.py) and loses in scoring (en_pick_analysis.py). A bare @ or one by digits is left alone.
+STRAY_AT = re.compile(r"[^\W\d_]@|@[^\W\d_]")
+
+
+def stray_at(word: str) -> bool:
+    return bool(STRAY_AT.search(word))
+
+
 def has_letter(word: str) -> bool:
     return any(c.isalnum() for c in word)
 
@@ -237,7 +248,7 @@ def main() -> None:
     os.makedirs(os.path.join(root, prefix, "lines"), exist_ok=True)
     os.makedirs(os.path.join(root, prefix, "words"), exist_ok=True)
 
-    lines = tasks = unpaired = merged = clipped = 0
+    lines = tasks = unpaired = merged = clipped = stray = 0
     with open(a.lines, encoding="utf-8") as src, open(os.path.join(a.out_dir, "tasks.jsonl"), "w", encoding="utf-8") as out:
         for raw in src:
             if not raw.strip():
@@ -260,8 +271,10 @@ def main() -> None:
                 pairs, left = pair_words(a_words, b_words, equivalents, a.min_similarity)
             kept = [(k, wb) for k, wb in pairs
                     if has_letter(a_words[k]) and has_letter(wb) and not stray_marks(a_words[k], wb, equivalents)
+                    and not (stray_at(a_words[k]) or stray_at(wb))
                     and not (a.skip_punctuation_only
                              and letters_only(a_words[k], equivalents) == letters_only(wb, equivalents))]
+            stray += sum(stray_at(a_words[k]) or stray_at(wb) for k, wb in pairs)
             unpaired += left + len(pairs) - len(kept)
             pairs = kept
             if not pairs:
@@ -310,6 +323,8 @@ def main() -> None:
     with open(os.path.join(a.out_dir, "language.json"), "w", encoding="utf-8") as f:
         json.dump(language, f, ensure_ascii=False, indent=1)
     print(f"{lines} lines, {tasks} tasks, {unpaired} words of reading a left out (no partner alike enough, or no letters)")
+    if stray:
+        print(f"{stray} of them with an @ touching a letter in a reading (plainly wrong, never offered)")
     if merged:
         print(f"{merged} lines marked merged_line left out")
     if a.clip_band:

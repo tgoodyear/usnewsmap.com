@@ -33,6 +33,8 @@ COPY boinc/images/server/lib.sh boinc/images/server/secrets.sh boinc/images/serv
 COPY boinc/images/server/bridge-job.sh /usr/local/bin/bridge-job
 COPY boinc/images/server/gold-mirror-config.py /usr/local/lib/usnm-boinc/
 COPY boinc/images/server/batch-inventory.py /usr/local/lib/usnm-boinc/
+COPY boinc/images/server/host-eligibility.py /usr/local/lib/usnm-boinc/
+COPY boinc/images/server/app-version-outcomes.py /usr/local/lib/usnm-boinc/
 COPY boinc/project/config.xml.template boinc/project/project.xml boinc/project/plan_class_spec.xml /usr/local/lib/usnm-boinc/
 COPY boinc/project/gold-engine-platforms.json /usr/local/lib/usnm-boinc/
 COPY web/public/.well-known /usr/local/lib/usnm-boinc/well-known
