@@ -490,6 +490,7 @@ const PAPERSEL = "usnm-check-paper-"; // + language code: the paper the visitor 
 const GUIDEOPEN = "usnm-check-guide"; // "1" or "0": the visitor opened or closed the letter guide in this browser
 let papers = [], paper = "", guideOpen = null, guideFor = null;
 const done = new Set(); // papers that had no word left for this visitor on this page
+const paperOfTask = (t) => (t && typeof t.page === "string" ? t.page.split("/")[0] : "");
 const paperInfo = (p = paper) => papers.find((x) => x.paper === p) || null;
 const nextPaper = () => papers.find((x) => x.paper !== paper && x.open > 0 && !done.has(x.paper)) || null;
 function guideShown() {
@@ -869,7 +870,7 @@ function closeNote(drop) {
 function toggleNote() {
   if (!task || busy || fontFailed || stale) return;
   if (noteFor === task.id) { closeNote(false); return; }
-  noteFor = task.id; noteOpening = {}; noteDraft = ""; render(shownPrev);
+  noteFor = task.id; noteOpening = {}; render(shownPrev); // a draft hidden with N comes back; a new word or Cancel cleared it
   const box = $("note-text"); if (box) box.focus();
 }
 
@@ -1122,7 +1123,11 @@ function back() {
   suggestFor = null; suggestDraft = ""; suggestOpening = null;
   noteFor = null; noteDraft = ""; noteOpening = null; noteSending = null;
   const had = controlFocused();
-  const h = history.pop(); task = h.task; lineShown = true; render(h.choice); keepFocus(had); prefetch();
+  const h = history.pop(); task = h.task; lineShown = true;
+  // A word answered before the paper was changed comes back under its own paper, picker and letter guide.
+  const from = paperOfTask(h.task);
+  if (paper && from && from !== paper && paperInfo(from)) { paper = from; store(PAPERSEL + lang, from); renderPaperBar(); }
+  render(h.choice); keepFocus(had); prefetch();
   status("Change your answer, or pick the same one to keep it.");
 }
 
