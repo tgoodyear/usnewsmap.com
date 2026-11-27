@@ -651,6 +651,14 @@ test("the character buttons stay hidden behind a keyboard button, which this bro
   assert.match(appJs, /b\.textContent = mark \? "\\u25CC" \+ ch : ch;/);
 });
 
+test("a language's character buttons can be rows: a chart whose columns line up, each key with its name", () => {
+  assert.match(appJs, /const rows = chars\.some\(Array\.isArray\) \? chars\.map\(\(r\) => \(Array\.isArray\(r\) \? r : \[r\]\)\) : null;/);
+  assert.match(appJs, /pad\.style\.setProperty\("--cols", String\(Math\.max\(\.\.\.rows\.map\(\(r\) => r\.length\)\)\)\);/, "every row has as many columns as the longest");
+  assert.match(appJs, /const name = rows && !mark && nameOf\(ch\);/, "a chart key shows the letter's label under it");
+  assert.match(appJs, /\+ \(name \? ", " \+ name : ""\)\);/, "and says it");
+  assert.match(css, /\.suggest-chars-row \{ display: grid; grid-template-columns: repeat\(var\(--cols\), minmax\(0, 1fr\)\);/, "columns shrink to fit a phone");
+});
+
 test("the enlarged word is never drawn smaller than the same word in the line above it", () => {
   assert.match(appJs, /const WORD_OVER_LINE = 1\.5, WORD_MAX_HEIGHT = 120;/);
   assert.match(appJs, /const scale = WORD_OVER_LINE \* Math\.max\(w \* li\.clientWidth \/ wi\.naturalWidth, h \* li\.clientHeight \/ wi\.naturalHeight\);/, "held to the word's box in the line on the side that needs more");

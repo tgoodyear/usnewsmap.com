@@ -54,11 +54,22 @@ for (const file of files) {
     if ("glyph_font" in cfg) assert.ok(KEY_FONTS.includes(cfg.glyph_font), `glyph_font is one of the bundled ${KEY_FONTS.join(", ")}`);
     if ("insert_chars" in cfg) {
       assert.ok(Array.isArray(cfg.insert_chars), "insert_chars is a list");
-      for (const c of cfg.insert_chars) {
+      // a list of characters, or of rows (lists of characters) laid out as a chart
+      for (const r of cfg.insert_chars) if (Array.isArray(r)) assert.ok(r.length > 0 && r.every((c) => typeof c === "string"), "an insert_chars row is a non-empty list of characters");
+      for (const c of cfg.insert_chars.flat()) {
         assert.ok(typeof c === "string" && [...new Intl.Segmenter().segment(c)].length === 1, `insert_chars entry ${JSON.stringify(c)} is one character as written`);
         assert.equal(c, c.normalize("NFC"), `insert_chars entry ${JSON.stringify(c)} is NFC, as the Worker stores suggestions`);
       }
-      assert.equal(new Set(cfg.insert_chars).size, cfg.insert_chars.length, "insert_chars has no repeats");
+      assert.equal(new Set(cfg.insert_chars.flat()).size, cfg.insert_chars.flat().length, "insert_chars has no repeats");
+    }
+    // Cherokee: the 85 letters of the syllabary (Ᏽ mv had dropped out of print before the Phoenix), each once, as a chart with a
+    // consonant per row and the vowels a e i o u v in the first six columns; the extra syllables (ka, hna, nah, s, dla) follow.
+    if (code.startsWith("chr")) {
+      const rows = cfg.insert_chars, flat = rows.flat();
+      assert.ok(rows.every(Array.isArray), "the Cherokee keys are rows");
+      assert.equal(flat.length, 85);
+      assert.deepEqual(flat.slice().sort(), Object.keys(cfg.labels).filter((c) => c !== "Ᏽ").sort(), "every letter but Ᏽ, each with its syllable");
+      for (const r of rows) r.slice(0, 6).forEach((c, i) => assert.ok(cfg.labels[c].endsWith("aeiouv"[i]), `${c} (${cfg.labels[c]}) is in the ${"aeiouv"[i]} column`));
     }
     if ("min_examples" in cfg) assert.ok(Number.isInteger(cfg.min_examples) && cfg.min_examples > 0);
     // Keys in ascending order at every level, as written by json.dumps(sort_keys=True).

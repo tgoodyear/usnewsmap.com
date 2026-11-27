@@ -561,10 +561,15 @@ function suggestBox(t) {
   if (chars.length) {
     pad = document.createElement("div"); pad.className = "suggest-chars"; pad.id = "suggest-chars"; pad.setAttribute("role", "group"); pad.setAttribute("aria-label", "Insert a character");
     if (cfg.dir) pad.dir = cfg.dir;
-    for (const ch of chars) {
+    // An entry that is itself a list is a row: the keys are laid out as a chart, one row per list, in columns that line up
+    // from row to row (Cherokee: a consonant per row, a vowel per column), each key with its `labels` entry under it.
+    const rows = chars.some(Array.isArray) ? chars.map((r) => (Array.isArray(r) ? r : [r])) : null;
+    const key = (ch) => {
       const mark = /^\p{M}/u.test(ch);
       const b = document.createElement("button"); b.type = "button"; b.className = "small char"; b.lang = lang; b.textContent = mark ? "\u25CC" + ch : ch;
-      b.setAttribute("aria-label", "Insert " + (mark && cfg.marks && cfg.marks[ch] ? cfg.marks[ch] : ch));
+      const name = rows && !mark && nameOf(ch);
+      if (name) { const n = document.createElement("small"); n.textContent = name; n.setAttribute("aria-hidden", "true"); b.appendChild(n); }
+      b.setAttribute("aria-label", "Insert " + (mark && cfg.marks && cfg.marks[ch] ? cfg.marks[ch] : ch) + (name ? ", " + name : ""));
       b.addEventListener("pointerdown", (e) => e.preventDefault());
       b.addEventListener("click", () => {
         // the opening's save state, not only the input's: a re-render during a save makes a new, writable input
@@ -574,8 +579,12 @@ function suggestBox(t) {
         suggestDraft = input.value;
         input.focus();
       });
-      pad.appendChild(b);
-    }
+      return b;
+    };
+    if (rows) {
+      pad.classList.add("rows"); pad.style.setProperty("--cols", String(Math.max(...rows.map((r) => r.length))));
+      for (const r of rows) { const line = document.createElement("div"); line.className = "suggest-chars-row"; line.append(...r.map(key)); pad.appendChild(line); }
+    } else for (const ch of chars) pad.appendChild(key(ch));
     const open = store(CHARSOPEN) === "1";
     pad.hidden = !open;
     toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "small chars-toggle"; toggle.id = "suggest-chars-toggle";
