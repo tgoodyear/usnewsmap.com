@@ -4,6 +4,7 @@ use crate::{
     gpu::{GpuState, NVIDIA_6GB_LAYERS},
     ms,
     report::{redacted_tail, startup_failure_excerpt},
+    shutdown,
 };
 use anyhow::{bail, ensure, Context};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -690,21 +691,18 @@ pub(crate) struct Server {
 }
 
 impl Drop for Server {
+    /// SIGTERM, up to [`shutdown::SHUTDOWN_GRACE`] to exit, then SIGKILL; always reaped and never
+    /// waited on forever (see [`shutdown`]).
     fn drop(&mut self) {
         self.control.set_child_pgid(None);
-        #[cfg(unix)]
-        if let Some(pid) = rustix::process::Pid::from_raw(self.child.id() as i32) {
-            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::TERM);
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        shutdown::stop_and_log(&mut self.child, shutdown::SHUTDOWN_GRACE);
     }
 }
 
 impl Server {
     /// Whether the `llama-server` process has ended, however it ended.
     pub(crate) fn has_exited(&mut self) -> bool {
-        !matches!(self.child.try_wait(), Ok(None))
+        !matches!(shutdown::try_reap(&mut self.child), Ok(None))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -805,6 +803,7 @@ impl Server {
         let child = cmd
             .spawn()
             .with_context(|| format!("spawning {}", server_bin.display()))?;
+        shutdown::register(&child);
         control.set_child_pgid(Some(child.id()));
         let mut srv = Self {
             child,
@@ -818,7 +817,7 @@ impl Server {
                 bail!("boinc control requested exit ({reason})");
             }
             let step_start = Instant::now();
-            if let Some(status) = srv.child.try_wait()? {
+            if let Some(status) = shutdown::try_reap(&mut srv.child)? {
                 let log_tail = std::fs::read_to_string(&srv.log_path).unwrap_or_default();
                 bail!(
                     "llama-server exited ({status}) before ready: {}",

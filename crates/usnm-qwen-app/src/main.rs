@@ -22,6 +22,7 @@ mod pagemode;
 mod report;
 mod retry;
 mod server;
+mod shutdown;
 #[cfg(all(test, unix))]
 mod stub_tests;
 #[cfg(test)]
