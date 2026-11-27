@@ -9,6 +9,7 @@ boinc/infra/boinc/env/prod.json, read only."""
 
 import json
 import os
+import sys
 import re
 import shutil
 import signal
@@ -1265,6 +1266,126 @@ class AppReleaseArgs(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("--app and --plan-class", r.stderr)
 
+
+class AppReleaseSigningKeyFile(unittest.TestCase):
+    """--signing-key-file, the operator-authorized fallback to the usbbak/signing dataset."""
+
+    def script(self):
+        return Path(APP_RELEASE_SCRIPT).read_text()
+
+    def run_release(self, *args):
+        return subprocess.run(
+            [APP_RELEASE_SCRIPT, "--env", "prod", "--app", "usnm_ocr", "--version", "1.0",
+             "--signing-host", "signing.example", *args],
+            cwd=ROOT, capture_output=True, text=True)
+
+    def test_the_key_file_replaces_the_dataset_and_key_dir(self):
+        for other in (["--signing-dataset", "usbbak/signing"], ["--signing-key-dir", "/usbbak/signing/boinc"]):
+            with self.subTest(other=other):
+                r = self.run_release("--signing-key-file", "/dev/shm/k/code_sign_private", *other)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("--signing-key-file replaces --signing-key-dir and --signing-dataset", r.stderr)
+
+    def test_the_key_file_must_be_under_dev_shm_or_run(self):
+        for path in ("/tmp/code_sign_private", "relative/key", "/dev/shm/../etc/key", "/run/k/../../root/key",
+                     "/usbbak/signing/boinc/code_sign_private"):
+            with self.subTest(path=path):
+                r = self.run_release("--signing-key-file", path)
+                self.assertEqual(r.returncode, 1)
+                self.assertIn("must be an absolute path under /dev/shm or /run", r.stderr)
+
+    def check_command(self, path, uid):
+        text = self.script()
+        start = text.index("key_file_check() {")
+        end = text.index("\n}\n", start) + 3
+        r = subprocess.run(["bash", "-c", text[start:end] + 'key_file_check "$1" "$2"', "_", path, str(uid)],
+                           capture_output=True, text=True, check=True)
+        return r.stdout
+
+    def run_check(self, path, uid=None):
+        command = self.check_command(path, os.getuid() if uid is None else uid)
+        return subprocess.run(["bash", "-c", command], capture_output=True, text=True)
+
+    @unittest.skipUnless(os.path.isdir("/dev/shm") and sys.platform.startswith("linux"), "needs a Linux tmpfs")
+    def test_the_signing_host_accepts_only_a_private_tmpfs_file(self):
+        with tempfile.TemporaryDirectory(dir="/dev/shm") as shm:
+            key = Path(shm, "code_sign_private")
+            key.write_text("secret key material\n")
+            key.chmod(0o600)
+            ok = self.run_check(str(key))
+            self.assertEqual(ok.returncode, 0, ok.stdout)
+            self.assertEqual(ok.stdout, "")
+            # The check never prints the key, whatever it refuses.
+            self.assertNotIn("secret", self.check_command(str(key), 0))
+            key.chmod(0o644)
+            r = self.run_check(str(key))
+            self.assertEqual((r.returncode, r.stdout.strip()), (1, "mode is not 0600"))
+            key.chmod(0o600)
+            r = self.run_check(str(key), uid=os.getuid() + 1)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("not owned by uid", r.stdout)
+            link = Path(shm, "link")
+            link.symlink_to(key)
+            r = self.run_check(str(link))
+            self.assertEqual((r.returncode, r.stdout.strip()), (1, "not a regular file, or a symlink"))
+            r = self.run_check(str(Path(shm, "missing")))
+            self.assertEqual(r.returncode, 1)
+            empty = Path(shm, "empty")
+            empty.touch(mode=0o600)
+            empty.chmod(0o600)
+            r = self.run_check(str(empty))
+            self.assertEqual((r.returncode, r.stdout.strip()), (1, "empty"))
+        with tempfile.TemporaryDirectory(dir=ROOT) as disk:
+            fs = subprocess.run(["stat", "-f", "-c", "%T", disk], capture_output=True, text=True).stdout.strip()
+            if fs in ("tmpfs", "ramfs"):
+                self.skipTest("the checkout is on tmpfs")
+            key = Path(disk, "code_sign_private")
+            key.write_text("k")
+            key.chmod(0o600)
+            r = self.run_check(str(key))
+            self.assertEqual((r.returncode, r.stdout.strip()), (1, "not on tmpfs or ramfs"))
+
+    def key_match(self, key_text, public_text, sign_empty=False):
+        """KEY_MATCH with stand-ins: a "signature" is the hash of the key and the nonce, and it
+        verifies when the public key file holds the same text as the private one."""
+        text = self.script()
+        start = text.index("KEY_MATCH='") + len("KEY_MATCH='")
+        body = text[start:text.index("'", start)]
+        with tempfile.TemporaryDirectory() as tmp:
+            w = Path(tmp, "w")
+            w.mkdir()
+            Path(w, "code_sign_public").write_text(public_text)
+            key = Path(tmp, "code_sign_private")
+            key.write_text(key_text)
+            sign = Path(tmp, "sign")
+            sign.write_text("#!/bin/sh\n" + ("exit 0\n" if sign_empty else 'cat "$2" "$1" | sha256sum | cut -c1-64\n'))
+            crypt = Path(tmp, "crypt")
+            crypt.write_text('#!/bin/sh\n[ "$1" = -verify ] || exit 2\n'
+                             '[ "$(cat "$4" "$2" | sha256sum | cut -c1-64)" = "$(cat "$3")" ]\n')
+            for tool in (sign, crypt):
+                tool.chmod(0o755)
+            return subprocess.run(["sh", "-ec", body], env=dict(os.environ, SIGN=str(sign), CRYPT=str(crypt),
+                                                                   W=str(w), KEY=str(key)),
+                                  capture_output=True, text=True)
+
+    def test_the_key_must_be_the_published_one(self):
+        self.assertEqual(self.key_match("the project key", "the project key").returncode, 0)
+        self.assertNotEqual(self.key_match("another key", "the project key").returncode, 0)
+        # A key that signs nothing fails closed too.
+        self.assertNotEqual(self.key_match("the project key", "the project key", sign_empty=True).returncode, 0)
+
+    def test_the_fallback_signs_in_the_same_isolated_container_and_never_shows_the_key(self):
+        text = self.script()
+        sign = text[text.index('echo "3. signing on the signing host"'):text.index("mkdir \"$work/sigs\"")]
+        self.assertIn('key_mount="-v $KEY_FILE:/key/code_sign_private:ro"', sign)
+        self.assertIn('key_mount="-v $KEY_DIR:/key:ro"', sign)
+        # The key check and the signing both run with --network=none and the key read-only.
+        self.assertEqual(sign.count("podman run --rm --network=none $key_mount"), 2)
+        self.assertLess(sign.index("$KEY_MATCH"), sign.index("sign_executable \\\"\\$f\\\""))
+        self.assertIn("OPERATOR-AUTHORIZED FALLBACK", text)
+        # Nothing reads the key file's contents outside the container.
+        for leak in ("cat $KEY_FILE", 'cat "$KEY_FILE"', "< $KEY_FILE", "base64 $KEY_FILE"):
+            self.assertNotIn(leak, text)
 
 class AppReleasePublication(unittest.TestCase):
     def test_native_extra_archive_contains_only_requested_files(self):

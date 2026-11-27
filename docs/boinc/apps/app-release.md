@@ -548,6 +548,53 @@ only batch-1621 units. Why, and how line jobs and their gold are submitted, is i
   `zfs load-key usbbak/signing && zfs mount usbbak/signing`. The script never unlocks it.
 - podman on the signing host.
 
+## Operator-authorized Key Vault signing
+
+The usual signing key is `code_sign_private` in the `usbbak/signing` dataset on the signing host,
+whose passphrase only the maintainer holds (`keylocation=prompt`). When the maintainer can't
+unlock it and explicitly authorizes a release anyway, `--signing-key-file FILE` signs with the
+key's backup in the home Key Vault (secret `boinc-code-sign-private`, base64, with a `sha256` tag
+of the decoded key; home-infra's README describes the backup). It replaces `--signing-dataset`
+and `--signing-key-dir` (giving either with it is refused), and changes nothing else:
+
+- **Where the key may be.** A path under `/dev/shm` or `/run` on the signing host, and there a
+  regular file (not a symlink) on tmpfs or ramfs, owned by root, mode 0600, not empty. Anything
+  else is refused before the release stages a file. The check prints why it refuses, never the
+  key.
+- **That it's the right key.** Before any release file is signed, the key signs a fresh nonce
+  and `crypt_prog -verify` checks it against the project's `codeSignPublicKey`, in the same
+  `--network=none` server-image container, the key mounted read-only. A key that isn't the
+  published one stops the release.
+- **Signing.** The same `sign_executable` step as the dataset's, with the key file mounted
+  read-only at `/key/code_sign_private`. Only the `.sig` files leave the signing host.
+- **The log.** The release prints `OPERATOR-AUTHORIZED FALLBACK` with the file's path, never its
+  contents.
+
+Use it only with the maintainer's explicit authorization for that release. From a machine
+signed in to Azure that the vault's firewall admits, with SSH to the signing host as root
+(`HOST` and `VAULT` stand for them):
+
+```sh
+set -euo pipefail
+dir=$(ssh root@HOST 'umask 077; mktemp -d /dev/shm/usnm-sign.XXXXXX')
+# Shred and remove the key however this shell ends: success, a failed step or an interrupt.
+trap 'ssh root@HOST "shred -u $dir/code_sign_private 2>/dev/null; rm -rf $dir"' EXIT INT TERM
+sum=$(az keyvault secret show --vault-name VAULT -n boinc-code-sign-private --query tags.sha256 -o tsv)
+[[ $sum =~ ^[0-9a-f]{64}$ ]] || { echo "error: the secret has no valid sha256 tag" >&2; exit 1; }
+# The secret goes straight from Key Vault into the tmpfs file: never a variable, an argument,
+# a log or a disk.
+az keyvault secret show --vault-name VAULT -n boinc-code-sign-private --query value -o tsv |
+  ssh root@HOST "set -euo pipefail; umask 077
+    tr -d '\r\n' | base64 -d > $dir/code_sign_private
+    echo '$sum  $dir/code_sign_private' | sha256sum -c --quiet -"
+boinc/scripts/boinc-app-release.sh --env prod --app APP --version VERSION ... \
+  --signing-host HOST --signing-key-file "$dir/code_sign_private" --onprem-host ... --onprem-ct ...
+```
+
+The trap runs when the shell exits, so run each release in its own shell, or fetch once and
+make every release of a batch before the shell ends. Afterwards, check on the signing host that
+nothing is left: `ls -d /dev/shm/usnm-sign.* 2>/dev/null` prints nothing.
+
 ## Steps
 
 ```mermaid
