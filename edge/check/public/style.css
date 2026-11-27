@@ -154,6 +154,11 @@ ul.guidance[hidden] { display: none; }
 .suggest { display: grid; gap: 8px; margin-top: 14px; }
 .suggest label { color: var(--muted); font-size: .95rem; }
 .suggest input { font: inherit; font-size: 1.1rem; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); width: 100%; box-sizing: border-box; }
+.note { display: grid; gap: 8px; margin-top: 14px; }
+.note label { color: var(--muted); font-size: .95rem; }
+.note .hint { margin: 0; }
+.note textarea { font: inherit; font-size: 1.05rem; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); width: 100%; box-sizing: border-box; resize: vertical; min-height: 5.5em; }
+.note-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 .suggest-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
 .suggest-chars { display: flex; gap: 6px; flex-wrap: wrap; }
 .suggest-chars .char { min-width: 44px; min-height: 44px; font-size: 1.2rem; padding: 4px 8px; }

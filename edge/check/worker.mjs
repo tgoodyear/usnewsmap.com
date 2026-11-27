@@ -50,6 +50,33 @@ export function cleanSuggestion(v) {
 // One suggestion per volunteer per word; a second one replaces the first.
 export const SUGGEST_SQL = `INSERT INTO suggestions (task_id, contributor, text, at) VALUES (?1, ?2, ?3, ?4)
 ON CONFLICT (task_id, contributor) DO UPDATE SET text = excluded.text, at = excluded.at`;
+// A note (README.md, "Notes"): free text a volunteer leaves on a word, apart from the answer and from a suggestion ("this is J
+// not I, they were one letter in Fraktur", "the k serif is faint", "show more of the line"). Like a suggestion it is evidence
+// only: nothing about it reads or writes answers, counts, settled or outcome, and a held or settled word takes notes too.
+// Trimmed and NFC-normalised, 1 to NOTE_MAX characters (code points). Line breaks are kept (\r\n and \r become \n, a run of three
+// or more becomes two); any other control character and the line and paragraph separators are refused. null when refused.
+export const NOTE_MAX = 1000;
+export function cleanNote(v) {
+  if (typeof v !== "string") return null;
+  const text = v.normalize("NFC").replace(/\r\n?/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  const n = Array.from(text).length;
+  if (n < 1 || n > NOTE_MAX) return null;
+  if (/[\p{Zl}\p{Zp}]|[^\P{Cc}\n]/u.test(text)) return null;
+  return text;
+}
+// The table, as in schema.sql and migrations/0008-notes.sql. D1 migrations are applied by hand and the deploy can come first,
+// so the Worker runs this (IF NOT EXISTS: a no-op once the table is there) before it writes or reads notes, and the feature
+// works whichever of the two happens first. It is one cheap statement on a request that is rare next to answers.
+export const NOTES_TABLE_SQL = `CREATE TABLE IF NOT EXISTS notes (
+  task_id TEXT NOT NULL,
+  contributor TEXT NOT NULL,
+  text TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (task_id, contributor)
+)`;
+// One note per volunteer per word; a second one replaces the first.
+export const NOTE_SQL = `INSERT INTO notes (task_id, contributor, text, at) VALUES (?1, ?2, ?3, ?4)
+ON CONFLICT (task_id, contributor) DO UPDATE SET text = excluded.text, at = excluded.at`;
 const SESSION_DAYS = 30;
 const SETTLE_MIN = 3; // answers before a word can settle
 const DISPUTE_AT = 7; // answers after which a word that never agreed is closed as disputed
@@ -305,6 +332,19 @@ async function api(request, env, url) {
     await env.DB.prepare(SUGGEST_SQL).bind(b.task, c, text, Date.now()).run();
     return json({ ok: true });
   }
+  if (p === "/api/notes" && request.method === "POST") {
+    const c = await contributorOf(request, env, { limited: true });
+    // 16384 bytes: a note of 1000 characters written with JSON escapes (a supplementary letter is 12 bytes) still fits.
+    const b = await body(request, 16384);
+    if (!b || typeof b.task !== "string" || b.task.length > 300) throw new HttpError(400, "task and text required");
+    const text = cleanNote(b.text);
+    if (text === null) throw new HttpError(400, `text must be 1 to ${NOTE_MAX} characters, with no control characters`);
+    const t = await env.DB.prepare("SELECT id FROM tasks WHERE id = ?").bind(b.task).first();
+    if (!t) throw new HttpError(404, "no such task");
+    await env.DB.prepare(NOTES_TABLE_SQL).run();
+    await env.DB.prepare(NOTE_SQL).bind(b.task, c, text, Date.now()).run();
+    return json({ ok: true });
+  }
   if (p === "/api/stats" && request.method === "GET") {
     const l = lang(url);
     const r = await env.DB.prepare(
@@ -347,6 +387,13 @@ async function api(request, env, url) {
       .all();
     const suggestions = new Map();
     for (const s of sug.results) suggestions.set(s.task_id, [...(suggestions.get(s.task_id) || []), s.text]);
+    // Notes the same way (README.md, "Notes"); the table is made first in case the migration has not been run yet.
+    await env.DB.prepare(NOTES_TABLE_SQL).run();
+    const nt = await env.DB.prepare("SELECT n.task_id, n.text FROM notes n JOIN tasks t ON t.id = n.task_id WHERE t.lang = ? ORDER BY n.at, n.contributor")
+      .bind(l)
+      .all();
+    const notes = new Map();
+    for (const s of nt.results) notes.set(s.task_id, [...(notes.get(s.task_id) || []), s.text]);
     const fontCounts = (r) => ({ loaded: r.f_loaded || 0, not_loaded: r.f_not_loaded || 0, none: r.f_none || 0, unknown: r.f_unknown || 0 });
     const namesCounts = (r) => ({ shown: r.n_shown || 0, not_shown: r.n_not_shown || 0, unknown: r.n_unknown || 0 });
     const choiceCounts = (r) => ({ a: r.a || 0, b: r.b || 0, neither: r.neither || 0, unsure: r.unsure || 0, notext: r.notext || 0, badcrop: r.badcrop || 0 });
@@ -392,6 +439,8 @@ async function api(request, env, url) {
         ...(r.outcome === BAD_CROP ? { clips: t.kind === "gutter" ? { crop: t.crop } : t.kind === "cover" ? { pageview: t.pageview, block: t.block } : { line: t.line, word: t.word } } : {}),
         // What volunteers typed for a word they judged neither reading right (README.md, "Suggestions"): text only, no contributor.
         suggestions: suggestions.get(r.id) || [],
+        // What volunteers wrote about a word, apart from their answer (README.md, "Notes"): text only, oldest first, no contributor.
+        notes: notes.get(r.id) || [],
         settled: !!r.settled, outcome: r.outcome,
       });
     });
@@ -690,9 +739,10 @@ async function admin(request, env, url) {
   }
   if (p === "/admin/dump" && request.method === "GET") {
     // Everything in D1 as JSON lines, one {"table", "row"} per line, for the nightly backup
-    // (backup/README.md). The four reads run as one batch, which D1 runs as one transaction,
+    // (backup/README.md). The reads run as one batch, which D1 runs as one transaction,
     // so tasks' counts and the answers come from the same moment and no row is read twice.
-    const tables = [["languages", "code"], ["tasks", "id"], ["answers", "task_id, contributor"], ["answers_excluded", "task_id, contributor"], ["suggestions", "task_id, contributor"]];
+    const tables = [["languages", "code"], ["tasks", "id"], ["answers", "task_id, contributor"], ["answers_excluded", "task_id, contributor"], ["suggestions", "task_id, contributor"], ["notes", "task_id, contributor"]];
+    await env.DB.prepare(NOTES_TABLE_SQL).run(); // the notes table may not exist yet (see NOTES_TABLE_SQL)
     const results = await env.DB.batch(tables.map(([table, order]) => env.DB.prepare(`SELECT * FROM ${table} ORDER BY ${order}`)));
     const out = [];
     tables.forEach(([table], k) => { for (const row of results[k].results) out.push(JSON.stringify({ table, row })); });

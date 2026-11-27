@@ -26,7 +26,7 @@
   <section id="work" hidden>
     <p class="how" id="intro"></p>
     <p class="how links" id="intro-links" hidden></p>
-    <p class="how" id="rules">The box marks one word in a line. Pick the reading whose letters match the printed word. Highlighted letters show where the two readings differ, but check every letter: pick a reading only if all its letters match the print, highlighted or not. If neither reading matches, pick Neither matches: a box then opens where you can type what the print says. If you can't make out the letters, pick Can't tell. If the box holds no letters (a picture or a smudge), pick Not text. You don't need to know the language, only to match shapes.</p>
+    <p class="how" id="rules">The box marks one word in a line. Pick the reading whose letters match the printed word. Highlighted letters show where the two readings differ, but check every letter: pick a reading only if all its letters match the print, highlighted or not. If neither reading matches, pick Neither matches: a box then opens where you can type what the print says. If you can't make out the letters, pick Can't tell. If the box holds no letters (a picture or a smudge), pick Not text. You don't need to know the language, only to match shapes. Use Add a note to tell us anything else about a word, such as why you chose or what you're unsure of.</p>
     <ul class="how guidance" id="guidance" hidden></ul>
     <label class="toggle" id="names-wrap" hidden><input type="checkbox" id="names"> Show letter names</label>
     <div class="paperbar" id="paperbar" hidden></div>
@@ -39,6 +39,7 @@
       <button class="small" id="badcrop" type="button" disabled>Bad crop (6)</button>
       <button class="small" id="back" type="button" disabled>Back (←)</button>
       <button class="small" id="skip" type="button" disabled>Skip (S)</button>
+      <button class="small" id="note" type="button" aria-controls="note-box" aria-expanded="false" disabled>Add a note (N)</button>
     </div>
     <p class="how hint" id="badcrop-help">Pick Bad crop if the box shows more than one line, cuts off the word, or marks the wrong thing.</p>
     <div class="status" id="status"></div>

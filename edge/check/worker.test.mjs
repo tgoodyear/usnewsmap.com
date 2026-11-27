@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import worker, { DISPLAY_REVISION, SUGGEST_MAX, cleanSuggestion, settle, signSession, verifySession } from "./worker.mjs";
+import worker, { DISPLAY_REVISION, NOTES_TABLE_SQL, NOTE_MAX, SUGGEST_MAX, cleanNote, cleanSuggestion, settle, signSession, verifySession } from "./worker.mjs";
 
 test("a word settles at three answers with two thirds agreeing", () => {
   assert.deepEqual(settle({ a: 2, b: 0, neither: 0, unsure: 0 }), { n: 2, settled: 0, outcome: null });
@@ -157,16 +157,17 @@ test("/admin/tasks with if_body replaces a body only while it is still the one t
 
 test("the dump has every table's rows", async () => {
   const data = { languages: [{ code: "chr", config: "{}" }], tasks: [{ id: "t1" }, { id: "t2" }], answers: [{ task_id: "t1", contributor: "c", choice: "a", at: 1 }],
-    answers_excluded: [{ task_id: "t2", contributor: "d", choice: "b", at: 2 }], suggestions: [{ task_id: "t1", contributor: "c", text: "x", at: 3 }] };
+    answers_excluded: [{ task_id: "t2", contributor: "d", choice: "b", at: 2 }], suggestions: [{ task_id: "t1", contributor: "c", text: "x", at: 3 }],
+    notes: [{ task_id: "t1", contributor: "c", text: "J not I", at: 4 }] };
   let batches = 0;
   const DB = {
-    prepare: (sql) => ({ sql }),
+    prepare: (sql) => ({ sql, run: async () => {} }),
     batch: async (stmts) => { batches++; return stmts.map((st) => ({ results: data[st.sql.match(/FROM (\w+)/)[1]] })); },
   };
   const r = await worker.fetch(new Request("https://check.usnewsmap.com/admin/dump", { headers: { authorization: "Bearer secret-admin" } }), { ...env, DB }, {});
   assert.equal(r.status, 200);
   const lines = (await r.text()).trim().split("\n").map((l) => JSON.parse(l));
-  assert.deepEqual(lines.map((l) => l.table), ["languages", "tasks", "tasks", "answers", "answers_excluded", "suggestions"]);
+  assert.deepEqual(lines.map((l) => l.table), ["languages", "tasks", "tasks", "answers", "answers_excluded", "suggestions", "notes"]);
   assert.equal(lines[3].row.choice, "a");
   assert.equal(lines[4].row.choice, "b");
   assert.equal(batches, 1, "one batch, so one snapshot");
@@ -259,7 +260,7 @@ test("a blind task's private fields stay off /api/next, and off /api/export unti
     { id: "en/s/2", set_name: "s", body: JSON.stringify(open), outcome: "b", settled: 1, a: 0, b: 3 },
     { id: "chr/s/3", set_name: "s", body: JSON.stringify(plain), outcome: null, settled: 0, a: 1, b: 0 },
   ];
-  const DB = { prepare: (sql) => ({ bind: () => ({ first: async () => (sql.includes("FROM tasks t WHERE lang") ? { id: "en/s/1", body: rows[0].body, n: 1 } : { k: 0 }), all: async () => ({ results: sql.includes("answers_excluded") ? [] : rows }) }), all: async () => ({ results: rows }) }) };
+  const DB = { prepare: (sql) => ({ bind: () => ({ first: async () => (sql.includes("FROM tasks t WHERE lang") ? { id: "en/s/1", body: rows[0].body, n: 1 } : { k: 0 }), all: async () => ({ results: sql.includes("answers_excluded") || sql.includes("FROM notes") ? [] : rows }) }), all: async () => ({ results: rows }), run: async () => ({}) }) };
   const token = await signSession(env.SESSION_KEY, "c1");
   const next = await worker.fetch(new Request("https://check.usnewsmap.com/api/next?lang=en", { headers: { authorization: "Bearer " + token } }), { ...env, DB }, {});
   const task = (await next.json()).task;
@@ -1331,4 +1332,144 @@ test("a paper's name is its label without the date and page", async () => {
   assert.equal(paperName("Der Morgen Zshurnal, 1 May 1920, page 12", "x"), "Der Morgen Zshurnal");
   assert.equal(paperName(null, "sn1"), "sn1");
   assert.equal(paperName("Plain name", "sn1"), "Plain name");
+});
+
+// ---------- notes (README.md, "Notes") ----------
+
+test("a note keeps line breaks, normalises them, and refuses control characters, empty and too long text", () => {
+  assert.equal(cleanNote("  one\ntwo  "), "one\ntwo");
+  assert.equal(cleanNote("a\r\nb\rc"), "a\nb\nc", "CRLF and CR become LF");
+  assert.equal(cleanNote("a\n\n\n\n\nb"), "a\n\nb", "three or more line breaks become two");
+  assert.equal(cleanNote("e\u0301"), "\u00e9", "decomposed input is composed");
+  assert.equal(cleanNote("\u200Fשלום"), "\u200Fשלום", "a right-to-left mark is kept");
+  assert.equal(cleanNote("x".repeat(NOTE_MAX)).length, NOTE_MAX);
+  assert.equal(cleanNote("x".repeat(NOTE_MAX + 1)), null);
+  assert.equal(cleanNote("\u{1F600}".repeat(NOTE_MAX)).length, NOTE_MAX * 2, "code points, not UTF-16 units");
+  assert.equal(cleanNote("\u{1F600}".repeat(NOTE_MAX + 1)), null);
+  for (const bad of ["", "   ", "\n\n", "a\tb", "a\u0000", "a\u001Fb", "a\u007Fb", "a\u2028b", "a\u2029b", 5, null, undefined]) assert.equal(cleanNote(bad), null, JSON.stringify(bad));
+});
+
+test("POST /api/notes needs a session, a task that exists and a valid text, and an upsert keeps one row per volunteer", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('yi/s/1', 'yi', 's', ?)").run(JSON.stringify({ page: "p", a: "x", b: "y" }));
+  const post = async (who, body, auth) => worker.fetch(new Request("https://check.usnewsmap.com/api/notes", {
+    method: "POST", headers: { authorization: auth ?? "Bearer " + (await signSession(env.SESSION_KEY, who)) }, body: typeof body === "string" ? body : JSON.stringify(body),
+  }), E, {});
+  assert.equal((await post(null, { task: "yi/s/1", text: "x" }, "")).status, 401, "no session");
+  assert.equal((await post("v1", "not json")).status, 400);
+  assert.equal((await post("v1", "null")).status, 400);
+  assert.equal((await post("v1", { task: "yi/s/1" })).status, 400, "no text");
+  assert.equal((await post("v1", { task: "yi/s/1", text: "a\u0000b" })).status, 400, "a control character");
+  assert.equal((await post("v1", { task: "yi/s/1", text: "x".repeat(NOTE_MAX + 1) })).status, 400, "too long");
+  assert.equal((await post("v1", { task: "yi/s/9", text: "hello" })).status, 404, "no such task");
+  assert.equal((await post("v1", { task: 7, text: "hello" })).status, 400);
+  assert.equal(db.prepare("SELECT COUNT(*) AS k FROM notes").get().k, 0, "refused texts store nothing");
+  assert.equal((await post("v1", { task: "yi/s/1", text: " first\r\nline two " })).status, 200);
+  assert.equal((await post("v1", { task: "yi/s/1", text: "I or J?\nOne letter in Fraktur." })).status, 200, "a second one replaces the first");
+  assert.equal((await post("v2", { task: "yi/s/1", text: "the serif is faint" })).status, 200, "another volunteer adds a row");
+  const rows = db.prepare("SELECT contributor, text FROM notes ORDER BY contributor").all().map((r) => ({ ...r }));
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].text, "I or J?\nOne letter in Fraktur.");
+  assert.equal(rows[1].text, "the serif is faint");
+  // 1000 supplementary letters written with JSON escapes (12 bytes each) are within the body limit
+  const escaped = JSON.stringify({ task: "yi/s/1", text: "\u{1F600}".repeat(NOTE_MAX) }).replace(/[\u{10000}-\u{10FFFF}]/gu, (c) => c.split("").map((u) => "\\u" + u.charCodeAt(0).toString(16)).join(""));
+  assert.ok(escaped.length > 4096);
+  assert.equal((await post("v1", escaped)).status, 200, "a 1000-character text escaped as JSON is accepted");
+  // rate limited like answers
+  const limited = await worker.fetch(new Request("https://check.usnewsmap.com/api/notes", {
+    method: "POST", headers: { authorization: "Bearer " + (await signSession(env.SESSION_KEY, "v1")) }, body: JSON.stringify({ task: "yi/s/1", text: "x" }),
+  }), { ...E, ANSWER_LIMIT: { limit: async () => ({ success: false }) } }, {});
+  assert.equal(limited.status, 429);
+});
+
+test("notes never settle a word or touch its answers, and a settled or held word takes them", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('yi/s/1', 'yi', 's', ?)").run(JSON.stringify({ page: "p", a: "x", b: "y" }));
+  const note = async (who, text) => worker.fetch(new Request("https://check.usnewsmap.com/api/notes", { method: "POST", headers: { authorization: "Bearer " + (await signSession(env.SESSION_KEY, who)) }, body: JSON.stringify({ task: "yi/s/1", text }) }), E, {});
+  for (let i = 0; i < 9; i++) assert.equal((await note("n" + i, "note " + i)).status, 200);
+  const row = () => ({ ...db.prepare("SELECT n, settled, outcome, held FROM tasks WHERE id = 'yi/s/1'").get() });
+  assert.deepEqual(row(), { n: 0, settled: 0, outcome: null, held: 0 }, "nine notes and no answer");
+  assert.equal(db.prepare("SELECT COUNT(*) AS k FROM answers").get().k, 0);
+  db.prepare("UPDATE tasks SET held = 1 WHERE id = 'yi/s/1'").run();
+  assert.equal((await note("n0", "still fine")).status, 200, "a held word takes a note");
+  db.prepare("UPDATE tasks SET held = 0, settled = 1, outcome = 'a' WHERE id = 'yi/s/1'").run();
+  assert.equal((await note("n1", "settled too")).status, 200, "a settled word takes a note");
+  assert.deepEqual(row(), { n: 0, settled: 1, outcome: "a", held: 0 }, "nothing but the notes table changed");
+});
+
+test("the export lists each word's notes as text only, oldest first, and the admin dump keeps the table", async () => {
+  const { db, DB } = await sqliteD1();
+  const E = { ...env, DB };
+  const body = JSON.stringify({ page: "p", a: "x", b: "y" });
+  db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('yi/s/1', 'yi', 's', ?), ('yi/s/2', 'yi', 's', ?), ('chr/s/1', 'chr', 's', ?)").run(body, body, body);
+  const put = async (who, task, text) => worker.fetch(new Request("https://check.usnewsmap.com/api/notes", { method: "POST", headers: { authorization: "Bearer " + (await signSession(env.SESSION_KEY, who)) }, body: JSON.stringify({ task, text }) }), E, {});
+  await put("v1", "yi/s/1", "first");
+  await new Promise((ok) => setTimeout(ok, 5));
+  await put("v2", "yi/s/1", "second\nline");
+  await put("v3", "chr/s/1", "ᏣᎳ");
+  const exp = await (await worker.fetch(new Request("https://check.usnewsmap.com/api/export?lang=yi"), E, {})).text();
+  const byId = Object.fromEntries(exp.trim().split("\n").map((l) => JSON.parse(l)).map((r) => [r.id, r]));
+  assert.deepEqual(byId["yi/s/1"].notes, ["first", "second\nline"], "oldest first");
+  assert.deepEqual(byId["yi/s/2"].notes, [], "a word with none has an empty list");
+  assert.ok(!exp.includes("v1") && !exp.includes("v2"), "no contributor ids in the export");
+  assert.equal(byId["yi/s/1"].settled, false);
+  const chr = (await (await worker.fetch(new Request("https://check.usnewsmap.com/api/export?lang=chr"), E, {})).text()).trim().split("\n").map((l) => JSON.parse(l));
+  assert.deepEqual(chr[0].notes, ["ᏣᎳ"]);
+  const dump = (await (await worker.fetch(new Request("https://check.usnewsmap.com/admin/dump", { headers: { authorization: "Bearer secret-admin" } }), E, {})).text()).trim().split("\n").map((x) => JSON.parse(x));
+  assert.equal(dump.filter((d) => d.table === "notes").length, 3);
+  assert.equal(dump.filter((d) => d.table === "notes" && d.row.contributor === "v1").length, 1);
+});
+
+test("a database without the notes table gets it on the first note, the export and the dump", async () => {
+  const body = JSON.stringify({ page: "p", a: "x", b: "y" });
+  const fresh = async () => {
+    const s = await sqliteD1();
+    s.db.exec("DROP TABLE notes");
+    s.db.prepare("INSERT INTO tasks (id, lang, set_name, body) VALUES ('yi/s/1', 'yi', 's', ?)").run(body);
+    return s;
+  };
+  const has = (db) => db.prepare("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'notes'").get();
+  // the first note on a database from before the migration
+  let { db, DB } = await fresh();
+  let E = { ...env, DB };
+  assert.ok(!has(db));
+  const r = await worker.fetch(new Request("https://check.usnewsmap.com/api/notes", { method: "POST", headers: { authorization: "Bearer " + (await signSession(env.SESSION_KEY, "v1")) }, body: JSON.stringify({ task: "yi/s/1", text: "hello" }) }), E, {});
+  assert.equal(r.status, 200);
+  assert.equal(db.prepare("SELECT text FROM notes").get().text, "hello");
+  // the export and the dump, before any note was written
+  for (const [path, headers] of [["/api/export?lang=yi", {}], ["/admin/dump", { authorization: "Bearer secret-admin" }]]) {
+    ({ db, DB } = await fresh()); E = { ...env, DB };
+    const res = await worker.fetch(new Request("https://check.usnewsmap.com" + path, { headers }), E, {});
+    assert.equal(res.status, 200, path);
+    assert.ok(has(db), path);
+  }
+  // the migration file is the same table, and running it on a database that has the table changes nothing
+  const { readFileSync } = await import("node:fs");
+  ({ db } = await fresh());
+  db.exec(readFileSync(new URL("./migrations/0008-notes.sql", import.meta.url), "utf8"));
+  db.exec(NOTES_TABLE_SQL);
+  db.exec(readFileSync(new URL("./migrations/0008-notes.sql", import.meta.url), "utf8"));
+  assert.ok(has(db));
+});
+
+test("the page's note box is for every task kind, keeps the answer, and its keys don't fire in it", () => {
+  const app = readFileSync(new URL("./public/app.js", import.meta.url), "utf8");
+  const html = readFileSync(new URL("./public/index.html", import.meta.url), "utf8");
+  assert.equal(Number(app.match(/const NOTE_MAX = (\d+);/)[1]), NOTE_MAX);
+  assert.match(html, /<button class="small" id="note"[^>]*>Add a note \(N\)<\/button>/);
+  assert.match(html, /Use Add a note to tell us anything else about a word/);
+  assert.match(app, /"Your note on this word \(optional\)"/);
+  assert.match(app, /id: "note-text", dir: "auto", lang,/);
+  assert.match(app, /if \(e\.target && e\.target\.id === "note-text"\) return;/);
+  assert.match(app, /e\.key === "Enter" && \(e\.ctrlKey \|\| e\.metaKey\)/, "Ctrl or Cmd+Enter saves; Enter is a newline");
+  assert.match(app, /authed\("\/api\/notes"/);
+  assert.match(app, /if \(noteOpening === opening && noteFor === id\)/, "a save finishing after the word changed leaves the new screen alone");
+  // the box is drawn for gutter, cover and pick tasks
+  assert.equal((app.match(/if \(noteFor === t\.id\) card\.appendChild\(noteBox\(t\)\);/g) || []).length, 2);
+  assert.match(app, /if \(suggestFor === t\.id\) card\.appendChild\(suggestBox\(t\)\);\s*if \(noteFor === t\.id\)/, "after the suggest box");
+  // saving a note sends no answer and moves nowhere
+  const send = app.slice(app.indexOf("async function sendNote"), app.indexOf("// An empty box just moves on."));
+  assert.doesNotMatch(send, /pending\.push|next\(|choose\(/);
 });

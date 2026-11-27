@@ -14,6 +14,14 @@ let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = 
 const INSERT_CHARS = ["½", "¼", "¾", "⅓", "⅔", "⅛", "⅜", "⅝", "⅞"];
 const CHARSOPEN = "usnm-check-chars"; // "1" when the visitor opened the character buttons under the suggestion box
 let suggestFor = null, suggestDraft = "", suggestOpening = null, suggestSending = null;
+// A note on a word (noteBox): free text, apart from the answer and from a suggestion, for anything a volunteer wants to tell us
+// about this word (why they chose, what they're unsure of, what more they'd need to see). Any task kind has it, and saving it
+// neither answers nor moves on. Worker: POST /api/notes, max NOTE_MAX. noteFor is the word the box is open on; noteDraft keeps
+// what was typed through a re-render and is dropped when the word changes. noteOpening is the object made each time the box
+// opens, as suggestOpening is: a save that finishes after the word changed or the box was closed doesn't touch what is on
+// screen then. noteDone holds the words that got a note on this page, so the button says "Edit note" when Back returns to one.
+let noteFor = null, noteDraft = "", noteOpening = null, noteSending = null;
+const noteDone = new Set();
 // On a slow connection an answer is saved in the background and the next word, fetched while this one was shown, appears at once.
 // `pending` holds answers not yet saved, oldest first; `ahead` holds the next words fetched for the word now shown; `stale` is set
 // when the Worker says this page is out of date, and stops answering until a reload.
@@ -24,6 +32,7 @@ const counted = new Set(); // words answered on this page, so a changed answer i
 // Revision 2 draws a gutter task's leaning line (line.x1); the Worker refuses answers to such a task from an older page.
 const DISPLAY = 2;
 const SUGGEST_MAX = 200;
+const NOTE_MAX = 1000;
 
 let memory = {};
 function store(k, v) {
@@ -634,6 +643,7 @@ function render(prev) {
   $("neither").disabled = $("unsure").disabled = $("notext").disabled = $("badcrop").disabled = $("skip").disabled = !live;
   // A column gutter task has only yes, no and can't tell, and Bad crop, which every task has.
   // A cover task has yes, no, can't tell, not text and Bad crop.
+  noteButton(live);
   $("neither").hidden = isGutter(task) || isCover(task);
   $("notext").hidden = isGutter(task);
   if (task) $("badcrop-help").textContent = isGutter(task) ? GUTTER_BADCROP_HELP : isCover(task) ? COVER_BADCROP_HELP : BADCROP_HELP;
@@ -685,6 +695,7 @@ function render(prev) {
   const t = task;
   if (isGutter(t) || isCover(t)) {
     (isGutter(t) ? renderGutter : renderCover)(card, t, prev);
+    if (noteFor === t.id) card.appendChild(noteBox(t));
     if (t.source) {
       const src = document.createElement("a"); src.href = t.source; src.target = "_blank"; src.rel = "noopener"; src.className = "label"; src.textContent = "See the whole page";
       card.appendChild(src);
@@ -720,6 +731,7 @@ function render(prev) {
   renderKey(card, t);
   markGuide(t);
   if (suggestFor === t.id) card.appendChild(suggestBox(t));
+  if (noteFor === t.id) card.appendChild(noteBox(t));
   if (t.source) {
     const src = document.createElement("a"); src.href = t.source; src.target = "_blank"; src.rel = "noopener"; src.className = "label"; src.textContent = "See the whole page";
     card.appendChild(src);
@@ -809,6 +821,84 @@ function suggestBox(t) {
   row.append(send, skipBox, ...(toggle ? [toggle] : []));
   box.append(label, input, row, ...(pad ? [pad] : []));
   return box;
+}
+
+// The note box (any task kind). Saving keeps the word on screen: the box closes and the button reads "Edit note". Enter is a
+// newline; Ctrl or Cmd+Enter saves. A failed save keeps the box and the text. The text is not prefilled when a word that already
+// has a note is shown again, since the page doesn't ask the Worker for it; a second note replaces the first.
+function noteBox(t) {
+  const box = document.createElement("div"); box.className = "note"; box.id = "note-box";
+  const label = document.createElement("label"); label.htmlFor = "note-text"; label.textContent = "Your note on this word (optional)";
+  const hint = document.createElement("p"); hint.className = "how hint"; hint.id = "note-hint";
+  hint.textContent = "Anything that helps: why you chose, what you're unsure of (I or J?), or what more you'd need to see. Notes are published with the answers, so leave out names and contact details.";
+  const input = document.createElement("textarea");
+  // No maxLength, as in suggestBox: it counts UTF-16 units, not the code points the Worker counts.
+  Object.assign(input, { id: "note-text", dir: "auto", lang, rows: 4, autocomplete: "off", spellcheck: false });
+  input.setAttribute("aria-describedby", "note-hint");
+  input.value = noteDraft;
+  if (noteSending && noteSending === noteOpening) input.readOnly = true;
+  input.addEventListener("input", () => { noteDraft = input.value; });
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) { e.preventDefault(); sendNote(t.id); } });
+  const row = document.createElement("div"); row.className = "note-buttons";
+  const save = document.createElement("button"); save.type = "button"; save.className = "small"; save.id = "note-save"; save.textContent = "Save note";
+  if (input.readOnly) save.disabled = true;
+  save.addEventListener("click", () => sendNote(t.id));
+  const cancel = document.createElement("button"); cancel.type = "button"; cancel.className = "small"; cancel.id = "note-cancel"; cancel.textContent = "Cancel";
+  cancel.addEventListener("click", () => closeNote(true));
+  row.append(save, cancel);
+  box.append(label, hint, input, row);
+  return box;
+}
+
+// The button's wording and state, set on every render and after a save. "Edit note" once this page has saved one for the word.
+function noteButton(live = !!task && !busy && !fontFailed && !stale) {
+  const b = $("note"); if (!b) return;
+  b.disabled = !live;
+  b.textContent = (task && noteDone.has(task.id) ? "Edit note" : "Add a note") + " (N)";
+  b.setAttribute("aria-expanded", String(!!task && noteFor === task.id));
+}
+
+function closeNote(drop) {
+  if (noteSending && noteSending === noteOpening) return; // a save is in flight: it closes the box when it has answered
+  noteFor = null; noteOpening = null; if (drop) noteDraft = "";
+  render(shownPrev);
+  const b = $("note"); if (b && !b.disabled) b.focus({ preventScroll: true });
+}
+
+// The button and key N: open the box on the word shown, or close it again (the text typed stays until the word changes).
+function toggleNote() {
+  if (!task || busy || fontFailed || stale) return;
+  if (noteFor === task.id) { closeNote(false); return; }
+  noteFor = task.id; noteOpening = {}; noteDraft = ""; render(shownPrev);
+  const box = $("note-text"); if (box) box.focus();
+}
+
+async function sendNote(id) {
+  const opening = noteOpening;
+  if (busy || !opening || noteFor !== id || noteSending === opening) return;
+  const input = $("note-text");
+  // the same normalising as the Worker's cleanNote, so the length checked here is the length it counts
+  const text = input ? input.value.normalize("NFC").replace(/\r\n?/g, "\n").replace(/\n{3,}/g, "\n\n").trim() : "";
+  if (!text) { status("Write a note first, or Cancel.", true); return; }
+  if (Array.from(text).length > NOTE_MAX) { status(`A note is at most ${NOTE_MAX} characters.`, true); return; }
+  const save = $("note-save");
+  noteSending = opening; if (save) save.disabled = true; if (input) input.readOnly = true;
+  try {
+    await authed("/api/notes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: id, text }) });
+  } catch (e) {
+    if (noteOpening === opening) {
+      // the box drawn now, which a re-render during the save may have replaced
+      noteSending = null;
+      const nowSave = $("note-save"), nowInput = $("note-text");
+      if (nowSave) nowSave.disabled = false; if (nowInput) nowInput.readOnly = false;
+      status("Your note wasn't saved: " + e.message, true);
+    }
+    return;
+  } finally { if (noteSending === opening) noteSending = null; }
+  noteDone.add(id);
+  // Only if the box is still the one this save came from: a word that changed meanwhile keeps its own screen.
+  if (noteOpening === opening && noteFor === id) { noteFor = null; noteOpening = null; noteDraft = ""; render(shownPrev); status("Note saved."); const b = $("note"); if (b && !b.disabled) b.focus({ preventScroll: true }); }
+  else noteButton();
 }
 
 // An empty box just moves on. A failed save keeps the word and the text, so it can be sent again or skipped. One save at a time:
@@ -931,6 +1021,7 @@ function navStatus(text, error) { if (!stale && !(checking && !error)) status(te
 // `after` is the word being left: the first word fetched ahead for it is shown; with `keepRest`, the others stay ahead.
 async function next(had = controlFocused(), after = null, pressed, keepRest = true) {
   suggestFor = null; suggestDraft = ""; suggestOpening = null;
+  noteFor = null; noteDraft = ""; noteOpening = null; noteSending = null;
   const list = after && ahead && ahead.forId === after ? ahead.list : [];
   const first = list[0], rest = keepRest ? list.slice(1) : [];
   dropAhead(first ? [first, ...rest] : []);
@@ -1029,6 +1120,7 @@ async function choose(choice) {
 function back() {
   if (!history.length || busy || stale) return;
   suggestFor = null; suggestDraft = ""; suggestOpening = null;
+  noteFor = null; noteDraft = ""; noteOpening = null; noteSending = null;
   const had = controlFocused();
   const h = history.pop(); task = h.task; lineShown = true; render(h.choice); keepFocus(had); prefetch();
   status("Change your answer, or pick the same one to keep it.");
@@ -1083,16 +1175,19 @@ async function work(code) {
     $("names-wrap").hidden = false;
   }
   $("skip").addEventListener("click", skip);
+  $("note").addEventListener("click", toggleNote);
   document.addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.target && e.target.id === "suggest-text") return;
     if (e.target && e.target.tagName === "SELECT") return; // the newspaper picker: its own keys pick a paper
+    if (e.target && e.target.id === "note-text") return; // Enter is a newline there, and N, S and the digits are typed
     if (e.key === "1" || e.key === "2") { const b = $("opt" + e.key); if (b) b.click(); }
     // Key 3 moves the cursor into the box it opens: preventDefault keeps the key from typing a "3" there.
     else if (e.key === "3") { e.preventDefault(); choose("neither"); }
     else if (e.key === "4") choose("unsure");
     else if (e.key === "5") choose("notext");
     else if (e.key === "6") choose("badcrop");
+    else if (e.key === "n" || e.key === "N") { e.preventDefault(); toggleNote(); }
     else if (e.key === "s" || e.key === "S") skip();
     else if (e.key === "l" || e.key === "L") toggleLine();
     else if (e.key === "k" || e.key === "K") toggleKey();
