@@ -562,10 +562,15 @@ def ship_main():
 
 
 def server_inventory(a, version):
+    """The server's Qwen backlog for this campaign's own batch: batch 8, 9 for a --full-res 8B
+    campaign (native-8b-full, #2168), or 108 for Xiaomi-OCR-0. Backpressure counts only it, so
+    a half-resolution backlog can't hold back a full-resolution campaign, nor the reverse."""
+    full = version != 5 and getattr(a, "full_res", False)
     return json.loads(remote(a.server_host, ["pct", "exec", str(a.server_ct), "--", "podman", "exec",
                                              "usnm-boinc-server", "python3",
                                              "/project/ops/qwen-feed/qwen_submit.py", "--inventory",
-                                             *(["--prompt-version", str(version)] if version == 5 else [])]))
+                                             *(["--prompt-version", str(version)] if version == 5 else []),
+                                             *(["--crop-res", "full"] if full else [])]))
 
 
 def half_res_pages(inv):

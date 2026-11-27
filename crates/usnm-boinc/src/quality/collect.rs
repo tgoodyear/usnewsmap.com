@@ -2241,6 +2241,7 @@ pub(super) mod tests {
         let crops = crate::qwen::stage::cut(&l.page, &l.alto, job.crop_seed, job.k_crops).unwrap();
         assert!(!crops.is_empty());
         let readings = Readings {
+            refused: Vec::new(),
             v: qwen::VERSION,
             job_id: job.id.clone(),
             device: "cpu".into(),
@@ -2461,6 +2462,7 @@ pub(super) mod tests {
             ("The council", 11, 2),
         ] {
             let readings = Readings {
+                refused: Vec::new(),
                 v: qwen::VERSION,
                 job_id: job.id.clone(),
                 device: "cpu".into(),
@@ -3130,6 +3132,7 @@ pub(super) mod tests {
             "a different late canonical text",
         ] {
             let readings = Readings {
+                refused: Vec::new(),
                 v: qwen::VERSION,
                 job_id: job.id.clone(),
                 device: "cuda".into(),
@@ -3393,6 +3396,7 @@ pub(super) mod tests {
         .unwrap();
         assert!(job.crops.len() >= 2, "the fixture cuts two crops or more");
         let readings = Readings {
+            refused: Vec::new(),
             v: qwen::VERSION,
             job_id: job.id.clone(),
             device: "cuda".into(),

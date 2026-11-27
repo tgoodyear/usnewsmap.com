@@ -48,6 +48,7 @@ Notes:
 
 - `no_text` maps to `blank`. The existing name stays in the pair record for compatibility (see Format).
 - `failed` follows #1964. That change deliberately left per-crop `failed` out of the result format: a crop that cannot be read fails the whole unit (outcome `failed`, non-zero exit), so the server reissues the unit. This design keeps that behaviour. `failed` is therefore a state a crop can only get at the server, when a returned unit reports it as `failed` and a re-issue also cannot read it. It is not something a client writes into an uploaded success.
+- One exception since 26 November 2026 (#968): a crop the live `llama-server` **refuses** with a 4xx status (such as a request past the context, `exceed_context_size_error`), or one that can't be cut from its page, fails alone. A re-issue would refuse it the same way, so failing the unit would only throw the other crops away. The client leaves that crop out of `readings.json`, names it in the readings' `diag` (`crop_errors`, `crop_error_ids`), and finishes the unit with outcome `ok`. A crop missing from a result is never read, so it can't agree: missing on both sides it has no reading and is left out of the pair; read by one host and missing on the other, the pair is refused as "read by one host only". Every other failure (a 5xx, a dropped connection, a deadline) still fails the whole unit as #1964 has it.
 - A crop that is `disagree` after the pair but not yet re-issued is `pending`. It is a transient state in the ledger, never in a published table.
 
 ## Validator and consensus changes

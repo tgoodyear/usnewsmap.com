@@ -210,7 +210,10 @@ def run(args):
         args.collector, "quality", "collect", "--campaign", args.campaign,
         "--root", root, "--spool", "/project/usnmocr/results/0",
         "--qwen-root", qwen_root,
-        "--qwen-spool", "/project/usnmocr/results/8" if args.qwen_campaign else root + "/no-qwen",
+        # A full-resolution 8B root recorded as submitting to batch 9 (native-8b-full, #2168) has
+        # its results there; every other root's 8B results are batch 8.
+        "--qwen-spool", (f"/project/usnmocr/results/{getattr(args, 'qwen_batch', 8)}"
+                         if args.qwen_campaign else root + "/no-qwen"),
     ]
     if args.qwen_campaign and getattr(args, "hold", False):
         # Xiaomi-OCR-0 units are batch 108 (#1776); their jobs read only this spool. Only a held
@@ -372,6 +375,10 @@ def main(argv=None):
                              "results share its name, with its own collector if named")
     parser.add_argument("--engine-image", required=True)
     parser.add_argument("--qwen-campaign", help="join this native Qwen campaign's canonical batch-8 readings")
+    parser.add_argument("--qwen-batch", type=int, choices=(8, 9), default=8,
+                        help="the batch the Qwen root's 8B units went to: 9 for a root qwen_submit "
+                             "recorded in its submit-batch (full-resolution 8B, #2168), 8 otherwise. "
+                             "Xiaomi-OCR-0 results are batch 108 either way")
     parser.add_argument("--qwen-crop-states", metavar="DIR",
                         help="the server's `qwen compare --crop-states` directory, passed to collectors "
                              "joining Qwen readings so only vouched crops join (needs a collector from #1434 on)")

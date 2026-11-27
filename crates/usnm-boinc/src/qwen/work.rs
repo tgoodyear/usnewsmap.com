@@ -120,9 +120,9 @@ pub fn request_body(png: &[u8], max_tokens: u32) -> serde_json::Value {
 /// llama.cpp's server binary in the image (the CUDA server image keeps
 /// it and its libraries under `/app`).
 pub const LLAMA_SERVER: &str = "/app/llama-server";
-/// Context for one crop: a 1,600 by 420 px crop is about 650 image
-/// tokens at Qwen3-VL's 32 px per token, plus the prompt and the answer.
-pub const CTX_SIZE: u32 = 4096;
+/// Context for one crop, the contract's for request versions 1 to 4 (8,192 since #968's A/B, so
+/// a crop at the 4.2 Mpx cap, about 4,100 image tokens, fits with the prompt and the answer).
+pub const CTX_SIZE: u32 = usnm_ocr_contract::qwen::CTX_SIZE;
 /// How long the server may take to accept a connection.
 const CONNECT: Duration = Duration::from_secs(5);
 /// The sampler's period for RSS and CPU time, and for GPU memory.
@@ -898,6 +898,7 @@ fn run_blocking(work: &Path) -> anyhow::Result<()> {
         }
     };
     let readings = Readings {
+        refused: Vec::new(),
         v: VERSION,
         job_id: job_id.clone(),
         device: done.device.clone(),

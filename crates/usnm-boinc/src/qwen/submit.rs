@@ -28,6 +28,12 @@ pub enum Target {
     /// Native 8B GPU worker (`templates/usnm_qwen_8b_in`, stages sticky 8B GGUF + mmproj).
     #[value(name = "native-8b", alias = "native8b")]
     Native8b,
+    /// The native 8B worker for a root staged with `--crop-res full` (#968 A/B, #2168): the
+    /// same template and model, as batch 9, which every 8B class but `nvidia_vulkan_6gb_8b`
+    /// takes. A capped full-resolution crop needs the full offload's memory, so a 6 GB card
+    /// stays on half-resolution (batch 8) work.
+    #[value(name = "native-8b-full")]
+    Native8bFull,
     /// Native 2B GPU/CPU worker (`templates/usnm_qwen_2b_in`, stages sticky 2B GGUF + mmproj).
     #[value(name = "native-2b", alias = "native2b")]
     Native2b,
@@ -42,6 +48,11 @@ pub enum Target {
     NativeXiaomiPage,
 }
 
+/// `workunit.batch` of capped full-resolution 8B units (#2168): the 8B classes take it, all
+/// but [`SIX_GB_8B_PLAN`].
+pub const FULL_RES_8B_BATCH: i32 = 9;
+/// The partial-offload 8B class for 6 GB cards: half-resolution (batch 8) work only.
+pub const SIX_GB_8B_PLAN: &str = "nvidia_vulkan_6gb_8b";
 /// `workunit.batch` of Xiaomi-OCR-0 units: only the `_x08` plan classes take it.
 pub const XIAOMI_BATCH: i32 = 108;
 /// `workunit.batch` of Xiaomi-OCR-0 page-mode units: only the `_x08p` plan classes take it.
@@ -58,7 +69,7 @@ impl Target {
                 "templates/usnm_qwen_benchmark_in",
                 include_bytes!("../../../../boinc/apps/usnm_qwen_benchmark_in"),
             ),
-            Self::Native8b => (
+            Self::Native8b | Self::Native8bFull => (
                 "templates/usnm_qwen_8b_benchmark_in",
                 include_bytes!("../../../../boinc/apps/usnm_qwen_8b_benchmark_in"),
             ),
@@ -76,7 +87,7 @@ impl Target {
     pub fn wu_template(self) -> &'static str {
         match self {
             Self::Container | Self::Container8b => "templates/usnm_qwen_in",
-            Self::Native8b => "templates/usnm_qwen_8b_in",
+            Self::Native8b | Self::Native8bFull => "templates/usnm_qwen_8b_in",
             Self::Native2b => "templates/usnm_qwen_2b_in",
             Self::NativeXiaomi | Self::NativeXiaomiPage => "templates/usnm_qwen_x08_in",
         }
@@ -102,7 +113,9 @@ impl Target {
                 false
             }
             Self::Container | Self::Native2b => pin.is_none_or(|p| p == "qwen3-vl-2b-q8"),
-            Self::Container8b | Self::Native8b => pin.is_none_or(|p| p == "qwen3-vl-8b-q4km"),
+            Self::Container8b | Self::Native8b | Self::Native8bFull => {
+                pin.is_none_or(|p| p == "qwen3-vl-8b-q4km")
+            }
         };
         ensure!(
             ok,
@@ -129,7 +142,7 @@ impl Target {
     fn qwen_model(self) -> Option<&'static str> {
         match self {
             Self::Container | Self::Native2b => Some("qwen3-vl-2b-q8"),
-            Self::Container8b | Self::Native8b => Some("qwen3-vl-8b-q4km"),
+            Self::Container8b | Self::Native8b | Self::Native8bFull => Some("qwen3-vl-8b-q4km"),
             Self::NativeXiaomi | Self::NativeXiaomiPage => None,
         }
     }
@@ -142,6 +155,8 @@ impl Target {
     /// - `2` (`Native2b`): native 2B/CPU plan classes (`mt`, `nvidia_cuda_2b`, `nvidia_vulkan_2b`)
     /// - `8` (`Native8b`): native 8B GPU plan classes (`apple_gpu_8b`, `nvidia_cuda_8b`,
     ///   `intel_vulkan_8b`, `nvidia_vulkan_8b`, `amd_vulkan_8b`)
+    /// - `9` ([`FULL_RES_8B_BATCH`], `Native8bFull`): the same 8B classes but
+    ///   `nvidia_vulkan_6gb_8b`, which keeps `max_batch` 8
     /// - `108` ([`XIAOMI_BATCH`], `NativeXiaomi`): the Xiaomi-OCR-0 classes (`mt_x08`,
     ///   `apple_gpu_x08`, `nvidia_vulkan_x08`, `intel_vulkan_x08`, `amd_vulkan_x08`)
     pub fn batch(self) -> i32 {
@@ -150,6 +165,7 @@ impl Target {
             Self::Container8b => 18,
             Self::Native2b => 2,
             Self::Native8b => 8,
+            Self::Native8bFull => FULL_RES_8B_BATCH,
             Self::NativeXiaomi => XIAOMI_BATCH,
             Self::NativeXiaomiPage => XIAOMI_PAGE_BATCH,
         }
@@ -172,6 +188,7 @@ impl Target {
             Self::Container8b => "18",
             Self::Native2b => "2",
             Self::Native8b => "8",
+            Self::Native8bFull => "9",
             Self::NativeXiaomi => "108",
             Self::NativeXiaomiPage => "109",
         }
@@ -183,6 +200,11 @@ impl Target {
             Self::Container => plan_class == "docker_mt_2b",
             Self::Container8b => plan_class == "docker_nvidia_cuda_8b",
             Self::Native8b => !plan_class.starts_with("docker") && plan_class.ends_with("_8b"),
+            Self::Native8bFull => {
+                !plan_class.starts_with("docker")
+                    && plan_class.ends_with("_8b")
+                    && plan_class != SIX_GB_8B_PLAN
+            }
             Self::Native2b => {
                 !plan_class.starts_with("docker")
                     && (plan_class == "mt" || plan_class.ends_with("_2b"))
@@ -197,7 +219,7 @@ impl Target {
     pub fn model_files(self) -> &'static [&'static str] {
         match self {
             Self::Container | Self::Container8b => &[],
-            Self::Native8b => &[
+            Self::Native8b | Self::Native8bFull => &[
                 "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
                 "mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf",
             ],
@@ -221,11 +243,31 @@ impl Target {
             Self::Container => ("2b", "container_cold_bytes"),
             Self::Container8b => ("8b", "container_cold_bytes"),
             Self::Native2b => ("2b", "native_cold_bytes"),
-            Self::Native8b => ("8b", "native_cold_bytes"),
+            Self::Native8b | Self::Native8bFull => ("8b", "native_cold_bytes"),
             Self::NativeXiaomi | Self::NativeXiaomiPage => ("x08", "native_cold_bytes"),
         };
         policy["models"][model][kind].as_u64().expect("disk bound")
     }
+}
+
+/// An 8B root's crop resolution picks its target (#2168): a `full` root goes only as
+/// [`Target::Native8bFull`] (batch 9, never a 6 GB card), and that target takes nothing else.
+pub fn check_target_res(target: Target, root: &Path) -> anyhow::Result<()> {
+    let full = super::stage::root_crop_res(root)? == super::stage::CropRes::Full;
+    match target {
+        Target::Native8bFull => ensure!(
+            full,
+            "{}: native-8b-full is for roots staged with --crop-res full",
+            root.display()
+        ),
+        Target::Native8b | Target::Container8b => ensure!(
+            !full,
+            "{}: a --crop-res full root's 8B units go as --target native-8b-full",
+            root.display()
+        ),
+        _ => {}
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -603,6 +645,7 @@ async fn run_selected_with_lock(
     members: Option<&Path>,
 ) -> anyhow::Result<Summary> {
     let project = opts.project.canonicalize()?;
+    check_target_res(opts.target, &opts.root)?;
     let dir = units(&opts.root);
     let names = crate::selection::units(&dir, JOB_FILE, members)?;
     let mut summary = Summary::default();
@@ -698,6 +741,63 @@ async fn run_selected_with_lock(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn full_resolution_8b_work_skips_the_6_gb_class() {
+        let full = Target::Native8bFull;
+        assert_eq!((full.batch(), full.batch_str()), (FULL_RES_8B_BATCH, "9"));
+        assert_eq!(full.wu_template(), Target::Native8b.wu_template());
+        assert_eq!(full.model_files(), Target::Native8b.model_files());
+        assert_eq!(full.disk_bound(), Target::Native8b.disk_bound());
+        for class in [
+            "apple_gpu_8b",
+            "nvidia_cuda_8b",
+            "nvidia_vulkan_8b",
+            "intel_vulkan_8b",
+            "amd_vulkan_8b",
+        ] {
+            assert!(full.is_plan_class_compatible(class), "{class}");
+        }
+        assert!(!full.is_plan_class_compatible(SIX_GB_8B_PLAN));
+        assert!(Target::Native8b.is_plan_class_compatible(SIX_GB_8B_PLAN));
+        assert!(!full.is_plan_class_compatible("docker_nvidia_cuda_8b"));
+        assert!(!full.is_plan_class_compatible("nvidia_vulkan_2b"));
+        // The plan classes agree: every 8B class but the 6 GB one takes batch 9.
+        let spec = include_str!("../../../../boinc/project/plan_class_spec.xml");
+        let max_batch = |name: &str| {
+            let at = spec.find(&format!("<name>{name}</name>")).unwrap();
+            let block = &spec[at..at + spec[at..].find("</plan_class>").unwrap()];
+            let tag = block.find("<max_batch>").unwrap() + "<max_batch>".len();
+            block[tag..tag + block[tag..].find('<').unwrap()].to_owned()
+        };
+        assert_eq!(max_batch(SIX_GB_8B_PLAN), "8");
+        for class in [
+            "apple_gpu_8b",
+            "nvidia_cuda_8b",
+            "nvidia_vulkan_8b",
+            "intel_vulkan_8b",
+            "amd_vulkan_8b",
+        ] {
+            assert_eq!(max_batch(class), "9", "{class}");
+        }
+    }
+
+    #[test]
+    fn a_roots_crop_resolution_picks_its_8b_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let half = tmp.path().join("half");
+        let full = tmp.path().join("full");
+        std::fs::create_dir_all(&half).unwrap();
+        std::fs::create_dir_all(&full).unwrap();
+        std::fs::write(full.join(crate::qwen::stage::CROP_RES_FILE), "full\n").unwrap();
+        check_target_res(Target::Native8b, &half).unwrap();
+        check_target_res(Target::Native8bFull, &full).unwrap();
+        assert!(check_target_res(Target::Native8b, &full).is_err());
+        assert!(check_target_res(Target::Native8bFull, &half).is_err());
+        // Other targets don't depend on it.
+        check_target_res(Target::NativeXiaomi, &full).unwrap();
+    }
+
     use super::*;
     #[cfg_attr(not(unix), allow(unused_imports))]
     use usnm_ocr_contract::boinc::sha256;

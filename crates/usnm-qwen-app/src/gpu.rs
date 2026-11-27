@@ -58,14 +58,17 @@ struct VulkanDevice {
 /// Software rasterizers Mesa and others expose as Vulkan devices; never a GPU class's device.
 const SOFTWARE_VULKAN: [&str; 3] = ["llvmpipe", "lavapipe", "swiftshader"];
 pub(crate) const NVIDIA_6GB_PLAN: &str = "nvidia_vulkan_6gb_8b";
-pub(crate) const NVIDIA_6GB_FREE_MIB: u64 = 5120;
+/// 5,120 MiB at a 4,096-token context, plus 384 MiB for the 8,192-token one (#968, 26 Nov 2026):
+/// the 8B's KV cache is 16 MiB a layer per 4,096 tokens (8 KV heads x 128 x K and V in f16),
+/// and this class offloads 24 layers. An estimate: the first canary must record the peak.
+pub(crate) const NVIDIA_6GB_FREE_MIB: u64 = 5504;
 pub(crate) const NVIDIA_6GB_LAYERS: u32 = 24;
 /// Full offload of the 2B Q8_0 model and projector on one NVIDIA Vulkan device (#1234). The two
-/// files are 2,174 MiB and the 4,096-token KV cache is 448 MiB. The 8B Vulkan run on an RTX 2060
+/// files are 2,174 MiB and the KV cache 896 MiB at the 8,192-token context (448 MiB at 4,096). The 8B Vulkan run on an RTX 2060
 /// SUPER peaked about 400 MiB above its own files and cache. The floor is an estimate, not a
 /// measurement: the first canary must record the 2B peak.
 pub(crate) const NVIDIA_2B_PLAN: &str = "nvidia_vulkan_2b";
-pub(crate) const NVIDIA_2B_FREE_MIB: u64 = 4096;
+pub(crate) const NVIDIA_2B_FREE_MIB: u64 = 4544;
 /// The native CPU class for Xiaomi-OCR-0 units (#1776), CPU-only like `mt`.
 pub(crate) const XIAOMI_CPU_PLAN: &str = "mt_x08";
 
@@ -821,10 +824,12 @@ mod tests {
         let mut single_model = job.clone();
         single_model.engine.models.truncate(1);
         assert!(vulkan_refusal(&partial, &single_model).is_none());
-        partial.free_mb = Some(5120);
+        partial.free_mb = Some(NVIDIA_6GB_FREE_MIB);
         assert!(vulkan_refusal(&partial, &job).is_none());
-        partial.free_mb = Some(5119);
-        assert!(vulkan_refusal(&partial, &job).unwrap().contains("5120 MiB"));
+        partial.free_mb = Some(NVIDIA_6GB_FREE_MIB - 1);
+        assert!(vulkan_refusal(&partial, &job)
+            .unwrap()
+            .contains(&format!("{NVIDIA_6GB_FREE_MIB} MiB")));
         partial.free_mb = None;
         assert!(vulkan_refusal(&partial, &job).is_some());
         partial.free_mb = Some(5600);
@@ -877,7 +882,9 @@ mod tests {
         gpu.free_mb = Some(NVIDIA_2B_FREE_MIB);
         assert!(vulkan_refusal(&gpu, &job).is_none());
         gpu.free_mb = Some(NVIDIA_2B_FREE_MIB - 1);
-        assert!(vulkan_refusal(&gpu, &job).unwrap().contains("4096 MiB"));
+        assert!(vulkan_refusal(&gpu, &job)
+            .unwrap()
+            .contains(&format!("{NVIDIA_2B_FREE_MIB} MiB")));
         gpu.free_mb = None;
         assert!(vulkan_refusal(&gpu, &job).is_some());
         gpu.free_mb = Some(5600);

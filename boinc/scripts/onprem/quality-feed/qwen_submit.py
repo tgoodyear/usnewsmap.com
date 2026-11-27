@@ -10,6 +10,7 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import os
 import logging
 from pathlib import Path
 import re
@@ -25,15 +26,49 @@ REQUEST_MIN_APP = {1: 0, 2: 115, 3: 117, 4: 117, 5: 120}
 # without --submit-binary they go with the stage binary (#1449).
 GUARDED_VERSIONS = (3, 4)
 # Request version 5 is Xiaomi-OCR-0's (#1776): every job pinned to it, sent to the `_x08` plan
-# classes as batch 108. Every other version reads with the plan class's Qwen model, batch 8.
+# classes as batch 108. Every other version reads with the plan class's Qwen model, batch 8, or
+# batch 9 for a root staged with --crop-res full: every 8B class but nvidia_vulkan_6gb_8b takes
+# it, so a 6 GB card stays on half-resolution work (#968 A/B, #2168).
 XIAOMI_VERSION = 5
 XIAOMI_MODEL = "xiaomi-ocr-0-q8"
-NATIVE_BATCHES = (8, 108)
+NATIVE_BATCHES = (8, 9, 108)
 
 
-def route(prompt_version):
-    """The submit target and workunit batch of a root at `prompt_version`."""
-    return ("native-xiaomi", 108) if prompt_version == XIAOMI_VERSION else ("native-8b", 8)
+SUBMIT_BATCH_FILE = "submit-batch"
+
+
+def claim_submit_batch(root, batch):
+    """Records that a root's units go to `batch` 9 (#2168), so the collectors read its results
+    from results/9; a root without the record keeps batch 8 (or 108 for Xiaomi-OCR-0). A root
+    that already sent units to batch 8 can't move: its earlier results would be split from the
+    rest."""
+    if batch != 9:
+        return
+    path = root / SUBMIT_BATCH_FILE
+    if path.exists():
+        if path.read_text().strip() != "9":
+            raise RuntimeError(f"{root}: recorded submit batch {path.read_text().strip()!r}, not 9")
+        return
+    if any((root / "units").glob("*/submitted")):
+        raise RuntimeError(f"{root}: units already went to batch 8; stage full-resolution 8B work "
+                           "into a new root")
+    tmp = root / (SUBMIT_BATCH_FILE + ".tmp")
+    tmp.write_text("9\n")
+    try:
+        os.link(tmp, path)
+    except FileExistsError:
+        pass
+    finally:
+        tmp.unlink(missing_ok=True)
+    if path.read_text().strip() != "9":
+        raise RuntimeError(f"{root}: another run recorded a different submit batch")
+
+
+def route(prompt_version, crop_res="half"):
+    """The submit target and workunit batch of a root at `prompt_version` and `crop_res`."""
+    if prompt_version == XIAOMI_VERSION:
+        return ("native-xiaomi", 108)
+    return ("native-8b-full", 9) if crop_res == "full" else ("native-8b", 8)
 
 
 def model_args(prompt_version):
@@ -783,7 +818,7 @@ def verify_acknowledgement(a, tx, value, receipt):
                 raise RuntimeError("publication acknowledgement changed")
             if kind == "native":
                 audit_row = audited.get(job["id"], {})
-                if (row["batch"] != route(value["recipe"]["prompt_version"])[1]
+                if (row["batch"] != route(value["recipe"]["prompt_version"], root_crop_res(root))[1]
                         or row.get("source_bindings") != source_bindings(root, job)
                         or any(audit_row.get(key) != item for key, item in row.items())):
                     raise RuntimeError("native acknowledgement lost bound audit")
@@ -846,7 +881,7 @@ def run_transaction(a):
     try:
         if any(value["recipe"][key] != item for key, item in recipe_inputs(a).items()):
             raise RuntimeError("changed frozen staging recipe")
-        state = inventory(a.share, a.project, route(a.prompt_version)[1])
+        state = inventory(a.share, a.project, route(a.prompt_version, root_crop_res(root))[1])
         if state["free_bytes"] - len(docs) * a.reserve_mib * 1024**2 < a.min_free_gb * 1024**3:
             receipt.update(shipment.publication_evidence(receipt),
                            phase="locked_storage", reason="reserved_input_free_space", reserve_pages=len(docs))
@@ -882,7 +917,7 @@ def run_transaction(a):
             if previous and (previous.get("job_sha256") != shipment.file_hash(path)
                              or previous.get("source_bindings") != source_bindings(root, job)):
                 raise RuntimeError("legacy/unbound or changed native audit; explicit reconciliation required")
-        target, batch = route(a.prompt_version)
+        target, batch = route(a.prompt_version, root_crop_res(root))
         native_rows = reconcile(a.project, native, "usnm_qwen", batch)
         reconcile(a.project, quality_jobs, "usnm_quality")
         # Published replays do not consume new queue capacity; disk reservation
@@ -1135,7 +1170,7 @@ def main():
         return
     if a.allow_english and a.prompt_version != XIAOMI_VERSION:
         ap.error("--allow-english is for a Xiaomi-OCR-0 root (--prompt-version 5) only")
-    target, batch = route(a.prompt_version)
+    target, batch = route(a.prompt_version, getattr(a, "crop_res", None) or "half")
     state = inventory(a.share, a.project, batch)
     if a.inventory:
         print(json.dumps(state))
@@ -1155,6 +1190,13 @@ def main():
         ap.error("--page-records takes an absolute directory and needs --bundle-size above 1")
     root = a.share / "qwen" / a.campaign
     quality = a.share / "quality" / a.campaign
+    # The root's own crop-res decides the batch once it exists (#2168): a full root's units go
+    # as batch 9, which a 6 GB card never takes, whatever this run's --crop-res says.
+    if (root / "crop-res").exists() and route(a.prompt_version, root_crop_res(root)) != (target, batch):
+        target, batch = route(a.prompt_version, root_crop_res(root))
+        state = inventory(a.share, a.project, batch)
+    if root.exists() and not (a.inventory or a.preflight):
+        claim_submit_batch(root, batch)
     if a.transaction:
         if a.preflight:
             ap.error("transaction publication is not a read-only preflight")

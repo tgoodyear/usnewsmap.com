@@ -244,6 +244,8 @@ php boinc/scripts/native-qwen-cohort.php --project /project/usnmocr --plan-class
   --expected-policy-sha256 BEFORE_SHA256 --apply
 ```
 
+**Full-resolution 8B work stays off 6 GB cards (#2168).** A Qwen root staged with `--crop-res full` submits as `--target native-8b-full`, batch 9 (`qwen_submit.py` picks it from the root's `crop-res`, and `qwen submit` refuses either target with the other kind of root). `apple_gpu_8b`, `nvidia_cuda_8b`, `nvidia_vulkan_8b`, `intel_vulkan_8b` and `amd_vulkan_8b` take batches 8 and 9. `nvidia_vulkan_6gb_8b` keeps `<max_batch>8</max_batch>`, so a 6 GB card only ever gets half-resolution work, even with general admission. The capped full-resolution crops need the full offload's memory: the A/B peaked at 7,519 MiB on the 8 GB RTX 2060 SUPER.
+
 `--plan-class nvidia_vulkan_6gb_8b --stop --apply` closes it and removes the marker. The
 operator stop, `--stop --keep-general` and every other class's window leave it open. The
 bounded fresh-pair window (`--workunit ID --fresh-pair --admit-until UNIX`) still works, and

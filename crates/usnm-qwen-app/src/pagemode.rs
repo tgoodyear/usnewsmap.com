@@ -1058,6 +1058,7 @@ mod tests {
         assert!(have.len() > 100 && have.len() < 1024, "{}", have.len());
         // What is accepted really does fit: the whole file, header and all.
         let file = usnm_ocr_contract::qwen::Readings {
+            refused: Vec::new(),
             v: 1,
             job_id: "a".repeat(64),
             device: "vulkan".into(),
@@ -1092,6 +1093,7 @@ mod tests {
             gpu_ms: 0,
             run_ms: 0,
             restart_log: vec![],
+            crop_errors: vec![],
         };
         assert!(!server_was_lost(&cp));
         cp.llama_restarts = 1;

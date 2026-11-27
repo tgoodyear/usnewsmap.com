@@ -69,8 +69,12 @@ pub const SUPPORTED_PROMPT_VERSIONS: [u32; 5] = [
     PROMPT_VERSION_IMAGE_MIN_TOKENS_LOOP_GUARD,
     PROMPT_VERSION_XIAOMI,
 ];
-/// llama-server's context for request versions 1 to 4.
-pub const CTX_SIZE: u32 = 4096;
+/// The longest crop id a result may list as refused.
+pub const MAX_REFUSED_ID: usize = 256;
+/// llama-server's context for request versions 1 to 4. 8,192 since #968's half/full A/B (26 Nov
+/// 2026): a crop at Xiaomi's 4.2 Mpx cap takes about 4,100 image tokens, so 4,096 refused it.
+/// Context size changes no reading that fit before; it only lets a larger crop in.
+pub const CTX_SIZE: u32 = 8192;
 /// Xiaomi-OCR-0's region prompt, as upstream's region stage sends it.
 pub const XIAOMI_PROMPT: &str = "Extract the text in the image.";
 pub const XIAOMI_CTX_SIZE: u32 = 16_384;
@@ -628,6 +632,13 @@ pub struct Readings {
     pub outcome: Outcome,
     pub prompt_version: u32,
     pub readings: Vec<Reading>,
+    /// Crops that failed alone (#2168): the live server refused the request (a 4xx, such as one
+    /// past the context) or the crop could not be cut. They have no reading; a finished
+    /// (`ok`) result lists every crop it did not read here, so its readings and these add up to
+    /// the job's crops. Absent (empty) in every result before this, and in every result whose
+    /// crops were all read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -727,10 +738,31 @@ impl ResultManifest {
                 "control characters in a reading"
             );
         }
+        // Refused crops (#2168): each once, never also read, and their ids bounded like a reading's.
+        let mut refused: Vec<&str> = r.refused.iter().map(String::as_str).collect();
+        refused.sort_unstable();
+        refused.dedup();
+        ensure!(refused.len() == r.refused.len(), "a crop is refused twice");
+        ensure!(
+            r.refused
+                .iter()
+                .all(|id| !id.is_empty() && id.len() <= MAX_REFUSED_ID),
+            "refused crop id empty or too long"
+        );
+        ensure!(
+            refused.iter().all(|id| ids.binary_search(id).is_err()),
+            "a crop is both read and refused"
+        );
+        let done = self.read as usize + r.refused.len();
         let consistent = match self.outcome {
-            Outcome::Ok => self.read == self.crops && self.model.is_some() && self.device != "none",
-            Outcome::NoGpu | Outcome::UnitError => self.read == 0 && self.model.is_none(),
-            Outcome::Timeout | Outcome::Failed => self.read < self.crops,
+            // Finished: every crop is read or listed as refused, and something was read.
+            Outcome::Ok => {
+                done == self.crops as usize && self.model.is_some() && self.device != "none"
+            }
+            Outcome::NoGpu | Outcome::UnitError => {
+                self.read == 0 && r.refused.is_empty() && self.model.is_none()
+            }
+            Outcome::Timeout | Outcome::Failed => done < self.crops as usize,
         };
         ensure!(consistent, "outcome does not match the readings");
         ensure!(
@@ -747,6 +779,30 @@ pub struct CropAgreement {
     pub dice: Option<f64>,
     pub id: String,
     pub read: (bool, bool),
+    /// Whether each side refused the crop (#2168): a refusal is not a blank reading, so one side
+    /// refusing and the other answering blank is no agreement. Not written when neither did, so a
+    /// record of a pair without refusals keeps its bytes.
+    #[serde(default, skip_serializing_if = "neither")]
+    pub refused: (bool, bool),
+}
+
+fn neither(pair: &(bool, bool)) -> bool {
+    !pair.0 && !pair.1
+}
+
+/// The first crop one result refused and the other didn't (#2168), as a verdict: a refused crop
+/// has no reading, and a blank one from the other host must not stand in for it.
+pub fn refusal_mismatch(a: &Readings, b: &Readings) -> Option<String> {
+    let mut ids: Vec<&str> = a
+        .refused
+        .iter()
+        .filter(|id| !b.refused.contains(id))
+        .chain(b.refused.iter().filter(|id| !a.refused.contains(id)))
+        .map(String::as_str)
+        .collect();
+    ids.sort_unstable();
+    ids.first()
+        .map(|id| format!("{id}: refused by one host only"))
 }
 
 /// Compares two hosts' results for one unit. They agree when they are for
@@ -772,6 +828,8 @@ pub fn agree(
     let b_ok = matches!(b.outcome, Outcome::Ok);
     if a_ok != b_ok {
         verdict = Err(format!("outcomes {:?} and {:?}", a.outcome, b.outcome));
+    } else if let Some(why) = refusal_mismatch(a_readings, b_readings) {
+        verdict = Err(why);
     }
     let bt: BTreeMap<&str, &Reading> = b_readings
         .readings
@@ -805,6 +863,10 @@ pub fn agree(
             dice,
             id: id.to_owned(),
             read,
+            refused: (
+                a_readings.refused.iter().any(|r| r == id),
+                b_readings.refused.iter().any(|r| r == id),
+            ),
         });
     }
     if verdict.is_ok() {
@@ -876,6 +938,10 @@ pub fn agree_pages(
         .map(|(doc, crops)| {
             let mut reason = None;
             for c in &crops {
+                if c.refused.0 != c.refused.1 {
+                    reason = Some(format!("{}: refused by one host only", c.id));
+                    break;
+                }
                 if c.read.0 != c.read.1 {
                     reason = Some(format!("{}: read by one host only", c.id));
                     break;
@@ -966,6 +1032,7 @@ pub(crate) mod tests {
         let unit = outcome == Outcome::UnitError;
         let ran = !matches!(outcome, Outcome::UnitError | Outcome::NoGpu);
         let readings = Readings {
+            refused: Vec::new(),
             v: VERSION,
             job_id: job().id,
             device: if ran { "cuda".into() } else { "none".into() },
@@ -1076,7 +1143,8 @@ pub(crate) mod tests {
             assert_eq!(prompt(version), PROMPT);
             assert!(!prompt_before_image(version));
             assert!(!thinking_off(version));
-            assert_eq!(context_size(version), 4096);
+            assert_eq!(context_size(version), CTX_SIZE);
+            assert_eq!(CTX_SIZE, 8192);
             assert_eq!(max_output_tokens(version), None);
         }
     }
@@ -1374,6 +1442,90 @@ pub(crate) mod tests {
             None
         );
         assert_eq!(tail_repetition(""), None);
+    }
+
+    /// `result`, with `refused` listed (#2168): `crops` counts both.
+    fn refused_result(
+        outcome: Outcome,
+        texts: &[(&str, &str)],
+        refused: &[&str],
+    ) -> (ResultManifest, Vec<u8>) {
+        let (mut r, mut readings, _) = result(outcome, texts);
+        readings.refused = refused.iter().map(|s| s.to_string()).collect();
+        let bytes = serde_json::to_vec_pretty(&readings).unwrap();
+        r.crops = (texts.len() + refused.len()) as u32;
+        r.readings_bytes = bytes.len() as u64;
+        r.readings_sha256 = sha256(&bytes);
+        (r, bytes)
+    }
+
+    #[test]
+    fn a_result_lists_the_crops_that_failed_alone() {
+        // Read plus refused make the crops of a finished result.
+        let (r, b) = refused_result(Outcome::Ok, &[("c01", "one two")], &["c02"]);
+        assert_eq!(r.check(&b, b"").unwrap().refused, ["c02"]);
+        // Listing one fewer leaves a crop unaccounted for.
+        let (mut r, b) = refused_result(Outcome::Ok, &[("c01", "one two")], &["c02"]);
+        r.crops = 3;
+        assert!(r.check(&b, b"").is_err());
+        // A crop refused twice, or both read and refused, is refused.
+        let (r, b) = refused_result(Outcome::Ok, &[("c01", "x")], &["c02", "c02"]);
+        assert!(r.check(&b, b"").is_err());
+        let (mut r, b) = refused_result(Outcome::Ok, &[("c01", "x")], &["c01"]);
+        r.crops = 1;
+        assert!(r.check(&b, b"").is_err());
+        // A result that never ran refuses nothing; an unfinished one stays short of the crops.
+        let (r, b) = refused_result(Outcome::NoGpu, &[], &["c01"]);
+        assert!(r.check(&b, b"").is_err());
+        let (mut r, b) = refused_result(Outcome::Timeout, &[("c01", "x")], &["c02"]);
+        r.crops = 3;
+        r.check(&b, b"").unwrap();
+        // An empty list isn't written, so a result without refusals is as it always was.
+        let (_, readings, bytes) = result(Outcome::Ok, &[("c01", "a"), ("c02", "b")]);
+        assert!(readings.refused.is_empty());
+        assert!(!String::from_utf8(bytes).unwrap().contains("refused"));
+    }
+
+    #[test]
+    fn a_refusal_never_agrees_with_a_blank_reading() {
+        // Host a refused c02; host b read it blank. Both have no text there, but a refusal isn't
+        // a reading, so the pair disagrees, crop by crop and page by page (#2168).
+        let (a, ar0, _) = result(Outcome::Ok, &[("p1:c01", "one two three four")]);
+        let mut ar = ar0;
+        ar.refused = vec!["p1:c02".into()];
+        let mut a = a;
+        a.crops = 2;
+        let (b, br, _) = result(
+            Outcome::Ok,
+            &[("p1:c01", "one two three four"), ("p1:c02", "   ")],
+        );
+        let (crops, verdict) = agree(&a, &ar, &b, &br, 0.5);
+        assert_eq!(verdict.unwrap_err(), "p1:c02: refused by one host only");
+        let c02 = crops.iter().find(|c| c.id == "p1:c02").unwrap();
+        assert_eq!((c02.read, c02.refused), ((false, false), (true, false)));
+        let pages = agree_pages(&a, &b, &crops, 0.5);
+        assert_eq!(pages.len(), 1);
+        assert!(!pages[0].agree);
+        assert_eq!(
+            pages[0].reason.as_deref(),
+            Some("p1:c02: refused by one host only")
+        );
+        // Both refusing it agrees on the rest, and the refused crop is in no verdict.
+        let mut br2 = br.clone();
+        br2.readings.retain(|r| r.id != "p1:c02");
+        br2.refused = vec!["p1:c02".into()];
+        let (crops, verdict) = agree(&a, &ar, &b, &br2, 0.5);
+        verdict.unwrap();
+        assert!(crops.iter().all(|c| c.id != "p1:c02"));
+        assert!(agree_pages(&a, &b, &crops, 0.5)[0].agree);
+        // A crop record without refusals keeps the bytes it always had.
+        let plain = CropAgreement {
+            dice: Some(1.0),
+            id: "p1:c01".into(),
+            read: (true, true),
+            refused: (false, false),
+        };
+        assert!(!serde_json::to_string(&plain).unwrap().contains("refused"));
     }
 
     #[test]

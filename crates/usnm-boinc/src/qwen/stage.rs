@@ -1217,6 +1217,7 @@ fn longest_reading_text(page: &Job, crop: &Crop) -> usize {
 pub(super) fn longest_readings_len(pages: &[Job]) -> anyhow::Result<usize> {
     let first = pages.first().context("a qwen bundle needs a page")?;
     let readings = Readings {
+        refused: Vec::new(),
         v: VERSION,
         job_id: "0".repeat(64),
         device: "vulkan".into(),
@@ -3040,6 +3041,7 @@ pub(crate) mod tests {
             serde_json::from_slice(&std::fs::read(page_dir.join(doc).join(JOB_FILE)).unwrap())
                 .unwrap();
         let readings = Readings {
+            refused: Vec::new(),
             v: VERSION,
             job_id: "0".repeat(64),
             device: "vulkan".into(),

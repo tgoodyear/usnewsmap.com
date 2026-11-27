@@ -624,9 +624,21 @@ fn same_crops(a: &Loaded, b: &Loaded) -> bool {
         ids.sort_unstable();
         ids
     }
+    fn refused(l: &Loaded) -> Vec<&str> {
+        let mut ids: Vec<&str> = l.readings.refused.iter().map(String::as_str).collect();
+        ids.sort_unstable();
+        ids
+    }
     let (x, y) = (ids(a), ids(b));
     let unique = x.windows(2).all(|w| w[0] != w[1]);
-    unique && x == y && a.result.crops == b.result.crops && x.len() == a.result.crops as usize
+    // A crop both hosts refused (#2168) is no crop of either side's readings: both read the same
+    // others and refused the same ones, and together they make the unit's crops. A crop only one
+    // refused differs in `x == y`, so it never settles here.
+    unique
+        && x == y
+        && refused(a) == refused(b)
+        && a.result.crops == b.result.crops
+        && x.len() + a.readings.refused.len() == a.result.crops as usize
 }
 
 /// Writes `<pages>/<job_id>/unit-verdict.json` for a bundle pair that
@@ -711,6 +723,9 @@ fn record_page(
                 "plan_class": l.result.host.plan_class,
                 "outcome": l.result.outcome,
                 "readings": l.readings.readings.iter().filter(|r| r.id.starts_with(&prefix)).collect::<Vec<_>>(),
+                // The page's crops this side failed alone (#2168): with its readings, the page's
+                // crops. A record from before has none.
+                "refused": l.readings.refused.iter().filter(|id| id.starts_with(&prefix)).collect::<Vec<_>>(),
             })
         })
         .collect();
@@ -792,6 +807,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let readings = Readings {
+            refused: Vec::new(),
             v: VERSION,
             job_id: j.id.clone(),
             device: "cuda".into(),
@@ -839,6 +855,142 @@ pub(crate) mod tests {
         std::fs::write(&files[1], serde_json::to_vec(&r).unwrap()).unwrap();
         std::fs::write(&files[2], "diag").unwrap();
         files
+    }
+
+    /// [`write`], with `refused` crops (#2168): a finished result that read `texts` and
+    /// lists `refused` as failed alone, so the unit has both counts' crops. With
+    /// `list_refused` false the crops are missing but not listed, which no result may be.
+    fn write_partial(
+        dir: &Path,
+        tag: &str,
+        texts: &[(&str, &str)],
+        refused: &[&str],
+        list_refused: bool,
+    ) -> Vec<PathBuf> {
+        let files = write(dir, tag, texts);
+        let mut readings: Readings =
+            serde_json::from_slice(&std::fs::read(&files[0]).unwrap()).unwrap();
+        if list_refused {
+            readings.refused = refused.iter().map(|s| s.to_string()).collect();
+        }
+        let rb = serde_json::to_vec(&readings).unwrap();
+        let mut r: ResultManifest =
+            serde_json::from_slice(&std::fs::read(&files[1]).unwrap()).unwrap();
+        r.crops = (texts.len() + refused.len()) as u32;
+        r.readings_bytes = rb.len() as u64;
+        r.readings_sha256 = sha256(&rb);
+        std::fs::write(&files[0], rb).unwrap();
+        std::fs::write(&files[1], serde_json::to_vec(&r).unwrap()).unwrap();
+        files
+    }
+
+    #[test]
+    fn a_crop_refused_on_both_sides_is_left_out_and_the_rest_agree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let read = [("c1", "erste Zeile"), ("c3", "dritte Zeile")];
+        let a = load(&write_partial(tmp.path(), "a", &read, &["c2"], true)).unwrap();
+        let b = load(&write_partial(tmp.path(), "b", &read, &["c2"], true)).unwrap();
+        let (crops, verdict) = qwen::agree(&a.result, &a.readings, &b.result, &b.readings, 0.9);
+        assert!(verdict.is_ok(), "{verdict:?}");
+        // The refused crop is in no agreement: it was never read.
+        assert!(crops.iter().all(|c| c.id != "c2"));
+        assert_eq!(crops.len(), 2);
+    }
+
+    #[test]
+    fn a_crop_refused_by_one_host_and_read_by_the_other_fails_the_pair() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = load(&write_partial(
+            tmp.path(),
+            "a",
+            &[("c1", "erste Zeile"), ("c3", "dritte Zeile")],
+            &["c2"],
+            true,
+        ))
+        .unwrap();
+        let b = load(&write_crops(
+            tmp.path(),
+            "b",
+            &[
+                ("c1", "erste Zeile"),
+                ("c2", "zweite Zeile"),
+                ("c3", "dritte Zeile"),
+            ],
+            Some(3),
+        ))
+        .unwrap();
+        let (_, verdict) = qwen::agree(&a.result, &a.readings, &b.result, &b.readings, 0.9);
+        // The refusal is caught first: a refused crop is no blank reading (#2168).
+        assert_eq!(verdict.unwrap_err(), "c2: refused by one host only");
+    }
+
+    #[test]
+    fn crop_consensus_never_takes_a_blank_for_a_refusal() {
+        // Host a refused c2; host b answered it blank. crop-consensus-v2 reads an absent crop
+        // as blank, so without the refusal check the pair would agree on c1 and c3 (#2168).
+        let tmp = tempfile::tempdir().unwrap();
+        let a = load(&write_partial(
+            tmp.path(),
+            "a",
+            &[("c1", "erste Zeile hier"), ("c3", "dritte Zeile hier")],
+            &["c2"],
+            true,
+        ))
+        .unwrap();
+        let b = load(&write_crops(
+            tmp.path(),
+            "b",
+            &[
+                ("c1", "erste Zeile hier"),
+                ("c2", ""),
+                ("c3", "dritte Zeile hier"),
+            ],
+            Some(3),
+        ))
+        .unwrap();
+        let judged = super::super::consensus::judge(
+            &a,
+            &b,
+            super::super::consensus::Params::IN_RULE,
+            Ok(()),
+        );
+        assert_eq!(judged.verdict.unwrap_err(), "c2: refused by one host only");
+    }
+
+    #[test]
+    fn a_missing_crop_that_is_not_listed_as_refused_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let read = [("c1", "erste Zeile"), ("c3", "dritte Zeile")];
+        assert!(load(&write_partial(tmp.path(), "listed", &read, &["c2"], true)).is_ok());
+        let err = load(&write_partial(
+            tmp.path(),
+            "unlisted",
+            &read,
+            &["c2"],
+            false,
+        ))
+        .err()
+        .unwrap();
+        assert!(format!("{err:#}").contains("outcome does not match the readings"));
+    }
+
+    #[test]
+    fn loop_bits_follow_the_readings_past_a_refused_crop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut l = load(&write_partial(
+            tmp.path(),
+            "l",
+            &[("c1", "erste Zeile"), ("c3", "dritte Zeile")],
+            &["c2"],
+            true,
+        ))
+        .unwrap();
+        // The app sets bit 1 for the second reading (c3), not for job crop 1 (c2).
+        l.readings
+            .diag
+            .insert("repetition_loop_crop_bits".into(), "02".into());
+        let sides = super::super::consensus::sides(&l);
+        assert!(sides["c3"].looped && !sides["c1"].looped);
     }
 
     // The empty-return guard (#1919).
@@ -1651,6 +1803,7 @@ pub(crate) mod tests {
             crops: ids
                 .iter()
                 .map(|id| qwen::CropAgreement {
+                    refused: (false, false),
                     dice: Some(1.0),
                     id: format!("{doc}:{id}"),
                     read: (true, true),

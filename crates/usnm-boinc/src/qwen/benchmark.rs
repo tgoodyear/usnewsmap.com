@@ -426,6 +426,8 @@ pub struct Summary {
     pub pending: usize,
     pub failed: usize,
     pub incomplete: usize,
+    /// Crops a finished result refused (#2168): scored as empty, like a missing reading.
+    pub refused: usize,
 }
 
 /// Only the assimilator's canonical outputs count; validator copies are not canonical results.
@@ -593,7 +595,14 @@ pub fn collect(root: &Path, spool: &Path, out: &Path) -> anyhow::Result<Summary>
             let loaded = &loaded_units[&unit.id];
             let result = &loaded.result;
             let reading = loaded.readings.readings.iter().find(|r| r.id == reading_id);
-            if result.outcome == Outcome::Ok {
+            // A crop the result refused (#2168) has no reading: it failed alone, and the
+            // bundle's other readings still count. Any other missing reading of a finished
+            // result is still an error.
+            let refused = loaded.readings.refused.contains(&reading_id);
+            if result.outcome == Outcome::Ok && refused {
+                summary.refused += 1;
+                detail["refused"] = true.into();
+            } else if result.outcome == Outcome::Ok {
                 ensure!(reading.is_some(), "successful result has no reading");
                 summary.returned += 1;
             } else {
@@ -743,6 +752,7 @@ mod tests {
     fn spool_result(spool: &Path, job: &Job, outcome: Outcome, texts: &[(String, String)]) {
         use usnm_ocr_contract::qwen::{Reading, Readings, ResultManifest};
         let readings = Readings {
+            refused: Vec::new(),
             v: VERSION,
             job_id: job.id.clone(),
             device: "vulkan".into(),
@@ -919,6 +929,67 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unexpected readings"));
+    }
+
+    #[test]
+    fn a_crop_a_finished_bundle_refused_scores_empty_and_keeps_the_rest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut opts = fixture_n(tmp.path(), 2);
+        opts.bundle_size = 2;
+        let manifest = staged(&opts);
+        let b = &manifest.bundles[0];
+        let ids: Vec<String> = b
+            .job
+            .pages
+            .iter()
+            .map(|p| format!("{}:{}", p.doc_id, p.crops[0].id))
+            .collect();
+        let spool = tmp.path().join("spool");
+        std::fs::create_dir(&spool).unwrap();
+        // Both hosts refused the second crop (#2168) and agreed on the first: the canonical
+        // result is ok, reads one crop and lists the other as refused.
+        spool_result(
+            &spool,
+            &b.job,
+            Outcome::Ok,
+            &[(ids[0].clone(), "TEXT 0".into())],
+        );
+        let readings_path = std::fs::read_dir(&spool)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| {
+                p.to_string_lossy()
+                    .ends_with(&format!("__file_{}", outputs()[0]))
+            })
+            .unwrap();
+        let result_path = readings_path.to_string_lossy().replace(
+            &format!("__file_{}", outputs()[0]),
+            &format!("__file_{}", outputs()[1]),
+        );
+        let mut readings: usnm_ocr_contract::qwen::Readings =
+            serde_json::from_slice(&std::fs::read(&readings_path).unwrap()).unwrap();
+        readings.refused = vec![ids[1].clone()];
+        let rb = serde_json::to_vec(&readings).unwrap();
+        let mut result: usnm_ocr_contract::qwen::ResultManifest =
+            serde_json::from_slice(&std::fs::read(&result_path).unwrap()).unwrap();
+        result.crops = 2;
+        result.readings_bytes = rb.len() as u64;
+        result.readings_sha256 = sha256(&rb);
+        std::fs::write(&readings_path, rb).unwrap();
+        std::fs::write(&result_path, serde_json::to_vec(&result).unwrap()).unwrap();
+        let out = tmp.path().join("out");
+        let s = collect(&opts.root, &spool, &out).unwrap();
+        assert_eq!(
+            (s.expected, s.returned, s.refused, s.incomplete, s.failed),
+            (2, 1, 1, 0, 0)
+        );
+        let hyps = score::read_jsonl(&out.join("hypotheses.jsonl")).unwrap();
+        let text = |cid: &str| hyps.iter().find(|h| h["crop_id"] == cid).unwrap()["text"].clone();
+        assert_eq!(text("public-000"), "TEXT 0");
+        assert_eq!(text("public-001"), "");
+        let details = score::read_jsonl(&out.join("by-crop.jsonl")).unwrap();
+        assert_eq!(details[1]["refused"], true);
+        assert!(details[0].get("refused").is_none());
     }
 
     fn staged(opts: &Options) -> Manifest {
@@ -1182,6 +1253,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(opts.root.join(MANIFEST)).unwrap()).unwrap();
         let job = &manifest.entries[0].job;
         let readings = Readings {
+            refused: Vec::new(),
             v: VERSION,
             job_id: job.id.clone(),
             device: "cpu".into(),
@@ -1264,6 +1336,7 @@ mod tests {
         let out = tmp.path().join("out");
         for (version, accepted) in [(1, false), (job.prompt_version, true)] {
             let readings = Readings {
+                refused: Vec::new(),
                 v: VERSION,
                 job_id: job.id.clone(),
                 device: "cpu".into(),
