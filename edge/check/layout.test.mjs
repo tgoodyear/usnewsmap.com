@@ -619,3 +619,10 @@ test("the letter key puts the letters in question first, with their equivalents,
   // a key may only name a bundled typeface
   assert.match(appJs, /if \(KEY_FONTS\.includes\(map\.font\)\)/);
 });
+
+test("Neither matches puts the cursor in the suggestion box, and key 3 doesn't type into it", () => {
+  // choose() focuses the box it just rendered, whatever picked Neither (click, tap or key)
+  assert.match(appJs, /if \(holds\) \{[^\n]*render\(\); const box = \$\("suggest-text"\); if \(box\) box\.focus\(\); return; \}/);
+  // the keydown that opens it is cancelled, so its "3" isn't typed into the box that now has focus
+  assert.match(appJs, /else if \(e\.key === "3"\) \{ e\.preventDefault\(\); choose\("neither"\); \}/);
+});
