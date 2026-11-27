@@ -135,8 +135,18 @@ pub(crate) fn stop_and_log(child: &mut Child, grace: Duration) -> Stopped {
 #[cfg(unix)]
 pub(crate) fn terminate_group(pgid: u32, grace: Duration) {
     use rustix::process::Signal;
-    signal_group(pgid, Signal::TERM);
-    signal_group(pgid, Signal::CONT);
+    {
+        // Under the lock, as the delayed SIGKILL is: a group no longer listed has been reaped and
+        // its id may belong to something else now.
+        let live = LIVE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !live.contains(&pgid) {
+            return;
+        }
+        signal_group(pgid, Signal::TERM);
+        signal_group(pgid, Signal::CONT);
+    }
     let _ = std::thread::Builder::new()
         .name("llama-server-kill".into())
         .spawn(move || {
@@ -161,6 +171,13 @@ mod tests {
     /// A stand-in server in its own process group. `trap '' TERM` ignores SIGTERM in the shell
     /// and in the `sleep` it runs, as a server hung in its teardown does.
     fn spawn(ignore_term: bool) -> Child {
+        let child = spawn_unlisted(ignore_term);
+        register(&child);
+        child
+    }
+
+    /// [`spawn`] without registering the group, standing in for one already reaped and reused.
+    fn spawn_unlisted(ignore_term: bool) -> Child {
         let script = if ignore_term {
             "trap '' TERM; while :; do sleep 0.05; done"
         } else {
@@ -172,7 +189,6 @@ mod tests {
             .process_group(0)
             .spawn()
             .unwrap();
-        register(&child);
         // Let the shell set its trap before it is signalled.
         std::thread::sleep(Duration::from_millis(200));
         child
@@ -303,7 +319,29 @@ s.serve_forever()
         let (failed, took) = request.join().unwrap();
         assert!(failed, "the request should fail once the server is killed");
         assert!(took < grace + Duration::from_secs(5), "{took:?}");
-        let (how, _) = stop(&mut c, Duration::from_secs(1));
-        assert_eq!(how, Stopped::AlreadyExited);
+        assert!(took >= grace, "the request ended before the kill: {took:?}");
+        // The connection closes when the kill lands, a moment before the process is reapable.
+        let status = loop {
+            if let Some(s) = try_reap(&mut c).unwrap() {
+                break s;
+            }
+            assert!(took < grace + Duration::from_secs(5));
+            std::thread::sleep(POLL);
+        };
+        assert_eq!(status.signal(), Some(9), "{status:?}");
+        assert!(!live(&c));
+    }
+
+    #[test]
+    fn a_client_exit_request_does_not_signal_a_group_that_is_not_listed() {
+        let mut c = spawn_unlisted(false);
+        terminate_group(c.id(), Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(
+            matches!(c.try_wait(), Ok(None)),
+            "an unlisted group was signalled"
+        );
+        let _ = c.kill();
+        let _ = c.wait();
     }
 }
