@@ -745,6 +745,26 @@ resumed mid-run. Both uploaded and validated against the AMD Windows host's resu
 both became canonical. The release script in the running server image predated #1719, so
 the copy from `main` went in with `podman cp`, as described below.
 
+**A class with no host of the project's own** (Intel, AMD, Apple) can't be isolated to a test
+host, so its release window is open to volunteers and has to bound itself instead.
+`boinc/scripts/onprem/release-window.py` does that, as root on the BOINC host, with the operator's
+authorization recorded in the journal:
+
+```sh
+python3 boinc/scripts/onprem/release-window.py --app-version ID --validated 3 --max-hours 48   # print only
+python3 boinc/scripts/onprem/release-window.py --app-version ID --validated 3 --max-hours 48 --apply
+```
+
+It releases the held version with `app-version-hold.php`, then every `--poll-secs` (300) reads
+the version's results reported since the release with the read-only `app-version-outcomes` bridge
+step, so no database credentials leave the server container. The validator log adds an early count
+of its Valid results (the log ties a Valid result to its app version, an Invalid one not). It holds
+the version again at once on the first client error, validate error or invalid result, or if fewer
+than `--validated` results have validated after `--max-hours`. With `--validated` valid results it
+ends, leaving the version released. Every action and poll goes to
+`/root/release-window/release-window-av<ID>-<time>.jsonl`. Exit status: 0 qualified, 2 held on a
+failure, 3 held on expiry, 1 tool error (read the journal: a failed hold leaves the version released).
+
 `nvidia_vulkan_6gb_8b` on `windows_x86_64` is built and published the same way, with
 `--plan-class nvidia_vulkan_6gb_8b`. The Windows build was checked on the Windows 11 test VM's
 8 GB RTX 2060 SUPER: 25 of 25 crops read, 23 identical to Linux Vulkan, 3 character edits in
