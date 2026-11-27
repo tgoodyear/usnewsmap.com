@@ -1488,13 +1488,15 @@ test("a language that includes others serves their words too, says each word's l
   task("sr/s/1", "sr");
   const token = await signSession(env.SESSION_KEY, "c1");
   const get = (path, auth = true) => worker.fetch(new Request("https://check.usnewsmap.com" + path, auth ? { headers: { authorization: "Bearer " + token } } : {}), { ...env, DB: d1(db) }, {});
-  const t = (await (await get("/api/next?lang=de")).json()).task;
+  assert.equal((await (await get("/api/next?lang=de")).json()).task, null, "a page from before mix gets only its own language");
+  assert.deepEqual((await (await get("/api/papers?lang=de", false)).json()).map((p) => p.tasks), [1]);
+  const t = (await (await get("/api/next?mix=1&lang=de")).json()).task;
   assert.equal(t.id, "de-read/s/1");
   assert.equal(t.lang, "de-read");
   assert.equal("private" in t, false, "an included blind task stays blind");
   assert.equal((await (await get("/api/next?lang=de-read")).json()).task.id, "de-read/s/1", "the included language keeps its own page");
-  assert.equal((await (await get("/api/next?lang=sr&skip=sr/s/1")).json()).task, null, "a language without includes serves only its own");
-  const papers = await (await get("/api/papers?lang=de", false)).json();
+  assert.equal((await (await get("/api/next?mix=1&lang=sr&skip=sr/s/1")).json()).task, null, "a language without includes serves only its own");
+  const papers = await (await get("/api/papers?mix=1&lang=de", false)).json();
   assert.deepEqual(papers.map((p) => [p.paper, p.open, p.tasks]), [["sn1", 1, 2]]);
   const list = await (await get("/api/languages", false)).json();
   assert.deepEqual(list.map((r) => [r.code, r.tasks, r.settled, r.part_of]), [["de", 2, 1, undefined], ["de-read", 1, 0, "de"], ["sr", 1, 0, undefined]]);

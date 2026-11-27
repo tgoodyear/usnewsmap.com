@@ -281,7 +281,7 @@ async function api(request, env, url) {
   }
   if (p === "/api/papers" && request.method === "GET") {
     // The newspapers a language's words come from (README.md, "One newspaper at a time"), most open words first.
-    const langs = JSON.stringify(await queueOf(env, lang(url)));
+    const langs = JSON.stringify(await queueOf(env, lang(url), mixes(url)));
     const rows = await env.DB.prepare(PAPERS_SQL).bind(langs).all();
     const keys = await env.DB.prepare(PAPER_KEYS_SQL).bind(langs).all();
     return json(papersOf(rows.results, keys.results), 200, { "cache-control": "public, max-age=60" });
@@ -294,8 +294,10 @@ async function api(request, env, url) {
     // ?paper=<lccn>: only words from that newspaper's pages (README.md, "One newspaper at a time").
     const paper = url.searchParams.get("paper") || "";
     if (paper && !PAPER.test(paper)) throw new HttpError(400, "paper must be a title id such as sn84027101");
-    // A language's queue also serves the languages its configuration `includes` (README.md, "One entry per language").
-    const langs = await queueOf(env, l);
+    // A language's queue also serves the languages its configuration `includes` (README.md, "One entry per language"), but only
+    // to a page that says it draws each word with its own language's configuration (?mix=1). A tab opened before that would
+    // show an included blind word with the page's own letter guide, so it keeps getting only its own language until reloaded.
+    const langs = await queueOf(env, l, mixes(url));
     const row = await env.DB.prepare(
       `SELECT id, lang, body, n FROM tasks t WHERE lang IN (SELECT value FROM json_each(?)) AND settled = 0 AND held = 0
          AND NOT EXISTS (SELECT 1 FROM answers a WHERE a.task_id = t.id AND a.contributor = ?)
@@ -470,8 +472,10 @@ export const includesOf = (config) => {
   try { cfg = typeof config === "string" ? JSON.parse(config) : config; } catch { return []; }
   return Array.isArray(cfg && cfg.includes) ? [...new Set(cfg.includes.filter((c) => typeof c === "string" && LANG.test(c)))].slice(0, 10) : [];
 };
-// The languages a page's queue draws from: the language itself, then those it includes.
-export async function queueOf(env, l) {
+// The languages a page's queue draws from: the language itself, then those it includes when the page can draw them (`mix`).
+export const mixes = (url) => url.searchParams.get("mix") === "1";
+export async function queueOf(env, l, mix = true) {
+  if (!mix) return [l];
   const row = await env.DB.prepare("SELECT config FROM languages WHERE code = ?").bind(l).first();
   return [l, ...(row ? includesOf(row.config) : []).filter((c) => c !== l)];
 }

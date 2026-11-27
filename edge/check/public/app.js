@@ -492,7 +492,8 @@ const taskLang = (t) => (t && typeof t.lang === "string" && /^[a-z]{2,3}(-[A-Za-
 async function configFor(t) {
   const l = taskLang(t);
   if (!t || configs.has(l)) return configs.get(l) || pageCfg;
-  try { const c = await getJSON("/api/languages/" + l); configs.set(l, c); return c; } catch { return pageCfg; }
+  // A failed fetch throws to next(), which shows its error and leaves the word unanswerable: never another language's config.
+  const c = await getJSON("/api/languages/" + l); configs.set(l, c); return c;
 }
 
 // ---------- one newspaper at a time (README.md, "One newspaper at a time") ----------
@@ -515,7 +516,7 @@ function guideShown() {
 }
 
 async function loadPapers() {
-  try { papers = await getJSON("/api/papers?lang=" + encodeURIComponent(lang)); } catch { papers = []; }
+  try { papers = await getJSON("/api/papers?mix=1&lang=" + encodeURIComponent(lang)); } catch { papers = []; }
   if (!Array.isArray(papers)) papers = [];
   papers = papers.filter((x) => x && typeof x.paper === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(x.paper));
   if (!papers.length) return;
@@ -1006,7 +1007,7 @@ async function fetchNext(also = []) {
     if (stale) throw new Error("This page is out of date.");
     await new Promise((ok) => drained.push(ok));
   }
-  const q = new URLSearchParams({ lang });
+  const q = new URLSearchParams({ lang, mix: "1" }); // mix: this page draws each word with its own language's configuration
   if (paper) q.set("paper", paper);
   const skip = [...new Set([...also, ...pending.map((p) => p.id), ...skipped.slice().reverse()])].slice(0, SKIP_MAX);
   if (skip.length) q.set("skip", skip.join(","));
