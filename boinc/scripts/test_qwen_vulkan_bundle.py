@@ -298,3 +298,90 @@ class WindowsBundle(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MacBundle(unittest.TestCase):
+    """build-macos: the pinned macos-arm64 tarball plus the macOS native CI artifact."""
+    FILES = ["llama-server", "libggml-base.0.0.1.dylib", "libggml-blas.0.0.1.dylib", "libggml-cpu.0.0.1.dylib",
+             "libggml-metal.0.0.1.dylib", "libggml-rpc.0.0.1.dylib", "libggml.0.0.1.dylib",
+             "libllama-common.0.0.1.dylib", "libllama-server-impl.dylib", "libllama.0.0.1.dylib",
+             "libmtmd.0.0.1.dylib", "llama-cli"]
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory(prefix=".qwen-mac-bundle-", dir=ROOT)
+        self.dir = Path(self.folder.name)
+        self.artifact = self.dir / "artifact"
+        self.artifact.mkdir()
+        (self.artifact / bundle.MAC_BINARY).write_bytes(b"\xcf\xfa\xed\xfe qwen")
+        (self.artifact / "GIT_COMMIT").write_text(COMMIT + "\n")
+        # The build-time weights.lock, deliberately unlike the repo's, so the test sees which is used.
+        (self.artifact / "weights.lock").write_text('{"build": "time"}\n')
+        self.sums()
+
+    def sums(self):
+        names = [n for n in (bundle.MAC_BINARY, "llama.lock", "weights.lock") if (self.artifact / n).exists()]
+        (self.artifact / "SHA256SUMS").write_text("".join(
+            f"{hashlib.sha256((self.artifact / n).read_bytes()).hexdigest()}  {n}\n" for n in names))
+
+    def tearDown(self):
+        self.folder.cleanup()
+
+    def archive(self, skip=()):
+        path = self.dir / "llama-b12084-bin-macos-arm64.tar.gz"
+        with tarfile.open(path, "w:gz") as packed:
+            for name in self.FILES:
+                if name not in skip:
+                    add(packed, f"llama-b12084/{name}", name.encode() * 3)
+            for name in sorted(bundle.MAC_RUNTIME - {"llama-server", "libllama-server-impl.dylib"}):
+                versioned = name.replace(".0.dylib", ".0.0.1.dylib")
+                if versioned not in skip:
+                    add(packed, f"llama-b12084/{name}", link=versioned)
+        lock = self.artifact / "llama.lock"
+        lock.write_text(json.dumps({"repository": "ggml-org/llama.cpp", "tag": "b12084", "assets": {
+            "macos-arm64": {"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}}}))
+        self.sums()
+        return path, lock
+
+    def build(self, archive, lock, out="out", plan_class="apple_gpu_8b"):
+        # No lock override: the bundle takes the artifact's build-time locks.
+        return bundle.build_macos(archive, self.artifact, COMMIT, self.dir / out, plan_class)
+
+    def test_build_takes_exactly_the_reviewed_runtime_links_as_files(self):
+        archive, lock = self.archive()
+        release = self.build(archive, lock)
+        out = self.dir / "out"
+        self.assertEqual(set(release["worker"]["extra_files"]), bundle.MAC_REQUIRED)
+        self.assertEqual((out / "extra/libggml.0.dylib").read_bytes(), b"libggml.0.0.1.dylib" * 3)
+        self.assertFalse((out / "extra/libggml.0.dylib").is_symlink())
+        self.assertNotIn("llama-cli", release["worker"]["extra_files"])
+        self.assertEqual(release["release"]["platform"], "arm64-apple-darwin")
+        bundle.verify(out)
+        self.assertEqual(bundle.release_args(out)[:2], ["--binary", str(out.resolve() / bundle.MAC_BINARY)])
+        self.build(archive, lock, out="again")
+        self.assertEqual((out / "SHA256SUMS").read_text(), (self.dir / "again/SHA256SUMS").read_text())
+        # Same runtime as an earlier release: only the locks may differ.
+        reviewed = self.dir / "reviewed.json"
+        reviewed.write_text(json.dumps({"worker": release["worker"]}))
+        bundle.verify(out, same_runtime_as=reviewed)
+
+    def test_the_bundle_carries_the_artifacts_build_time_locks(self):
+        # Copilot on #2179: the repo's locks could differ from the ones the binary checks.
+        archive, lock = self.archive()
+        self.build(archive, lock)
+        out = self.dir / "out"
+        self.assertEqual((out / "extra/weights.lock").read_bytes(), (self.artifact / "weights.lock").read_bytes())
+        self.assertEqual((out / "extra/llama.lock").read_bytes(), lock.read_bytes())
+        (self.artifact / "weights.lock").write_text('{"changed": true}\n')
+        with self.assertRaisesRegex(ValueError, "weights.lock"):
+            self.build(archive, lock, out="again")
+
+    def test_refuses_a_missing_runtime_file_a_wrong_class_and_a_wrong_artifact(self):
+        archive, lock = self.archive(skip=("libggml-metal.0.0.1.dylib",))
+        with self.assertRaisesRegex(ValueError, "lacks|links outside"):
+            self.build(archive, lock)
+        archive, lock = self.archive()
+        with self.assertRaises(ValueError):
+            self.build(archive, lock, out="x", plan_class="nvidia_vulkan_8b")
+        (self.artifact / "GIT_COMMIT").write_text("b" * 40)
+        with self.assertRaisesRegex(ValueError, "GIT_COMMIT"):
+            self.build(archive, lock, out="y")
