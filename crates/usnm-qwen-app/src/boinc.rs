@@ -43,12 +43,17 @@ pub(crate) fn start_boinc_control(work: &Path) -> BoincControl {
     {
         use usnm_ocr_quality::slot::ChildAction;
         control.set_child_hook(Some(std::sync::Arc::new(|pgid, action| {
+            let sig = match action {
+                ChildAction::Suspend => rustix::process::Signal::STOP,
+                ChildAction::Resume => rustix::process::Signal::CONT,
+                // SIGTERM, then SIGKILL if the server is still there after the grace: a server
+                // hung in its teardown would otherwise hold a request open until the deadline.
+                ChildAction::Terminate => {
+                    crate::shutdown::terminate_group(pgid, crate::shutdown::SHUTDOWN_GRACE);
+                    return;
+                }
+            };
             if let Some(pid) = rustix::process::Pid::from_raw(pgid as i32) {
-                let sig = match action {
-                    ChildAction::Suspend => rustix::process::Signal::STOP,
-                    ChildAction::Resume => rustix::process::Signal::CONT,
-                    ChildAction::Terminate => rustix::process::Signal::TERM,
-                };
                 let _ = rustix::process::kill_process_group(pid, sig);
             }
         })));
