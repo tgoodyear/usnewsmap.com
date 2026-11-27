@@ -534,12 +534,15 @@ function renderPaperBar() {
 }
 
 // Leaving the word shown for another paper's: it isn't answered (a word answered Neither joins the history, as Skip does).
-function setPaper(p) {
+// If the new paper's first word doesn't load, the word shown stays, so the picker and guide go back to its paper.
+async function setPaper(p) {
   if (busy || stale) { const sel = $("paper"); if (sel) sel.value = paper || "*"; return; }
+  const was = paper;
   paper = p; store(PAPERSEL + lang, p || "*"); done.delete(p);
   if (task && suggestFor === task.id) { history.push({ task, choice: "neither" }); if (history.length > 50) history.shift(); }
   renderPaperBar();
-  next(controlFocused(), null, undefined, false);
+  await next(controlFocused(), null, undefined, false);
+  if (failed && task && paperOfTask(task) !== paper) { paper = was; store(PAPERSEL + lang, was || "*"); renderPaperBar(); markGuide(task); }
 }
 
 function toggleGuide() {
