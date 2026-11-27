@@ -501,7 +501,7 @@ function render(prev) {
   card.appendChild(wd);
   // The enlarged word is never drawn smaller than the same word in the line above it (a short line is stretched to the card's
   // width, so its word can outgrow the word clip at its own size).
-  const fit = () => fitWord(li, wi, wd, w);
+  const fit = () => fitWord(li, wi, wd, w, h);
   li.addEventListener("load", fit); wi.addEventListener("load", fit);
   if (typeof ResizeObserver === "function") new ResizeObserver(fit).observe(lv);
   const opts = document.createElement("div"); opts.className = "options";
@@ -523,15 +523,18 @@ function render(prev) {
   }
 }
 
-// Sizes the word clip at WORD_OVER_LINE times the width the word's box has in the line as drawn, the clip's padding included,
-// so the word itself is never smaller than in the line. A clip already larger keeps its own size (at most WORD_MAX_HEIGHT
-// tall); none grows past the word strip.
+// Sizes the word clip so the word is never smaller than in the line as drawn. The clip carries padding around the word, so its
+// width or its height is held to WORD_OVER_LINE times the word's box in the line on that side, whichever needs the larger clip:
+// a clip padded less than that much on either side then shows the word larger than the line does (a short, narrow word padded
+// more on both is the rare exception). A clip already larger keeps its own size (at most WORD_MAX_HEIGHT tall); none grows past
+// the word strip.
 const WORD_OVER_LINE = 1.5, WORD_MAX_HEIGHT = 120;
-function fitWord(li, wi, wd, w) {
+function fitWord(li, wi, wd, w, h) {
   if (!li.naturalWidth || !wi.naturalWidth || !li.clientWidth) return;
   const own = wi.naturalWidth * Math.min(1, WORD_MAX_HEIGHT / wi.naturalHeight);
+  const scale = WORD_OVER_LINE * Math.max(w * li.clientWidth / wi.naturalWidth, h * li.clientHeight / wi.naturalHeight);
   const room = wd.clientWidth - 12; // .word's padding, 6px a side
-  const width = Math.min(Math.max(own, WORD_OVER_LINE * w * li.clientWidth), room);
+  const width = Math.min(Math.max(own, wi.naturalWidth * scale), room);
   if (width > 0) Object.assign(wi.style, { width: Math.floor(width) + "px", maxHeight: "none" });
 }
 

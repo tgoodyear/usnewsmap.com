@@ -653,7 +653,8 @@ test("the character buttons stay hidden behind a keyboard button, which this bro
 
 test("the enlarged word is never drawn smaller than the same word in the line above it", () => {
   assert.match(appJs, /const WORD_OVER_LINE = 1\.5, WORD_MAX_HEIGHT = 120;/);
-  assert.match(appJs, /const width = Math\.min\(Math\.max\(own, WORD_OVER_LINE \* w \* li\.clientWidth\), room\);/, "at least the word's box in the line as drawn, never past the strip");
+  assert.match(appJs, /const scale = WORD_OVER_LINE \* Math\.max\(w \* li\.clientWidth \/ wi\.naturalWidth, h \* li\.clientHeight \/ wi\.naturalHeight\);/, "held to the word's box in the line on the side that needs more");
+  assert.match(appJs, /const width = Math\.min\(Math\.max\(own, wi\.naturalWidth \* scale\), room\);/, "never past the strip");
   assert.match(appJs, /li\.addEventListener\("load", fit\); wi\.addEventListener\("load", fit\);/, "sized once both images are in");
   assert.match(appJs, /new ResizeObserver\(fit\)\.observe\(lv\);/, "and again when the line is drawn at another width");
 });
