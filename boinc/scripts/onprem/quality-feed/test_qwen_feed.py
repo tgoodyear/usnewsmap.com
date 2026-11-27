@@ -2328,6 +2328,44 @@ class SourceTest(unittest.TestCase):
                     driver.tick(a)
                 self.assertEqual(remote.call_count, 2)
 
+    def test_a_full_resolution_campaign_counts_its_own_batch_only(self):
+        # A --full-res 8B campaign submits as batch 9 (#2168): its inventory asks for that batch,
+        # so a half-resolution backlog can't hold it back. Xiaomi keeps asking for 108.
+        for full_res, version, flags in [(False, 3, []), (True, 3, ["--crop-res", "full"]),
+                                         (True, 5, ["--prompt-version", "5"]),
+                                         (False, 5, ["--prompt-version", "5"])]:
+            with self.subTest(full_res=full_res, version=version):
+                a = types.SimpleNamespace(server_host="boinc.example", server_ct=230, full_res=full_res)
+                with mock.patch.object(driver, "remote", return_value="{}") as remote:
+                    driver.server_inventory(a, version)
+                argv = remote.call_args.args[1]
+                self.assertEqual(argv[argv.index("--inventory") + 1:], flags)
+        # The tick's backpressure reads that inventory: a full campaign with its own batch idle
+        # prepares even while batch 8 is full.
+        class Started(Exception):
+            pass
+        with tempfile.TemporaryDirectory() as folder:
+            a = types.SimpleNamespace(state=Path(folder), campaign="qwen-full", full_res=True,
+                                      server_host="boinc.example", server_ct=230, prep_ct=215,
+                                      outbox=Path(folder), min_free_gb=50, max_ready=1000, max_pending=3,
+                                      max_unresolved=2000, reserve_mib=64, chunk_pages=100)
+            full_inv = {"ready": 0, "fresh_pairs": 0, "unresolved_native": 0, "documents": [],
+                        "free_bytes": 100 * 1024**3}
+            pool = {"report": [{"lv": [{"lv_size": str(100 * 1024**3), "data_percent": "0"}]}]}
+
+            def remote(host, argv, *rest, **kw):
+                if "--inventory" in argv:
+                    self.assertIn("--crop-res", argv)
+                    return json.dumps(full_inv)
+                return json.dumps(pool)
+            with mock.patch.object(driver, "remote", side_effect=remote), \
+                    mock.patch.object(driver.shutil, "disk_usage",
+                                      return_value=types.SimpleNamespace(free=100 * 1024**3)), \
+                    mock.patch.object(driver, "command", side_effect=Started), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(Started):
+                    driver.tick(a)
+
     def test_the_producer_outbox_has_its_own_free_space_floor(self):
         # CT 215's outbox is a 24 GB disk: under the server's 50 GB floor it never prepared (#2159).
         class Started(Exception):

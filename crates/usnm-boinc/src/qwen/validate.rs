@@ -624,9 +624,21 @@ fn same_crops(a: &Loaded, b: &Loaded) -> bool {
         ids.sort_unstable();
         ids
     }
+    fn refused(l: &Loaded) -> Vec<&str> {
+        let mut ids: Vec<&str> = l.readings.refused.iter().map(String::as_str).collect();
+        ids.sort_unstable();
+        ids
+    }
     let (x, y) = (ids(a), ids(b));
     let unique = x.windows(2).all(|w| w[0] != w[1]);
-    unique && x == y && a.result.crops == b.result.crops && x.len() == a.result.crops as usize
+    // A crop both hosts refused (#2168) is no crop of either side's readings: both read the same
+    // others and refused the same ones, and together they make the unit's crops. A crop only one
+    // refused differs in `x == y`, so it never settles here.
+    unique
+        && x == y
+        && refused(a) == refused(b)
+        && a.result.crops == b.result.crops
+        && x.len() + a.readings.refused.len() == a.result.crops as usize
 }
 
 /// Writes `<pages>/<job_id>/unit-verdict.json` for a bundle pair that
@@ -711,6 +723,9 @@ fn record_page(
                 "plan_class": l.result.host.plan_class,
                 "outcome": l.result.outcome,
                 "readings": l.readings.readings.iter().filter(|r| r.id.starts_with(&prefix)).collect::<Vec<_>>(),
+                // The page's crops this side failed alone (#2168): with its readings, the page's
+                // crops. A record from before has none.
+                "refused": l.readings.refused.iter().filter(|id| id.starts_with(&prefix)).collect::<Vec<_>>(),
             })
         })
         .collect();

@@ -86,6 +86,29 @@ class PartialTest(unittest.TestCase):
             self.assertEqual(command[command.index("--qwen-xiaomi-spool") + 1],
                              str(project / "usnmocr/results/108"))
 
+    def test_a_full_resolution_root_reads_and_checks_batch_9(self):
+        # A root staged with --crop-res full submits as batch 9 (#2168): its spool is checked and
+        # collected, and batch 8 isn't needed for it.
+        project = self.root / "project"
+        qwen = project / "qwen" / self.campaign
+        (qwen / "units").mkdir(parents=True)
+        (qwen / "crop-res").write_text("full\n")
+        (project / "usnmocr/results/108").mkdir(parents=True)
+        args = types.SimpleNamespace(qwen_campaign=self.campaign, campaign="test", collector="collector")
+        with mock.patch.object(partial.subprocess, "run") as run:
+            with self.assertRaises(FileNotFoundError):
+                partial.completion_inventory(args, project, self.root / "base")
+            (project / "usnmocr/results/9").mkdir()
+            run.return_value = subprocess.CompletedProcess([], 0, stdout="{}", stderr="")
+            partial.completion_inventory(args, project, self.root / "base")
+            command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--qwen-spool") + 1], str(project / "usnmocr/results/9"))
+        scope = partial.scope_command(args, project, self.root / "base", self.root / "scope")
+        self.assertEqual(scope[scope.index("--qwen-spool") + 1], str(project / "usnmocr/results/9"))
+        # A half root (no file) stays on batch 8.
+        (qwen / "crop-res").unlink()
+        self.assertEqual(partial.qwen_spool(project, qwen), project / "usnmocr/results/8")
+
     def test_scoped_collection_rechecks_real_dependencies_and_never_uses_old_snapshot(self):
         root = self.root / "project"
         units = root / "quality/test/units"

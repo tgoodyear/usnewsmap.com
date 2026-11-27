@@ -255,6 +255,16 @@ def digest_args(args, base):
     return ["--digest-cache", str(base / DIGESTS_DIR)]
 
 
+def qwen_spool(project, qwen_root):
+    """The batch spool a Qwen root's canonical results arrive in: batch 9 for a root staged with
+    `--crop-res full`, which submits as native-8b-full (#2168), and batch 8 otherwise."""
+    try:
+        full = (Path(qwen_root) / "crop-res").read_text().strip() == "full"
+    except FileNotFoundError:
+        full = False
+    return project / ("usnmocr/results/9" if full else "usnmocr/results/8")
+
+
 def completion_inventory(args, project, base, selected=None, deadline=None, limit=CALL_SECONDS,
                          log=None):
     qwen_root = project / "qwen" / args.qwen_campaign if args.qwen_campaign else base / "no-qwen"
@@ -262,7 +272,7 @@ def completion_inventory(args, project, base, selected=None, deadline=None, limi
         # An unavailable configured reading source is not an empty reading campaign.
         with os.scandir(qwen_root / "units"):
             pass
-        with os.scandir(project / "usnmocr/results/8"):
+        with os.scandir(qwen_spool(project, qwen_root)):
             pass
         # Likewise batch 108, where Xiaomi-OCR-0 results arrive (#1776).
         with os.scandir(project / "usnmocr/results/108"):
@@ -272,7 +282,7 @@ def completion_inventory(args, project, base, selected=None, deadline=None, limi
         "--root", str(project / "quality" / args.campaign),
         "--spool", str(project / "usnmocr/results/0"),
         "--qwen-root", str(qwen_root),
-        "--qwen-spool", str(project / "usnmocr/results/8") if args.qwen_campaign else str(qwen_root),
+        "--qwen-spool", str(qwen_spool(project, qwen_root)) if args.qwen_campaign else str(qwen_root),
         "--out-dir", str(base / "unused-inventory-out"),
         "--cache", str(base / "frontier-parts"), "--inventory-only", *digest_args(args, base),
     ]
@@ -403,7 +413,7 @@ def scope_command(args, project, base, scope):
         args.collector, "quality", "collect", "--campaign", args.campaign,
         "--root", str(scope / "quality"), "--spool", str(project / "usnmocr/results/0"),
         "--qwen-root", qwen_root,
-        "--qwen-spool", str(project / "usnmocr/results/8") if args.qwen_campaign else qwen_root,
+        "--qwen-spool", str(qwen_spool(project, qwen_root)) if args.qwen_campaign else qwen_root,
         "--cache", str(scope / "parts"), "--max-dirty-units", "1", *digest_args(args, base),
     ]
     if args.qwen_campaign:

@@ -205,8 +205,9 @@ class DaemonConfig(unittest.TestCase):
                 self.assertEqual(plans[name].findtext("min_wu_id"), "2")
                 self.assertEqual(plans[name].findtext("max_wu_id"), "1")
         amd = plans["amd_vulkan_8b"]
+        # max_batch 9: capped full-resolution 8B work (#2168).
         for tag, value in (("gpu_type", "ati"), ("ngpus", "1"), ("min_batch", "8"),
-                           ("max_batch", "8"), ("min_gpu_ram_mb", "7000"),
+                           ("max_batch", "9"), ("min_gpu_ram_mb", "7000"),
                            ("gpu_ram_used_mb", "6500"), ("avg_ncpus", "2"),
                            # An iGPU's shared RAM passes the RAM floor; peak FLOPS keeps it out.
                            ("min_gpu_peak_flops", "1.5e12")):
@@ -235,6 +236,9 @@ class DaemonConfig(unittest.TestCase):
         self.assertIsNotNone(six.find("cuda"))
         self.assertIsNone(six.find("docker"))
         self.assertEqual(int(six.findtext("max_gpu_ram_mb")) + 1, int(full.findtext("min_gpu_ram_mb")))
+        # Capped full-resolution 8B work is batch 9 (#2168): the full class takes it and the
+        # 6 GB class never does, so a 6 GB card only gets half-resolution work.
+        self.assertEqual(full.findtext("max_batch"), "9")
         self.assertIsNone(full.find("max_gpu_ram_mb"))
         # Only the 6 GB class carries a cap, which the patched scheduler enforces.
         capped = [name for name, plan in plans.items() if plan.find("max_gpu_ram_mb") is not None]

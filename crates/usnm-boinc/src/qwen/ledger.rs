@@ -192,13 +192,14 @@ pub fn accepted_readings(
             a.result
         );
         let side = if b.result < a.result { b } else { a };
-        let mut ids: Vec<&str> = side.readings.iter().map(|r| r.id.as_str()).collect();
-        ids.sort_unstable();
+        let read: Vec<&str> = side.readings.iter().map(|r| r.id.as_str()).collect();
         let mut want = expected(job, &page.doc_id);
         want.sort_unstable();
+        // The side's readings and the crops it refused (#2168) are the page's crops, each once;
+        // a refused crop has no reading, so only the rest are accepted.
         anyhow::ensure!(
-            !want.is_empty() && ids == want,
-            "{}: the agreeing side does not read the page's crops once each",
+            !want.is_empty() && !read.is_empty() && covers(&read, &side.refused, &want),
+            "{}: the agreeing side does not read or refuse the page's crops once each",
             path.display()
         );
         anyhow::ensure!(
@@ -221,8 +222,14 @@ pub fn accepted_readings(
             })
             .collect::<Option<Vec<_>>>()
             .with_context(|| format!("{}: a reading of another page", path.display()))?;
+        let refused = side
+            .refused
+            .iter()
+            .map(|id| id.strip_prefix(&prefix).map(str::to_owned))
+            .collect::<Option<Vec<_>>>()
+            .with_context(|| format!("{}: a refusal of another page", path.display()))?;
         let readings = Readings {
-            refused: Vec::new(),
+            refused,
             v: VERSION,
             job_id: job.id.clone(),
             device: side.device,
@@ -255,6 +262,21 @@ struct RecordSide {
     model: Option<String>,
     outcome: Outcome,
     readings: Vec<Reading>,
+    /// The page's crops this side refused (#2168); none in a record from before.
+    #[serde(default)]
+    refused: Vec<String>,
+}
+
+/// Whether `read` and `refused` are `want`'s crops (sorted), each exactly once: no crop missing,
+/// none twice, none both read and refused.
+fn covers(read: &[&str], refused: &[String], want: &[&str]) -> bool {
+    let mut all: Vec<&str> = read
+        .iter()
+        .copied()
+        .chain(refused.iter().map(String::as_str))
+        .collect();
+    all.sort_unstable();
+    all == want
 }
 
 /// The page's status from its pair records. A record that does not name
@@ -268,11 +290,60 @@ fn page_records(
 ) -> anyhow::Result<(&'static str, Vec<String>)> {
     let mut want: Vec<&str> = expected.to_vec();
     want.sort_unstable();
-    let exact = |items: &serde_json::Value| {
-        items.as_array().is_some_and(|xs| {
-            let mut ids: Vec<&str> = xs.iter().filter_map(|x| x["id"].as_str()).collect();
-            ids.sort_unstable();
-            ids.len() == xs.len() && ids == want
+    let ids = |items: &serde_json::Value| -> Option<Vec<String>> {
+        let xs = items.as_array()?;
+        let ids: Vec<String> = xs
+            .iter()
+            .filter_map(|x| x["id"].as_str().map(str::to_owned))
+            .collect();
+        (ids.len() == xs.len()).then_some(ids)
+    };
+    let names = |items: &serde_json::Value| -> Option<Vec<String>> {
+        match items {
+            serde_json::Value::Null => Some(Vec::new()),
+            serde_json::Value::Array(xs) => {
+                let v: Vec<String> = xs
+                    .iter()
+                    .filter_map(|x| x.as_str().map(str::to_owned))
+                    .collect();
+                (v.len() == xs.len()).then_some(v)
+            }
+            _ => None,
+        }
+    };
+    // Each side's readings and refusals (#2168) are the page's crops once each, and the crop
+    // verdicts are every crop at least one side read: all of them but those both refused. A
+    // refused crop is never in a verdict, so it never counts as agreement.
+    let coverage = |r: &serde_json::Value| -> bool {
+        let Some(sides) = r["results"].as_array().filter(|s| s.len() == 2) else {
+            return false;
+        };
+        let mut both_refused: Option<Vec<String>> = None;
+        for side in sides {
+            let (Some(read), Some(refused)) = (ids(&side["readings"]), names(&side["refused"]))
+            else {
+                return false;
+            };
+            let read: Vec<&str> = read.iter().map(String::as_str).collect();
+            if !covers(&read, &refused, &want) {
+                return false;
+            }
+            both_refused = Some(match both_refused {
+                None => refused,
+                Some(prev) => prev.into_iter().filter(|id| refused.contains(id)).collect(),
+            });
+        }
+        let both_refused = both_refused.unwrap_or_default();
+        let mut verdicts: Vec<&str> = want
+            .iter()
+            .copied()
+            .filter(|id| !both_refused.iter().any(|r| r == id))
+            .collect();
+        verdicts.sort_unstable();
+        ids(&r["crops"]).is_some_and(|crops| {
+            let mut crops: Vec<&str> = crops.iter().map(String::as_str).collect();
+            crops.sort_unstable();
+            !crops.is_empty() && crops == verdicts
         })
     };
     let mut agreed = Vec::new();
@@ -288,10 +359,7 @@ fn page_records(
             && r["doc_id"] == doc_id
             && r["accuracy_established"] == false
             && !want.is_empty()
-            && exact(&r["crops"])
-            && r["results"].as_array().is_some_and(|sides| {
-                sides.len() == 2 && sides.iter().all(|s| exact(&s["readings"]))
-            });
+            && coverage(&r);
         let Some(name) = f.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
@@ -398,6 +466,125 @@ pub(crate) mod tests {
         }
         let dirs: Vec<PathBuf> = DOCS.iter().map(|d| page_dir.join(d)).collect();
         stage::write_bundle(&units(root).join("bundle-00001"), &dirs).unwrap()
+    }
+
+    /// `result`, with the crops `refused` names (as `<doc>:<crop>`) failed alone (#2168): no
+    /// reading, listed in `refused`, and counted in the manifest's crops.
+    fn refusing(
+        dir: &Path,
+        job: &Job,
+        tag: &str,
+        refused: &[String],
+        text: impl Fn(&str, &str) -> String,
+    ) -> Vec<PathBuf> {
+        let files = result(dir, job, tag, text);
+        let mut readings: Readings =
+            serde_json::from_slice(&std::fs::read(&files[0]).unwrap()).unwrap();
+        readings.readings.retain(|r| !refused.contains(&r.id));
+        readings.refused = refused.to_vec();
+        let rb = serde_json::to_vec(&readings).unwrap();
+        let mut r: ResultManifest =
+            serde_json::from_slice(&std::fs::read(&files[1]).unwrap()).unwrap();
+        r.read = readings.readings.len() as u32;
+        r.readings_bytes = rb.len() as u64;
+        r.readings_sha256 = sha256(&rb);
+        std::fs::write(&files[0], rb).unwrap();
+        std::fs::write(&files[1], serde_json::to_vec(&r).unwrap()).unwrap();
+        files
+    }
+
+    #[test]
+    fn a_crop_both_hosts_refused_leaves_the_rest_of_its_page_collectable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let job = bundle(&root);
+        let pages = tmp.path().join("qwen/pages");
+        let log = tmp.path().join("qwen/pairs.jsonl");
+        let words = |doc: &str, crop: &str| format!("{doc} {crop} the ship sailed for england");
+        // Both hosts refuse page 2's second crop (an oversized request); page 3's second crop
+        // loops on host b, so the bundle is inconclusive and settles by its pages.
+        let gone = vec![format!("{}:c02", DOCS[1])];
+        let a = refusing(tmp.path(), &job, "a", &gone, words);
+        let b = refusing(tmp.path(), &job, "b", &gone, |doc, crop| {
+            if doc == DOCS[2] && crop == "c02" {
+                "[?] ".repeat(30)
+            } else {
+                words(doc, crop)
+            }
+        });
+        assert!(validate::compare(&a, &b, 0.5, Some(&log), Some(&pages)).is_err());
+        let ledger = run(&root, &pages).unwrap();
+        let status: Vec<&str> = ledger.iter().map(|p| p.status).collect();
+        // The page with the refused crop is accepted on the crop both read; it isn't pending.
+        assert_eq!(status, ["accepted", "accepted", "disagreed"]);
+        let kept =
+            accepted_readings(&root, &units(&root).join("bundle-00001"), &job, &pages).unwrap();
+        assert_eq!(kept.keys().collect::<Vec<_>>(), [DOCS[0], DOCS[1]]);
+        let partial = &kept[DOCS[1]];
+        assert_eq!(
+            partial
+                .readings
+                .iter()
+                .map(|r| (r.id.as_str(), r.text.clone()))
+                .collect::<Vec<_>>(),
+            [("c01", words(DOCS[1], "c01"))]
+        );
+        // The refused crop is listed, as the page's own crop id, never as a reading.
+        assert_eq!(partial.refused, ["c02"]);
+        assert_eq!(kept[DOCS[0]].refused, Vec::<String>::new());
+        // The record keeps both sides' refusals, and its crop verdicts leave the refused crop out:
+        // it was never agreed on.
+        let entries: Vec<PathBuf> = pages
+            .join(&job.id)
+            .join(DOCS[1])
+            .read_dir()
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        let [record_path] = <[PathBuf; 1]>::try_from(entries).unwrap();
+        let record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&record_path).unwrap()).unwrap();
+        assert!(record["crops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["id"] != gone[0].as_str()));
+        for side in record["results"].as_array().unwrap() {
+            assert_eq!(side["refused"], serde_json::json!(gone));
+        }
+        // A record whose side neither reads nor refuses a crop is not the page's: it stays pending.
+        let mut broken = record.clone();
+        broken["results"][0]["refused"] = serde_json::json!([]);
+        std::fs::write(&record_path, serde_json::to_vec(&broken).unwrap()).unwrap();
+        let ledger = run(&root, &pages).unwrap();
+        assert_eq!(ledger[1].status, PENDING);
+        // Nor is one that counts the refused crop as a verdict.
+        let mut broken = record.clone();
+        broken["crops"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"id": gone[0], "dice": 1.0, "read": [true, true]}));
+        std::fs::write(&record_path, serde_json::to_vec(&broken).unwrap()).unwrap();
+        assert_eq!(run(&root, &pages).unwrap()[1].status, PENDING);
+    }
+
+    #[test]
+    fn a_crop_only_one_host_refused_settles_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let job = bundle(&root);
+        let pages = tmp.path().join("qwen/pages");
+        let log = tmp.path().join("qwen/pairs.jsonl");
+        let words = |doc: &str, crop: &str| format!("{doc} {crop} the ship sailed for england");
+        let a = refusing(tmp.path(), &job, "a", &[format!("{}:c02", DOCS[1])], words);
+        let b = result(tmp.path(), &job, "b", words);
+        assert!(validate::compare(&a, &b, 0.5, Some(&log), Some(&pages)).is_err());
+        let ledger = run(&root, &pages).unwrap();
+        // The page one host refused a crop of disagrees; it is never accepted.
+        assert_eq!(ledger[1].status, "disagreed");
+        let kept =
+            accepted_readings(&root, &units(&root).join("bundle-00001"), &job, &pages).unwrap();
+        assert!(!kept.contains_key(DOCS[1]));
     }
 
     #[test]

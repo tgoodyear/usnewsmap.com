@@ -496,6 +496,20 @@ class ResultsTest(unittest.TestCase):
             self.assertIn("/results/qwen-nonenglish-v1/snapshots/", load)
             self.assertNotIn("--qwen-crop-states", command)
 
+    def test_a_full_resolution_qwen_root_is_collected_from_batch_9(self):
+        # A --crop-res full root submits as native-8b-full, batch 9 (#2168).
+        args = self.args()
+        args.campaign = args.qwen_campaign = "qwen-full"
+        args.qwen_crop_res = "full"
+        with mock.patch.object(results.subprocess, "run") as run:
+            results.run(args)
+        command = run.call_args_list[0].args[0][-1]
+        self.assertIn("--qwen-spool /project/usnmocr/results/9", command)
+        self.assertNotIn("results/8", command)
+        # The flag takes half or full only.
+        source = Path(results.__file__).read_text()
+        self.assertIn('"--qwen-crop-res", choices=("half", "full"), default="half"', source)
+
     def test_a_held_xiaomi_root_is_collected_from_batch_108_and_never_loaded(self):
         args = self.args()
         args.campaign = args.qwen_campaign = "x08-fre-wf1415"
