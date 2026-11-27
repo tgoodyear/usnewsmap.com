@@ -321,11 +321,15 @@ s.serve_forever()
         assert!(took < grace + Duration::from_secs(5), "{took:?}");
         assert!(took >= grace, "the request ended before the kill: {took:?}");
         // The connection closes when the kill lands, a moment before the process is reapable.
+        let reaping = Instant::now();
         let status = loop {
             if let Some(s) = try_reap(&mut c).unwrap() {
                 break s;
             }
-            assert!(took < grace + Duration::from_secs(5));
+            assert!(
+                reaping.elapsed() < KILL_REAP_LIMIT + Duration::from_secs(5),
+                "the killed server never became reapable"
+            );
             std::thread::sleep(POLL);
         };
         assert_eq!(status.signal(), Some(9), "{status:?}");
