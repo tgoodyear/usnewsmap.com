@@ -20,6 +20,16 @@ class Punctuation(unittest.TestCase):
         self.assertNotEqual(bt.letters_only("себс", eq), bt.letters_only("себе.", eq))
 
 
+class StrayAt(unittest.TestCase):
+    def test_an_at_touching_a_letter_is_plainly_wrong(self):
+        for w in ("@ourse", "c@urse", "e@", "Ma@"):
+            self.assertTrue(bt.stray_at(w), w)
+
+    def test_an_at_in_prices_and_quantities_is_left_alone(self):
+        for w in ("@", "6@7c", "@$4.50", "10@12", "@4", "course"):
+            self.assertFalse(bt.stray_at(w), w)
+
+
 class Fractions(unittest.TestCase):
     def test_single_character_fractions_fold_to_digits_and_slash(self):
         self.assertEqual(bt.fold_fractions("103½"), "1031/2")
