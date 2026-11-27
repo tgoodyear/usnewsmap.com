@@ -7,7 +7,7 @@ let lineShown = true; // column gutter tasks: whether the line is drawn on the c
 let lang = null, cfg = null, task = null, answered = 0, history = [], skipped = [], busy = false, loaded = false, failed = false, fontFailed = false, showNames = false, shownPrev;
 // After "Neither matches", the word stays on screen with an optional box for what the print says (suggestBox). suggestFor is the
 // word it is open on; suggestDraft keeps what was typed through a re-render. Worker: POST /api/suggestions, max SUGGEST_MAX.
-let suggestFor = null, suggestDraft = "";
+let suggestFor = null, suggestDraft = "", suggestSending = null;
 // On a slow connection an answer is saved in the background and the next word, fetched while this one was shown, appears at once.
 // `pending` holds answers not yet saved, oldest first; `ahead` holds the next words fetched for the word now shown; `stale` is set
 // when the Worker says this page is out of date, and stops answering until a reload.
@@ -518,7 +518,8 @@ function suggestBox(t) {
   const box = document.createElement("div"); box.className = "suggest"; box.id = "suggest";
   const label = document.createElement("label"); label.htmlFor = "suggest-text"; label.textContent = "What does it say? (optional)";
   const input = document.createElement("input");
-  Object.assign(input, { type: "text", id: "suggest-text", maxLength: SUGGEST_MAX, dir: "auto", lang, autocomplete: "off", spellcheck: false });
+  // No maxLength: it counts UTF-16 units, not the code points the Worker counts after NFC, so it would refuse valid text.
+  Object.assign(input, { type: "text", id: "suggest-text", dir: "auto", lang, autocomplete: "off", spellcheck: false });
   input.value = suggestDraft;
   input.addEventListener("input", () => { suggestDraft = input.value; });
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); sendSuggestion(t.id); } });
@@ -532,25 +533,32 @@ function suggestBox(t) {
   return box;
 }
 
-// An empty box just moves on. A failed save keeps the word and the text, so it can be sent again or skipped.
+// An empty box just moves on. A failed save keeps the word and the text, so it can be sent again or skipped. One save at a time:
+// Enter or Send during a save does nothing, and the box is locked until the save has answered.
 async function sendSuggestion(id) {
-  if (busy || suggestFor !== id) return;
+  if (busy || suggestFor !== id || suggestSending === id) return;
   const input = $("suggest-text");
-  const text = input ? input.value.trim() : "";
+  const text = input ? input.value.normalize("NFC").trim() : "";
   if (!text) { moveOnFromSuggestion(id); return; }
-  const send = $("suggest-send"); if (send) send.disabled = true;
+  if (Array.from(text).length > SUGGEST_MAX) { status(`A suggestion is at most ${SUGGEST_MAX} characters.`, true); return; }
+  const send = $("suggest-send");
+  suggestSending = id; if (send) send.disabled = true; if (input) input.readOnly = true;
   try {
     await authed("/api/suggestions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: id, text }) });
   } catch (e) {
-    if (send) send.disabled = false;
-    if (suggestFor === id) status("Your suggestion wasn't saved: " + e.message, true);
+    if (suggestFor === id) {
+      if (send) send.disabled = false; if (input) input.readOnly = false;
+      status("Your suggestion wasn't saved: " + e.message, true);
+    }
     return;
-  }
+  } finally { if (suggestSending === id) suggestSending = null; }
   moveOnFromSuggestion(id);
 }
 
+// The word was answered Neither; it joins the history now, once, as it leaves the screen (choose() doesn't add it while the box is open).
 function moveOnFromSuggestion(id) {
   if (suggestFor !== id || busy) return;
+  history.push({ task, choice: "neither" }); if (history.length > 50) history.shift();
   next(controlFocused(), id, "neither");
 }
 
@@ -717,8 +725,9 @@ async function choose(choice) {
   const had = controlFocused();
   const body = JSON.stringify({ task: task.id, choice, display: DISPLAY, font: fontState(task), names_shown: namesState(task) });
   const id = task.id;
-  history.push({ task, choice });
-  if (history.length > 50) history.shift();
+  // Neither keeps the word on screen for the optional box; it joins the history when the box is sent or skipped.
+  const holds = choice === "neither" && !isGutter(task);
+  if (!holds) { history.push({ task, choice }); if (history.length > 50) history.shift(); }
   // A changed answer (Back, then another choice) replaces the one still waiting to be saved, unless it is being sent now.
   const queued = pending.findIndex((p) => p.id === id && p !== inflight);
   if (queued >= 0) pending.splice(queued, 1);
@@ -726,7 +735,7 @@ async function choose(choice) {
   pending.push({ id, body, tries: 0 });
   sendAnswers();
   // Neither keeps the word on screen for the optional box; it moves on when the box is sent or skipped (or another control is used).
-  if (choice === "neither" && !isGutter(task)) { suggestFor = id; suggestDraft = ""; render(); return; }
+  if (holds) { suggestFor = id; suggestDraft = ""; render(); return; }
   await next(had, id, choice);
 }
 

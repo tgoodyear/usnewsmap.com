@@ -1127,6 +1127,7 @@ test("POST /api/suggestions needs a session, a task that exists and a valid text
   assert.equal((await post(null, { task: "yi/s/1", text: "שלום" }, "")).status, 401, "no session");
   assert.equal((await post("v1", { task: "yi/s/1", text: "שלום" }, "Bearer forged")).status, 401, "a bad session");
   assert.equal((await post("v1", "not json")).status, 400);
+  assert.equal((await post("v1", "null")).status, 400, "a JSON null is a bad request, not a crash");
   assert.equal((await post("v1", { task: "yi/s/1" })).status, 400, "no text");
   assert.equal((await post("v1", { task: "yi/s/1", text: "a\nb" })).status, 400, "a line break");
   assert.equal((await post("v1", { task: "yi/s/1", text: "x".repeat(SUGGEST_MAX + 1) })).status, 400, "too long");
@@ -1231,7 +1232,10 @@ test("the page sends a suggestion only after Neither, in a box that keeps the an
   assert.match(app, /lang, autocomplete: "off"/, "the box takes the language's code");
   assert.match(app, /if \(e\.target && e\.target\.id === "suggest-text"\) return;/);
   assert.match(app, /authed\("\/api\/suggestions"/);
-  assert.match(app, /if \(choice === "neither" && !isGutter\(task\)\) \{ suggestFor = id; suggestDraft = ""; render\(\); return; \}/);
+  assert.match(app, /const holds = choice === "neither" && !isGutter\(task\);/);
+  assert.match(app, /if \(holds\) \{ suggestFor = id; suggestDraft = ""; render\(\); return; \}/);
+  assert.match(app, /if \(!holds\) \{ history\.push\(\{ task, choice \}\);/, "history gets the word once, not while the box is open");
+  assert.doesNotMatch(app, /maxLength: SUGGEST_MAX/, "no native cap: it counts UTF-16 units");
   assert.match(app, /if \(e\.key === "Enter" && !e\.isComposing\)/);
   // the answer body is unchanged (see the test above)
   assert.match(app, /JSON\.stringify\(\{ task: task\.id, choice, display: DISPLAY, font: fontState\(task\), names_shown: namesState\(task\) \}\)/);

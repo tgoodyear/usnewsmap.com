@@ -280,7 +280,7 @@ async function api(request, env, url) {
   if (p === "/api/suggestions" && request.method === "POST") {
     const c = await contributorOf(request, env, { limited: true });
     const b = await body(request, 2048);
-    if (typeof b.task !== "string" || b.task.length > 300) throw new HttpError(400, "task and text required");
+    if (!b || typeof b.task !== "string" || b.task.length > 300) throw new HttpError(400, "task and text required");
     const text = cleanSuggestion(b.text);
     if (text === null) throw new HttpError(400, `text must be 1 to ${SUGGEST_MAX} characters, with no line breaks or control characters`);
     const t = await env.DB.prepare("SELECT id FROM tasks WHERE id = ?").bind(b.task).first();
