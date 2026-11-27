@@ -155,3 +155,11 @@ ul.guidance[hidden] { display: none; }
 .suggest label { color: var(--muted); font-size: .95rem; }
 .suggest input { font: inherit; font-size: 1.1rem; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); width: 100%; box-sizing: border-box; }
 .suggest-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Cover tasks: the page with the block marked, the block, and one reading's text. */
+.pageview { max-width: 420px; align-self: center; }
+.word.block img { max-height: 520px; }
+.reading { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--paper); }
+.reading .key { font-size: .8rem; color: var(--muted); margin-bottom: 4px; }
+.reading-text { white-space: pre-wrap; overflow-wrap: anywhere; font-family: Georgia, "Times New Roman", serif; font-size: 1.05rem; line-height: 1.45; max-height: 22em; overflow-y: auto; }
+.reading-text.empty { color: var(--muted); font-style: italic; }
