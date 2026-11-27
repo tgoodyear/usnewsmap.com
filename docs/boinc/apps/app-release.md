@@ -755,13 +755,18 @@ python3 boinc/scripts/onprem/release-window.py --app-version ID --validated 3 --
 python3 boinc/scripts/onprem/release-window.py --app-version ID --validated 3 --max-hours 48 --apply
 ```
 
-It releases the held version with `app-version-hold.php`, then every `--poll-secs` (300) reads
+Before opening it previews a hold: if holding would strand unfinished workunits pinned to a
+version (`stranded_workunits`), it refuses to open unless `--accept-stranded` is given, and then
+passes that flag to every hold, so a hold can't be refused later. Every hold that fails prints
+`HOLD FAILED` on stderr with `app-version-hold.php`'s own message and the exact command to hold the
+version by hand. It releases the held version with `app-version-hold.php`, then every `--poll-secs` (300) reads
 the version's results reported since the release with the read-only `app-version-outcomes` bridge
 step, so no database credentials leave the server container. The validator log adds an early count
 of its Valid results (the log ties a Valid result to its app version, an Invalid one not). It holds
 the version again at once on the first client error, validate error or invalid result, or if fewer
 than `--validated` results have validated after `--max-hours`. With `--validated` valid results it
-ends, leaving the version released. Every action and poll goes to
+ends, leaving the version released, but only once that qualification is journaled; if the entry
+can't be written it holds again. Every action and poll goes to
 `/root/release-window/release-window-av<ID>-<time>.jsonl`. A read after the deadline can't qualify:
 expiry is checked first. Any other exit after the release (Ctrl-C, SIGTERM, SIGHUP, a failed command
 or a journal write failure) holds the version again before the tool exits, and that hold doesn't

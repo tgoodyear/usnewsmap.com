@@ -1,4 +1,6 @@
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import signal
@@ -32,29 +34,39 @@ def outcomes(valid=0, invalid=0, client_errors=0, validate_errors=0):
 
 class Runner:
     """Answers app-version-hold.php and the outcomes step in order; records every command."""
-    def __init__(self, reports, hold_rc=0):
-        self.reports, self.hold_rc, self.calls = list(reports), hold_rc, []
+    def __init__(self, reports, hold_rc=0, stranded=None, release_rc=0):
+        self.reports, self.hold_rc, self.release_rc, self.calls = list(reports), hold_rc, release_rc, []
+        self.stranded = stranded or {}
 
     def __call__(self, cmd, **_):
         self.calls.append(cmd)
         if "app-version-outcomes" in cmd:
             return subprocess.CompletedProcess(cmd, 0, json.dumps(self.reports.pop(0)) + "\n", "")
-        return subprocess.CompletedProcess(cmd, self.hold_rc, "", "")
+        if "--apply" not in cmd:  # the hold preview
+            refused = bool(self.stranded) and "--accept-stranded" not in cmd
+            return subprocess.CompletedProcess(
+                cmd, 1 if refused else 0, json.dumps({"stranded_workunits": self.stranded}) + "\n",
+                "Refusing: unfinished workunits pinned" if refused else "")
+        rc = self.release_rc if "release" in cmd else self.hold_rc
+        return subprocess.CompletedProcess(cmd, rc, "", "Refusing: example" if rc else "")
 
     def actions(self):
-        return [c[c.index("--action") + 1] for c in self.calls if "--action" in c]
+        """The applied actions, in order (previews left out)."""
+        return [c[c.index("--action") + 1] for c in self.calls if "--action" in c and "--apply" in c]
 
 
 class WindowTests(unittest.TestCase):
-    def window(self, reports, apply=True, validated=2, max_hours=1, hold_rc=0, poll_secs=60, on_sleep=None):
+    def window(self, reports, apply=True, validated=2, max_hours=1, hold_rc=0, poll_secs=60, on_sleep=None,
+               stranded=None, accept_stranded=False, release_rc=0):
         self.dir = tempfile.TemporaryDirectory()
         log = Path(self.dir.name) / "validator.log"
         log.write_text("")
         args = rw.arguments(["--app-version", "138", "--validated", str(validated), "--max-hours", str(max_hours),
                              "--poll-secs", str(poll_secs), "--journal-dir", self.dir.name,
-                             *(["--apply"] if apply else [])])
+                             *(["--apply"] if apply else []),
+                             *(["--accept-stranded"] if accept_stranded else [])])
         self.now = [1_000_000]
-        runner = Runner(reports, hold_rc)
+        runner = Runner(reports, hold_rc, stranded, release_rc)
 
         self.slept = 0
 
@@ -77,7 +89,7 @@ class WindowTests(unittest.TestCase):
         w, r = self.window([outcomes(valid=1), outcomes(valid=2)])
         self.assertEqual(w.run_window(), 0)
         self.assertEqual(r.actions(), ["release"])
-        self.assertEqual(self.journal(), ["window_open", "release", "poll", "poll", "window_qualified"])
+        self.assertEqual(self.journal(), ["window_open", "precheck", "release", "poll", "poll", "window_qualified"])
 
     def test_first_client_error_holds_at_once(self):
         w, r = self.window([outcomes(valid=1), outcomes(valid=1, client_errors=1)])
@@ -103,7 +115,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(self.slept, 0)
 
     def test_failed_release_is_a_tool_error_and_is_held_again(self):
-        w, r = self.window([], hold_rc=1)
+        w, r = self.window([], release_rc=1)
         self.assertEqual(w.run_window(), 1)
         self.assertEqual(r.actions(), ["release", "hold"])
 
@@ -156,11 +168,49 @@ class WindowTests(unittest.TestCase):
         w, r = self.window([outcomes(valid=0)])
 
         def broken_note(event, **fields):
-            if event != "window_open":
+            if event not in ("window_open", "precheck"):
                 raise OSError("read-only file system")
         w.note = broken_note
         self.assertEqual(w.run_window(), 1)
         self.assertEqual(r.actions(), ["release", "hold"])
+
+    def test_stranded_work_refuses_to_open_without_accept_stranded(self):
+        w, r = self.window([outcomes(valid=2)], stranded={"121": 4})
+        self.assertEqual(w.run_window(), 1)
+        self.assertEqual(r.actions(), [])  # never released, so nothing to hold
+
+    def test_accept_stranded_opens_and_is_passed_to_every_hold(self):
+        w, r = self.window([outcomes(client_errors=1)], stranded={"121": 4}, accept_stranded=True)
+        self.assertEqual(w.run_window(), 2)
+        self.assertEqual(r.actions(), ["release", "hold"])
+        holds = [c for c in r.calls if "--apply" in c and "hold" in c]
+        self.assertTrue(all("--accept-stranded" in c for c in holds))
+        release = next(c for c in r.calls if "--apply" in c and "release" in c)
+        self.assertNotIn("--accept-stranded", release)
+
+    def test_a_qualification_that_cannot_be_journaled_holds_again(self):
+        w, r = self.window([outcomes(valid=2)])
+        real = w.note
+
+        def note(event, **fields):
+            if event == "window_qualified":
+                raise OSError("disk full")
+            real(event, **fields)
+        w.note = note
+        self.assertEqual(w.run_window(), 1)
+        self.assertEqual(r.actions(), ["release", "hold"])
+
+    def test_every_failed_hold_warns_with_its_stderr_and_the_recovery_command(self):
+        w, r = self.window([outcomes(client_errors=1)], hold_rc=1)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(w.run_window(), 1)
+        text = err.getvalue()
+        self.assertIn("HOLD FAILED", text)
+        self.assertIn("Refusing: example", text)
+        self.assertIn("--action hold --apply", text)
+        # The failure hold and the cleanup hold each warn.
+        self.assertEqual(text.count("HOLD FAILED"), 2)
 
     def test_qualification_does_not_hold(self):
         w, r = self.window([outcomes(valid=2)])

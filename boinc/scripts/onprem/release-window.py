@@ -35,10 +35,16 @@ HAV = re.compile(r"\[HOST#\d+ AV#(\d+)\]")
 VALID = re.compile(r"\[RESULT#(\d+) [^\]]+\] Valid;")
 
 
-def hold_cmd(app_version, action):
+def hold_cmd(app_version, action, accept_stranded=False, apply=True):
     return ["podman", "exec", "usnm-boinc-server", "php", HOLD_PHP, "--project", PROJECT,
             "--journal-dir", f"{PROJECT}/ops-app-versions", "--app-version", str(app_version),
-            "--action", action, "--apply"]
+            "--action", action, *(["--accept-stranded"] if accept_stranded else []),
+            *(["--apply"] if apply else [])]
+
+
+def recovery(app_version, accept_stranded):
+    """The command an operator runs by hand when a hold failed."""
+    return " ".join(hold_cmd(app_version, "hold", accept_stranded))
 
 
 def valid_in_log(lines, app_version):
@@ -89,16 +95,44 @@ class Window:
             with open(self.journal, "a") as f:
                 f.write(json.dumps(line, sort_keys=True) + "\n")
 
+    def warn_hold_failed(self, reason, stderr):
+        print(f"release-window: HOLD FAILED for app_version {self.args.app_version} ({reason}); the version "
+              f"may still be released. app-version-hold.php said: {(stderr or '').strip()[-400:] or '(nothing)'}\n"
+              f"Hold it by hand: {recovery(self.args.app_version, self.args.accept_stranded)}", file=sys.stderr)
+
+    def precheck(self):
+        """Preview a hold before opening: refuse if holding would strand pinned unfinished work,
+        unless --accept-stranded was given (and is then passed to every hold)."""
+        done = self.run(hold_cmd(self.args.app_version, "hold", self.args.accept_stranded, apply=False),
+                        capture_output=True, text=True)
+        record = {}
+        for line in (done.stdout or "").splitlines():
+            if line.startswith("{"):
+                record = json.loads(line)
+                break
+        stranded = record.get("stranded_workunits") or {}
+        self.note("precheck", returncode=done.returncode, stranded_workunits=stranded,
+                  accept_stranded=self.args.accept_stranded)
+        if done.returncode != 0 or not record:
+            raise RuntimeError("the hold preview refused or printed no record; not opening the window: "
+                               + (done.stderr or "").strip()[-300:])
+        if stranded and not self.args.accept_stranded:
+            raise RuntimeError(f"holding would strand pinned workunits {stranded}; not opening the window "
+                               "(pass --accept-stranded to allow it)")
+
     def act(self, action, reason):
-        cmd = hold_cmd(self.args.app_version, action)
+        cmd = hold_cmd(self.args.app_version, action, self.args.accept_stranded and action == "hold")
         if not self.args.apply:
             self.note(f"would_{action}", reason=reason, command=cmd)
             return
         if action == "release":
             self.exposed = True
         done = self.run(cmd, capture_output=True, text=True)
-        if action == "hold" and done.returncode == 0:
-            self.exposed = False
+        if action == "hold":
+            if done.returncode == 0:
+                self.exposed = False
+            else:
+                self.warn_hold_failed(reason, done.stderr)
         self.note(action, reason=reason, returncode=done.returncode, stderr=(done.stderr or "")[-400:])
         if done.returncode != 0:
             raise RuntimeError(f"app-version-hold.php --action {action} failed")
@@ -108,13 +142,16 @@ class Window:
         if not self.exposed:
             return
         try:
-            done = self.run(hold_cmd(self.args.app_version, "hold"), capture_output=True, text=True)
+            done = self.run(hold_cmd(self.args.app_version, "hold", self.args.accept_stranded),
+                            capture_output=True, text=True)
             ok = done.returncode == 0
+            stderr = done.stderr
         except Exception as error:  # the hold itself couldn't start
-            ok, done = False, None
-            print(f"release-window: cleanup hold failed to start: {error}", file=sys.stderr)
+            ok, done, stderr = False, None, f"could not start: {error}"
         if ok:
             self.exposed = False
+        else:
+            self.warn_hold_failed(f"cleanup after {reason}", stderr)
         try:
             self.note("cleanup_hold", reason=reason, ok=ok,
                       returncode=None if done is None else done.returncode)
@@ -167,6 +204,8 @@ class Window:
         deadline = start + self.args.max_hours * 3600
         offset = self.log.stat().st_size if self.log.exists() else 0
         self.note("window_open", validated=self.args.validated, max_hours=self.args.max_hours)
+        if self.args.apply:
+            self.precheck()
         self.act("release", "window opened")
         if not self.args.apply:
             self.note("dry_run_stops_here")
@@ -192,8 +231,10 @@ class Window:
                 self.act("hold", f"fewer than {self.args.validated} valid results in {self.args.max_hours} h")
                 return 3
             if verdict == "qualified":
-                self.exposed = False
+                # Only a journaled qualification ends the window released; if the entry can't be
+                # written, the cleanup holds the version again.
                 self.note("window_qualified", valid=outcomes["valid"])
+                self.exposed = False
                 return 0
 
 
@@ -204,6 +245,8 @@ def arguments(argv=None):
     p.add_argument("--max-hours", type=int, default=48, help="hold again if not qualified by then (1-168)")
     p.add_argument("--poll-secs", type=int, default=300, help="between reads (60-3600)")
     p.add_argument("--journal-dir", default="/root/release-window")
+    p.add_argument("--accept-stranded", action="store_true",
+                   help="open even if a hold would strand pinned unfinished work; passed to every hold")
     p.add_argument("--apply", action="store_true", help="release and hold for real (default: print only)")
     args = p.parse_args(argv)
     if not (args.app_version > 0 and 1 <= args.validated <= 50 and 1 <= args.max_hours <= 168
