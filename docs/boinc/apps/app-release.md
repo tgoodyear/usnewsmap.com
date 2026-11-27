@@ -351,6 +351,20 @@ boinc/scripts/boinc-app-release.sh --env prod --app usnm_qwen --version VERSION 
   --plan-class nvidia_vulkan_8b --platform windows_x86_64 "${inputs[@]}" --hold --signing-host HOST ... --what-if
 ```
 
+For `arm64-apple-darwin` (`apple_gpu_8b`, `apple_gpu_x08`), `build-macos` takes the
+`llama.lock`-pinned `macos-arm64` tarball's `llama-server` and the ten dylibs the reviewed 1.20
+release ships (links copied as files; nothing else from the tarball), the locks, and the merged
+commit's `boinc-native-arm64-apple-darwin` artifact's `usnm_qwen_arm64-apple-darwin`, checked
+against its `SHA256SUMS` and `GIT_COMMIT`. Check the runtime against the last reviewed Apple
+release before signing, and publish it held like any other first build:
+
+```sh
+python3 boinc/scripts/qwen_vulkan_bundle.py build-macos --archive llama-b12084-bin-macos-arm64.tar.gz \
+  --artifact boinc-native-arm64-apple-darwin --source-commit COMMIT --plan-class apple_gpu_8b --out target/qwen-mac
+python3 boinc/scripts/qwen_vulkan_bundle.py verify --bundle target/qwen-mac \
+  --same-runtime-as boinc/infra/boinc/releases/prod-onprem-usnm_qwen-1.20-apple_gpu_8b-arm64-apple-darwin.json
+```
+
 These native-only classes admit stable BOINC 8.2.11+ (the 6 GB and 2B profiles 8.2.9) and
 do not require a container runtime. The ordinary OCR `docker` class also admits stable 8.2.11 when
 its platform runtime is available; do not require a development Mac client for it.
