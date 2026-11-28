@@ -1,0 +1,10 @@
+{
+  "purpose": "CI only, never shipped: the software Vulkan driver amd-vulkan-runtime.yml launches the pinned and patched b12084 llama-server.exe against (docs/boinc/apps/amd-gpu.md step 2).",
+  "repository": "pal1000/mesa-dist-win",
+  "tag": "26.3.1",
+  "file": "mesa3d-26.3.1-release-msvc.7z",
+  "url": "https://github.com/pal1000/mesa-dist-win/releases/download/26.3.1/mesa3d-26.3.1-release-msvc.7z",
+  "sha256": "64e84cf13d67dd354640bf443ed0445e6a83afd06a5729f0750b3744d633b3f1",
+  "icd": "x64/lvp_icd.x86_64.json",
+  "license": "Mesa (lavapipe): MIT; its statically linked LLVM: Apache-2.0 WITH LLVM-exception; mesa-dist-win packaging: MIT"
+}

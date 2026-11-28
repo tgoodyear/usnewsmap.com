@@ -3,6 +3,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - scripts/ci/lavapipe.lock
       - .github/workflows/amd-vulkan-runtime.yml
       - boinc/apps/qwen/amd-device-map.cpp
       - boinc/apps/qwen/llama.lock
@@ -11,6 +12,7 @@ on:
   push:
     branches: [main]
     paths:
+      - scripts/ci/lavapipe.lock
       - .github/workflows/amd-vulkan-runtime.yml
       - boinc/apps/qwen/amd-device-map.cpp
       - boinc/apps/qwen/llama.lock
@@ -129,6 +131,130 @@ jobs:
           $hash = (Get-FileHash amd-vulkan-runtime\ggml-vulkan.dll -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  ggml-vulkan.dll" | Set-Content amd-vulkan-runtime\SHA256SUMS -Encoding ascii
           git rev-parse HEAD | Set-Content amd-vulkan-runtime\GIT_COMMIT -Encoding ascii
+      # docs/boinc/apps/amd-gpu.md step 2: the pinned release's own llama-server.exe must start with the
+      # patched DLL and load it as its Vulkan backend, the same way it loads the original. The runner has
+      # no GPU, so this step alone installs the scripts/ci/lavapipe.lock software driver (Mesa lavapipe).
+      # It proves launch, backend registration and the identity export on a software device, not
+      # inference on, or device mapping of, a real AMD card.
+      - name: Launch the pinned llama-server.exe with the patched runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pin = Get-Content scripts\ci\lavapipe.lock -Raw | ConvertFrom-Json
+          $archive = Join-Path $env:RUNNER_TEMP $pin.file
+          Invoke-WebRequest $pin.url -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.sha256) { throw 'lavapipe digest mismatch' }
+          $mesa = Join-Path $env:RUNNER_TEMP 'mesa'
+          & (Join-Path $env:ProgramFiles '7-Zip\7z.exe') x $archive "-o$mesa" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'lavapipe extraction failed' }
+          $icd = Join-Path $mesa $pin.icd
+          $driver = (Get-Content $icd -Raw | ConvertFrom-Json).ICD.library_path
+          if (-not (Test-Path (Join-Path (Split-Path $icd) $driver))) { throw "lavapipe ICD names a missing driver: $driver" }
+          # Only lavapipe, for this step only. The runner is elevated, and the Vulkan loader ignores
+          # VK_DRIVER_FILES/VK_ICD_FILENAMES in elevated processes, so register the manifest under the
+          # loader's driver key (empty on this runner) and remove it when the step ends.
+          $drivers = 'HKLM:\SOFTWARE\Khronos\Vulkan\Drivers'
+          if ((Test-Path $drivers) -and @((Get-Item $drivers).Property).Count) { throw "Runner already has Vulkan drivers: $((Get-Item $drivers).Property)" }
+          New-Item $drivers -Force | Out-Null
+          New-ItemProperty $drivers -Name $icd -PropertyType DWord -Value 0 | Out-Null
+          try {
+            # The loader must see it before llama.cpp is asked to.
+            $vulkaninfo = Get-ChildItem (Join-Path $env:VULKAN_SDK 'Bin') -Filter 'vulkaninfo*.exe' | Select-Object -First 1
+            if (-not $vulkaninfo) { throw 'Vulkan SDK has no vulkaninfo' }
+            $env:VK_LOADER_DEBUG = 'error,warn,driver'
+            $summary = & $vulkaninfo.FullName --summary 2>&1 | Out-String; $code = $LASTEXITCODE
+            Remove-Item Env:VK_LOADER_DEBUG
+            "== vulkaninfo exit=$code"; $summary
+            if ($code -ne 0 -or $summary -notmatch 'llvmpipe') { throw 'The Vulkan loader did not load the lavapipe driver' }
+            # ggml-vulkan skips CPU-type devices unless they are named, and lavapipe is one.
+            $env:GGML_VK_VISIBLE_DEVICES = '0'
+            # Every device the backend registers, with the identity the backend exports for it.
+            $source = Join-Path $PWD 'boinc\apps\qwen\amd-device-map.cpp'
+            @"
+          #define main helper_main
+          #include "$($source.Replace('\','/'))"
+          #undef main
+          int main(int argc, char **argv) {
+              if (argc != 2) return 2;
+              std::filesystem::path dir = argv[1];
+              Library base((dir / "ggml-base.dll").string());
+              Library registry((dir / "ggml.dll").string());
+              auto load = registry.symbol<void *(*)(const char *)>("ggml_backend_load");
+              auto count = base.symbol<size_t(*)(void *)>("ggml_backend_reg_dev_count");
+              auto device = base.symbol<void *(*)(void *, size_t)>("ggml_backend_reg_dev_get");
+              auto props = base.symbol<void(*)(void *, Props *)>("ggml_backend_dev_get_props");
+              void *reg = load((dir / "ggml-vulkan.dll").string().c_str());
+              if (!reg) { std::puts("no Vulkan backend"); return 1; }
+              for (size_t i = 0, n = count(reg); i < n; ++i) {
+                  Props value{};
+                  props(device(reg, i), &value);
+                  std::printf("%s|%s|%s\n", value.name ? value.name : "(null)",
+                              value.description ? value.description : "(null)", value.device_id ? value.device_id : "(null)");
+              }
+              return 0;
+          }
+          "@ | Set-Content amd-devices.cpp -Encoding ascii
+            $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+            $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            cmd /c "`"$(Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat')`" && cl /nologo /std:c++17 /EHsc /W4 /WX /D_CRT_SECURE_NO_WARNINGS amd-devices.cpp /Fe:amd-devices.exe"
+            if ($LASTEXITCODE -ne 0) { throw 'Device probe build failed' }
+            $outputs = @{}; $devices = @{}
+            foreach ($bundle in 'amd-baseline', 'amd-patched') {
+              $dir = (Resolve-Path $bundle).Path
+              foreach ($arguments in @('--version'), @('--list-devices')) {
+                $log = Join-Path $env:RUNNER_TEMP "$bundle$($arguments[0])"
+                $process = Start-Process (Join-Path $dir 'llama-server.exe') -ArgumentList $arguments -WorkingDirectory $dir `
+                  -NoNewWindow -Wait -PassThru -RedirectStandardOutput "$log.out" -RedirectStandardError "$log.err"
+                $text = (Get-Content "$log.out", "$log.err" -Raw) -join "`n"
+                "== $bundle $($arguments -join ' ') exit=$($process.ExitCode)"; $text
+                if ($process.ExitCode -ne 0) { throw "$bundle llama-server.exe $($arguments -join ' ') exited $($process.ExitCode)" }
+                # Free memory moves between runs; everything else must match.
+                $outputs["$bundle $($arguments[0])"] = ($text.Replace($dir, 'BUNDLE') -replace '\d+ MiB free', 'N MiB free')
+              }
+              $listed = & .\amd-devices.exe $dir 2> "$log-devices.err"; $code = $LASTEXITCODE
+              $loaderLog = Get-Content "$log-devices.err" -Raw
+              "== $bundle devices exit=$code"; $listed; $loaderLog
+              if ($code -ne 0) { throw "$bundle Vulkan backend registered no devices" }
+              if (-not $loaderLog.Replace($dir, 'BUNDLE').Contains('loaded Vulkan backend from BUNDLE\ggml-vulkan.dll')) {
+                throw "$bundle did not load its own ggml-vulkan.dll"
+              }
+              $devices[$bundle] = @($listed)
+            }
+            foreach ($arguments in '--version', '--list-devices') {
+              if ($outputs["amd-baseline $arguments"] -ne $outputs["amd-patched $arguments"]) {
+                throw "llama-server.exe $arguments differs between the pinned and patched runtimes"
+              }
+            }
+            if ($outputs['amd-patched --list-devices'] -notmatch '(?m)^\s*Vulkan0: llvmpipe') { throw 'llama-server.exe did not list the lavapipe device' }
+            # llama-server.exe's logger hides ggml's INFO lines, so prove the source instead: it searches only
+            # its own directory and the working directory (both the bundle; GGML_BACKEND_PATH unset), where
+            # the only Vulkan backend is the patched DLL, so the listed device came from that DLL.
+            if ($env:GGML_BACKEND_PATH) { throw 'GGML_BACKEND_PATH is set' }
+            $candidates = @(Get-ChildItem amd-patched -Filter 'ggml-vulkan*.dll')
+            $patchedHash = (Get-FileHash amd-vulkan-runtime\ggml-vulkan.dll -Algorithm SHA256).Hash
+            if ($candidates.Count -ne 1 -or (Get-FileHash $candidates[0].FullName -Algorithm SHA256).Hash -ne $patchedHash) {
+              throw 'The patched bundle does not hold exactly one Vulkan backend, the patched DLL'
+            }
+            # Same devices; the patch may only fill an identity the pinned runtime leaves empty, and only with a
+            # nonzero 8-byte LUID (patch_amd_vulkan_identity.py).
+            $baseline = $devices['amd-baseline']; $patched = $devices['amd-patched']
+            if ($baseline.Count -lt 1 -or $baseline.Count -ne $patched.Count) { throw 'Patched runtime registered different devices' }
+            for ($i = 0; $i -lt $baseline.Count; $i++) {
+              $b = $baseline[$i].Split('|'); $p = $patched[$i].Split('|')
+              if ($b[0] -ne $p[0] -or $b[1] -ne $p[1]) { throw "Device $i differs: $($baseline[$i]) / $($patched[$i])" }
+              if ($b[2] -ne '(null)') {
+                if ($p[2] -ne $b[2]) { throw "Patched runtime changed device $i's PCI identity" }
+                "device ${i}: PCI identity $($b[2]) from VK_EXT_pci_bus_info, unchanged"
+              } elseif ($p[2] -eq '(null)') {
+                "device ${i}: no PCI bus info and no valid LUID; both runtimes export no identity"
+              } elseif ($p[2] -match '^luid:[0-9a-f]{16}$' -and $p[2] -ne 'luid:0000000000000000') {
+                "device ${i}: no PCI bus info; the patched runtime exports $($p[2])"
+              } else { throw "Patched runtime exported an invalid identity for device ${i}: $($p[2])" }
+            }
+            "patched runtime: llama-server.exe starts, lists the same lavapipe device and loads the patched DLL"
+          } finally {
+            Remove-ItemProperty $drivers -Name $icd
+          }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: amd-vulkan-runtime-windows_x86_64
