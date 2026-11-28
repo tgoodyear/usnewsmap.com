@@ -60,7 +60,9 @@ def read_bytes(src):
         for rg in range(pf.metadata.num_row_groups):
             n = pf.metadata.row_group(rg).num_rows
             if start <= r < start + n:
-                return pf.read_row_group(rg, columns=["page_image"]).column("page_image").to_pylist()[r - start]["bytes"]
+                names = pf.schema_arrow.names
+                col = "page_image" if "page_image" in names else "image"  # Europeana names it `image`
+                return pf.read_row_group(rg, columns=[col]).column(col).to_pylist()[r - start]["bytes"]
             start += n
         raise SystemExit("row %d not in %s" % (r, f))
     with open(src, "rb") as f:

@@ -35,7 +35,11 @@ import bwfalse  # noqa: E402
 
 def member_doc(name):
     """doc id of a member <lccn>/<yyyy>/<mm>/<dd>/ed-<n>/seq-<m>/ocr.xml, else None."""
+    while name.startswith("./"):
+        name = name[2:]
     p = name.split("/")
+    if len(p) == 5 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p[1]):   # <lccn>/<yyyy-mm-dd>/ed-<n>/seq-<m>/ocr.xml
+        p = [p[0]] + p[1].split("-") + p[2:]
     if len(p) != 7 or p[6] != "ocr.xml" or not p[4].startswith("ed-") or not p[5].startswith("seq-"):
         return None
     try:

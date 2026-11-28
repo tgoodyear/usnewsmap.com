@@ -40,13 +40,17 @@ def main(argv=None):
                 with tf.extractfile(m) as src, open(tmp, "wb") as dst:
                     shutil.copyfileobj(src, dst, 1 << 22)
                 need = rows_by_parquet.get(os.path.basename(m.name), {})
+                if want_paths and not maps:
+                    raise SystemExit("parquet %s came before any --paths map in the stream; put the maps first" % m.name)
                 pf = pq.ParquetFile(tmp)
+                names = pf.schema_arrow.names
+                colname = "page_image" if "page_image" in names else "image"  # Europeana names it `image`
                 start = 0
                 for rg in range(pf.metadata.num_row_groups):
                     n = pf.metadata.row_group(rg).num_rows
                     sel = [i for i in need if start <= i < start + n]
                     if sel:
-                        col = pf.read_row_group(rg, columns=["page_image"]).column("page_image").to_pylist()
+                        col = pf.read_row_group(rg, columns=[colname]).column(colname).to_pylist()
                         for i in sel:
                             with open(os.path.join(a.out_dir, "images", need[i] + ".img"), "wb") as f:
                                 f.write(col[i - start]["bytes"])
@@ -55,7 +59,10 @@ def main(argv=None):
                 os.remove(tmp)
                 print("parquet %s: %d pages (total %d)" % (os.path.basename(m.name), len(need), done_pages), flush=True)
                 continue
-            dst = os.path.join(a.out_dir, m.name)
+            root = os.path.realpath(a.out_dir)
+            dst = os.path.realpath(os.path.join(root, m.name))
+            if os.path.isabs(m.name) or os.path.commonpath([root, dst]) != root:
+                raise SystemExit("archive member %r would be written outside --out-dir" % m.name)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             with tf.extractfile(m) as src, open(dst, "wb") as f:
                 shutil.copyfileobj(src, f, 1 << 22)

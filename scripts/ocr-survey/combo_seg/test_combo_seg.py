@@ -377,3 +377,5 @@ def test_alto_member_doc():
     import alto_bulk
     assert alto_bulk.member_doc("sn84026749/1918/02/15/ed-1/seq-7/ocr.xml") == "sn84026749_1918-02-15_ed-1_seq-7"
     assert alto_bulk.member_doc("sn84026749/1918/02/15/ed-1/seq-7/ocr.txt") is None
+    assert alto_bulk.member_doc("./sn84026749/1918/02/15/ed-1/seq-7/ocr.xml") == "sn84026749_1918-02-15_ed-1_seq-7"
+    assert alto_bulk.member_doc("sn84026749/1918-02-15/ed-1/seq-7/ocr.xml") == "sn84026749_1918-02-15_ed-1_seq-7"
