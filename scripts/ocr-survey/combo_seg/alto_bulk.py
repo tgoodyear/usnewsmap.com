@@ -145,7 +145,7 @@ def stage_extract(a):
     not_indexed = sorted(docs - set(arch))
     print("docs %d, in locstats %d, archives %d" % (len(docs), len(docs) - len(not_indexed), len(jobs)), flush=True)
     not_found = []
-    with mp.Pool(a.workers) as pool:
+    with mp.get_context("fork").Pool(a.workers) as pool:
         for n, (name, got, left) in enumerate(pool.imap_unordered(_archive_job, [(k, v, a.alto_dir) for k, v in sorted(jobs.items())]), 1):
             not_found += left
             print("archives %d/%d (%s: %d, not found %d)" % (n, len(jobs), name, got, len(left)), flush=True)

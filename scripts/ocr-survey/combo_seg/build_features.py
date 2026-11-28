@@ -150,7 +150,7 @@ def main(argv=None):
     print("pages without a full-resolution image, left out: %d (listed in %s)" % (len(missing), mo), flush=True)
     t0 = time.time()
     n_rows = 0
-    with open(a.out, "w") as f, mp.Pool(a.workers) as pool:
+    with open(a.out, "w") as f, mp.get_context("fork").Pool(a.workers) as pool:
         for n, rows in enumerate(pool.imap(_one, ids), 1):
             for r in rows:
                 f.write(json.dumps(r, sort_keys=True, allow_nan=True) + "\n")

@@ -114,7 +114,7 @@ def main(argv=None):
         sorted(ln.strip() for ln in open(a.pages_from) if ln.strip())
     jobs = [(p, a.page_cache, a.out_dir, a.lang, a.psm) for p in ids if not os.path.exists(os.path.join(a.out_dir, out_name(p)))]
     t0, bad = time.time(), []
-    with mp.Pool(a.workers) as pool:
+    with mp.get_context("fork").Pool(a.workers) as pool:
         for n, (pid, err) in enumerate(pool.imap_unordered(_tess, jobs), 1):
             if err:
                 bad.append((pid, err))

@@ -105,7 +105,7 @@ def finish(a, rows, ids):
         src[pid] = have[stem][0]
         jobs.append((pid, src[pid], cache))
     sizes = {}
-    with mp.Pool(a.workers) as pool:
+    with mp.get_context("fork").Pool(a.workers) as pool:
         for n, (pid, size) in enumerate(pool.imap_unordered(_cache, jobs), 1):
             sizes[pid] = size
             if n % 50 == 0 or n == len(jobs):
