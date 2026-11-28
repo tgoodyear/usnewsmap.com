@@ -26,6 +26,7 @@ let noteFor = null, noteDraft = "", noteOpening = null, noteSending = null;
 // The saved note and the latest draft are kept apart, so a save that answers late never replaces text typed after it.
 const typed = new Map(); // task id -> { suggest, saved, draft, noteOpen }
 const noteRevs = new Map(); // task id -> the number of the latest note save started on it
+const savedRevs = new Map(); // task id -> the number of the newest note save on it that succeeded
 function keepTyped(id, part) {
   const was = typed.get(id) || {}; typed.delete(id); typed.set(id, { ...was, ...part });
   if (typed.size > 60) {
@@ -984,7 +985,8 @@ async function sendNote(id) {
     }
     return;
   } finally { if (noteSending === opening) noteSending = null; }
-  noteDone.add(id); if (noteRevs.get(id) === rev) keepTyped(id, { saved: text });
+  // the newest save that succeeded is the saved text, whatever later saves did (one that answers late, or failed, changes nothing)
+  noteDone.add(id); if (rev > (savedRevs.get(id) || 0)) { savedRevs.set(id, rev); keepTyped(id, { saved: text }); }
   // Only if the box is still the one this save came from: a word that changed meanwhile keeps its own screen.
   if (noteOpening === opening && noteFor === id) { noteFor = null; noteOpening = null; noteDraft = ""; render(shownPrev); status("Note saved."); const b = $("note"); if (b && !b.disabled) b.focus({ preventScroll: true }); }
   else noteButton();
