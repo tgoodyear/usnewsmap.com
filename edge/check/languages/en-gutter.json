@@ -1,14 +1,14 @@
 {
   "guidance": [
-    "A printed vertical line between columns (a column rule) counts as a gap. The line may run along it.",
-    "If there is print on only one side of the line, or on neither side (blank paper, the foot of a page), answer Yes as long as the line touches no print. The dark edge of the scan is not print.",
-    "An advertisement, a picture or a heading that spans several columns counts as printed text. A line through one does not run down a gap, but a line in the gap between two pictures or cartoon panels does.",
-    "If the line is mostly in a gap but clips a few letters, answer No."
+    "A printed vertical line between columns (a column rule) counts as a gap, and the line may run along it.",
+    "If there is print on only one side of the line, or on neither (blank paper, the foot of a page), answer Yes as long as the line crosses no print. The dark edge of the scan is not print.",
+    "An advertisement, a picture or a heading across several columns counts as print, so a line through one is a No. A line in the gap between two pictures or cartoon panels does run down a gap.",
+    "If the line is mostly in a gap but crosses a few letters, answer No."
   ],
-  "intro": "These crops come from English-language newspaper pages in Chronicling America, the Library of Congress's collection of historic American newspapers. A line is drawn on each crop where a program thinks two columns of text are separated.",
+  "intro": "A program drew a line on each of these crops from English-language pages in Chronicling America, where it thinks two columns of text are separated.",
   "name": "English column gutters",
   "question": "Does this line run down a gap between columns of text without crossing any printed text?",
-  "rules": "A colored line is drawn on a piece of a newspaper page. Say whether it runs down the white gap between two columns of text without crossing any printed text. Use the button to hide the line and look at the print under it. If you can't tell, pick Can't tell. You don't need to read the text, only to see where the print is. Use Add a note to tell us anything else about a crop, such as why you chose or what you're unsure of.",
+  "rules": "Say whether the colored line runs down the white gap between two columns without crossing any print. Use Hide the line (L) to see the print under it. You don't need to read the text, only see where the print is.",
   "title": "English newspaper column gutters",
   "unit": "lines"
 }

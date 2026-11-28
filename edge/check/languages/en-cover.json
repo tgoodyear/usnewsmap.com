@@ -1,14 +1,13 @@
 {
   "guidance": [
-    "Wrong letters or misspelled words don't matter. Answer No only when lines, a passage or a column of the print are missing from the reading.",
-    "The reading may run its lines together differently from the print, or put a few words at the edge of the box in another order. That still counts as Yes.",
-    "If the reading holds the block's text and more besides (words from the next column), answer Yes.",
+    "If the reading runs lines together differently from the print, or puts a few words at the edge of the box in another order, that still counts as Yes.",
+    "If the reading has the block's text and more besides (words from the next column), answer Yes.",
     "If the box holds no text at all (a picture, an ornament, a rule or blank paper), pick Not text. A headline or an advertisement is text."
   ],
-  "intro": "These come from English-language newspaper pages in Chronicling America, the Library of Congress's collection of historic American newspapers. A program read each page, and we want to know whether it missed any of the print.",
+  "intro": "A program read each of these English-language newspaper pages from Chronicling America, the Library of Congress's collection of historic American newspapers. We want to know whether it missed any of the print.",
   "name": "English: missing text",
   "question": "Does the machine reading include all the words printed in the box? Ignore spelling mistakes and a word or two cut off at the edge of the box: answer No only if a line or more is missing.",
-  "rules": "The box marks a block of print on the page, shown enlarged below it. Under that is the machine reading of the same place. This is not a spelling check: we want to know whether the machine skipped any of the print. Answer No if a line or more of the print in the box (a line, a passage, a column) is missing from the reading, even if the rest is perfect. Use Add a note to tell us anything else about a block, such as why you chose or what you're unsure of.",
+  "rules": "The box marks a block of print, shown enlarged below it, with the machine reading of the same place under that. Spelling doesn't count here. Answer No if a line or more of the print in the box (a line, a passage, a column) is missing from the reading, even if the rest is perfect.",
   "title": "English newspapers: missing text",
   "unit": "blocks"
 }
