@@ -211,9 +211,13 @@ jobs:
                 # Free memory moves between runs; everything else must match.
                 $outputs["$bundle $($arguments[0])"] = ($text.Replace($dir, 'BUNDLE') -replace '\d+ MiB free', 'N MiB free')
               }
-              $listed = & .\amd-devices.exe $dir; $code = $LASTEXITCODE
-              "== $bundle devices exit=$code"; $listed
+              $listed = & .\amd-devices.exe $dir 2> "$log-devices.err"; $code = $LASTEXITCODE
+              $loaderLog = Get-Content "$log-devices.err" -Raw
+              "== $bundle devices exit=$code"; $listed; $loaderLog
               if ($code -ne 0) { throw "$bundle Vulkan backend registered no devices" }
+              if (-not $loaderLog.Replace($dir, 'BUNDLE').Contains('loaded Vulkan backend from BUNDLE\ggml-vulkan.dll')) {
+                throw "$bundle did not load its own ggml-vulkan.dll"
+              }
               $devices[$bundle] = @($listed)
             }
             foreach ($arguments in '--version', '--list-devices') {
@@ -222,8 +226,14 @@ jobs:
               }
             }
             if ($outputs['amd-patched --list-devices'] -notmatch '(?m)^\s*Vulkan0: llvmpipe') { throw 'llama-server.exe did not list the lavapipe device' }
-            if (-not $outputs['amd-patched --list-devices'].Contains('loaded Vulkan backend from BUNDLE\ggml-vulkan.dll')) {
-              throw 'llama-server.exe did not load the patched ggml-vulkan.dll as its Vulkan backend'
+            # llama-server.exe's logger hides ggml's INFO lines, so prove the source instead: it searches only
+            # its own directory and the working directory (both the bundle; GGML_BACKEND_PATH unset), where
+            # the only Vulkan backend is the patched DLL, so the listed device came from that DLL.
+            if ($env:GGML_BACKEND_PATH) { throw 'GGML_BACKEND_PATH is set' }
+            $candidates = @(Get-ChildItem amd-patched -Filter 'ggml-vulkan*.dll')
+            $patchedHash = (Get-FileHash amd-vulkan-runtime\ggml-vulkan.dll -Algorithm SHA256).Hash
+            if ($candidates.Count -ne 1 -or (Get-FileHash $candidates[0].FullName -Algorithm SHA256).Hash -ne $patchedHash) {
+              throw 'The patched bundle does not hold exactly one Vulkan backend, the patched DLL'
             }
             # Same devices; the patch may only fill an identity the pinned runtime leaves empty, and only with a
             # nonzero 8-byte LUID (patch_amd_vulkan_identity.py).
