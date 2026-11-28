@@ -11,6 +11,7 @@
 # cuts query strings from the error lines that carry a failed request's
 # URL. IPv4 to the edge only, because the container's firewall passes IPv4
 # only.
+# Its metrics listen on 127.0.0.1:20242; the dev tunnel's take 20241.
 # Updates come from pkg.cloudflare.com through unattended-upgrades, not
 # from cloudflared itself.
 [Unit]
@@ -21,6 +22,7 @@ ConditionPathExists=/etc/cloudflared/usnm-serving.env
 
 [Service]
 EnvironmentFile=/etc/cloudflared/usnm-serving.env
+Environment=TUNNEL_METRICS=127.0.0.1:20242
 ExecStart=/usr/local/libexec/usnm-serving/run-cloudflared
 DynamicUser=yes
 NoNewPrivileges=yes

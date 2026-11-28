@@ -33,8 +33,11 @@
 #   independent of visitor search logging.
 # - USNM_SITEMAP_GENERATE: unset, so on-prem generates. An Azure app at zero
 #   replicas sets it false and serves its last checkpoint.
-# - USNM_ALTO_URL: the host's OCR ALTO copy, mounted read-only at
-#   /srv/usnm-lake/ocr-local (the store root is /srv/usnm-lake), where the
+# - USNM_REFERENCE_URL: the local lake's reference, mounted read-only at
+#   /srv/usnm-lake-t/reference, in place of the Blob container (#1367). A
+#   publish rewrites its current.json, so the API follows each release.
+# - USNM_ALTO_URL: the host's curated OCR ALTO copy, mounted read-only at
+#   /srv/usnm-lake-t/ocr-local (the store root is /srv/usnm-lake-t), where the
 #   Azure app has no setting: it serves no page layout from the lake.
 # - USNM_WORD_FEEDBACK_URL: a durable local directory for readers' per-word
 #   marks (POST /v1/word-feedback, #2026), bind-mounted into both API colors
@@ -46,7 +49,9 @@
 #   and the startup warm-up (USNM_PREWARM_STARTUP_BUDGET_SECS) covers it.
 # - USNM_SEARCH_LOG_URL and USNM_OCR_REQUESTS_URL: unset until the public
 #   cutover (#955 Phase 3), because the API records same-origin searches on
-#   any hostname.
+#   any hostname. With --production, local lake directories
+#   (/srv/usnm-lake-t/searches and /srv/usnm-lake-t/ocr-requests) in place
+#   of the Blob containers (#1367).
 # - USNM_COMPUTE_CONCURRENCY: the whole visitor budget, since one color
 #   serves at a time from a searcher of its own.
 # - USNM_ALLOWED_ORIGINS: the site's domain, without the Container Apps
@@ -110,8 +115,6 @@ command -v jq > /dev/null || die "jq is needed"
 get() { local v; v=$(aget "$1") || exit 1; printf '%s\n' "${v:-$2}"; }
 need() { local v; v=$(aget "$1") || exit 1; [ -n "$v" ] || die "no $1 for $ENV_NAME: provision it first"; printf '%s\n' "$v"; }
 [ "$(get USNM_SEARCH_BACKEND fixtures)" = quickwit ] || die "$ENV_NAME's search backend isn't quickwit"
-STORAGE=$(need STORAGE_ACCOUNT)
-[[ $STORAGE =~ ^[a-z0-9]{3,24}$ ]] || die "STORAGE_ACCOUNT isn't a storage account name"
 COSMOS=$(need COSMOS_ENDPOINT)
 INSIGHTS=$(get APPLICATIONINSIGHTS_CONNECTION_STRING "")
 ZONE=$(need USNM_DNS_ZONE)
@@ -129,18 +132,18 @@ trap 'rm -f "$API_ENV"' EXIT
 {
   echo "USNM_BACKEND=quickwit"
   echo "USNM_QUICKWIT_URL=http://127.0.0.1:7280"
-  echo "USNM_REFERENCE_URL=https://$STORAGE.blob.core.windows.net/reference"
+  echo "USNM_REFERENCE_URL=/srv/usnm-lake-t/reference"
   echo "USNM_RESPONSE_CACHE_URL=/srv/usnm-serving/cache"
   echo "USNM_SITEMAP_STATE_URL=/srv/usnm-serving/sitemap-state"
-  echo "USNM_ALTO_URL=/srv/usnm-lake"
+  echo "USNM_ALTO_URL=/srv/usnm-lake-t"
   echo "USNM_WORD_FEEDBACK_URL=/srv/usnm-serving/word-feedback"
   if $PRODUCTION; then
-    echo "USNM_SEARCH_LOG_URL=https://$STORAGE.blob.core.windows.net/searches"
+    echo "USNM_SEARCH_LOG_URL=/srv/usnm-lake-t/searches"
     if [ "$(get USNM_OCR_NODES false)" = true ] && [ "$(get USNM_USE_ACR false)" = true ] &&
       { [ "$(get USNM_INGEST_JOBS false)" = true ] ||
         { [ "$(get USNM_OCR_SYNC_ONPREM false)" = true ] &&
           [[ "$(get USNM_BATCH_HOST "")" =~ [^[:space:]] ]]; }; }; then
-      echo "USNM_OCR_REQUESTS_URL=https://$STORAGE.blob.core.windows.net/ocr-requests"
+      echo "USNM_OCR_REQUESTS_URL=/srv/usnm-lake-t/ocr-requests"
     fi
   fi
   echo "USNM_ALLOWED_ORIGINS=https://$ZONE,https://www.$ZONE"
@@ -219,7 +222,7 @@ if $CHECK_APP; then
     --arg warm "$azure_warm" --arg cap "$azure_cap" --argjson production "$PRODUCTION" '
     ($azure | map({(.name): (.value // "(a secret)")}) | add) as $a
     | ($onprem | split("\n") | map(select(length > 0) | capture("^(?<k>[^=]+)=(?<v>.*)$") | {(.k): .v}) | add) as $o
-    | ["USNM_QUICKWIT_URL", "USNM_RESPONSE_CACHE_URL", "USNM_SITEMAP_STATE_URL", "USNM_COMPUTE_CONCURRENCY", "USNM_TRUSTED_PROXY_HOPS", "USNM_PREWARM_BUDGET_SECS", "USNM_PREWARM_STARTUP_BUDGET_SECS", "USNM_READY_CAP_SECS"] as $differ
+    | ["USNM_QUICKWIT_URL", "USNM_REFERENCE_URL", "USNM_SEARCH_LOG_URL", "USNM_OCR_REQUESTS_URL", "USNM_RESPONSE_CACHE_URL", "USNM_SITEMAP_STATE_URL", "USNM_COMPUTE_CONCURRENCY", "USNM_TRUSTED_PROXY_HOPS", "USNM_PREWARM_BUDGET_SECS", "USNM_PREWARM_STARTUP_BUDGET_SECS", "USNM_READY_CAP_SECS"] as $differ
     | (["AZURE_CLIENT_ID", "USNM_SITEMAP_GENERATE"] + (if $production then [] else ["USNM_SEARCH_LOG_URL", "USNM_OCR_REQUESTS_URL"] end)) as $azure_only
     | ["IDENTITY_ENDPOINT", "IMDS_ENDPOINT", "USNM_SITEMAP_STATE_URL", "USNM_ALTO_URL", "USNM_WORD_FEEDBACK_URL", "USNM_PREWARM_BUDGET_SECS", "USNM_TRUST_CF_CONNECTING_IP", "USNM_READY_REQUIRES_PUBLISHED_INDEXES", "USNM_API_HOST", "USNM_SITE_HOST"] as $onprem_only
     | ($a | keys) as $ak | ($o | keys) as $ok

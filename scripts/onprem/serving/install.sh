@@ -7,7 +7,8 @@
 # run again.
 #
 #   scripts/onprem/serving/install.sh --registry NAME --config-dir DIR
-#     [--env prod] [--skip-quickwit] [--production] [--dry-run]
+#     [--env prod] [--skip-quickwit] [--production]
+#     [--dev] [--dev-image IMAGE] [--dry-run]
 #
 # --registry: the environment's registry name (NAME.azurecr.io), which the
 #   Arc identity can pull from (AcrPull).
@@ -15,6 +16,11 @@
 # --env: the environment whose pinned Quickwit to install
 #   (infra/quickwit-image.json, through scripts/onprem/install-quickwit.sh).
 # --skip-quickwit: keep the Quickwit binary that's installed.
+# --dev: also install the dev origin for dev.usnewsmap.com (usnm-api-dev,
+#   its Caddy listener and its tunnel); see usnm-api-dev.service.
+# --dev-image: the image the dev API runs, a local image id (sha256:...) or
+#   a reference by digest; written to /etc/usnm-serving-dev/image.env.
+#   Needed with --dev the first time, and to move dev to another image.
 # --dry-run: say what would change, and change nothing.
 #
 # It installs:
@@ -31,6 +37,14 @@
 #   /usr/local/libexec/usnm-serving/run-cloudflared (run-cloudflared.sh)
 #   /usr/local/libexec/usnm-serving/warm-edge (warm-edge.py)
 #   /srv/usnm-serving/bin/quickwit
+# and with --dev:
+#   /etc/usnm-serving-dev/  api.env (api-dev.env), robots.txt, image.env
+#   /etc/usnm-serving/extra/dev.caddy
+#   /etc/systemd/system/    usnm-api-dev.service,
+#                           cloudflared-usnm-serving-dev.service
+# It removes the drop-ins usnm-api@.service.d/azexit-lake.conf (the lake
+# mounts) and cloudflared-usnm-serving.service.d/metrics.conf (the tunnel's
+# metrics port), which the units here now carry.
 # and the system user usnm-qw, which runs the searcher. It enables Caddy,
 # the searcher, the timer and cloudflared, and starts or reloads them. The
 # searcher restarts only when its config, environment, binary or unit
@@ -47,7 +61,7 @@ set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
 usage() { sed -n '9,10s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 
-REGISTRY="" CONFIG="" ENV_NAME=prod SKIP_QW=false DRY_RUN=false PRODUCTION=false
+REGISTRY="" CONFIG="" ENV_NAME=prod SKIP_QW=false DRY_RUN=false PRODUCTION=false DEV=false DEV_IMAGE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --registry) REGISTRY=${2:-}; shift 2 || usage ;;
@@ -55,6 +69,8 @@ while [ $# -gt 0 ]; do
     --env) ENV_NAME=${2:-}; shift 2 || usage ;;
     --skip-quickwit) SKIP_QW=true; shift ;;
     --production) PRODUCTION=true; shift ;;
+    --dev) DEV=true; shift ;;
+    --dev-image) DEV_IMAGE=${2:-}; shift 2 || usage ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage ;;
     *) echo "error: unknown option $1" >&2; usage ;;
@@ -63,11 +79,16 @@ done
 [[ $REGISTRY =~ ^[a-z0-9]{5,50}$ ]] || { echo "error: --registry: the registry's name, as in NAME.azurecr.io" >&2; usage; }
 { [ -n "$CONFIG" ] && [ -d "$CONFIG" ]; } || { echo "error: --config-dir: gen-env.sh's output directory" >&2; usage; }
 [[ $ENV_NAME =~ ^[a-z0-9]{1,8}$ ]] || { echo "error: --env: an environment name, such as prod" >&2; usage; }
+[ -z "$DEV_IMAGE" ] || $DEV || { echo "error: --dev-image needs --dev" >&2; usage; }
+[ -z "$DEV_IMAGE" ] || [[ $DEV_IMAGE =~ ^(sha256:[0-9a-f]{64}|[a-z0-9.-]+(/[a-z0-9._-]+)+@sha256:[0-9a-f]{64})$ ]] ||
+  { echo "error: --dev-image: sha256:<64 hex> or NAME@sha256:<64 hex>" >&2; usage; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 # USNM_SERVING_TEST_ROOT: the tests' stand-in for /. Never set in the container.
 R=${USNM_SERVING_TEST_ROOT:-}
 [ "$DRY_RUN" = true ] || [ -n "$R" ] || [ "$(id -u)" -eq 0 ] || die "run as root in the serving container"
 ETC=$R/etc/usnm-serving
+DEV_ETC=$R/etc/usnm-serving-dev
+DEV_SRV=$R/srv/usnm-serving-dev
 SRV=$R/srv/usnm-serving
 UNITS=$R/etc/systemd/system
 CACHE_UID=1000
@@ -121,6 +142,10 @@ run chmod 750 "$SRV/cache"
 # The mount point for the OCR ALTO copy, which the API unit binds in; the
 # host's bind mount covers it, so nothing here changes its owner or mode.
 run mkdir -p "$R/srv/usnm-lake/ocr-local"
+# The same for the local lake's datasets (usnm-api@.service).
+for d in ocr-local reference searches ocr-requests; do
+  run mkdir -p "$R/srv/usnm-lake-t/$d"
+done
 run mkdir -p "$SRV/sitemap-state"
 run chown "$CACHE_UID:$CACHE_UID" "$SRV/sitemap-state"
 run chmod 750 "$SRV/sitemap-state"
@@ -181,6 +206,41 @@ changed=false
 put "$HERE/run-cloudflared.sh" "$R/usr/local/libexec/usnm-serving/run-cloudflared" 0755
 ! $changed || cloudflared_changed=true
 
+# The drop-ins the units here now carry themselves: the lake mounts
+# (usnm-api@.service) and the production tunnel's metrics port.
+for dropin in usnm-api@.service.d/azexit-lake.conf cloudflared-usnm-serving.service.d/metrics.conf; do
+  [ -f "$UNITS/$dropin" ] || continue
+  units_changed=true
+  run rm -f "$UNITS/$dropin"
+  run rmdir --ignore-fail-on-non-empty "$UNITS/${dropin%/*}"
+done
+
+dev_changed=false dev_tunnel_changed=false
+if $DEV; then
+  [ -n "$DEV_IMAGE" ] || [ -s "$DEV_ETC/image.env" ] ||
+    die "no dev image yet: give --dev-image"
+  run mkdir -p "$DEV_ETC" "$ETC/extra"
+  for d in cache sitemap-state; do
+    run mkdir -p "$DEV_SRV/$d"
+    run chown "$CACHE_UID:$CACHE_UID" "$DEV_SRV/$d"
+  done
+  changed=false
+  put "$HERE/api-dev.env" "$DEV_ETC/api.env" 0644
+  if [ -n "$DEV_IMAGE" ]; then
+    printf 'DEV_API_IMAGE=%s\n' "$DEV_IMAGE" > "$T/image.env"
+    put "$T/image.env" "$DEV_ETC/image.env" 0644
+  fi
+  put "$HERE/usnm-api-dev.service" "$UNITS/usnm-api-dev.service" 0644
+  ! $changed || { dev_changed=true; units_changed=true; }
+  changed=false
+  put "$HERE/cloudflared-usnm-serving-dev.service" "$UNITS/cloudflared-usnm-serving-dev.service" 0644
+  ! $changed || { dev_tunnel_changed=true; units_changed=true; }
+  put "$HERE/robots-dev.txt" "$DEV_ETC/robots.txt" 0644
+  changed=false
+  put "$HERE/dev.caddy" "$ETC/extra/dev.caddy" 0644
+  ! $changed || caddy_changed=true
+fi
+
 if ! $SKIP_QW; then
   changed=false
   before=$(readlink "$SRV/bin/quickwit" 2> /dev/null || true)
@@ -212,6 +272,23 @@ else
   run systemctl start usnm-searcher.service
 fi
 run systemctl start usnm-serving-update.timer usnm-edge-warm.timer
+if $DEV; then
+  run systemctl enable --quiet usnm-api-dev.service cloudflared-usnm-serving-dev.service
+  if systemctl is-active --quiet usnm-api-dev.service; then
+    ! $dev_changed || run systemctl restart usnm-api-dev.service
+  else
+    run systemctl start usnm-api-dev.service
+  fi
+  if [ -s "$R/etc/cloudflared/usnm-serving-dev.env" ]; then
+    if systemctl is-active --quiet cloudflared-usnm-serving-dev.service; then
+      ! $dev_tunnel_changed || run systemctl restart cloudflared-usnm-serving-dev.service
+    else
+      run systemctl start cloudflared-usnm-serving-dev.service
+    fi
+  else
+    echo "note: no /etc/cloudflared/usnm-serving-dev.env yet; the dev tunnel starts once its token is there"
+  fi
+fi
 if [ -s "$R/etc/cloudflared/usnm-serving.env" ]; then
   if systemctl is-active --quiet cloudflared-usnm-serving.service; then
     ! $cloudflared_changed || run systemctl restart cloudflared-usnm-serving.service
