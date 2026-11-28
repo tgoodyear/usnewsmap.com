@@ -61,7 +61,7 @@ CHAT = [
     r"happy to help",
 ]
 PLACEHOLDER = [
-    r"\[(your|insert)[^\]]*\]", r"\bTODO\b", r"\bTBD\b", r"\b\d{4}-XX-XX\b", r"INSERT_",
+    r"\[(?i:your|insert)[^\]]*\]", r"\bTODO\b", r"\bTBD\b", r"\b\d{4}-XX-XX\b", r"INSERT_",
     r"lorem ipsum", r"utm_source=(chatgpt|openai)", r"contentReference\[oaicite",
 ]
 HOUSE = [r"\b(free )?colou?red (people|persons?|men|women|children|population|families|residents|voters|schools?|troops|soldiers|households?)\b", r"\bfree colou?red\b"]
@@ -69,13 +69,18 @@ HOUSE = [r"\b(free )?colou?red (people|persons?|men|women|children|population|fa
 
 def strip_code(text):
     """Blank out fenced code, inline code and blockquote lines, keeping line numbers."""
-    out, fenced = [], False
+    out, fence = [], None  # (char, length) of the open fence
     for line in text.split("\n"):
-        if line.lstrip().startswith("```"):
-            fenced = not fenced
+        m = re.match(r"\s{0,3}(`{3,}|~{3,})(.*)$", line)
+        if m and fence is None:
+            fence = (m.group(1)[0], len(m.group(1)))
             out.append("")
             continue
-        if fenced or line.lstrip().startswith(">"):
+        if m and fence and m.group(1)[0] == fence[0] and len(m.group(1)) >= fence[1] and not m.group(2).strip():
+            fence = None
+            out.append("")
+            continue
+        if fence or line.lstrip().startswith(">"):
             out.append("")
             continue
         out.append(re.sub(r"`[^`]*`", "``", line))
