@@ -14,6 +14,7 @@ One directory per report, named `<year>-<month>-<topic>`. A report is `report.md
 | [2026-11-cherokee](2026-11-cherokee/)                       | Cherokee: searchable volume, OCR accuracy proxies, models tried, and a plan  |
 | [2026-11-gain-measures](2026-11-gain-measures/)             | Which gain measure tracks real CER: damage rate against qe-v1 `lm_oov`       |
 | [2026-11-gpu-studies](2026-11-gpu-studies/)                 | GPU OCR studies and their reproduction notes                                 |
+| [2026-11-layout-and-ocr-evidence](2026-11-layout-and-ocr-evidence/) | Layout and OCR-evidence studies of 22–27 November: decisions, corrections, methods caveats and open items (#2103, #2107, #2122, #2167, #1922, #968, #1915) |
 | [2026-11-ocr-quality-estimation](2026-11-ocr-quality-estimation/) | Reference-free OCR quality: `lm_oov` against true CER, and the evidence rule (`qe-v1`) |
 | [2026-11-reader-comparison](2026-11-reader-comparison/)     | Per-language reader comparison (#968): protocol and results          |
 | [2026-11-tesseract-5-5-4](2026-11-tesseract-5-5-4/) | Tesseract 5.5.4 beside 5.5.0: output comparison, CPU time and the three patches (#1835) |
