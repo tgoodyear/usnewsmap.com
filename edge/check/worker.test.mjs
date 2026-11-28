@@ -1459,7 +1459,7 @@ test("the page's note box is for every task kind, keeps the answer, and its keys
   const html = readFileSync(new URL("./public/index.html", import.meta.url), "utf8");
   assert.equal(Number(app.match(/const NOTE_MAX = (\d+);/)[1]), NOTE_MAX);
   assert.match(html, /<button class="small" id="note"[^>]*>Add a note \(N\)<\/button>/);
-  assert.match(html, /Use Add a note to tell us anything else about a word/);
+  assert.match(html, /Add a note to tell us anything else\./);
   assert.match(app, /"Your note on this word \(optional\)"/);
   assert.match(app, /id: "note-text", dir: "auto", lang,/);
   assert.match(app, /if \(e\.target && e\.target\.id === "note-text"\) return;/);

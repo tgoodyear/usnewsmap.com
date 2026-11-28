@@ -85,7 +85,7 @@ async function session() {
       await new Promise((r) => setTimeout(r, 100));
     }
     checking = true;
-    status("Running a one-time browser check… if a check box appears above the word, tick it to begin.");
+    status("Running a one-time browser check. If a check box appears above the word, tick it to start.");
     // Each attempt gets its own widget, removed afterwards whether it worked or not, so a retry
     // (or a new sign-in after a 401) starts a fresh check instead of waiting on a spent one.
     let widget = null, token;

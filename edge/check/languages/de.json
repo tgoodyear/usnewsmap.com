@@ -184,7 +184,7 @@
     "ꝛ",
     "⸗"
   ],
-  "intro": "These words come from German-language newspapers printed in the United States in the 1800s and early 1900s, held by the Library of Congress. They are printed in Fraktur, a blackletter type. Each paper's type differs a little, so the words come one newspaper at a time, with a guide to how that paper prints each letter. The machines most often mix up n and u, f and the long ſ (the long ſ has a nub only on the left of its stem, where f has a crossbar right through it), e and r, k and t, b and h, B and V, and D and T. The long ſ and the round s count as the same letter, so they are never highlighted. Capital I and J have one shape in most Fraktur type (they were long one letter), so if the readings differ only in I against J, pick Can't tell.",
+  "intro": "These words come from German-language newspapers printed in the United States in the 1800s and early 1900s, set in Fraktur, a blackletter type. Each paper's type differs a little, so the words come one paper at a time, with a guide to how that paper prints each letter. The machines most often mix up n and u, f and long ſ (ſ has a nub only on the left of its stem, f has a bar right through it), e and r, k and t, b and h, B and V, and D and T. Long ſ and round s count as the same letter and are never highlighted. Capital I and J have one shape in most Fraktur type (they were long one letter), so if the readings differ only in I and J, pick Can't tell.",
   "links": [
     {
       "href": "https://script.byu.edu/german-handwriting/alphabet/gothic-typefaces/lowercase",

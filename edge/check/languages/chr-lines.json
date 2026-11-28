@@ -114,7 +114,7 @@
       "Ᏼ"
     ]
   ],
-  "intro": "These lines come from the Cherokee Phoenix (1828–1834), printed in Sequoyah's syllabary. Two machine readings disagree on one word of each line: the Library of Congress's OCR, and a reader we trained on this paper's own type. Your answers show which reading matches the print, so we can measure whether the new reader is better. The small pictures under a highlighted letter show how this paper printed it.",
+  "intro": "These lines come from the Cherokee Phoenix (1828–1834), printed in Sequoyah's syllabary. Two machine readings disagree on one word in each line: the Library of Congress's OCR and a reader we trained on this paper's type. Your answers tell us whether the new reader is better. The small pictures under a highlighted letter show how this paper printed it.",
   "labels": {
     "Ꭰ": "a",
     "Ꭱ": "e",
