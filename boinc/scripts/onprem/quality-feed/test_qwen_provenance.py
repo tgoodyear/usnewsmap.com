@@ -237,7 +237,7 @@ class ProvenanceRecoveryTest(unittest.TestCase):
             "root=Path(sys.argv[1]); "
             "counts=patch.object(q.subprocess,'check_output',return_value='{}'); "
             "disk=patch.object(q.shutil,'disk_usage',return_value=SimpleNamespace(free=100)); "
-            "counts.start(); disk.start(); print(json.dumps(q.inventory(root,root))); "
+            "counts.start(); disk.start(); print(json.dumps(q.inventory(root,root,documents_held=True))); "
             "assert 'qwen_provenance' not in sys.modules"
         )
         result = subprocess.run([sys.executable, "-B", "-c", program, str(isolated)],

@@ -2207,7 +2207,7 @@ class SourceTest(unittest.TestCase):
                                    return_value='{"ready": 0, "dispatched": 0}'), \
                     mock.patch.object(submit.shutil, "disk_usage",
                                       return_value=types.SimpleNamespace(free=100)):
-                self.assertEqual(submit.inventory(share, share)["documents"], [DOC])
+                self.assertEqual(submit.inventory(share, share, documents_held=True)["documents"], [DOC])
                 self.assertEqual(list(submit.jobs(share / "qwen")), [])
                 submit.assert_submitted(share / "qwen" / "campaign")
 

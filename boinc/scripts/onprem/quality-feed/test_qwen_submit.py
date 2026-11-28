@@ -33,10 +33,13 @@ class PhaseTest(unittest.TestCase):
             argv += ["--bundle-size", str(bundle)]
         admitted = []
         self.batches = []
+        self.walks = []
         patches = (
             mock.patch.object(sys, "argv", argv),
             mock.patch.object(qwen_submit, "inventory",
-                              lambda share, project, batch=8: self.batches.append(("inventory", batch)) or {}),
+                              lambda share, project, batch=8, documents_held=False:
+                              self.batches.append(("inventory", batch))
+                              or self.walks.append(documents_held) or {}),
             mock.patch.object(qwen_submit, "admission", lambda a, state, root: admitted.append(a.max_pages)),
             mock.patch.object(qwen_submit, "assert_bundle_layout"),
             mock.patch.object(qwen_submit, "unsubmitted_units", return_value=unsent),
@@ -115,9 +118,23 @@ class PhaseTest(unittest.TestCase):
         (self.share / "quality").mkdir(exist_ok=True)
         with mock.patch.object(qwen_submit.subprocess, "check_output", return_value=counts), \
                 mock.patch.object(qwen_submit.shutil, "disk_usage", return_value=mock.Mock(free=1)):
-            inv = qwen_submit.inventory(self.share, self.share / "usnmocr")
+            inv = qwen_submit.inventory(self.share, self.share / "usnmocr", documents_held=True)
         self.assertEqual(inv["documents"], ["doc_full", "doc_half"])
         self.assertEqual(inv["full_documents"], ["doc_full"])
+
+    def test_admission_counts_never_read_the_roots_jobs(self):
+        # A publication takes its counts under the bridge step lock; walking every root's jobs
+        # there kept the lock for minutes (28 Nov 2026), so only --inventory reads them.
+        self.put_job("full", "u1", "doc_full", crop_res="full")
+        counts = json.dumps({"ready": 0, "dispatched": 0, "fresh_pairs": 0, "unresolved_native": 0,
+                             "app_versions": [], "min_version": 0})
+        (self.share / "quality").mkdir(exist_ok=True)
+        with mock.patch.object(qwen_submit.subprocess, "check_output", return_value=counts), \
+                mock.patch.object(qwen_submit.shutil, "disk_usage", return_value=mock.Mock(free=1)), \
+                mock.patch.object(qwen_submit, "jobs", side_effect=AssertionError("walked the roots")):
+            inv = qwen_submit.inventory(self.share, self.share / "usnmocr")
+        self.assertNotIn("documents", inv)
+        self.assertEqual((inv["fresh_pairs"], inv["free_bytes"]), (0, 1))
 
     def test_reread_half_needs_full_resolution(self):
         for extra in (["--reread-half"], ["--reread-half", "--crop-res", "half"]):
@@ -142,6 +159,8 @@ class PhaseTest(unittest.TestCase):
         self.assertIn("--models-prechecked", submit)
         self.assertEqual(submit[submit.index("--max-units") + 1], "7")
         self.assertEqual(admitted, [7])
+        # Under the step lock, admission takes counts only and never walks the roots' jobs.
+        self.assertEqual(self.walks, [False])
 
     def test_publish_counts_the_staged_units_when_bundling(self):
         admitted, _ = self.run_main("--phase", "publish", "--prompt-version", "3", bundle=4, unsent=3)
