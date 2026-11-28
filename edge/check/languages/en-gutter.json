@@ -1,14 +1,15 @@
 {
   "guidance": [
-    "A printed vertical line between columns (a column rule) counts as a gap, and the line may run along it.",
-    "If there is print on only one side of the line, or on neither (blank paper, the foot of a page), answer Yes as long as the line crosses no print. The dark edge of the scan is not print.",
-    "An advertisement, a picture or a heading across several columns counts as print, so a line through one is a No. A line in the gap between two pictures or cartoon panels does run down a gap.",
-    "If the line is mostly in a gap but crosses a few letters, answer No."
+    "A printed vertical line between columns (a column rule) counts as a gap. The line may run along the rule.",
+    "If there is print on only one side of the line, or on neither side (blank paper, the foot of a page), pick Yes as long as the line crosses no print. The dark edge of the scan is not print.",
+    "An advertisement, a picture or a heading across several columns counts as print. If the line goes through one, pick No.",
+    "If the line runs down the gap between two pictures or two cartoon panels without touching either, pick Yes.",
+    "If the line is mostly in a gap but crosses a few letters, pick No."
   ],
-  "intro": "A program drew a line on each of these crops from English-language pages in Chronicling America, where it thinks two columns of text are separated.",
+  "intro": "Each crop comes from an English-language page in Chronicling America. A program drew a line on it where it thinks two columns of text are separated.",
   "name": "English column gutters",
   "question": "Does this line run down a gap between columns of text without crossing any printed text?",
-  "rules": "Say whether the colored line runs down the white gap between two columns without crossing any print. Use Hide the line (L) to see the print under it. You don't need to read the text, only see where the print is.",
+  "rules": "Pick Yes if the line runs down the gap between two columns and crosses no print. Use Hide the line (L) to see the print under it. You don't need to read the text, only see where the print is.",
   "title": "English newspaper column gutters",
   "unit": "lines"
 }
