@@ -126,6 +126,9 @@ exit 0
 '''
 
 
+DEV_IMAGE = "sha256:" + "a" * 64
+
+
 def write(path, text, mode=0o644):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
@@ -725,6 +728,64 @@ class Install(Stubbed):
                 self.assertEqual(source.st_ino, linked.st_ino, name)
                 self.assertEqual(int(linked.st_mtime), old, name)
 
+    def test_dev_is_opt_in(self):
+        r = self.install("--dry-run")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("usnm-serving-dev", r.stdout)
+        self.assertNotIn("usnm-api-dev", r.stdout)
+        self.assertNotIn("dev.caddy", r.stdout)
+
+    def test_dev_needs_an_image_the_first_time(self):
+        r = self.install("--dev", "--dry-run")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--dev-image", r.stderr)
+        r = self.install("--dev", "--dev-image", "latest", "--dry-run")
+        self.assertEqual(r.returncode, 2)
+
+    def test_dev_dry_run_lists_the_dev_files(self):
+        r = self.install("--dev", "--dev-image", DEV_IMAGE, "--dry-run")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for path in ("etc/usnm-serving-dev/api.env", "etc/usnm-serving-dev/robots.txt",
+                     "etc/usnm-serving-dev/image.env", "etc/usnm-serving/extra/dev.caddy",
+                     "etc/systemd/system/usnm-api-dev.service",
+                     "etc/systemd/system/cloudflared-usnm-serving-dev.service"):
+            self.assertIn("would install %s/%s" % (self.root, path), r.stdout)
+        self.assertIn("would run: chown 1000:1000 %s/srv/usnm-serving-dev/cache" % self.root, r.stdout)
+        self.assertIn("would run: chown 1000:1000 %s/srv/usnm-serving-dev/sitemap-state" % self.root, r.stdout)
+        self.assertEqual(os.listdir(self.root), [])
+
+    def test_dev_installs_once_and_keeps_its_image(self):
+        r = self.install("--dev", "--dev-image", DEV_IMAGE)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        dev = os.path.join(self.root, "etc/usnm-serving-dev")
+        with open(os.path.join(dev, "image.env")) as f:
+            self.assertEqual(f.read(), "API_IMAGE=%s\n" % DEV_IMAGE)
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.join(dev, "api.env")).st_mode), 0o644)
+        self.assertTrue(os.path.isfile(os.path.join(self.root, "etc/usnm-serving/extra/dev.caddy")))
+        self.assertIn("systemctl start usnm-api-dev.service", self.calls())
+        self.assertIn("no /etc/cloudflared/usnm-serving-dev.env", r.stdout)
+        self.assertNotIn("systemctl start cloudflared-usnm-serving-dev.service", self.calls())
+        # Rerun with another image and the dev API active: the pin stays, nothing restarts.
+        pinned = "sha256:" + "b" * 64
+        open(self.log, "w").close()
+        self.env["STUB_ACTIVE"] = "usnm-searcher.service caddy.service usnm-api-dev.service"
+        r = self.install("--dev", "--dev-image", pinned)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(dev, "image.env")) as f:
+            self.assertEqual(f.read(), "API_IMAGE=%s\n" % DEV_IMAGE)
+        self.assertNotIn("installed", r.stdout)
+        self.assertFalse(any(c.startswith(("systemctl restart", "systemctl daemon-reload", "systemctl reload"))
+                             for c in self.calls()), self.calls())
+        # A changed env restarts the dev API only; a changed dev.caddy reloads Caddy.
+        write(os.path.join(dev, "api.env"), "old\n")
+        write(os.path.join(self.root, "etc/usnm-serving/extra/dev.caddy"), "old\n")
+        open(self.log, "w").close()
+        r = self.install("--dev")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("systemctl restart usnm-api-dev.service", self.calls())
+        self.assertIn("systemctl reload caddy.service", self.calls())
+        self.assertNotIn("systemctl restart usnm-searcher.service", self.calls())
+
     def test_search_log_is_refused_before_the_cutover(self):
         write(os.path.join(self.config, "api.env"), "USNM_SEARCH_LOG_URL=https://x/searches\n")
         r = self.install("--dry-run")
@@ -844,6 +905,40 @@ class Static(unittest.TestCase):
         self.assertIn("-v /srv/usnm-serving/word-feedback:/srv/usnm-serving/word-feedback",
                       self.read("usnm-api@.service"))
         self.assertIn("d /srv/usnm-serving/word-feedback 0750 1000 1000 -", tmpfiles)
+
+    def test_dev_reads_the_lakes_reference_read_only(self):
+        env = dict(line.split("=", 1) for line in self.read("dev-api.env").splitlines()
+                   if line and not line.startswith("#"))
+        self.assertEqual(env["USNM_REFERENCE_URL"], "/srv/usnm-lake-t/reference")
+        self.assertNotIn("serving-dev/reference", self.read("dev-api.env"))
+        unit = self.read("usnm-api-dev.service")
+        self.assertIn("-v /srv/usnm-lake-t/reference:/srv/usnm-lake-t/reference:ro", unit)
+        self.assertNotIn("serving-dev/reference", unit)
+        self.assertIn("ConditionPathExists=/etc/usnm-serving-dev/api.env", unit)
+        self.assertIn("EnvironmentFile=/etc/usnm-serving-dev/image.env", unit)
+        self.assertRegex(unit, r"\n  \$\{API_IMAGE\}\n")
+        self.assertNotIn("sha256:", re.sub(r"(?m)^#.*$", "", unit))
+        for name in ("USNM_SEARCH_LOG_URL", "USNM_OCR_REQUESTS_URL", "USNM_ALTO_URL", "USNM_WORD_FEEDBACK_URL"):
+            self.assertNotIn(name, env)
+
+    def test_dev_caddy_binds_loopback_and_proxies_to_the_dev_api(self):
+        caddy = self.read("dev.caddy")
+        self.assertIn("http://:8088 {\n    bind 127.0.0.1\n", caddy)
+        bind = re.search(r"^USNM_BIND=(.+)$", self.read("dev-api.env"), re.M).group(1)
+        self.assertIn("reverse_proxy %s" % bind, caddy)
+        self.assertEqual(bind, "127.0.0.1:8091")
+        self.assertIn("respond 404", caddy)
+        self.assertIn("noindex", caddy)
+        self.assertEqual(self.read("dev-robots.txt"), "User-agent: *\nDisallow: /\n")
+        self.assertIn("root * /etc/usnm-serving-dev", caddy)
+
+    def test_dev_tunnel_unit_shares_the_connector_and_keeps_its_token_out(self):
+        unit = self.read("cloudflared-usnm-serving-dev.service")
+        self.assertIn("Description=Cloudflare Tunnel for dev.usnewsmap.com only (#955)", unit)
+        self.assertIn("EnvironmentFile=/etc/cloudflared/usnm-serving-dev.env", unit)
+        self.assertIn("ConditionPathExists=/etc/cloudflared/usnm-serving-dev.env", unit)
+        self.assertIn("ExecStart=/usr/local/libexec/usnm-serving/run-cloudflared\n", unit)
+        self.assertNotIn("TUNNEL_TOKEN=", re.sub(r"(?m)^#.*$", "", unit))
 
     def test_alto_copy_is_mounted_read_only_for_the_api(self):
         unit = self.read("usnm-api@.service")

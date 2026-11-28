@@ -8,6 +8,7 @@
 #
 #   scripts/onprem/serving/install.sh --registry NAME --config-dir DIR
 #     [--env prod] [--skip-quickwit] [--production] [--dry-run]
+#     [--dev --dev-image sha256:DIGEST]
 #
 # --registry: the environment's registry name (NAME.azurecr.io), which the
 #   Arc identity can pull from (AcrPull).
@@ -16,6 +17,10 @@
 #   (infra/quickwit-image.json, through scripts/onprem/install-quickwit.sh).
 # --skip-quickwit: keep the Quickwit binary that's installed.
 # --dry-run: say what would change, and change nothing.
+# --dev: also install the dev origin (README, "Dev origin"); off by default.
+# --dev-image: the dev API image by digest, written to
+#   /etc/usnm-serving-dev/image.env only if that file is missing; an existing
+#   one is never overwritten. Required with --dev while image.env is missing.
 #
 # It installs:
 #   /etc/usnm-serving/      api.env (0600), searcher.env, searcher.yaml,
@@ -43,11 +48,22 @@
 # directory in it. Entries from the older per-color directories are hard-linked
 # in, so the next color starts warm. A running color keeps the mount it started
 # with until the next deploy.
+#
+# With --dev, also:
+#   /etc/usnm-serving-dev/  api.env (dev-api.env), robots.txt
+#                           (dev-robots.txt), image.env (only if missing)
+#   /etc/usnm-serving/extra/dev.caddy
+#   /etc/systemd/system/    usnm-api-dev.service,
+#                           cloudflared-usnm-serving-dev.service
+#   /srv/usnm-serving-dev/  cache, sitemap-state (owned by 1000)
+# The dev API restarts only when its unit or env changed, Caddy reloads when
+# dev.caddy changed, and the dev cloudflared unit starts only once
+# /etc/cloudflared/usnm-serving-dev.env exists.
 set -euo pipefail
 die() { echo "error: $*" >&2; exit 1; }
-usage() { sed -n '9,10s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+usage() { sed -n '9,11s/^# \{0,1\}//p' "$0" >&2; exit 2; }
 
-REGISTRY="" CONFIG="" ENV_NAME=prod SKIP_QW=false DRY_RUN=false PRODUCTION=false
+REGISTRY="" CONFIG="" ENV_NAME=prod SKIP_QW=false DRY_RUN=false PRODUCTION=false DEV=false DEV_IMAGE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --registry) REGISTRY=${2:-}; shift 2 || usage ;;
@@ -55,6 +71,8 @@ while [ $# -gt 0 ]; do
     --env) ENV_NAME=${2:-}; shift 2 || usage ;;
     --skip-quickwit) SKIP_QW=true; shift ;;
     --production) PRODUCTION=true; shift ;;
+    --dev) DEV=true; shift ;;
+    --dev-image) DEV_IMAGE=${2:-}; shift 2 || usage ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage ;;
     *) echo "error: unknown option $1" >&2; usage ;;
@@ -63,6 +81,7 @@ done
 [[ $REGISTRY =~ ^[a-z0-9]{5,50}$ ]] || { echo "error: --registry: the registry's name, as in NAME.azurecr.io" >&2; usage; }
 { [ -n "$CONFIG" ] && [ -d "$CONFIG" ]; } || { echo "error: --config-dir: gen-env.sh's output directory" >&2; usage; }
 [[ $ENV_NAME =~ ^[a-z0-9]{1,8}$ ]] || { echo "error: --env: an environment name, such as prod" >&2; usage; }
+[ -z "$DEV_IMAGE" ] || [[ $DEV_IMAGE =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "error: --dev-image: an image digest, such as sha256:<64 hex digits>" >&2; usage; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 # USNM_SERVING_TEST_ROOT: the tests' stand-in for /. Never set in the container.
 R=${USNM_SERVING_TEST_ROOT:-}
@@ -70,6 +89,8 @@ R=${USNM_SERVING_TEST_ROOT:-}
 ETC=$R/etc/usnm-serving
 SRV=$R/srv/usnm-serving
 UNITS=$R/etc/systemd/system
+DEV_ETC=$R/etc/usnm-serving-dev
+DEV_SRV=$R/srv/usnm-serving-dev
 CACHE_UID=1000
 
 for f in api.env searcher.env searcher.yaml; do
@@ -78,6 +99,9 @@ done
 if ! $PRODUCTION; then
   grep -qE '^(USNM_SEARCH_LOG_URL|USNM_OCR_REQUESTS_URL)=' "$CONFIG/api.env" &&
     die "$CONFIG/api.env sets the search log or OCR requests, which require explicit --production at cutover (#955 Phase 3)"
+fi
+if $DEV && [ ! -s "$DEV_ETC/image.env" ] && [ -z "$DEV_IMAGE" ]; then
+  die "no $DEV_ETC/image.env: pass --dev-image sha256:<digest>, the image dev runs"
 fi
 for tool in podman skopeo caddy cloudflared gh jq curl flock sha256sum; do
   command -v "$tool" > /dev/null || die "no $tool here: make the container with home-infra's scripts/lab/serving-ct.sh"
@@ -188,6 +212,36 @@ if ! $SKIP_QW; then
   [ "$(readlink "$SRV/bin/quickwit" 2> /dev/null || true)" = "$before" ] || searcher_changed=true
 fi
 
+# The dev origin, only with --dev. Its image pin is written once and kept.
+dev_changed=false dev_caddy_changed=false dev_cloudflared_changed=false
+if $DEV; then
+  run mkdir -p "$DEV_ETC" "$DEV_SRV/cache" "$DEV_SRV/sitemap-state"
+  for d in cache sitemap-state; do
+    run chown "$CACHE_UID:$CACHE_UID" "$DEV_SRV/$d"
+    run chmod 750 "$DEV_SRV/$d"
+  done
+  if [ ! -s "$DEV_ETC/image.env" ]; then
+    printf 'API_IMAGE=%s\n' "$DEV_IMAGE" > "$T/image.env"
+    put "$T/image.env" "$DEV_ETC/image.env" 0644
+    dev_changed=true
+  fi
+  changed=false
+  put "$HERE/dev-api.env" "$DEV_ETC/api.env" 0644
+  put "$HERE/dev-robots.txt" "$DEV_ETC/robots.txt" 0644
+  ! $changed || dev_changed=true
+  changed=false
+  put "$HERE/usnm-api-dev.service" "$UNITS/usnm-api-dev.service" 0644
+  ! $changed || { dev_changed=true; units_changed=true; }
+  changed=false
+  put "$HERE/cloudflared-usnm-serving-dev.service" "$UNITS/cloudflared-usnm-serving-dev.service" 0644
+  ! $changed || { dev_cloudflared_changed=true; units_changed=true; }
+  changed=false
+  put "$HERE/dev.caddy" "$ETC/extra/dev.caddy" 0644
+  dev_caddy_changed=$changed
+  # The shared run-cloudflared copy is the dev connector's too.
+  ! $cloudflared_changed || dev_cloudflared_changed=true
+fi
+
 ! $units_changed || run systemctl daemon-reload
 run systemd-tmpfiles --create usnm-serving.conf
 # Entries are immutable, so hard links carry the per-color caches over at no cost.
@@ -198,8 +252,9 @@ for color in blue green; do
 done
 ! $journald_changed || run systemctl restart systemd-journald.service
 run systemctl enable --quiet caddy.service usnm-searcher.service usnm-serving-update.timer usnm-edge-warm.timer cloudflared-usnm-serving.service
+! $DEV || run systemctl enable --quiet usnm-api-dev.service cloudflared-usnm-serving-dev.service
 if systemctl is-active --quiet caddy.service; then
-  ! $caddy_changed || run systemctl reload caddy.service
+  ! { $caddy_changed || $dev_caddy_changed; } || run systemctl reload caddy.service
 else
   run systemctl start caddy.service
 fi
@@ -220,4 +275,20 @@ if [ -s "$R/etc/cloudflared/usnm-serving.env" ]; then
   fi
 else
   echo "note: no /etc/cloudflared/usnm-serving.env yet; home-infra's serving-ct.sh --tunnel installs the tunnel token"
+fi
+if $DEV; then
+  if systemctl is-active --quiet usnm-api-dev.service; then
+    ! $dev_changed || run systemctl restart usnm-api-dev.service
+  else
+    run systemctl start usnm-api-dev.service
+  fi
+  if [ -s "$R/etc/cloudflared/usnm-serving-dev.env" ]; then
+    if systemctl is-active --quiet cloudflared-usnm-serving-dev.service; then
+      ! $dev_cloudflared_changed || run systemctl restart cloudflared-usnm-serving-dev.service
+    else
+      run systemctl start cloudflared-usnm-serving-dev.service
+    fi
+  else
+    echo "note: no /etc/cloudflared/usnm-serving-dev.env yet; put the dev tunnel's TUNNEL_TOKEN there (root only, mode 0600)"
+  fi
 fi

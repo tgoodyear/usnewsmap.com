@@ -19,6 +19,8 @@ Everything listens on loopback only. The only way in is the tunnel, which cloudf
 | `caddy.service`                                   | Debian's Caddy with this directory's `Caddyfile`. It forwards every request to the API color that serves.                                                    | 127.0.0.1:8080, and :2019 (admin API) |
 | `usnm-api@blue.service`, `usnm-api@green.service` | The API and site, the same `usnewsmap-api` image Azure runs, pulled by digest under podman. One color serves; the other is stopped, or starting a new image. | 127.0.0.1:8081, :8082                 |
 | `usnm-searcher.service`                           | The pinned Quickwit binary (`scripts/onprem/install-quickwit.sh`), searcher and metastore roles, reading the index from a read-only `file://` metastore.     | 127.0.0.1:7280, and :7281 (gRPC)      |
+| `usnm-api-dev.service`                            | The dev origin's API and site (`dev.usnewsmap.com`), a pinned image reading the lake's reference read-only. Installed only with `--dev` (see Dev origin).    | 127.0.0.1:8091 (behind Caddy's :8088) |
+| `cloudflared-usnm-serving-dev.service`            | The connector for the dev tunnel, which carries `dev.usnewsmap.com` only. Its token is in a root-only file, never in this repository. Installed only with `--dev`. | A loopback metrics port, not 20241 |
 | `usnm-serving-update.timer`                       | Runs `update-api.sh` 2 minutes after the last run ends, so the API follows the image prod runs.                                                              |                                       |
 | `usnm-edge-warm.service`, `.timer`                | Runs `warm-edge.py` after a deploy switches traffic and weekly, to fill Cloudflare with the example searches.                                                | Outbound only                         |
 
@@ -52,6 +54,7 @@ from the default searcher account; do not rewrite the source index permissions.
 | `apply-cache-rules.py`, `cache-rules.json`            | The operator's machine, from the address the Cloudflare API token is limited to | Stages apex static/versioned lookup caching and explicit dynamic/API bypasses. Edits individual rules, preserves existing basemap/OCR rules, and verifies read-back. Does not change DNS or certificates.                                                                                        |
 | `Caddyfile`, `*.service`, `*.timer`                   | Installed by `install.sh`                                                       |                                                                                                                                                                                                                                                                                                  |
 | `tunnel-ingress.json`                                 | Applied by `apply-tunnel-ingress.sh`                                            | The tunnel's ingress, kept in the repository (ADR-0005 decision 3).                                                                                                                                                                                                                              |
+| `dev-api.env`, `dev.caddy`, `dev-robots.txt`          | Installed by `install.sh --dev`                                                 | The dev origin's settings, listener and robots.txt (Dev origin). |
 | `run-cloudflared.sh`                                  | Installed by `install.sh`, run by the cloudflared unit                          | Runs cloudflared and cuts query strings from its log lines.                                                                                                                                                                                                                                      |
 | `journald-usnm-serving.conf`, `usnm-serving.tmpfiles` | Installed by `install.sh`                                                       | The journal is kept 30 days. The colors share one response cache directory, and entries are deleted 14 days after they're written.                                                                                                                                                               |
 | `test_serving.py`                                     | CI and locally                                                                  | Runs every script against stub tools. The deploy and install tests need Linux.                                                                                                                                                                                                                   |
@@ -131,6 +134,22 @@ retain `Content-Length`/`Content-Range` without `Content-Encoding`.
    ```
 
 6. The timer's first run deploys the image prod runs to blue.
+
+## Dev origin
+
+`dev.usnewsmap.com` is a second, isolated origin in the same container: `usnm-api-dev.service` runs a pinned production image on 127.0.0.1:8091, `dev.caddy` (installed to `/etc/usnm-serving/extra/`) serves it on 127.0.0.1:8088 as the dev hostname only (everything else gets 404, and every response is `noindex`), and `cloudflared-usnm-serving-dev.service` carries the dev tunnel. The tunnel's ingress (`dev.usnewsmap.com` to `http://127.0.0.1:8088`) is managed on Cloudflare, not here. It shares the searcher with prod. It has no search log, Cosmos, OCR requests, App Insights, ALTO or word feedback (`dev-api.env`).
+
+It reads the lake's `reference/` directory (`/srv/usnm-lake-t/reference`) read-only, the same one prod reads, so a publish moves dev together with prod. It once read a frozen copy: on 28 Nov dev stayed pinned to an index that a later prune deleted, and it crash-looped. Never point `USNM_REFERENCE_URL` at a copy.
+
+The dev image is pinned in `/etc/usnm-serving-dev/image.env` (`API_IMAGE=sha256:...`), which `install.sh` writes only if it is missing and never overwrites; to move dev to another image, edit it and restart the unit. The unit does nothing where `/etc/usnm-serving-dev/api.env` doesn't exist. The tunnel token goes in `/etc/cloudflared/usnm-serving-dev.env` (`TUNNEL_TOKEN=...`, root only, mode 0600). Set `TUNNEL_METRICS` there to a loopback port other than the production connector's 20241.
+
+Install with the rest:
+
+```bash
+scripts/onprem/serving/install.sh --registry crusnmprodffapzy --config-dir /root/usnm-serving-config --dev --dev-image sha256:<digest>
+```
+
+`--dev` is off by default. It restarts the dev API only when its unit or `api.env` changed, reloads Caddy when `dev.caddy` changed, and starts the dev connector only once its token file exists.
 
 ## Deploys
 

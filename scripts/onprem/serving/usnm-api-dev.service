@@ -1,0 +1,41 @@
+# The dev origin's API and site (#955): dev.usnewsmap.com, a pinned
+# production image on 127.0.0.1:8091 behind Caddy's :8088 listener
+# (dev.caddy). install.sh --dev installs this unit as
+# /etc/systemd/system/usnm-api-dev.service, and only where
+# /etc/usnm-serving-dev/api.env exists.
+#
+# /etc/usnm-serving-dev/api.env (dev-api.env) holds the settings.
+# /etc/usnm-serving-dev/image.env holds API_IMAGE, the image by digest.
+# install.sh writes it only when it is missing (from --dev-image) and never
+# overwrites it, so whoever pins dev to another image edits that file and
+# restarts the unit.
+#
+# The reference directory is the lake's, mounted read-only, the same one prod
+# reads, so a publish moves dev with prod. A frozen copy once left dev pinned
+# to an index that a later prune deleted, and the API crash-looped. The
+# searcher is shared with prod. Host network, as usnm-api@.service has it.
+[Unit]
+Description=US News Map dev pinned production API and complete site (#955)
+ConditionPathExists=/etc/usnm-serving-dev/api.env
+Requires=nftables.service
+Wants=network-online.target usnm-searcher.service
+After=nftables.service network-online.target usnm-searcher.service
+
+[Service]
+EnvironmentFile=/etc/usnm-serving-dev/image.env
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+ExecStartPre=-/usr/bin/podman rm -f usnm-api-dev
+ExecStart=/usr/bin/podman run --init --rm --name usnm-api-dev --network host --pull never \
+  --env-file /etc/usnm-serving-dev/api.env \
+  -v /srv/usnm-lake-t/reference:/srv/usnm-lake-t/reference:ro \
+  -v /srv/usnm-serving-dev/cache:/srv/usnm-serving-dev/cache \
+  -v /srv/usnm-serving-dev/sitemap-state:/srv/usnm-serving-dev/sitemap-state \
+  --read-only --tmpfs /tmp:rw,size=256m --cap-drop all --security-opt no-new-privileges \
+  --memory 2g --stop-timeout 40 \
+  ${API_IMAGE}
+ExecStop=/usr/bin/podman stop -t 40 usnm-api-dev
+
+[Install]
+WantedBy=multi-user.target

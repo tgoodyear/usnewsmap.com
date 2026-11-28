@@ -1,0 +1,24 @@
+# The connector for the dev origin's tunnel (#955), installed by
+# install.sh --dev as /etc/systemd/system/cloudflared-usnm-serving-dev.service.
+# The token is in /etc/cloudflared/usnm-serving-dev.env (TUNNEL_TOKEN=...,
+# root only, mode 0600), never in this repository. The tunnel's ingress is
+# managed on Cloudflare: dev.usnewsmap.com to http://127.0.0.1:8088 (the
+# dev.caddy listener). Otherwise like cloudflared-usnm-serving.service,
+# sharing its run-cloudflared.
+[Unit]
+Description=Cloudflare Tunnel for dev.usnewsmap.com only (#955)
+Wants=network-online.target
+After=network-online.target caddy.service
+ConditionPathExists=/etc/cloudflared/usnm-serving-dev.env
+
+[Service]
+EnvironmentFile=/etc/cloudflared/usnm-serving-dev.env
+ExecStart=/usr/local/libexec/usnm-serving/run-cloudflared
+DynamicUser=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

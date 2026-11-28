@@ -1,0 +1,22 @@
+# The dev origin's listener (#955), installed by install.sh --dev as
+# /etc/usnm-serving/extra/dev.caddy and imported by the Caddyfile. Loopback
+# only; the dev tunnel sends dev.usnewsmap.com here. Everything is marked
+# noindex, other hostnames get 404, and the upstream is usnm-api-dev
+# (USNM_BIND in dev-api.env).
+http://:8088 {
+    bind 127.0.0.1
+    header X-Robots-Tag "noindex, nofollow, noarchive"
+    @dev host dev.usnewsmap.com
+    handle @dev {
+        handle /robots.txt {
+            root * /etc/usnm-serving-dev
+            file_server
+        }
+        handle {
+            reverse_proxy 127.0.0.1:8091
+        }
+    }
+    handle {
+        respond 404
+    }
+}
