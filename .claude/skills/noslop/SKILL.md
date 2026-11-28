@@ -118,7 +118,7 @@ Perfect grammar, formal register on its own, one transition word, one "robust" i
   - If locked wording is also confusing, do not fix it in place. Flag it with a proposed rewording that keeps the meaning, for the maintainer or the science thread to approve.
   - Keep the concrete pairs ("n and u", "C and С"). They are the most useful words on the screen.
   - One "Thank you" at the end of a run, not on every screen. The intro and rules together should fit on one phone screen above the task.
-  - Configs for languages that live only in the Worker DB come from `/api/languages/<code>` and change through sync, not by hand. Run `node --test edge/check/*.test.mjs` after a copy change. Some tests assert exact strings.
+  - Edit copy in `edge/check/languages/*.json`. Deploy syncs those files to the Worker. A language with no file there (such as en-read or de-read) lives only in the Worker DB: read it at `/api/languages/<code>`, and ask the maintainer before changing it, since sync can't reach it. Run `node --test edge/check/*.test.mjs` after a copy change. Some tests assert exact strings.
 - **Site copy** (usnewsmap.com and its sister sites): what the reader can do here and what the data is, with its source and dates. No "explore", "discover", "journey", "rich history", "unlock".
 - **Issue comments and PR bodies:** what changed, why, how it was tested, what is left. Results with their numbers and test set. No "This PR introduces a comprehensive...". Check house rule 7 before posting to this public repo.
 - **Reports and study write-ups:** method, data, result, limits, in that order. Name every deviation from the plan.
