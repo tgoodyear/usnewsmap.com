@@ -21,6 +21,18 @@ let suggestFor = null, suggestDraft = "", suggestOpening = null, suggestSending 
 // opens, as suggestOpening is: a save that finishes after the word changed or the box was closed doesn't touch what is on
 // screen then. noteDone holds the words that got a note on this page, so the button says "Edit note" when Back returns to one.
 let noteFor = null, noteDraft = "", noteOpening = null, noteSending = null;
+// What was typed on a word this page has left, so Back brings it back (README.md, "Back"): the "What does it say?" text of a word
+// answered Neither (sent or not), and its note (saved, or a draft left open). Kept for the words Back can reach.
+const typed = new Map(); // task id -> { suggest, note, noteOpen }
+function keepTyped(id, part) {
+  const was = typed.get(id) || {}; typed.delete(id); typed.set(id, { ...was, ...part });
+  while (typed.size > 60) typed.delete(typed.keys().next().value);
+}
+// The word shown was answered Neither and is being left: it joins the history with the text in its box.
+function pushNeither() {
+  history.push({ task, choice: "neither" }); if (history.length > 50) history.shift();
+  keepTyped(task.id, { suggest: suggestDraft });
+}
 const noteDone = new Set();
 // On a slow connection an answer is saved in the background and the next word, fetched while this one was shown, appears at once.
 // `pending` holds answers not yet saved, oldest first; `ahead` holds the next words fetched for the word now shown; `stale` is set
@@ -578,7 +590,7 @@ async function setPaper(p) {
   if (busy || stale) { const sel = $("paper"); if (sel) sel.value = paper || "*"; return; }
   const was = paper;
   paper = p; store(PAPERSEL + lang, p || "*"); done.delete(p);
-  if (task && suggestFor === task.id) { history.push({ task, choice: "neither" }); if (history.length > 50) history.shift(); }
+  if (task && suggestFor === task.id) { pushNeither(); }
   renderPaperBar();
   await next(controlFocused(), null, undefined, false);
   if (failed && task && paperOfTask(task) !== paper) { paper = was; store(PAPERSEL + lang, was || "*"); renderPaperBar(); markGuide(task); }
@@ -694,6 +706,8 @@ function render(prev) {
   noteButton(live);
   $("neither").hidden = isGutter(task) || isCover(task);
   $("notext").hidden = isGutter(task);
+  // The answer given before shows on these buttons too when Back returns to a word (the readings mark theirs as they are drawn).
+  for (const [id, c] of [["neither", "neither"], ["unsure", "unsure"], ["notext", "notext"], ["badcrop", "badcrop"]]) $(id).classList.toggle("chosen", prev === c);
   if (task) $("badcrop-help").textContent = isGutter(task) ? GUTTER_BADCROP_HELP : isCover(task) ? COVER_BADCROP_HELP : BADCROP_HELP;
   if (!task && !loaded) {
     const d = document.createElement("div"); d.className = "done";
@@ -891,8 +905,9 @@ function suggestBox(t) {
 }
 
 // The note box (any task kind). Saving keeps the word on screen: the box closes and the button reads "Edit note". Enter is a
-// newline; Ctrl or Cmd+Enter saves. A failed save keeps the box and the text. The text is not prefilled when a word that already
-// has a note is shown again, since the page doesn't ask the Worker for it; a second note replaces the first.
+// newline; Ctrl or Cmd+Enter saves. A failed save keeps the box and the text. Back to a word brings its note's text back (saved, or
+// a draft left open, `typed`); a word noted in an earlier visit isn't prefilled, since the page doesn't ask the Worker for it. A
+// second note replaces the first.
 function noteBox(t) {
   const box = document.createElement("div"); box.className = "note"; box.id = "note-box";
   const label = document.createElement("label"); label.htmlFor = "note-text"; label.textContent = "Your note on this word (optional)";
@@ -962,7 +977,7 @@ async function sendNote(id) {
     }
     return;
   } finally { if (noteSending === opening) noteSending = null; }
-  noteDone.add(id);
+  noteDone.add(id); keepTyped(id, { note: text, noteOpen: false });
   // Only if the box is still the one this save came from: a word that changed meanwhile keeps its own screen.
   if (noteOpening === opening && noteFor === id) { noteFor = null; noteOpening = null; noteDraft = ""; render(shownPrev); status("Note saved."); const b = $("note"); if (b && !b.disabled) b.focus({ preventScroll: true }); }
   else noteButton();
@@ -997,7 +1012,7 @@ async function sendSuggestion(id) {
 // The word was answered Neither; it joins the history now, once, as it leaves the screen (choose() doesn't add it while the box is open).
 function moveOnFromSuggestion(id) {
   if (suggestFor !== id || busy) return;
-  history.push({ task, choice: "neither" }); if (history.length > 50) history.shift();
+  pushNeither();
   next(controlFocused(), id, "neither");
 }
 
@@ -1088,6 +1103,8 @@ function navStatus(text, error) { if (!stale && !(checking && !error)) status(te
 
 // `after` is the word being left: the first word fetched ahead for it is shown; with `keepRest`, the others stay ahead.
 async function next(had = controlFocused(), after = null, pressed, keepRest = true) {
+  // a note typed but not saved stays with its word, open, for Back
+  if (task && noteFor === task.id && noteDraft.trim()) keepTyped(task.id, { note: noteDraft, noteOpen: true });
   suggestFor = null; suggestDraft = ""; suggestOpening = null;
   noteFor = null; noteDraft = ""; noteOpening = null; noteSending = null;
   const list = after && ahead && ahead.forId === after ? ahead.list : [];
@@ -1192,6 +1209,11 @@ function back() {
   noteFor = null; noteDraft = ""; noteOpening = null; noteSending = null;
   const had = controlFocused();
   const h = history.pop(); task = h.task; cfg = configs.get(taskLang(h.task)) || pageCfg; lineShown = true;
+  // What was typed on the word comes back with it: a Neither answer reopens its box with the text, and a note its text (its box
+  // open again if it was left unsaved).
+  const k = typed.get(task.id) || {};
+  if (h.choice === "neither" && !isGutter(task) && !isCover(task)) { suggestFor = task.id; suggestOpening = {}; suggestDraft = k.suggest || ""; }
+  if (k.note) { noteDraft = k.note; if (k.noteOpen) { noteFor = task.id; noteOpening = {}; } }
   // A word answered before the paper was changed comes back under its own paper, picker and letter guide.
   const from = paperOfTask(h.task);
   if (paper && from && from !== paper && paperInfo(from)) { paper = from; store(PAPERSEL + lang, from); renderPaperBar(); }
@@ -1202,7 +1224,7 @@ function back() {
 function skip() {
   if (!task || busy || stale) return;
   // A word answered Neither joins the history as it is left, as it does when its box is sent or skipped.
-  if (suggestFor === task.id) { history.push({ task, choice: "neither" }); if (history.length > 50) history.shift(); }
+  if (suggestFor === task.id) { pushNeither(); }
   skipped.push(task.id); next(controlFocused(), task.id, undefined, false);
 }
 
