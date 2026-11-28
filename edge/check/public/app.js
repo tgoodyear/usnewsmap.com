@@ -25,6 +25,7 @@ let noteFor = null, noteDraft = "", noteOpening = null, noteSending = null;
 // answered Neither (sent or not), and its note (saved, or a draft left open). Kept for the words Back can reach.
 // The saved note and the latest draft are kept apart, so a save that answers late never replaces text typed after it.
 const typed = new Map(); // task id -> { suggest, saved, draft, noteOpen }
+const noteRevs = new Map(); // task id -> the number of the latest note save started on it
 function keepTyped(id, part) {
   const was = typed.get(id) || {}; typed.delete(id); typed.set(id, { ...was, ...part });
   if (typed.size > 60) {
@@ -970,6 +971,7 @@ async function sendNote(id) {
   if (Array.from(text).length > NOTE_MAX) { status(`A note is at most ${NOTE_MAX} characters.`, true); return; }
   const save = $("note-save");
   noteSending = opening; if (save) save.disabled = true; if (input) input.readOnly = true;
+  const rev = (noteRevs.get(id) || 0) + 1; noteRevs.set(id, rev); // a save that answers after a later one is not the saved text
   try {
     await authed("/api/notes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ task: id, text }) });
   } catch (e) {
@@ -982,7 +984,7 @@ async function sendNote(id) {
     }
     return;
   } finally { if (noteSending === opening) noteSending = null; }
-  noteDone.add(id); keepTyped(id, { saved: text });
+  noteDone.add(id); if (noteRevs.get(id) === rev) keepTyped(id, { saved: text });
   // Only if the box is still the one this save came from: a word that changed meanwhile keeps its own screen.
   if (noteOpening === opening && noteFor === id) { noteFor = null; noteOpening = null; noteDraft = ""; render(shownPrev); status("Note saved."); const b = $("note"); if (b && !b.disabled) b.focus({ preventScroll: true }); }
   else noteButton();
@@ -1130,6 +1132,9 @@ async function next(had = controlFocused(), after = null, pressed, keepRest = tr
     navStatus(fontFailed ? "The font for this word didn't load." : "", fontFailed);
   } catch (e) {
     failed = true;
+    // the word stays on screen: its note box comes back as it was left, so trying again can't lose the draft
+    const k = task && typed.get(task.id);
+    if (k && k.noteOpen && k.draft) { noteDraft = k.draft; noteFor = task.id; noteOpening = {}; }
     navStatus(e.status === 429 ? "Slow down a little, then try again." : "The next word didn't load. " + e.message, true);
   } finally {
     clearTimeout(slowTimer);
