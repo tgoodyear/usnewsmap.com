@@ -106,6 +106,12 @@ fi
 for tool in podman skopeo caddy cloudflared gh jq curl flock sha256sum; do
   command -v "$tool" > /dev/null || die "no $tool here: make the container with home-infra's scripts/lab/serving-ct.sh"
 done
+# The dev unit runs with --pull never, so a new pin must already be stored
+# here, or the dev API would restart forever. An existing pin is kept as it is.
+if $DEV && ! $DRY_RUN && [ ! -s "$DEV_ETC/image.env" ]; then
+  podman image exists "$DEV_IMAGE" ||
+    die "--dev-image $DEV_IMAGE isn't stored here; pull it (podman pull <registry>/usnewsmap-api@$DEV_IMAGE) first"
+fi
 HIMDS_GID=$(getent group himds | cut -d: -f3 || true)
 [[ $HIMDS_GID =~ ^[0-9]+$ ]] || die "no himds group: connect the container to Azure Arc first"
 

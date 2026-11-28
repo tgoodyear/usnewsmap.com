@@ -119,6 +119,7 @@ case "$(basename "$0") $1" in
     [ -z "${STUB_BAD_ATTESTATION:-}" ] || exit 1
     printf '[{"verificationResult":{"signature":{"certificate":{"sourceRepositoryDigest":"%s"}}}}]\n' "$STUB_SOURCE" ;;
   "podman images") printf '%s\n' ${STUB_IMAGES:-} ;;
+  "podman image") [ "${4:-$3}" != "${STUB_MISSING_IMAGE:-}" ] || exit 1 ;;
   "getent group") echo "himds:x:4242:" ;;
   "getent passwd") exit 2 ;;
 esac
@@ -753,6 +754,19 @@ class Install(Stubbed):
         self.assertIn("would run: chown 1000:1000 %s/srv/usnm-serving-dev/cache" % self.root, r.stdout)
         self.assertIn("would run: chown 1000:1000 %s/srv/usnm-serving-dev/sitemap-state" % self.root, r.stdout)
         self.assertEqual(os.listdir(self.root), [])
+
+    def test_dev_refuses_an_image_that_isnt_stored(self):
+        self.env["STUB_MISSING_IMAGE"] = DEV_IMAGE
+        r = self.install("--dev", "--dev-image", DEV_IMAGE)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("isn't stored here", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "etc/usnm-serving-dev/image.env")))
+
+    def test_dev_cache_expires_and_its_sitemap_state_does_not(self):
+        with open(os.path.join(HERE, "usnm-serving.tmpfiles")) as f:
+            lines = [l.split() for l in f if l.strip() and not l.startswith("#")]
+        self.assertIn(["e", "/srv/usnm-serving-dev/cache", "-", "-", "-", "mM:14d"], lines)
+        self.assertFalse(any("usnm-serving-dev/sitemap-state" in l[1] for l in lines))
 
     def test_dev_installs_once_and_keeps_its_image(self):
         r = self.install("--dev", "--dev-image", DEV_IMAGE)
