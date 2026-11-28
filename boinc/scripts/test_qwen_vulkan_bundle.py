@@ -13,6 +13,8 @@ from boinc.scripts import qwen_vulkan_bundle as bundle
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMIT = "a" * 40
+# The amd-vulkan-runtime artifact may come from a later commit with the same patch and builder.
+RUNTIME_COMMIT = "d" * 40
 # b12084's layout: llama-server is a launcher for libllama-server-impl.so and libllama-common.so.
 LIBS = ["libggml-base.so.0.28.0", "libggml.so.0.28.0", "libggml-vulkan.so", "libllama.so.0.8.0",
         "libmtmd.so.0.8.0", "libggml-cpu-x64.so", "libllama-server-impl.so", "libllama-common.so.0.8.0"]
@@ -182,6 +184,94 @@ class Bundle(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "runtime differs"):
             bundle.verify(self.dir / "third", reviewed)
 
+    def amd_artifact(self, helper=b"\x7fELF amd", lock=None):
+        artifact = self.dir / "linux-artifact"
+        artifact.mkdir(exist_ok=True)
+        # The build-time locks; weights.lock deliberately unlike the repo's, so the test sees which is used.
+        files = {bundle.BINARY: self.binary.read_bytes(), bundle.AMD_HELPER: helper,
+                 "llama.lock": (lock or self.dir / "llama.lock").read_bytes(), "weights.lock": b'{"build": "time"}\n'}
+        for name, data in files.items():
+            (artifact / name).write_bytes(data)
+        (artifact / "GIT_COMMIT").write_text(COMMIT + "\n")
+        (artifact / "SHA256SUMS").write_text("".join(
+            f"{hashlib.sha256(data).hexdigest()}  {name}\n" for name, data in files.items()))
+        return artifact
+
+    def build_amd(self, archive, lock, artifact, out="amd"):
+        return bundle.build(archive, self.binary, COMMIT, self.dir / out, "amd_vulkan_8b", self.deb,
+                            lock_path=lock, libgomp_lock=self.gomp_lock, artifact=artifact)
+
+    def test_amd_adds_only_the_artifacts_helper_to_the_same_runtime(self):
+        archive, lock = self.archive()
+        nvidia = self.build(archive, lock, out="nvidia")
+        amd = self.build_amd(archive, lock, self.amd_artifact())
+        extras = amd["worker"]["extra_files"]
+        self.assertEqual(set(extras) - set(nvidia["worker"]["extra_files"]), {"usnm-amd-device-map"})
+        self.assertEqual(extras["usnm-amd-device-map"]["source_commit"], COMMIT)
+        self.assertEqual((self.dir / "amd/extra/usnm-amd-device-map").stat().st_mode & 0o777, 0o755)
+        bundle.verify(self.dir / "amd")
+        # Against a reviewed AMD manifest whose helper was built at another commit: same runtime.
+        reviewed = json.loads((self.dir / "amd/release.json").read_text())
+        reviewed["worker"]["extra_files"]["usnm-amd-device-map"]["sha256"] = "0" * 64
+        (self.dir / "reviewed.json").write_text(json.dumps(reviewed))
+        bundle.verify(self.dir / "amd", self.dir / "reviewed.json")
+        # A reviewed manifest without the helper (another class) is not the same runtime.
+        with self.assertRaisesRegex(ValueError, "runtime differs"):
+            bundle.verify(self.dir / "amd", self.dir / "nvidia/release.json")
+        # An AMD bundle without its helper does not verify.
+        (self.dir / "amd/extra/usnm-amd-device-map").unlink()
+        sums = self.dir / "amd/SHA256SUMS"
+        sums.write_text("".join(l + "\n" for l in sums.read_text().splitlines() if "usnm-amd-device-map" not in l))
+        with self.assertRaises(ValueError):
+            bundle.verify(self.dir / "amd")
+
+    def test_amd_bundles_the_artifacts_build_time_locks(self):
+        # Copilot on #2210: the checkout's locks could differ from the ones the binary checks.
+        archive, lock = self.archive()
+        artifact = self.amd_artifact()
+        release = bundle.build(archive, self.binary, COMMIT, self.dir / "amd", "amd_vulkan_8b", self.deb,
+                               libgomp_lock=self.gomp_lock, artifact=artifact)
+        out = self.dir / "amd"
+        self.assertEqual((out / "extra/weights.lock").read_bytes(), b'{"build": "time"}\n')
+        self.assertNotEqual((out / "extra/weights.lock").read_bytes(), bundle.WEIGHTS.read_bytes())
+        self.assertEqual((out / "extra/llama.lock").read_bytes(), (artifact / "llama.lock").read_bytes())
+        self.assertEqual(release["worker"]["extra_files"]["weights.lock"]["source_commit"], COMMIT)
+        bundle.verify(out)
+        for name in ("weights.lock", "llama.lock"):
+            with self.subTest(name):
+                artifact = self.amd_artifact()
+                (artifact / name).write_text('{"changed": true}\n')
+                with self.assertRaisesRegex(ValueError, f"{name} is missing .* or does not match"):
+                    bundle.build(archive, self.binary, COMMIT, self.dir / f"changed-{name}", "amd_vulkan_8b",
+                                 self.deb, libgomp_lock=self.gomp_lock, artifact=artifact)
+        # The artifact's llama.lock must also pin the archive.
+        other = self.dir / "other.lock"
+        other.write_text(lock.read_text().replace(hashlib.sha256(archive.read_bytes()).hexdigest(), "0" * 64))
+        with self.assertRaisesRegex(ValueError, "not the llama.lock-pinned"):
+            bundle.build(archive, self.binary, COMMIT, self.dir / "unpinned", "amd_vulkan_8b", self.deb,
+                         libgomp_lock=self.gomp_lock, artifact=self.amd_artifact(lock=other))
+
+    def test_amd_refuses_a_missing_or_mismatched_artifact(self):
+        archive, lock = self.archive()
+        with self.assertRaisesRegex(ValueError, "--artifact .* required for amd_vulkan_8b"):
+            bundle.build(archive, self.binary, COMMIT, self.dir / "none", "amd_vulkan_8b", self.deb,
+                         lock_path=lock, libgomp_lock=self.gomp_lock)
+        artifact = self.amd_artifact()
+        with self.assertRaisesRegex(ValueError, "only for it"):
+            bundle.build(archive, self.binary, COMMIT, self.dir / "nv", "nvidia_vulkan_8b", self.deb,
+                         lock_path=lock, libgomp_lock=self.gomp_lock, artifact=artifact)
+        (artifact / "usnm-amd-device-map").write_bytes(b"changed")
+        with self.assertRaisesRegex(ValueError, "usnm-amd-device-map is missing .* or does not match"):
+            self.build_amd(archive, lock, artifact, out="helper")
+        artifact = self.amd_artifact()
+        (artifact / "GIT_COMMIT").write_text("b" * 40)
+        with self.assertRaisesRegex(ValueError, "GIT_COMMIT"):
+            self.build_amd(archive, lock, artifact, out="commit")
+        artifact = self.amd_artifact()
+        self.binary.write_bytes(b"\x7fELF another qwen")
+        with self.assertRaisesRegex(ValueError, "--binary is not the artifact's"):
+            self.build_amd(archive, lock, artifact, out="binary")
+
     def test_build_refuses_an_unpinned_or_unsafe_archive(self):
         archive, lock = self.archive()
         lock.write_text(lock.read_text().replace('"sha256": "', '"sha256": "0'))
@@ -275,6 +365,8 @@ class WindowsBundle(unittest.TestCase):
     def test_build_refuses_wrong_inputs(self):
         archive, lock = self.archive()
         with self.assertRaisesRegex(ValueError, "not a Windows Vulkan"):
+            self.build(archive, lock, plan_class="apple_gpu_8b", out="apple")
+        with self.assertRaisesRegex(ValueError, "--amd-runtime .* is required for amd_vulkan_8b"):
             self.build(archive, lock, plan_class="amd_vulkan_8b", out="amd")
         (self.artifact / "msvcp140.dll").write_bytes(b"changed")
         with self.assertRaisesRegex(ValueError, "msvcp140.dll does not match"):
@@ -296,8 +388,110 @@ class WindowsBundle(unittest.TestCase):
             self.build(archive, lock, out="unsafe")
 
 
-if __name__ == "__main__":
-    unittest.main()
+    def amd_runtime(self, dll=b"MZ patched vulkan", patch=None, **receipt):
+        runtime = self.dir / "amd-runtime"
+        runtime.mkdir(exist_ok=True)
+        (runtime / "ggml-vulkan.dll").write_bytes(dll)
+        digest = hashlib.sha256(dll).hexdigest()
+        (runtime / "SHA256SUMS").write_text(f"{digest}  ggml-vulkan.dll\n")
+        (runtime / "GIT_COMMIT").write_text(RUNTIME_COMMIT + "\r\n")
+        fields = {"schema_version": 1, "source_commit": bundle.LLAMA_SOURCE["b12084"],
+                  "patch_sha256": hashlib.sha256((patch or bundle.AMD_PATCH).read_bytes()).hexdigest(),
+                  "runtime_sha256": digest, "vulkan_sdk": "C:\\VulkanSDK\\1.4.357.0", **receipt}
+        # PowerShell's ConvertTo-Json | Set-Content: CRLF line ends.
+        (runtime / "AMD_RUNTIME_BUILD.json").write_bytes(json.dumps(fields, indent=4).replace("\n", "\r\n").encode())
+        return runtime
+
+    def build_amd(self, archive, lock, runtime, out="amd"):
+        return bundle.build_windows(archive, self.artifact, COMMIT, self.dir / out, "amd_vulkan_8b", lock,
+                                    amd_runtime=runtime)
+
+    def test_amd_replaces_only_ggml_vulkan_and_adds_the_helper_and_receipt(self):
+        archive, lock = self.archive()
+        nvidia = self.build(archive, lock, out="nvidia")
+        amd = self.build_amd(archive, lock, self.amd_runtime())
+        extras, base = amd["worker"]["extra_files"], nvidia["worker"]["extra_files"]
+        self.assertEqual(set(extras) - set(base), {"usnm-amd-device-map.exe", "AMD_RUNTIME_BUILD.json"})
+        changed = {n for n in base if extras[n]["sha256"] != base[n]["sha256"]}
+        self.assertEqual(changed, {"ggml-vulkan.dll"})
+        self.assertEqual((self.dir / "amd/extra/ggml-vulkan.dll").read_bytes(), b"MZ patched vulkan")
+        self.assertEqual(extras["usnm-amd-device-map.exe"]["source_commit"], COMMIT)
+        for name in ("ggml-vulkan.dll", "AMD_RUNTIME_BUILD.json"):
+            self.assertEqual(extras[name]["source_commit"], RUNTIME_COMMIT)
+        self.assertEqual(extras["ggml.dll"]["source_commit"], bundle.LLAMA_SOURCE["b12084"])
+        bundle.verify(self.dir / "amd")
+        self.assertIn("--extra-file", bundle.release_args(self.dir / "amd"))
+        self.assertIn(f"AMD_RUNTIME_BUILD.json={(self.dir / 'amd/extra/AMD_RUNTIME_BUILD.json').resolve()}",
+                      bundle.release_args(self.dir / "amd"))
+        # A reviewed release whose patched DLL, receipt and helper were built at another commit has the
+        # same pinned runtime; one that also differs in another DLL, or lacks AMD's files, does not.
+        reviewed = json.loads((self.dir / "amd/release.json").read_text())
+        for name in ("ggml-vulkan.dll", "AMD_RUNTIME_BUILD.json", "usnm-amd-device-map.exe"):
+            reviewed["worker"]["extra_files"][name]["sha256"] = "0" * 64
+        (self.dir / "reviewed.json").write_text(json.dumps(reviewed))
+        bundle.verify(self.dir / "amd", self.dir / "reviewed.json")
+        reviewed["worker"]["extra_files"]["ggml.dll"]["sha256"] = "0" * 64
+        (self.dir / "reviewed.json").write_text(json.dumps(reviewed))
+        with self.assertRaisesRegex(ValueError, "runtime differs"):
+            bundle.verify(self.dir / "amd", self.dir / "reviewed.json")
+        with self.assertRaisesRegex(ValueError, "runtime differs"):
+            bundle.verify(self.dir / "amd", self.dir / "nvidia/release.json")
+        # A reviewed AMD manifest with the receipt and helper but without the patched DLL is incomplete.
+        del reviewed["worker"]["extra_files"]["ggml-vulkan.dll"]
+        reviewed["worker"]["extra_files"]["ggml.dll"]["sha256"] = extras["ggml.dll"]["sha256"]
+        (self.dir / "reviewed.json").write_text(json.dumps(reviewed))
+        with self.assertRaisesRegex(ValueError, "runtime differs"):
+            bundle.verify(self.dir / "amd", self.dir / "reviewed.json")
+
+    @unittest.skipUnless(shutil.which("git") and (ROOT / ".git").exists(), "needs the git checkout")
+    def test_the_patch_whose_digest_the_receipt_records_is_checked_out_with_lf(self):
+        attrs = subprocess.run(["git", "-C", str(ROOT), "check-attr", "text", "eol", "--",
+                                "boinc/scripts/patch_amd_vulkan_identity.py"],
+                               capture_output=True, text=True, check=True).stdout
+        self.assertIn("text: set", attrs)
+        self.assertIn("eol: lf", attrs)
+        self.assertNotIn(b"\r", bundle.AMD_PATCH.read_bytes())
+
+    def test_amd_verify_refuses_a_dll_the_receipt_does_not_record(self):
+        archive, lock = self.archive()
+        self.build_amd(archive, lock, self.amd_runtime())
+        out = self.dir / "amd"
+        (out / "extra/ggml-vulkan.dll").write_bytes(b"MZ other")
+        release = json.loads((out / "release.json").read_text())
+        release["worker"]["extra_files"]["ggml-vulkan.dll"]["sha256"] = hashlib.sha256(b"MZ other").hexdigest()
+        (out / "release.json").write_text(json.dumps(release))
+        bundle.write_sums(out, [p.relative_to(out).as_posix() for p in out.rglob("*")
+                                if p.is_file() and p.name != "SHA256SUMS"])
+        with self.assertRaisesRegex(ValueError, "not the one AMD_RUNTIME_BUILD.json records"):
+            bundle.verify(out)
+
+    def test_amd_refuses_wrong_runtime_inputs(self):
+        archive, lock = self.archive()
+        with self.assertRaisesRegex(ValueError, "only for it"):
+            bundle.build_windows(archive, self.artifact, COMMIT, self.dir / "nv", "nvidia_vulkan_8b", lock,
+                                 amd_runtime=self.amd_runtime())
+        cases = {"source_commit": ("source_commit", "c" * 40), "runtime_sha256": ("runtime_sha256", "0" * 64),
+                 "patch_sha256": ("patch_sha256", "0" * 64), "schema_version": ("schema_version", 2)}
+        for label, (key, value) in cases.items():
+            with self.subTest(label):
+                with self.assertRaisesRegex(ValueError, f"AMD_RUNTIME_BUILD.json {key}"):
+                    self.build_amd(archive, lock, self.amd_runtime(**{key: value}), out=f"r-{label}")
+        runtime = self.amd_runtime()
+        (runtime / "ggml-vulkan.dll").write_bytes(b"MZ swapped")
+        with self.assertRaisesRegex(ValueError, "ggml-vulkan.dll is missing .* or does not match"):
+            self.build_amd(archive, lock, runtime, out="swapped")
+        runtime = self.amd_runtime()
+        (runtime / "GIT_COMMIT").write_text("not a commit")
+        with self.assertRaisesRegex(ValueError, "GIT_COMMIT"):
+            self.build_amd(archive, lock, runtime, out="commit")
+        runtime = self.amd_runtime()
+        (self.artifact / "usnm-amd-device-map.exe").write_bytes(b"MZ changed")
+        with self.assertRaisesRegex(ValueError, "usnm-amd-device-map.exe does not match"):
+            self.build_amd(archive, lock, runtime, out="helper")
+        (self.artifact / "usnm-amd-device-map.exe").write_bytes(b"MZ amd")
+        archive, lock = self.archive(skip=("ggml-vulkan.dll",))
+        with self.assertRaisesRegex(ValueError, "lacks ggml-vulkan.dll"):
+            self.build_amd(archive, lock, runtime, out="nodll")
 
 
 class MacBundle(unittest.TestCase):
@@ -385,3 +579,7 @@ class MacBundle(unittest.TestCase):
         (self.artifact / "GIT_COMMIT").write_text("b" * 40)
         with self.assertRaisesRegex(ValueError, "GIT_COMMIT"):
             self.build(archive, lock, out="y")
+
+
+if __name__ == "__main__":
+    unittest.main()

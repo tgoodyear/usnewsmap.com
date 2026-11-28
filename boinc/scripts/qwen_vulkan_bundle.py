@@ -24,9 +24,19 @@ and its signed app-local Microsoft runtime DLLs, each checked against the artifa
                                     every ggml*.dll, llama.dll, mtmd.dll, libomp.dll, the
                                     Microsoft runtime DLLs and the locks
 
+For amd_vulkan_8b (docs/boinc/apps/amd-gpu.md), `build` also takes the Linux native CI artifact
+(--artifact) and adds its usnm-amd-device-map, and `build-windows` adds the Windows artifact's
+usnm-amd-device-map.exe and replaces only ggml-vulkan.dll with the identity-patched one from the
+amd-vulkan-runtime workflow's artifact (--amd-runtime), adding its AMD_RUNTIME_BUILD.json receipt.
+Each is checked against its artifact's SHA256SUMS and GIT_COMMIT (the native ones must be
+--source-commit), and the receipt against the DLL, the pinned llama.cpp source and this
+checkout's patch_amd_vulkan_identity.py.
+
 The same inputs give the same bytes. `verify` rehashes a directory; with --same-runtime-as it also
 checks that the llama.cpp runtime (every extra file but the two locks) is byte for byte that of an
-already-reviewed release manifest. `args` verifies, then prints the --binary/--binary-sha256/
+already-reviewed release manifest; for amd_vulkan_8b the files built from this repository (the
+helper, and on Windows the patched DLL and its receipt) are left out of that comparison and
+checked against each other instead. `args` verifies, then prints the --binary/--binary-sha256/
 --extra-file arguments for boinc/scripts/boinc-app-release.sh, one per line, with absolute paths.
 Nothing here signs, uploads or publishes.
 """
@@ -51,14 +61,21 @@ PLATFORM = "x86_64-pc-linux-gnu"
 # The llama.cpp source commit of each pinned tag (docs/boinc/apps/intel-gpu.md); a new pin is reviewed here.
 LLAMA_SOURCE = {"b8799": "e1a9a6dcbefccb4b864d9385ce8494f2a7f2ffcd",
                 "b12084": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"}
-PLAN_CLASSES = ("nvidia_vulkan_2b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_8b", "intel_vulkan_8b")
+PLAN_CLASSES = ("nvidia_vulkan_2b", "nvidia_vulkan_6gb_8b", "nvidia_vulkan_8b", "intel_vulkan_8b", "amd_vulkan_8b")
+# amd_vulkan_8b (docs/boinc/apps/amd-gpu.md): the pinned runtime plus the native CI artifact's PCI
+# identity helper; on Windows, ggml-vulkan.dll is the identity-patched build and its receipt is signed too.
+AMD_PLAN_CLASS = "amd_vulkan_8b"
+AMD_HELPER = "usnm-amd-device-map"
+WIN_AMD_HELPER = "usnm-amd-device-map.exe"
+AMD_RECEIPT = "AMD_RUNTIME_BUILD.json"
+AMD_DLL = "ggml-vulkan.dll"
+AMD_PATCH = ROOT / "boinc/scripts/patch_amd_vulkan_identity.py"
 BINARY = f"usnm_qwen_{PLATFORM}"
 # windows_x86_64 (#1672). NVIDIA (full and 6 GB partial-offload 8B) and Intel take the pinned
-# runtime unchanged; AMD's Windows bundle replaces ggml-vulkan.dll and adds its PCI identity helper
-# (docs/boinc/apps/amd-gpu.md), so it isn't built here.
+# runtime unchanged; AMD's replaces only ggml-vulkan.dll and adds its PCI identity helper.
 WIN_ASSET = "win-vulkan-x64"
 WIN_PLATFORM = "windows_x86_64"
-WIN_PLAN_CLASSES = ("nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "intel_vulkan_8b")
+WIN_PLAN_CLASSES = ("nvidia_vulkan_8b", "nvidia_vulkan_6gb_8b", "intel_vulkan_8b", "amd_vulkan_8b")
 WIN_BINARY = f"usnm_qwen_{WIN_PLATFORM}.exe"
 # From b12084, llama-server.exe is a launcher for llama-server-impl.dll and llama-common.dll, and the
 # OpenMP runtime is libomp.dll (b8799's libomp140.x86_64.dll).
@@ -207,11 +224,38 @@ def write_sums(out, names):
     (out / "SHA256SUMS").write_text(lines)
 
 
-def build(archive, binary, source_commit, out, plan_class, libgomp_deb, lock_path=LOCK, libgomp_lock=LIBGOMP_LOCK):
+def checked_artifact(artifact, source_commit, names):
+    """The artifact directory, once its GIT_COMMIT is `source_commit` (any commit if None) and each of
+    `names` matches its SHA256SUMS."""
+    artifact = Path(artifact)
+    commit = (artifact / "GIT_COMMIT").read_text().strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", commit) or source_commit not in (None, commit):
+        raise ValueError(f"the GIT_COMMIT of {artifact} is not --source-commit")
+    sums = read_sums(artifact / "SHA256SUMS")
+    for name in names:
+        if not (artifact / name).is_file() or sums.get(name) != sha256(artifact / name):
+            raise ValueError(f"{name} is missing from {artifact} or does not match its SHA256SUMS")
+    return artifact
+
+
+def build(archive, binary, source_commit, out, plan_class, libgomp_deb, lock_path=None, libgomp_lock=LIBGOMP_LOCK,
+          artifact=None):
+    """The Linux bundle. With `artifact` (amd_vulkan_8b), the locks are the artifact's, the ones its
+    usnm_qwen was built against and checks at run time, each verified against its SHA256SUMS, as in
+    build_macos; otherwise the checkout's. `lock_path` overrides llama.lock (tests)."""
     if plan_class not in PLAN_CLASSES:
         raise ValueError(f"not a Linux Vulkan usnm_qwen plan class: {plan_class}")
     if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
         raise ValueError("--source-commit must be the 40-hex commit the binary was built from")
+    if (artifact is not None) != (plan_class == AMD_PLAN_CLASS):
+        raise ValueError("--artifact (the Linux native CI artifact) is required for amd_vulkan_8b, and only for it")
+    if artifact is not None:
+        artifact = checked_artifact(artifact, source_commit, [BINARY, AMD_HELPER, "llama.lock", "weights.lock"])
+        if sha256(binary) != sha256(artifact / BINARY):
+            raise ValueError(f"--binary is not the artifact's {BINARY}")
+    if lock_path is None:
+        lock_path = artifact / "llama.lock" if artifact is not None else LOCK
+    weights = artifact / "weights.lock" if artifact is not None else WEIGHTS
     lock = json.loads(Path(lock_path).read_text())
     asset = lock["assets"][ASSET]
     if lock["tag"] not in LLAMA_SOURCE or asset["file"] != f"llama-{lock['tag']}-bin-{ASSET}.tar.gz":
@@ -232,7 +276,10 @@ def build(archive, binary, source_commit, out, plan_class, libgomp_deb, lock_pat
                 shutil.copyfileobj(source, target)
             (extra / logical).chmod(0o755 if logical == "llama-server" else 0o644)
     shutil.copyfile(lock_path, extra / "llama.lock")
-    shutil.copyfile(WEIGHTS, extra / "weights.lock")
+    shutil.copyfile(weights, extra / "weights.lock")
+    if artifact is not None:
+        shutil.copyfile(artifact / AMD_HELPER, extra / AMD_HELPER)
+        (extra / AMD_HELPER).chmod(0o755)
     shutil.copyfile(binary, out / BINARY)
     (out / BINARY).chmod(0o755)
     names = sorted(p.name for p in extra.iterdir())
@@ -248,7 +295,7 @@ def build(archive, binary, source_commit, out, plan_class, libgomp_deb, lock_pat
             "extra_files": {name: {"sha256": sha256(extra / name),
                                    # libgomp is pinned by libgomp.lock in this repository.
                                    "source_commit": source_commit if name.endswith(".lock") or name.startswith("libgomp.")
-                                   else llama}
+                                   or name == AMD_HELPER else llama}
                             for name in names},
         },
         "runtime": {"repository": lock["repository"], "tag": lock["tag"], "file": asset["file"],
@@ -269,20 +316,38 @@ def read_sums(path):
     return sums
 
 
-def build_windows(archive, artifact, source_commit, out, plan_class, lock_path=LOCK):
+def amd_runtime_files(amd_runtime, llama, patch=AMD_PATCH):
+    """(commit, DLL, receipt): the identity-patched ggml-vulkan.dll and its receipt from the
+    amd-vulkan-runtime artifact. It needn't be the app's commit: the receipt binds the DLL to the
+    pinned llama.cpp source and to this checkout's patch, and the artifact's commit is its provenance."""
+    amd_runtime = checked_artifact(amd_runtime, None, [AMD_DLL])
+    receipt = json.loads((amd_runtime / AMD_RECEIPT).read_text(encoding="utf-8-sig"))
+    expected = {"schema_version": 1, "source_commit": llama, "runtime_sha256": sha256(amd_runtime / AMD_DLL),
+                "patch_sha256": sha256(patch)}
+    for key, value in expected.items():
+        if receipt.get(key) != value:
+            raise ValueError(f"{AMD_RECEIPT} {key} is {receipt.get(key)!r}, not {value!r}")
+    return (amd_runtime / "GIT_COMMIT").read_text().strip(), amd_runtime / AMD_DLL, amd_runtime / AMD_RECEIPT
+
+
+def build_windows(archive, artifact, source_commit, out, plan_class, lock_path=LOCK, amd_runtime=None,
+                  amd_patch=AMD_PATCH):
     """The windows_x86_64 bundle from the pinned zip and the Windows native CI artifact directory."""
     import zipfile
     if plan_class not in WIN_PLAN_CLASSES:
         raise ValueError(f"not a Windows Vulkan usnm_qwen plan class built here: {plan_class}")
     if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
         raise ValueError("--source-commit must be the 40-hex commit the binary was built from")
+    amd = plan_class == AMD_PLAN_CLASS
+    if (amd_runtime is not None) != amd:
+        raise ValueError("--amd-runtime (the amd-vulkan-runtime artifact) is required for amd_vulkan_8b, and only for it")
     artifact = Path(artifact)
     if (artifact / "GIT_COMMIT").read_text().strip() != source_commit:
         raise ValueError("the artifact's GIT_COMMIT is not --source-commit")
     sums = read_sums(artifact / "SHA256SUMS")
     crt = sorted(p.name for p in artifact.iterdir() if WIN_CRT.fullmatch(p.name))
-    for name in [WIN_BINARY, *crt]:
-        if sums.get(name) != sha256(artifact / name):
+    for name in [WIN_BINARY, *crt, *([WIN_AMD_HELPER] if amd else [])]:
+        if not (artifact / name).is_file() or sums.get(name) != sha256(artifact / name):
             raise ValueError(f"{name} does not match the artifact's SHA256SUMS")
     lock = json.loads(Path(lock_path).read_text())
     asset = lock["assets"][WIN_ASSET]
@@ -290,6 +355,8 @@ def build_windows(archive, artifact, source_commit, out, plan_class, lock_path=L
         raise ValueError("llama.lock pins a runtime this script has not reviewed")
     if Path(archive).name != asset["file"] or sha256(archive) != asset["sha256"]:
         raise ValueError(f"{archive} is not the llama.lock-pinned {asset['file']}")
+    llama = LLAMA_SOURCE[lock["tag"]]
+    runtime_commit, *patched = amd_runtime_files(amd_runtime, llama, amd_patch) if amd else (None,)
     out = Path(out)
     out.mkdir()
     extra = out / "extra"
@@ -309,6 +376,12 @@ def build_windows(archive, artifact, source_commit, out, plan_class, lock_path=L
                 shutil.copyfileobj(source, target)
     for name in crt:
         shutil.copyfile(artifact / name, extra / name)
+    if amd:
+        if not (extra / AMD_DLL).is_file():
+            raise ValueError(f"bundle lacks {AMD_DLL}")
+        # Only ggml-vulkan.dll is replaced; the rest of the pinned runtime stays as released.
+        for path in [*patched, artifact / WIN_AMD_HELPER]:
+            shutil.copyfile(path, extra / path.name)
     shutil.copyfile(lock_path, extra / "llama.lock")
     shutil.copyfile(WEIGHTS, extra / "weights.lock")
     shutil.copyfile(artifact / WIN_BINARY, out / WIN_BINARY)
@@ -319,15 +392,17 @@ def build_windows(archive, artifact, source_commit, out, plan_class, lock_path=L
     bound = json.loads(DISK_POLICY.read_text())["native_bundle_bound_bytes"]
     if sum(p.stat().st_size for p in [out / WIN_BINARY, *extra.iterdir()]) > bound:
         raise ValueError("bundle exceeds the reviewed native Qwen disk envelope")
-    llama = LLAMA_SOURCE[lock["tag"]]
+    own = set(crt) | ({WIN_AMD_HELPER} if amd else set())
     release = {
         "release": {"app": "usnm_qwen", "kind": "native", "platform": WIN_PLATFORM, "plan_class": plan_class},
         "worker": {
             "sha256": sha256(out / WIN_BINARY),
             "source_commit": source_commit,
-            # The locks and the Microsoft runtime come with the app's own commit; the rest is llama.cpp's.
+            # The locks, the Microsoft runtime and AMD's helper come with the app's own commit; AMD's
+            # patched DLL and receipt with the commit whose builder made them; the rest is llama.cpp's.
             "extra_files": {name: {"sha256": sha256(extra / name),
-                                   "source_commit": source_commit if name.endswith(".lock") or name in crt else llama}
+                                   "source_commit": runtime_commit if amd and name in (AMD_DLL, AMD_RECEIPT)
+                                   else source_commit if name.endswith(".lock") or name in own else llama}
                             for name in names},
         },
         "runtime": {"repository": lock["repository"], "tag": lock["tag"], "file": asset["file"],
@@ -401,16 +476,26 @@ def build_macos(archive, artifact, source_commit, out, plan_class, lock_path=Non
 
 
 def layout(release):
-    """(binary name, required extras) of a release.json's platform."""
+    """(binary name, required extras) of a release.json's platform and plan class."""
+    amd = release["release"].get("plan_class") == AMD_PLAN_CLASS
     if release["release"]["platform"] == WIN_PLATFORM:
-        return WIN_BINARY, WIN_REQUIRED
+        return WIN_BINARY, WIN_REQUIRED | ({WIN_AMD_HELPER, AMD_RECEIPT} if amd else set())
     if release["release"]["platform"] == MAC_PLATFORM:
         return MAC_BINARY, MAC_REQUIRED
-    return BINARY, REQUIRED
+    return BINARY, REQUIRED | ({AMD_HELPER} if amd else set())
+
+
+def amd_own(extra_files):
+    """AMD's files built from this repository rather than taken from the pinned archive."""
+    own = {AMD_HELPER, WIN_AMD_HELPER, AMD_RECEIPT} & set(extra_files)
+    # The DLL counts as AMD's own only where it is listed, so a manifest missing it fails the comparison.
+    return own | ({AMD_DLL} if AMD_RECEIPT in extra_files and AMD_DLL in extra_files else set())
 
 
 def runtime_hashes(extra_files):
-    return {name: entry["sha256"] for name, entry in extra_files.items() if not name.endswith(".lock")}
+    skip = amd_own(extra_files)
+    return {name: entry["sha256"] for name, entry in extra_files.items()
+            if not name.endswith(".lock") and name not in skip}
 
 
 def verify(bundle, same_runtime_as=None):
@@ -432,9 +517,13 @@ def verify(bundle, same_runtime_as=None):
     if (listed.get(binary) != worker["sha256"] or set(extras) != {n[len("extra/"):] for n in listed if n.startswith("extra/")}
             or any(listed["extra/" + n] != e["sha256"] for n, e in extras.items()) or not required <= set(extras)):
         raise ValueError("release.json does not match the bundle")
+    if AMD_RECEIPT in extras:
+        receipt = json.loads((bundle / "extra" / AMD_RECEIPT).read_text(encoding="utf-8-sig"))
+        if receipt.get("runtime_sha256") != extras.get(AMD_DLL, {}).get("sha256"):
+            raise ValueError(f"{AMD_DLL} is not the one {AMD_RECEIPT} records")
     if same_runtime_as is not None:
         reviewed = json.loads(Path(same_runtime_as).read_text())["worker"]["extra_files"]
-        if runtime_hashes(reviewed) != runtime_hashes(extras):
+        if amd_own(reviewed) != amd_own(extras) or runtime_hashes(reviewed) != runtime_hashes(extras):
             raise ValueError(f"the runtime differs from {same_runtime_as}")
     return bundle, release
 
@@ -458,6 +547,9 @@ def main(argv=None):
     make.add_argument("--out", type=Path, required=True)
     make.add_argument("--libgomp-deb", type=Path, required=True,
                       help="the libgomp.lock-pinned libgomp1 package (boinc/apps/qwen/libgomp.lock url)")
+    make.add_argument("--artifact", type=Path,
+                      help="amd_vulkan_8b only: the unpacked boinc-native-x86_64-pc-linux-gnu CI artifact of "
+                           "--source-commit, whose usnm_qwen --binary must be and whose usnm-amd-device-map is bundled")
     win = commands.add_parser("build-windows")
     win.add_argument("--archive", type=Path, required=True, help="the llama.lock-pinned win-vulkan-x64 zip")
     win.add_argument("--artifact", type=Path, required=True,
@@ -465,6 +557,8 @@ def main(argv=None):
     win.add_argument("--source-commit", required=True)
     win.add_argument("--plan-class", required=True, choices=WIN_PLAN_CLASSES)
     win.add_argument("--out", type=Path, required=True)
+    win.add_argument("--amd-runtime", type=Path,
+                     help="amd_vulkan_8b only: the unpacked amd-vulkan-runtime-windows_x86_64 artifact")
     mac = commands.add_parser("build-macos")
     mac.add_argument("--archive", type=Path, required=True, help="the llama.lock-pinned macos-arm64 tarball")
     mac.add_argument("--artifact", type=Path, required=True,
@@ -481,11 +575,12 @@ def main(argv=None):
     try:
         if args.command == "build":
             release = build(args.archive, args.binary, args.source_commit, args.out, args.plan_class,
-                            args.libgomp_deb)
+                            args.libgomp_deb, artifact=args.artifact)
             print(f"{release['worker']['sha256']}  {args.out / BINARY}")
             print(f"{len(release['worker']['extra_files'])} extra files; see {args.out / 'SHA256SUMS'}")
         elif args.command == "build-windows":
-            release = build_windows(args.archive, args.artifact, args.source_commit, args.out, args.plan_class)
+            release = build_windows(args.archive, args.artifact, args.source_commit, args.out, args.plan_class,
+                                    amd_runtime=args.amd_runtime)
             print(f"{release['worker']['sha256']}  {args.out / WIN_BINARY}")
             print(f"{len(release['worker']['extra_files'])} extra files; see {args.out / 'SHA256SUMS'}")
         elif args.command == "build-macos":

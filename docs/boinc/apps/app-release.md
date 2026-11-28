@@ -339,9 +339,7 @@ For `windows_x86_64` (`nvidia_vulkan_8b`, `nvidia_vulkan_6gb_8b` or `intel_vulka
 every `ggml*.dll`, `llama.dll`, `mtmd.dll` and `libomp140.x86_64.dll`). It adds the merged commit's
 `boinc-native-windows_x86_64` artifact: `usnm_qwen_windows_x86_64.exe` and the signed
 app-local Microsoft runtime DLLs, each checked against the artifact's `SHA256SUMS` and
-`GIT_COMMIT`. Windows AMD isn't built this way: its bundle replaces `ggml-vulkan.dll` and adds
-the PCI identity helper ([AMD](amd-gpu.md)). Publish it held (`--hold`) until the qualification
-window above has passed:
+`GIT_COMMIT`. Publish it held (`--hold`) until the qualification window above has passed:
 
 ```sh
 python3 boinc/scripts/qwen_vulkan_bundle.py build-windows --archive llama-b8799-bin-win-vulkan-x64.zip \
@@ -349,6 +347,30 @@ python3 boinc/scripts/qwen_vulkan_bundle.py build-windows --archive llama-b8799-
 mapfile -t inputs < <(python3 boinc/scripts/qwen_vulkan_bundle.py args --bundle "$PWD/target/qwen-win")
 boinc/scripts/boinc-app-release.sh --env prod --app usnm_qwen --version VERSION --kind native \
   --plan-class nvidia_vulkan_8b --platform windows_x86_64 "${inputs[@]}" --hold --signing-host HOST ... --what-if
+```
+
+For `amd_vulkan_8b` ([AMD](amd-gpu.md)), both builds also take the PCI identity helper from the
+same commit's native artifact, checked against its `SHA256SUMS` and `GIT_COMMIT`. On Linux, pass
+the `boinc-native-x86_64-pc-linux-gnu` artifact as `--artifact`: `--binary` must be its
+`usnm_qwen`, and its `usnm-amd-device-map` is added. On Windows, `build-windows` adds
+`usnm-amd-device-map.exe` and takes `--amd-runtime`, an `amd-vulkan-runtime-windows_x86_64`
+artifact (a `workflow_dispatch` run on `main`). It replaces only `ggml-vulkan.dll` with that
+artifact's patched DLL and adds `AMD_RUNTIME_BUILD.json`, once the receipt records that DLL, the
+pinned llama.cpp source and this checkout's `patch_amd_vulkan_identity.py`. The runtime artifact
+may come from a later commit than the app; the manifest records its `GIT_COMMIT` for those two files. `args` then lists the
+receipt as an `--extra-file`. `verify --same-runtime-as` against the last reviewed AMD manifest
+leaves out the files this repository builds (the helper and, on Windows, the patched DLL and its
+receipt), which differ at each commit, and requires them on both sides:
+
+```sh
+python3 boinc/scripts/qwen_vulkan_bundle.py build --archive llama-b12084-bin-ubuntu-vulkan-x64.tar.gz \
+  --binary boinc-native-x86_64-pc-linux-gnu/usnm_qwen_x86_64-pc-linux-gnu --artifact boinc-native-x86_64-pc-linux-gnu \
+  --libgomp-deb libgomp1.deb --source-commit COMMIT --plan-class amd_vulkan_8b --out target/qwen-amd
+python3 boinc/scripts/qwen_vulkan_bundle.py build-windows --archive llama-b12084-bin-win-vulkan-x64.zip \
+  --artifact boinc-native-windows_x86_64 --amd-runtime amd-vulkan-runtime-windows_x86_64 \
+  --source-commit COMMIT --plan-class amd_vulkan_8b --out target/qwen-amd-win
+python3 boinc/scripts/qwen_vulkan_bundle.py verify --bundle target/qwen-amd-win \
+  --same-runtime-as boinc/infra/boinc/releases/prod-onprem-usnm_qwen-1.20-amd_vulkan_8b-windows_x86_64.json
 ```
 
 For `arm64-apple-darwin` (`apple_gpu_8b`, `apple_gpu_x08`), `build-macos` takes the

@@ -23,3 +23,6 @@ ocr/engines/tesseract/models.lock text eol=lf
 ocr/engines/tesseract/Containerfile text eol=lf
 ocr/models/chr-phoenix/* text eol=lf
 boinc/apps/native/*.lock text eol=lf
+# AMD_RUNTIME_BUILD.json records this patch's SHA256, and qwen_vulkan_bundle.py build-windows
+# compares it with the checkout's copy, so every checkout, Windows CI included, must keep LF.
+boinc/scripts/patch_amd_vulkan_identity.py text eol=lf
