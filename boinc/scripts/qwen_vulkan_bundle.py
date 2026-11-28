@@ -482,7 +482,8 @@ def layout(release):
 def amd_own(extra_files):
     """AMD's files built from this repository rather than taken from the pinned archive."""
     own = {AMD_HELPER, WIN_AMD_HELPER, AMD_RECEIPT} & set(extra_files)
-    return own | ({AMD_DLL} if AMD_RECEIPT in extra_files else set())
+    # The DLL counts as AMD's own only where it is listed, so a manifest missing it fails the comparison.
+    return own | ({AMD_DLL} if AMD_RECEIPT in extra_files and AMD_DLL in extra_files else set())
 
 
 def runtime_hashes(extra_files):

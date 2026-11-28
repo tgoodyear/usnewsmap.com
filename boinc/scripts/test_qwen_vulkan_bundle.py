@@ -408,6 +408,21 @@ class WindowsBundle(unittest.TestCase):
             bundle.verify(self.dir / "amd", self.dir / "reviewed.json")
         with self.assertRaisesRegex(ValueError, "runtime differs"):
             bundle.verify(self.dir / "amd", self.dir / "nvidia/release.json")
+        # A reviewed AMD manifest with the receipt and helper but without the patched DLL is incomplete.
+        del reviewed["worker"]["extra_files"]["ggml-vulkan.dll"]
+        reviewed["worker"]["extra_files"]["ggml.dll"]["sha256"] = extras["ggml.dll"]["sha256"]
+        (self.dir / "reviewed.json").write_text(json.dumps(reviewed))
+        with self.assertRaisesRegex(ValueError, "runtime differs"):
+            bundle.verify(self.dir / "amd", self.dir / "reviewed.json")
+
+    @unittest.skipUnless(shutil.which("git") and (ROOT / ".git").exists(), "needs the git checkout")
+    def test_the_patch_whose_digest_the_receipt_records_is_checked_out_with_lf(self):
+        attrs = subprocess.run(["git", "-C", str(ROOT), "check-attr", "text", "eol", "--",
+                                "boinc/scripts/patch_amd_vulkan_identity.py"],
+                               capture_output=True, text=True, check=True).stdout
+        self.assertIn("text: set", attrs)
+        self.assertIn("eol: lf", attrs)
+        self.assertNotIn(b"\r", bundle.AMD_PATCH.read_bytes())
 
     def test_amd_verify_refuses_a_dll_the_receipt_does_not_record(self):
         archive, lock = self.archive()
