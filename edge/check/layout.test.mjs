@@ -704,3 +704,9 @@ test("the letter guide lists every letter A to Z as well as the mixed-up pairs",
   const c = new Intl.Collator("de", { caseFirst: "lower" });
   assert.deepEqual(["B", "a", "s", "ä", "A", "S", "b"].sort(c.compare), ["a", "A", "ä", "b", "B", "s", "S"]);
 });
+
+test("r rotunda (ꝛ) has a font: borrowed from the bundled Fraktur font for that letter only", () => {
+  assert.match(css, /font-family: "Rotunda";[^}]*src: url\("fonts\/UnifrakturMaguntia-Book\.ttf"\)[^}]*unicode-range: U\+A75B, U\+A75A;/);
+  assert.match(css, /--font-script:[^;]*"Rotunda", system-ui, sans-serif;/);
+  assert.match(css, /--font-ui:[^;]*"Rotunda", sans-serif;/);
+});
