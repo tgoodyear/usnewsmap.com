@@ -152,6 +152,16 @@ jobs:
           if (-not (Test-Path (Join-Path (Split-Path $icd) $driver))) { throw "lavapipe ICD names a missing driver: $driver" }
           # Only lavapipe, for this step only.
           $env:VK_DRIVER_FILES = $icd; $env:VK_ICD_FILENAMES = $icd
+          # The loader must see it before llama.cpp is asked to.
+          $vulkaninfo = Get-ChildItem (Join-Path $env:VULKAN_SDK 'Bin') -Filter 'vulkaninfo*.exe' | Select-Object -First 1
+          if (-not $vulkaninfo) { throw 'Vulkan SDK has no vulkaninfo' }
+          $env:VK_LOADER_DEBUG = 'error,warn,driver'
+          $summary = & $vulkaninfo.FullName --summary 2>&1 | Out-String; $code = $LASTEXITCODE
+          Remove-Item Env:VK_LOADER_DEBUG
+          "== vulkaninfo exit=$code"; $summary
+          if ($code -ne 0 -or $summary -notmatch 'llvmpipe') { throw 'The Vulkan loader did not load the lavapipe driver' }
+          # ggml-vulkan skips CPU-type devices unless they are named, and lavapipe is one.
+          $env:GGML_VK_VISIBLE_DEVICES = '0'
           # Every device the backend registers, with the identity the backend exports for it.
           $source = Join-Path $PWD 'boinc\apps\qwen\amd-device-map.cpp'
           @"
