@@ -127,6 +127,60 @@ class Build(unittest.TestCase):
             report = json.load(open(os.path.join(out, "report.json")))
             self.assertEqual(report["tasks_by_ratio_band"], {"full": 1, "none": 1})
 
+    def test_a_chunk_with_almost_nothing_of_ours_and_many_loc_words_is_labelled_by_rule(self):
+        from PIL import Image
+        many = [f"w{i}" for i in range(20)]
+        loc = alto([[line(many[:10], 0, 100), line(many[10:], 0, 130)], [line(WORDS, 500, 100), line(WORDS, 500, 130)]])
+        ours = alto([[line(["w1", "w2"], 0, 100)], [line(WORDS, 500, 100), line(WORDS, 500, 130)]])
+        with tempfile.TemporaryDirectory() as d:
+            Image.new("L", (2000, 2000), 255).save(os.path.join(d, "p.jpg"))
+            open(os.path.join(d, "loc.xml"), "wb").write(loc)
+            open(os.path.join(d, "ours.xml"), "wb").write(ours)
+            open(os.path.join(d, "en.json"), "w").write(json.dumps({"name": "English", "intro": "x"}))
+            page = {"page": "sn1/1876-10-08/ed-1/seq-7", "date": "1876-10-08", "image": "p.jpg", "loc_alto": "loc.xml",
+                    "ours_alto": "ours.xml", "seed": "known-miss"}
+            open(os.path.join(d, "pages.jsonl"), "w").write(json.dumps(page) + "\n")
+            out = os.path.join(d, "out")
+            subprocess.run([sys.executable, os.path.join(HERE, "en_cover.py"), "--pages", os.path.join(d, "pages.jsonl"),
+                            "--set", "cover-v1", "--language-config", os.path.join(d, "en.json"), "--out-dir", out,
+                            "--clip-tag", "fr1"], check=True, capture_output=True)
+            tasks = [json.loads(l) for l in open(os.path.join(out, "tasks.jsonl"))]
+            self.assertEqual([t["id"].rsplit("~", 1)[1] for t in tasks], ["b1c0"])
+            self.assertIn("/blocks-fr1/", tasks[0]["block"])
+            self.assertIn("/pages-fr1/", tasks[0]["pageview"])
+            ruled = [json.loads(l) for l in open(os.path.join(out, "rule_labelled.jsonl"))]
+            self.assertEqual([(r["id"].rsplit("~", 1)[1], r["outcome"], r["reason"]) for r in ruled],
+                             [("b0c0", "missing", "ours<=3 words, loc>=20")])
+            self.assertFalse(os.path.exists(os.path.join(out, "clips", "en-cover/cover-v1/blocks-fr1/sn1_1876-10-08_ed-1_seq-7_b0c0.jpg")))
+            only = os.path.join(d, "only.txt")
+            open(only, "w").write(tasks[0]["id"] + "\n" + ruled[0]["id"] + "\n")
+            subprocess.run([sys.executable, os.path.join(HERE, "en_cover.py"), "--pages", os.path.join(d, "pages.jsonl"),
+                            "--set", "cover-v1", "--language-config", os.path.join(d, "en.json"), "--out-dir", out + "2",
+                            "--only-ids", only], check=True, capture_output=True)
+            again = [json.loads(l) for l in open(os.path.join(out + "2", "tasks.jsonl"))]
+            self.assertEqual([t["id"] for t in again], [tasks[0]["id"]])
+
+    def test_a_wide_block_clip_keeps_the_scans_pixels(self):
+        from PIL import Image
+        row = [f"w{i}" for i in range(30)]
+        both = alto([[line(row, 0, 100), line(row, 0, 130)]], width=4000, height=1000)
+        with tempfile.TemporaryDirectory() as d:
+            Image.new("L", (4000, 1000), 255).save(os.path.join(d, "p.jpg"))
+            open(os.path.join(d, "loc.xml"), "wb").write(both)
+            open(os.path.join(d, "ours.xml"), "wb").write(both)
+            open(os.path.join(d, "en.json"), "w").write(json.dumps({"name": "English", "intro": "x"}))
+            page = {"page": "sn1/1876-10-08/ed-1/seq-7", "date": "1876-10-08", "image": "p.jpg", "loc_alto": "loc.xml",
+                    "ours_alto": "ours.xml"}
+            open(os.path.join(d, "pages.jsonl"), "w").write(json.dumps(page) + "\n")
+            out = os.path.join(d, "out")
+            subprocess.run([sys.executable, os.path.join(HERE, "en_cover.py"), "--pages", os.path.join(d, "pages.jsonl"),
+                            "--set", "cover-v1", "--language-config", os.path.join(d, "en.json"), "--out-dir", out],
+                           check=True, capture_output=True)
+            t = json.loads(open(os.path.join(out, "tasks.jsonl")).readline())
+            x0, y0, x1, y1 = t["block_box"]
+            self.assertGreater(x1 - x0, 1200)
+            self.assertGreater(Image.open(os.path.join(out, "clips", t["block"])).size[0], x1 - x0)
+
 
 if __name__ == "__main__":
     unittest.main()
