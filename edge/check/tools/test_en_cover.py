@@ -130,8 +130,8 @@ class Build(unittest.TestCase):
     def test_a_chunk_with_almost_nothing_of_ours_and_many_loc_words_is_labelled_by_rule(self):
         from PIL import Image
         many = [f"w{i}" for i in range(20)]
-        loc = alto([[line(many[:10], 0, 100), line(many[10:], 0, 130)], [line(WORDS, 500, 100), line(WORDS, 500, 130)]])
-        ours = alto([[line(["w1", "w2"], 0, 100)], [line(WORDS, 500, 100), line(WORDS, 500, 130)]])
+        loc = alto([[line(many[:10], 0, 100), line(many[10:], 0, 130)], [line(WORDS, 1200, 100), line(WORDS, 1200, 130)]], width=2000)
+        ours = alto([[line(["w1", "w2"], 0, 100)], [line(WORDS, 1200, 100), line(WORDS, 1200, 130)]], width=2000)
         with tempfile.TemporaryDirectory() as d:
             Image.new("L", (2000, 2000), 255).save(os.path.join(d, "p.jpg"))
             open(os.path.join(d, "loc.xml"), "wb").write(loc)
