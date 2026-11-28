@@ -40,8 +40,8 @@ def main(argv=None):
                 with tf.extractfile(m) as src, open(tmp, "wb") as dst:
                     shutil.copyfileobj(src, dst, 1 << 22)
                 need = rows_by_parquet.get(os.path.basename(m.name), {})
-                if want_paths and not maps:
-                    raise SystemExit("parquet %s came before any --paths map in the stream; put the maps first" % m.name)
+                if len(maps) < len(want_paths):
+                    raise SystemExit("parquet %s came before all --paths maps (%d of %d seen); put the maps first" % (m.name, len(maps), len(want_paths)))
                 pf = pq.ParquetFile(tmp)
                 names = pf.schema_arrow.names
                 colname = "page_image" if "page_image" in names else "image"  # Europeana names it `image`
@@ -52,7 +52,11 @@ def main(argv=None):
                     if sel:
                         col = pf.read_row_group(rg, columns=[colname]).column(colname).to_pylist()
                         for i in sel:
-                            with open(os.path.join(a.out_dir, "images", need[i] + ".img"), "wb") as f:
+                            img_root = os.path.realpath(os.path.join(a.out_dir, "images"))
+                            img = os.path.realpath(os.path.join(img_root, need[i] + ".img"))
+                            if os.path.commonpath([img_root, img]) != img_root:
+                                raise SystemExit("page id %r would be written outside %s" % (need[i], img_root))
+                            with open(img, "wb") as f:
                                 f.write(col[i - start]["bytes"])
                             done_pages += 1
                     start += n
