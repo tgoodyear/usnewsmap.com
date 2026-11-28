@@ -25,6 +25,10 @@ Per page it keeps every chunk with ratio below --low (the candidates for a misse
 with other chunks drawn with --seed, so most pages also carry chunks that should be answered Yes. Low chunks past
 --per-page are kept too, up to --max-low.
 
+A chunk where our reading has at most 3 words and LoC has at least 20 is missing by rule: no volunteer is asked, it is not a task, and it goes to OUT_DIR/rule_labelled.jsonl with outcome "missing" and reason "ours<=3 words, loc>=20". It does not count as a low chunk, so the page is filled from the others instead.
+The page's `image` must be the held full-resolution scan, never a reduced derivative or a reduced decode (`im.reduce`): the block clips are cut from it at 1:1 (the page view alone is scaled to 800 px wide).
+--clip-tag TAG writes clips as pages-TAG/ and blocks-TAG/, new keys for a rebuild (clips are cached as immutable); --only-ids FILE keeps only the chunks whose ids are listed, so a rebuild covers the loaded tasks and nothing else.
+
 Writes OUT_DIR/clips/<lang>/<set>/{pages,blocks}/... (lang en-cover by default, its own queue and page, /en-cover), OUT_DIR/tasks.jsonl, OUT_DIR/language.json and OUT_DIR/report.json.
 A task is {"kind": "cover", "text": <our text>, "block": <clip>, "pageview": <clip>, "box": <the block on the page,
 as fractions>, "block_box": <the chunk in image pixels>} plus the usual id, page, source and label. The page answers
@@ -51,8 +55,10 @@ _spec = importlib.util.spec_from_file_location("build_tasks", os.path.join(HERE,
 bt = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bt)
 
+RULE_OURS_MAX = 3  # our reading of a chunk with at most this many words ...
+RULE_LOC_MIN = 20  # ... where LoC has at least this many is missing by rule: no volunteer is asked
+RULE_REASON = f"ours<={RULE_OURS_MAX} words, loc>={RULE_LOC_MIN}"
 PAGEVIEW_WIDTH = 800
-MAX_BLOCK_WIDTH = 1200
 LETTER = re.compile(r"\w", re.UNICODE)
 
 
@@ -188,6 +194,11 @@ def chunks(page: dict, loc_blocks: list, ours: list, args, stats: Counter) -> li
     return out
 
 
+def by_rule(c: dict) -> bool:
+    """A chunk where we read almost nothing and LoC reads a lot: missing without asking anyone."""
+    return c["ours_words"] <= RULE_OURS_MAX and c["loc_words"] >= RULE_LOC_MIN
+
+
 def pick(cands: list, args) -> list:
     low = sorted((c for c in cands if c["ratio"] < args.low), key=lambda c: rank(args.seed, c["id"]))[:args.max_low]
     rest = sorted((c for c in cands if c["ratio"] >= args.low), key=lambda c: rank(args.seed, c["id"]))
@@ -202,7 +213,8 @@ def write_page(page: dict, chosen: list, img, args, out_dir: str, f) -> None:
     W, H = img.size
     prefix = f"{args.lang}/{args.set}"
     stem = page["page"].replace("/", "_")
-    pv_key = f"{prefix}/pages/{stem}.jpg"
+    tag = f"-{args.clip_tag}" if args.clip_tag else ""  # clips are cached as immutable, so a rebuilt clip needs a new key
+    pv_key = f"{prefix}/pages{tag}/{stem}.jpg"
     os.makedirs(os.path.dirname(os.path.join(out_dir, "clips", pv_key)), exist_ok=True)
     pv = img.resize((PAGEVIEW_WIDTH, max(1, round(H * PAGEVIEW_WIDTH / W))))
     pv.save(os.path.join(out_dir, "clips", pv_key), quality=args.quality)
@@ -210,9 +222,8 @@ def write_page(page: dict, chosen: list, img, args, out_dir: str, f) -> None:
         x0, y0, x1, y1 = c["box"]
         pad = max(6, int((y1 - y0) * 0.03))
         crop = img.crop((max(0, int(x0 - pad)), max(0, int(y0 - pad)), min(W, int(x1 + pad)), min(H, int(y1 + pad))))
-        if crop.size[0] > MAX_BLOCK_WIDTH:
-            crop = crop.resize((MAX_BLOCK_WIDTH, max(1, round(crop.size[1] * MAX_BLOCK_WIDTH / crop.size[0]))))
-        key = f"{prefix}/blocks/{c['id'].split('/', 2)[2].replace('/', '_').replace('~', '_')}.jpg"
+        # No downscale: a block clip is the scan's own pixels (a cap at 1200 px once shrank full-width blocks by up to 4.6x).
+        key = f"{prefix}/blocks{tag}/{c['id'].split('/', 2)[2].replace('/', '_').replace('~', '_')}.jpg"
         os.makedirs(os.path.dirname(os.path.join(out_dir, "clips", key)), exist_ok=True)
         crop.save(os.path.join(out_dir, "clips", key), quality=args.quality)
         f.write(json.dumps({
@@ -243,6 +254,8 @@ def main() -> None:
     ap.add_argument("--max-overlap", type=float, default=0.6, help="a chunk overlapping a taken one more than this is left out")
     ap.add_argument("--no-clips", action="store_true", help="count only: write the report and no tasks or images")
     ap.add_argument("--quality", type=int, default=85)
+    ap.add_argument("--clip-tag", default="", help="clips go in pages-TAG/ and blocks-TAG/ (new keys for a rebuild)")
+    ap.add_argument("--only-ids", help="a file of task ids, one per line: keep only those chunks (a rebuild of a loaded set)")
     args = ap.parse_args()
 
     from PIL import Image
@@ -251,7 +264,9 @@ def main() -> None:
     os.makedirs(args.out_dir, exist_ok=True)
     stats, bands, per_page = Counter(), Counter(), {}
     pages = [json.loads(l) for l in open(args.pages, encoding="utf-8") if l.strip()]
+    only = set(l.strip() for l in open(args.only_ids, encoding="utf-8") if l.strip()) if args.only_ids is not None else None
     f = None if args.no_clips else open(os.path.join(args.out_dir, "tasks.jsonl"), "w", encoding="utf-8")
+    rl = None if args.no_clips else open(os.path.join(args.out_dir, "rule_labelled.jsonl"), "w", encoding="utf-8")
     try:
         for page in pages:
             stats["pages"] += 1
@@ -264,16 +279,27 @@ def main() -> None:
                 per_page[page["page"]] = {"seed": page.get("seed"), "left_out": str(e)}
                 continue
             cands = chunks(page, loc, ours, args, stats)
-            chosen = pick(cands, args)
+            ruled = [c for c in cands if by_rule(c)]
+            cands = [c for c in cands if not by_rule(c)]
+            if only is not None:
+                ruled = [c for c in ruled if c["id"] in only]
+            stats["rule_labelled_missing"] += len(ruled)
+            if f:
+                for c in ruled:
+                    rl.write(json.dumps({"id": c["id"], "page": page["page"], "outcome": "missing", "reason": RULE_REASON,
+                                         "block_box": [round(v) for v in c["box"]], "loc_words": c["loc_words"],
+                                         "ours_words": c["ours_words"], "text": c["text"]}, ensure_ascii=False) + "\n")
+            chosen = [c for c in cands if c["id"] in only] if only is not None else pick(cands, args)
             stats["tasks"] += len(chosen)
             bands.update(ratio_band(c["ratio"]) for c in chosen)
             per_page[page["page"]] = {"seed": page.get("seed"), "chunks": len(cands), "tasks": len(chosen),
                                       "low": sum(c["ratio"] < args.low for c in cands)}
-            if f:
+            if f and chosen:
                 write_page(page, chosen, img, args, args.out_dir, f)
     finally:
         if f:
             f.close()
+            rl.close()
     if not args.no_clips:
         cfg = json.load(open(args.language_config, encoding="utf-8"))
         language = {k: v for k, v in cfg.items() if k not in bt.BUILD_ONLY}
