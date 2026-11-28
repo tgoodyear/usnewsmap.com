@@ -114,7 +114,8 @@ async function home() {
       a.href = "/" + l.code;
       const name = document.createElement("strong"); name.textContent = l.name;
       const meta = document.createElement("div"); meta.className = "meta";
-      meta.textContent = `${l.tasks.toLocaleString()} words, ${l.settled.toLocaleString()} settled`;
+      // `unit` names what a language's tasks are (lines, blocks, or items for an entry that mixes kinds); words otherwise
+      meta.textContent = `${l.tasks.toLocaleString()} ${l.unit || "words"}, ${l.settled.toLocaleString()} settled`;
       a.append(name, meta); li.appendChild(a); ul.appendChild(li);
     }
     if (!langs.length) ul.innerHTML = '<li class="muted">No languages yet.</li>';
@@ -312,11 +313,26 @@ const GUTTER_BADCROP_HELP = "Pick Bad crop if the picture is broken or isn't par
 // the question whether all of the block's text is in the reading. Yes is `a`, No (some is missing) is `b`, Not text is `notext`
 // (the block holds no text); Neither doesn't apply. Wrong letters don't count, only missing lines or passages.
 const isCover = (t) => !!t && t.kind === "cover";
-const COVER_ANSWERS = [["a", "Yes, it's all there"], ["b", "No, some is missing"]];
+const COVER_ANSWERS = [["a", "Yes, nothing missing"], ["b", "No, a line or more is missing"]];
 const COVER_BADCROP_HELP = "Pick Bad crop if the picture is broken, or the box cuts through the middle of lines so you can't say what is in it.";
+
+// A task drawn with another language's configuration than the page's (README.md, "One entry per language") asks a question the
+// page's rules don't cover, so its card carries its own: the rules under the question, and its notes for edge cases behind a fold.
+function ownHelp(card) {
+  if (!cfg || cfg === pageCfg) return;
+  if (typeof cfg.rules === "string" && cfg.rules) { const p = document.createElement("p"); p.className = "how card-rules"; p.textContent = cfg.rules; card.appendChild(p); }
+  if (Array.isArray(cfg.guidance) && cfg.guidance.length) {
+    const d = document.createElement("details"); d.className = "card-guidance";
+    const s = document.createElement("summary"); s.textContent = "More help";
+    const ul = document.createElement("ul"); ul.className = "how";
+    for (const g of cfg.guidance) { const li = document.createElement("li"); li.textContent = g; ul.appendChild(li); }
+    d.append(s, ul); card.appendChild(d);
+  }
+}
 
 function renderCover(card, t, prev) {
   const q = document.createElement("p"); q.className = "question"; q.textContent = cfg.question || ""; card.appendChild(q);
+  ownHelp(card);
   if (t.label) { const top = document.createElement("div"); top.className = "label"; top.textContent = t.label; card.appendChild(top); }
   const pv = document.createElement("div"); pv.className = "lineview pageview";
   const pi = new Image(); pi.src = "/clips/" + t.pageview; pi.alt = "the whole page, with the block marked"; pv.appendChild(pi);
@@ -347,6 +363,7 @@ function renderCover(card, t, prev) {
 
 function renderGutter(card, t, prev) {
   const q = document.createElement("p"); q.className = "question"; q.textContent = cfg.question || ""; card.appendChild(q);
+  ownHelp(card);
   const view = document.createElement("div"); view.className = "gutterview";
   // Focusable so keyboard-only volunteers can scroll a tall crop with the arrow keys.
   view.tabIndex = 0; view.setAttribute("role", "region"); view.setAttribute("aria-label", "Page crop; scroll to see the whole line");

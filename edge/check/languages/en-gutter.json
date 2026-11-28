@@ -9,5 +9,6 @@
   "name": "English column gutters",
   "question": "Does this line run down a gap between columns of text without crossing any printed text?",
   "rules": "A colored line is drawn on a piece of a newspaper page. Say whether it runs down the white gap between two columns of text without crossing any printed text. Use the button to hide the line and look at the print under it. If you can't tell, pick Can't tell. You don't need to read the text, only to see where the print is. Use Add a note to tell us anything else about a crop, such as why you chose or what you're unsure of.",
-  "title": "English newspaper column gutters"
+  "title": "English newspaper column gutters",
+  "unit": "lines"
 }

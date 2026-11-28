@@ -75,7 +75,16 @@
     "9"
   ],
   "guidance": [
+    "Only the letters and digits count. Capital and small letters count as the same, and punctuation doesn't count: if the readings differ only in a comma or a capital, compare the letters.",
+    "On older pages the long s (ſ), which looks like an f without the bar across, counts as s: a reading with f in its place does not match.",
+    "If the box cuts off part of the word, look at the line above it to see the whole word.",
+    "If a letter is too worn or blotted to tell which reading it supports, pick Can't tell.",
     "A printed fraction such as ½: if neither reading has it, pick Neither, then type the word in the box. The ⌨ button beside Send shows buttons for ½ ¼ ¾ and other characters a keyboard lacks, and 1/2 typed out counts the same."
+  ],
+  "includes": [
+    "en-read",
+    "en-gutter",
+    "en-cover"
   ],
   "insert_chars": [
     "½",
@@ -96,7 +105,8 @@
     "°",
     "—"
   ],
-  "intro": "These words come from English-language newspaper pages in Chronicling America, the Library of Congress's collection of historic American newspapers. Two machine readings (OCR) disagree on each word.",
+  "intro": "These come from English-language newspaper pages in Chronicling America, the Library of Congress's collection of historic American newspapers. Most are words where two machine readings (OCR) disagree. Some ask instead whether a drawn line runs between two columns, or whether a machine reading missed any of a block of print: those cards say what to look for.",
   "name": "English",
-  "title": "English newspapers"
+  "title": "English newspapers",
+  "unit": "items"
 }
