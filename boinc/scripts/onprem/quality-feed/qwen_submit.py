@@ -122,15 +122,21 @@ def held_elsewhere(share, root, reread_half=False):
     return elsewhere
 
 
-def inventory(share, project, batch=8):
+def inventory(share, project, batch=8, documents_held=False):
+    """The queue counts, app versions and free space that admission reads, and with
+    `documents_held` the pages every Qwen root holds (`--inventory`, for the feed's picker).
+
+    Only `--inventory` walks the roots: reading every root's jobs over the share took about nine
+    minutes on 28 Nov 2026 (30,000 jobs), and a publication or a transaction does it while it
+    holds the bridge step lock, which kept every other step on the server waiting."""
     qwen = share / "qwen"
     seen, full = set(), set()
-    for path, job in jobs(qwen):
+    for path, job in (jobs(qwen) if documents_held else ()):
         docs = documents(job)
         seen.update(docs)
         if root_crop_res(root_of(qwen, path)) == "full":
             full.update(docs)
-    for marker in qwen.glob("*/*/*/too_large"):
+    for marker in (qwen.glob("*/*/*/too_large") if documents_held else ()):
         evidence = marker.parent / "rejected-qwen.json"
         if evidence.exists():
             docs = documents(json.loads(evidence.read_text()))
@@ -164,6 +170,8 @@ echo json_encode(["ready"=>count($ready), "dispatched"=>count($running),
     counts = json.loads(subprocess.check_output(["php", "-r", php], text=True))
     free = min(shutil.disk_usage(path).free
                for path in (share, share / "quality", project / "download"))
+    if not documents_held:
+        return {**counts, "free_bytes": free}
     # full_documents: the pages a full-resolution root holds, all a --reread-half feed skips.
     return {**counts, "documents": sorted(seen), "full_documents": sorted(full), "free_bytes": free}
 
@@ -1171,7 +1179,7 @@ def main():
     if a.allow_english and a.prompt_version != XIAOMI_VERSION:
         ap.error("--allow-english is for a Xiaomi-OCR-0 root (--prompt-version 5) only")
     target, batch = route(a.prompt_version, getattr(a, "crop_res", None) or "half")
-    state = inventory(a.share, a.project, batch)
+    state = inventory(a.share, a.project, batch, documents_held=a.inventory)
     if a.inventory:
         print(json.dumps(state))
         return
