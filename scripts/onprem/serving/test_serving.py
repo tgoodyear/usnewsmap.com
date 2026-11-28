@@ -771,6 +771,20 @@ class Install(Stubbed):
         r = self.install("--dev", "--dev-image", "latest")
         self.assertEqual(r.returncode, 2)
 
+    def test_a_new_tunnel_helper_restarts_the_dev_connector(self):
+        r = self.install("--dev", "--dev-image", "sha256:" + "ab" * 32)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        write(os.path.join(self.root, "etc/cloudflared/usnm-serving-dev.env"), "TUNNEL_TOKEN=x\n")
+        helper = os.path.join(self.root, "usr/local/libexec/usnm-serving/run-cloudflared")
+        with open(helper, "a") as f:
+            f.write("# older\n")
+        open(self.log, "w").close()
+        self.env["STUB_ACTIVE"] = "usnm-searcher.service caddy.service usnm-api-dev.service cloudflared-usnm-serving-dev.service"
+        r = self.install("--dev")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("systemctl restart cloudflared-usnm-serving-dev.service", self.calls())
+        self.assertNotIn("systemctl restart usnm-api-dev.service", self.calls())
+
     def test_dev_refuses_an_image_that_isnt_stored(self):
         image = "sha256:" + "cd" * 32
         self.env["STUB_MISSING_IMAGE"] = image

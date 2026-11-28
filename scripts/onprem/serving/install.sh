@@ -211,7 +211,9 @@ put "$HERE/update-api.sh" "$R/usr/local/sbin/usnm-serving-update" 0755
 put "$HERE/warm-edge.py" "$R/usr/local/libexec/usnm-serving/warm-edge" 0755
 changed=false
 put "$HERE/run-cloudflared.sh" "$R/usr/local/libexec/usnm-serving/run-cloudflared" 0755
-! $changed || cloudflared_changed=true
+# Both tunnels run this helper, so a new one restarts both connectors.
+helper_changed=$changed
+! $helper_changed || cloudflared_changed=true
 
 # The drop-ins the units here now carry themselves: the lake mounts
 # (usnm-api@.service) and the production tunnel's metrics port.
@@ -222,7 +224,7 @@ for dropin in usnm-api@.service.d/azexit-lake.conf cloudflared-usnm-serving.serv
   run rmdir --ignore-fail-on-non-empty "$UNITS/${dropin%/*}"
 done
 
-dev_changed=false dev_tunnel_changed=false
+dev_changed=false dev_tunnel_changed=$helper_changed
 if $DEV; then
   [ -n "$DEV_IMAGE" ] || [ -s "$DEV_ETC/image.env" ] ||
     die "no dev image yet: give --dev-image"
