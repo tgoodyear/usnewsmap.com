@@ -305,13 +305,20 @@ class WindowsBundle(unittest.TestCase):
         self.dir = Path(self.folder.name)
         self.artifact = self.dir / "artifact"
         self.artifact.mkdir()
+        # The build-time weights.lock, deliberately unlike the repo's, so the tests see which is used.
         files = {bundle.WIN_BINARY: b"MZ qwen", **{n: n.encode() * 2 for n in self.CRT},
-                 "usnm-amd-device-map.exe": b"MZ amd", "usnm_quality_windows_x86_64.exe": b"MZ quality"}
+                 "usnm-amd-device-map.exe": b"MZ amd", "usnm_quality_windows_x86_64.exe": b"MZ quality",
+                 "weights.lock": b'{"build": "time"}\n'}
         for name, data in files.items():
             (self.artifact / name).write_bytes(data)
         (self.artifact / "GIT_COMMIT").write_text(COMMIT + "\n")
-        (self.artifact / "SHA256SUMS").write_text("".join(
-            f"{hashlib.sha256(data).hexdigest()}  {name}\n" for name, data in files.items()))
+        self.sums()
+
+    def sums(self):
+        # The Windows job writes `sha256 *name` lines with CRLF ends.
+        names = sorted(p.name for p in self.artifact.iterdir() if p.name not in ("GIT_COMMIT", "SHA256SUMS"))
+        (self.artifact / "SHA256SUMS").write_bytes("".join(
+            f"{hashlib.sha256((self.artifact / n).read_bytes()).hexdigest()} *{n}\r\n" for n in names).encode())
 
     def tearDown(self):
         self.folder.cleanup()
@@ -328,6 +335,9 @@ class WindowsBundle(unittest.TestCase):
         lock = self.dir / "llama.lock"
         lock.write_text(json.dumps({"repository": "ggml-org/llama.cpp", "tag": "b12084", "assets": {
             "win-vulkan-x64": {"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}}}))
+        # The artifact's build-time llama.lock pins the same zip.
+        shutil.copyfile(lock, self.artifact / "llama.lock")
+        self.sums()
         return path, lock
 
     def build(self, archive, lock, plan_class="nvidia_vulkan_8b", out="out"):
@@ -351,6 +361,32 @@ class WindowsBundle(unittest.TestCase):
         # Same inputs, same bytes.
         self.build(archive, lock, out="again")
         self.assertEqual((out / "SHA256SUMS").read_text(), (self.dir / "again/SHA256SUMS").read_text())
+
+    def test_build_bundles_the_artifacts_build_time_locks(self):
+        # Copilot on #2210: the checkout's locks could differ from the ones the binary checks.
+        archive, lock = self.archive()
+        for plan_class in ("nvidia_vulkan_8b", "amd_vulkan_8b"):
+            with self.subTest(plan_class):
+                runtime = {"amd_runtime": self.amd_runtime()} if plan_class == "amd_vulkan_8b" else {}
+                out = self.dir / f"locks-{plan_class}"
+                bundle.build_windows(archive, self.artifact, COMMIT, out, plan_class, **runtime)
+                self.assertEqual((out / "extra/weights.lock").read_bytes(), b'{"build": "time"}\n')
+                self.assertNotEqual((out / "extra/weights.lock").read_bytes(), bundle.WEIGHTS.read_bytes())
+                self.assertEqual((out / "extra/llama.lock").read_bytes(), (self.artifact / "llama.lock").read_bytes())
+                bundle.verify(out)
+        for name in ("weights.lock", "llama.lock"):
+            with self.subTest(changed=name):
+                saved = (self.artifact / name).read_bytes()
+                (self.artifact / name).write_text('{"changed": true}\n')
+                with self.assertRaisesRegex(ValueError, f"{name} does not match"):
+                    bundle.build_windows(archive, self.artifact, COMMIT, self.dir / f"changed-{name}", "nvidia_vulkan_8b")
+                (self.artifact / name).write_bytes(saved)
+        # The artifact's llama.lock must also pin the zip.
+        (self.artifact / "llama.lock").write_text(
+            lock.read_text().replace(hashlib.sha256(archive.read_bytes()).hexdigest(), "0" * 64))
+        self.sums()
+        with self.assertRaisesRegex(ValueError, "not the llama.lock-pinned"):
+            bundle.build_windows(archive, self.artifact, COMMIT, self.dir / "unpinned", "nvidia_vulkan_8b")
 
     def test_build_serves_the_6gb_partial_offload_class_with_the_same_runtime(self):
         # nvidia_vulkan_6gb_8b takes the same pinned runtime as nvidia_vulkan_8b; only the manifest's class differs.

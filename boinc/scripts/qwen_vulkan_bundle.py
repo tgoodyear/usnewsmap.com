@@ -16,8 +16,9 @@ native CI artifact's usnm_qwen, checked against the artifact's SHA256SUMS. It re
 reviewed 1.20 runtime file for file; check that with `verify --same-runtime-as`.
 
 `build-windows` does the same for windows_x86_64 (#1672): the llama.lock-pinned win-vulkan-x64
-zip's llama-server.exe and DLLs, unchanged, plus the Windows native CI artifact's usnm_qwen .exe
-and its signed app-local Microsoft runtime DLLs, each checked against the artifact's SHA256SUMS:
+zip's llama-server.exe and DLLs, unchanged, plus the Windows native CI artifact's usnm_qwen .exe,
+its signed app-local Microsoft runtime DLLs and its build-time llama.lock and weights.lock, each
+checked against the artifact's SHA256SUMS (the artifact's llama.lock also pins the zip):
 
     usnm_qwen_windows_x86_64.exe    the binary, as built
     extra/<logical>                 llama-server.exe, llama-server-impl.dll, llama-common.dll,
@@ -330,9 +331,13 @@ def amd_runtime_files(amd_runtime, llama, patch=AMD_PATCH):
     return (amd_runtime / "GIT_COMMIT").read_text().strip(), amd_runtime / AMD_DLL, amd_runtime / AMD_RECEIPT
 
 
-def build_windows(archive, artifact, source_commit, out, plan_class, lock_path=LOCK, amd_runtime=None,
+def build_windows(archive, artifact, source_commit, out, plan_class, lock_path=None, amd_runtime=None,
                   amd_patch=AMD_PATCH):
-    """The windows_x86_64 bundle from the pinned zip and the Windows native CI artifact directory."""
+    """The windows_x86_64 bundle from the pinned zip and the Windows native CI artifact directory.
+
+    The locks are the artifact's, the ones its usnm_qwen was built against and checks at run time,
+    each verified against the artifact's SHA256SUMS, as in build_macos; `lock_path` overrides
+    llama.lock (tests)."""
     import zipfile
     if plan_class not in WIN_PLAN_CLASSES:
         raise ValueError(f"not a Windows Vulkan usnm_qwen plan class built here: {plan_class}")
@@ -346,10 +351,11 @@ def build_windows(archive, artifact, source_commit, out, plan_class, lock_path=L
         raise ValueError("the artifact's GIT_COMMIT is not --source-commit")
     sums = read_sums(artifact / "SHA256SUMS")
     crt = sorted(p.name for p in artifact.iterdir() if WIN_CRT.fullmatch(p.name))
-    for name in [WIN_BINARY, *crt, *([WIN_AMD_HELPER] if amd else [])]:
+    for name in [WIN_BINARY, *crt, "llama.lock", "weights.lock", *([WIN_AMD_HELPER] if amd else [])]:
         if not (artifact / name).is_file() or sums.get(name) != sha256(artifact / name):
             raise ValueError(f"{name} does not match the artifact's SHA256SUMS")
-    lock = json.loads(Path(lock_path).read_text())
+    lock_path = artifact / "llama.lock" if lock_path is None else Path(lock_path)
+    lock = json.loads(lock_path.read_text())
     asset = lock["assets"][WIN_ASSET]
     if lock["tag"] not in LLAMA_SOURCE or asset["file"] != f"llama-{lock['tag']}-bin-{WIN_ASSET}.zip":
         raise ValueError("llama.lock pins a runtime this script has not reviewed")
@@ -383,7 +389,7 @@ def build_windows(archive, artifact, source_commit, out, plan_class, lock_path=L
         for path in [*patched, artifact / WIN_AMD_HELPER]:
             shutil.copyfile(path, extra / path.name)
     shutil.copyfile(lock_path, extra / "llama.lock")
-    shutil.copyfile(WEIGHTS, extra / "weights.lock")
+    shutil.copyfile(artifact / "weights.lock", extra / "weights.lock")
     shutil.copyfile(artifact / WIN_BINARY, out / WIN_BINARY)
     names = sorted(p.name for p in extra.iterdir())
     missing = sorted(WIN_REQUIRED - set(names))
