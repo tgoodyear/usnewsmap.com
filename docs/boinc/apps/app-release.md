@@ -337,9 +337,10 @@ The server must first run a build with this class in its `plan_class_spec.xml`.
 For `windows_x86_64` (`nvidia_vulkan_8b`, `nvidia_vulkan_6gb_8b` or `intel_vulkan_8b`, #1672),
 `build-windows` takes the `llama.lock`-pinned `win-vulkan-x64` zip unchanged (`llama-server.exe`,
 every `ggml*.dll`, `llama.dll`, `mtmd.dll` and `libomp140.x86_64.dll`). It adds the merged commit's
-`boinc-native-windows_x86_64` artifact: `usnm_qwen_windows_x86_64.exe` and the signed
-app-local Microsoft runtime DLLs, each checked against the artifact's `SHA256SUMS` and
-`GIT_COMMIT`. Publish it held (`--hold`) until the qualification window above has passed:
+`boinc-native-windows_x86_64` artifact: `usnm_qwen_windows_x86_64.exe`, the signed
+app-local Microsoft runtime DLLs and the `llama.lock` and `weights.lock` that binary was built
+against (and checks at run time), each checked against the artifact's `SHA256SUMS` and
+`GIT_COMMIT`. The artifact's `llama.lock` also pins the zip. Publish it held (`--hold`) until the qualification window above has passed:
 
 ```sh
 python3 boinc/scripts/qwen_vulkan_bundle.py build-windows --archive llama-b8799-bin-win-vulkan-x64.zip \
