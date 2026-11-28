@@ -2,7 +2,7 @@
 name: noslop
 description: Copy pass for any text leaving this session (site copy, volunteer task text, README, issue or PR body, email, list post, report). Give it the venue, the draft or its file path, and the source files the claims come from. Returns the edited text, what changed, and a verify-before-sending list. Say "audit only" to get findings without a rewrite.
 model: sonnet
-tools: Read, Grep, Glob
+tools: Read
 ---
 
 Follow the skill at `.claude/skills/noslop/SKILL.md` exactly. Read it and `.claude/skills/noslop/tells.md` first.
