@@ -671,10 +671,13 @@ async function fillGuide(panel) {
     panel.appendChild(box);
   }
   if (order.length) {
-    const all = document.createElement("details"); all.className = "guide-all";
-    const sum = document.createElement("summary"); sum.textContent = "Every letter in this paper"; all.appendChild(sum);
+    // A to Z, small letter before its capital, so a volunteer can look up the letter they suspect. The pair letters are in it too.
+    let coll; try { coll = new Intl.Collator(lang, { caseFirst: "lower" }); } catch { coll = new Intl.Collator(undefined, { caseFirst: "lower" }); }
+    const abc = [...new Set([...order, ...pairs.flat()])].sort(coll.compare);
+    const all = document.createElement("details"); all.className = "guide-all"; all.open = true;
+    const sum = document.createElement("summary"); sum.textContent = "Every letter in this paper, A to Z"; all.appendChild(sum);
     const box = document.createElement("div"); box.className = "guide-letters";
-    for (const g of order) box.appendChild(cell(g));
+    for (const g of abc) box.appendChild(cell(g));
     all.appendChild(box); panel.appendChild(all);
   } else {
     const n = document.createElement("p"); n.className = "muted"; n.textContent = "No pictures from this paper yet: the letters above are drawn in a period typeface."; panel.appendChild(n);

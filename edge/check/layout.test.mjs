@@ -695,3 +695,12 @@ test("the enlarged word is never drawn smaller than the same word in the line ab
   assert.match(appJs, /li\.addEventListener\("load", fit\); wi\.addEventListener\("load", fit\);/, "sized once both images are in");
   assert.match(appJs, /new ResizeObserver\(fit\)\.observe\(lv\);/, "and again when the line is drawn at another width");
 });
+
+test("the letter guide lists every letter A to Z as well as the mixed-up pairs", () => {
+  assert.match(appJs, /new Intl\.Collator\(lang, \{ caseFirst: "lower" \}\)/, "sorted for the paper's language, small letter first");
+  assert.match(appJs, /const abc = \[\.\.\.new Set\(\[\.\.\.order, \.\.\.pairs\.flat\(\)\]\)\]\.sort\(coll\.compare\);/, "pair letters included, each once");
+  assert.match(appJs, /all\.className = "guide-all"; all\.open = true;/, "open, not folded");
+  assert.match(appJs, /"Every letter in this paper, A to Z"/);
+  const c = new Intl.Collator("de", { caseFirst: "lower" });
+  assert.deepEqual(["B", "a", "s", "ä", "A", "S", "b"].sort(c.compare), ["a", "A", "ä", "b", "B", "s", "S"]);
+});
