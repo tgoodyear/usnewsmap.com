@@ -1,13 +1,13 @@
 {
   "guidance": [
-    "If the reading runs lines together differently from the print, or puts a few words at the edge of the box in another order, that still counts as Yes.",
-    "If the reading has the block's text and more besides (words from the next column), answer Yes.",
-    "If the box holds no text at all (a picture, an ornament, a rule or blank paper), pick Not text. A headline or an advertisement is text."
+    "If the machine reading runs lines together differently from the print, or puts a few words at the edge of the box in another order, pick Yes, nothing missing.",
+    "If the machine reading has all the text in the box and more besides (words from the next column), pick Yes, nothing missing.",
+    "If the box holds no text at all (a picture, an ornament, a divider line or blank paper), pick Not text. A headline or an advertisement is text."
   ],
-  "intro": "A program read each of these English-language newspaper pages from Chronicling America, the Library of Congress's collection of historic American newspapers. We want to know whether it missed any of the print.",
+  "intro": "Each block of print comes from an English-language page in Chronicling America, the Library of Congress's collection of historic American newspapers. A program read the page. We want to know whether it missed any of the print.",
   "name": "English: missing text",
-  "question": "Does the machine reading include all the words printed in the box? Ignore spelling mistakes and a word or two cut off at the edge of the box: answer No only if a line or more is missing.",
-  "rules": "The box marks a block of print, shown enlarged below it, with the machine reading of the same place under that. Spelling doesn't count here. Answer No if a line or more of the print in the box (a line, a passage, a column) is missing from the reading, even if the rest is perfect.",
+  "question": "Does the machine reading include every line printed in the box? Ignore wrong letters and a word or two cut off at the edge of the box.",
+  "rules": "The box on the page marks a block of print. Below the page is that block enlarged, then the machine reading of the same place. Wrong letters don't matter. Pick No if a line or more of the print in the box (a line, a passage, a column) is missing from the machine reading, even if the rest is perfect.",
   "title": "English newspapers: missing text",
   "unit": "blocks"
 }
