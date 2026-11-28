@@ -238,8 +238,11 @@ def checked_artifact(artifact, source_commit, names):
     return artifact
 
 
-def build(archive, binary, source_commit, out, plan_class, libgomp_deb, lock_path=LOCK, libgomp_lock=LIBGOMP_LOCK,
+def build(archive, binary, source_commit, out, plan_class, libgomp_deb, lock_path=None, libgomp_lock=LIBGOMP_LOCK,
           artifact=None):
+    """The Linux bundle. With `artifact` (amd_vulkan_8b), the locks are the artifact's, the ones its
+    usnm_qwen was built against and checks at run time, each verified against its SHA256SUMS, as in
+    build_macos; otherwise the checkout's. `lock_path` overrides llama.lock (tests)."""
     if plan_class not in PLAN_CLASSES:
         raise ValueError(f"not a Linux Vulkan usnm_qwen plan class: {plan_class}")
     if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
@@ -247,9 +250,12 @@ def build(archive, binary, source_commit, out, plan_class, libgomp_deb, lock_pat
     if (artifact is not None) != (plan_class == AMD_PLAN_CLASS):
         raise ValueError("--artifact (the Linux native CI artifact) is required for amd_vulkan_8b, and only for it")
     if artifact is not None:
-        artifact = checked_artifact(artifact, source_commit, [BINARY, AMD_HELPER])
+        artifact = checked_artifact(artifact, source_commit, [BINARY, AMD_HELPER, "llama.lock", "weights.lock"])
         if sha256(binary) != sha256(artifact / BINARY):
             raise ValueError(f"--binary is not the artifact's {BINARY}")
+    if lock_path is None:
+        lock_path = artifact / "llama.lock" if artifact is not None else LOCK
+    weights = artifact / "weights.lock" if artifact is not None else WEIGHTS
     lock = json.loads(Path(lock_path).read_text())
     asset = lock["assets"][ASSET]
     if lock["tag"] not in LLAMA_SOURCE or asset["file"] != f"llama-{lock['tag']}-bin-{ASSET}.tar.gz":
@@ -270,7 +276,7 @@ def build(archive, binary, source_commit, out, plan_class, libgomp_deb, lock_pat
                 shutil.copyfileobj(source, target)
             (extra / logical).chmod(0o755 if logical == "llama-server" else 0o644)
     shutil.copyfile(lock_path, extra / "llama.lock")
-    shutil.copyfile(WEIGHTS, extra / "weights.lock")
+    shutil.copyfile(weights, extra / "weights.lock")
     if artifact is not None:
         shutil.copyfile(artifact / AMD_HELPER, extra / AMD_HELPER)
         (extra / AMD_HELPER).chmod(0o755)

@@ -184,10 +184,12 @@ class Bundle(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "runtime differs"):
             bundle.verify(self.dir / "third", reviewed)
 
-    def amd_artifact(self, helper=b"\x7fELF amd"):
+    def amd_artifact(self, helper=b"\x7fELF amd", lock=None):
         artifact = self.dir / "linux-artifact"
         artifact.mkdir(exist_ok=True)
-        files = {bundle.BINARY: self.binary.read_bytes(), bundle.AMD_HELPER: helper}
+        # The build-time locks; weights.lock deliberately unlike the repo's, so the test sees which is used.
+        files = {bundle.BINARY: self.binary.read_bytes(), bundle.AMD_HELPER: helper,
+                 "llama.lock": (lock or self.dir / "llama.lock").read_bytes(), "weights.lock": b'{"build": "time"}\n'}
         for name, data in files.items():
             (artifact / name).write_bytes(data)
         (artifact / "GIT_COMMIT").write_text(COMMIT + "\n")
@@ -222,6 +224,32 @@ class Bundle(unittest.TestCase):
         sums.write_text("".join(l + "\n" for l in sums.read_text().splitlines() if "usnm-amd-device-map" not in l))
         with self.assertRaises(ValueError):
             bundle.verify(self.dir / "amd")
+
+    def test_amd_bundles_the_artifacts_build_time_locks(self):
+        # Copilot on #2210: the checkout's locks could differ from the ones the binary checks.
+        archive, lock = self.archive()
+        artifact = self.amd_artifact()
+        release = bundle.build(archive, self.binary, COMMIT, self.dir / "amd", "amd_vulkan_8b", self.deb,
+                               libgomp_lock=self.gomp_lock, artifact=artifact)
+        out = self.dir / "amd"
+        self.assertEqual((out / "extra/weights.lock").read_bytes(), b'{"build": "time"}\n')
+        self.assertNotEqual((out / "extra/weights.lock").read_bytes(), bundle.WEIGHTS.read_bytes())
+        self.assertEqual((out / "extra/llama.lock").read_bytes(), (artifact / "llama.lock").read_bytes())
+        self.assertEqual(release["worker"]["extra_files"]["weights.lock"]["source_commit"], COMMIT)
+        bundle.verify(out)
+        for name in ("weights.lock", "llama.lock"):
+            with self.subTest(name):
+                artifact = self.amd_artifact()
+                (artifact / name).write_text('{"changed": true}\n')
+                with self.assertRaisesRegex(ValueError, f"{name} is missing .* or does not match"):
+                    bundle.build(archive, self.binary, COMMIT, self.dir / f"changed-{name}", "amd_vulkan_8b",
+                                 self.deb, libgomp_lock=self.gomp_lock, artifact=artifact)
+        # The artifact's llama.lock must also pin the archive.
+        other = self.dir / "other.lock"
+        other.write_text(lock.read_text().replace(hashlib.sha256(archive.read_bytes()).hexdigest(), "0" * 64))
+        with self.assertRaisesRegex(ValueError, "not the llama.lock-pinned"):
+            bundle.build(archive, self.binary, COMMIT, self.dir / "unpinned", "amd_vulkan_8b", self.deb,
+                         libgomp_lock=self.gomp_lock, artifact=self.amd_artifact(lock=other))
 
     def test_amd_refuses_a_missing_or_mismatched_artifact(self):
         archive, lock = self.archive()
