@@ -129,6 +129,36 @@ jobs:
           $hash = (Get-FileHash amd-vulkan-runtime\ggml-vulkan.dll -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  ggml-vulkan.dll" | Set-Content amd-vulkan-runtime\SHA256SUMS -Encoding ascii
           git rev-parse HEAD | Set-Content amd-vulkan-runtime\GIT_COMMIT -Encoding ascii
+      # docs/boinc/apps/amd-gpu.md step 2: the pinned release's own llama-server.exe must start with the
+      # patched DLL and load it as its Vulkan backend, the same way it loads the original. The runner has
+      # no GPU, so this proves the launch and backend registration, not inference or device mapping.
+      - name: Launch the pinned llama-server.exe with the patched runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outputs = @{}
+          foreach ($bundle in 'amd-baseline', 'amd-patched') {
+            $dir = (Resolve-Path $bundle).Path
+            foreach ($arguments in @('--version'), @('--list-devices')) {
+              $log = Join-Path $env:RUNNER_TEMP "$bundle$($arguments[0]).log"
+              $process = Start-Process (Join-Path $dir 'llama-server.exe') -ArgumentList $arguments -WorkingDirectory $dir `
+                -NoNewWindow -Wait -PassThru -RedirectStandardOutput "$log.out" -RedirectStandardError "$log.err"
+              $text = (Get-Content "$log.out", "$log.err" -Raw) -join "`n"
+              "== $bundle $($arguments -join ' ') exit=$($process.ExitCode)"; $text
+              if ($process.ExitCode -ne 0) { throw "$bundle llama-server.exe $($arguments -join ' ') exited $($process.ExitCode)" }
+              $outputs["$bundle $($arguments[0])"] = $text.Replace($dir, 'BUNDLE')
+            }
+          }
+          foreach ($arguments in '--version', '--list-devices') {
+            if ($outputs["amd-baseline $arguments"] -ne $outputs["amd-patched $arguments"]) {
+              throw "llama-server.exe $arguments differs between the pinned and patched runtimes"
+            }
+          }
+          $loaded = 'loaded Vulkan backend from BUNDLE\ggml-vulkan.dll'
+          if (-not $outputs['amd-patched --list-devices'].Contains($loaded)) {
+            throw "llama-server.exe did not load the patched ggml-vulkan.dll as its Vulkan backend"
+          }
+          "patched runtime: llama-server.exe starts and loads it as the Vulkan backend"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: amd-vulkan-runtime-windows_x86_64

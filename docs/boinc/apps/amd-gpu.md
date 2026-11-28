@@ -154,7 +154,11 @@ For the next reviewed Windows AMD app version:
    the unmodified archive hash.
 2. Use the same reviewed native CI commit's app, corrected helper, app-local CRT
    and unchanged locks. Verify every artifact hash, and test the original
-   `llama-server.exe` with the patched DLL before signing.
+   `llama-server.exe` with the patched DLL before signing. The
+   `amd-vulkan-runtime` workflow does this on its GPU-less runner: the pinned
+   release's `llama-server.exe` must start and load the patched DLL as its
+   Vulkan backend, with the same output as the original. It uploads no
+   artifact otherwise. It does not test inference or device mapping.
 3. Use `boinc/scripts/boinc-app-release.sh`'s existing native
    `--plan-class amd_vulkan_8b --platform windows_x86_64` on-prem release path,
    signing **all** replaced and existing extra files. Include
