@@ -546,6 +546,7 @@ async function configFor(t) {
 // Like the letter key, it only helps the eye and changes nothing about the readings or the answers.
 const PAPERSEL = "usnm-check-paper-"; // + language code: the paper the visitor picked in this browser ("*" for any)
 const GUIDEOPEN = "usnm-check-guide"; // "1" or "0": the visitor opened or closed the letter guide in this browser
+const GUIDEVIEW = "usnm-check-guide-view"; // "pairs", "abc" or "both": which lists of the letter guide the visitor shows
 let papers = [], paper = "", guideOpen = null, guideFor = null;
 const done = new Set(); // papers that had no word left for this visitor on this page
 const paperOfTask = (t) => (t && typeof t.page === "string" ? t.page.split("/")[0] : "");
@@ -664,22 +665,44 @@ async function fillGuide(panel) {
   const off = document.createElement("p"); off.className = "guide-off muted";
   off.textContent = "The letter guide is off for this word: it comes from a blind test, where the guide could lean toward one reading."; panel.appendChild(off);
   const pairs = (Array.isArray(pageCfg.confusions) ? pageCfg.confusions : []).filter((x) => Array.isArray(x) && x.length === 2);
+  // Two lists, each behind a check box: the pairs the machines mix up, and every letter A to Z (small letter before its capital,
+  // pair letters included) so a volunteer can look up the letter they suspect. The pairs show alone at first; the choice is kept.
+  const lists = [];
   if (pairs.length) {
-    const h = document.createElement("p"); h.className = "guide-h"; h.textContent = "Letters the machines mix up, as this paper prints them:"; panel.appendChild(h);
+    const sec = document.createElement("div"); sec.className = "guide-sec"; sec.dataset.list = "pairs";
     const box = document.createElement("div"); box.className = "guide-pairs";
     for (const [x, y] of pairs) { const pr = document.createElement("span"); pr.className = "guide-pair"; pr.append(cell(x), cell(y)); box.appendChild(pr); }
-    panel.appendChild(box);
+    sec.appendChild(box); lists.push(["pairs", "Letters the machines mix up", sec]);
   }
   if (order.length) {
-    // A to Z, small letter before its capital, so a volunteer can look up the letter they suspect. The pair letters are in it too.
     let coll; try { coll = new Intl.Collator(lang, { caseFirst: "lower" }); } catch { coll = new Intl.Collator(undefined, { caseFirst: "lower" }); }
     const abc = [...new Set([...order, ...pairs.flat()])].sort(coll.compare);
-    const all = document.createElement("details"); all.className = "guide-all"; all.open = true;
-    const sum = document.createElement("summary"); sum.textContent = "Every letter in this paper, A to Z"; all.appendChild(sum);
+    const sec = document.createElement("div"); sec.className = "guide-sec"; sec.dataset.list = "abc";
     const box = document.createElement("div"); box.className = "guide-letters";
     for (const g of abc) box.appendChild(cell(g));
-    all.appendChild(box); panel.appendChild(all);
-  } else {
+    sec.appendChild(box); lists.push(["abc", "Every letter, A to Z", sec]);
+  }
+  if (lists.length > 1) {
+    const saved = store(GUIDEVIEW), want = new Set(saved === "both" ? ["pairs", "abc"] : [saved === "abc" ? "abc" : "pairs"]);
+    const bar = document.createElement("div"); bar.className = "guide-views"; bar.setAttribute("role", "group"); bar.setAttribute("aria-label", "Letter guide lists");
+    const boxes = [];
+    for (const [key, label, sec] of lists) {
+      const lab = document.createElement("label"); lab.className = "toggle";
+      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = want.has(key); cb.setAttribute("aria-controls", (sec.id = "guide-" + key));
+      sec.hidden = !cb.checked; boxes.push(cb);
+      cb.addEventListener("change", () => {
+        if (!boxes.some((c) => c.checked)) cb.checked = true; // keep one list showing
+        lists.forEach(([, , sc], i) => { sc.hidden = !boxes[i].checked; });
+        store(GUIDEVIEW, boxes.every((c) => c.checked) ? "both" : boxes[0].checked ? "pairs" : "abc");
+      });
+      lab.append(cb, " " + label); bar.appendChild(lab);
+    }
+    panel.appendChild(bar);
+  } else if (lists.length) {
+    const h = document.createElement("p"); h.className = "guide-h"; h.textContent = lists[0][1] + ":"; panel.appendChild(h);
+  }
+  for (const [, , sec] of lists) panel.appendChild(sec);
+  if (!order.length) {
     const n = document.createElement("p"); n.className = "muted"; n.textContent = "No pictures from this paper yet: the letters above are drawn in a period typeface."; panel.appendChild(n);
   }
   if (task) markGuide(task);

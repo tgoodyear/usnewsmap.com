@@ -696,11 +696,20 @@ test("the enlarged word is never drawn smaller than the same word in the line ab
   assert.match(appJs, /new ResizeObserver\(fit\)\.observe\(lv\);/, "and again when the line is drawn at another width");
 });
 
-test("the letter guide lists every letter A to Z as well as the mixed-up pairs", () => {
+test("the letter guide shows the mixed-up pairs, every letter A to Z, or both, by check box", () => {
   assert.match(appJs, /new Intl\.Collator\(lang, \{ caseFirst: "lower" \}\)/, "sorted for the paper's language, small letter first");
   assert.match(appJs, /const abc = \[\.\.\.new Set\(\[\.\.\.order, \.\.\.pairs\.flat\(\)\]\)\]\.sort\(coll\.compare\);/, "pair letters included, each once");
-  assert.match(appJs, /all\.className = "guide-all"; all\.open = true;/, "open, not folded");
-  assert.match(appJs, /"Every letter in this paper, A to Z"/);
+  assert.match(appJs, /lists\.push\(\["pairs", "Letters the machines mix up", sec\]\)/);
+  assert.match(appJs, /lists\.push\(\["abc", "Every letter, A to Z", sec\]\)/);
+  assert.match(appJs, /want = new Set\(saved === "both" \? \["pairs", "abc"\] : \[saved === "abc" \? "abc" : "pairs"\]\)/, "a check box per list; the pairs alone at first");
+  assert.match(appJs, /if \(!boxes\.some\(\(c\) => c\.checked\)\) cb\.checked = true;/, "one list always shows");
+  assert.match(appJs, /store\(GUIDEVIEW, boxes\.every\(\(c\) => c\.checked\) \? "both" : boxes\[0\]\.checked \? "pairs" : "abc"\)/, "the choice is kept");
   const c = new Intl.Collator("de", { caseFirst: "lower" });
   assert.deepEqual(["B", "a", "s", "ä", "A", "S", "b"].sort(c.compare), ["a", "A", "ä", "b", "B", "s", "S"]);
+});
+
+test("r rotunda (ꝛ) has a font: borrowed from the bundled Fraktur font for that letter only", () => {
+  assert.match(css, /font-family: "Rotunda";[^}]*src: url\("fonts\/UnifrakturMaguntia-Book\.ttf"\)[^}]*unicode-range: U\+A75B, U\+A75A;/);
+  assert.match(css, /--font-script:[^;]*"Rotunda", system-ui, sans-serif;/);
+  assert.match(css, /--font-ui:[^;]*"Rotunda", sans-serif;/);
 });
