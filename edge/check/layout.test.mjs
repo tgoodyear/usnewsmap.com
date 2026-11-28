@@ -659,6 +659,17 @@ test("a card drawn with another language's configuration than the page's carries
   assert.match(appJs, /\$\{l\.unit \|\| "words"\}/, "the home list names lines, blocks or items, not always words");
 });
 
+test("Back to a word answered Neither shows Neither and reopens its box with its text, and brings its note back", () => {
+  assert.equal((appJs.match(/history\.push\(\{ task, choice: "neither" \}\)/g) || []).length, 1, "every Neither leaves through pushNeither");
+  assert.match(appJs, /function pushNeither\(\) \{\n[^\n]*\n  keepTyped\(task\.id, \{ suggest: suggestDraft \}\);/);
+  assert.match(appJs, /if \(h\.choice === "neither" && !isGutter\(task\) && !isCover\(task\)\) \{ suggestFor = task\.id; suggestOpening = \{\}; suggestDraft = k\.suggest \|\| ""; \}/);
+  assert.match(appJs, /noteDone\.add\(id\); if \(rev > \(savedRevs\.get\(id\) \|\| 0\)\) \{ savedRevs\.set\(id, rev\); keepTyped\(id, \{ saved: text \}\); \}/, "a saved note, apart from the draft: the newest save that succeeded, whatever order saves answer or fail in");
+  assert.match(appJs, /failed = true;\n[^\n]*\n    const k = task && typed\.get\(task\.id\);\n    if \(k && k\.noteOpen && k\.draft\) \{ noteDraft = k\.draft; noteFor = task\.id; noteOpening = \{\}; \}/, "a failed load keeps the note box");
+  assert.match(appJs, /if \(task\) keepTyped\(task\.id, noteFor === task\.id && noteDraft\.trim\(\) \? \{ draft: noteDraft, noteOpen: true \} : \{ draft: null, noteOpen: false \}\);/, "an open draft, or none once cleared or cancelled");
+  assert.match(appJs, /for \(const k of \[\.\.\.typed\.keys\(\)\]\) if \(typed\.size > 60 && !reach\.has\(k\)\) typed\.delete\(k\);/, "words Back can reach are never dropped");
+  assert.match(appJs, /\$\(id\)\.classList\.toggle\("chosen", prev === c\)/, "Neither, Can't tell, Not text and Bad crop show the answer given");
+});
+
 test("the character buttons stay hidden behind a keyboard button, which this browser remembers", () => {
   assert.match(appJs, /const open = store\(CHARSOPEN\) === "1";\s*pad\.hidden = !open;/, "hidden until asked for");
   assert.match(appJs, /toggle\.setAttribute\("aria-controls", "suggest-chars"\); toggle\.setAttribute\("aria-expanded", String\(open\)\);/);
