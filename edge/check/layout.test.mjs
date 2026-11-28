@@ -663,8 +663,9 @@ test("Back to a word answered Neither shows Neither and reopens its box with its
   assert.equal((appJs.match(/history\.push\(\{ task, choice: "neither" \}\)/g) || []).length, 1, "every Neither leaves through pushNeither");
   assert.match(appJs, /function pushNeither\(\) \{\n[^\n]*\n  keepTyped\(task\.id, \{ suggest: suggestDraft \}\);/);
   assert.match(appJs, /if \(h\.choice === "neither" && !isGutter\(task\) && !isCover\(task\)\) \{ suggestFor = task\.id; suggestOpening = \{\}; suggestDraft = k\.suggest \|\| ""; \}/);
-  assert.match(appJs, /noteDone\.add\(id\); keepTyped\(id, \{ note: text, noteOpen: false \}\);/, "a saved note");
-  assert.match(appJs, /if \(task && noteFor === task\.id && noteDraft\.trim\(\)\) keepTyped\(task\.id, \{ note: noteDraft, noteOpen: true \}\);/, "an unsaved note");
+  assert.match(appJs, /noteDone\.add\(id\); keepTyped\(id, \{ saved: text \}\);/, "a saved note, apart from the draft");
+  assert.match(appJs, /if \(task\) keepTyped\(task\.id, noteFor === task\.id && noteDraft\.trim\(\) \? \{ draft: noteDraft, noteOpen: true \} : \{ draft: null, noteOpen: false \}\);/, "an open draft, or none once cleared or cancelled");
+  assert.match(appJs, /for \(const k of \[\.\.\.typed\.keys\(\)\]\) if \(typed\.size > 60 && !reach\.has\(k\)\) typed\.delete\(k\);/, "words Back can reach are never dropped");
   assert.match(appJs, /\$\(id\)\.classList\.toggle\("chosen", prev === c\)/, "Neither, Can't tell, Not text and Bad crop show the answer given");
 });
 
