@@ -41,7 +41,7 @@ Additional isolated listeners may be installed under
 `/etc/usnm-serving/extra/*.caddy`; `install.sh --dev` installs the dev
 origin's there as `dev.caddy`. The dev API keeps no reference of its own: a
 frozen copy names an index that prune later deletes from the searcher, and
-the API then fails to start. The updater verifies only the production
+the API then fails to start. The dev unit runs with `--pull never`, so pull its image before `install.sh --dev --dev-image`, which refuses one that isn't stored; `update-api.sh`'s image cleanup keeps the pinned image. The dev response cache expires after 14 days like prod's (`usnm-serving.tmpfiles`); its sitemap state never does. The updater verifies only the production
 listener on `127.0.0.1:8080`, not an unrelated dev upstream. Preserve the
 qualified read-only index mount's UID/GID in a systemd drop-in when it differs
 from the default searcher account; do not rewrite the source index permissions.

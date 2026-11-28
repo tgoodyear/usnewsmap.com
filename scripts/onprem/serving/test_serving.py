@@ -118,7 +118,8 @@ case "$(basename "$0") $1" in
   "gh attestation")
     [ -z "${STUB_BAD_ATTESTATION:-}" ] || exit 1
     printf '[{"verificationResult":{"signature":{"certificate":{"sourceRepositoryDigest":"%s"}}}}]\n' "$STUB_SOURCE" ;;
-  "podman images") printf '%s\n' ${STUB_IMAGES:-} ;;
+  "podman images") printf '%s\n' ${STUB_IMAGES:-} | tr , ' ' ;;
+  "podman image") [ "$3" != "${STUB_MISSING_IMAGE:-}" ] || exit 1 ;;
   "getent group") echo "himds:x:4242:" ;;
   "getent passwd") exit 2 ;;
 esac
@@ -440,6 +441,24 @@ class UpdateApi(Stubbed):
         removed = [c for c in self.calls() if c.startswith("podman rmi")]
         self.assertEqual(removed, ["podman rmi " + stale])
 
+    def dev_pin_cleanup(self, pinned):
+        self.serving("blue", SHA["old"], "old")
+        self.release(SHA["new"], "new")
+        write(os.path.join(self.root, "etc/usnm-serving-dev/image.env"), "DEV_API_IMAGE=%s\n" % pinned)
+        images = ("%s/usnewsmap-api@sha256:%s" % (HOST, "7" * 64),
+                  "%s/usnewsmap-api@sha256:%s,sha256:%s" % (HOST, "6" * 64, "5" * 64),
+                  "%s/usnewsmap-api@sha256:%s" % (HOST, "9" * 64))
+        r = self.update(STUB_READY_PORTS="8081 8082", STUB_IMAGES=" ".join(images))
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        return [c[len("podman rmi "):] for c in self.calls() if c.startswith("podman rmi")]
+
+    def test_the_dev_pin_by_digest_survives_image_cleanup(self):
+        removed = self.dev_pin_cleanup("%s/usnewsmap-api@sha256:%s" % (HOST, "7" * 64))
+        self.assertEqual(sorted(removed), sorted("%s/usnewsmap-api@sha256:%s" % (HOST, c * 64) for c in "69"))
+
+    def test_the_dev_pin_by_image_id_survives_image_cleanup(self):
+        removed = self.dev_pin_cleanup("sha256:" + "5" * 64)
+        self.assertEqual(sorted(removed), sorted("%s/usnewsmap-api@sha256:%s" % (HOST, c * 64) for c in "79"))
 
 class GenEnv(unittest.TestCase):
     SCRIPT = os.path.join(HERE, "gen-env.sh")
@@ -751,6 +770,23 @@ class Install(Stubbed):
         self.assertEqual(r.returncode, 2)
         r = self.install("--dev", "--dev-image", "latest")
         self.assertEqual(r.returncode, 2)
+
+    def test_dev_refuses_an_image_that_isnt_stored(self):
+        image = "sha256:" + "cd" * 32
+        self.env["STUB_MISSING_IMAGE"] = image
+        r = self.install("--dev", "--dev-image", image)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("isn't stored here", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "etc/usnm-serving-dev/image.env")))
+        # A dry run doesn't look.
+        r = self.install("--dev", "--dev-image", image, "--dry-run")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_dev_cache_expires_and_its_sitemap_state_does_not(self):
+        with open(os.path.join(HERE, "usnm-serving.tmpfiles")) as f:
+            lines = [l.split() for l in f if l.strip() and not l.startswith("#")]
+        self.assertIn(["e", "/srv/usnm-serving-dev/cache", "-", "-", "-", "mM:14d"], lines)
+        self.assertFalse(any("usnm-serving-dev/sitemap-state" in l[1] for l in lines))
 
     def test_dev_origin_install_then_nothing_to_change(self):
         image = "sha256:" + "ab" * 32
