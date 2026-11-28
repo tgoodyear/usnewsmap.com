@@ -588,6 +588,7 @@ fn worker(sh: &Shared<'_, '_>) {
                     min_tokens,
                     guard,
                     sh.deadline.saturating_sub(sh.started.elapsed()),
+                    None,
                 )
             },
             |(text, tokens, _)| text.trim().is_empty() && *tokens == 0,

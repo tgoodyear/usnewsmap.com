@@ -276,9 +276,24 @@ fn unchunk(mut b: &[u8]) -> anyhow::Result<Vec<u8>> {
 /// version's prompt in the version's order (Qwen's prompt after the image,
 /// Xiaomi-OCR-0's before it), and thinking off where the version says so.
 pub(crate) fn request_json(png: &[u8], prompt_version: u32, max_tokens: u32) -> serde_json::Value {
+    request_json_with(png, prompt_version, max_tokens, None)
+}
+
+/// [`request_json`] with `prefix` (one sentence) and a space before the version's prompt: the
+/// #968 metadata A/B harness only (`USNM_QWEN_AB_PROMPT_PREFIXES`). Never set in a release.
+pub(crate) fn request_json_with(
+    png: &[u8],
+    prompt_version: u32,
+    max_tokens: u32,
+    prefix: Option<&str>,
+) -> serde_json::Value {
     let url = format!("data:image/png;base64,{}", BASE64.encode(png));
     let image = serde_json::json!({"type": "image_url", "image_url": {"url": url}});
-    let text = serde_json::json!({"type": "text", "text": prompt(prompt_version)});
+    let text = match prefix {
+        Some(p) => format!("{p} {}", prompt(prompt_version)),
+        None => prompt(prompt_version).to_owned(),
+    };
+    let text = serde_json::json!({"type": "text", "text": text});
     let content = if prompt_before_image(prompt_version) {
         [text, image]
     } else {
@@ -315,6 +330,7 @@ pub fn chat_completion(
         image_min_tokens,
         guard,
         timeout,
+        None,
     )
 }
 
@@ -327,8 +343,9 @@ pub fn chat_completion_for(
     image_min_tokens: Option<u32>,
     guard: bool,
     timeout: Duration,
+    prompt_prefix: Option<&str>,
 ) -> anyhow::Result<(String, u32, String)> {
-    let mut request = request_json(png, prompt_version, max_tokens);
+    let mut request = request_json_with(png, prompt_version, max_tokens, prompt_prefix);
     if guard {
         request["stream"] = true.into();
         let body = serde_json::to_vec(&request)?;
@@ -1407,6 +1424,30 @@ mod completion_tests {
         );
         assert_eq!(m["tail_repetition"]["period_chars"], 21);
         assert!(m["image_min_tokens_requested"].is_null());
+    }
+
+    #[test]
+    fn the_ab968_prefix_goes_before_each_versions_prompt_and_nothing_else_changes() {
+        use usnm_ocr_contract::qwen::{
+            PROMPT, PROMPT_VERSION_LOOP_GUARD, PROMPT_VERSION_XIAOMI, XIAOMI_PROMPT,
+        };
+        let s = "This text is from Neue Zürcher Zeitung, Zürich, printed on 31 December 1849.";
+        for (v, base, at) in [
+            (PROMPT_VERSION_LOOP_GUARD, PROMPT, 1),
+            (PROMPT_VERSION_XIAOMI, XIAOMI_PROMPT, 0),
+        ] {
+            let plain = request_json(b"png", v, 300);
+            assert_eq!(plain, request_json_with(b"png", v, 300, None));
+            let with = request_json_with(b"png", v, 300, Some(s));
+            assert_eq!(
+                with["messages"][0]["content"][at]["text"],
+                format!("{s} {base}")
+            );
+            let mut back = with.clone();
+            back["messages"][0]["content"][at]["text"] =
+                plain["messages"][0]["content"][at]["text"].clone();
+            assert_eq!(back, plain);
+        }
     }
 
     #[test]

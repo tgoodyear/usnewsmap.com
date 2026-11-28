@@ -687,6 +687,44 @@ fn run_crops(
     let mut outcome = Outcome::Ok;
     let mut gpu_peak_mib: Option<u64> = None;
 
+    // #968 metadata A/B harness (never set in a release): USNM_QWEN_AB_PROMPT_PREFIXES names a
+    // JSON object of crop id -> one sentence, prepended to that crop's prompt. Its sha256 goes in
+    // diag, so a reading made by this build can't pass for the app's.
+    let ab_prefixes: Option<std::collections::BTreeMap<String, String>> = match std::env::var_os(
+        "USNM_QWEN_AB_PROMPT_PREFIXES",
+    ) {
+        None => None,
+        Some(path) => {
+            let parsed = std::fs::read(&path)
+                .with_context(|| format!("reading {}", Path::new(&path).display()))
+                .and_then(|bytes| {
+                    let map: std::collections::BTreeMap<String, String> = serde_json::from_slice(
+                        &bytes,
+                    )
+                    .context("USNM_QWEN_AB_PROMPT_PREFIXES is not a JSON object of strings")?;
+                    Ok((usnm_ocr_contract::boinc::sha256(&bytes), map))
+                });
+            match parsed {
+                Ok((sha, map)) => {
+                    diag.section(
+                            "ab968 harness",
+                            &format!(
+                                "build: #968 metadata A/B harness (1.22 source 6e51a3a4 + prompt prefix), not a release\n\
+                                 prefix file sha256: {sha}\nprefixes: {}",
+                                map.len()
+                            ),
+                            1024,
+                        );
+                    Some(map)
+                }
+                Err(e) => {
+                    // The harness must never read a unit without its prefixes.
+                    diag.section("ab968 harness", &format!("{e:#}"), 1024);
+                    return None;
+                }
+            }
+        }
+    };
     // A page-mode unit is read by the concurrent loop below instead.
     let sequential: &[Crop] = if l.job.page_mode.is_some() {
         &[]
@@ -733,6 +771,15 @@ fn run_crops(
         let max_tokens = l.job.max_tokens(crop);
         let min_tokens = image_min_tokens(l.job.prompt_version);
         let guard = loop_guard(l.job.prompt_version);
+        // #968 metadata A/B harness: a crop's prepended sentence, keyed by its crop id (the part
+        // after any `<doc_id>:`). Unset in every release.
+        let ab_prefix: Option<String> = ab_prefixes
+            .as_ref()
+            .map(|m| {
+                let key = crop.id.rsplit(':').next().unwrap_or(&crop.id);
+                m.get(key).cloned().unwrap_or_default()
+            })
+            .filter(|p| !p.is_empty());
         let mut restarts_this_run = 0u32;
         let end = run_crop(
             &mut llama,
@@ -745,6 +792,7 @@ fn run_crops(
                     min_tokens,
                     guard,
                     deadline.saturating_sub(started.elapsed()),
+                    ab_prefix.as_deref(),
                 )
             },
             |(text, tokens, _)| text.trim().is_empty() && *tokens == 0,
