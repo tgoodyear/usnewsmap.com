@@ -141,7 +141,7 @@ retain `Content-Length`/`Content-Range` without `Content-Encoding`.
 
 It reads the lake's `reference/` directory (`/srv/usnm-lake-t/reference`) read-only, the same one prod reads, so a publish moves dev together with prod. It once read a frozen copy: on 28 Nov dev stayed pinned to an index that a later prune deleted, and it crash-looped. Never point `USNM_REFERENCE_URL` at a copy.
 
-The dev image is pinned in `/etc/usnm-serving-dev/image.env` (`API_IMAGE=sha256:...`), which `install.sh` writes only if it is missing and never overwrites; to move dev to another image, edit it and restart the unit. The unit does nothing where `/etc/usnm-serving-dev/api.env` doesn't exist. The tunnel token goes in `/etc/cloudflared/usnm-serving-dev.env` (`TUNNEL_TOKEN=...`, root only, mode 0600). Set `TUNNEL_METRICS` there to a loopback port other than the production connector's 20241.
+The dev image is pinned in `/etc/usnm-serving-dev/image.env` (`API_IMAGE=sha256:...`), which `install.sh` writes only if it is missing and never overwrites; to move dev to another image, edit it and restart the unit. The unit does nothing where `/etc/usnm-serving-dev/api.env` doesn't exist. The tunnel token goes in `/etc/cloudflared/usnm-serving-dev.env` (`TUNNEL_TOKEN=...`, root only, mode 0600). Its metrics listen on 127.0.0.1:20242, beside the production connector's 20241; set `TUNNEL_METRICS` there to change it.
 
 Install with the rest:
 

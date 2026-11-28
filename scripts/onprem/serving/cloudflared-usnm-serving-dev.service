@@ -4,7 +4,8 @@
 # root only, mode 0600), never in this repository. The tunnel's ingress is
 # managed on Cloudflare: dev.usnewsmap.com to http://127.0.0.1:8088 (the
 # dev.caddy listener). Otherwise like cloudflared-usnm-serving.service,
-# sharing its run-cloudflared.
+# sharing its run-cloudflared. Its metrics port defaults to 20242 so it
+# doesn't collide with prod's 20241; the env file can still set TUNNEL_METRICS.
 [Unit]
 Description=Cloudflare Tunnel for dev.usnewsmap.com only (#955)
 Wants=network-online.target
@@ -12,6 +13,7 @@ After=network-online.target caddy.service
 ConditionPathExists=/etc/cloudflared/usnm-serving-dev.env
 
 [Service]
+Environment=TUNNEL_METRICS=127.0.0.1:20242
 EnvironmentFile=/etc/cloudflared/usnm-serving-dev.env
 ExecStart=/usr/local/libexec/usnm-serving/run-cloudflared
 DynamicUser=yes
