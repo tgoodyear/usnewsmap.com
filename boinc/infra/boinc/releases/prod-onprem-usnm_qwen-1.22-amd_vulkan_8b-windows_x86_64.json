@@ -21,8 +21,8 @@
   "worker": {
     "extra_files": {
       "AMD_RUNTIME_BUILD.json": {
-        "sha256": "3f1a0d8c2cf0beea73fec830bf48d4668bd47c6a2fdf1fede5a66dc51cfa7eaf",
-        "source_commit": "ce82cc4fa363bea254e3eabaec212b4409b380a3"
+        "sha256": "e2cf7e87d3074baf6e5ba084ca5bbcabc40f0e2c3a5915a491d0d65f3846d19c",
+        "source_commit": "07c62040cbe64516f6f71152f64c241525b3a09d"
       },
       "concrt140.dll": {
         "sha256": "8efda0374a4b4df975feeefbea3d86cafdd36802a0144c3d261295bd268071c7",
@@ -93,8 +93,8 @@
         "source_commit": "f9448cddc48c129a4abc7ff9c2a84c2b4c101c61"
       },
       "ggml-vulkan.dll": {
-        "sha256": "ec0ef14e694951ed9802d05b4134825baee06d8bc6fbd13f60b021e7e825cca0",
-        "source_commit": "ce82cc4fa363bea254e3eabaec212b4409b380a3"
+        "sha256": "7b95edbb9445d8451c29785cf22781563590f9c24283653787d0fb334986ee3d",
+        "source_commit": "07c62040cbe64516f6f71152f64c241525b3a09d"
       },
       "ggml.dll": {
         "sha256": "b976a90e0aa063030fcdca810b65b31423a33554de85d5e7c160d44834770dee",
