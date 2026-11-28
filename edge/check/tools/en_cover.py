@@ -294,7 +294,7 @@ def main() -> None:
             bands.update(ratio_band(c["ratio"]) for c in chosen)
             per_page[page["page"]] = {"seed": page.get("seed"), "chunks": len(cands), "tasks": len(chosen),
                                       "low": sum(c["ratio"] < args.low for c in cands)}
-            if f:
+            if f and chosen:
                 write_page(page, chosen, img, args, args.out_dir, f)
     finally:
         if f:

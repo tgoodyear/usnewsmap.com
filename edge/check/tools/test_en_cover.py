@@ -166,6 +166,7 @@ class Build(unittest.TestCase):
                             "--only-ids", only], check=True, capture_output=True)
             self.assertEqual(open(os.path.join(out + "3", "tasks.jsonl")).read(), "")
             self.assertEqual(open(os.path.join(out + "3", "rule_labelled.jsonl")).read(), "")
+            self.assertFalse(os.path.exists(os.path.join(out + "3", "clips")))
 
     def test_a_wide_block_clip_keeps_the_scans_pixels(self):
         from PIL import Image
