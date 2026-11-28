@@ -22,7 +22,7 @@ futures.workspace = true
 governor.workspace = true
 moka.workspace = true
 opentelemetry.workspace = true
-resvg = { version = "0.49", default-features = false, features = ["text"] }
+resvg = { version = "0.50", default-features = false, features = ["text"] }
 rmcp.workspace = true
 schemars = { workspace = true, features = ["chrono04"] }
 serde.workspace = true
