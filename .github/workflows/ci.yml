@@ -969,7 +969,7 @@ jobs:
       - name: The layout study code's tests pass (#2107, #2122)
         if: needs.changes.outputs.ocr_gold == 'true'
         run: |
-          python3 -m pip install --quiet --break-system-packages numpy pytest
+          python3 -m pip install --quiet --break-system-packages numpy scipy pytest
           for d in layout_columns layout_refs layout_diag combo_seg enpick; do
             (cd "scripts/ocr-survey/$d" && python3 -m pytest -q -p no:cacheprovider)
           done
