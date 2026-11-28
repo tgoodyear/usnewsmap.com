@@ -13,6 +13,8 @@ from boinc.scripts import qwen_vulkan_bundle as bundle
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMIT = "a" * 40
+# The amd-vulkan-runtime artifact may come from a later commit with the same patch and builder.
+RUNTIME_COMMIT = "d" * 40
 # b12084's layout: llama-server is a launcher for libllama-server-impl.so and libllama-common.so.
 LIBS = ["libggml-base.so.0.28.0", "libggml.so.0.28.0", "libggml-vulkan.so", "libllama.so.0.8.0",
         "libmtmd.so.0.8.0", "libggml-cpu-x64.so", "libllama-server-impl.so", "libllama-common.so.0.8.0"]
@@ -364,7 +366,7 @@ class WindowsBundle(unittest.TestCase):
         (runtime / "ggml-vulkan.dll").write_bytes(dll)
         digest = hashlib.sha256(dll).hexdigest()
         (runtime / "SHA256SUMS").write_text(f"{digest}  ggml-vulkan.dll\n")
-        (runtime / "GIT_COMMIT").write_text(COMMIT + "\r\n")
+        (runtime / "GIT_COMMIT").write_text(RUNTIME_COMMIT + "\r\n")
         fields = {"schema_version": 1, "source_commit": bundle.LLAMA_SOURCE["b12084"],
                   "patch_sha256": hashlib.sha256((patch or bundle.AMD_PATCH).read_bytes()).hexdigest(),
                   "runtime_sha256": digest, "vulkan_sdk": "C:\\VulkanSDK\\1.4.357.0", **receipt}
@@ -385,8 +387,9 @@ class WindowsBundle(unittest.TestCase):
         changed = {n for n in base if extras[n]["sha256"] != base[n]["sha256"]}
         self.assertEqual(changed, {"ggml-vulkan.dll"})
         self.assertEqual((self.dir / "amd/extra/ggml-vulkan.dll").read_bytes(), b"MZ patched vulkan")
-        for name in ("ggml-vulkan.dll", "AMD_RUNTIME_BUILD.json", "usnm-amd-device-map.exe"):
-            self.assertEqual(extras[name]["source_commit"], COMMIT)
+        self.assertEqual(extras["usnm-amd-device-map.exe"]["source_commit"], COMMIT)
+        for name in ("ggml-vulkan.dll", "AMD_RUNTIME_BUILD.json"):
+            self.assertEqual(extras[name]["source_commit"], RUNTIME_COMMIT)
         self.assertEqual(extras["ggml.dll"]["source_commit"], bundle.LLAMA_SOURCE["b12084"])
         bundle.verify(self.dir / "amd")
         self.assertIn("--extra-file", bundle.release_args(self.dir / "amd"))
@@ -435,7 +438,7 @@ class WindowsBundle(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ggml-vulkan.dll is missing .* or does not match"):
             self.build_amd(archive, lock, runtime, out="swapped")
         runtime = self.amd_runtime()
-        (runtime / "GIT_COMMIT").write_text("b" * 40)
+        (runtime / "GIT_COMMIT").write_text("not a commit")
         with self.assertRaisesRegex(ValueError, "GIT_COMMIT"):
             self.build_amd(archive, lock, runtime, out="commit")
         runtime = self.amd_runtime()

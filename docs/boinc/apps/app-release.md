@@ -353,10 +353,11 @@ For `amd_vulkan_8b` ([AMD](amd-gpu.md)), both builds also take the PCI identity 
 same commit's native artifact, checked against its `SHA256SUMS` and `GIT_COMMIT`. On Linux, pass
 the `boinc-native-x86_64-pc-linux-gnu` artifact as `--artifact`: `--binary` must be its
 `usnm_qwen`, and its `usnm-amd-device-map` is added. On Windows, `build-windows` adds
-`usnm-amd-device-map.exe` and takes `--amd-runtime`, the same commit's
-`amd-vulkan-runtime-windows_x86_64` artifact. It replaces only `ggml-vulkan.dll` with that
+`usnm-amd-device-map.exe` and takes `--amd-runtime`, an `amd-vulkan-runtime-windows_x86_64`
+artifact (a `workflow_dispatch` run on `main`). It replaces only `ggml-vulkan.dll` with that
 artifact's patched DLL and adds `AMD_RUNTIME_BUILD.json`, once the receipt records that DLL, the
-pinned llama.cpp source and this checkout's `patch_amd_vulkan_identity.py`. `args` then lists the
+pinned llama.cpp source and this checkout's `patch_amd_vulkan_identity.py`. The runtime artifact
+may come from a later commit than the app; the manifest records its `GIT_COMMIT` for those two files. `args` then lists the
 receipt as an `--extra-file`. `verify --same-runtime-as` against the last reviewed AMD manifest
 leaves out the files this repository builds (the helper and, on Windows, the patched DLL and its
 receipt), which differ at each commit, and requires them on both sides:

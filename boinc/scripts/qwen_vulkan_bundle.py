@@ -28,8 +28,9 @@ For amd_vulkan_8b (docs/boinc/apps/amd-gpu.md), `build` also takes the Linux nat
 (--artifact) and adds its usnm-amd-device-map, and `build-windows` adds the Windows artifact's
 usnm-amd-device-map.exe and replaces only ggml-vulkan.dll with the identity-patched one from the
 amd-vulkan-runtime workflow's artifact (--amd-runtime), adding its AMD_RUNTIME_BUILD.json receipt.
-Each is checked against its artifact's SHA256SUMS and GIT_COMMIT, and the receipt against the DLL,
-the pinned llama.cpp source and this checkout's patch_amd_vulkan_identity.py.
+Each is checked against its artifact's SHA256SUMS and GIT_COMMIT (the native ones must be
+--source-commit), and the receipt against the DLL, the pinned llama.cpp source and this
+checkout's patch_amd_vulkan_identity.py.
 
 The same inputs give the same bytes. `verify` rehashes a directory; with --same-runtime-as it also
 checks that the llama.cpp runtime (every extra file but the two locks) is byte for byte that of an
@@ -224,9 +225,11 @@ def write_sums(out, names):
 
 
 def checked_artifact(artifact, source_commit, names):
-    """The artifact directory, once its GIT_COMMIT is `source_commit` and each of `names` matches its SHA256SUMS."""
+    """The artifact directory, once its GIT_COMMIT is `source_commit` (any commit if None) and each of
+    `names` matches its SHA256SUMS."""
     artifact = Path(artifact)
-    if (artifact / "GIT_COMMIT").read_text().strip() != source_commit:
+    commit = (artifact / "GIT_COMMIT").read_text().strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", commit) or source_commit not in (None, commit):
         raise ValueError(f"the GIT_COMMIT of {artifact} is not --source-commit")
     sums = read_sums(artifact / "SHA256SUMS")
     for name in names:
@@ -307,16 +310,18 @@ def read_sums(path):
     return sums
 
 
-def amd_runtime_files(amd_runtime, source_commit, llama, patch=AMD_PATCH):
-    """The identity-patched ggml-vulkan.dll and its receipt from the amd-vulkan-runtime artifact."""
-    amd_runtime = checked_artifact(amd_runtime, source_commit, [AMD_DLL])
+def amd_runtime_files(amd_runtime, llama, patch=AMD_PATCH):
+    """(commit, DLL, receipt): the identity-patched ggml-vulkan.dll and its receipt from the
+    amd-vulkan-runtime artifact. It needn't be the app's commit: the receipt binds the DLL to the
+    pinned llama.cpp source and to this checkout's patch, and the artifact's commit is its provenance."""
+    amd_runtime = checked_artifact(amd_runtime, None, [AMD_DLL])
     receipt = json.loads((amd_runtime / AMD_RECEIPT).read_text(encoding="utf-8-sig"))
     expected = {"schema_version": 1, "source_commit": llama, "runtime_sha256": sha256(amd_runtime / AMD_DLL),
                 "patch_sha256": sha256(patch)}
     for key, value in expected.items():
         if receipt.get(key) != value:
             raise ValueError(f"{AMD_RECEIPT} {key} is {receipt.get(key)!r}, not {value!r}")
-    return amd_runtime / AMD_DLL, amd_runtime / AMD_RECEIPT
+    return (amd_runtime / "GIT_COMMIT").read_text().strip(), amd_runtime / AMD_DLL, amd_runtime / AMD_RECEIPT
 
 
 def build_windows(archive, artifact, source_commit, out, plan_class, lock_path=LOCK, amd_runtime=None,
@@ -345,7 +350,7 @@ def build_windows(archive, artifact, source_commit, out, plan_class, lock_path=L
     if Path(archive).name != asset["file"] or sha256(archive) != asset["sha256"]:
         raise ValueError(f"{archive} is not the llama.lock-pinned {asset['file']}")
     llama = LLAMA_SOURCE[lock["tag"]]
-    patched = amd_runtime_files(amd_runtime, source_commit, llama, amd_patch) if amd else ()
+    runtime_commit, *patched = amd_runtime_files(amd_runtime, llama, amd_patch) if amd else (None,)
     out = Path(out)
     out.mkdir()
     extra = out / "extra"
@@ -381,16 +386,17 @@ def build_windows(archive, artifact, source_commit, out, plan_class, lock_path=L
     bound = json.loads(DISK_POLICY.read_text())["native_bundle_bound_bytes"]
     if sum(p.stat().st_size for p in [out / WIN_BINARY, *extra.iterdir()]) > bound:
         raise ValueError("bundle exceeds the reviewed native Qwen disk envelope")
-    own = set(crt) | ({AMD_DLL, AMD_RECEIPT, WIN_AMD_HELPER} if amd else set())
+    own = set(crt) | ({WIN_AMD_HELPER} if amd else set())
     release = {
         "release": {"app": "usnm_qwen", "kind": "native", "platform": WIN_PLATFORM, "plan_class": plan_class},
         "worker": {
             "sha256": sha256(out / WIN_BINARY),
             "source_commit": source_commit,
-            # The locks, the Microsoft runtime and AMD's helper and patched DLL (built from llama.cpp's
-            # pinned source by this repository's builder, as in 1.20) come with the app's own commit.
+            # The locks, the Microsoft runtime and AMD's helper come with the app's own commit; AMD's
+            # patched DLL and receipt with the commit whose builder made them; the rest is llama.cpp's.
             "extra_files": {name: {"sha256": sha256(extra / name),
-                                   "source_commit": source_commit if name.endswith(".lock") or name in own else llama}
+                                   "source_commit": runtime_commit if amd and name in (AMD_DLL, AMD_RECEIPT)
+                                   else source_commit if name.endswith(".lock") or name in own else llama}
                             for name in names},
         },
         "runtime": {"repository": lock["repository"], "tag": lock["tag"], "file": asset["file"],
@@ -545,7 +551,7 @@ def main(argv=None):
     win.add_argument("--plan-class", required=True, choices=WIN_PLAN_CLASSES)
     win.add_argument("--out", type=Path, required=True)
     win.add_argument("--amd-runtime", type=Path,
-                     help="amd_vulkan_8b only: the unpacked amd-vulkan-runtime-windows_x86_64 artifact of --source-commit")
+                     help="amd_vulkan_8b only: the unpacked amd-vulkan-runtime-windows_x86_64 artifact")
     mac = commands.add_parser("build-macos")
     mac.add_argument("--archive", type=Path, required=True, help="the llama.lock-pinned macos-arm64 tarball")
     mac.add_argument("--artifact", type=Path, required=True,
