@@ -96,6 +96,28 @@ pub fn cause(message: &str, query: &str) -> &'static str {
         "corrupted",
     ]) {
         "split"
+    // What a 400 is usually about: the query Quickwit couldn't parse, a field
+    // it doesn't know, an aggregation it refused, a body it couldn't read, or
+    // another argument out of range. Without these a refusal is `other`,
+    // which says nothing about which of our requests to fix.
+    } else if any(&[
+        "parse",
+        "parser",
+        "parsing",
+        "syntax",
+        "unexpected",
+        "expected",
+        "token",
+    ]) {
+        "query_syntax"
+    } else if any(&["field", "fields", "schema", "fast", "mapping"]) {
+        "field"
+    } else if any(&["aggregation", "aggregations", "aggs", "agg"]) {
+        "aggregation"
+    } else if any(&["deserialize", "json", "serde", "body"]) {
+        "request_body"
+    } else if any(&["invalid", "argument", "range", "exceeds", "max", "limit"]) {
+        "invalid_argument"
     } else if w.is_empty() {
         "empty"
     } else {
@@ -226,6 +248,27 @@ mod tests {
         assert_eq!(cause("", ""), "empty");
         assert_eq!(cause("something else", ""), "other");
         assert_eq!(cause("timed out after 30s", ""), "timeout");
+        assert_eq!(
+            cause("failed to parse query: unexpected token at 12", ""),
+            "query_syntax"
+        );
+        assert_eq!(cause("Field does not exist: `foo`", ""), "field");
+        assert_eq!(cause("invalid aggregation request", ""), "aggregation");
+        assert_eq!(
+            cause("failed to deserialize the request", ""),
+            "request_body"
+        );
+        assert_eq!(cause("Invalid argument: max_hits", ""), "invalid_argument");
+    }
+
+    #[test]
+    fn a_refusals_kind_ignores_the_echoed_query() {
+        // A search for "parse field" that Quickwit refused for some other
+        // reason doesn't look like a syntax error.
+        assert_eq!(
+            cause("refused text:\"parse field\"", "text:\"parse field\""),
+            "other"
+        );
     }
 
     #[test]
