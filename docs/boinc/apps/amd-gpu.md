@@ -149,9 +149,10 @@ This is not a full patched-runtime build or a real-card test.
 For the next reviewed Windows AMD app version:
 
 1. Verify and unpack the pinned `win-vulkan-x64` baseline archive; replace only
-   `ggml-vulkan.dll` with the builder output. `qwen_vulkan_bundle.py build-windows
-   --plan-class amd_vulkan_8b --amd-runtime DIR` does this and step 2's hash checks
-   from the `amd-vulkan-runtime` workflow's artifact ([app release](app-release.md)). Keep its complete original runtime
+   `ggml-vulkan.dll` with the builder output.
+   `qwen_vulkan_bundle.py build-windows --amd-runtime DIR` does this and the
+   hash checks of step 2 from the `amd-vulkan-runtime` workflow's artifact
+   ([app release](app-release.md)). Keep its complete original runtime
    and model set. Retain the receipt; do not claim the resulting bundle equals
    the unmodified archive hash.
 2. Use the same reviewed native CI commit's app, corrected helper, app-local CRT
