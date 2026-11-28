@@ -264,7 +264,7 @@ def main() -> None:
     os.makedirs(args.out_dir, exist_ok=True)
     stats, bands, per_page = Counter(), Counter(), {}
     pages = [json.loads(l) for l in open(args.pages, encoding="utf-8") if l.strip()]
-    only = set(l.strip() for l in open(args.only_ids, encoding="utf-8") if l.strip()) if args.only_ids else None
+    only = set(l.strip() for l in open(args.only_ids, encoding="utf-8") if l.strip()) if args.only_ids is not None else None
     f = None if args.no_clips else open(os.path.join(args.out_dir, "tasks.jsonl"), "w", encoding="utf-8")
     rl = None if args.no_clips else open(os.path.join(args.out_dir, "rule_labelled.jsonl"), "w", encoding="utf-8")
     try:
@@ -281,13 +281,15 @@ def main() -> None:
             cands = chunks(page, loc, ours, args, stats)
             ruled = [c for c in cands if by_rule(c)]
             cands = [c for c in cands if not by_rule(c)]
+            if only is not None:
+                ruled = [c for c in ruled if c["id"] in only]
             stats["rule_labelled_missing"] += len(ruled)
             if f:
                 for c in ruled:
                     rl.write(json.dumps({"id": c["id"], "page": page["page"], "outcome": "missing", "reason": RULE_REASON,
                                          "block_box": [round(v) for v in c["box"]], "loc_words": c["loc_words"],
                                          "ours_words": c["ours_words"], "text": c["text"]}, ensure_ascii=False) + "\n")
-            chosen = [c for c in cands if c["id"] in only] if only else pick(cands, args)
+            chosen = [c for c in cands if c["id"] in only] if only is not None else pick(cands, args)
             stats["tasks"] += len(chosen)
             bands.update(ratio_band(c["ratio"]) for c in chosen)
             per_page[page["page"]] = {"seed": page.get("seed"), "chunks": len(cands), "tasks": len(chosen),

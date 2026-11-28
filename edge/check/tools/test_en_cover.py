@@ -159,6 +159,13 @@ class Build(unittest.TestCase):
                             "--only-ids", only], check=True, capture_output=True)
             again = [json.loads(l) for l in open(os.path.join(out + "2", "tasks.jsonl"))]
             self.assertEqual([t["id"] for t in again], [tasks[0]["id"]])
+            self.assertEqual([json.loads(l)["id"] for l in open(os.path.join(out + "2", "rule_labelled.jsonl"))], [ruled[0]["id"]])
+            open(only, "w").write("")
+            subprocess.run([sys.executable, os.path.join(HERE, "en_cover.py"), "--pages", os.path.join(d, "pages.jsonl"),
+                            "--set", "cover-v1", "--language-config", os.path.join(d, "en.json"), "--out-dir", out + "3",
+                            "--only-ids", only], check=True, capture_output=True)
+            self.assertEqual(open(os.path.join(out + "3", "tasks.jsonl")).read(), "")
+            self.assertEqual(open(os.path.join(out + "3", "rule_labelled.jsonl")).read(), "")
 
     def test_a_wide_block_clip_keeps_the_scans_pixels(self):
         from PIL import Image
