@@ -444,6 +444,18 @@ class UpdateApi(Stubbed):
         removed = [c for c in self.calls() if c.startswith("podman rmi")]
         self.assertEqual(removed, ["podman rmi " + stale])
 
+    def test_the_dev_pin_survives_image_cleanup(self):
+        self.serving("blue", SHA["old"], "old")
+        self.release(SHA["new"], "new")
+        dev = "sha256:" + "7" * 64
+        write(os.path.join(self.root, "etc/usnm-serving-dev/image.env"), "API_IMAGE=%s\n" % dev)
+        pinned = "%s/usnewsmap-api@%s" % (HOST, dev)
+        stale = "%s/usnewsmap-api@sha256:%s" % (HOST, "9" * 64)
+        r = self.update(STUB_READY_PORTS="8081 8082", STUB_IMAGES=" ".join((pinned, stale)))
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        removed = [c for c in self.calls() if c.startswith("podman rmi")]
+        self.assertEqual(removed, ["podman rmi " + stale])
+
 
 class GenEnv(unittest.TestCase):
     SCRIPT = os.path.join(HERE, "gen-env.sh")

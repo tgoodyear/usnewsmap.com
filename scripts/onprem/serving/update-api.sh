@@ -368,10 +368,16 @@ warn "usnm-api deployed: ${current:-nothing} -> $target on $idle${COMMIT:+; held
 # edge colder.
 systemctl restart --no-block usnm-edge-warm.service || warn "warning: can't start usnm-edge-warm"
 
-# Images neither color names. One still in use stays.
+# Images neither color nor the dev origin names. One still in use stays.
+# Dev's pin (install.sh --dev) is a bare digest, and its unit runs with
+# --pull never, so a stopped dev would never start again without it.
 keep=" $(env_get "$ETC/api-blue.env" API_IMAGE) $(env_get "$ETC/api-green.env" API_IMAGE) "
+dev_pin=""
+[ ! -s "$R/etc/usnm-serving-dev/image.env" ] || dev_pin=$(env_get "$R/etc/usnm-serving-dev/image.env" API_IMAGE)
+dev_pin=${dev_pin##*@}
 podman images --digests --format '{{.Repository}}@{{.Digest}}' | while read -r ref; do
   [ "${ref%@*}" = "$HOST/$IMAGE_REPO" ] || continue
   case $keep in *" $ref "*) continue ;; esac
+  [ -z "$dev_pin" ] || [ "${ref##*@}" != "$dev_pin" ] || continue
   podman rmi "$ref" > /dev/null 2>&1 || true
 done

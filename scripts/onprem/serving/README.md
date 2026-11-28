@@ -143,7 +143,7 @@ It reads the lake's `reference/` directory (`/srv/usnm-lake-t/reference`) read-o
 
 The dev image is pinned in `/etc/usnm-serving-dev/image.env` (`API_IMAGE=sha256:...`), which `install.sh` writes only if it is missing and never overwrites; to move dev to another image, edit it and restart the unit. The unit does nothing where `/etc/usnm-serving-dev/api.env` doesn't exist. The tunnel token goes in `/etc/cloudflared/usnm-serving-dev.env` (`TUNNEL_TOKEN=...`, root only, mode 0600). Its metrics listen on 127.0.0.1:20242, beside the production connector's 20241; set `TUNNEL_METRICS` there to change it.
 
-The unit runs with `--pull never`, so pull the image first (`podman pull <registry>.azurecr.io/usnewsmap-api@sha256:<digest>`); `install.sh` refuses a new pin that isn't stored. The dev response cache expires after 14 days like prod's (`usnm-serving.tmpfiles`); its sitemap state never does.
+The unit runs with `--pull never`, so pull the image first (`podman pull <registry>.azurecr.io/usnewsmap-api@sha256:<digest>`); `install.sh` refuses a new pin that isn't stored. `update-api.sh`'s image cleanup keeps it. The dev response cache expires after 14 days like prod's (`usnm-serving.tmpfiles`); its sitemap state never does.
 
 Install with the rest:
 
