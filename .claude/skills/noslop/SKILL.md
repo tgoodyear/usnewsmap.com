@@ -21,13 +21,13 @@ If you have no draft, ask for it. If the venue is unclear and you cannot infer i
 
 ## House rules (these win)
 
-1. **No em dashes.** Zero, in every venue. No spaced en dashes either. Pick the replacement by job: period for two thoughts, colon for label then description, parentheses for a real aside, comma for a light pause. Do not turn them into semicolons.
+1. **No em dashes.** Zero, in every venue. No spaced en dashes either. Pick the replacement by job: period for two thoughts, colon for label then description, parentheses for a real aside, comma for a light pause. Do not turn them into semicolons. The rule is for prose punctuation: a literal character (a transcription character, a key on a keyboard) and a quoted source keep theirs.
 2. **No metaphor standing in for a mechanism.** "The index is the backbone of search", "give requests a home": say what the thing does. "Search reads the Quickwit index" says it.
 3. **Plain headings.** Noun phrases that name the content ("What the data covers", "How answers are counted"). No headings whose only job is emphasis or cleverness ("Exactly this", "X, handled", "Done right"). Sentence case.
 4. **Every claim traces to a source.** A number, date, count, origin story, volunteer anecdote or result must come from the draft, the repo, the data, or the maintainer. If you inferred it, it goes on the Verify list. Never write a backstory to make copy warmer.
 5. **Modern terms in the site's own voice.** On the history sites use "free Black" and "enslaved", not census or archival category names, in labels, headings and data columns. Quote historical sources and authors' text verbatim and do not edit them. Note an original category once where accuracy needs it.
 6. **Non-commercial voice.** usnewsmap.com sells nothing: no sales register, no "customers".
-7. **Public text holds no private infrastructure.** This is a public repo. No hostnames, IPs, container or VM IDs, node names, storage paths, budgets or costs in its issues, PRs, READMEs or site copy.
+7. **Public text holds no private infrastructure.** This is a public repo. No private hostnames, IPs, container or VM IDs, node names, storage paths, budgets or costs in its issues, PRs, READMEs or site copy. Public service, source and licence URLs (the privacy page, CC0, Chronicling America) are fine.
 8. **Measured results stay measured.** Keep the test set, the n, the metric and the direction exactly as reported. A pre-registered result is reported as scored once, with any deviation stated. Never round "3.1% CER on 120 held-out lines" into "much more accurate".
 
 ## What you must not change

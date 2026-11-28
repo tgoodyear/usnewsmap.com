@@ -83,7 +83,7 @@ def strip_code(text):
         if fence or line.lstrip().startswith(">"):
             out.append("")
             continue
-        out.append(re.sub(r"`[^`]*`", "``", line))
+        out.append(re.sub(r"(`+)(?!`).*?(?<!`)\1(?!`)", "``", line))
     return out
 
 
