@@ -1,2 +1,6 @@
 models/
 __pycache__/
+*.onnx
+*.pt
+*.pth
+*.safetensors

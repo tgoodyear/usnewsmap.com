@@ -1,0 +1,552 @@
+"""Blind word-pick tasks for check.usnewsmap.com: our Tesseract against LoC's OCR on Chronicling America English
+body text (#2122, route 2). The pick-between-readings format of en_pick.py (#1867), with the second reading's words
+placed by their own boxes instead of by text alignment.
+
+Input (--pages) is JSON lines, one page each, as english_pages.py writes them:
+
+  {"page": "<lccn>/<date>/ed-N/seq-N", "page_id": "<doc id>", "source": "<page URL>", "date": "YYYY-MM-DD",
+   "label": "<shown above the line>", "alto": "<LoC ALTO>", "image": "<the scan>", "tsv": "<Tesseract TSV of the scan>",
+   "damage_rate": 0.18, "regions": [{"id": "<region id>", "box": [x0, y0, x1, y1], "text": "<truth>"}]}
+
+Paths are relative to --root (default: the folder of --pages). `regions` is for gold pages only (a human transcription
+of some boxes, in scan pixels): a page with regions gives only tasks inside them, each with which reading matches it.
+
+Words. LoC's words are the ALTO's Strings in reading order with a line's HYP kept on its last word, mapped onto the
+scan by proportion (en_pick.parse_alto). Tesseract's are the TSV's level-5 rows in its output order.
+
+Alignment, by box overlap (scan pixels). A LoC word i and a Tesseract word j are paired when
+  * j is the Tesseract word with the largest intersection over union (IoU) with i, and i is the LoC word with the
+    largest IoU with j (mutual best);
+  * that IoU is at least --min-iou;
+  * no other Tesseract word covers --max-other or more of i's box and no other LoC word covers that much of j's
+    (one engine split what the other read as one word, or joined two).
+Every LoC word that is not paired is counted by why: no Tesseract word overlaps it, another word covers it (split or
+joined), or the best overlap is under --min-iou. A page where fewer than --min-page-aligned of LoC's words pair is
+left out whole (the boxes do not line up: a different image, a rotation), and its words are counted.
+
+Readings. Both words are normalised as the #2122 scorer does (score2122.py at b045416f; normalise() below is a copy):
+NFKC, lowercase, line-end hyphens joined, punctuation removed except apostrophes inside words. A pair is
+  * an agreement when the normalised readings are equal (counted as exact when the raw readings are too, else as
+    agreeing after normalisation: case or punctuation only);
+  * left out, counted by reason, when: the word is cut by a line-end hyphen in either reading (the word before the
+    break and the first word of the next line: each half is part of a word, and the halves are scored joined);
+    its LoC line is a merged line (merged_lines.py, #1978); either reading has no letter or digit once normalised
+    (punctuation only); or either normalises to more than one word (U.S. against US);
+  * otherwise a disagreement, and a candidate task.
+The page shows the raw readings, as the engines gave them (as the other pick languages do); normalisation only
+decides whether the two differ, and `private.normalised` keeps the normalised forms the analysis scores.
+
+Gold sets (--gold tesseract=N,loc=N,neither=N): from pages with regions, each truth class is filled up to its quota
+by taking pages in turn (gold_sample), instead of --per-page.
+
+Crops (--clip-band, en-read v1b): a word crop is the union of the two readings' boxes. When one engine's box reaches
+into the line above or below, the crop showed part of that line; with --clip-band the box is cut vertically to the
+printed line (line_band, word_geometry), for tasks whose crop gets more than --clip-shrink shorter, and those tasks get new
+clip keys. Readings, pairs, ids and sampling are unchanged; the report counts `clipped_to_line`.
+
+Sampling. Per page, up to --per-page candidates, those first by sha256(seed:task id:rank) (a simple random sample of
+the page's disagreements, with no de-duplication, so each page's tasks can be weighted back to its candidates).
+
+Which reading is `a` is drawn from a secret side key and the task id, as en_pick.py does: --side-key FILE (default:
+OUT_DIR/side-key.private, kept if it exists, else a new random key; never loaded, stays on the build host).
+
+Writes OUT_DIR/clips/<lang>/<set>/{lines,words}/..., OUT_DIR/tasks.jsonl, OUT_DIR/language.json, OUT_DIR/report.json
+(totals and what was left out and why) and OUT_DIR/pages.jsonl (the same counts per page: the denominators for a
+word error rate difference).
+
+A task's `private` (kept off /api/next, and out of /api/export until the task settles: edge/check/README.md, "Blind
+tasks") holds `a_is` and `b_is` (`tesseract` or `loc`), `page_id`, `loc_word` and `tess_word` (word indexes),
+`iou` and `other_cover` (the alignment's confidence), `similarity` (of the two normalised readings), `normalised`
+(both readings as scored), `tess_conf`, `page_candidates` and `page_sampled` (for weights), `strata`
+(`decade`, `damage_band`), and on a gold page `truth` (`tesseract`, `loc` or `neither`: which reading equals the
+normalised truth word), `truth_word` and `region`.
+
+  python3 tess_pick.py --pages pages.jsonl --lang en-read --set tess-loc-v1 --language-config languages/en-read.json \
+    --out-dir OUT [--seed 2122] [--per-page 6] [--min-iou 0.5] [--max-other 0.2] [--min-page-aligned 0.5]
+"""
+import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+import unicodedata
+from collections import Counter
+from difflib import SequenceMatcher
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)  # `python3 -I` leaves the script directory off the path
+import build_tasks as bt  # noqa: E402
+import en_pick  # noqa: E402
+import merged_lines  # noqa: E402
+
+READINGS = ("tesseract", "loc")
+MAX_LINE_WIDTH = en_pick.MAX_LINE_WIDTH
+
+# ---------------------------------------------------------------- normalisation (score2122.py at b045416f, verbatim)
+
+HYPHENS = "-‐­¬"
+APOS = {"'", "‘", "’", "ʼ"}
+LINE_END_HYPHEN = re.compile(r"(?<=\w)[" + HYPHENS + r"][ \t]*\r?\n\s*(?=\w)")
+
+
+def normalise(text):
+    t = unicodedata.normalize("NFKC", text).lower()
+    t = LINE_END_HYPHEN.sub("", t)
+    t = t.replace("­", "")
+    chars = []
+    for ch in t:
+        if ch in APOS:
+            chars.append("'")
+        elif unicodedata.category(ch).startswith("P"):
+            chars.append(" ")
+        else:
+            chars.append(ch)
+    out = []
+    for i, ch in enumerate(chars):
+        if ch == "'" and not (0 < i < len(chars) - 1 and chars[i - 1].isalnum() and chars[i + 1].isalnum()):
+            out.append(" ")
+        else:
+            out.append(ch)
+    return " ".join("".join(out).split())
+
+
+# ---------------------------------------------------------------- words
+
+
+def parse_tsv(tsv: str) -> list:
+    """Tesseract's words in output order: {text, box: [x, y, w, h], line: index, conf, line_box: [x0, y0, x1, y1]}."""
+    words, line_of = [], {}
+    for ln in tsv.splitlines()[1:]:
+        f = ln.split("\t")
+        if len(f) < 12 or f[0] != "5" or not f[11].strip():
+            continue
+        key = tuple(f[1:5])
+        if key not in line_of:
+            line_of[key] = len(line_of)
+        x, y, w, h = (int(v) for v in f[6:10])
+        words.append({"text": f[11], "box": [x, y, w, h], "line": line_of[key], "conf": float(f[10])})
+    _line_boxes(words)
+    return words
+
+
+def _line_boxes(words: list) -> None:
+    by_line = {}
+    for w in words:
+        by_line.setdefault(w["line"], []).append(w)
+    for ws in by_line.values():
+        box = [min(w["box"][0] for w in ws), min(w["box"][1] for w in ws),
+               max(w["box"][0] + w["box"][2] for w in ws), max(w["box"][1] + w["box"][3] for w in ws)]
+        for w in ws:
+            w["line_box"] = box
+
+
+def area(b) -> float:
+    return max(0.0, b[2]) * max(0.0, b[3])
+
+
+def inter(a, b) -> float:
+    w = min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0])
+    h = min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1])
+    return w * h if w > 0 and h > 0 else 0.0
+
+
+def iou(a, b) -> float:
+    i = inter(a, b)
+    u = area(a) + area(b) - i
+    return i / u if u > 0 else 0.0
+
+
+class Grid:
+    """Boxes bucketed by rows of `step` pixels, for overlap queries."""
+
+    def __init__(self, boxes: list, step: int = 64):
+        self.step, self.rows = step, {}
+        for k, b in enumerate(boxes):
+            for r in range(int(b[1]) // step, int(b[1] + b[3]) // step + 1):
+                self.rows.setdefault(r, []).append(k)
+        self.boxes = boxes
+
+    def overlapping(self, b) -> list:
+        seen = set()
+        for r in range(int(b[1]) // self.step, int(b[1] + b[3]) // self.step + 1):
+            seen.update(self.rows.get(r, ()))
+        return [(k, inter(b, self.boxes[k])) for k in sorted(seen) if inter(b, self.boxes[k]) > 0]
+
+
+def align(loc: list, tess: list, min_iou: float, max_other: float) -> tuple:
+    """({i: (j, iou, other_cover)} for paired words, {i: reason} for the other LoC words, Tesseract words unpaired)."""
+    lb, tb = [w["box"] for w in loc], [w["box"] for w in tess]
+    tg, lg = Grid(tb), Grid(lb)
+    t_over = [tg.overlapping(b) for b in lb]
+    best_i_of_j = {}
+    for j, b in enumerate(tb):
+        cands = [(iou(lb[i], b), -i) for i, _ in lg.overlapping(b)]
+        if cands:
+            best_i_of_j[j] = -max(cands)[1]
+    pairs, why = {}, {}
+    for i, over in enumerate(t_over):
+        if not over:
+            why[i] = "no_tesseract_word"
+            continue
+        score, j = max((iou(lb[i], tb[j]), -j) for j, _ in over)
+        j = -j
+        a_i = area(lb[i]) or 1.0
+        others_on_i = max((c / a_i for k, c in over if k != j), default=0.0)
+        a_j = area(tb[j]) or 1.0
+        others_on_j = max((c / a_j for k, c in lg.overlapping(tb[j]) if k != i), default=0.0)
+        other = max(others_on_i, others_on_j)
+        if other >= max_other:
+            why[i] = "split_or_joined"
+        elif score < min_iou:
+            why[i] = "low_overlap"
+        elif best_i_of_j.get(j) != i:
+            why[i] = "not_mutual_best"
+        else:
+            pairs[i] = (j, round(score, 4), round(other, 4))
+    paired_t = {j for j, _, _ in pairs.values()}
+    return pairs, why, len(tess) - len(paired_t)
+
+
+def hyphen_cut(words: list) -> set:
+    """Indexes of words cut by a hyphen: a word ending in one, and the first word of the next line after it."""
+    out = set()
+    for k, w in enumerate(words):
+        if w["text"].rstrip() and w["text"].rstrip()[-1] in HYPHENS:
+            out.add(k)
+            if k + 1 < len(words) and words[k + 1]["line"] != w["line"]:
+                out.add(k + 1)
+    return out
+
+
+def merged(words: list) -> set:
+    """Indexes of LoC words on a merged line (merged_lines.py), from the lines' boxes."""
+    boxes = {}
+    for w in words:
+        boxes.setdefault(w["line"], w["line_box"])
+    lines = [{"id": k, "box": [b[0], b[1], b[2] - b[0], b[3] - b[1]]} for k, b in boxes.items()]
+    _, flagged = merged_lines.flag_page(lines)
+    bad = {f["id"] for f in flagged}
+    return {k for k, w in enumerate(words) if w["line"] in bad}
+
+
+def who_is_right(loc: str, tess: str, truth: str) -> str:
+    if tess == truth and loc != truth:
+        return "tesseract"
+    if loc == truth and tess != truth:
+        return "loc"
+    return "neither"
+
+
+def truth_words(loc: list, regions: list) -> dict:
+    """{LoC word index: (region id, normalised truth word)} for words whose box centre is in a region and that the
+    region's truth aligns to (en_pick.truth_for on normalised words)."""
+    out = {}
+    for reg in regions:
+        inside = _in_box(loc, reg["box"])
+        toks = [normalise(loc[k]["text"]) or "∅" for k in inside]
+        for pos, word in en_pick.truth_for(toks, normalise(reg["text"]).split()).items():
+            out[inside[pos]] = (reg["id"], word)
+    return out
+
+
+def _in_box(words: list, box: list) -> list:
+    x0, y0, x1, y1 = box
+    return [k for k, w in enumerate(words)
+            if x0 <= w["box"][0] + w["box"][2] / 2 < x1 and y0 <= w["box"][1] + w["box"][3] / 2 < y1]
+
+
+def side(key, task_id: str) -> str:
+    """Which reading is `a`, fixed by the secret side key and the task id (as en_pick.side)."""
+    return READINGS[hashlib.sha256(f"{key}:{task_id}:side".encode()).digest()[0] & 1]
+
+
+def page_candidates(page: dict, loc: list, tess: list, args, stats: Counter) -> tuple:
+    """(candidate rows, per-page counts) for one page."""
+    c = Counter(loc_words=len(loc), tess_words=len(tess))
+    pairs, why, t_unpaired = align(loc, tess, args.min_iou, args.max_other)
+    c["tess_unpaired"] = t_unpaired
+    c["aligned"] = len(pairs)
+    if not loc or len(pairs) / len(loc) < args.min_page_aligned:
+        c["page_alignment_failed"] = 1
+        stats.update(c)
+        return [], c
+    for r in why.values():
+        c["unaligned_" + r] += 1
+    cut_l, cut_t, merged_l = hyphen_cut(loc), hyphen_cut(tess), merged(loc)
+    truth = truth_words(loc, page["regions"]) if page.get("regions") else None
+    key = en_pick.slug(page["page"])
+    heights = {}
+    for w in loc:
+        heights.setdefault(w["line"], []).append(w["box"][3])
+    line_med = {k: sorted(v)[len(v) // 2] for k, v in heights.items()}
+    rows = []
+    for i, (j, score, other) in sorted(pairs.items()):
+        raw_l, raw_t = loc[i]["text"], tess[j]["text"]
+        if i in merged_l:
+            c["left_out_merged_line"] += 1
+            continue
+        if i in cut_l or j in cut_t:
+            c["left_out_hyphen_cut"] += 1
+            continue
+        nl, nt = normalise(raw_l), normalise(raw_t)
+        if nl == nt:
+            c["agree_exact" if raw_l == raw_t else "agree_after_normalisation"] += 1
+            continue
+        if not nl or not nt:
+            c["left_out_punctuation_only"] += 1
+            continue
+        if " " in nl or " " in nt:
+            c["left_out_several_words"] += 1
+            continue
+        c["disagree"] += 1
+        row = {"id": f"{args.lang}/{args.set}/{key}~{i}", "page": page, "i": i, "j": j, "loc": bt.clean(raw_l), "tesseract": bt.clean(raw_t),
+               "norm": {"loc": nl, "tesseract": nt}, "iou": score, "other": other, "conf": tess[j]["conf"],
+               "loc_box": loc[i]["box"], "tess_box": tess[j]["box"], "line_box": loc[i]["line_box"],
+               "line_med_h": line_med.get(loc[i]["line"]),
+               "similarity": round(SequenceMatcher(None, nl, nt, autojunk=False).ratio(), 4)}
+        if truth is not None:
+            if i not in truth:
+                c["outside_truth"] += 1  # a gold page gives tasks only where its truth aligns
+                continue
+            row["region"], row["truth_word"] = truth[i]
+            row["truth"] = who_is_right(nl, nt, row["truth_word"])
+            c["truth_" + row["truth"]] += 1
+        rows.append(row)
+    c["candidates"] = len(rows)
+    stats.update(c)
+    return rows, c
+
+
+def sample(rows: list, per_page: int, seed) -> list:
+    picked = sorted(rows, key=lambda r: en_pick.rank(seed, r["id"]))[:per_page]
+    for r in picked:
+        r["page_candidates"], r["page_sampled"] = len(rows), len(picked)
+    return picked
+
+
+def parse_quota(text: str) -> dict:
+    """'tesseract=54,loc=54,neither=12' -> {'tesseract': 54, 'loc': 54, 'neither': 12}."""
+    out = {}
+    for part in text.split(","):
+        k, _, v = part.partition("=")
+        if k not in ("tesseract", "loc", "neither") or not v.isdigit():
+            raise SystemExit(f"--gold wants tesseract=N,loc=N,neither=N, got {text!r}")
+        out[k] = int(v)
+    return out
+
+
+def gold_sample(rows_by_page: dict, quota: dict, seed) -> dict:
+    """{page: rows} for a gold set: per truth class, up to its quota, taking pages in turn (pages ordered by
+    sha256(seed:page)) and each page's rows by rank, so no page dominates a class. page_candidates is the page's
+    rows with a truth, page_sampled what is taken from it."""
+    order = sorted(rows_by_page, key=lambda p: hashlib.sha256(f"{seed}:{p}".encode()).hexdigest())
+    out = {p: [] for p in order}
+    for cls in ("tesseract", "loc", "neither"):
+        queues = {p: sorted([r for r in rows_by_page[p] if r.get("truth") == cls], key=lambda r: en_pick.rank(seed, r["id"]))
+                  for p in order}
+        need, k = quota.get(cls, 0), 0
+        while need > 0 and any(queues.values()):
+            p = order[k % len(order)]
+            if queues[p]:
+                out[p].append(queues[p].pop(0))
+                need -= 1
+            k += 1
+    for p, picked in out.items():
+        for r in picked:
+            r["page_candidates"], r["page_sampled"] = len(rows_by_page[p]), len(picked)
+    return {p: v for p, v in out.items() if v}
+
+
+def union(a, b) -> list:
+    x0, y0 = min(a[0], b[0]), min(a[1], b[1])
+    return [x0, y0, max(a[0] + a[2], b[0] + b[2]) - x0, max(a[1] + a[3], b[1] + b[3]) - y0]
+
+
+def line_band(r: dict):
+    """(y0, y1): the printed line a word is on: the band of its LoC TextLine (the line's word boxes). When LoC's own
+    word box is the one that reaches into another line (over 1.6 times the median word height of its line, and over
+    1.6 times Tesseract's box), the line band contains it, so Tesseract's box is the band. The rows where the two boxes
+    overlap are not used: on a box that is only offset or short, that cut real letters off (v1b review)."""
+    (_, yl, _, hl), (_, yt, _, ht) = r["loc_box"], r["tess_box"]
+    med = r.get("line_med_h")
+    if med and hl > 1.6 * med and hl > 1.6 * ht and ht > 0:
+        return (yt, yt + ht)
+    lb = (r["line_box"][1], r["line_box"][3])
+    return lb if lb[1] > lb[0] else None
+
+
+def word_geometry(r: dict, size: tuple, clip_band: bool, shrink: float):
+    """([x, y, w, h] of the word in scan pixels, affected): the union of both readings' boxes, cut vertically to
+    line_band() when clip_band is on and that makes the word crop more than `shrink` shorter (one engine's box
+    reaching into the line above or below); else the union as before, so unaffected tasks stay byte-identical."""
+    x, y, w, h = union(r["loc_box"], r["tess_box"])
+    if not clip_band:
+        return [x, y, w, h], False
+    band = line_band(r)
+    if band is None:
+        return [x, y, w, h], False
+    # Only a side that reaches more than half a word height past the band is cut, and to the band plus a tenth of
+    # a word height: LoC's line boxes can sit a few pixels off the ink, and cutting to them exactly took letters off.
+    med = r.get("line_med_h") or (band[1] - band[0])
+    y0 = max(y, band[0] - 0.1 * med) if band[0] - y > 0.5 * med else y
+    y1 = min(y + h, band[1] + 0.1 * med) if (y + h) - band[1] > 0.5 * med else y + h
+    if y1 <= y0 or (y0, y1) == (y, y + h):
+        return [x, y, w, h], False
+
+    def crop_h(yy, hh):
+        pad = max(3, hh // 6)
+        return min(size[1], int(yy + hh + pad)) - max(0, int(yy - pad))
+    if crop_h(y0, y1 - y0) < (1 - shrink) * crop_h(y, h):
+        return [x, y0, w, y1 - y0], True
+    return [x, y, w, h], False
+
+
+def write_task(r: dict, args, img, out_dir: str, f) -> bool:
+    """Write one task and its clips; True when its word box was cut to the line (new clip keys, --clip-band)."""
+    page = r["page"]
+    (x, y, w, h), cut = word_geometry(r, img.size, getattr(args, "clip_band", False), getattr(args, "clip_shrink", 0.25))
+    prefix = f"{args.lang}/{args.set}"
+    stem = r["id"].split("/", 2)[2].replace("~", "_w") + (args.clip_suffix if cut else "")
+    word_key, line_key = f"{prefix}/words/{stem}.jpg", f"{prefix}/lines/{stem}.jpg"
+    for k in (word_key, line_key):
+        os.makedirs(os.path.dirname(os.path.join(out_dir, "clips", k)), exist_ok=True)
+    wimg, _ = en_pick.clip(img, [x, y, w, h], max(4, h // 4), max(3, h // 6))
+    wimg.save(os.path.join(out_dir, "clips", word_key), quality=args.quality)
+    lx0, ly0, lx1, ly1 = r["line_box"]
+    lb = union([lx0, ly0, lx1 - lx0, ly1 - ly0], [x, y, w, h])
+    limg, (cx0, cy0, cx1, cy1) = en_pick.clip(img, lb, max(6, int(h // 2)), max(4, int(h // 3)))
+    if limg.size[0] > MAX_LINE_WIDTH:
+        limg = limg.resize((MAX_LINE_WIDTH, max(1, round(limg.size[1] * MAX_LINE_WIDTH / limg.size[0]))))
+    limg.save(os.path.join(out_dir, "clips", line_key), quality=args.quality)
+    cw, ch = cx1 - cx0, cy1 - cy0
+    a_is = side(args.side_key, r["id"])
+    b_is = READINGS[1 - READINGS.index(a_is)]
+    a, b = r[a_is], r[b_is]
+    ad, bd = bt.letter_diff(a, b, {})
+    private = {"a_is": a_is, "b_is": b_is, "iou": r["iou"], "loc_word": r["i"], "other_cover": r["other"],
+               "page_candidates": r["page_candidates"], "page_id": page.get("page_id"), "page_sampled": r["page_sampled"],
+               "normalised": r["norm"], "similarity": r["similarity"],
+               "strata": {"damage_band": en_pick.band(page.get("damage_rate")), "decade": en_pick.decade(page["date"])},
+               "tess_conf": r["conf"], "tess_word": r["j"]}
+    if "truth" in r:
+        private.update(region=r["region"], truth=r["truth"], truth_word=r["truth_word"])
+    f.write(json.dumps({
+        "id": r["id"], "lang": args.lang, "set": args.set, "page": page["page"], "source": page.get("source"),
+        "label": page.get("label"), "line": line_key, "word": word_key,
+        "box": [round((x - cx0) / cw, 4), round((y - cy0) / ch, 4), round(w / cw, 4), round(h / ch, 4)],
+        "a": a, "b": b, "a_diff": ad, "b_diff": bd, "private": private,
+    }, ensure_ascii=False) + "\n")
+    return cut
+
+
+def load_side_key(args) -> str:
+    key_file = args.side_key or os.path.join(args.out_dir, "side-key.private")
+    if os.path.exists(key_file):
+        return open(key_file, encoding="utf-8").read().strip()
+    if args.side_key:
+        raise SystemExit(f"--side-key {args.side_key}: no such file")
+    key = os.urandom(16).hex()
+    fd = os.open(key_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(key + "\n")
+    return key
+
+
+LEFT_OUT = ("unaligned_no_tesseract_word", "unaligned_split_or_joined", "unaligned_low_overlap", "unaligned_not_mutual_best",
+            "left_out_merged_line", "left_out_hyphen_cut", "left_out_punctuation_only", "left_out_several_words")
+
+
+def summary(stats: Counter, per_page: list) -> dict:
+    rep = dict(sorted(stats.items()))
+    differing = stats["disagree"] + sum(stats[k] for k in LEFT_OUT if k.startswith("left_out"))
+    rep["shares_of_loc_words"] = {k: round(stats[k] / stats["loc_words"], 4) for k in
+                                  ("aligned", "agree_exact", "agree_after_normalisation", "disagree") + LEFT_OUT
+                                  if stats["loc_words"]}
+    rep["aligned_words_left_out_share"] = round(
+        sum(stats[k] for k in LEFT_OUT if k.startswith("left_out")) / differing, 4) if differing else None
+    counts = sorted(p["disagree"] for p in per_page if not p.get("page_alignment_failed"))
+    rep["disagreements_per_page"] = {"pages": len(counts), "min": counts[0] if counts else 0,
+                                     "median": counts[len(counts) // 2] if counts else 0,
+                                     "max": counts[-1] if counts else 0}
+    return rep
+
+
+def main(argv=None) -> None:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--pages", required=True)
+    ap.add_argument("--root", help="folder the pages' paths are relative to (default: the folder of --pages)")
+    ap.add_argument("--lang", default="en-read")
+    ap.add_argument("--set", required=True)
+    ap.add_argument("--language-config", required=True)
+    ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--seed", default="2122", help="seeds the sampling (public)")
+    ap.add_argument("--side-key", help="file holding the secret that decides which reading is a (default: a new random one)")
+    ap.add_argument("--per-page", type=int, default=6)
+    ap.add_argument("--min-iou", type=float, default=0.5)
+    ap.add_argument("--max-other", type=float, default=0.2, help="another word covering this share of a box makes it a split or join")
+    ap.add_argument("--min-page-aligned", type=float, default=0.5, help="leave out a page where fewer of LoC's words pair")
+    ap.add_argument("--gold", help="gold set: quotas per truth class, e.g. tesseract=54,loc=54,neither=12 (pages with regions); "
+                    "replaces --per-page")
+    ap.add_argument("--clip-band", action="store_true", help="cut a word box that reaches into another printed line to "
+                    "its line (line_band) when that makes the word crop more than --clip-shrink shorter; such tasks get new "
+                    "clip keys (--clip-suffix), since served clips are cached as immutable")
+    ap.add_argument("--clip-shrink", type=float, default=0.25)
+    ap.add_argument("--clip-suffix", default="_b")
+    ap.add_argument("--no-clips", action="store_true", help="count only: write the reports and no tasks or images")
+    ap.add_argument("--quality", type=int, default=85)
+    args = ap.parse_args(argv)
+    from PIL import Image
+    Image.MAX_IMAGE_PIXELS = None  # newspaper scans are large
+
+    root = args.root or os.path.dirname(os.path.abspath(args.pages))
+    os.makedirs(args.out_dir, exist_ok=True)
+    args.side_key = load_side_key(args)
+    stats, per_page = Counter(), []
+    tasks = open(os.path.join(args.out_dir, "tasks.jsonl"), "w", encoding="utf-8") if not args.no_clips else None
+    pages, all_rows = en_pick.read_jsonl(args.pages), {}
+    for page in pages:
+        stats["pages"] += 1
+        img_path = os.path.join(root, page["image"])
+        with Image.open(img_path) as im:
+            size = im.size
+        loc = en_pick.parse_alto(open(os.path.join(root, page["alto"]), "rb").read(), size)
+        tess = parse_tsv(open(os.path.join(root, page["tsv"]), encoding="utf-8").read())
+        rows, c = page_candidates(page, loc, tess, args, stats)
+        all_rows[page["page"]] = rows
+        per_page.append({"page": page["page"], "page_id": page.get("page_id"), "date": page["date"],
+                         "damage_rate": page.get("damage_rate"), **dict(sorted(c.items()))})
+    if args.gold:
+        picked_by_page = gold_sample(all_rows, parse_quota(args.gold), args.seed)
+    else:
+        picked_by_page = {p: sample(rows, args.per_page, args.seed) for p, rows in all_rows.items()}
+    for p in per_page:
+        p["sampled"] = len(picked_by_page.get(p["page"], []))
+        stats["sampled"] += p["sampled"]
+        for r in picked_by_page.get(p["page"], []):
+            if "truth" in r:
+                stats["sampled_truth_" + r["truth"]] += 1
+    for page in pages:
+        picked = picked_by_page.get(page["page"], [])
+        if tasks and picked:
+            img = Image.open(os.path.join(root, page["image"])).convert("L")
+            for r in sorted(picked, key=lambda r: r["id"]):
+                stats["clipped_to_line"] += write_task(r, args, img, args.out_dir, tasks)
+    if tasks:
+        tasks.close()
+        cfg = json.load(open(args.language_config, encoding="utf-8"))
+        language = {k: v for k, v in cfg.items() if k not in bt.BUILD_ONLY}
+        language["examples"] = {}
+        with open(os.path.join(args.out_dir, "language.json"), "w", encoding="utf-8") as f:
+            json.dump(language, f, ensure_ascii=False, indent=1)
+    with open(os.path.join(args.out_dir, "pages.jsonl"), "w", encoding="utf-8") as f:
+        for p in per_page:
+            f.write(json.dumps(p) + "\n")
+    rep = summary(stats, per_page)
+    with open(os.path.join(args.out_dir, "report.json"), "w", encoding="utf-8") as f:
+        json.dump(rep, f, indent=1)
+    print(json.dumps(rep, indent=1))
+
+
+if __name__ == "__main__":
+    main()

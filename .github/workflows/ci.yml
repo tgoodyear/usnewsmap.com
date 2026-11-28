@@ -966,6 +966,13 @@ jobs:
           python3 -m unittest -v scripts/ocr-survey/test_loc_column.py
           python3 -m unittest -v scripts/ocr-survey/chr_ghn_layout/test_ghn_boxes.py
           python3 -m unittest discover -s scripts/ocr-survey -p test_transcription.py -v
+      - name: The layout study code's tests pass (#2107, #2122)
+        if: needs.changes.outputs.ocr_gold == 'true'
+        run: |
+          python3 -m pip install --quiet --break-system-packages numpy pytest
+          for d in layout_columns layout_refs layout_diag combo_seg enpick; do
+            (cd "scripts/ocr-survey/$d" && python3 -m pytest -q -p no:cacheprovider)
+          done
       - name: The Rust scorer's golden files match gold.py (#457)
         if: needs.changes.outputs.ocr_gold == 'true'
         run: python3 scripts/ocr-survey/golden_score.py --out crates/usnm-ocr-survey/tests/golden --check
