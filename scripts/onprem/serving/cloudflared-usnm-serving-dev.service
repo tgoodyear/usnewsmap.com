@@ -1,0 +1,28 @@
+# The connector for the remotely managed tunnel that carries only
+# dev.usnewsmap.com (#955), installed by install.sh --dev as
+# /etc/systemd/system/cloudflared-usnm-serving-dev.service. Its token is in
+# /etc/cloudflared/usnm-serving-dev.env (TUNNEL_TOKEN=..., root only, mode
+# 0600). The tunnel's ingress, set on Cloudflare's side, sends
+# dev.usnewsmap.com to Caddy's dev listener on 127.0.0.1:8088 (dev.caddy).
+#
+# It runs the same run-cloudflared as the production tunnel, so its log
+# lines lose their query strings too, with its metrics on a port of its own.
+[Unit]
+Description=Cloudflare Tunnel for dev.usnewsmap.com only (#955)
+Requires=nftables.service
+Wants=network-online.target caddy.service
+After=nftables.service network-online.target caddy.service
+ConditionPathExists=/etc/cloudflared/usnm-serving-dev.env
+
+[Service]
+EnvironmentFile=/etc/cloudflared/usnm-serving-dev.env
+Environment=TUNNEL_METRICS=127.0.0.1:20241
+ExecStart=/usr/local/libexec/usnm-serving/run-cloudflared
+DynamicUser=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

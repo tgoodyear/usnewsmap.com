@@ -1,0 +1,22 @@
+# The dev origin's listener (#955), installed by install.sh --dev as
+# /etc/usnm-serving/extra/dev.caddy, which the Caddyfile imports. The dev
+# tunnel (cloudflared-usnm-serving-dev.service) sends dev.usnewsmap.com
+# here; every other host gets 404. Search engines are told to stay out,
+# by header and by robots.txt.
+http://:8088 {
+	bind 127.0.0.1
+	header X-Robots-Tag "noindex, nofollow, noarchive"
+	@dev host dev.usnewsmap.com
+	handle @dev {
+		handle /robots.txt {
+			root * /etc/usnm-serving-dev
+			file_server
+		}
+		handle {
+			reverse_proxy 127.0.0.1:8091
+		}
+	}
+	handle {
+		respond 404
+	}
+}

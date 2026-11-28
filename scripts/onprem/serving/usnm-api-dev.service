@@ -1,0 +1,41 @@
+# The dev API and site for dev.usnewsmap.com (#955), installed by
+# install.sh --dev as /etc/systemd/system/usnm-api-dev.service. It runs a
+# pinned API image (DEV_API_IMAGE in /etc/usnm-serving-dev/image.env, which
+# install.sh --dev-image writes) on 127.0.0.1:8091, against the production
+# searcher, so a change can be tried on the live index before prod runs it.
+# Caddy's dev listener (dev.caddy, 127.0.0.1:8088) forwards to it, and
+# cloudflared-usnm-serving-dev.service carries dev.usnewsmap.com there.
+#
+# Settings are api-dev.env, installed as /etc/usnm-serving-dev/api.env. Dev
+# keeps no search log, OCR requests, Cosmos state, word feedback or
+# telemetry, so it writes nothing that prod reads.
+#
+# It reads the same reference as prod, the local lake's, read-only. A
+# publish rewrites current.json there and prune then deletes the old
+# version's indexes from the searcher, so dev must never keep a reference
+# of its own: a frozen copy goes on naming an index that is gone, and the
+# API fails to start (#955).
+[Unit]
+Description=US News Map dev API and site, pinned image (#955)
+Requires=nftables.service
+Wants=network-online.target usnm-searcher.service
+After=nftables.service network-online.target usnm-searcher.service
+ConditionPathExists=/etc/usnm-serving-dev/image.env
+
+[Service]
+EnvironmentFile=/etc/usnm-serving-dev/image.env
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+ExecStartPre=-/usr/bin/podman rm -f usnm-api-dev
+ExecStart=/usr/bin/podman run --init --rm --name usnm-api-dev --network host --pull never \
+  --env-file /etc/usnm-serving-dev/api.env \
+  -v /srv/usnm-lake-t/reference:/srv/usnm-lake-t/reference:ro \
+  -v /srv/usnm-serving-dev/cache:/srv/usnm-serving-dev/cache \
+  -v /srv/usnm-serving-dev/sitemap-state:/srv/usnm-serving-dev/sitemap-state \
+  --read-only --tmpfs /tmp:rw,size=256m --cap-drop all --security-opt no-new-privileges \
+  --memory 2g --stop-timeout 40 ${DEV_API_IMAGE}
+ExecStop=/usr/bin/podman stop -t 40 usnm-api-dev
+
+[Install]
+WantedBy=multi-user.target

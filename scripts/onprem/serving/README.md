@@ -15,14 +15,16 @@ Everything listens on loopback only. The only way in is the tunnel, which cloudf
 
 | Unit                                              | What                                                                                                                                                         | Listens on                            |
 | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------- |
-| `cloudflared-usnm-serving.service`                | The connector for the remotely managed tunnel `usnm-serving`. Its token comes from Key Vault into a root-only file (ADR-0024).                               | 127.0.0.1:20241 (metrics)             |
+| `cloudflared-usnm-serving.service`                | The connector for the remotely managed tunnel `usnm-serving`. Its token comes from Key Vault into a root-only file (ADR-0024).                               | 127.0.0.1:20242 (metrics)             |
 | `caddy.service`                                   | Debian's Caddy with this directory's `Caddyfile`. It forwards every request to the API color that serves.                                                    | 127.0.0.1:8080, and :2019 (admin API) |
 | `usnm-api@blue.service`, `usnm-api@green.service` | The API and site, the same `usnewsmap-api` image Azure runs, pulled by digest under podman. One color serves; the other is stopped, or starting a new image. | 127.0.0.1:8081, :8082                 |
 | `usnm-searcher.service`                           | The pinned Quickwit binary (`scripts/onprem/install-quickwit.sh`), searcher and metastore roles, reading the index from a read-only `file://` metastore.     | 127.0.0.1:7280, and :7281 (gRPC)      |
 | `usnm-serving-update.timer`                       | Runs `update-api.sh` 2 minutes after the last run ends, so the API follows the image prod runs.                                                              |                                       |
 | `usnm-edge-warm.service`, `.timer`                | Runs `warm-edge.py` after a deploy switches traffic and weekly, to fill Cloudflare with the example searches.                                                | Outbound only                         |
+| `usnm-api-dev.service` (`--dev`)                  | The dev API and site for dev.usnewsmap.com: a pinned image against the production searcher and the published reference. Writes nothing prod reads.           | 127.0.0.1:8091                        |
+| `cloudflared-usnm-serving-dev.service` (`--dev`)  | The dev tunnel's connector. Caddy's dev listener (`dev.caddy`) takes its requests.                                                                           | 127.0.0.1:8088 (Caddy), :20241        |
 
-The API reaches Azure (the lake's `reference/`, Cosmos and App Insights) with the container's own Arc identity. Rehearsals leave search logging and OCR requests off, because the API records same-origin searches on any hostname, the test hostname included. The authorized production deployment enables their shared authoritative stores.
+Since the Azure exit (#1367) the API reads the local lake, which the container host binds in under `/srv/usnm-lake-t`: the published reference (read-only, so a publish's `current.json` reaches both prod and dev), the curated OCR ALTO, and, with `--production`, the search log and OCR requests. It reaches Azure (Cosmos and App Insights) with the container's own Arc identity. Rehearsals leave search logging and OCR requests off, because the API records same-origin searches on any hostname, the test hostname included. The authorized production deployment enables their shared authoritative stores.
 
 At the authorized public cutover, pass `--production` to both `gen-env.sh`
 and `install.sh`. This enables the shared Azure search log without
@@ -35,8 +37,11 @@ rather than accepting them as rehearsal-only differences. The default
 rehearsal configuration still leaves both unset and the installer refuses
 writer settings without that explicit flag.
 
-Additional isolated listeners, such as the dev origin, may be installed under
-`/etc/usnm-serving/extra/*.caddy`. The updater verifies only the production
+Additional isolated listeners may be installed under
+`/etc/usnm-serving/extra/*.caddy`; `install.sh --dev` installs the dev
+origin's there as `dev.caddy`. The dev API keeps no reference of its own: a
+frozen copy names an index that prune later deletes from the searcher, and
+the API then fails to start. The dev unit runs with `--pull never`, so pull its image before `install.sh --dev --dev-image`, which refuses one that isn't stored; `update-api.sh`'s image cleanup keeps the pinned image. The dev response cache expires after 14 days like prod's (`usnm-serving.tmpfiles`); its sitemap state never does. The updater verifies only the production
 listener on `127.0.0.1:8080`, not an unrelated dev upstream. Preserve the
 qualified read-only index mount's UID/GID in a systemd drop-in when it differs
 from the default searcher account; do not rewrite the source index permissions.

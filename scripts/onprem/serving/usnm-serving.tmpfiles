@@ -15,3 +15,7 @@ d /srv/usnm-serving/cache/green 0750 1000 1000 mM:14d
 d /srv/usnm-serving/sitemap-state 0750 1000 1000 -
 # Readers' word marks (#2026): create-only day files, never expired or cleaned.
 d /srv/usnm-serving/word-feedback 0750 1000 1000 -
+# The dev origin's response cache (install.sh --dev), expired the same way.
+# "e" only ages out a directory that exists, so nothing is made without
+# --dev. Its sitemap state, like prod's, never expires.
+e /srv/usnm-serving-dev/cache - - - mM:14d

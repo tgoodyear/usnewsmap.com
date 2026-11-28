@@ -118,7 +118,8 @@ case "$(basename "$0") $1" in
   "gh attestation")
     [ -z "${STUB_BAD_ATTESTATION:-}" ] || exit 1
     printf '[{"verificationResult":{"signature":{"certificate":{"sourceRepositoryDigest":"%s"}}}}]\n' "$STUB_SOURCE" ;;
-  "podman images") printf '%s\n' ${STUB_IMAGES:-} ;;
+  "podman images") printf '%s\n' ${STUB_IMAGES:-} | tr , ' ' ;;
+  "podman image") [ "$3" != "${STUB_MISSING_IMAGE:-}" ] || exit 1 ;;
   "getent group") echo "himds:x:4242:" ;;
   "getent passwd") exit 2 ;;
 esac
@@ -440,6 +441,24 @@ class UpdateApi(Stubbed):
         removed = [c for c in self.calls() if c.startswith("podman rmi")]
         self.assertEqual(removed, ["podman rmi " + stale])
 
+    def dev_pin_cleanup(self, pinned):
+        self.serving("blue", SHA["old"], "old")
+        self.release(SHA["new"], "new")
+        write(os.path.join(self.root, "etc/usnm-serving-dev/image.env"), "DEV_API_IMAGE=%s\n" % pinned)
+        images = ("%s/usnewsmap-api@sha256:%s" % (HOST, "7" * 64),
+                  "%s/usnewsmap-api@sha256:%s,sha256:%s" % (HOST, "6" * 64, "5" * 64),
+                  "%s/usnewsmap-api@sha256:%s" % (HOST, "9" * 64))
+        r = self.update(STUB_READY_PORTS="8081 8082", STUB_IMAGES=" ".join(images))
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        return [c[len("podman rmi "):] for c in self.calls() if c.startswith("podman rmi")]
+
+    def test_the_dev_pin_by_digest_survives_image_cleanup(self):
+        removed = self.dev_pin_cleanup("%s/usnewsmap-api@sha256:%s" % (HOST, "7" * 64))
+        self.assertEqual(sorted(removed), sorted("%s/usnewsmap-api@sha256:%s" % (HOST, c * 64) for c in "69"))
+
+    def test_the_dev_pin_by_image_id_survives_image_cleanup(self):
+        removed = self.dev_pin_cleanup("sha256:" + "5" * 64)
+        self.assertEqual(sorted(removed), sorted("%s/usnewsmap-api@sha256:%s" % (HOST, c * 64) for c in "79"))
 
 class GenEnv(unittest.TestCase):
     SCRIPT = os.path.join(HERE, "gen-env.sh")
@@ -478,8 +497,8 @@ class GenEnv(unittest.TestCase):
         r = self.gen("--dry-run", "--production")
         self.assertEqual(r.returncode, 0, r.stderr)
         api = dict(line.split("=", 1) for line in self.files(r.stdout)["api.env"].splitlines())
-        self.assertEqual(api["USNM_SEARCH_LOG_URL"], "https://stexampletest.blob.core.windows.net/searches")
-        self.assertEqual(api["USNM_OCR_REQUESTS_URL"], "https://stexampletest.blob.core.windows.net/ocr-requests")
+        self.assertEqual(api["USNM_SEARCH_LOG_URL"], "/srv/usnm-lake-t/searches")
+        self.assertEqual(api["USNM_OCR_REQUESTS_URL"], "/srv/usnm-lake-t/ocr-requests")
 
     def test_production_ocr_writer_follows_azure_infrastructure_not_local_ocr(self):
         env_file = os.path.join(self.env["USNM_ENV_DIR"], "prod.json")
@@ -526,12 +545,13 @@ class GenEnv(unittest.TestCase):
         r = self.gen("--dry-run")
         self.assertEqual(r.returncode, 0, r.stderr)
         api = dict(line.split("=", 1) for line in self.files(r.stdout)["api.env"].splitlines())
-        self.assertEqual(api["USNM_REFERENCE_URL"], "https://stexampletest.blob.core.windows.net/reference")
+        self.assertEqual(api["USNM_REFERENCE_URL"], "/srv/usnm-lake-t/reference")
+        self.assertNotIn("blob.core.windows.net", self.files(r.stdout)["api.env"])
         self.assertEqual(api["USNM_QUICKWIT_URL"], "http://127.0.0.1:7280")
         self.assertEqual(api["USNM_RESPONSE_CACHE_URL"], "/srv/usnm-serving/cache")
         self.assertEqual(api["USNM_SITEMAP_STATE_URL"], "/srv/usnm-serving/sitemap-state")
         self.assertEqual(api["USNM_WORD_FEEDBACK_URL"], "/srv/usnm-serving/word-feedback")
-        self.assertEqual(api["USNM_ALTO_URL"], "/srv/usnm-lake")
+        self.assertEqual(api["USNM_ALTO_URL"], "/srv/usnm-lake-t")
         self.assertNotIn("USNM_SITEMAP_GENERATE", api)
         self.assertEqual(api["USNM_ALLOWED_ORIGINS"], "https://usnewsmap.com,https://www.usnewsmap.com")
         self.assertEqual(api["USNM_CONGRESS_SEARCH"], "false")
@@ -683,6 +703,10 @@ class Install(Stubbed):
         self.assertIn("chown 1000:1000 %s/srv/usnm-serving/word-feedback" % self.root, self.calls())
         # The ALTO mount point exists before the host mounts the dataset on it, so a color still starts.
         self.assertTrue(os.path.isdir(os.path.join(self.root, "srv/usnm-lake/ocr-local")))
+        for d in ("ocr-local", "reference", "searches", "ocr-requests"):
+            self.assertTrue(os.path.isdir(os.path.join(self.root, "srv/usnm-lake-t", d)), d)
+        # No dev origin unless asked for.
+        self.assertFalse(os.path.exists(os.path.join(etc, "systemd/system/usnm-api-dev.service")))
         open(self.log, "w").close()
         r = self.install()
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -724,6 +748,79 @@ class Install(Stubbed):
                 linked = os.stat(os.path.join(cache, "shared", entry.format(name)))
                 self.assertEqual(source.st_ino, linked.st_ino, name)
                 self.assertEqual(int(linked.st_mtime), old, name)
+
+    def test_the_old_lake_drop_in_is_removed(self):
+        dropin = os.path.join(self.root, "etc/systemd/system/usnm-api@.service.d/azexit-lake.conf")
+        write(dropin, "[Service]\nExecStart=\n")
+        r = self.install()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(dropin))
+        metrics = os.path.join(self.root, "etc/systemd/system/cloudflared-usnm-serving.service.d/metrics.conf")
+        write(metrics, "[Service]\nEnvironment=TUNNEL_METRICS=127.0.0.1:20242\n")
+        r = self.install()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(metrics))
+        self.assertIn("systemctl daemon-reload", self.calls())
+
+    def test_dev_needs_an_image_the_first_time(self):
+        r = self.install("--dev")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("--dev-image", r.stderr)
+        r = self.install("--dev-image", "sha256:" + "0" * 64)
+        self.assertEqual(r.returncode, 2)
+        r = self.install("--dev", "--dev-image", "latest")
+        self.assertEqual(r.returncode, 2)
+
+    def test_a_new_tunnel_helper_restarts_the_dev_connector(self):
+        r = self.install("--dev", "--dev-image", "sha256:" + "ab" * 32)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        write(os.path.join(self.root, "etc/cloudflared/usnm-serving-dev.env"), "TUNNEL_TOKEN=x\n")
+        helper = os.path.join(self.root, "usr/local/libexec/usnm-serving/run-cloudflared")
+        with open(helper, "a") as f:
+            f.write("# older\n")
+        open(self.log, "w").close()
+        self.env["STUB_ACTIVE"] = "usnm-searcher.service caddy.service usnm-api-dev.service cloudflared-usnm-serving-dev.service"
+        r = self.install("--dev")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("systemctl restart cloudflared-usnm-serving-dev.service", self.calls())
+        self.assertNotIn("systemctl restart usnm-api-dev.service", self.calls())
+
+    def test_dev_refuses_an_image_that_isnt_stored(self):
+        image = "sha256:" + "cd" * 32
+        self.env["STUB_MISSING_IMAGE"] = image
+        r = self.install("--dev", "--dev-image", image)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("isn't stored here", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "etc/usnm-serving-dev/image.env")))
+        # A dry run doesn't look.
+        r = self.install("--dev", "--dev-image", image, "--dry-run")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_dev_cache_expires_and_its_sitemap_state_does_not(self):
+        with open(os.path.join(HERE, "usnm-serving.tmpfiles")) as f:
+            lines = [l.split() for l in f if l.strip() and not l.startswith("#")]
+        self.assertIn(["e", "/srv/usnm-serving-dev/cache", "-", "-", "-", "mM:14d"], lines)
+        self.assertFalse(any("usnm-serving-dev/sitemap-state" in l[1] for l in lines))
+
+    def test_dev_origin_install_then_nothing_to_change(self):
+        image = "sha256:" + "ab" * 32
+        r = self.install("--dev", "--dev-image", image)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        etc = os.path.join(self.root, "etc")
+        with open(os.path.join(etc, "usnm-serving-dev/image.env")) as f:
+            self.assertEqual(f.read(), "DEV_API_IMAGE=%s\n" % image)
+        for path in ("usnm-serving-dev/api.env", "usnm-serving-dev/robots.txt", "usnm-serving/extra/dev.caddy",
+                     "systemd/system/usnm-api-dev.service", "systemd/system/cloudflared-usnm-serving-dev.service"):
+            self.assertTrue(os.path.isfile(os.path.join(etc, path)), path)
+        self.assertIn("chown 1000:1000 %s/srv/usnm-serving-dev/cache" % self.root, self.calls())
+        self.assertIn("systemctl start usnm-api-dev.service", self.calls())
+        open(self.log, "w").close()
+        # Later runs keep the image without --dev-image, and change nothing.
+        r = self.install("--dev")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("installed", r.stdout)
+        self.assertFalse(any(c.startswith(("systemctl restart", "systemctl daemon-reload", "systemctl reload"))
+                             for c in self.calls()))
 
     def test_search_log_is_refused_before_the_cutover(self):
         write(os.path.join(self.config, "api.env"), "USNM_SEARCH_LOG_URL=https://x/searches\n")
@@ -844,6 +941,32 @@ class Static(unittest.TestCase):
         self.assertIn("-v /srv/usnm-serving/word-feedback:/srv/usnm-serving/word-feedback",
                       self.read("usnm-api@.service"))
         self.assertIn("d /srv/usnm-serving/word-feedback 0750 1000 1000 -", tmpfiles)
+
+    def test_dev_follows_the_published_reference(self):
+        unit = self.read("usnm-api-dev.service")
+        env = dict(line.split("=", 1) for line in self.read("api-dev.env").splitlines())
+        self.assertEqual(env["USNM_REFERENCE_URL"], "/srv/usnm-lake-t/reference")
+        self.assertIn("-v /srv/usnm-lake-t/reference:/srv/usnm-lake-t/reference:ro", unit)
+        self.assertNotIn("usnm-serving-dev/reference", unit)
+        self.assertEqual(env["USNM_BIND"], "127.0.0.1:8091")
+        self.assertIn("reverse_proxy 127.0.0.1:8091", self.read("dev.caddy"))
+        self.assertIn("http://:8088 {\n\tbind 127.0.0.1\n", self.read("dev.caddy"))
+        # Dev writes nothing prod reads.
+        for unset in ("USNM_SEARCH_LOG_URL", "USNM_OCR_REQUESTS_URL", "USNM_COSMOS_ENDPOINT",
+                      "USNM_WORD_FEEDBACK_URL", "APPLICATIONINSIGHTS_CONNECTION_STRING"):
+            self.assertNotIn(unset, env)
+        tunnel = self.read("cloudflared-usnm-serving-dev.service")
+        self.assertIn("ExecStart=/usr/local/libexec/usnm-serving/run-cloudflared", tunnel)
+        self.assertIn("Environment=TUNNEL_METRICS=127.0.0.1:20241", tunnel)
+        self.assertIn("Environment=TUNNEL_METRICS=127.0.0.1:20242", self.read("cloudflared-usnm-serving.service"))
+
+    def test_the_api_reads_the_local_lake(self):
+        unit = self.read("usnm-api@.service")
+        for mount in ("/srv/usnm-lake-t/ocr-local:/srv/usnm-lake-t/ocr-local:ro",
+                      "/srv/usnm-lake-t/reference:/srv/usnm-lake-t/reference:ro",
+                      "/srv/usnm-lake-t/searches:/srv/usnm-lake-t/searches",
+                      "/srv/usnm-lake-t/ocr-requests:/srv/usnm-lake-t/ocr-requests"):
+            self.assertIn("-v " + mount + " ", unit)
 
     def test_alto_copy_is_mounted_read_only_for_the_api(self):
         unit = self.read("usnm-api@.service")
